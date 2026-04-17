@@ -1,0 +1,21 @@
+[project]
+name = "stockai-shared"
+version = "0.1.0"
+description = "Shared library: config, logging, ORM models"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
+    "alembic>=1.13",
+    "structlog>=24.1",
+    "redis>=5.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["common*", "db*"]

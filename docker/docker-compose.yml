@@ -1,0 +1,122 @@
+name: stockai
+
+x-py-common: &py-common
+  env_file: ../.env
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  networks: [stockai-net]
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    env_file: ../.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    networks: [stockai-net]
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    networks: [stockai-net]
+
+  market-data:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/market-data/Dockerfile
+    ports: ["8001:8001"]
+    volumes:
+      - datavol:/data
+
+  technical-analysis:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/technical-analysis/Dockerfile
+    ports: ["8002:8002"]
+
+  ml-prediction:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/ml-prediction/Dockerfile
+    ports: ["8003:8003"]
+    volumes:
+      - datavol:/data
+
+  ranking-engine:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/ranking-engine/Dockerfile
+    ports: ["8004:8004"]
+
+  signal-engine:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/signal-engine/Dockerfile
+    ports: ["8005:8005"]
+
+  strategy-engine:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/strategy-engine/Dockerfile
+    ports: ["8006:8006"]
+
+  portfolio-optimizer:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/portfolio-optimizer/Dockerfile
+    ports: ["8007:8007"]
+
+  api-gateway:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/api-gateway/Dockerfile
+    ports: ["8000:8000"]
+    depends_on:
+      - market-data
+      - technical-analysis
+      - ml-prediction
+      - ranking-engine
+      - signal-engine
+      - strategy-engine
+      - portfolio-optimizer
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+    env_file: ../.env
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports: ["3000:3000"]
+    depends_on: [api-gateway]
+    networks: [stockai-net]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  datavol:
+
+networks:
+  stockai-net:
+    driver: bridge

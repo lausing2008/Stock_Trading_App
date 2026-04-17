@@ -1,0 +1,433 @@
+You are a Senior Staff Engineer + Quant Architect + ML Engineer tasked with designing and implementing a Production-Ready AI Stock Intelligence Platform similar to:
+
+TradingView
+TrendSpider
+Tickeron
+Kavout
+
+Your goal is to design and implement a professional-grade system with:
+
+Clean architecture
+Scalable microservices
+Dockerized local development
+AWS ECS Fargate deployment ready
+Modular AI/ML pipeline
+Product Name
+
+AI Stock Intelligence Platform
+
+Core Requirements
+
+Build a full-stack AI Stock Intelligence Platform supporting:
+
+Markets
+
+Primary Markets:
+
+US Stock Market
+Hong Kong Stock Market
+
+Supported Exchanges:
+
+US:
+
+NYSE
+NASDAQ
+
+Hong Kong:
+
+HKEX
+Core Features
+1. AI Technical Analysis
+
+Implement:
+
+Automated Trendline Detection
+Support/Resistance Detection
+Pattern Recognition:
+Head & Shoulders
+Double Top/Bottom
+Triangle Patterns
+Flag & Pennant
+Cup & Handle
+
+Indicators:
+
+Moving Average
+RSI
+MACD
+Bollinger Bands
+VWAP
+Fibonacci Retracement
+2. Strategy Backtesting Engine
+
+Features:
+
+Historical Backtesting
+Multi-timeframe testing
+Portfolio level testing
+Performance metrics:
+
+Metrics:
+
+Sharpe Ratio
+Max Drawdown
+Win Rate
+CAGR
+Profit Factor
+3. AI Strategy Builder
+
+User can:
+
+Combine indicators
+Build rule-based strategies
+Run backtests
+Save strategies
+
+Example:
+
+If RSI < 30 and Price > MA50 then Buy
+
+4. Machine Learning Prediction Engine
+
+Implement:
+
+Models:
+
+Random Forest
+XGBoost
+LSTM
+Gradient Boosting
+
+Predictions:
+
+Price Direction
+Short Term Trend
+Volatility Forecast
+5. AI Confidence Score
+
+Generate:
+
+AI Confidence Score (0-100)
+
+Based on:
+
+Technical signals
+ML prediction
+Sentiment
+Volume
+
+Example:
+
+AAPL
+
+Bullish Probability: 72%
+Confidence Score: 81
+
+6. AI Stock Ranking (K-Score / Fair Price)
+
+Implement scoring model:
+
+Components:
+
+Technical strength
+Momentum
+Value
+Growth
+Volatility
+
+Output:
+
+Stock Rank:
+
+Example:
+
+NVDA — Score 92
+MSFT — Score 88
+AAPL — Score 85
+7. Trading Signals
+
+Generate:
+
+Buy
+Sell
+Hold
+
+Signals:
+
+Short Term
+Swing
+Long Term
+
+8. Portfolio Optimization
+
+Implement:
+
+Risk Parity
+Mean Variance Optimization
+AI Allocation
+
+Output:
+
+Portfolio Allocation
+
+Example:
+
+AAPL 20%
+MSFT 20%
+NVDA 25%
+Cash 35%
+
+Data Ingestion Requirements
+
+Start with Free Data Sources
+
+US Market:
+
+yfinance
+Alpha Vantage (free tier)
+Polygon free tier
+
+Hong Kong:
+
+iTrick
+QOS
+Yahoo Finance HK
+
+Design architecture to easily swap paid data later.
+
+Implement:
+
+Data ingestion microservice
+
+Features:
+
+Scheduler
+Incremental loads
+Data validation
+Architecture Requirements
+
+Use Microservices Architecture
+
+Services:
+
+market-data-service
+technical-analysis-service
+ml-prediction-service
+strategy-engine
+ranking-engine
+signal-engine
+portfolio-optimizer
+api-gateway
+frontend
+
+Tech Stack
+
+Backend:
+
+Python
+FastAPI
+
+AI/ML:
+
+PyTorch
+Scikit-learn
+XGBoost
+
+Data:
+
+PostgreSQL
+Redis
+Parquet Storage
+
+Optional:
+
+DuckDB for analytics
+
+Frontend
+
+React + NextJS
+
+Charts:
+
+TradingView-style chart
+
+Libraries:
+
+lightweight-charts
+plotly
+
+Features:
+
+Interactive charts
+Strategy builder UI
+Portfolio dashboard
+API Design
+
+REST APIs
+
+Endpoints:
+
+/stocks
+/signals
+/backtest
+/rankings
+/portfolio
+/strategies
+
+Docker Requirements
+
+Create:
+
+Docker Compose
+
+Services:
+
+frontend
+backend
+postgres
+redis
+ml-service
+
+Provide:
+
+Dockerfile for each service
+
+AWS Deployment Requirements
+
+Deployable to:
+
+AWS ECS Fargate
+
+Provide:
+
+Infrastructure:
+
+ECS services
+ALB
+CloudWatch logs
+ECR images
+
+Use:
+
+Terraform or AWS CDK
+
+Project Structure
+
+Create professional repo structure:
+
+stock-intelligence-platform
+
+services/
+  market-data
+  ml-engine
+  ranking-engine
+  signal-engine
+
+frontend/
+
+infra/
+
+docker/
+
+docs/
+Data Model
+
+Tables:
+
+stocks
+prices
+indicators
+signals
+rankings
+strategies
+backtests
+portfolio
+
+Performance Requirements
+
+Support:
+
+5000 stocks
+US + HK markets
+Daily updates
+MVP Phases
+
+Phase 1
+
+Data ingestion
+Charts
+Indicators
+
+Phase 2
+
+ML predictions
+Signals
+
+Phase 3
+
+Ranking
+Portfolio optimization
+
+Documentation
+
+Generate:
+
+README
+Architecture Diagram
+Setup Guide
+Deployment Guide
+
+Deliverables
+
+Claude should output:
+
+Full architecture
+Repo structure
+Docker setup
+Backend skeleton
+Frontend skeleton
+ML pipeline
+Deployment config
+Engineering Standards
+
+Use:
+
+Clean Architecture
+SOLID principles
+Type hints
+Unit tests
+Logging
+Config management
+Priority
+
+Start with:
+
+Data ingestion
+Indicators
+Ranking
+Signals
+ML
+End Goal
+
+Build a Production-Ready AI Stock Intelligence Platform comparable to:
+
+TradingView
+TrendSpider
+Tickeron
+Kavout
+Additional Requirements
+
+System must support:
+
+Plugin architecture
+Add new markets easily
+Add crypto later
+Begin Implementation
+
+Start with:
+
+Architecture design
+Repository setup
+Docker containers
+Data ingestion service
