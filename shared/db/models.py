@@ -213,3 +213,11 @@ class PortfolioHolding(Base):
     weight: Mapped[float] = mapped_column(Float)
 
     portfolio: Mapped[Portfolio] = relationship(back_populates="holdings")
+
+
+class WatchlistItem(Base):
+    __tablename__ = "watchlist_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), unique=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

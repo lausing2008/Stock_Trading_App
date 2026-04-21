@@ -13,6 +13,8 @@ export default function App({ Component, pageProps }: AppProps) {
           <nav className="flex gap-4 text-sm text-slate-300">
             <Link href="/">Dashboard</Link>
             <Link href="/rankings">Rankings</Link>
+            <Link href="/watchlist">Watchlist</Link>
+            <Link href="/positions">Positions</Link>
             <Link href="/portfolio">Portfolio</Link>
             <Link href="/strategies">Strategies</Link>
           </nav>

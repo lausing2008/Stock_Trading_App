@@ -33,6 +33,23 @@ def train(req: TrainRequest, tasks: BackgroundTasks):
     return {"status": "scheduled", "symbol": req.symbol, "model": req.model}
 
 
+@router.post("/train_all")
+def train_all(tasks: BackgroundTasks):
+    """Schedule xgboost training for every active stock in the universe."""
+    from sqlalchemy import select
+    from db import Stock, SessionLocal
+
+    with SessionLocal() as session:
+        symbols = list(session.execute(
+            select(Stock.symbol).where(Stock.active.is_(True))
+        ).scalars())
+
+    for sym in symbols:
+        tasks.add_task(train_model, sym, "xgboost", 5)
+
+    return {"status": "scheduled", "count": len(symbols), "symbols": symbols}
+
+
 @router.post("/predict")
 def predict(req: PredictRequest):
     try:

@@ -8,6 +8,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listStocks: (market?: string) => request<Stock[]>(`/stocks${market ? `?market=${market}` : ''}`),
+  latestPrices: () => request<LatestPrice[]>(`/stocks/latest_prices`),
   getStock: (symbol: string) => request<Stock>(`/stocks/${symbol}`),
   getPrices: (symbol: string, tf = '1d', limit = 400) =>
     request<Price[]>(`/stocks/${symbol}/prices?timeframe=${tf}&limit=${limit}`),
@@ -15,13 +16,27 @@ export const api = {
   rankings: (market?: string) =>
     request<{ rankings: RankingRow[] }>(`/rankings${market ? `?market=${market}` : ''}`),
   signal: (symbol: string) => request<Signal>(`/signals/${symbol}`),
+  allSignals: () => request<SignalSummary[]>(`/signals`),
   predict: (symbol: string, model = 'xgboost') =>
     request<Prediction>(`/ml/predict`, { method: 'POST', body: JSON.stringify({ symbol, model }) }),
+  trainModel: (symbol: string, model = 'xgboost') =>
+    request<{ status: string }>(`/ml/train`, { method: 'POST', body: JSON.stringify({ symbol, model }) }),
+  listModels: () => request<string[]>(`/ml/models`),
+  getNews: (symbol: string) => request<NewsItem[]>(`/stocks/${symbol}/news`),
   createStrategy: (body: unknown) => request<{ id: number }>(`/strategies`, { method: 'POST', body: JSON.stringify(body) }),
   listStrategies: () => request<{ id: number; name: string; description?: string }[]>(`/strategies`),
   backtest: (body: unknown) => request<Backtest>(`/backtest`, { method: 'POST', body: JSON.stringify(body) }),
   optimizePortfolio: (body: unknown) => request<PortfolioWeights>(`/portfolio/optimize`, { method: 'POST', body: JSON.stringify(body) }),
-  ingest: (symbols: string[]) => request(`/admin/ingest`, { method: 'POST', body: JSON.stringify({ symbols }) }),
+  ingest: (symbols: string[]) => request<{ status: string; symbols?: number }>(`/admin/ingest`, { method: 'POST', body: JSON.stringify({ symbols }) }),
+  trainAll: () => request<{ status: string; count: number; symbols: string[] }>(`/ml/train_all`, { method: 'POST' }),
+  addStock: (symbol: string) => request<{ status: string; symbol: string; name: string; sector?: string }>(`/admin/add_stock`, { method: 'POST', body: JSON.stringify({ symbol }) }),
+  listWatchlist: () => request<WatchlistItem[]>(`/watchlist`),
+  addToWatchlist: (symbol: string) => request<WatchlistItem>(`/watchlist/${symbol}`, { method: 'POST' }),
+  removeFromWatchlist: (symbol: string) => request(`/watchlist/${symbol}`, { method: 'DELETE' }),
+  isWatched: async (symbol: string): Promise<boolean> => {
+    const items = await request<WatchlistItem[]>(`/watchlist`);
+    return items.some(i => i.symbol === symbol);
+  },
 };
 
 export type Stock = {
@@ -52,7 +67,8 @@ export type Signal = {
   reasons: Record<string, unknown>;
 };
 
-export type RankingRow = { symbol: string; name: string; score: number; market: string; fair_price?: number };
+export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD'; horizon: string; confidence: number; bullish_probability: number | null };
+export type RankingRow = { symbol: string; name: string; score: number; market: string; fair_price?: number; sector?: string };
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {
   backtest_id: number;
@@ -66,13 +82,23 @@ export type Backtest = {
   equity_curve: { ts: string; equity: number }[];
 };
 export type PortfolioWeights = { method: string; weights: Record<string, number>; cash: number };
+export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string };
+export type WatchlistItem = { symbol: string; name: string; market: string; exchange: string; sector?: string; currency: string; added_at: string };
+export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
+
+export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };
+export type Levels = {
+  support_resistance: SRLevel[];
+  trendlines: { slope: number; intercept: number; r2: number; direction: string; start_idx: number; end_idx: number }[];
+  fibonacci: Record<string, number>;
+} | null;
 
 export type Overview = {
   price: Stock | null;
   prices: Price[] | null;
   indicators: { ts: string[]; values: Record<string, (number | null)[]> } | null;
   patterns: { patterns: { name: string; confidence: number; start_idx: number; end_idx: number }[] } | null;
-  levels: unknown;
+  levels: Levels;
   signal: Signal | null;
-  ranking: { score: number; fair_price?: number; [k: string]: unknown } | null;
+  ranking: { score: number; fair_price?: number; technical: number; momentum: number; value: number; growth: number; volatility: number } | null;
 };

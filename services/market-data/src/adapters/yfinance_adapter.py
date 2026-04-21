@@ -45,14 +45,12 @@ class YFinanceAdapter(DataAdapter):
     ) -> OHLCV:
         interval = _TIMEFRAME_MAP.get(timeframe, "1d")
         log.info("yfinance.fetch", symbol=symbol, start=str(start), end=str(end), tf=timeframe)
-        df = yf.download(
-            tickers=symbol,
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(
             start=start.isoformat(),
             end=end.isoformat(),
             interval=interval,
             auto_adjust=False,
-            progress=False,
-            threads=False,
         )
         if df is None or df.empty:
             return OHLCV(symbol, timeframe, pd.DataFrame(columns=["ts"]))
@@ -69,7 +67,6 @@ class YFinanceAdapter(DataAdapter):
                 "Volume": "volume",
             }
         )
-        # yfinance sometimes returns a MultiIndex column frame for single tickers
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[0] for c in df.columns]
 

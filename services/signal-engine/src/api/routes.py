@@ -1,6 +1,7 @@
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from db import Signal, SignalHorizon, SignalType, Stock, get_session
@@ -8,6 +9,32 @@ from db import Signal, SignalHorizon, SignalType, Stock, get_session
 from ..generators import generate_signal
 
 router = APIRouter(prefix="/signals", tags=["signals"])
+
+
+@router.get("")
+def all_latest_signals(session: Session = Depends(get_session)):
+    """Return the most recently persisted signal for every active stock."""
+    latest_subq = (
+        select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+        .group_by(Signal.stock_id)
+        .subquery()
+    )
+    rows = session.execute(
+        select(Stock.symbol, Signal.signal, Signal.horizon, Signal.confidence, Signal.bullish_probability)
+        .join(Signal, Stock.id == Signal.stock_id)
+        .join(latest_subq, (Signal.stock_id == latest_subq.c.stock_id) & (Signal.ts == latest_subq.c.max_ts))
+        .where(Stock.active.is_(True))
+    ).all()
+    return [
+        {
+            "symbol": row.symbol,
+            "signal": row.signal.value,
+            "horizon": row.horizon.value,
+            "confidence": row.confidence,
+            "bullish_probability": row.bullish_probability,
+        }
+        for row in rows
+    ]
 
 
 @router.get("/{symbol}")

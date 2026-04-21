@@ -5,5 +5,5 @@ from .api.aggregate import router as aggregate_router
 
 app = create_app(
     "api-gateway",
-    routers=[proxy_router, aggregate_router],
+    routers=[aggregate_router, proxy_router],
 )

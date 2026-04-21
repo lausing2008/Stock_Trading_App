@@ -25,6 +25,8 @@ class IngestionError(Exception):
 
 def validate_ohlcv(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """Reject bars with bad invariants (low>high, negative prices, etc)."""
+    if df.empty or not {"high", "low", "open", "close", "volume"}.issubset(df.columns):
+        return df
     before = len(df)
     df = df.copy()
     df = df[(df["high"] >= df["low"]) & (df["high"] >= df["open"]) & (df["high"] >= df["close"])]
