@@ -102,9 +102,11 @@ export default function StockDetail() {
     try {
       const stocks = await api.listStocks();
       await api.ingest(stocks.map(s => s.symbol));
+      // Refresh this stock's chart with newly ingested prices
+      await mutateOverview();
       const res = await api.trainAll();
       setTrainAllState('done');
-      setTrainAllMsg(`✓ Scheduled ${res.count} models — ready in ~2–5 min`);
+      setTrainAllMsg(`✓ Ingested ${stocks.length} stocks · Scheduled ${res.count} ML models — ready in ~2–5 min`);
     } catch {
       setTrainAllState('error');
       setTrainAllMsg('Pipeline failed. Check backend logs.');
@@ -115,6 +117,7 @@ export default function StockDetail() {
   if (error || !data) return <div className="text-slate-300 p-4">Error loading {symbol}.</div>;
 
   const ranking = data.ranking;
+
   const levels = data.levels;
   const srLevels = levels?.support_resistance ?? [];
   const fibLevels = levels?.fibonacci ?? {};
@@ -122,6 +125,21 @@ export default function StockDetail() {
 
   return (
     <div className="space-y-4">
+      {/* Back button */}
+      <div>
+        <button
+          onClick={() => r.back()}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: '6px',
+            padding: '5px 12px', borderRadius: '6px', fontSize: '13px',
+            border: '1px solid #1e293b', background: 'transparent',
+            color: '#64748b', cursor: 'pointer', transition: 'all 0.15s',
+          }}
+        >
+          ← Back
+        </button>
+      </div>
+
       {/* Header */}
       <div className="flex items-start justify-between">
         <div className="flex items-start gap-6">
@@ -321,6 +339,181 @@ export default function StockDetail() {
           )}
         </div>
       </div>
+
+      {/* Company Financials — full width */}
+      {data.fundamentals && (() => {
+        const f = data.fundamentals!;
+
+        function fmtBig(n: number | null | undefined): string {
+          if (n == null) return '—';
+          const abs = Math.abs(n);
+          if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+          if (abs >= 1e9)  return `${(n / 1e9).toFixed(2)}B`;
+          if (abs >= 1e6)  return `${(n / 1e6).toFixed(2)}M`;
+          if (abs >= 1e3)  return `${(n / 1e3).toFixed(1)}K`;
+          return n.toFixed(2);
+        }
+        function fmtPct(n: number | null | undefined): string {
+          if (n == null) return '—';
+          return `${(n * 100).toFixed(1)}%`;
+        }
+        function fmtX(n: number | null | undefined): string {
+          if (n == null) return '—';
+          return `${n.toFixed(1)}x`;
+        }
+        function fmtNum(n: number | null | undefined, d = 2): string {
+          if (n == null) return '—';
+          return n.toFixed(d);
+        }
+        function growthColor(n: number | null | undefined): string {
+          if (n == null) return '#94a3b8';
+          return n >= 0 ? '#4ade80' : '#f87171';
+        }
+
+        const recColors: Record<string, string> = {
+          buy: '#4ade80', 'strong_buy': '#22c55e',
+          hold: '#facc15', neutral: '#facc15',
+          sell: '#f87171', 'strong_sell': '#ef4444',
+          underperform: '#fb923c', outperform: '#86efac',
+        };
+        const recLabel: Record<string, string> = {
+          buy: 'BUY', strong_buy: 'STRONG BUY',
+          hold: 'HOLD', neutral: 'NEUTRAL',
+          sell: 'SELL', strong_sell: 'STRONG SELL',
+          underperform: 'UNDERPERFORM', outperform: 'OUTPERFORM',
+        };
+
+        const card = (label: string, value: string, sub?: string, valueColor?: string) => (
+          <div key={label} style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid #1e293b', padding: '10px 13px' }}>
+            <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>{label}</div>
+            <div style={{ fontSize: '15px', fontWeight: 700, color: valueColor ?? '#e2e8f0' }}>{value}</div>
+            {sub && <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>{sub}</div>}
+          </div>
+        );
+
+        const curPrice = (data.price as any)?.regularMarketPrice ?? null;
+        const hi = f.week_52_high, lo = f.week_52_low;
+        const rangePct = (hi && lo && hi > lo) ? ((((curPrice ?? lo) - lo) / (hi - lo)) * 100) : null;
+
+        return (
+          <div>
+            <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', marginBottom: '12px' }}>Company Financials</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+              {/* Row 1 — Valuation */}
+              <div>
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#4f46e5', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Valuation</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
+                  {card('Market Cap', fmtBig(f.market_cap))}
+                  {card('Enterprise Value', fmtBig(f.enterprise_value))}
+                  {card('P/E (TTM)', fmtX(f.trailing_pe))}
+                  {card('Forward P/E', fmtX(f.forward_pe))}
+                  {card('P/B Ratio', fmtX(f.price_to_book))}
+                  {card('EV / EBITDA', fmtX(f.ev_to_ebitda))}
+                </div>
+              </div>
+
+              {/* Row 2 — Income + Cash */}
+              <div>
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#0891b2', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Financials (TTM)</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
+                  {card('Revenue', fmtBig(f.total_revenue), f.revenue_growth != null ? `${f.revenue_growth >= 0 ? '+' : ''}${fmtPct(f.revenue_growth)} YoY` : undefined, '#e2e8f0')}
+                  {card('Gross Profit', fmtBig(f.gross_profit))}
+                  {card('Net Income', fmtBig(f.net_income), undefined, f.net_income != null ? (f.net_income >= 0 ? '#4ade80' : '#f87171') : undefined)}
+                  {card('EBITDA', fmtBig(f.ebitda))}
+                  {card('Free Cash Flow', fmtBig(f.free_cashflow), undefined, f.free_cashflow != null ? (f.free_cashflow >= 0 ? '#4ade80' : '#f87171') : undefined)}
+                  {card('Operating CF', fmtBig(f.operating_cashflow))}
+                </div>
+              </div>
+
+              {/* Row 3 — Balance sheet + margins + per share */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+                {/* Balance sheet */}
+                <div>
+                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Balance Sheet</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {card('Total Cash', fmtBig(f.total_cash))}
+                    {card('Total Debt', fmtBig(f.total_debt), undefined, f.total_debt != null && f.total_cash != null ? (f.total_cash > f.total_debt ? '#4ade80' : '#f87171') : undefined)}
+                  </div>
+                </div>
+                {/* Margins */}
+                <div>
+                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#059669', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Margins</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {card('Gross Margin', fmtPct(f.gross_margin))}
+                    {card('Operating Margin', fmtPct(f.operating_margin))}
+                    {card('Profit Margin', fmtPct(f.profit_margin))}
+                  </div>
+                </div>
+                {/* Returns + growth */}
+                <div>
+                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#b45309', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Returns &amp; Growth</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {card('ROE', fmtPct(f.return_on_equity))}
+                    {card('ROA', fmtPct(f.return_on_assets))}
+                    {card('Earnings Growth', fmtPct(f.earnings_growth), 'YoY', growthColor(f.earnings_growth))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 4 — Per share + range + analyst */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                {/* Per share & risk */}
+                <div>
+                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Per Share &amp; Risk</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    {card('EPS (TTM)', fmtNum(f.trailing_eps))}
+                    {card('Fwd EPS', fmtNum(f.forward_eps))}
+                    {card('Book Value', fmtNum(f.book_value))}
+                    {card('Dividend Yield', f.dividend_yield != null ? fmtPct(f.dividend_yield) : '—', f.dividend_rate != null ? `$${f.dividend_rate.toFixed(2)}/yr` : undefined)}
+                    {card('Beta', fmtNum(f.beta), 'vs market')}
+                    {card('Shares Out', fmtBig(f.shares_outstanding))}
+                  </div>
+                </div>
+
+                {/* 52-week + analyst */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {/* 52-week range */}
+                  {hi != null && lo != null && (
+                    <div style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid #1e293b', padding: '12px 13px' }}>
+                      <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>52-Week Range</div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '6px' }}>
+                        <span style={{ color: '#f87171' }}>${lo.toFixed(2)}</span>
+                        <span style={{ color: '#94a3b8' }}>Low → High</span>
+                        <span style={{ color: '#4ade80' }}>${hi.toFixed(2)}</span>
+                      </div>
+                      <div style={{ height: '6px', background: '#1e293b', borderRadius: '3px', overflow: 'hidden', position: 'relative' }}>
+                        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${rangePct ?? 50}%`, background: 'linear-gradient(90deg, #f87171, #facc15, #4ade80)', borderRadius: '3px' }} />
+                      </div>
+                      {curPrice && <div style={{ fontSize: '10px', color: '#64748b', marginTop: '4px', textAlign: 'center' }}>Current ${curPrice.toFixed(2)} · {rangePct != null ? `${rangePct.toFixed(0)}% of range` : ''}</div>}
+                    </div>
+                  )}
+                  {/* Analyst consensus */}
+                  {(f.target_price != null || f.recommendation != null) && (
+                    <div style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid #1e293b', padding: '12px 13px' }}>
+                      <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>Analyst Consensus</div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        {f.recommendation && (
+                          <div style={{ fontSize: '14px', fontWeight: 800, color: recColors[f.recommendation] ?? '#94a3b8' }}>
+                            {recLabel[f.recommendation] ?? f.recommendation.toUpperCase()}
+                          </div>
+                        )}
+                        {f.target_price != null && (
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontSize: '16px', fontWeight: 700, color: '#818cf8' }}>${f.target_price.toFixed(2)}</div>
+                            <div style={{ fontSize: '10px', color: '#475569' }}>{f.number_of_analysts != null ? `${f.number_of_analysts} analysts` : 'target'}</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
 
       {/* News feed — full width below chart */}
       <div>

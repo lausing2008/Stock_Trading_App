@@ -36,11 +36,14 @@ def run_seed():
 
 
 @router.post("/ingest")
-def run_ingest(req: IngestRequest, tasks: BackgroundTasks):
+def run_ingest(req: IngestRequest):
+    """Synchronously ingest all requested symbols (parallel for multi-symbol)."""
     if len(req.symbols) == 1:
-        return ingest_symbol(req.symbols[0], timeframe=req.timeframe)
-    tasks.add_task(ingest_universe, req.symbols, req.timeframe)
-    return {"status": "scheduled", "symbols": len(req.symbols)}
+        result = ingest_symbol(req.symbols[0], timeframe=req.timeframe)
+        return {"status": "ok", "symbols": 1, "results": [result]}
+    results = ingest_universe(req.symbols, req.timeframe)
+    ok = sum(1 for r in results if "error" not in r)
+    return {"status": "ok", "symbols": ok, "total": len(results), "results": results}
 
 
 @router.post("/add_stock")

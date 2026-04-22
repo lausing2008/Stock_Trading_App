@@ -37,7 +37,7 @@ Services and ports:
 |-----------|------|----------------|
 | frontend | 3000 | Next.js app |
 | api-gateway | 8000 | Main entry point (OpenAPI at /docs) |
-| market-data | 8001 | Price data, ingestion |
+| market-data | 8001 | Live prices, ingestion, price history |
 | technical-analysis | 8002 | Indicators, patterns |
 | ml-prediction | 8003 | ML models |
 | ranking-engine | 8004 | K-Score leaderboard |
@@ -45,34 +45,47 @@ Services and ports:
 | strategy-engine | 8006 | Strategy DSL + backtester |
 | portfolio-optimizer | 8007 | MVO / optimization |
 
-## 3. Seed and ingest data
+## 3. Login
+
+Open http://localhost:3000. You will be redirected to the login page.
+
+**Default account:**
+- Username: `lausing`
+- Password: `120402`
+
+To reset your password, go to the Login page and click the **Reset Password** tab.
+
+## 4. Seed and ingest data
 
 ```bash
 # Seed ~20 blue-chip US + HK tickers into the stocks table
 curl -X POST http://localhost:8000/admin/seed
 
-# Ingest 3 years of daily bars (incremental — safe to re-run)
+# Ingest 3 years of daily bars (runs in parallel — ~5-10 s for 20 symbols)
 curl -X POST http://localhost:8000/admin/ingest \
   -H 'content-type: application/json' \
   -d '{"symbols":["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","0700.HK","0005.HK","9988.HK"]}'
 ```
 
-Or open http://localhost:3000 and click **Train All** on the dashboard — it runs ingest + ML training for every stock in one click.
+Or open the dashboard and click **⚡ Train All** — it runs ingest + ML training for every stock in one click.
 
-## 4. Explore the frontend
+## 5. Live prices
 
-Open http://localhost:3000. Six pages are available:
+Dashboard, Watchlist, and Positions pages all show **real-time prices** fetched from yfinance on every load. Prices auto-refresh in the background every 60 seconds — no manual action needed.
 
-- **Dashboard** — stock grid with BUY/SELL/HOLD badges and K-Scores
-- **Rankings** — leaderboard sorted by K-Score
-- **Watchlist** — curated watchlist with notes and price alerts
-- **Positions** — portfolio P&L tracker with allocation chart
-- **Stock Detail** — click any stock card; shows chart, signals, ML predictions, news
-- **Strategies** — build and backtest rule-based strategies
+The first load after a cache expiry takes ~3–5 seconds (parallel yfinance fetches). Subsequent loads within 60 seconds are instant (Redis cache).
 
-## 5. Train ML models
+If yfinance is unavailable, the UI falls back to the last ingested close price from Postgres.
 
-**Option A — from the UI:** Click **Train All** on the dashboard or any stock detail page.
+## 6. Train ML models
+
+**Option A — from the UI:** Click **⚡ Train All** on the dashboard or any stock detail page.
+
+The Train All button:
+1. Ingests latest prices for all active stocks (synchronous, parallel — waits until done)
+2. Refreshes the dashboard price cards immediately with new data
+3. Schedules XGBoost training for every stock in the background
+4. Models are ready in ~2–5 minutes
 
 **Option B — via API:**
 ```bash
@@ -81,7 +94,7 @@ curl -X POST http://localhost:8000/ml/train \
   -H 'content-type: application/json' \
   -d '{"symbol":"AAPL","model":"xgboost"}'
 
-# Train all active stocks (background tasks)
+# Train all active stocks
 curl -X POST http://localhost:8000/ml/train_all
 
 # Get a prediction
@@ -91,25 +104,24 @@ curl -X POST http://localhost:8000/ml/predict \
 ```
 
 Available models: `xgboost` (default), `random_forest`, `gradient_boosting`, `lstm`.
-Training takes ~30 seconds per symbol. After training, run predict to get a direction + confidence.
 
-## 6. Generate signals
+## 7. Generate signals
 
-Signals are generated and persisted automatically when you view a stock detail page.
-To generate them in bulk via the API:
+Signals are computed and persisted automatically when you view a stock detail page.
+To generate in bulk via API:
 
 ```bash
 # Single symbol — saves to DB
 curl http://localhost:8000/signals/AAPL?persist=true
 
-# All active stocks — latest persisted signal per stock
+# Latest signal for all active stocks
 curl http://localhost:8000/signals
 ```
 
-## 7. Run a backtest
+## 8. Run a backtest
 
 ```bash
-# Create a strategy using the rule DSL
+# Create a strategy
 curl -X POST http://localhost:8000/strategies \
   -H 'content-type: application/json' \
   -d '{"name":"RSI dip","rule_dsl":{"entry":{"op":"<","left":"rsi_14","right":30},"exit":{"op":">","left":"rsi_14","right":70}}}'
@@ -121,36 +133,34 @@ curl -X POST http://localhost:8000/backtest \
   -d '{"strategy_id":1,"symbol":"AAPL"}'
 ```
 
-## 8. Use the Watchlist
+## 9. Use the Watchlist
 
-- Click **☆ Watch** on any stock detail page or add from the dashboard
+- Click **☆ Watch** on any stock detail page, or add from the dashboard
 - On the Watchlist page: filter by BUY/HOLD/SELL, sort by K-Score or price change
-- Click 📝 to add private notes (stored in your browser)
-- Click 🔔 to set a price alert — a yellow banner appears when the price crosses your target
+- Click 📝 to add private notes (stored in browser localStorage)
+- Click 🔔 to set a price alert — yellow banner appears when price crosses target
 - Click **+ POS** to add to your Positions portfolio
 
-## 9. Track Positions
+## 10. Track Positions
 
 - Navigate to `/positions` or click **+ POS** from the watchlist
-- Add positions with symbol, number of shares, average cost, and currency
-- Currencies supported: USD, HKD, CAD, GBP, EUR, AUD
-- View live P&L, today's change, allocation donut chart
-- Click BUY/SELL buttons to log trades and update your average cost
-- Sort by symbol, value, P&L$, P&L%, today's change, or K-Score
-- Click **Export CSV** to download a spreadsheet of your portfolio
+- Add positions: symbol, shares, average cost, currency (USD/HKD/CAD/GBP/EUR/AUD)
+- View live P&L, today's change, allocation donut chart, best/worst performer
+- Click BUY/SELL to log trades and update average cost
+- Click **Export CSV** to download your portfolio as a spreadsheet
 
-## 10. Tests
+## 11. Tests
 
 ```bash
 make test   # runs pytest across all services
 ```
 
-## Rebuilding after code changes
+## 12. Rebuilding after code changes
 
 ```bash
-# Rebuild a single service (e.g. frontend)
-docker compose -f docker/docker-compose.yml build frontend
-docker compose -f docker/docker-compose.yml up -d --force-recreate frontend
+# Rebuild a single service
+docker compose -f docker/docker-compose.yml build <service-name>
+docker compose -f docker/docker-compose.yml up -d --force-recreate <service-name>
 
 # Rebuild all
 make build && make up
@@ -160,9 +170,11 @@ make build && make up
 
 | Symptom | Fix |
 |---------|-----|
-| "No price data for X" | Run `POST /admin/ingest` with that symbol |
-| "Model not trained yet" | Click Train on the stock detail page or run `POST /ml/train` |
-| Signal shows K-Score fallback (not real TA) | View the stock detail page once — this persists the TA signal to DB |
-| yfinance HTTP 429 (rate limit) | Wait and retry; adapters use exponential backoff automatically |
+| "No price data for X" | Run `POST /admin/ingest` with that symbol first |
+| "Model not trained yet" | Click Train on the stock detail page, or run `POST /ml/train` |
+| Signal shows K-Score fallback (not TA) | View the stock detail page once — this persists the TA signal to DB |
+| Dashboard prices look stale | Click ↻ Refresh — prices update every 60 s automatically otherwise |
+| yfinance HTTP 429 (rate limit) | Wait and retry; adapters use exponential backoff |
 | Port collision on 5432/6379/3000/8000-8007 | Stop the conflicting process or edit `docker/docker-compose.yml` |
-| Positions/notes disappeared | These are stored in browser localStorage; clearing browser data removes them |
+| Can't log in | Default credentials: `lausing` / `120402`. Use Reset Password tab to change. |
+| Positions/notes disappeared | Stored in browser localStorage — clearing browser data removes them |

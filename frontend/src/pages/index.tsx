@@ -36,7 +36,7 @@ export default function Home() {
   const { data: stocks, error, mutate: mutateStocks } = useSWR<Stock[]>('stocks', () => api.listStocks());
   const { data: watchlist, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
-  const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices());
+  const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
 
   const [watchPending, setWatchPending] = useState<string | null>(null);
@@ -82,10 +82,13 @@ export default function Home() {
       const syms = stocks?.map(s => s.symbol) ?? [];
       // Step 1: ingest latest price data
       const ingestRes = await api.ingest(syms);
-      // Step 2: schedule ML training for all
+      // Step 2: refresh UI with newly ingested prices
+      await Promise.all([mutatePrices(), mutateRankings()]);
+      // Step 3: schedule ML training for all
       const trainRes = await api.trainAll();
-      setTrainInfo({ ingestCount: syms.length, trainCount: trainRes.count });
+      setTrainInfo({ ingestCount: ingestRes.symbols ?? syms.length, trainCount: trainRes.count });
       setTrainState('done');
+      // Signals update after models finish (~2-5 min); do a lazy refresh
       setTimeout(() => mutateSignals(), 5000);
     } catch (err) {
       setTrainInfo({ error: err instanceof Error ? err.message : 'Unknown error' });

@@ -113,12 +113,32 @@ def _write_parquet(df: pd.DataFrame, symbol: str, timeframe: str) -> None:
     df.to_parquet(fname, index=False)
 
 
-def ingest_universe(symbols: list[str], timeframe: str = "1d") -> list[dict]:
-    results = []
-    for sym in symbols:
+def _bust_live_price_cache() -> None:
+    try:
+        import redis as redis_lib
+        r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        r.delete("stockai:live_prices")
+    except Exception:
+        pass
+
+
+def ingest_universe(symbols: list[str], timeframe: str = "1d", max_workers: int = 6) -> list[dict]:
+    """Fetch all symbols in parallel (I/O-bound — safe to thread)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch(sym: str) -> dict:
         try:
-            results.append(ingest_symbol(sym, timeframe=timeframe))
-        except Exception as exc:  # per-symbol fault isolation
+            return ingest_symbol(sym, timeframe=timeframe)
+        except Exception as exc:
             log.error("ingest.symbol_failed", symbol=sym, error=str(exc))
-            results.append({"symbol": sym, "error": str(exc)})
+            return {"symbol": sym, "error": str(exc)}
+
+    results: list[dict] = [{}] * len(symbols)
+    index = {sym: i for i, sym in enumerate(symbols)}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_fetch, sym): sym for sym in symbols}
+        for fut in as_completed(futures):
+            sym = futures[fut]
+            results[index[sym]] = fut.result()
+    _bust_live_price_cache()
     return results

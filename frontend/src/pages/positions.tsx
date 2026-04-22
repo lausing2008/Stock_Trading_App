@@ -102,7 +102,7 @@ export default function Positions() {
   const [sortKey, setSortKey]             = useState<SortKey>('symbol');
   const [sortAsc, setSortAsc]             = useState(true);
 
-  const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices());
+  const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: rankingsData }  = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: signalsData }   = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
   const { data: watchlistData, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());

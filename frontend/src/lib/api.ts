@@ -93,6 +93,51 @@ export type Levels = {
   fibonacci: Record<string, number>;
 } | null;
 
+export type Fundamentals = {
+  // Valuation
+  market_cap: number | null;
+  enterprise_value: number | null;
+  trailing_pe: number | null;
+  forward_pe: number | null;
+  price_to_book: number | null;
+  ev_to_ebitda: number | null;
+  // Income statement
+  total_revenue: number | null;
+  gross_profit: number | null;
+  net_income: number | null;
+  ebitda: number | null;
+  // Margins
+  profit_margin: number | null;
+  operating_margin: number | null;
+  gross_margin: number | null;
+  // Cash flow & balance sheet
+  free_cashflow: number | null;
+  operating_cashflow: number | null;
+  total_cash: number | null;
+  total_debt: number | null;
+  // Per share
+  trailing_eps: number | null;
+  forward_eps: number | null;
+  book_value: number | null;
+  dividend_yield: number | null;
+  dividend_rate: number | null;
+  // Returns & risk
+  return_on_equity: number | null;
+  return_on_assets: number | null;
+  revenue_growth: number | null;
+  earnings_growth: number | null;
+  beta: number | null;
+  // Range & volume
+  week_52_high: number | null;
+  week_52_low: number | null;
+  average_volume: number | null;
+  shares_outstanding: number | null;
+  // Analyst
+  target_price: number | null;
+  recommendation: string | null;
+  number_of_analysts: number | null;
+};
+
 export type Overview = {
   price: Stock | null;
   prices: Price[] | null;
@@ -101,4 +146,5 @@ export type Overview = {
   levels: Levels;
   signal: Signal | null;
   ranking: { score: number; fair_price?: number; technical: number; momentum: number; value: number; growth: number; volatility: number } | null;
+  fundamentals: Fundamentals | null;
 };

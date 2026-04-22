@@ -37,6 +37,7 @@ async def overview(symbol: str):
             "levels": _get(client, f"{_settings.technical_analysis_url}/ta/{symbol}/levels"),
             "signal": _get(client, f"{_settings.signal_engine_url}/signals/{symbol}?persist=true"),
             "ranking": _get(client, f"{_settings.ranking_engine_url}/rankings/{symbol}"),
+            "fundamentals": _get(client, f"{_settings.market_data_url}/stocks/{symbol}/fundamentals"),
         }
         results = await asyncio.gather(*tasks.values())
 
