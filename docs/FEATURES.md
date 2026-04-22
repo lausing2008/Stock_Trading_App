@@ -110,6 +110,44 @@ Full drill-down page for a single stock. Accessed by clicking any stock card.
 **Fibonacci Levels**
 - Key retracement levels (0%, 23.6%, 38.2%, 50%, 61.8%, 100%) with price values
 
+### Company Financials (full width below chart)
+
+Fetched from yfinance `.info`, cached in Redis for 24 hours. Displayed in four organised rows.
+
+**Valuation**
+
+| Card | What it shows |
+|------|--------------|
+| Market Cap | Total market capitalisation |
+| Enterprise Value | Market cap + net debt |
+| P/E (TTM) | Trailing price-to-earnings |
+| Forward P/E | Forward price-to-earnings (next 12 m estimates) |
+| P/B Ratio | Price-to-book |
+| EV / EBITDA | Enterprise value relative to EBITDA |
+
+**Financials (TTM)**
+
+| Card | What it shows |
+|------|--------------|
+| Revenue | Trailing 12-month revenue + YoY growth % |
+| Gross Profit | Revenue minus cost of goods sold |
+| Net Income | Bottom-line profit (green = positive, red = negative) |
+| EBITDA | Earnings before interest, taxes, depreciation, amortisation |
+| Free Cash Flow | Operating cash flow minus capex |
+| Operating Cash Flow | Cash generated from core operations |
+
+**Three-column grid**
+
+- *Balance Sheet* — Total Cash vs Total Debt (cash highlighted green when > debt)
+- *Margins* — Gross Margin / Operating Margin / Profit Margin
+- *Returns & Growth* — ROE / ROA / Earnings Growth YoY (color-coded positive/negative)
+
+**Per Share & Risk + 52-Week Range + Analyst Consensus**
+
+- *Per Share & Risk* — EPS TTM, Forward EPS, Book Value, Dividend Yield (with annual rate), Beta, Shares Outstanding
+- *52-Week Range* — Gradient bar (red → yellow → green) showing where the current price sits between the 52-week low and high
+- *Analyst Consensus* — Recommendation label (BUY/HOLD/SELL/etc., color-coded) + analyst target price + number of analysts
+
 ### News & Sentiment (full width below chart)
 - News articles fetched per symbol
 - Each article: headline (2-line clamp), source, publish time, sentiment badge
@@ -260,12 +298,13 @@ Total return %, Sharpe ratio, Max drawdown %, CAGR, Win rate %, Profit factor, E
 
 ### Data
 ```
-POST /admin/seed                     # seed default stock universe
-POST /admin/ingest  {symbols:[...]}  # ingest price history (parallel, synchronous)
-GET  /stocks                         # list all tracked stocks
-GET  /stocks/{symbol}/prices         # OHLCV history from DB
-GET  /stocks/latest_prices           # live prices (yfinance fast_info, Redis 60s cache)
-GET  /news/{symbol}                  # news + sentiment
+POST /admin/seed                       # seed default stock universe
+POST /admin/ingest  {symbols:[...]}    # ingest price history (parallel, synchronous)
+GET  /stocks                           # list all tracked stocks
+GET  /stocks/{symbol}/prices           # OHLCV history from DB
+GET  /stocks/latest_prices             # live prices (yfinance fast_info, Redis 60 s cache)
+GET  /stocks/{symbol}/fundamentals     # company financials (yfinance .info, Redis 24 h cache)
+GET  /news/{symbol}                    # news + sentiment
 ```
 
 ### Signals
@@ -314,19 +353,26 @@ POST /portfolio/optimize                 # run portfolio optimization
 
 ---
 
-## Live price data
+## Data freshness reference
 
-| Data | Source | Freshness |
-|------|--------|-----------|
-| Dashboard / Watchlist / Positions prices | yfinance `fast_info` (Redis 60 s cache) | Near real-time |
-| Stock detail chart | DB prices table (OHLCV history) | As of last ingest |
-| Latest price in stock detail header | yfinance via aggregate overview | Near real-time |
-| K-Score / Fair price | DB rankings table | As of last rankings refresh |
-| AI Signal | DB signals table (TA + ML) | As of last stock detail view |
+| Data | Source | Cache / Freshness |
+|------|--------|-------------------|
+| Dashboard / Watchlist / Positions prices | yfinance `fast_info` | Redis 60 s TTL; auto-refreshes every 60 s in UI |
+| Stock detail chart (OHLCV) | DB `prices` table | As of last ingest |
+| Company Financials | yfinance `.info` | Redis 24 h TTL (quarterly data) |
+| K-Score / Fair price | DB `rankings` table | As of last rankings refresh |
+| AI Signal | DB `signals` table (TA + ML) | As of last stock detail view |
 | ML prediction | Trained model inference | On demand |
-| News & sentiment | yfinance news API | Current session |
+| News & sentiment | yfinance news API | Per request |
 
 ---
+
+## Redis cache keys
+
+| Key | Contents | TTL |
+|-----|----------|-----|
+| `stockai:live_prices` | Array of live price objects for all active stocks | 60 s |
+| `stockai:fundamentals:{SYMBOL}` | Company fundamentals JSON for one symbol | 24 h |
 
 ## Browser storage keys
 

@@ -23,6 +23,7 @@ downstream services.
 | **Portfolio Optimizer** | Mean-variance, risk parity, AI allocation (K-Score filter + MVO) |
 | **Watchlist** | Per-stock notes, price alerts, signal filter tabs, sort controls, K-Score progress bars |
 | **Positions** | Multi-currency P&L tracker, allocation donut chart, trade history, best/worst performer, CSV export |
+| **Company Financials** | Valuation, income statement, balance sheet, margins, returns, 52-week range, analyst consensus — all from yfinance, Redis-cached 24 h |
 | **News & Sentiment** | Per-symbol news feed with bullish/bearish/neutral sentiment badges |
 | **Auth** | Login page with session management; password reset; pre-created account (`lausing`) |
 

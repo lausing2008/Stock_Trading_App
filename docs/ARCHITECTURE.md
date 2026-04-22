@@ -37,7 +37,7 @@
 | Service | Responsibility | Key endpoints |
 |---------|---------------|---------------|
 | `api-gateway` | Reverse proxy + aggregate stock overview | `GET /aggregate/overview/{symbol}` |
-| `market-data` | Live price quotes (yfinance), ingestion, price history | `GET /stocks/latest_prices`, `POST /admin/ingest`, `POST /admin/seed`, `GET /stocks/{s}/prices` |
+| `market-data` | Live price quotes, company fundamentals, ingestion, price history | `GET /stocks/latest_prices`, `GET /stocks/{s}/fundamentals`, `POST /admin/ingest`, `POST /admin/seed`, `GET /stocks/{s}/prices` |
 | `technical-analysis` | Indicators, patterns, trendlines, S/R, Fibonacci | `GET /ta/{s}/indicators`, `/ta/{s}/patterns`, `/ta/{s}/levels` |
 | `ml-prediction` | RF / XGB / GBM / LSTM train & predict | `POST /ml/train`, `POST /ml/predict`, `POST /ml/train_all` |
 | `ranking-engine` | K-Score composite + leaderboard | `GET /rankings`, `GET /rankings/{s}`, `POST /rankings/refresh` |
@@ -92,6 +92,37 @@ Frontend:
   → prices update in background every 60 s without user action
 ```
 
+## Fundamentals flow
+
+```
+GET /stocks/{symbol}/fundamentals
+  1. Check Redis key "stockai:fundamentals:{SYMBOL}" (TTL 24 h)
+     → HIT:  return cached JSON instantly
+     → MISS: fetch from yfinance (step 2)
+  2. yf.Ticker(symbol).info  — ~1-2 s, returns 100+ fields
+  3. Map to FundamentalsOut (30 curated fields, None for missing)
+  4. Write to Redis (TTL 86400 s)
+  5. Return
+
+Fields returned:
+  Valuation:     market_cap, enterprise_value, trailing_pe, forward_pe,
+                 price_to_book, ev_to_ebitda
+  Income (TTM):  total_revenue, gross_profit, net_income, ebitda
+  Margins:       profit_margin, operating_margin, gross_margin
+  Cash flow:     free_cashflow, operating_cashflow
+  Balance sheet: total_cash, total_debt
+  Per share:     trailing_eps, forward_eps, book_value,
+                 dividend_yield, dividend_rate
+  Returns/risk:  return_on_equity, return_on_assets,
+                 revenue_growth, earnings_growth, beta
+  Range/volume:  week_52_high, week_52_low,
+                 average_volume, shares_outstanding
+  Analyst:       target_price, recommendation, number_of_analysts
+
+Included in /aggregate/overview/{symbol} — fetched in parallel with the
+other 7 upstream calls, adding zero extra latency to the stock detail page load.
+```
+
 ## Signal persistence flow
 
 ```
@@ -138,7 +169,11 @@ Dashboard (/)
 
 Stock Detail (/stock/[symbol])
   SWR keys: overview-{symbol}, news-{symbol}
-  → /aggregate/overview/{symbol}  (api-gateway — persists signal to DB)
+  → /aggregate/overview/{symbol}  (api-gateway — fans out to 8 upstreams in parallel)
+      ├─ price, prices, indicators, patterns, levels  (market-data / technical-analysis)
+      ├─ signal (persist=true)                        (signal-engine)
+      ├─ ranking                                      (ranking-engine)
+      └─ fundamentals (Redis 24 h cache)              (market-data → yfinance .info)
   → /news/{symbol}                (market-data)
   ← Back button: router.back()
 
@@ -167,6 +202,8 @@ Tables: `stocks`, `prices`, `indicators`, `signals`, `rankings`, `strategies`, `
 - `prices` keyed by `(stock_id, ts, timeframe)` — used for chart history and indicator computation. **Not** the source for dashboard prices (live yfinance is used instead).
 - `signals` stores persisted BUY/SELL/HOLD with `ts`, `horizon`, `confidence`, `bullish_probability`. Batch `GET /signals` returns latest row per active stock.
 - `rankings` versioned by `as_of` date — allows backtest of ranking performance over time.
+
+**Fundamentals are not stored in Postgres.** They are fetched live from yfinance `.info` on demand and cached in Redis for 24 hours. This avoids schema migrations when adding new fields and keeps the data fresh each quarter without a scheduled job.
 
 Client-side state (positions, trades, notes, alerts, auth session) is stored in **localStorage** — no backend required, instant writes, works offline.
 
