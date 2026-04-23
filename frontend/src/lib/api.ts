@@ -22,7 +22,8 @@ export const api = {
   trainModel: (symbol: string, model = 'xgboost') =>
     request<{ status: string }>(`/ml/train`, { method: 'POST', body: JSON.stringify({ symbol, model }) }),
   listModels: () => request<string[]>(`/ml/models`),
-  getNews: (symbol: string) => request<NewsItem[]>(`/stocks/${symbol}/news`),
+  getNews: (symbol: string, sources = 'yfinance,google') =>
+    request<NewsItem[]>(`/stocks/${symbol}/news?sources=${encodeURIComponent(sources)}`),
   createStrategy: (body: unknown) => request<{ id: number }>(`/strategies`, { method: 'POST', body: JSON.stringify(body) }),
   listStrategies: () => request<{ id: number; name: string; description?: string }[]>(`/strategies`),
   backtest: (body: unknown) => request<Backtest>(`/backtest`, { method: 'POST', body: JSON.stringify(body) }),

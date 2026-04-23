@@ -18,6 +18,8 @@ Edit `.env`:
 - `POSTGRES_PASSWORD` — pick any value for local dev
 - `ALPHA_VANTAGE_API_KEY` / `POLYGON_API_KEY` — optional; yfinance is the default provider and needs no key
 
+> **Note:** AI provider API keys (Claude, DeepSeek) are configured in the app's Settings page and stored in your browser — not in `.env`.
+
 ## 2. Build and launch
 
 ```bash
@@ -37,13 +39,13 @@ Services and ports:
 |-----------|------|----------------|
 | frontend | 3000 | Next.js app |
 | api-gateway | 8000 | Main entry point (OpenAPI at /docs) |
-| market-data | 8001 | Live prices, ingestion, price history |
+| market-data | 8001 | Live prices, ingestion, price history, news |
 | technical-analysis | 8002 | Indicators, patterns |
 | ml-prediction | 8003 | ML models |
 | ranking-engine | 8004 | K-Score leaderboard |
 | signal-engine | 8005 | BUY/SELL/HOLD signals |
 | strategy-engine | 8006 | Strategy DSL + backtester |
-| portfolio-optimizer | 8007 | MVO / optimization |
+| portfolio-optimizer | 8007 | MVO / HRP / optimization |
 
 ## 3. Login
 
@@ -105,7 +107,47 @@ curl -X POST http://localhost:8000/ml/predict \
 
 Available models: `xgboost` (default), `random_forest`, `gradient_boosting`, `lstm`.
 
-## 7. Generate signals
+## 7. Configure AI Chat (optional)
+
+To enable the AI chat panel on stock detail pages:
+
+1. Open http://localhost:3000/settings
+2. Scroll to **AI Assistant**
+3. Select your provider: **Claude (Anthropic)** or **DeepSeek**
+4. Paste your API key:
+   - Claude: get a key at [console.anthropic.com](https://console.anthropic.com)
+   - DeepSeek: get a key at [platform.deepseek.com](https://platform.deepseek.com)
+5. Choose a model (Claude Sonnet 4.6 or DeepSeek Chat recommended)
+6. Click **Test Connection** to verify, then **Save Settings**
+
+Once configured, every stock detail page will show an "Ask AI" panel at the bottom. The AI receives current price, signal, K-Score, and recent news as context automatically.
+
+API keys are stored in your browser's localStorage only — they are never saved on the server.
+
+## 8. Configure data sources (optional)
+
+By default, StockAI uses **yfinance** (free, no API key needed) for prices and **both Yahoo Finance News + Google News RSS** for news.
+
+To change these:
+
+1. Open http://localhost:3000/settings
+2. **Stock Price Data Sources** — toggle Alpha Vantage or Polygon.io on and enter your API key
+3. **News Sources** — toggle yfinance news and/or Google News RSS on/off
+
+Source changes take effect on the next data fetch. News source changes immediately invalidate the Redis cache (different cache key per source combination).
+
+## 9. Set up Alerts
+
+1. Open http://localhost:3000/alerts (or click **Alerts** in the nav)
+2. Select a stock, choose a condition (price, % change, signal, K-Score), set threshold and cooldown
+3. Click **+ Add Alert**
+
+Alerts are checked every 60 seconds in the background. When triggered:
+- A notification appears in the **🔔 bell** in the top-right nav
+- A sound plays (configurable in Settings → Notifications)
+- The alert goes into Notification History on the Alerts page
+
+## 10. Generate signals
 
 Signals are computed and persisted automatically when you view a stock detail page.
 To generate in bulk via API:
@@ -118,7 +160,22 @@ curl http://localhost:8000/signals/AAPL?persist=true
 curl http://localhost:8000/signals
 ```
 
-## 8. Run a backtest
+## 11. Run the Portfolio Optimizer
+
+Navigate to http://localhost:3000/portfolio.
+
+- Enter comma-separated ticker symbols
+- Choose a method:
+  - **Max Sharpe (MVO)** — Sharpe-maximizing with Ledoit-Wolf covariance
+  - **Risk Parity** — equal risk contribution
+  - **Hierarchical Risk Parity** — cluster-based, most robust
+  - **AI Allocation** — K-Score filtered + return views + Sharpe max
+- Select lookback period (6m / 1y / 2y / 3y)
+- Click **Optimize Portfolio**
+
+Results show allocation bars, Sharpe ratio, expected return/volatility, max drawdown, and a diversification score.
+
+## 12. Run a backtest
 
 ```bash
 # Create a strategy
@@ -133,29 +190,13 @@ curl -X POST http://localhost:8000/backtest \
   -d '{"strategy_id":1,"symbol":"AAPL"}'
 ```
 
-## 9. Use the Watchlist
-
-- Click **☆ Watch** on any stock detail page, or add from the dashboard
-- On the Watchlist page: filter by BUY/HOLD/SELL, sort by K-Score or price change
-- Click 📝 to add private notes (stored in browser localStorage)
-- Click 🔔 to set a price alert — yellow banner appears when price crosses target
-- Click **+ POS** to add to your Positions portfolio
-
-## 10. Track Positions
-
-- Navigate to `/positions` or click **+ POS** from the watchlist
-- Add positions: symbol, shares, average cost, currency (USD/HKD/CAD/GBP/EUR/AUD)
-- View live P&L, today's change, allocation donut chart, best/worst performer
-- Click BUY/SELL to log trades and update average cost
-- Click **Export CSV** to download your portfolio as a spreadsheet
-
-## 11. Tests
+## 13. Tests
 
 ```bash
 make test   # runs pytest across all services
 ```
 
-## 12. Rebuilding after code changes
+## 14. Rebuilding after code changes
 
 ```bash
 # Rebuild a single service
@@ -178,3 +219,7 @@ make build && make up
 | Port collision on 5432/6379/3000/8000-8007 | Stop the conflicting process or edit `docker/docker-compose.yml` |
 | Can't log in | Default credentials: `lausing` / `120402`. Use Reset Password tab to change. |
 | Positions/notes disappeared | Stored in browser localStorage — clearing browser data removes them |
+| AI chat shows "No AI provider" | Go to Settings → AI Assistant and configure Claude or DeepSeek |
+| AI chat shows API error 401 | Your API key is invalid or expired — check it in Settings |
+| News not updating after toggling sources | Hard-refresh the browser (Ctrl+Shift+R) to clear SWR cache |
+| Portfolio optimizer returns 400 | One or more symbols have insufficient price history — try a shorter lookback or run ingest first |

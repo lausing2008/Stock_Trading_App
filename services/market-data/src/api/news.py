@@ -165,11 +165,15 @@ def _merge(primary: list[NewsItem], supplement: list[NewsItem], limit: int) -> l
 def get_news(
     symbol: str,
     limit: int = Query(12, le=30),
+    sources: str = Query("yfinance,google", description="Comma-separated list: yfinance, google"),
     session: Session = Depends(get_session),
 ):
-    cache_key = f"stockai:news:{symbol.upper()}"
+    enabled = {s.strip().lower() for s in sources.split(",")}
+    use_yf = "yfinance" in enabled
+    use_google = "google" in enabled
 
-    # Serve from cache if available
+    # Cache key includes active sources so toggling bypasses stale cache
+    cache_key = f"stockai:news:{symbol.upper()}:{sources}"
     try:
         cached = _get_redis().get(cache_key)
         if cached:
@@ -177,29 +181,28 @@ def get_news(
     except Exception:
         pass
 
-    # Resolve company name for better search query
+    # Resolve company name for better Google News query
     name = session.execute(
         select(Stock.name).where(Stock.symbol == symbol)
     ).scalar_one_or_none() or symbol
 
     is_hk = symbol.upper().endswith(".HK")
+    yf_items = _yfinance_news(symbol) if use_yf else []
 
-    yf_items = _yfinance_news(symbol)
-
-    # Supplement when: HK stock (yfinance HK news is often stale/sparse)
-    # or fewer than 3 fresh articles from yfinance
-    if is_hk or len(yf_items) < 3:
+    # Supplement with Google News when: user enabled it, HK stock, or yfinance sparse
+    if use_google and (is_hk or len(yf_items) < 3 or not use_yf):
         google_items = _google_news(name)
         results = _merge(yf_items, google_items, limit)
         log.info("news.merged", symbol=symbol, yf=len(yf_items), google=len(google_items), total=len(results))
-    else:
+    elif use_yf:
         results = sorted(yf_items, key=lambda x: x.published_at, reverse=True)[:limit]
         log.info("news.yfinance_only", symbol=symbol, count=len(results))
+    else:
+        results = []
 
     if not results:
-        raise HTTPException(404, f"No recent news found for {symbol}")
+        raise HTTPException(404, f"No recent news found for {symbol} with sources={sources!r}")
 
-    # Cache for 30 minutes
     try:
         _get_redis().setex(cache_key, _NEWS_TTL, json.dumps([r.model_dump() for r in results]))
     except Exception:
