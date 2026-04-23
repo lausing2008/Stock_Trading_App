@@ -81,7 +81,16 @@ export type Backtest = {
   n_trades: number;
   equity_curve: { ts: string; equity: number }[];
 };
-export type PortfolioWeights = { method: string; weights: Record<string, number>; cash: number };
+export type PortfolioWeights = {
+  method: string;
+  weights: Record<string, number>;
+  cash: number;
+  expected_return?: number | null;
+  expected_vol?: number | null;
+  sharpe_ratio?: number | null;
+  max_drawdown?: number | null;
+  diversification?: number | null;
+};
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string };
 export type WatchlistItem = { symbol: string; name: string; market: string; exchange: string; sector?: string; currency: string; added_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };

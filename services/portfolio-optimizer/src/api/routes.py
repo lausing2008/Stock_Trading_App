@@ -10,15 +10,17 @@ from pydantic import BaseModel
 
 from common.config import get_settings
 
-from ..optimizers import ai_allocation, mean_variance, risk_parity
+from ..optimizers import ai_allocation, hierarchical_risk_parity, mean_variance, risk_parity
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 _settings = get_settings()
 
+METHOD = Literal["mean_variance", "risk_parity", "hierarchical_risk_parity", "ai_allocation"]
+
 
 class OptimizeRequest(BaseModel):
     symbols: list[str]
-    method: Literal["mean_variance", "risk_parity", "ai_allocation"] = "mean_variance"
+    method: METHOD = "mean_variance"
     lookback_days: int = 365
     min_score: float = 60.0
 
@@ -59,13 +61,15 @@ def _fetch_scores(symbols: list[str]) -> dict[str, float]:
 def optimize(req: OptimizeRequest):
     closes = _fetch_closes(req.symbols, req.lookback_days)
     if closes.empty or len(closes) < 30:
-        raise HTTPException(400, "Insufficient price history across requested symbols")
+        raise HTTPException(400, "Insufficient price history — need at least 30 trading days for all symbols")
     returns = closes.pct_change().dropna()
 
     if req.method == "mean_variance":
         out = mean_variance(returns)
     elif req.method == "risk_parity":
         out = risk_parity(returns)
+    elif req.method == "hierarchical_risk_parity":
+        out = hierarchical_risk_parity(returns)
     else:
         scores = _fetch_scores(req.symbols)
         out = ai_allocation(returns, scores, min_score=req.min_score)

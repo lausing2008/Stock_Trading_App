@@ -1,26 +1,56 @@
-"""News endpoint — fetch recent headlines with sentiment scores."""
+"""News endpoint — recent headlines with sentiment.
+
+Strategy:
+  1. Fetch from yfinance, discard articles older than 7 days.
+  2. For HK stocks (.HK) or when yfinance returns < 3 fresh articles,
+     supplement with Google News RSS (no API key needed).
+  3. Merge, deduplicate by title prefix, sort newest-first.
+  4. Cache result in Redis for 30 minutes.
+"""
 from __future__ import annotations
 
+import json
 import time
+import urllib.parse
+from datetime import datetime, timezone
 
+import feedparser
+import redis as redis_lib
 import yfinance as yf
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
+from common.config import get_settings
 from common.logging import get_logger
+from db import Stock, get_session
 
 router = APIRouter(prefix="/stocks", tags=["news"])
 log = get_logger("news")
 _analyzer = SentimentIntensityAnalyzer()
+_settings = get_settings()
+
+_NEWS_TTL = 30 * 60        # 30 minutes
+_STALE_CUTOFF = 7 * 86400  # discard yfinance articles older than 7 days
+
+_redis: redis_lib.Redis | None = None
+
+
+def _get_redis() -> redis_lib.Redis:
+    global _redis
+    if _redis is None:
+        _redis = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+    return _redis
 
 
 class NewsItem(BaseModel):
     title: str
     url: str
     source: str
-    published_at: int  # unix timestamp
-    sentiment: float   # -1 (bearish) to +1 (bullish)
+    published_at: int
+    sentiment: float
     sentiment_label: str
     thumbnail: str | None = None
 
@@ -33,54 +63,146 @@ def _label(score: float) -> str:
     return "neutral"
 
 
-@router.get("/{symbol}/news", response_model=list[NewsItem])
-def get_news(symbol: str, limit: int = Query(12, le=30)):
-    try:
-        ticker = yf.Ticker(symbol)
-        raw = ticker.news or []
-    except Exception as exc:
-        log.warning("news.fetch_failed", symbol=symbol, error=str(exc))
-        raise HTTPException(502, "Failed to fetch news")
+def _make(title: str, url: str, source: str, ts: int, thumb: str | None = None) -> NewsItem:
+    score = _analyzer.polarity_scores(title)["compound"]
+    return NewsItem(
+        title=title, url=url, source=source,
+        published_at=ts, sentiment=round(score, 3),
+        sentiment_label=_label(score), thumbnail=thumb,
+    )
 
-    results: list[NewsItem] = []
-    for item in raw[:limit]:
-        # yfinance 1.x nests data under item["content"]
+
+def _yfinance_news(symbol: str) -> list[NewsItem]:
+    """Fetch from yfinance and discard anything older than 7 days."""
+    cutoff = int(time.time()) - _STALE_CUTOFF
+    try:
+        raw = yf.Ticker(symbol).news or []
+    except Exception as exc:
+        log.warning("news.yfinance_failed", symbol=symbol, error=str(exc))
+        return []
+
+    items: list[NewsItem] = []
+    for item in raw:
         c = item.get("content") or item
         title = c.get("title") or item.get("title", "")
         if not title:
             continue
-        score = _analyzer.polarity_scores(title)["compound"]
-        # URL
+
         url = (c.get("canonicalUrl") or {}).get("url") or item.get("link", "")
-        # Source
         source = (c.get("provider") or {}).get("displayName") or item.get("publisher", "")
-        # Published timestamp
+
         pub_date = c.get("pubDate") or ""
         if pub_date:
-            from datetime import datetime, timezone
             try:
                 ts = int(datetime.fromisoformat(pub_date.replace("Z", "+00:00")).timestamp())
             except Exception:
                 ts = int(time.time())
         else:
             ts = item.get("providerPublishTime", int(time.time()))
-        # Thumbnail
+
+        if ts < cutoff:
+            continue  # stale — skip
+
         thumb = None
         try:
             resolutions = (c.get("thumbnail") or {}).get("resolutions") or []
-            if resolutions:
-                thumb = resolutions[0].get("url")
+            thumb = resolutions[0].get("url") if resolutions else None
             if not thumb:
                 thumb = (c.get("thumbnail") or {}).get("originalUrl")
         except Exception:
             pass
-        results.append(NewsItem(
-            title=title,
-            url=url,
-            source=source,
-            published_at=ts,
-            sentiment=round(score, 3),
-            sentiment_label=_label(score),
-            thumbnail=thumb,
-        ))
+
+        items.append(_make(title, url, source, ts, thumb))
+
+    return items
+
+
+def _google_news(query: str, limit: int = 15) -> list[NewsItem]:
+    """Fetch from Google News RSS — no API key, always fresh."""
+    try:
+        q = urllib.parse.quote(f"{query} stock")
+        feed_url = f"https://news.google.com/rss/search?q={q}&hl=en&gl=US&ceid=US:en"
+        feed = feedparser.parse(feed_url)
+
+        items: list[NewsItem] = []
+        for entry in feed.entries[:limit]:
+            title = entry.get("title", "").strip()
+            if not title:
+                continue
+            link = entry.get("link", "")
+            src = ""
+            s = entry.get("source")
+            if isinstance(s, dict):
+                src = s.get("title", "")
+            elif hasattr(s, "title"):
+                src = s.title
+
+            published = entry.get("published_parsed")
+            if published:
+                ts = int(datetime(*published[:6], tzinfo=timezone.utc).timestamp())
+            else:
+                ts = int(time.time())
+
+            items.append(_make(title, link, src or "Google News", ts))
+        return items
+    except Exception as exc:
+        log.warning("news.google_failed", query=query, error=str(exc))
+        return []
+
+
+def _merge(primary: list[NewsItem], supplement: list[NewsItem], limit: int) -> list[NewsItem]:
+    seen: set[str] = set()
+    merged: list[NewsItem] = []
+    for item in sorted(primary + supplement, key=lambda x: x.published_at, reverse=True):
+        key = item.title[:60].lower().strip()
+        if key not in seen:
+            seen.add(key)
+            merged.append(item)
+    return merged[:limit]
+
+
+@router.get("/{symbol}/news", response_model=list[NewsItem])
+def get_news(
+    symbol: str,
+    limit: int = Query(12, le=30),
+    session: Session = Depends(get_session),
+):
+    cache_key = f"stockai:news:{symbol.upper()}"
+
+    # Serve from cache if available
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    # Resolve company name for better search query
+    name = session.execute(
+        select(Stock.name).where(Stock.symbol == symbol)
+    ).scalar_one_or_none() or symbol
+
+    is_hk = symbol.upper().endswith(".HK")
+
+    yf_items = _yfinance_news(symbol)
+
+    # Supplement when: HK stock (yfinance HK news is often stale/sparse)
+    # or fewer than 3 fresh articles from yfinance
+    if is_hk or len(yf_items) < 3:
+        google_items = _google_news(name)
+        results = _merge(yf_items, google_items, limit)
+        log.info("news.merged", symbol=symbol, yf=len(yf_items), google=len(google_items), total=len(results))
+    else:
+        results = sorted(yf_items, key=lambda x: x.published_at, reverse=True)[:limit]
+        log.info("news.yfinance_only", symbol=symbol, count=len(results))
+
+    if not results:
+        raise HTTPException(404, f"No recent news found for {symbol}")
+
+    # Cache for 30 minutes
+    try:
+        _get_redis().setex(cache_key, _NEWS_TTL, json.dumps([r.model_dump() for r in results]))
+    except Exception:
+        pass
+
     return results
