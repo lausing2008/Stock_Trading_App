@@ -89,6 +89,7 @@ export default function App({ Component, pageProps }: AppProps) {
           </Link>
           <nav className="flex gap-4 text-sm text-slate-300">
             <Link href="/">Dashboard</Link>
+            <Link href="/opportunities" style={{ color: '#a78bfa', fontWeight: 600 }}>Opportunities</Link>
             <Link href="/rankings">Rankings</Link>
             <Link href="/watchlist">Watchlist</Link>
             <Link href="/positions">Positions</Link>

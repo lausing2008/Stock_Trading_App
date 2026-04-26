@@ -32,7 +32,8 @@ export async function askAI(
     throw new Error(`${PROVIDER_LABELS[s.aiProvider]} API key not set. Go to Settings → AI Assistant.`);
   }
 
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ai/chat`, {
+  const base = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+  const res = await fetch(`${base}/ai/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

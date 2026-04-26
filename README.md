@@ -18,7 +18,9 @@ downstream services.
 | **Technical Analysis** | SMA/EMA, RSI, MACD, Bollinger Bands, VWAP, Fibonacci retracement, automated trendlines, support/resistance |
 | **Pattern Recognition** | Head & Shoulders, Double Top/Bottom, Triangles, Flag/Pennant, Cup & Handle |
 | **ML Prediction** | Random Forest, Gradient Boosting, XGBoost, PyTorch LSTM — price direction, confidence score |
-| **AI Signals** | BUY / SELL / HOLD with horizon (short/swing/long) and 0–100 confidence fusing TA + ML + volume |
+| **AI Signals** | BUY / HOLD / WAIT / SELL with horizon and 0–100 confidence fusing TA + ML + volume. HOLD = bullish lean; WAIT = bearish lean (don't enter yet) |
+| **Market Overview** | Live US index bar (S&P 500, NASDAQ, Dow Jones, VIX) + Hang Seng on the dashboard, with Open/Closed/Pre-mkt status and Portfolio Pulse signal distribution |
+| **Opportunities** | Strategy-filtered stock screener — Top Picks, Swing Trade, Short-Term, Long-Term, and Growth — ranked by K-Score sub-scores and AI signals |
 | **K-Score Ranking** | Composite 0–100 score across Technical / Momentum / Value / Growth / Volatility |
 | **Strategy Engine** | JSON rule DSL (e.g. `RSI<30 and Close>SMA50`), vectorized backtester with Sharpe, max drawdown, CAGR |
 | **Portfolio Optimizer** | Sharpe-maximizing MVO, Risk Parity, Hierarchical Risk Parity (HRP), AI Allocation — all with Ledoit-Wolf covariance shrinkage |
@@ -26,7 +28,7 @@ downstream services.
 | **AI Chat** | Ask Claude or DeepSeek about any stock on the detail page — context-aware (price, signal, news, K-Score) |
 | **Watchlist** | Per-stock notes, price alerts, signal filter tabs, sort controls, K-Score progress bars |
 | **Positions** | Multi-currency P&L tracker, allocation donut chart, trade history, best/worst performer, CSV export |
-| **Company Financials** | Valuation, income statement, balance sheet, margins, returns, 52-week range, analyst consensus |
+| **Company Financials** | Valuation, income statement, balance sheet, margins, returns, 52-week range; full analyst ratings with rating distribution bar, consensus badge, price target range visualization, and Buy/Sell zone cards |
 | **Settings** | Data source toggles, AI provider config, news source toggles, notification preferences, ML defaults |
 | **Auth** | Login page with session management; password reset; pre-created account (`lausing`) |
 
@@ -45,8 +47,8 @@ stock_trading_app/
 │   └── api-gateway/          # Reverse proxy + aggregation + AI proxy
 ├── frontend/                 # Next.js 14 + lightweight-charts + SWR
 │   └── src/
-│       ├── pages/            # Login, Dashboard, Rankings, Watchlist, Positions,
-│       │                     # Stock Detail, Strategies, Portfolio, Alerts, Settings
+│       ├── pages/            # Login, Dashboard, Opportunities, Rankings, Watchlist,
+│       │                     # Positions, Stock Detail, Strategies, Portfolio, Alerts, Settings
 │       ├── components/       # AddStockModal, SignalCard, NewsCard, PriceChart,
 │       │                     # DonutChart, NotificationBell
 │       └── lib/              # api.ts, auth.ts, alerts.ts, settings.ts, ai.ts
@@ -97,9 +99,10 @@ Or use the **⚡ Train All** button on the dashboard to ingest + train all ML mo
 | Page | URL | What it does |
 |------|-----|-------------|
 | Login | `/login` | Sign-in gate; password reset tab |
-| Dashboard | `/` | All stocks grid with live BUY/SELL/HOLD badges, K-Score, real-time prices |
-| Stock Detail | `/stock/[symbol]` | Candlestick chart, AI signal, K-Score, ML prediction, financials, AI chat, news |
-| Rankings | `/rankings` | Leaderboard sorted by K-Score with sub-score breakdown |
+| Dashboard | `/` | Market overview panel (US + HK indices, Portfolio Pulse), stock grid with live signals, K-Score, delete button |
+| Opportunities | `/opportunities` | Strategy screener — Top Picks / Swing / Short-Term / Long-Term / Growth, filterable by market |
+| Stock Detail | `/stock/[symbol]` | Live price card (60 s refresh), candlestick chart, AI signal (BUY/HOLD/WAIT/SELL), K-Score, ML prediction, financials, analyst ratings & price targets, AI chat, news |
+| Rankings | `/rankings` | Leaderboard sorted by K-Score with full sub-score breakdown |
 | Watchlist | `/watchlist` | Curated list with notes, price alerts, signal filter, sort controls |
 | Positions | `/positions` | Portfolio P&L tracker with allocation chart, trade history, CSV export |
 | Strategies | `/strategies` | Rule DSL strategy builder + backtester |

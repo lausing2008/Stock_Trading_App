@@ -73,7 +73,9 @@ Or open the dashboard and click **⚡ Train All** — it runs ingest + ML traini
 
 ## 5. Live prices
 
-Dashboard, Watchlist, and Positions pages all show **real-time prices** fetched from yfinance on every load. Prices auto-refresh in the background every 60 seconds — no manual action needed.
+Dashboard, Watchlist, Positions, and **Stock Detail** pages all show **real-time prices** fetched from yfinance on every load. Prices auto-refresh in the background every 60 seconds — no manual action needed.
+
+The stock detail page displays a **Live Price card** in the header showing the real-time price, day change %, and previous close. It fetches from the shared `/stocks/latest_prices` endpoint (same Redis 60 s cache used by the dashboard).
 
 The first load after a cache expiry takes ~3–5 seconds (parallel yfinance fetches). Subsequent loads within 60 seconds are instant (Redis cache).
 
@@ -219,6 +221,10 @@ make build && make up
 | Port collision on 5432/6379/3000/8000-8007 | Stop the conflicting process or edit `docker/docker-compose.yml` |
 | Can't log in | Default credentials: `lausing` / `120402`. Use Reset Password tab to change. |
 | Positions/notes disappeared | Stored in browser localStorage — clearing browser data removes them |
+| Stock detail shows "Last Close" instead of "Live Price" | yfinance quota hit or network issue — price shown is from DB; auto-recovers within 60 s |
+| Market overview shows "—" prices | yfinance rate-limited; auto-recovers in 60 s |
+| Opportunities page shows 0 stocks | Run Train All to compute signals + rankings first |
+| AI chat / Test Connection returns 404 | Restart the frontend container — env var baked at build time |
 | AI chat shows "No AI provider" | Go to Settings → AI Assistant and configure Claude or DeepSeek |
 | AI chat shows API error 401 | Your API key is invalid or expired — check it in Settings |
 | News not updating after toggling sources | Hard-refresh the browser (Ctrl+Shift+R) to clear SWR cache |

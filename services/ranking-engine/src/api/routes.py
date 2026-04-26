@@ -70,7 +70,13 @@ def leaderboard(
                 "symbol": s.symbol,
                 "name": s.name,
                 "market": s.market.value,
+                "sector": s.sector,
                 "score": comp.score,
+                "technical": comp.technical,
+                "momentum": comp.momentum,
+                "value": comp.value,
+                "growth": comp.growth,
+                "volatility": comp.volatility,
                 "fair_price": comp.fair_price,
             }
         )

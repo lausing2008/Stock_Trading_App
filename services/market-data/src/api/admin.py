@@ -46,6 +46,20 @@ def run_ingest(req: IngestRequest):
     return {"status": "ok", "symbols": ok, "total": len(results), "results": results}
 
 
+@router.delete("/stocks/{symbol}")
+def delete_stock(symbol: str):
+    """Soft-delete (deactivate) a stock — sets active=False, preserves price history."""
+    sym = symbol.upper().strip()
+    with SessionLocal() as session:
+        stock = session.execute(select(Stock).where(Stock.symbol == sym)).scalar_one_or_none()
+        if not stock:
+            raise HTTPException(404, f"Unknown symbol: {sym}")
+        stock.active = False
+        session.commit()
+    log.info("delete_stock.done", symbol=sym)
+    return {"status": "deactivated", "symbol": sym}
+
+
 @router.post("/add_stock")
 def add_stock(req: AddStockRequest, tasks: BackgroundTasks):
     symbol = req.symbol.upper().strip()

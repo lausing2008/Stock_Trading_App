@@ -100,7 +100,7 @@ export default function AlertsPage() {
   }
 
   const sigColor = (s: string) =>
-    s === 'BUY' ? '#4ade80' : s === 'SELL' ? '#f87171' : '#facc15';
+    s === 'BUY' ? '#4ade80' : s === 'SELL' ? '#f87171' : s === 'WAIT' ? '#fb923c' : '#facc15';
 
   return (
     <div style={{ maxWidth: '900px', margin: '0 auto', paddingTop: '8px' }}>

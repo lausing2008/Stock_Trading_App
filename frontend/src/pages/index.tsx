@@ -2,7 +2,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
-import { api, type Stock, type WatchlistItem, type RankingRow, type LatestPrice, type SignalSummary } from '@/lib/api';
+import { api, type Stock, type WatchlistItem, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex } from '@/lib/api';
 import AddStockModal from '@/components/AddStockModal';
 
 const SECTOR_COLOR: Record<string, { text: string; bg: string }> = {
@@ -32,14 +32,144 @@ function scoreColor(score: number) {
 type SortKey = 'symbol' | 'score' | 'sector' | 'market';
 type MarketFilter = 'all' | 'US' | 'HK';
 
+/* ── Market status helpers ─────────────────────────────────── */
+function getMarketStatus() {
+  const now = new Date();
+  const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const day = now.getUTCDay(); // 0=Sun 6=Sat
+  const weekday = day >= 1 && day <= 5;
+
+  // US: NYSE 9:30–16:00 ET. Use UTC-4 (EDT Apr–Nov, close enough).
+  const etMin = ((utcMin - 4 * 60) + 1440) % 1440;
+  const usOpen = weekday && etMin >= 9 * 60 + 30 && etMin < 16 * 60;
+  const usPreMkt = weekday && etMin >= 4 * 60 && etMin < 9 * 60 + 30;
+
+  // HK: HKEX 9:30–12:00 & 13:00–16:00 HKT (UTC+8)
+  const hktMin = (utcMin + 8 * 60) % 1440;
+  const hkOpen = weekday && (
+    (hktMin >= 9 * 60 + 30 && hktMin < 12 * 60) ||
+    (hktMin >= 13 * 60 && hktMin < 16 * 60)
+  );
+  const hkLunch = weekday && hktMin >= 12 * 60 && hktMin < 13 * 60;
+
+  return { usOpen, usPreMkt, hkOpen, hkLunch };
+}
+
+function StatusBadge({ open, pre, lunch }: { open: boolean; pre?: boolean; lunch?: boolean }) {
+  const label = open ? 'Open' : lunch ? 'Lunch' : pre ? 'Pre-mkt' : 'Closed';
+  const color = open ? '#4ade80' : lunch ? '#facc15' : pre ? '#818cf8' : '#475569';
+  const bg    = open ? 'rgba(34,197,94,0.12)' : lunch ? 'rgba(250,204,21,0.1)' : pre ? 'rgba(129,140,248,0.12)' : 'rgba(71,85,105,0.15)';
+  return (
+    <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color, background: bg, letterSpacing: '0.04em' }}>
+      ● {label}
+    </span>
+  );
+}
+
+function MarketOverview({ indices, signals }: { indices: MarketIndex[]; signals: SignalSummary[] }) {
+  const { usOpen, usPreMkt, hkOpen, hkLunch } = getMarketStatus();
+  const us = indices.filter(i => i.market === 'US');
+  const hk = indices.filter(i => i.market === 'HK');
+
+  // Signal distribution from tracked stocks
+  const sigCounts = { BUY: 0, HOLD: 0, WAIT: 0, SELL: 0 };
+  for (const s of signals) {
+    if (s.signal in sigCounts) sigCounts[s.signal as keyof typeof sigCounts]++;
+  }
+  const total = signals.length;
+
+  function IndexTile({ idx }: { idx: MarketIndex }) {
+    const up = (idx.change_pct ?? 0) >= 0;
+    const isVix = idx.ticker === '^VIX';
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', minWidth: '90px' }}>
+        <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600 }}>{idx.name}</div>
+        <div style={{ fontSize: '14px', fontWeight: 800, color: '#f1f5f9' }}>
+          {idx.price != null ? idx.price.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}
+        </div>
+        {idx.change_pct != null && (
+          <div style={{ fontSize: '11px', fontWeight: 700, color: isVix ? (up ? '#f87171' : '#4ade80') : (up ? '#4ade80' : '#f87171') }}>
+            {up ? '▲' : '▼'} {Math.abs(idx.change_pct).toFixed(2)}%
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '10px' }}>
+
+      {/* US Markets */}
+      <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0b1120', padding: '12px 16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 700, color: '#60a5fa' }}>🇺🇸 US Markets</span>
+          <StatusBadge open={usOpen} pre={usPreMkt} />
+        </div>
+        <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+          {us.map(i => <IndexTile key={i.ticker} idx={i} />)}
+        </div>
+      </div>
+
+      {/* HK Markets */}
+      <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0b1120', padding: '12px 16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 700, color: '#f472b6' }}>🇭🇰 HK Markets</span>
+          <StatusBadge open={hkOpen} lunch={hkLunch} />
+        </div>
+        <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+          {hk.map(i => <IndexTile key={i.ticker} idx={i} />)}
+        </div>
+      </div>
+
+      {/* Portfolio pulse */}
+      {total > 0 && (
+        <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0b1120', padding: '12px 16px', minWidth: '160px' }}>
+          <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', marginBottom: '10px' }}>Portfolio Pulse</div>
+          {/* Stacked bar */}
+          <div style={{ display: 'flex', height: '6px', borderRadius: '3px', overflow: 'hidden', marginBottom: '8px' }}>
+            {[
+              { key: 'BUY',  color: '#22c55e' },
+              { key: 'HOLD', color: '#facc15' },
+              { key: 'WAIT', color: '#fb923c' },
+              { key: 'SELL', color: '#ef4444' },
+            ].map(({ key, color }) => {
+              const count = sigCounts[key as keyof typeof sigCounts];
+              return count > 0 ? (
+                <div key={key} style={{ flex: count, background: color }} title={`${key}: ${count}`} />
+              ) : null;
+            })}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+            {[
+              { key: 'BUY',  color: '#4ade80', label: 'Buy'  },
+              { key: 'HOLD', color: '#facc15', label: 'Hold' },
+              { key: 'WAIT', color: '#fb923c', label: 'Wait' },
+              { key: 'SELL', color: '#f87171', label: 'Sell' },
+            ].map(({ key, color, label }) => (
+              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: color, flexShrink: 0, display: 'inline-block' }} />
+                <span style={{ fontSize: '10px', color: '#475569' }}>{label}</span>
+                <span style={{ fontSize: '11px', fontWeight: 700, color }}>{sigCounts[key as keyof typeof sigCounts]}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const { data: stocks, error, mutate: mutateStocks } = useSWR<Stock[]>('stocks', () => api.listStocks());
   const { data: watchlist, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
+  const { data: marketData } = useSWR<MarketIndex[]>('market-overview', () => api.marketOverview(), { refreshInterval: 60_000 });
 
   const [watchPending, setWatchPending] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [search, setSearch] = useState('');
   const [market, setMarket] = useState<MarketFilter>('all');
@@ -105,6 +235,17 @@ export default function Home() {
       else await api.addToWatchlist(symbol);
       mutateWatchlist();
     } finally { setWatchPending(null); }
+  }
+
+  async function handleDelete(e: React.MouseEvent, symbol: string) {
+    e.preventDefault();
+    if (confirmDelete !== symbol) { setConfirmDelete(symbol); return; }
+    setDeleting(symbol);
+    setConfirmDelete(null);
+    try {
+      await api.deleteStock(symbol);
+      mutateStocks();
+    } finally { setDeleting(null); }
   }
 
   function handleAdded(symbol: string) {
@@ -256,6 +397,9 @@ export default function Home() {
         </div>
       )}
 
+      {/* Market Overview */}
+      {marketData && marketData.length > 0 && <MarketOverview indices={marketData} signals={signalsData ?? []} />}
+
       {/* Search + Filter + Sort bar */}
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
         <input
@@ -333,7 +477,12 @@ export default function Home() {
           const lp     = priceMap[s.symbol];
           const realSig = signalMap[s.symbol];
           const sig = realSig
-            ? { label: realSig.signal, color: realSig.signal === 'BUY' ? '#4ade80' : realSig.signal === 'SELL' ? '#f87171' : '#facc15', bg: realSig.signal === 'BUY' ? 'rgba(34,197,94,0.1)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.1)' : 'rgba(250,204,21,0.1)', border: realSig.signal === 'BUY' ? 'rgba(34,197,94,0.3)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.3)' : 'rgba(250,204,21,0.3)' }
+            ? {
+                label: realSig.signal,
+                color:  realSig.signal === 'BUY' ? '#4ade80' : realSig.signal === 'SELL' ? '#f87171' : realSig.signal === 'WAIT' ? '#fb923c' : '#facc15',
+                bg:     realSig.signal === 'BUY' ? 'rgba(34,197,94,0.1)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.1)' : realSig.signal === 'WAIT' ? 'rgba(251,146,60,0.1)' : 'rgba(250,204,21,0.1)',
+                border: realSig.signal === 'BUY' ? 'rgba(34,197,94,0.3)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.3)' : realSig.signal === 'WAIT' ? 'rgba(251,146,60,0.3)' : 'rgba(250,204,21,0.3)',
+              }
             : signalFromScore(rank?.score);
           const isWatched = watchedSet.has(s.symbol);
           const sc     = SECTOR_COLOR[s.sector ?? ''];
@@ -367,8 +516,50 @@ export default function Home() {
                 {isWatched ? '★' : '☆'}
               </button>
 
+              {/* Delete button */}
+              {confirmDelete === s.symbol ? (
+                <div
+                  onClick={e => e.preventDefault()}
+                  style={{ position: 'absolute', top: '8px', left: '8px', display: 'flex', gap: '4px', zIndex: 2 }}
+                >
+                  <button
+                    onClick={(e) => handleDelete(e, s.symbol)}
+                    disabled={deleting === s.symbol}
+                    style={{
+                      padding: '3px 8px', borderRadius: '5px', fontSize: '11px', fontWeight: 700,
+                      background: '#ef4444', border: 'none', color: '#fff', cursor: 'pointer',
+                    }}
+                  >
+                    {deleting === s.symbol ? '…' : 'Delete?'}
+                  </button>
+                  <button
+                    onClick={(e) => { e.preventDefault(); setConfirmDelete(null); }}
+                    style={{
+                      padding: '3px 7px', borderRadius: '5px', fontSize: '11px',
+                      background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={(e) => handleDelete(e, s.symbol)}
+                  style={{
+                    position: 'absolute', top: '10px', left: '10px',
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    fontSize: '13px', lineHeight: 1, padding: '2px',
+                    color: '#1e293b', transition: 'color 0.15s',
+                  }}
+                  className="delete-btn"
+                  title="Remove stock"
+                >
+                  ✕
+                </button>
+              )}
+
               {/* Symbol + price row */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingRight: '24px', marginBottom: '4px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingRight: '24px', paddingLeft: '20px', marginBottom: '4px' }}>
                 <div style={{ fontWeight: 700, fontSize: '17px', letterSpacing: '-0.01em' }}>{s.symbol}</div>
                 {lp ? (
                   <div style={{ textAlign: 'right' }}>
@@ -465,6 +656,8 @@ export default function Home() {
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         .stock-card:hover { border-color: #334155 !important; background: #0f1829 !important; }
+        .stock-card:hover .delete-btn { color: #475569 !important; }
+        .delete-btn:hover { color: #ef4444 !important; }
       `}</style>
     </div>
   );

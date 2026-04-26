@@ -98,9 +98,11 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 def _decide(fused_prob: float) -> tuple[str, str]:
     if fused_prob > 0.65:
         return "BUY", "SWING"
-    if fused_prob < 0.35:
-        return "SELL", "SWING"
-    return "HOLD", "SWING"
+    if fused_prob > 0.50:
+        return "HOLD", "SWING"   # bullish lean — hold existing positions
+    if fused_prob >= 0.35:
+        return "WAIT", "SWING"   # bearish lean — not a sell, but don't enter yet
+    return "SELL", "SWING"
 
 
 def generate_signal(symbol: str) -> AIConfidence:

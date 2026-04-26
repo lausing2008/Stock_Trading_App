@@ -36,17 +36,37 @@ The default account (`lausing` / `120402`) is hardcoded as a fallback in `lib/au
 
 ## Dashboard (`/`)
 
-The main screen. Shows every stock in your universe as cards.
+The main screen. Shows a live market overview and every tracked stock as a card.
+
+### Market Overview panel
+Displayed between the toolbar and the stock grid. Three cards updated every 60 s:
+
+**🇺🇸 US Markets**
+- Live quotes: S&P 500, NASDAQ, Dow Jones, VIX — each showing price and day change %
+- VIX colour is inverted (green = fear falling = good, red = fear rising = bad)
+- Status badge: `● Open` / `● Pre-mkt` / `● Closed` based on NYSE hours (9:30 AM–4:00 PM ET)
+
+**🇭🇰 HK Markets**
+- Live Hang Seng Index price and day change %
+- Status badge respects HKEX session including the 12:00–1:00 PM lunch break
+
+**Portfolio Pulse**
+- Stacked bar showing BUY / HOLD / WAIT / SELL distribution across all tracked stocks
+- Count breakdown in a 2×2 grid
+
+Data source: `GET /stocks/market_overview` — yfinance fast_info for indices ^GSPC, ^IXIC, ^DJI, ^VIX, ^HSI. Redis-cached 60 s.
 
 ### Stock cards
 - **Symbol + company name** — click to go to the stock detail page
+- **✕ Delete button** — top-left corner, appears on card hover. First click shows inline `Delete? / Cancel` confirmation; confirming soft-deletes the stock (sets `active=False`, price history preserved). Re-add any time via + Add Stock.
 - **Current price** — live real-time price (yfinance `fast_info`, refreshes every 60 s)
-- **Day change** — percentage and absolute change from previous close, color-coded green/red
-- **K-Score badge** — composite 0–100 score (green ≥ 70 / yellow ≥ 50 / red < 50)
-- **BUY / SELL / HOLD badge** — real TA-based signal from the signal engine
+- **Day change** — percentage and direction arrow, color-coded green/red
+- **K-Score** — composite 0–100 score (green ≥ 70 / yellow ≥ 50 / red < 50)
+- **BUY / HOLD / WAIT / SELL badge** — real TA + ML signal from the signal engine
+- **Fair price** — DCF-lite value from the ranking engine
 
 ### Toolbar
-- **↻ Refresh** — re-fetches all five data sources simultaneously
+- **↻ Refresh** — re-fetches all data sources simultaneously
 - **⚡ Train All** — runs the full pipeline: ingest → refresh prices → schedule ML training
 - **+ Add Stock** — opens the Add Stock modal
 
@@ -64,8 +84,9 @@ Full drill-down page for a single stock.
 
 ### Header
 - Symbol, company name, market, exchange, sector
+- **Live Price card** — real-time price, day change % (color-coded), and previous close. Fetched from yfinance `fast_info` via the shared `latest-prices` SWR key, auto-refreshes every 60 s. Falls back to "Last Close" from the DB if the live quote is unavailable.
 - **Fair Value** card — DCF-lite derived fair price with K-Score
-- **Recommendation** card — BUY/SELL/HOLD with bullish probability %
+- **AI Signal** card — BUY / HOLD / WAIT / SELL with bullish probability %; colour-coded green / yellow / orange / red
 - **↻ Refresh** / **☆ Watch** toggle
 
 ### Chart
@@ -92,9 +113,17 @@ Fetched from yfinance `.info`, Redis-cached 24 h.
 
 **Per Share & Risk** — EPS, Forward EPS, Book Value, Dividend Yield, Beta, Shares Outstanding
 
-**52-Week Range** — gradient bar showing current price position between 52W low/high
+**52-Week Range** — gradient bar showing current live price position between 52W low/high, with percentage-of-range label
 
-**Analyst Consensus** — recommendation label + target price + analyst count
+**Analyst Ratings & Price Targets** — full analyst consensus section powered by Yahoo Finance (Wall Street aggregate):
+- **Rating distribution bar** — stacked colored bar (Strong Buy / Buy / Hold / Underperform / Sell) with individual counts and color-coded labels
+- **Consensus badge** — `STRONG BUY` / `BUY` / `HOLD` etc. label + star rating derived from `recommendation_mean` (1.0 = strong buy → 5.0 = sell)
+- **Price target range visualization** — gradient bar with absolute-positioned markers for Low / Median / Mean / High analyst targets, plus the current live price as a white dot; upside % from current to mean target shown inline
+- **Buy Zone card** — suggested entry range from analyst low target to current price; shows nearest technical support level and upside % to mean target; warns if price is already above analyst consensus
+- **Sell / Target Zone card** — suggested take-profit range from analyst mean to high target; also shows K-Score fair value and nearest resistance level
+- **Reliability disclaimer** — "Via Yahoo Finance · consensus of Wall Street analysts · updated daily · not a personalised recommendation" shown in the section header
+
+> **Reliability note:** Analyst data is sourced from Yahoo Finance, which aggregates ratings from major investment banks. Coverage is excellent for US large-cap stocks (20–50 analysts) and thinner for small caps or HK stocks. The consensus mean is a useful directional indicator but analyst price targets scatter widely — treat them as one input alongside K-Score, technical signals, and your own research.
 
 ### AI Chat Panel
 Collapsible "Ask AI" panel below the financials section.
@@ -114,6 +143,39 @@ Collapsible "Ask AI" panel below the financials section.
 
 ---
 
+## Opportunities (`/opportunities`)
+
+Strategy-filtered stock screener. Surfaces the best candidates from your tracked universe for each trading style. Linked in the nav bar (highlighted purple).
+
+### Strategies
+
+| Strategy | Icon | Horizon | How stocks are ranked |
+|----------|------|---------|----------------------|
+| **Top Picks** | ⭐ | Any | Overall K-Score — best composite across all sub-scores |
+| **Swing Trade** | 📊 | 5–30 days | Technical score (40%) + Momentum (25%) + AI signal strength |
+| **Short-Term** | ⚡ | 1–5 days | Momentum (50%) + Technical (25%) + today's % move × 3 |
+| **Long-Term** | 🏛️ | 6–24 months | Value (40%) + Growth (30%) + upside to fair value (60%) |
+| **Growth** | 🚀 | Medium | Growth (50%) + Momentum (30%) + Technical (20%) |
+
+### Filters
+- **Market filter** — All / US / HK
+- Each strategy also applies a minimum sub-score filter (e.g. Growth requires growth score ≥ 50)
+
+### Per-stock card
+- **Rank badge** — gold / silver / bronze for top 3
+- **Signal badge** — BUY / HOLD / WAIT / SELL with colour coding
+- **Market badge** — US (blue) / HK (pink)
+- **Why this stock** — up to 3 specific reasons generated from the data (e.g. "AI signal BUY — 72% confidence", "+18.3% upside to fair value $215.40", "Strong price momentum (82/100)")
+- **T / M / V / G mini progress bars** — sub-score visualisation at a glance
+- **Key metric** — strategy-specific highlight (e.g. Upside % for Long-Term, Today % for Short-Term)
+- **Live price + day change** — same 60 s refresh as dashboard
+- Click card → stock detail page
+
+### Data source
+Rankings SWR key `rankings-all` and signals SWR key `signals-all` — no extra API calls. All scoring is pure frontend computation from existing data.
+
+---
+
 ## Rankings (`/rankings`)
 
 Leaderboard of all tracked stocks sorted by K-Score.
@@ -129,8 +191,8 @@ Leaderboard of all tracked stocks sorted by K-Score.
 Your curated list of stocks to monitor closely.
 
 ### Features
-- Signal stats bar (BUY / HOLD / SELL / TOTAL counts)
-- Signal filter tabs (ALL / BUY / HOLD / SELL)
+- Signal stats bar (BUY / HOLD / WAIT / SELL counts with colour-coded tiles)
+- Signal filter tabs (ALL / BUY / HOLD / WAIT / SELL)
 - Sort by: Symbol, Signal, K-Score, Change%, Price
 - Auto-refreshing live prices every 60 s
 
@@ -351,9 +413,11 @@ The 🔔 bell icon appears in the top-right navigation bar when logged in.
 ```
 POST /admin/seed                       # seed default stock universe
 POST /admin/ingest  {symbols:[...]}    # ingest price history (parallel, synchronous)
+DELETE /admin/stocks/{symbol}          # soft-delete stock (active=False, preserves history)
 GET  /stocks                           # list all tracked stocks
 GET  /stocks/{symbol}/prices           # OHLCV history from DB
 GET  /stocks/latest_prices             # live prices (yfinance fast_info, Redis 60 s cache)
+GET  /stocks/market_overview           # live index quotes: S&P 500, NASDAQ, DJI, VIX, HSI (Redis 60 s)
 GET  /stocks/{symbol}/fundamentals     # company financials (yfinance .info, Redis 24 h cache)
 GET  /stocks/{symbol}/news?sources=yfinance,google   # news + sentiment (filterable by source)
 ```
@@ -423,8 +487,11 @@ POST /ai/chat
 | Data | Source | Cache / Freshness |
 |------|--------|-------------------|
 | Dashboard / Watchlist / Positions prices | yfinance `fast_info` | Redis 60 s TTL; auto-refreshes every 60 s in UI |
+| Market overview indices (S&P 500, NASDAQ, DJI, VIX, HSI) | yfinance `fast_info` | Redis 60 s TTL; SWR 60 s refresh on dashboard |
+| Stock detail **live price card** | yfinance `fast_info` (via `/stocks/latest_prices`) | Redis 60 s TTL; SWR 60 s refresh on stock detail page |
 | Stock detail chart (OHLCV) | DB `prices` table | As of last ingest |
 | Company Financials | yfinance `.info` | Redis 24 h TTL (quarterly data) |
+| Analyst ratings & price targets | yfinance `.info` + `recommendations_summary` | Redis 24 h TTL (updates in step with fundamentals) |
 | News | yfinance + Google News RSS | Redis 30 min TTL per source combination |
 | K-Score / Fair price | DB `rankings` table | As of last rankings refresh |
 | AI Signal | DB `signals` table (TA + ML) | As of last stock detail view |
@@ -437,7 +504,8 @@ POST /ai/chat
 | Key | Contents | TTL |
 |-----|----------|-----|
 | `stockai:live_prices` | Array of live price objects for all active stocks | 60 s |
-| `stockai:fundamentals:{SYMBOL}` | Company fundamentals JSON for one symbol | 24 h |
+| `stockai:market_overview` | Array of index quotes (^GSPC, ^IXIC, ^DJI, ^VIX, ^HSI) | 60 s |
+| `stockai:fundamentals:v2:{SYMBOL}` | Company fundamentals JSON for one symbol (includes analyst ratings breakdown) | 24 h |
 | `stockai:news:{SYMBOL}:{sources}` | News articles for one symbol + source combination | 30 min |
 
 ---

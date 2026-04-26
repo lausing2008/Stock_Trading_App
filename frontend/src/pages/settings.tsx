@@ -105,7 +105,8 @@ export default function SettingsPage() {
     setAiTestState('loading');
     setAiTestMsg('');
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ai/chat`, {
+      const base = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+      const res = await fetch(`${base}/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

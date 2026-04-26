@@ -42,7 +42,7 @@
 | Service | Responsibility | Key endpoints |
 |---------|---------------|---------------|
 | `api-gateway` | Reverse proxy + aggregate overview + AI proxy | `GET /aggregate/overview/{symbol}`, `POST /ai/chat` |
-| `market-data` | Live prices, fundamentals, ingestion, news, price history | `GET /stocks/latest_prices`, `GET /stocks/{s}/fundamentals`, `GET /stocks/{s}/news`, `POST /admin/ingest` |
+| `market-data` | Live prices, fundamentals, ingestion, news, price history, market indices | `GET /stocks/latest_prices`, `GET /stocks/market_overview`, `GET /stocks/{s}/fundamentals`, `GET /stocks/{s}/news`, `POST /admin/ingest`, `DELETE /admin/stocks/{s}` |
 | `technical-analysis` | Indicators, patterns, trendlines, S/R, Fibonacci | `GET /ta/{s}/indicators`, `/ta/{s}/patterns`, `/ta/{s}/levels` |
 | `ml-prediction` | RF / XGB / GBM / LSTM train & predict | `POST /ml/train`, `POST /ml/predict`, `POST /ml/train_all` |
 | `ranking-engine` | K-Score composite + leaderboard | `GET /rankings`, `GET /rankings/{s}`, `POST /rankings/refresh` |
@@ -125,16 +125,20 @@ Frontend:
 
 ```
 GET /stocks/{symbol}/fundamentals
-  1. Check Redis key "stockai:fundamentals:{SYMBOL}" (TTL 24 h)
+  1. Check Redis key "stockai:fundamentals:v2:{SYMBOL}" (TTL 24 h)
      → HIT:  return cached JSON instantly
      → MISS: fetch from yfinance (step 2)
   2. yf.Ticker(symbol).info  — ~1-2 s, returns 100+ fields
-  3. Map to FundamentalsOut (30 curated fields, None for missing)
-  4. Write to Redis (TTL 86400 s)
-  5. Return
+  3. yf.Ticker(symbol).recommendations_summary  — analyst rating breakdown
+       period "0m" row → strongBuy / buy / hold / underperform / sell counts
+  4. Map to FundamentalsOut (38 curated fields including full analyst consensus)
+  5. Write to Redis (TTL 86400 s)
+  6. Return
 
 Included in /aggregate/overview/{symbol} — fetched in parallel with the
 other 7 upstream calls, adding zero extra latency to the stock detail page load.
+
+Cache key versioned as "v2" to bust old entries when new analyst fields were added.
 ```
 
 ## News flow
@@ -263,18 +267,26 @@ Login (/login)
   No API calls — pure localStorage auth
 
 Dashboard (/)
-  SWR keys: stocks, watchlist, rankings-all, latest-prices (60s), signals-all
-  → /stocks, /watchlist, /rankings, /stocks/latest_prices, /signals
+  SWR keys: stocks, watchlist, rankings-all, latest-prices (60s), signals-all, market-overview (60s)
+  → /stocks, /watchlist, /rankings, /stocks/latest_prices, /stocks/market_overview, /signals
+  Market overview panel: US indices (S&P 500, NASDAQ, DJI, VIX) + HK Hang Seng + Portfolio Pulse
 
 Stock Detail (/stock/[symbol])
-  SWR keys: overview-{symbol}, news-{symbol}-{sources}
+  SWR keys: overview-{symbol}, news-{symbol}-{sources}, latest-prices (shared, 60 s)
   → /aggregate/overview/{symbol}  (fans out to 8 upstreams in parallel)
       ├─ price, prices, indicators, patterns, levels  (market-data / technical-analysis)
       ├─ signal (persist=true)                        (signal-engine)
       ├─ ranking                                      (ranking-engine)
-      └─ fundamentals (Redis 24 h cache)              (market-data → yfinance .info)
+      └─ fundamentals (Redis 24 h cache)              (market-data → yfinance .info + recommendations_summary)
+  → /stocks/latest_prices  (live price card in header — shared SWR key, 60 s refresh)
+      └─ filtered by symbol → price, change_pct, prev_close displayed in header
   → /stocks/{symbol}/news?sources={activeNewsSources}  (market-data)
   AI Chat: POST /ai/chat  (api-gateway → Claude/DeepSeek API)
+
+Opportunities (/opportunities)
+  SWR keys: rankings-all, latest-prices (60s), signals-all  (reuses dashboard keys — no extra calls)
+  Pure frontend scoring: scoreFor(strategy, rankingRow, signal, livePrice)
+  Five strategies: all | swing | short | longterm | growth
 
 Portfolio (/portfolio)
   On-demand: POST /portfolio/optimize
@@ -319,6 +331,17 @@ Signal engine fuses three sources:
 - **Fused probability** = `0.6 × ML + 0.4 × TA` when ML available, else pure TA
 
 Confidence = `|fused − 0.5| × 200` → 0 = coin-flip, 100 = maximum conviction.
+
+### Signal thresholds
+
+| Fused probability | Signal | Meaning |
+|-------------------|--------|---------|
+| > 0.65 | **BUY** | Strong bullish — enter position |
+| 0.50–0.65 | **HOLD** | Bullish lean — hold existing positions |
+| 0.35–0.50 | **WAIT** | Bearish lean — conditions not right to enter yet |
+| < 0.35 | **SELL** | Strong bearish — exit position |
+
+WAIT is distinct from HOLD: HOLD applies to existing holders; WAIT tells prospective buyers to wait for a better entry.
 
 ## ML models comparison
 

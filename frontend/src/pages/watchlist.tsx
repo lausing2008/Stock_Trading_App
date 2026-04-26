@@ -22,9 +22,10 @@ function saveAlerts(a: Record<string, { target: number; dir: 'above' | 'below' }
 }
 
 function sigStyle(label: string) {
-  if (label === 'BUY')  return { color: '#4ade80', bg: 'rgba(34,197,94,0.1)',  border: 'rgba(34,197,94,0.3)'  };
-  if (label === 'SELL') return { color: '#f87171', bg: 'rgba(239,68,68,0.1)',  border: 'rgba(239,68,68,0.3)'  };
-  return                       { color: '#facc15', bg: 'rgba(250,204,21,0.1)', border: 'rgba(250,204,21,0.3)' };
+  if (label === 'BUY')  return { color: '#4ade80', bg: 'rgba(34,197,94,0.1)',   border: 'rgba(34,197,94,0.3)'   };
+  if (label === 'SELL') return { color: '#f87171', bg: 'rgba(239,68,68,0.1)',   border: 'rgba(239,68,68,0.3)'   };
+  if (label === 'WAIT') return { color: '#fb923c', bg: 'rgba(251,146,60,0.1)',  border: 'rgba(251,146,60,0.3)'  };
+  return                       { color: '#facc15', bg: 'rgba(250,204,21,0.1)',  border: 'rgba(250,204,21,0.3)'  };
 }
 function signalFromScore(score?: number) {
   if (score == null) return null;
@@ -34,7 +35,7 @@ function scoreColor(s: number) { return s >= 70 ? '#4ade80' : s >= 50 ? '#facc15
 function fmt2(n: number) { return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 
 type SortKey = 'symbol' | 'change' | 'score' | 'signal' | 'price';
-type SigFilter = 'ALL' | 'BUY' | 'HOLD' | 'SELL';
+type SigFilter = 'ALL' | 'BUY' | 'HOLD' | 'WAIT' | 'SELL';
 
 /* ── Note modal ─────────────────────────────────────────── */
 function NoteModal({ symbol, initial, onSave, onClose }: { symbol: string; initial: string; onSave: (v: string) => void; onClose: () => void }) {
@@ -162,10 +163,10 @@ export default function Watchlist() {
 
   /* Stats */
   const stats = useMemo(() => {
-    const counts = { BUY: 0, HOLD: 0, SELL: 0 };
+    const counts = { BUY: 0, HOLD: 0, WAIT: 0, SELL: 0 };
     for (const item of data ?? []) {
       const s = getSignal(item.symbol);
-      if (s === 'BUY' || s === 'HOLD' || s === 'SELL') counts[s]++;
+      if (s === 'BUY' || s === 'HOLD' || s === 'WAIT' || s === 'SELL') counts[s]++;
     }
     return counts;
   }, [data, signalMap, rankMap]);
@@ -184,7 +185,7 @@ export default function Watchlist() {
       if (sortKey === 'score')  return (rkB?.score ?? 0) - (rkA?.score ?? 0);
       if (sortKey === 'price')  return (lpB?.price ?? 0) - (lpA?.price ?? 0);
       if (sortKey === 'signal') {
-        const order = { BUY: 0, HOLD: 1, SELL: 2, null: 3 };
+        const order = { BUY: 0, HOLD: 1, WAIT: 2, SELL: 3, null: 4 };
         return (order[getSignal(a.symbol) as keyof typeof order] ?? 3) - (order[getSignal(b.symbol) as keyof typeof order] ?? 3);
       }
       return 0;
@@ -216,7 +217,7 @@ export default function Watchlist() {
       {data && data.length > 0 && (<>
         {/* Signal stats bar */}
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          {([['BUY', '#4ade80', 'rgba(34,197,94,0.1)', 'rgba(34,197,94,0.25)'], ['HOLD', '#facc15', 'rgba(250,204,21,0.1)', 'rgba(250,204,21,0.25)'], ['SELL', '#f87171', 'rgba(239,68,68,0.1)', 'rgba(239,68,68,0.25)']] as const).map(([label, color, bg, border]) => (
+          {([['BUY', '#4ade80', 'rgba(34,197,94,0.1)', 'rgba(34,197,94,0.25)'], ['HOLD', '#facc15', 'rgba(250,204,21,0.1)', 'rgba(250,204,21,0.25)'], ['WAIT', '#fb923c', 'rgba(251,146,60,0.1)', 'rgba(251,146,60,0.25)'], ['SELL', '#f87171', 'rgba(239,68,68,0.1)', 'rgba(239,68,68,0.25)']] as const).map(([label, color, bg, border]) => (
             <div key={label} style={{ borderRadius: '10px', border: `1px solid ${border}`, background: bg, padding: '10px 18px', textAlign: 'center', minWidth: '80px' }}>
               <div style={{ fontSize: '20px', fontWeight: 800, color, lineHeight: 1 }}>{stats[label as keyof typeof stats]}</div>
               <div style={{ fontSize: '10px', fontWeight: 700, color, marginTop: '3px', letterSpacing: '0.06em' }}>{label}</div>
@@ -231,8 +232,8 @@ export default function Watchlist() {
         {/* Filter + Sort bar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', borderRadius: '6px', border: '1px solid #334155', overflow: 'hidden', fontSize: '12px', fontWeight: 600 }}>
-            {(['ALL', 'BUY', 'HOLD', 'SELL'] as SigFilter[]).map(f => (
-              <button key={f} onClick={() => setSigFilter(f)} style={{ padding: '6px 12px', border: 'none', cursor: 'pointer', transition: 'all 0.15s', background: sigFilter === f ? (f === 'BUY' ? 'rgba(34,197,94,0.2)' : f === 'SELL' ? 'rgba(239,68,68,0.2)' : f === 'HOLD' ? 'rgba(250,204,21,0.15)' : '#334155') : 'transparent', color: sigFilter === f ? (f === 'BUY' ? '#4ade80' : f === 'SELL' ? '#f87171' : f === 'HOLD' ? '#facc15' : '#e2e8f0') : '#64748b' }}>
+            {(['ALL', 'BUY', 'HOLD', 'WAIT', 'SELL'] as SigFilter[]).map(f => (
+              <button key={f} onClick={() => setSigFilter(f)} style={{ padding: '6px 12px', border: 'none', cursor: 'pointer', transition: 'all 0.15s', background: sigFilter === f ? (f === 'BUY' ? 'rgba(34,197,94,0.2)' : f === 'SELL' ? 'rgba(239,68,68,0.2)' : f === 'WAIT' ? 'rgba(251,146,60,0.15)' : f === 'HOLD' ? 'rgba(250,204,21,0.15)' : '#334155') : 'transparent', color: sigFilter === f ? (f === 'BUY' ? '#4ade80' : f === 'SELL' ? '#f87171' : f === 'WAIT' ? '#fb923c' : f === 'HOLD' ? '#facc15' : '#e2e8f0') : '#64748b' }}>
                 {f}
               </button>
             ))}

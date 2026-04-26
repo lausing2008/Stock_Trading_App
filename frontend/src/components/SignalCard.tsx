@@ -2,8 +2,9 @@ import type { Signal } from '@/lib/api';
 
 const SIGNAL_COLOR: Record<string, string> = {
   BUY:  'bg-green-600',
-  SELL: 'bg-red-600',
   HOLD: 'bg-yellow-500',
+  WAIT: 'bg-orange-500',
+  SELL: 'bg-red-600',
 };
 
 type Reasons = {
@@ -128,7 +129,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
       {/* Confidence bar */}
       <div className="h-1 rounded-full bg-slate-800 mb-3 overflow-hidden">
         <div
-          className={`h-full rounded-full ${signal.signal === 'BUY' ? 'bg-green-500' : signal.signal === 'SELL' ? 'bg-red-500' : 'bg-yellow-500'}`}
+          className={`h-full rounded-full ${signal.signal === 'BUY' ? 'bg-green-500' : signal.signal === 'SELL' ? 'bg-red-500' : signal.signal === 'WAIT' ? 'bg-orange-500' : 'bg-yellow-500'}`}
           style={{ width: `${signal.bullish_probability * 100}%` }}
         />
       </div>

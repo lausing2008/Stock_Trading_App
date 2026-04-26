@@ -4,7 +4,7 @@ import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Prediction, type NewsItem } from '@/lib/api';
+import { api, type Overview, type Prediction, type NewsItem, type LatestPrice } from '@/lib/api';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 
@@ -38,6 +38,11 @@ export default function StockDetail() {
   const { data, error, isLoading, mutate: mutateOverview } = useSWR<Overview>(
     symbol ? `overview-${symbol}` : null,
     () => api.overview(symbol),
+  );
+  const { data: allPrices } = useSWR<LatestPrice[]>(
+    'latest-prices',
+    () => api.latestPrices(),
+    { refreshInterval: 60_000 },
   );
   const newsSources = typeof window !== 'undefined' ? activeNewsSources() : 'yfinance,google';
   const { data: news, mutate: mutateNews } = useSWR<NewsItem[]>(
@@ -156,6 +161,11 @@ export default function StockDetail() {
   if (isLoading) return <div className="text-slate-400 p-4">Loading…</div>;
   if (error || !data) return <div className="text-slate-300 p-4">Error loading {symbol}.</div>;
 
+  const liveQuote = allPrices?.find(p => p.symbol === symbol) ?? null;
+  const curPrice: number | null = liveQuote?.price ?? (data.prices && data.prices.length > 0 ? data.prices[data.prices.length - 1].close : null);
+  const changePct: number | null = liveQuote?.change_pct ?? null;
+  const prevClose: number | null = liveQuote?.prev_close ?? null;
+
   const ranking = data.ranking;
 
   const levels = data.levels;
@@ -191,6 +201,26 @@ export default function StockDetail() {
               {data.price && <span>{(data.price as { sector?: string })?.sector}</span>}
             </div>
           </div>
+          {/* Live price card */}
+          <div style={{ textAlign: 'center', padding: '10px 20px', borderRadius: '8px', border: '1px solid #1e293b', background: 'rgba(255,255,255,0.02)', minWidth: '110px' }}>
+            <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '2px' }}>
+              {liveQuote ? 'Live Price' : 'Last Close'}
+            </div>
+            <div style={{ fontSize: '24px', fontWeight: 800, color: '#f1f5f9', lineHeight: 1.1 }}>
+              {curPrice != null ? `$${curPrice.toFixed(2)}` : '—'}
+            </div>
+            {changePct != null && (
+              <div style={{ fontSize: '13px', fontWeight: 700, marginTop: '2px', color: changePct >= 0 ? '#4ade80' : '#f87171' }}>
+                {changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%
+              </div>
+            )}
+            {prevClose != null && (
+              <div style={{ fontSize: '10px', color: '#475569', marginTop: '1px' }}>
+                Prev ${prevClose.toFixed(2)}
+              </div>
+            )}
+          </div>
+
           {ranking?.fair_price != null && (
             <div className="rounded-md border border-indigo-800 bg-indigo-950/40 px-4 py-2 text-center">
               <div className="text-xs text-indigo-400 font-medium mb-0.5">Fair Value</div>
@@ -200,13 +230,19 @@ export default function StockDetail() {
               )}
             </div>
           )}
-          {data.signal && (
-            <div className={`rounded-md border px-4 py-2 text-center ${data.signal.signal === 'BUY' ? 'border-green-800 bg-green-950/40' : data.signal.signal === 'SELL' ? 'border-red-800 bg-red-950/40' : 'border-yellow-800 bg-yellow-950/40'}`}>
-              <div className={`text-xs font-medium mb-0.5 ${data.signal.signal === 'BUY' ? 'text-green-400' : data.signal.signal === 'SELL' ? 'text-red-400' : 'text-yellow-400'}`}>Recommendation</div>
-              <div className={`text-xl font-bold ${data.signal.signal === 'BUY' ? 'text-green-300' : data.signal.signal === 'SELL' ? 'text-red-300' : 'text-yellow-300'}`}>{data.signal.signal}</div>
-              <div className="text-xs text-slate-500 mt-0.5">{(data.signal.bullish_probability * 100).toFixed(0)}% bullish</div>
-            </div>
-          )}
+          {data.signal && (() => {
+            const s = data.signal.signal;
+            const borderCls = s === 'BUY' ? 'border-green-800 bg-green-950/40' : s === 'SELL' ? 'border-red-800 bg-red-950/40' : s === 'WAIT' ? 'border-orange-800 bg-orange-950/40' : 'border-yellow-800 bg-yellow-950/40';
+            const labelCls  = s === 'BUY' ? 'text-green-400'  : s === 'SELL' ? 'text-red-400'  : s === 'WAIT' ? 'text-orange-400'  : 'text-yellow-400';
+            const valueCls  = s === 'BUY' ? 'text-green-300'  : s === 'SELL' ? 'text-red-300'  : s === 'WAIT' ? 'text-orange-300'  : 'text-yellow-300';
+            return (
+              <div className={`rounded-md border px-4 py-2 text-center ${borderCls}`}>
+                <div className={`text-xs font-medium mb-0.5 ${labelCls}`}>AI Signal</div>
+                <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
+                <div className="text-xs text-slate-500 mt-0.5">{(data.signal.bullish_probability * 100).toFixed(0)}% bullish</div>
+              </div>
+            );
+          })()}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <RefreshButton onClick={handleRefresh} loading={refreshing} />
@@ -431,7 +467,6 @@ export default function StockDetail() {
           </div>
         );
 
-        const curPrice = (data.price as any)?.regularMarketPrice ?? null;
         const hi = f.week_52_high, lo = f.week_52_low;
         const rangePct = (hi && lo && hi > lo) ? ((((curPrice ?? lo) - lo) / (hi - lo)) * 100) : null;
 
@@ -496,9 +531,8 @@ export default function StockDetail() {
                 </div>
               </div>
 
-              {/* Row 4 — Per share + range + analyst */}
+              {/* Row 4 — Per share & risk + 52-week range */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                {/* Per share & risk */}
                 <div>
                   <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Per Share &amp; Risk</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
@@ -510,45 +544,256 @@ export default function StockDetail() {
                     {card('Shares Out', fmtBig(f.shares_outstanding))}
                   </div>
                 </div>
-
-                {/* 52-week + analyst */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {/* 52-week range */}
-                  {hi != null && lo != null && (
-                    <div style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid #1e293b', padding: '12px 13px' }}>
-                      <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>52-Week Range</div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '6px' }}>
+                {hi != null && lo != null && (
+                  <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>52-Week Range</div>
+                    <div style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid #1e293b', padding: '14px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '8px' }}>
                         <span style={{ color: '#f87171' }}>${lo.toFixed(2)}</span>
-                        <span style={{ color: '#94a3b8' }}>Low → High</span>
+                        <span style={{ color: '#64748b', fontSize: '11px' }}>52-Week Low → High</span>
                         <span style={{ color: '#4ade80' }}>${hi.toFixed(2)}</span>
                       </div>
                       <div style={{ height: '6px', background: '#1e293b', borderRadius: '3px', overflow: 'hidden', position: 'relative' }}>
-                        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${rangePct ?? 50}%`, background: 'linear-gradient(90deg, #f87171, #facc15, #4ade80)', borderRadius: '3px' }} />
+                        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${rangePct ?? 50}%`, background: 'linear-gradient(90deg,#f87171,#facc15,#4ade80)', borderRadius: '3px' }} />
                       </div>
-                      {curPrice && <div style={{ fontSize: '10px', color: '#64748b', marginTop: '4px', textAlign: 'center' }}>Current ${curPrice.toFixed(2)} · {rangePct != null ? `${rangePct.toFixed(0)}% of range` : ''}</div>}
+                      {curPrice && <div style={{ fontSize: '11px', color: '#64748b', marginTop: '6px', textAlign: 'center' }}>Current ${curPrice.toFixed(2)} · {rangePct != null ? `${rangePct.toFixed(0)}% of range` : ''}</div>}
                     </div>
-                  )}
-                  {/* Analyst consensus */}
-                  {(f.target_price != null || f.recommendation != null) && (
-                    <div style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid #1e293b', padding: '12px 13px' }}>
-                      <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>Analyst Consensus</div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        {f.recommendation && (
-                          <div style={{ fontSize: '14px', fontWeight: 800, color: recColors[f.recommendation] ?? '#94a3b8' }}>
-                            {recLabel[f.recommendation] ?? f.recommendation.toUpperCase()}
-                          </div>
-                        )}
-                        {f.target_price != null && (
-                          <div style={{ textAlign: 'right' }}>
-                            <div style={{ fontSize: '16px', fontWeight: 700, color: '#818cf8' }}>${f.target_price.toFixed(2)}</div>
-                            <div style={{ fontSize: '10px', color: '#475569' }}>{f.number_of_analysts != null ? `${f.number_of_analysts} analysts` : 'target'}</div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
+
+              {/* Row 5 — Analyst Ratings & Price Targets */}
+              {(() => {
+                const hasRatings = f.recommendation != null || f.target_price != null;
+                const hasCounts = (f.analyst_strong_buy ?? 0) + (f.analyst_buy ?? 0) + (f.analyst_hold ?? 0) + (f.analyst_underperform ?? 0) + (f.analyst_sell ?? 0) > 0;
+                const totalAnalysts = hasCounts
+                  ? (f.analyst_strong_buy ?? 0) + (f.analyst_buy ?? 0) + (f.analyst_hold ?? 0) + (f.analyst_underperform ?? 0) + (f.analyst_sell ?? 0)
+                  : (f.number_of_analysts ?? 0);
+                if (!hasRatings) return null;
+
+                // Price target range
+                const tLow  = f.target_low;
+                const tMed  = f.target_median;
+                const tMean = f.target_price;
+                const tHigh = f.target_high;
+                const hasTargets = tLow != null && tHigh != null && tHigh > tLow;
+                const rangeMin = hasTargets ? tLow! * 0.98 : null;
+                const rangeMax = hasTargets ? tHigh! * 1.02 : null;
+                const toBarPct = (p: number) =>
+                  rangeMin != null && rangeMax != null
+                    ? Math.max(0, Math.min(100, ((p - rangeMin) / (rangeMax - rangeMin)) * 100))
+                    : null;
+
+                // Upside from current price to mean target
+                const upside = tMean != null && curPrice != null ? ((tMean - curPrice) / curPrice) * 100 : null;
+
+                // Nearest support/resistance from srLevels
+                const supports = srLevels.filter(l => l.kind === 'support' && curPrice != null && l.price < curPrice).sort((a, b) => b.price - a.price);
+                const resistances = srLevels.filter(l => l.kind === 'resistance' && curPrice != null && l.price > curPrice).sort((a, b) => a.price - b.price);
+                const nearestSupport = supports[0]?.price ?? null;
+                const nearestResistance = resistances[0]?.price ?? null;
+
+                // Rating bar segments
+                const ratingSegs = [
+                  { key: 'Strong Buy',  count: f.analyst_strong_buy  ?? 0, color: '#22c55e' },
+                  { key: 'Buy',         count: f.analyst_buy         ?? 0, color: '#4ade80' },
+                  { key: 'Hold',        count: f.analyst_hold        ?? 0, color: '#facc15' },
+                  { key: 'Underperform',count: f.analyst_underperform ?? 0, color: '#fb923c' },
+                  { key: 'Sell',        count: f.analyst_sell        ?? 0, color: '#ef4444' },
+                ];
+
+                // Recommendation mean → label + star score
+                const recMean = f.recommendation_mean;
+                const starScore = recMean != null ? Math.max(0, Math.min(5, 5 - recMean + 1)) : null;
+
+                // Buy zone: from analyst low (or support) up to current price
+                const buyLower = tLow ?? nearestSupport;
+                const buyUpper = curPrice;
+
+                // Sell zone: from mean target to high target (+ fair value if available)
+                const sellLower = tMean;
+                const sellUpper = tHigh;
+                const fairPrice = ranking?.fair_price ?? null;
+
+                return (
+                  <div style={{ borderRadius: '12px', border: '1px solid rgba(99,102,241,0.2)', background: 'rgba(15,23,42,0.9)', overflow: 'hidden' }}>
+                    {/* Section header */}
+                    <div style={{ padding: '12px 16px', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
+                      <div>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                          Analyst Ratings &amp; Price Targets
+                        </div>
+                        <div style={{ fontSize: '10px', color: '#334155', marginTop: '2px' }}>
+                          Via Yahoo Finance · consensus of Wall Street analysts · updated daily · not a personalised recommendation
+                        </div>
+                      </div>
+                      {totalAnalysts > 0 && (
+                        <span style={{ fontSize: '11px', color: '#475569' }}>{totalAnalysts} analysts</span>
+                      )}
+                    </div>
+
+                    <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+
+                      {/* Top row: rating distribution + consensus */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '16px', alignItems: 'start' }}>
+
+                        {/* Rating bar + breakdown */}
+                        <div>
+                          {hasCounts && (
+                            <>
+                              {/* Stacked bar */}
+                              <div style={{ display: 'flex', height: '10px', borderRadius: '5px', overflow: 'hidden', gap: '1px', marginBottom: '8px' }}>
+                                {ratingSegs.map(seg => seg.count > 0 && (
+                                  <div key={seg.key} title={`${seg.key}: ${seg.count}`}
+                                    style={{ flex: seg.count, background: seg.color, minWidth: '4px' }} />
+                                ))}
+                              </div>
+                              {/* Count labels */}
+                              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                                {ratingSegs.map(seg => (
+                                  <div key={seg.key} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <span style={{ width: '8px', height: '8px', borderRadius: '2px', background: seg.color, display: 'inline-block', flexShrink: 0 }} />
+                                    <span style={{ fontSize: '11px', color: '#64748b' }}>{seg.key}</span>
+                                    <span style={{ fontSize: '12px', fontWeight: 700, color: seg.count > 0 ? seg.color : '#1e293b' }}>{seg.count}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        {/* Consensus badge */}
+                        {f.recommendation && (
+                          <div style={{ textAlign: 'center', padding: '10px 18px', borderRadius: '10px', background: `${recColors[f.recommendation] ?? '#64748b'}12`, border: `1px solid ${recColors[f.recommendation] ?? '#64748b'}35` }}>
+                            <div style={{ fontSize: '18px', fontWeight: 800, color: recColors[f.recommendation] ?? '#94a3b8', whiteSpace: 'nowrap' }}>
+                              {recLabel[f.recommendation] ?? f.recommendation.toUpperCase()}
+                            </div>
+                            {starScore != null && (
+                              <div style={{ fontSize: '12px', marginTop: '4px' }}>
+                                {[1,2,3,4,5].map(i => (
+                                  <span key={i} style={{ color: i <= Math.round(starScore) ? '#facc15' : '#1e293b', fontSize: '14px' }}>★</span>
+                                ))}
+                                <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>
+                                  Mean score: {recMean?.toFixed(2)}
+                                </div>
+                                <div style={{ fontSize: '9px', color: '#334155', marginTop: '1px' }}>
+                                  1.0 = Strong Buy · 5.0 = Sell
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Price target range visualization */}
+                      {hasTargets && (
+                        <div>
+                          <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '10px' }}>
+                            Price Target Range
+                            {upside != null && (
+                              <span style={{ marginLeft: '10px', color: upside >= 0 ? '#4ade80' : '#f87171', fontWeight: 700, textTransform: 'none', letterSpacing: 0 }}>
+                                {upside >= 0 ? '+' : ''}{upside.toFixed(1)}% to mean target
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Range bar with price markers */}
+                          <div style={{ position: 'relative', height: '40px', marginBottom: '4px' }}>
+                            {/* Background bar */}
+                            <div style={{ position: 'absolute', top: '18px', left: 0, right: 0, height: '4px', background: '#1e293b', borderRadius: '2px' }} />
+                            {/* Filled bar: low → high */}
+                            {toBarPct(tLow!) != null && toBarPct(tHigh!) != null && (
+                              <div style={{
+                                position: 'absolute', top: '18px', height: '4px', borderRadius: '2px',
+                                left: `${toBarPct(tLow!)}%`,
+                                width: `${toBarPct(tHigh!)! - toBarPct(tLow!)!}%`,
+                                background: 'linear-gradient(90deg,#ef4444,#facc15,#22c55e)',
+                              }} />
+                            )}
+                            {/* Markers */}
+                            {[
+                              { price: tLow,  label: `Low\n$${tLow!.toFixed(2)}`,   color: '#ef4444', size: 8 },
+                              { price: tMed,  label: `Med\n$${tMed?.toFixed(2)}`,   color: '#facc15', size: 8 },
+                              { price: tMean, label: `Mean\n$${tMean?.toFixed(2)}`, color: '#818cf8', size: 10 },
+                              { price: tHigh, label: `High\n$${tHigh!.toFixed(2)}`, color: '#22c55e', size: 8 },
+                              { price: curPrice, label: `Now\n$${curPrice?.toFixed(2)}`, color: '#f1f5f9', size: 12 },
+                            ].filter(m => m.price != null).map(m => {
+                              const pct = toBarPct(m.price!);
+                              if (pct == null) return null;
+                              const lines = m.label.split('\n');
+                              return (
+                                <div key={m.label} style={{ position: 'absolute', left: `${pct}%`, top: 0, transform: 'translateX(-50%)', textAlign: 'center', width: '48px', marginLeft: '-24px' }}>
+                                  <div style={{ fontSize: '9px', color: m.color, fontWeight: 700, lineHeight: 1.2, whiteSpace: 'nowrap', marginBottom: '2px' }}>
+                                    {lines[0]}
+                                  </div>
+                                  <div style={{
+                                    width: `${m.size}px`, height: `${m.size}px`,
+                                    borderRadius: '50%', background: m.color,
+                                    margin: '0 auto',
+                                    border: m.price === curPrice ? '2px solid #fff' : 'none',
+                                    boxShadow: m.price === curPrice ? `0 0 6px ${m.color}` : 'none',
+                                  }} />
+                                  <div style={{ fontSize: '9px', color: m.color, fontWeight: 600, marginTop: '2px', whiteSpace: 'nowrap' }}>
+                                    {lines[1]}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Buy zone + Sell / Target zone */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        {/* BUY ZONE */}
+                        <div style={{ borderRadius: '10px', padding: '12px 14px', background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.2)' }}>
+                          <div style={{ fontSize: '10px', fontWeight: 800, color: '#22c55e', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                            ↓ Buy Zone
+                          </div>
+                          {buyLower != null && buyUpper != null ? (
+                            <div style={{ fontSize: '20px', fontWeight: 800, color: '#4ade80', marginBottom: '6px' }}>
+                              ${buyLower.toFixed(2)} – ${buyUpper.toFixed(2)}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '13px', color: '#475569', marginBottom: '6px' }}>See support levels</div>
+                          )}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                            {tLow != null && <div style={{ fontSize: '11px', color: '#64748b' }}>Analyst low target: <span style={{ color: '#4ade80' }}>${tLow.toFixed(2)}</span></div>}
+                            {nearestSupport != null && <div style={{ fontSize: '11px', color: '#64748b' }}>Nearest support: <span style={{ color: '#4ade80' }}>${nearestSupport.toFixed(2)}</span></div>}
+                            {curPrice != null && tMean != null && curPrice > tMean && (
+                              <div style={{ fontSize: '11px', color: '#fb923c', marginTop: '4px' }}>⚠ Above analyst consensus — consider waiting for pullback</div>
+                            )}
+                            {curPrice != null && tMean != null && curPrice <= tMean && upside != null && (
+                              <div style={{ fontSize: '11px', color: '#4ade80', marginTop: '4px' }}>+{upside.toFixed(1)}% upside to mean target</div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* SELL / TARGET ZONE */}
+                        <div style={{ borderRadius: '10px', padding: '12px 14px', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                          <div style={{ fontSize: '10px', fontWeight: 800, color: '#ef4444', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                            ↑ Sell / Target Zone
+                          </div>
+                          {sellLower != null ? (
+                            <div style={{ fontSize: '20px', fontWeight: 800, color: '#f87171', marginBottom: '6px' }}>
+                              ${sellLower.toFixed(2)}{sellUpper != null ? ` – $${sellUpper.toFixed(2)}` : ''}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '13px', color: '#475569', marginBottom: '6px' }}>See resistance levels</div>
+                          )}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                            {tMean != null && <div style={{ fontSize: '11px', color: '#64748b' }}>Analyst mean target: <span style={{ color: '#f87171' }}>${tMean.toFixed(2)}</span></div>}
+                            {tHigh != null && <div style={{ fontSize: '11px', color: '#64748b' }}>Bull case (high): <span style={{ color: '#f87171' }}>${tHigh.toFixed(2)}</span></div>}
+                            {fairPrice != null && <div style={{ fontSize: '11px', color: '#64748b' }}>K-Score fair value: <span style={{ color: '#818cf8' }}>${fairPrice.toFixed(2)}</span></div>}
+                            {nearestResistance != null && <div style={{ fontSize: '11px', color: '#64748b' }}>Nearest resistance: <span style={{ color: '#fb923c' }}>${nearestResistance.toFixed(2)}</span></div>}
+                          </div>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                );
+              })()}
 
             </div>
           </div>

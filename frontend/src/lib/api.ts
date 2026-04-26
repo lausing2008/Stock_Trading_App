@@ -31,6 +31,8 @@ export const api = {
   ingest: (symbols: string[]) => request<{ status: string; symbols?: number }>(`/admin/ingest`, { method: 'POST', body: JSON.stringify({ symbols }) }),
   trainAll: () => request<{ status: string; count: number; symbols: string[] }>(`/ml/train_all`, { method: 'POST' }),
   addStock: (symbol: string) => request<{ status: string; symbol: string; name: string; sector?: string }>(`/admin/add_stock`, { method: 'POST', body: JSON.stringify({ symbol }) }),
+  deleteStock: (symbol: string) => request<{ status: string; symbol: string }>(`/admin/stocks/${symbol}`, { method: 'DELETE' }),
+  marketOverview: () => request<MarketIndex[]>(`/stocks/market_overview`),
   listWatchlist: () => request<WatchlistItem[]>(`/watchlist`),
   addToWatchlist: (symbol: string) => request<WatchlistItem>(`/watchlist/${symbol}`, { method: 'POST' }),
   removeFromWatchlist: (symbol: string) => request(`/watchlist/${symbol}`, { method: 'DELETE' }),
@@ -61,15 +63,15 @@ export type Price = {
 
 export type Signal = {
   symbol: string;
-  signal: 'BUY' | 'SELL' | 'HOLD';
+  signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT';
   horizon: string;
   confidence: number;
   bullish_probability: number;
   reasons: Record<string, unknown>;
 };
 
-export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD'; horizon: string; confidence: number; bullish_probability: number | null };
-export type RankingRow = { symbol: string; name: string; score: number; market: string; fair_price?: number; sector?: string };
+export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null };
+export type RankingRow = { symbol: string; name: string; score: number; market: string; fair_price?: number; sector?: string; technical?: number; momentum?: number; value?: number; growth?: number; volatility?: number };
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {
   backtest_id: number;
@@ -93,6 +95,7 @@ export type PortfolioWeights = {
   diversification?: number | null;
 };
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string };
+export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };
 export type WatchlistItem = { symbol: string; name: string; market: string; exchange: string; sector?: string; currency: string; added_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 
@@ -143,9 +146,18 @@ export type Fundamentals = {
   average_volume: number | null;
   shares_outstanding: number | null;
   // Analyst
-  target_price: number | null;
+  target_price: number | null;      // mean target
+  target_high: number | null;
+  target_low: number | null;
+  target_median: number | null;
   recommendation: string | null;
+  recommendation_mean: number | null;  // 1.0 strong buy → 5.0 sell
   number_of_analysts: number | null;
+  analyst_strong_buy: number | null;
+  analyst_buy: number | null;
+  analyst_hold: number | null;
+  analyst_underperform: number | null;
+  analyst_sell: number | null;
 };
 
 export type Overview = {

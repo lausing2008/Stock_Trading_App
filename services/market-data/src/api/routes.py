@@ -126,6 +126,57 @@ def _latest_prices_from_db(session: Session) -> list[LatestPriceOut]:
     return result
 
 
+_INDICES = [
+    ("S&P 500",   "^GSPC", "US"),
+    ("NASDAQ",    "^IXIC", "US"),
+    ("Dow Jones", "^DJI",  "US"),
+    ("VIX",       "^VIX",  "US"),
+    ("Hang Seng", "^HSI",  "HK"),
+]
+_MARKET_OVERVIEW_KEY = "stockai:market_overview"
+
+
+def _fetch_index(name: str, ticker: str, market: str) -> dict:
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        price = fi.last_price
+        prev  = getattr(fi, "previous_close", None)
+        chg   = ((price - prev) / prev * 100) if prev and price else None
+        return {
+            "name": name, "ticker": ticker, "market": market,
+            "price": round(float(price), 2) if price else None,
+            "change_pct": round(chg, 2) if chg is not None else None,
+        }
+    except Exception:
+        return {"name": name, "ticker": ticker, "market": market, "price": None, "change_pct": None}
+
+
+@router.get("/market_overview")
+def market_overview():
+    """Live quotes for major US and HK indices. Redis-cached 60 s."""
+    try:
+        cached = _get_redis().get(_MARKET_OVERVIEW_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(_fetch_index, n, t, m): (n, t, m) for n, t, m in _INDICES}
+        for fut in as_completed(futures):
+            results.append(fut.result())
+    # preserve defined order
+    order = {t: i for i, (_, t, _) in enumerate(_INDICES)}
+    results.sort(key=lambda r: order.get(r["ticker"], 99))
+
+    try:
+        _get_redis().setex(_MARKET_OVERVIEW_KEY, 60, json.dumps(results))
+    except Exception:
+        pass
+    return results
+
+
 @router.get("/latest_prices", response_model=list[LatestPriceOut])
 def latest_prices(session: Session = Depends(get_session)):
     """Live prices from yfinance fast_info, Redis-cached for 60 s; DB fallback."""
@@ -207,9 +258,19 @@ class FundamentalsOut(BaseModel):
     average_volume: int | None = None
     shares_outstanding: int | None = None
     # Analyst consensus
-    target_price: float | None = None
-    recommendation: str | None = None
+    target_price: float | None = None       # mean target
+    target_high: float | None = None
+    target_low: float | None = None
+    target_median: float | None = None
+    recommendation: str | None = None       # key: strongbuy / buy / hold / sell
+    recommendation_mean: float | None = None  # 1.0 (strong buy) → 5.0 (sell)
     number_of_analysts: int | None = None
+    # Analyst rating breakdown (current period)
+    analyst_strong_buy: int | None = None
+    analyst_buy: int | None = None
+    analyst_hold: int | None = None
+    analyst_underperform: int | None = None
+    analyst_sell: int | None = None
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
@@ -228,7 +289,7 @@ def _safe(info: dict, key: str):
 @router.get("/{symbol}/fundamentals", response_model=FundamentalsOut)
 def get_fundamentals(symbol: str):
     """Live company fundamentals from yfinance, Redis-cached for 24 h."""
-    cache_key = f"stockai:fundamentals:{symbol.upper()}"
+    cache_key = f"stockai:fundamentals:v2:{symbol.upper()}"
     try:
         cached = _get_redis().get(cache_key)
         if cached:
@@ -237,10 +298,29 @@ def get_fundamentals(symbol: str):
         pass
 
     info: dict = {}
+    ticker = None
     try:
-        info = yf.Ticker(symbol).info or {}
+        ticker = yf.Ticker(symbol)
+        info = ticker.info or {}
     except Exception as exc:
         log.warning("fundamentals.fetch_failed", symbol=symbol, error=str(exc))
+
+    # Analyst rating breakdown from recommendations_summary (current period)
+    a_strong_buy = a_buy = a_hold = a_underperform = a_sell = None
+    try:
+        if ticker is not None:
+            recs = ticker.recommendations_summary
+            if recs is not None and not recs.empty:
+                cur = recs[recs["period"] == "0m"]
+                if not cur.empty:
+                    row = cur.iloc[0]
+                    a_strong_buy   = int(row.get("strongBuy",   0))
+                    a_buy          = int(row.get("buy",         0))
+                    a_hold         = int(row.get("hold",        0))
+                    a_underperform = int(row.get("underperform",0))
+                    a_sell         = int(row.get("sell",        0))
+    except Exception:
+        pass
 
     data = FundamentalsOut(
         market_cap=_safe(info, "marketCap"),
@@ -275,8 +355,17 @@ def get_fundamentals(symbol: str):
         average_volume=_safe(info, "averageVolume"),
         shares_outstanding=_safe(info, "sharesOutstanding"),
         target_price=_safe(info, "targetMeanPrice"),
+        target_high=_safe(info, "targetHighPrice"),
+        target_low=_safe(info, "targetLowPrice"),
+        target_median=_safe(info, "targetMedianPrice"),
         recommendation=_safe(info, "recommendationKey"),
+        recommendation_mean=_safe(info, "recommendationMean"),
         number_of_analysts=_safe(info, "numberOfAnalystOpinions"),
+        analyst_strong_buy=a_strong_buy,
+        analyst_buy=a_buy,
+        analyst_hold=a_hold,
+        analyst_underperform=a_underperform,
+        analyst_sell=a_sell,
     )
 
     try:
