@@ -1,3 +1,5 @@
+import { storage } from './storage';
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type ConditionType =
@@ -39,19 +41,19 @@ export type Notification = {
 
 // ─── Storage keys ────────────────────────────────────────────────────────────
 
-const ALERTS_KEY         = 'stockai_alert_rules';
-const NOTIFICATIONS_KEY  = 'stockai_notifications';
+const ALERTS_KEY        = 'alert_rules';
+const NOTIFICATIONS_KEY = 'notifications';
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
 
 export function loadAlerts(): StockAlert[] {
   if (typeof window === 'undefined') return [];
-  try { return JSON.parse(localStorage.getItem(ALERTS_KEY) ?? '[]'); }
+  try { return JSON.parse(storage.getItem(ALERTS_KEY) ?? '[]'); }
   catch { return []; }
 }
 
 export function saveAlerts(alerts: StockAlert[]): void {
-  localStorage.setItem(ALERTS_KEY, JSON.stringify(alerts));
+  storage.setItem(ALERTS_KEY, JSON.stringify(alerts));
 }
 
 export function addAlert(alert: Omit<StockAlert, 'id' | 'createdAt'>): StockAlert {
@@ -70,12 +72,12 @@ export function toggleAlert(id: string): void {
 
 export function loadNotifications(): Notification[] {
   if (typeof window === 'undefined') return [];
-  try { return JSON.parse(localStorage.getItem(NOTIFICATIONS_KEY) ?? '[]'); }
+  try { return JSON.parse(storage.getItem(NOTIFICATIONS_KEY) ?? '[]'); }
   catch { return []; }
 }
 
 export function saveNotifications(ns: Notification[]): void {
-  localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(ns.slice(0, 100)));
+  storage.setItem(NOTIFICATIONS_KEY, JSON.stringify(ns.slice(0, 100)));
 }
 
 export function markAllRead(): void {

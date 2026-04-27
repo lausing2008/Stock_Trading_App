@@ -29,16 +29,16 @@ export default function LoginPage() {
     e.preventDefault();
     setLoginLoading(true);
     setLoginError('');
-    await new Promise(r => setTimeout(r, 350)); // brief delay for UX
-    if (login(username, password)) {
-      router.replace('/');
+    const ok = await login(username, password);
+    if (ok) {
+      window.location.href = '/';
     } else {
       setLoginError('Incorrect username or password.');
       setLoginLoading(false);
     }
   }
 
-  function handleReset(e: FormEvent) {
+  async function handleReset(e: FormEvent) {
     e.preventDefault();
     setResetMsg(null);
     if (rNew !== rConfirm) {
@@ -49,15 +49,17 @@ export default function LoginPage() {
       setResetMsg({ ok: false, text: 'New password must be at least 4 characters.' });
       return;
     }
-    const result = resetPassword(rUser, rOld, rNew);
+    const result = await resetPassword(rUser, rOld, rNew);
     if (result === 'ok') {
       setResetMsg({ ok: true, text: 'Password updated. You can now log in.' });
       setRUser(''); setROld(''); setRNew(''); setRConfirm('');
       setTimeout(() => { setMode('login'); setResetMsg(null); }, 1800);
     } else if (result === 'wrong_password') {
       setResetMsg({ ok: false, text: 'Current password is incorrect.' });
-    } else {
+    } else if (result === 'not_found') {
       setResetMsg({ ok: false, text: 'Username not found.' });
+    } else {
+      setResetMsg({ ok: false, text: 'Server error. Please try again.' });
     }
   }
 

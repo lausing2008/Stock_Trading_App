@@ -34,6 +34,7 @@ class StockOut(BaseModel):
     id: int
     symbol: str
     name: str
+    name_zh: str | None = None
     market: str
     exchange: str
     sector: str | None = None

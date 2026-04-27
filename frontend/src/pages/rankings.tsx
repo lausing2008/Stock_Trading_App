@@ -1,13 +1,21 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import RankingsTable from '@/components/RankingsTable';
-import { api } from '@/lib/api';
+import { api, type WatchlistItem } from '@/lib/api';
 
 export default function RankingsPage() {
   const [market, setMarket] = useState<'US' | 'HK' | ''>('');
   const { data, error, isLoading } = useSWR(
     `rankings-${market}`,
     () => api.rankings(market || undefined),
+  );
+  const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+
+  const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
+
+  const filteredRankings = useMemo(
+    () => data ? { rankings: data.rankings.filter(r => watchedSet.has(r.symbol)) } : undefined,
+    [data, watchedSet],
   );
 
   return (
@@ -28,7 +36,7 @@ export default function RankingsPage() {
       </div>
       {isLoading && <div>Loading…</div>}
       {error && <div className="text-slate-300">Unable to load rankings.</div>}
-      {data && <RankingsTable rows={data.rankings} />}
+      {filteredRankings && <RankingsTable rows={filteredRankings.rankings} />}
     </div>
   );
 }

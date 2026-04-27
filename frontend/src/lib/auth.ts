@@ -1,48 +1,92 @@
-const USERS_KEY = 'stockai_auth_users';
-const SESSION_KEY = 'stockai_auth_session';
+const JWT_KEY = 'stockai_jwt';
 
-const DEFAULT_USERS: Record<string, string> = { lausing: '120402' };
+export interface Session {
+  username: string;
+  role: 'admin' | 'user';
+}
 
-function getUsers(): Record<string, string> {
-  if (typeof window === 'undefined') return DEFAULT_USERS;
+function decodeJWT(token: string): Session | null {
   try {
-    const stored = localStorage.getItem(USERS_KEY);
-    if (!stored) return DEFAULT_USERS;
-    const parsed = JSON.parse(stored);
-    // merge defaults so built-in account always exists unless overridden
-    return { ...DEFAULT_USERS, ...parsed };
-  } catch { return DEFAULT_USERS; }
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    if (payload.exp < Date.now() / 1000) return null;
+    return { username: payload.sub as string, role: payload.role as 'admin' | 'user' };
+  } catch {
+    return null;
+  }
 }
 
-export function login(username: string, password: string): boolean {
-  const users = getUsers();
-  if (users[username.toLowerCase()] !== password) return false;
-  localStorage.setItem(SESSION_KEY, JSON.stringify({ username: username.toLowerCase() }));
-  return true;
+export async function login(username: string, password: string): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) return false;
+    const { token } = await res.json();
+    localStorage.setItem(JWT_KEY, token);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export function logout() {
-  localStorage.removeItem(SESSION_KEY);
+export function logout(): void {
+  localStorage.removeItem(JWT_KEY);
 }
 
-export function getSession(): { username: string } | null {
+export function getToken(): string | null {
   if (typeof window === 'undefined') return null;
-  try {
-    const s = localStorage.getItem(SESSION_KEY);
-    return s ? JSON.parse(s) : null;
-  } catch { return null; }
+  return localStorage.getItem(JWT_KEY);
+}
+
+export function getSession(): Session | null {
+  if (typeof window === 'undefined') return null;
+  const token = localStorage.getItem(JWT_KEY);
+  if (!token) return null;
+  return decodeJWT(token);
 }
 
 export function isLoggedIn(): boolean {
   return getSession() !== null;
 }
 
-export function resetPassword(username: string, oldPassword: string, newPassword: string): 'ok' | 'wrong_password' | 'not_found' {
-  const users = getUsers();
-  const key = username.toLowerCase();
-  if (!(key in users)) return 'not_found';
-  if (users[key] !== oldPassword) return 'wrong_password';
-  const updated = { ...users, [key]: newPassword };
-  localStorage.setItem(USERS_KEY, JSON.stringify(updated));
-  return 'ok';
+export async function resetPassword(
+  username: string,
+  oldPassword: string,
+  newPassword: string,
+): Promise<'ok' | 'wrong_password' | 'not_found' | 'error'> {
+  try {
+    const res = await fetch('/api/auth/reset-password', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, old_password: oldPassword, new_password: newPassword }),
+    });
+    if (res.status === 401) return 'wrong_password';
+    if (res.status === 404) return 'not_found';
+    if (!res.ok) return 'error';
+    return 'ok';
+  } catch {
+    return 'error';
+  }
+}
+
+export async function changePassword(
+  oldPassword: string,
+  newPassword: string,
+): Promise<'ok' | 'wrong_password' | 'error'> {
+  const token = getToken();
+  if (!token) return 'error';
+  try {
+    const res = await fetch('/api/auth/change-password', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    });
+    if (res.status === 401) return 'wrong_password';
+    if (!res.ok) return 'error';
+    return 'ok';
+  } catch {
+    return 'error';
+  }
 }

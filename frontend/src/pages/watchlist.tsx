@@ -3,22 +3,23 @@ import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { api, type WatchlistItem, type RankingRow, type LatestPrice, type SignalSummary } from '@/lib/api';
+import { storage } from '@/lib/storage';
 
 /* ── helpers ────────────────────────────────────────────── */
-const NOTES_KEY  = 'stockai_watch_notes';
-const ALERTS_KEY = 'stockai_price_alerts';
+const NOTES_KEY  = 'watch_notes';
+const ALERTS_KEY = 'watch_price_alerts';
 
 function loadNotes(): Record<string, string> {
   if (typeof window === 'undefined') return {};
-  try { return JSON.parse(localStorage.getItem(NOTES_KEY) ?? '{}'); } catch { return {}; }
+  try { return JSON.parse(storage.getItem(NOTES_KEY) ?? '{}'); } catch { return {}; }
 }
-function saveNotes(n: Record<string, string>) { localStorage.setItem(NOTES_KEY, JSON.stringify(n)); }
+function saveNotes(n: Record<string, string>) { storage.setItem(NOTES_KEY, JSON.stringify(n)); }
 function loadAlerts(): Record<string, { target: number; dir: 'above' | 'below' }> {
   if (typeof window === 'undefined') return {};
-  try { return JSON.parse(localStorage.getItem(ALERTS_KEY) ?? '{}'); } catch { return {}; }
+  try { return JSON.parse(storage.getItem(ALERTS_KEY) ?? '{}'); } catch { return {}; }
 }
 function saveAlerts(a: Record<string, { target: number; dir: 'above' | 'below' }>) {
-  localStorage.setItem(ALERTS_KEY, JSON.stringify(a));
+  storage.setItem(ALERTS_KEY, JSON.stringify(a));
 }
 
 function sigStyle(label: string) {
@@ -285,7 +286,10 @@ export default function Watchlist() {
                 </div>
 
                 {/* Company name */}
-                <div style={{ fontSize: '12px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: '10px' }}>{item.name}</div>
+                <div style={{ marginBottom: '10px' }}>
+                  <div style={{ fontSize: '12px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</div>
+                  {item.name_zh && <div style={{ fontSize: '11px', color: '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '1px' }}>{item.name_zh}</div>}
+                </div>
 
                 {/* Signal + K-Score bar */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>

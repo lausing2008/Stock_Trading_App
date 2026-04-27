@@ -167,14 +167,12 @@ export default function Home() {
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
   const { data: marketData } = useSWR<MarketIndex[]>('market-overview', () => api.marketOverview(), { refreshInterval: 60_000 });
 
-  const [watchPending, setWatchPending] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [search, setSearch] = useState('');
   const [market, setMarket] = useState<MarketFilter>('all');
   const [sort, setSort] = useState<SortKey>('symbol');
-  const [showWatchedOnly, setShowWatchedOnly] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [trainState, setTrainState] = useState<null | 'running' | 'done' | 'error'>(null);
   const [trainInfo, setTrainInfo] = useState<{ ingestCount?: number; trainCount?: number; error?: string } | null>(null);
@@ -209,7 +207,8 @@ export default function Home() {
     setTrainState('running');
     setTrainInfo(null);
     try {
-      const syms = stocks?.map(s => s.symbol) ?? [];
+      const syms = watchlist?.map(w => w.symbol) ?? [];
+      if (syms.length === 0) { setTrainState(null); return; }
       // Step 1: ingest latest price data
       const ingestRes = await api.ingest(syms);
       // Step 2: refresh UI with newly ingested prices
@@ -226,39 +225,30 @@ export default function Home() {
     }
   }
 
-  async function toggleWatch(e: React.MouseEvent, symbol: string) {
-    e.preventDefault();
-    if (watchPending) return;
-    setWatchPending(symbol);
-    try {
-      if (watchedSet.has(symbol)) await api.removeFromWatchlist(symbol);
-      else await api.addToWatchlist(symbol);
-      mutateWatchlist();
-    } finally { setWatchPending(null); }
-  }
-
   async function handleDelete(e: React.MouseEvent, symbol: string) {
     e.preventDefault();
     if (confirmDelete !== symbol) { setConfirmDelete(symbol); return; }
     setDeleting(symbol);
     setConfirmDelete(null);
     try {
-      await api.deleteStock(symbol);
-      mutateStocks();
+      await api.removeFromWatchlist(symbol);
+      mutateWatchlist();
     } finally { setDeleting(null); }
   }
 
-  function handleAdded(symbol: string) {
+  async function handleAdded(symbol: string) {
+    try { await api.addToWatchlist(symbol); } catch {}
+    await mutateWatchlist();
     setTimeout(() => { mutateStocks(); globalMutate('rankings-all'); globalMutate('latest-prices'); }, 1500);
   }
 
   const filtered = useMemo(() => {
-    if (!stocks) return [];
+    if (!stocks || !watchlist) return [];
     let list = stocks.filter(s => {
+      if (!watchedSet.has(s.symbol)) return false;
       const q = search.toLowerCase();
       if (q && !s.symbol.toLowerCase().includes(q) && !s.name.toLowerCase().includes(q)) return false;
       if (market !== 'all' && s.market !== market) return false;
-      if (showWatchedOnly && !watchedSet.has(s.symbol)) return false;
       return true;
     });
     list = [...list].sort((a, b) => {
@@ -271,9 +261,9 @@ export default function Home() {
     return list;
   }, [stocks, search, market, sort, showWatchedOnly, rankMap, watchedSet]);
 
-  const usCount  = stocks?.filter(s => s.market === 'US').length ?? 0;
-  const hkCount  = stocks?.filter(s => s.market === 'HK').length ?? 0;
-  const topRanked = rankingsData?.rankings.reduce(
+  const usCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'US').length ?? 0;
+  const hkCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'HK').length ?? 0;
+  const topRanked = rankingsData?.rankings.filter(r => watchedSet.has(r.symbol)).reduce(
     (best, r) => (!best || r.score > best.score) ? r : best,
     null as RankingRow | null,
   );
@@ -285,14 +275,13 @@ export default function Home() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '24px', fontSize: '14px' }}>
           <div>
-            <span style={{ fontSize: '24px', fontWeight: 700 }}>{stocks?.length ?? '—'}</span>
+            <span style={{ fontSize: '24px', fontWeight: 700 }}>{watchedSet.size}</span>
             <span style={{ color: '#475569', marginLeft: '6px' }}>stocks</span>
           </div>
           <div style={{ color: '#334155' }}>|</div>
           <div style={{ display: 'flex', gap: '16px', color: '#64748b' }}>
             <span><span style={{ fontWeight: 600, color: '#e2e8f0' }}>{usCount}</span> US</span>
             <span><span style={{ fontWeight: 600, color: '#e2e8f0' }}>{hkCount}</span> HK</span>
-            <span><span style={{ fontWeight: 600, color: '#e2e8f0' }}>{watchedSet.size}</span> watching</span>
           </div>
           {topRanked && (
             <>
@@ -398,7 +387,12 @@ export default function Home() {
       )}
 
       {/* Market Overview */}
-      {marketData && marketData.length > 0 && <MarketOverview indices={marketData} signals={signalsData ?? []} />}
+      {marketData && marketData.length > 0 && (
+        <MarketOverview
+          indices={marketData}
+          signals={(signalsData ?? []).filter(s => watchedSet.has(s.symbol))}
+        />
+      )}
 
       {/* Search + Filter + Sort bar */}
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
@@ -429,19 +423,6 @@ export default function Home() {
           ))}
         </div>
 
-        <button
-          onClick={() => setShowWatchedOnly(v => !v)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '4px',
-            padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 500,
-            border: showWatchedOnly ? '1px solid #4f46e5' : '1px solid #334155',
-            background: showWatchedOnly ? 'rgba(79,70,229,0.15)' : 'transparent',
-            color: showWatchedOnly ? '#818cf8' : '#94a3b8', transition: 'all 0.15s',
-          }}
-        >
-          ★ Watching
-        </button>
-
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: 'auto', fontSize: '12px', color: '#475569' }}>
           Sort:
           {(['symbol', 'score', 'sector', 'market'] as SortKey[]).map(s => (
@@ -466,8 +447,8 @@ export default function Home() {
         </div>
       )}
 
-      {stocks && filtered.length !== stocks.length && (
-        <div style={{ fontSize: '11px', color: '#475569' }}>{filtered.length} of {stocks.length} stocks</div>
+      {watchedSet.size > 0 && filtered.length !== watchedSet.size && (
+        <div style={{ fontSize: '11px', color: '#475569' }}>{filtered.length} of {watchedSet.size} stocks</div>
       )}
 
       {/* Stock grid */}
@@ -484,7 +465,6 @@ export default function Home() {
                 border: realSig.signal === 'BUY' ? 'rgba(34,197,94,0.3)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.3)' : realSig.signal === 'WAIT' ? 'rgba(251,146,60,0.3)' : 'rgba(250,204,21,0.3)',
               }
             : signalFromScore(rank?.score);
-          const isWatched = watchedSet.has(s.symbol);
           const sc     = SECTOR_COLOR[s.sector ?? ''];
           const changeUp = (lp?.change_pct ?? 0) >= 0;
 
@@ -500,23 +480,7 @@ export default function Home() {
               }}
               className="stock-card"
             >
-              {/* Watch star */}
-              <button
-                onClick={(e) => toggleWatch(e, s.symbol)}
-                disabled={watchPending === s.symbol}
-                style={{
-                  position: 'absolute', top: '10px', right: '10px',
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  fontSize: '16px', lineHeight: 1, padding: '2px',
-                  color: isWatched ? '#818cf8' : '#334155',
-                  transition: 'color 0.15s',
-                }}
-                title={isWatched ? 'Remove from watchlist' : 'Add to watchlist'}
-              >
-                {isWatched ? '★' : '☆'}
-              </button>
-
-              {/* Delete button */}
+              {/* Delete / remove button */}
               {confirmDelete === s.symbol ? (
                 <div
                   onClick={e => e.preventDefault()}
@@ -530,7 +494,7 @@ export default function Home() {
                       background: '#ef4444', border: 'none', color: '#fff', cursor: 'pointer',
                     }}
                   >
-                    {deleting === s.symbol ? '…' : 'Delete?'}
+                    {deleting === s.symbol ? '…' : 'Remove?'}
                   </button>
                   <button
                     onClick={(e) => { e.preventDefault(); setConfirmDelete(null); }}
@@ -552,14 +516,14 @@ export default function Home() {
                     color: '#1e293b', transition: 'color 0.15s',
                   }}
                   className="delete-btn"
-                  title="Remove stock"
+                  title="Remove from watchlist"
                 >
                   ✕
                 </button>
               )}
 
               {/* Symbol + price row */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingRight: '24px', paddingLeft: '20px', marginBottom: '4px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingLeft: '20px', marginBottom: '4px' }}>
                 <div style={{ fontWeight: 700, fontSize: '17px', letterSpacing: '-0.01em' }}>{s.symbol}</div>
                 {lp ? (
                   <div style={{ textAlign: 'right' }}>
@@ -583,8 +547,15 @@ export default function Home() {
               </div>
 
               {/* Company name */}
-              <div style={{ fontSize: '12px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: '8px' }}>
-                {s.name}
+              <div style={{ marginBottom: '8px', overflow: 'hidden' }}>
+                <div style={{ fontSize: '12px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {s.name}
+                </div>
+                {s.name_zh && (
+                  <div style={{ fontSize: '11px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '1px' }}>
+                    {s.name_zh}
+                  </div>
+                )}
               </div>
 
               {/* Sector + signal row */}
@@ -636,16 +607,26 @@ export default function Home() {
       </div>
 
       {/* Empty state */}
-      {filtered.length === 0 && !error && stocks && (
+      {filtered.length === 0 && !error && stocks && watchlist && (
         <div style={{ textAlign: 'center', padding: '64px 0', color: '#475569' }}>
-          <div style={{ fontSize: '36px', marginBottom: '12px' }}>🔍</div>
-          <div>No stocks match your filter.</div>
-          <button
-            onClick={() => { setSearch(''); setMarket('all'); setShowWatchedOnly(false); }}
-            style={{ marginTop: '8px', color: '#818cf8', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px' }}
-          >
-            Clear filters
-          </button>
+          {watchedSet.size === 0 ? (
+            <>
+              <div style={{ fontSize: '36px', marginBottom: '12px' }}>📋</div>
+              <div style={{ fontSize: '15px', color: '#64748b' }}>Your watchlist is empty.</div>
+              <div style={{ fontSize: '12px', marginTop: '6px' }}>Click + Add Stock to start tracking stocks.</div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: '36px', marginBottom: '12px' }}>🔍</div>
+              <div>No stocks match your filter.</div>
+              <button
+                onClick={() => { setSearch(''); setMarket('all'); }}
+                style={{ marginTop: '8px', color: '#818cf8', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px' }}
+              >
+                Clear filters
+              </button>
+            </>
+          )}
         </div>
       )}
 

@@ -1,4 +1,4 @@
-"""Strategy CRUD + backtest endpoint."""
+"""Strategy CRUD + backtest endpoint — user-scoped via JWT."""
 from dataclasses import asdict
 from datetime import date, timedelta
 
@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
+from common.jwt_auth import get_current_username
 from db import Backtest, Strategy, TimeFrame, get_session
 
 from ..backtest import BacktestEngine
@@ -32,10 +33,14 @@ class BacktestIn(BaseModel):
 
 
 @router.post("/strategies")
-def create_strategy(body: StrategyIn, session: Session = Depends(get_session)):
+def create_strategy(
+    body: StrategyIn,
+    username: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
     if "entry" not in body.rule_dsl:
         raise HTTPException(400, "rule_dsl must contain 'entry' rule")
-    strat = Strategy(name=body.name, rule_dsl=body.rule_dsl, description=body.description)
+    strat = Strategy(name=body.name, rule_dsl=body.rule_dsl, description=body.description, owner=username)
     session.add(strat)
     session.commit()
     session.refresh(strat)
@@ -43,17 +48,44 @@ def create_strategy(body: StrategyIn, session: Session = Depends(get_session)):
 
 
 @router.get("/strategies")
-def list_strategies(session: Session = Depends(get_session)):
-    rows = list(session.execute(select(Strategy)).scalars())
+def list_strategies(
+    username: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    rows = list(session.execute(
+        select(Strategy).where(Strategy.owner == username)
+    ).scalars())
     return [{"id": r.id, "name": r.name, "description": r.description} for r in rows]
 
 
 @router.get("/strategies/{sid}")
-def get_strategy(sid: int, session: Session = Depends(get_session)):
+def get_strategy(
+    sid: int,
+    username: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
     s = session.get(Strategy, sid)
     if not s:
         raise HTTPException(404, "Not found")
+    if s.owner != username:
+        raise HTTPException(403, "Not your strategy")
     return {"id": s.id, "name": s.name, "rule_dsl": s.rule_dsl, "description": s.description}
+
+
+@router.delete("/strategies/{sid}")
+def delete_strategy(
+    sid: int,
+    username: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    s = session.get(Strategy, sid)
+    if not s:
+        raise HTTPException(404, "Not found")
+    if s.owner != username:
+        raise HTTPException(403, "Not your strategy")
+    session.delete(s)
+    session.commit()
+    return {"status": "deleted", "id": sid}
 
 
 def _fetch_prices_df(symbol: str, start: date, end: date) -> pd.DataFrame:
@@ -72,10 +104,16 @@ def _fetch_prices_df(symbol: str, start: date, end: date) -> pd.DataFrame:
 
 
 @router.post("/backtest")
-def backtest(body: BacktestIn, session: Session = Depends(get_session)):
+def backtest(
+    body: BacktestIn,
+    username: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
     strat = session.get(Strategy, body.strategy_id)
     if not strat:
         raise HTTPException(404, "Strategy not found")
+    if strat.owner != username:
+        raise HTTPException(403, "Not your strategy")
 
     start = body.start or (date.today() - timedelta(days=365 * 3))
     end = body.end or date.today()
@@ -100,7 +138,7 @@ def backtest(body: BacktestIn, session: Session = Depends(get_session)):
         cagr=result.cagr,
         profit_factor=result.profit_factor,
         total_return=result.total_return,
-        equity_curve={"data": result.equity_curve[-500:]},  # cap payload
+        equity_curve={"data": result.equity_curve[-500:]},
         trades={"data": result.trades},
     )
     session.add(bt)

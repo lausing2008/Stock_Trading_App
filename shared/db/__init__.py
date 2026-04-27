@@ -1,5 +1,7 @@
 from .models import (
     Base,
+    User,
+    UserRole,
     Stock,
     Price,
     Indicator,
@@ -20,6 +22,8 @@ from .session import SessionLocal, engine, get_session, init_db
 
 __all__ = [
     "Base",
+    "User",
+    "UserRole",
     "Stock",
     "Price",
     "Indicator",

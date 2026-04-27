@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://redis:6379/0"
 
+    # Auth
+    jwt_secret: str = "stockai-change-me-in-production-secret-key"
+    jwt_expire_days: int = 30
+
     # Providers
     alpha_vantage_api_key: str = ""
     polygon_api_key: str = ""

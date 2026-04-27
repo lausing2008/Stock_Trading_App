@@ -42,7 +42,7 @@
 | Service | Responsibility | Key endpoints |
 |---------|---------------|---------------|
 | `api-gateway` | Reverse proxy + aggregate overview + AI proxy | `GET /aggregate/overview/{symbol}`, `POST /ai/chat` |
-| `market-data` | Live prices, fundamentals, ingestion, news, price history, market indices | `GET /stocks/latest_prices`, `GET /stocks/market_overview`, `GET /stocks/{s}/fundamentals`, `GET /stocks/{s}/news`, `POST /admin/ingest`, `DELETE /admin/stocks/{s}` |
+| `market-data` | Live prices, fundamentals, ingestion, news, price history, market indices, **auth** | `GET /stocks/latest_prices`, `GET /stocks/market_overview`, `GET /stocks/{s}/fundamentals`, `GET /stocks/{s}/news`, `POST /admin/ingest`, `DELETE /admin/stocks/{s}`, `POST /auth/login`, `GET /auth/users`, … |
 | `technical-analysis` | Indicators, patterns, trendlines, S/R, Fibonacci | `GET /ta/{s}/indicators`, `/ta/{s}/patterns`, `/ta/{s}/levels` |
 | `ml-prediction` | RF / XGB / GBM / LSTM train & predict | `POST /ml/train`, `POST /ml/predict`, `POST /ml/train_all` |
 | `ranking-engine` | K-Score composite + leaderboard | `GET /rankings`, `GET /rankings/{s}`, `POST /rankings/refresh` |
@@ -52,25 +52,43 @@
 
 ## Authentication
 
-Auth is client-side only — suitable for a personal/single-user deployment.
+Auth is JWT-based. The `market-data` service owns all auth endpoints under `/auth/*`.
 
 ```
-Browser localStorage
-  stockai_auth_users   — {username: password} map (overrides defaults)
-  stockai_auth_session — {username} set on successful login
+Tokens
+  Algorithm:  HS256
+  Expiry:     30 days
+  Payload:    { sub: username, role: "admin" | "user", exp }
+  Storage:    stockai_jwt in browser localStorage
 
-Default credentials (hardcoded fallback in auth.ts):
-  lausing / 120402
+Passwords
+  Hashed with bcrypt (bcrypt>=4.0.0, direct hashpw/checkpw — no passlib)
+  Stored in users.password_hash (Postgres)
 
-Flow:
-  1. User visits any page → _app.tsx checks localStorage for session
-  2. No session → redirect to /login
-  3. Login page verifies credentials → sets session → redirect to /
-  4. Logout → clears session → redirect to /login
-  5. Reset password → updates stockai_auth_users in localStorage
+Default admin account
+  Username: lausing / Password: 120402
+  Created automatically by init_db() → _seed_admin() on first boot
+
+Login flow:
+  1. User visits any page → _app.tsx reads stockai_jwt from localStorage
+  2. No valid token → redirect to /login
+  3. /login POSTs to /api/auth/login → receives JWT → stores in stockai_jwt
+  4. Frontend decodes token client-side (base64 split) to read username + role
+  5. JWT attached as "Authorization: Bearer <token>" on every API request
+  6. Logout → removes stockai_jwt → redirect to /login
+
+Admin role flow:
+  _app.tsx reads role from JWT → passes to Settings page
+  Settings shows User Management section only when role === 'admin'
+  Backend re-validates role from JWT on admin-only endpoints (403 otherwise)
+
+User management endpoints (admin JWT required):
+  GET  /auth/users
+  POST /auth/users
+  DELETE /auth/users/{username}
+  PUT  /auth/users/{username}/reset-password
+  PUT  /auth/users/{username}/toggle
 ```
-
-For production with multiple users, replace `auth.ts` with a proper JWT-based backend service.
 
 ## AI Chat flow
 
@@ -264,12 +282,18 @@ POST /portfolio/optimize
 
 ```
 Login (/login)
-  No API calls — pure localStorage auth
+  POST /api/auth/login → stores JWT in localStorage
+  POST /api/auth/reset-password → public endpoint, no JWT needed
 
 Dashboard (/)
   SWR keys: stocks, watchlist, rankings-all, latest-prices (60s), signals-all, market-overview (60s)
+  All SWR fetches include Authorization: Bearer <jwt> header
   → /stocks, /watchlist, /rankings, /stocks/latest_prices, /stocks/market_overview, /signals
-  Market overview panel: US indices (S&P 500, NASDAQ, DJI, VIX) + HK Hang Seng + Portfolio Pulse
+  Displayed stocks = stocks filtered to watchlist symbols (client-side, no extra API call)
+  Portfolio Pulse signal counts are filtered to watchlist symbols
+  ⚡ Train All ingests only watchlist symbols for the current user
+  + Add Stock creates stock globally AND adds to current user's watchlist
+  ✕ on card removes from watchlist (stock stays in global DB)
 
 Stock Detail (/stock/[symbol])
   SWR keys: overview-{symbol}, news-{symbol}-{sources}, latest-prices (shared, 60 s)
@@ -284,20 +308,32 @@ Stock Detail (/stock/[symbol])
   AI Chat: POST /ai/chat  (api-gateway → Claude/DeepSeek API)
 
 Opportunities (/opportunities)
-  SWR keys: rankings-all, latest-prices (60s), signals-all  (reuses dashboard keys — no extra calls)
+  SWR keys: rankings-all, latest-prices (60s), signals-all, watchlist  (reuses dashboard keys — no extra calls)
+  Rankings filtered to watchlist symbols before strategy scoring
   Pure frontend scoring: scoreFor(strategy, rankingRow, signal, livePrice)
   Five strategies: all | swing | short | longterm | growth
+
+Rankings (/rankings)
+  SWR keys: rankings-{market}, watchlist
+  Rankings filtered to watchlist symbols before rendering RankingsTable
+  Market filter (All / US / HK) applied server-side via query param; watchlist filter applied client-side
 
 Portfolio (/portfolio)
   On-demand: POST /portfolio/optimize
 
 Alerts (/alerts)
   SWR: /stocks  (for stock selector)
-  localStorage: stockai_alert_rules, stockai_notifications
+  localStorage: stockai:{username}:alert_rules, stockai:{username}:notifications
 
 Settings (/settings)
-  No API calls — reads/writes localStorage only via lib/settings.ts
+  Reads/writes namespaced localStorage via lib/settings.ts and lib/storage.ts
   Test Connection: POST /ai/chat  (API key validation)
+  Change Password: PUT /auth/change-password  (JWT required)
+  Admin — User list: GET /auth/users  (admin JWT required)
+  Admin — Create: POST /auth/users  (admin JWT required)
+  Admin — Delete: DELETE /auth/users/{username}  (admin JWT required)
+  Admin — Reset: PUT /auth/users/{username}/reset-password  (admin JWT required)
+  Admin — Toggle: PUT /auth/users/{username}/toggle  (admin JWT required)
 ```
 
 ## Design principles
@@ -312,15 +348,19 @@ Settings (/settings)
 
 ## Data model
 
-Tables: `stocks`, `prices`, `indicators`, `signals`, `rankings`, `strategies`, `backtests`, `portfolios`, `portfolio_holdings`.
+Tables: `users`, `stocks`, `prices`, `indicators`, `signals`, `rankings`, `strategies`, `backtests`, `portfolios`, `portfolio_holdings`, `watchlist_items`.
 
+- `users` — `id, username, password_hash, role (ADMIN|USER enum), is_active, created_at`
+- `stocks` — includes `name_zh VARCHAR(256)` for HK Chinese company names (nullable; backfilled on init)
+- `watchlist_items` — `user_id FK → users.id (ON DELETE CASCADE)`, unique constraint `(user_id, stock_id)`; items are per-user not global
 - `prices` keyed by `(stock_id, ts, timeframe)` — for chart history and indicator computation
 - `signals` stores persisted BUY/SELL/HOLD with `ts`, `horizon`, `confidence`, `bullish_probability`
 - `rankings` versioned by `as_of` date — allows backtest of ranking performance over time
+- `strategies.owner` — string field storing the JWT username of the creator; strategies are scoped and not shared across users
 
 **Fundamentals and news are not stored in Postgres.** They are fetched live and cached in Redis.
 
-Client-side state (positions, trades, notes, alerts, settings, AI keys) is stored in **localStorage**.
+Client-side state (positions, trades, notes, watchlist alerts, settings, AI keys) is stored in **namespaced localStorage** (`stockai:{username}:{key}`) and is per-user isolated.
 
 ## AI Confidence Score (Signal Engine)
 
@@ -370,7 +410,7 @@ WAIT is distinct from HOLD: HOLD applies to existing holders; WAIT tells prospec
 - **New ML model:** extend `BaseModel`, register in `models/registry.py`
 - **New alert condition:** add to `ConditionType` union in `lib/alerts.ts` and `checkAlerts()` switch
 - **New AI provider:** add a branch in `ai_proxy.py` and a provider option in `settings.tsx`
-- **Production auth:** replace `frontend/src/lib/auth.ts` with a JWT endpoint backed by a users table
+- **New user role:** add enum value to `UserRole` in `shared/db/models.py` and add role checks in `services/market-data/src/api/auth.py`
 
 ## Scaling notes
 

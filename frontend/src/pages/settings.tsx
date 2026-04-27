@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
+import { getSession, changePassword } from '@/lib/auth';
+import { api, type AppUser } from '@/lib/api';
 
 const inp: React.CSSProperties = {
   background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px',
@@ -90,6 +92,91 @@ export default function SettingsPage() {
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [aiTestState, setAiTestState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
   const [aiTestMsg, setAiTestMsg] = useState('');
+
+  const session = getSession();
+  const isAdmin = session?.role === 'admin';
+
+  // Change-password (from settings)
+  const [cpOld, setCpOld] = useState('');
+  const [cpNew, setCpNew] = useState('');
+  const [cpConfirm, setCpConfirm] = useState('');
+  const [cpMsg, setCpMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // User management (admin)
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newRole, setNewRole] = useState<'user' | 'admin'>('user');
+  const [createMsg, setCreateMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [resetTarget, setResetTarget] = useState('');
+  const [resetPwd, setResetPwd] = useState('');
+  const [resetMsg, setResetMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    if (isAdmin) {
+      setUsersLoading(true);
+      api.listUsers().then(setUsers).catch(() => {}).finally(() => setUsersLoading(false));
+    }
+  }, [isAdmin]);
+
+  async function handleChangePassword(e: React.FormEvent) {
+    e.preventDefault();
+    setCpMsg(null);
+    if (cpNew !== cpConfirm) { setCpMsg({ ok: false, text: 'New passwords do not match.' }); return; }
+    if (cpNew.length < 4) { setCpMsg({ ok: false, text: 'New password must be at least 4 characters.' }); return; }
+    const result = await changePassword(cpOld, cpNew);
+    if (result === 'ok') {
+      setCpMsg({ ok: true, text: 'Password changed successfully.' });
+      setCpOld(''); setCpNew(''); setCpConfirm('');
+    } else if (result === 'wrong_password') {
+      setCpMsg({ ok: false, text: 'Current password is incorrect.' });
+    } else {
+      setCpMsg({ ok: false, text: 'Server error. Please try again.' });
+    }
+  }
+
+  async function handleCreateUser(e: React.FormEvent) {
+    e.preventDefault();
+    setCreateMsg(null);
+    try {
+      const u = await api.createUser(newUsername, newPassword, newRole);
+      setUsers(prev => [...prev, u]);
+      setNewUsername(''); setNewPassword('');
+      setCreateMsg({ ok: true, text: `User "${u.username}" created.` });
+    } catch (err: any) {
+      setCreateMsg({ ok: false, text: err.message ?? 'Failed to create user.' });
+    }
+  }
+
+  async function handleDeleteUser(username: string) {
+    if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+    try {
+      await api.deleteUser(username);
+      setUsers(prev => prev.filter(u => u.username !== username));
+    } catch {}
+  }
+
+  async function handleToggleUser(username: string) {
+    try {
+      const res = await api.toggleUser(username);
+      setUsers(prev => prev.map(u => u.username === username ? { ...u, is_active: res.is_active } : u));
+    } catch {}
+  }
+
+  async function handleAdminReset(e: React.FormEvent) {
+    e.preventDefault();
+    setResetMsg(null);
+    if (!resetTarget) { setResetMsg({ ok: false, text: 'Select a user.' }); return; }
+    if (resetPwd.length < 4) { setResetMsg({ ok: false, text: 'Password must be at least 4 characters.' }); return; }
+    try {
+      await api.adminResetPassword(resetTarget, resetPwd);
+      setResetMsg({ ok: true, text: `Password reset for "${resetTarget}".` });
+      setResetPwd('');
+    } catch {
+      setResetMsg({ ok: false, text: 'Failed to reset password.' });
+    }
+  }
 
   function update<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
     setS(prev => ({ ...prev, [key]: value }));
@@ -518,18 +605,165 @@ export default function SettingsPage() {
       {/* ── Account ──────────────────────────────────────────────── */}
       <div style={section('#f59e0b')}>
         <div style={sectionBar('linear-gradient(90deg,#f59e0b,#fbbf24,#f59e0b)')} />
-        <div style={sectionHead}>Account</div>
-        <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <Link href="/login?tab=reset" style={{
-            fontSize: '13px', color: '#fbbf24', textDecoration: 'none',
-            padding: '8px 16px', border: '1px solid rgba(251,191,36,0.3)',
-            borderRadius: '8px', background: 'rgba(251,191,36,0.08)', fontWeight: 600,
-          }}>
-            Change Password
-          </Link>
-          <span style={{ fontSize: '12px', color: '#334155' }}>Update your login credentials</span>
-        </div>
+        <div style={sectionHead}>Account — {session?.username}</div>
+        <form onSubmit={handleChangePassword} style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={grid2}>
+            <div>
+              <label style={lbl}>Current Password</label>
+              <input type="password" value={cpOld} onChange={e => setCpOld(e.target.value)} required placeholder="Current password" style={inp} />
+            </div>
+            <div />
+            <div>
+              <label style={lbl}>New Password</label>
+              <input type="password" value={cpNew} onChange={e => setCpNew(e.target.value)} required placeholder="New password" style={inp} />
+            </div>
+            <div>
+              <label style={lbl}>Confirm New Password</label>
+              <input type="password" value={cpConfirm} onChange={e => setCpConfirm(e.target.value)} required placeholder="Repeat new password" style={inp} />
+            </div>
+          </div>
+          {cpMsg && (
+            <div style={{
+              borderRadius: '8px', padding: '9px 14px', fontSize: '13px',
+              background: cpMsg.ok ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+              border: `1px solid ${cpMsg.ok ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
+              color: cpMsg.ok ? '#4ade80' : '#f87171',
+            }}>{cpMsg.text}</div>
+          )}
+          <div>
+            <button type="submit" style={{
+              padding: '9px 22px', borderRadius: '8px', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
+              background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.3)', color: '#fbbf24',
+            }}>
+              Change Password
+            </button>
+          </div>
+        </form>
       </div>
+
+      {/* ── User Management (admin only) ───────────────────────────── */}
+      {isAdmin && (
+        <div style={section('#e11d48')}>
+          <div style={sectionBar('linear-gradient(90deg,#e11d48,#fb7185,#e11d48)')} />
+          <div style={sectionHead}>User Management <span style={{ fontSize: '10px', color: '#fb7185', fontWeight: 400, marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(251,113,133,0.3)', borderRadius: '4px', background: 'rgba(225,29,72,0.1)' }}>Admin only</span></div>
+
+          {/* User list */}
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid #1e293b' }}>
+            <label style={lbl}>Current Users</label>
+            {usersLoading ? (
+              <div style={{ fontSize: '13px', color: '#475569' }}>Loading…</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                {users.map(u => (
+                  <div key={u.id} style={{
+                    display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px',
+                    borderRadius: '8px', background: '#0a0f1e', border: '1px solid #1e293b',
+                  }}>
+                    <span style={{ flex: 1, fontSize: '13px', fontWeight: 600, color: u.is_active ? '#e2e8f0' : '#475569' }}>
+                      {u.username}
+                    </span>
+                    <span style={{
+                      fontSize: '10px', padding: '2px 7px', borderRadius: '4px', fontWeight: 700,
+                      background: u.role === 'admin' ? 'rgba(251,113,133,0.15)' : 'rgba(99,102,241,0.15)',
+                      color: u.role === 'admin' ? '#fb7185' : '#818cf8',
+                      border: u.role === 'admin' ? '1px solid rgba(251,113,133,0.3)' : '1px solid rgba(99,102,241,0.3)',
+                    }}>{u.role.toUpperCase()}</span>
+                    <span style={{
+                      fontSize: '10px', padding: '2px 7px', borderRadius: '4px',
+                      background: u.is_active ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)',
+                      color: u.is_active ? '#4ade80' : '#f87171',
+                    }}>{u.is_active ? 'Active' : 'Disabled'}</span>
+                    {u.username !== session?.username && (
+                      <>
+                        <button onClick={() => handleToggleUser(u.username)} style={{
+                          fontSize: '11px', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer',
+                          background: 'transparent', border: '1px solid #1e293b', color: '#64748b',
+                        }}>{u.is_active ? 'Disable' : 'Enable'}</button>
+                        <button onClick={() => handleDeleteUser(u.username)} style={{
+                          fontSize: '11px', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer',
+                          background: 'transparent', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171',
+                        }}>Delete</button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Create user */}
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid #1e293b' }}>
+            <label style={lbl}>Create New User</label>
+            <form onSubmit={handleCreateUser} style={{ display: 'flex', gap: '10px', marginTop: '8px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div style={{ flex: 2, minWidth: '120px' }}>
+                <label style={{ ...lbl, marginBottom: '4px' }}>Username</label>
+                <input value={newUsername} onChange={e => setNewUsername(e.target.value)} required placeholder="e.g. john" style={inp} />
+              </div>
+              <div style={{ flex: 2, minWidth: '120px' }}>
+                <label style={{ ...lbl, marginBottom: '4px' }}>Password</label>
+                <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} required placeholder="Min 4 chars" style={inp} />
+              </div>
+              <div style={{ flex: 1, minWidth: '100px' }}>
+                <label style={{ ...lbl, marginBottom: '4px' }}>Role</label>
+                <select value={newRole} onChange={e => setNewRole(e.target.value as 'user' | 'admin')} style={inp}>
+                  <option value="user">User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <button type="submit" style={{
+                padding: '9px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
+                background: 'rgba(225,29,72,0.15)', border: '1px solid rgba(225,29,72,0.3)', color: '#fb7185',
+                flexShrink: 0,
+              }}>
+                + Create
+              </button>
+            </form>
+            {createMsg && (
+              <div style={{
+                marginTop: '8px', borderRadius: '8px', padding: '8px 12px', fontSize: '13px',
+                background: createMsg.ok ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+                border: `1px solid ${createMsg.ok ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                color: createMsg.ok ? '#4ade80' : '#f87171',
+              }}>{createMsg.text}</div>
+            )}
+          </div>
+
+          {/* Admin reset another user's password */}
+          <div style={{ padding: '14px 20px' }}>
+            <label style={lbl}>Reset Another User&apos;s Password</label>
+            <form onSubmit={handleAdminReset} style={{ display: 'flex', gap: '10px', marginTop: '8px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div style={{ flex: 2, minWidth: '120px' }}>
+                <label style={{ ...lbl, marginBottom: '4px' }}>User</label>
+                <select value={resetTarget} onChange={e => setResetTarget(e.target.value)} style={inp}>
+                  <option value="">Select user…</option>
+                  {users.filter(u => u.username !== session?.username).map(u => (
+                    <option key={u.id} value={u.username}>{u.username}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ flex: 2, minWidth: '140px' }}>
+                <label style={{ ...lbl, marginBottom: '4px' }}>New Password</label>
+                <input type="password" value={resetPwd} onChange={e => setResetPwd(e.target.value)} required placeholder="New password" style={inp} />
+              </div>
+              <button type="submit" style={{
+                padding: '9px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
+                background: 'rgba(225,29,72,0.1)', border: '1px solid rgba(225,29,72,0.3)', color: '#fb7185',
+                flexShrink: 0,
+              }}>
+                Reset
+              </button>
+            </form>
+            {resetMsg && (
+              <div style={{
+                marginTop: '8px', borderRadius: '8px', padding: '8px 12px', fontSize: '13px',
+                background: resetMsg.ok ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+                border: `1px solid ${resetMsg.ok ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                color: resetMsg.ok ? '#4ade80' : '#f87171',
+              }}>{resetMsg.text}</div>
+            )}
+          </div>
+        </div>
+      )}
 
     </div>
   );

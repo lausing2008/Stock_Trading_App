@@ -24,6 +24,7 @@ _ROUTES = {
     "backtest": _settings.strategy_engine_url,
     "portfolio": _settings.portfolio_optimizer_url,
     "watchlist": _settings.market_data_url,
+    "auth": _settings.market_data_url,
 }
 
 

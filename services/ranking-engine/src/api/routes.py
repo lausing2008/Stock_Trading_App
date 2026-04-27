@@ -69,6 +69,7 @@ def leaderboard(
             {
                 "symbol": s.symbol,
                 "name": s.name,
+                "name_zh": s.name_zh,
                 "market": s.market.value,
                 "sector": s.sector,
                 "score": comp.score,

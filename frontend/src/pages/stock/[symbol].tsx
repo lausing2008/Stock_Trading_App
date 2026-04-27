@@ -196,6 +196,11 @@ export default function StockDetail() {
           <div>
             <h1 className="text-2xl font-bold">{symbol}</h1>
             <div className="text-sm text-slate-400">{(data.price as { name?: string })?.name}</div>
+            {(data.price as { name_zh?: string | null })?.name_zh && (
+              <div className="text-xs text-slate-500" style={{ marginTop: '1px' }}>
+                {(data.price as { name_zh?: string | null })?.name_zh}
+              </div>
+            )}
             <div className="flex gap-3 mt-1 text-xs text-slate-500">
               {data.price && <span>{(data.price as { market?: string })?.market} · {(data.price as { exchange?: string })?.exchange}</span>}
               {data.price && <span>{(data.price as { sector?: string })?.sector}</span>}

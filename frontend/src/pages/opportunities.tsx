@@ -2,7 +2,7 @@
 import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type RankingRow, type LatestPrice, type SignalSummary } from '@/lib/api';
+import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem } from '@/lib/api';
 
 type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth';
 type Market = 'all' | 'US' | 'HK';
@@ -126,6 +126,9 @@ export default function Opportunities() {
   const { data: rankData, isLoading } = useSWR('rankings-all', () => api.rankings());
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData } = useSWR('signals-all', () => api.allSignals());
+  const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+
+  const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
 
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
@@ -143,6 +146,7 @@ export default function Opportunities() {
     const all = rankData?.rankings ?? [];
     const filter = STRATEGY_FILTER[strategy];
     return all
+      .filter(r => watchedSet.has(r.symbol))
       .filter(r => market === 'all' || r.market === market)
       .filter(r => r.score > 0)
       .filter(r => filter(r, signalMap[r.symbol]))
@@ -154,7 +158,7 @@ export default function Opportunities() {
       }))
       .sort((a, b) => b.stratScore - a.stratScore)
       .slice(0, 20);
-  }, [rankData, priceMap, signalMap, strategy, market]);
+  }, [rankData, priceMap, signalMap, strategy, market, watchedSet]);
 
   const active = STRATEGIES.find(s => s.key === strategy)!;
 

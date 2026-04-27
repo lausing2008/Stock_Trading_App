@@ -4,6 +4,7 @@ import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { api, type LatestPrice, type RankingRow, type SignalSummary, type WatchlistItem } from '@/lib/api';
+import { storage } from '@/lib/storage';
 
 const DonutChart = dynamic(() => import('@/components/DonutChart'), { ssr: false });
 
@@ -12,12 +13,12 @@ type Position = { id: string; symbol: string; shares: number; avgCost: number; c
 type Trade    = { type: 'BUY' | 'SELL'; shares: number; price: number; date: string };
 type SortKey  = 'symbol' | 'pnl' | 'pnlPct' | 'value' | 'change' | 'score';
 
-const STORAGE_KEY = 'stockai_positions';
-const TRADES_KEY  = 'stockai_trades';
-function loadPositions(): Position[] { if (typeof window === 'undefined') return []; try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]'); } catch { return []; } }
-function savePositions(p: Position[]) { localStorage.setItem(STORAGE_KEY, JSON.stringify(p)); }
-function loadTrades(): Record<string, Trade[]> { if (typeof window === 'undefined') return {}; try { return JSON.parse(localStorage.getItem(TRADES_KEY) ?? '{}'); } catch { return {}; } }
-function saveTrades(t: Record<string, Trade[]>) { localStorage.setItem(TRADES_KEY, JSON.stringify(t)); }
+const STORAGE_KEY = 'positions';
+const TRADES_KEY  = 'trades';
+function loadPositions(): Position[] { if (typeof window === 'undefined') return []; try { return JSON.parse(storage.getItem(STORAGE_KEY) ?? '[]'); } catch { return []; } }
+function savePositions(p: Position[]) { storage.setItem(STORAGE_KEY, JSON.stringify(p)); }
+function loadTrades(): Record<string, Trade[]> { if (typeof window === 'undefined') return {}; try { return JSON.parse(storage.getItem(TRADES_KEY) ?? '{}'); } catch { return {}; } }
+function saveTrades(t: Record<string, Trade[]>) { storage.setItem(TRADES_KEY, JSON.stringify(t)); }
 
 /* ─── Helpers ────────────────────────────────────────────── */
 function pnlColor(v: number) { return v > 0 ? '#4ade80' : v < 0 ? '#f87171' : '#94a3b8'; }

@@ -20,14 +20,15 @@ The entry gate for the application. Every page redirects here if no session is a
 - New password must be at least 4 characters
 
 ### How auth works
-Credentials are stored in browser **localStorage**:
-- `stockai_auth_users` — overrides the built-in default credentials
-- `stockai_auth_session` — set on successful login, cleared on logout
+Authentication is JWT-based. On login, the `market-data` service verifies credentials with **bcrypt** and issues a signed **HS256 JWT** (30-day expiry). The token is stored in `stockai_jwt` in `localStorage` and sent as a `Bearer` header on every API request.
 
-The default account (`lausing` / `120402`) is hardcoded as a fallback in `lib/auth.ts`.
+- Tokens contain `sub` (username) and `role` (`admin` or `user`)
+- The frontend decodes the token client-side to read the active session — no extra `/me` call needed
+- Logout clears the token from `localStorage`
+- The default admin account (`lausing` / `120402`) is created automatically on first boot via `init_db()`
 
 ### Navigation
-- Logged-in username displayed in the top-right nav bar
+- Logged-in username + **admin** badge (for admin accounts) displayed in the top-right nav bar
 - **🔔 Notification Bell** — shows unread alert count, dropdown with recent notifications
 - **⚙ Settings** icon — quick link to Settings page
 - **Logout** button clears the session and redirects to `/login`
@@ -36,7 +37,7 @@ The default account (`lausing` / `120402`) is hardcoded as a fallback in `lib/au
 
 ## Dashboard (`/`)
 
-The main screen. Shows a live market overview and every tracked stock as a card.
+The main screen. Shows a live market overview and the current user's tracked stocks as cards. Each user sees only the stocks they have added to their watchlist — the dashboard is fully per-user.
 
 ### Market Overview panel
 Displayed between the toolbar and the stock grid. Three cards updated every 60 s:
@@ -51,14 +52,15 @@ Displayed between the toolbar and the stock grid. Three cards updated every 60 s
 - Status badge respects HKEX session including the 12:00–1:00 PM lunch break
 
 **Portfolio Pulse**
-- Stacked bar showing BUY / HOLD / WAIT / SELL distribution across all tracked stocks
+- Stacked bar showing BUY / HOLD / WAIT / SELL distribution across the **current user's watchlist stocks only**
 - Count breakdown in a 2×2 grid
 
 Data source: `GET /stocks/market_overview` — yfinance fast_info for indices ^GSPC, ^IXIC, ^DJI, ^VIX, ^HSI. Redis-cached 60 s.
 
 ### Stock cards
-- **Symbol + company name** — click to go to the stock detail page
-- **✕ Delete button** — top-left corner, appears on card hover. First click shows inline `Delete? / Cancel` confirmation; confirming soft-deletes the stock (sets `active=False`, price history preserved). Re-add any time via + Add Stock.
+The grid shows only the stocks in the logged-in user's watchlist. Each card shows:
+- **Symbol + company name** — click to go to the stock detail page; HK stocks show the Chinese name as a subtitle (e.g. 騰訊控股)
+- **✕ Remove button** — top-left corner, appears on card hover. First click shows inline `Remove? / Cancel` confirmation; confirming removes the stock from the user's watchlist (the stock and its price history remain in the global DB)
 - **Current price** — live real-time price (yfinance `fast_info`, refreshes every 60 s)
 - **Day change** — percentage and direction arrow, color-coded green/red
 - **K-Score** — composite 0–100 score (green ≥ 70 / yellow ≥ 50 / red < 50)
@@ -67,11 +69,14 @@ Data source: `GET /stocks/market_overview` — yfinance fast_info for indices ^G
 
 ### Toolbar
 - **↻ Refresh** — re-fetches all data sources simultaneously
-- **⚡ Train All** — runs the full pipeline: ingest → refresh prices → schedule ML training
-- **+ Add Stock** — opens the Add Stock modal
+- **⚡ Train All** — ingests latest prices and schedules ML training for the current user's watchlist stocks only
+- **+ Add Stock** — opens the Add Stock modal; the stock is added to the global DB and automatically added to the user's watchlist
 
 ### Auto-refresh
 Prices refresh automatically every 60 seconds via SWR `refreshInterval`.
+
+### Empty state
+When the user's watchlist is empty the grid shows "Your watchlist is empty — click + Add Stock to start tracking stocks."
 
 ---
 
@@ -83,7 +88,7 @@ Full drill-down page for a single stock.
 - **← Back** button — returns to the previous page
 
 ### Header
-- Symbol, company name, market, exchange, sector
+- Symbol, company name (with Chinese name subtitle for HK stocks), market, exchange, sector
 - **Live Price card** — real-time price, day change % (color-coded), and previous close. Fetched from yfinance `fast_info` via the shared `latest-prices` SWR key, auto-refreshes every 60 s. Falls back to "Last Close" from the DB if the live quote is unavailable.
 - **Fair Value** card — DCF-lite derived fair price with K-Score
 - **AI Signal** card — BUY / HOLD / WAIT / SELL with bullish probability %; colour-coded green / yellow / orange / red
@@ -145,7 +150,7 @@ Collapsible "Ask AI" panel below the financials section.
 
 ## Opportunities (`/opportunities`)
 
-Strategy-filtered stock screener. Surfaces the best candidates from your tracked universe for each trading style. Linked in the nav bar (highlighted purple).
+Strategy-filtered stock screener. Surfaces the best candidates from the **current user's watchlist** for each trading style. Only stocks the logged-in user is tracking are scored and ranked. Linked in the nav bar (highlighted purple).
 
 ### Strategies
 
@@ -172,16 +177,17 @@ Strategy-filtered stock screener. Surfaces the best candidates from your tracked
 - Click card → stock detail page
 
 ### Data source
-Rankings SWR key `rankings-all` and signals SWR key `signals-all` — no extra API calls. All scoring is pure frontend computation from existing data.
+Reuses SWR keys `rankings-all`, `signals-all`, `latest-prices`, and `watchlist` (all already fetched by the dashboard — no extra network calls). All scoring is pure frontend computation; watchlist filtering is applied client-side before ranking.
 
 ---
 
 ## Rankings (`/rankings`)
 
-Leaderboard of all tracked stocks sorted by K-Score.
+Leaderboard of the current user's watchlist stocks sorted by K-Score. Only stocks the logged-in user is tracking appear in the table.
 
 - Sortable columns: K-Score, Technical, Momentum, Value, Growth, Volatility, Price, Change%
 - Fair price column — compare current price to estimated fair value
+- HK stocks show Chinese name as a subtitle in the Name column
 - Click any row to go to stock detail
 
 ---
@@ -198,8 +204,9 @@ Your curated list of stocks to monitor closely.
 
 ### Per-stock card
 - Price + day change, signal badge, K-Score bar, note preview, price alert banner
-- **📝 Notes** — free-text, stored in localStorage
-- **🔔 Alerts** — target price + Above/Below trigger (these are simple watchlist alerts, separate from the full Alerts page)
+- HK stocks show Chinese company name as a subtitle
+- **📝 Notes** — free-text, stored in namespaced localStorage per user
+- **🔔 Alerts** — target price + Above/Below trigger (stored in namespaced localStorage per user; separate from the full Alerts page)
 - **+ POS** — navigate to Positions with symbol pre-filled
 - **✕** — remove from watchlist
 
@@ -312,14 +319,13 @@ The global alert checker runs in the background every 60 seconds via `_app.tsx`:
 5. The **🔔 notification bell** in the nav bar shows the unread count badge
 
 ### Storage
-- `stockai_alert_rules` — alert definitions (localStorage)
-- `stockai_notifications` — last 100 triggered notifications (localStorage)
+Alert rules and notifications are stored in **namespaced localStorage** under the active user's prefix. Each user's alerts are fully isolated from other users.
 
 ---
 
 ## Strategies (`/strategies`)
 
-Build, save, and backtest rule-based trading strategies.
+Build, save, and backtest rule-based trading strategies. Each strategy is **user-scoped** — only the creating user can view, edit, delete, or backtest their own strategies. Authentication (JWT Bearer token) is required for all strategy endpoints.
 
 ### Strategy DSL
 JSON rule tree for entry and exit conditions:
@@ -389,7 +395,15 @@ Configure which AI model powers the chat panel on stock detail pages.
 - **Default ML Model** — pre-selects the model in the Stock Detail ML Prediction panel
 
 ### Account
-- Link to **Change Password** (Reset Password tab on the login page)
+- **Change Password** — inline form to change your own password (enter current password + new password)
+
+### User Management (admin only)
+Visible only to users with the `admin` role.
+
+- **User list** — shows all accounts with username, role, and active status; toggle active/inactive per user
+- **Create user** — enter a username, password, and role (user / admin)
+- **Delete user** — permanently removes the account
+- **Admin password reset** — reset any user's password without knowing their current password
 
 ---
 
@@ -450,20 +464,38 @@ GET  /aggregate/overview/{symbol}    # all-in-one: price, indicators, patterns,
                                      # levels, ranking, signal, price history, fundamentals
 ```
 
-### Watchlist
+### Auth
+All auth endpoints are under `/auth/*` (proxied from `/api/auth/*`).
 ```
-GET    /watchlist                    # get watchlist
-POST   /watchlist/{symbol}           # add to watchlist
-DELETE /watchlist/{symbol}           # remove from watchlist
+POST /auth/login                             # → {access_token, token_type, username, role}
+POST /auth/reset-password                    # change own password (no JWT needed)
+GET  /auth/me                                # current user info (JWT required)
+PUT  /auth/change-password                   # change password (JWT required)
+GET  /auth/users                             # list all users (admin JWT required)
+POST /auth/users                             # create user (admin JWT required)
+DELETE /auth/users/{username}                # delete user (admin JWT required)
+PUT  /auth/users/{username}/reset-password   # admin reset any user's password
+PUT  /auth/users/{username}/toggle           # toggle user active/inactive
+```
+
+### Watchlist
+All watchlist endpoints require JWT. Each user sees only their own watchlist items.
+```
+GET    /watchlist                    # get current user's watchlist
+POST   /watchlist/{symbol}           # add to current user's watchlist
+DELETE /watchlist/{symbol}           # remove from current user's watchlist
 GET    /watchlist/{symbol}           # check if watched (returns bool)
 ```
 
 ### Strategies & Portfolio
+All strategy endpoints require JWT. Strategies are scoped to the authenticated user.
 ```
-POST /strategies                         # create strategy
-GET  /strategies                         # list strategies
-POST /backtest   {strategy_id, symbol}   # run backtest
-POST /portfolio/optimize                 # run portfolio optimization
+POST   /strategies                         # create strategy
+GET    /strategies                         # list user's strategies
+GET    /strategies/{id}                    # get one strategy
+DELETE /strategies/{id}                    # delete strategy
+POST   /backtest   {strategy_id, symbol}   # run backtest
+POST   /portfolio/optimize                 # run portfolio optimization
 ```
 
 ### AI Chat
@@ -512,19 +544,27 @@ POST /ai/chat
 
 ## Browser storage keys
 
+### Auth token (global — not user-namespaced)
+
 | Key | Contents |
 |-----|----------|
-| `stockai_auth_users` | `{username: password}` — overrides default credentials |
-| `stockai_auth_session` | `{username}` — active session |
-| `stockai_settings` | All app settings (data sources, AI keys, intervals, etc.) |
-| `stockai_alert_rules` | Array of alert rule objects |
-| `stockai_notifications` | Last 100 triggered notifications |
-| `stockai_positions` | Array of `{id, symbol, shares, avgCost, currency, addedAt}` |
-| `stockai_trades` | Map of `{symbol: [{type, shares, price, date}]}` |
-| `stockai_watch_notes` | Map of `{symbol: noteText}` |
-| `stockai_price_alerts` | Map of `{symbol: {target, direction}}` (watchlist quick-alerts) |
+| `stockai_jwt` | Raw JWT string for the active session |
 
-Clearing browser storage resets all client-side data including login session and AI keys.
+### Per-user namespaced keys
+
+All user-specific keys follow the pattern `stockai:{username}:{key}`. This ensures each user's data is fully isolated in the browser.
+
+| Key suffix | Contents |
+|------------|----------|
+| `settings` | All app settings (data sources, AI keys, intervals, etc.) |
+| `alert_rules` | Array of alert rule objects |
+| `notifications` | Last 100 triggered notifications |
+| `positions` | Array of `{id, symbol, shares, avgCost, currency, addedAt}` |
+| `trades` | Map of `{symbol: [{type, shares, price, date}]}` |
+| `watch_notes` | Map of `{symbol: noteText}` |
+| `watch_price_alerts` | Map of `{symbol: {target, direction}}` (watchlist quick-alerts) |
+
+Clearing `stockai_jwt` from `localStorage` logs the user out. Clearing all storage resets all per-user data and AI keys.
 
 ---
 

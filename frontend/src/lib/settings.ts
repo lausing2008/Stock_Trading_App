@@ -1,4 +1,6 @@
-const SETTINGS_KEY = 'stockai_settings';
+import { storage } from './storage';
+
+const SETTINGS_KEY = 'settings';
 
 export type AppSettings = {
   // Data & Refresh
@@ -59,14 +61,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export function loadSettings(): AppSettings {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS;
   try {
-    const stored = localStorage.getItem(SETTINGS_KEY);
+    const stored = storage.getItem(SETTINGS_KEY);
     return stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
   } catch { return DEFAULT_SETTINGS; }
 }
 
 export function saveSettings(s: Partial<AppSettings>): AppSettings {
   const merged = { ...loadSettings(), ...s };
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+  storage.setItem(SETTINGS_KEY, JSON.stringify(merged));
   window.dispatchEvent(new CustomEvent('stockai:settings', { detail: merged }));
   return merged;
 }

@@ -51,11 +51,13 @@ Services and ports:
 
 Open http://localhost:3000. You will be redirected to the login page.
 
-**Default account:**
+**Default admin account:**
 - Username: `lausing`
 - Password: `120402`
 
-To reset your password, go to the Login page and click the **Reset Password** tab.
+The admin account is created automatically on first boot. To reset your password, go to the Login page and click the **Reset Password** tab, or use **Settings → Change Password** while logged in.
+
+**Adding more users:** Log in as `lausing`, go to **Settings → User Management**, and use the Create User form. You can also reset other users' passwords and toggle accounts from that panel.
 
 ## 4. Seed and ingest data
 
@@ -179,15 +181,24 @@ Results show allocation bars, Sharpe ratio, expected return/volatility, max draw
 
 ## 12. Run a backtest
 
+Strategies and backtests require a JWT. Get a token first:
+
 ```bash
+# Login and capture the token
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"lausing","password":"120402"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
 # Create a strategy
 curl -X POST http://localhost:8000/strategies \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
   -d '{"name":"RSI dip","rule_dsl":{"entry":{"op":"<","left":"rsi_14","right":30},"exit":{"op":">","left":"rsi_14","right":70}}}'
 # → {"id": 1, ...}
 
 # Run backtest
 curl -X POST http://localhost:8000/backtest \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
   -d '{"strategy_id":1,"symbol":"AAPL"}'
 ```
@@ -219,8 +230,9 @@ make build && make up
 | Dashboard prices look stale | Click ↻ Refresh — prices update every 60 s automatically otherwise |
 | yfinance HTTP 429 (rate limit) | Wait and retry; adapters use exponential backoff |
 | Port collision on 5432/6379/3000/8000-8007 | Stop the conflicting process or edit `docker/docker-compose.yml` |
-| Can't log in | Default credentials: `lausing` / `120402`. Use Reset Password tab to change. |
-| Positions/notes disappeared | Stored in browser localStorage — clearing browser data removes them |
+| Can't log in | Default credentials: `lausing` / `120402`. Use Reset Password tab or Settings → Change Password to change. |
+| Positions/notes disappeared | Stored in namespaced browser localStorage (`stockai:{username}:key`) — clearing browser data removes them |
+| Logged in as wrong user, data missing | Each user has isolated positions, notes, alerts, and settings. Switch users from the nav bar logout button. |
 | Stock detail shows "Last Close" instead of "Live Price" | yfinance quota hit or network issue — price shown is from DB; auto-recovers within 60 s |
 | Market overview shows "—" prices | yfinance rate-limited; auto-recovers in 60 s |
 | Opportunities page shows 0 stocks | Run Train All to compute signals + rankings first |

@@ -21,7 +21,10 @@ export default function RankingsTable({ rows }: { rows: RankingRow[] }) {
               <td className="px-3 py-2 font-medium">
                 <a href={`/stock/${r.symbol}`} className="text-indigo-400 hover:underline">{r.symbol}</a>
               </td>
-              <td className="px-3 py-2">{r.name}</td>
+              <td className="px-3 py-2">
+                <div>{r.name}</div>
+                {r.name_zh && <div className="text-xs text-slate-500 mt-0.5">{r.name_zh}</div>}
+              </td>
               <td className="px-3 py-2">{r.market}</td>
               <td className="px-3 py-2 text-right font-semibold">{r.score.toFixed(1)}</td>
               <td className="px-3 py-2 text-right">{r.fair_price?.toFixed(2) ?? '—'}</td>

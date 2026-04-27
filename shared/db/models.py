@@ -53,6 +53,11 @@ class TimeFrame(str, enum.Enum):
     W1 = "1w"
 
 
+class UserRole(str, enum.Enum):
+    ADMIN = "ADMIN"
+    USER = "USER"
+
+
 class SignalType(str, enum.Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -65,6 +70,19 @@ class SignalHorizon(str, enum.Enum):
     LONG = "LONG"
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(256))
+    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), default=UserRole.USER)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    watchlist_items: Mapped[list["WatchlistItem"]] = relationship(back_populates="user")
+
+
 class Stock(Base):
     __tablename__ = "stocks"
 
@@ -73,6 +91,7 @@ class Stock(Base):
     market: Mapped[Market] = mapped_column(SAEnum(Market), index=True)
     exchange: Mapped[Exchange] = mapped_column(SAEnum(Exchange))
     name: Mapped[str] = mapped_column(String(256))
+    name_zh: Mapped[str | None] = mapped_column(String(256), nullable=True)
     sector: Mapped[str | None] = mapped_column(String(128), nullable=True)
     industry: Mapped[str | None] = mapped_column(String(128), nullable=True)
     currency: Mapped[str] = mapped_column(String(8), default="USD")
@@ -219,5 +238,12 @@ class WatchlistItem(Base):
     __tablename__ = "watchlist_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), unique=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"))
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User | None"] = relationship(back_populates="watchlist_items")
+
+    __table_args__ = (UniqueConstraint("user_id", "stock_id", name="uq_watchlist_user_stock"),)

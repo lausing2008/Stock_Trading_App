@@ -26,11 +26,13 @@ downstream services.
 | **Portfolio Optimizer** | Sharpe-maximizing MVO, Risk Parity, Hierarchical Risk Parity (HRP), AI Allocation — all with Ledoit-Wolf covariance shrinkage |
 | **Alerts** | Rule-based alerts on price, % change, signal, or K-Score — with cooldown, notification history, and sound |
 | **AI Chat** | Ask Claude or DeepSeek about any stock on the detail page — context-aware (price, signal, news, K-Score) |
+| **Per-user Universe** | Dashboard, Opportunities, and Rankings show only the logged-in user's watchlist stocks — each user has a fully independent tracked universe |
 | **Watchlist** | Per-stock notes, price alerts, signal filter tabs, sort controls, K-Score progress bars |
 | **Positions** | Multi-currency P&L tracker, allocation donut chart, trade history, best/worst performer, CSV export |
 | **Company Financials** | Valuation, income statement, balance sheet, margins, returns, 52-week range; full analyst ratings with rating distribution bar, consensus badge, price target range visualization, and Buy/Sell zone cards |
 | **Settings** | Data source toggles, AI provider config, news source toggles, notification preferences, ML defaults |
-| **Auth** | Login page with session management; password reset; pre-created account (`lausing`) |
+| **Auth** | JWT-based multi-user auth; admin can create/delete/reset users; each user has isolated watchlist, positions, strategies, alerts, notes, and settings |
+| **Chinese Names** | HK stocks show Chinese company names (e.g. 騰訊控股, 阿里巴巴) in dashboard cards, stock detail header, watchlist, and rankings table |
 
 ## Repo structure
 
@@ -89,7 +91,7 @@ Or use the **⚡ Train All** button on the dashboard to ingest + train all ML mo
 | Data | PostgreSQL 16, Redis 7 (live price cache + news cache), Parquet (pyarrow) |
 | Frontend | Next.js 14, React 18, SWR, lightweight-charts, plotly.js |
 | AI Chat | Anthropic Claude API + DeepSeek API (proxied via api-gateway, keys in browser) |
-| Auth | localStorage session, password stored per-browser |
+| Auth | JWT (HS256, 30-day tokens), bcrypt password hashing, multi-user with admin role |
 | Infra (dev) | Docker Compose |
 | Infra (prod) | Terraform + AWS ECS Fargate, RDS, ElastiCache, ALB |
 | Observability | structlog JSON logs, `/health` on every service, CloudWatch (prod) |
@@ -99,16 +101,16 @@ Or use the **⚡ Train All** button on the dashboard to ingest + train all ML mo
 | Page | URL | What it does |
 |------|-----|-------------|
 | Login | `/login` | Sign-in gate; password reset tab |
-| Dashboard | `/` | Market overview panel (US + HK indices, Portfolio Pulse), stock grid with live signals, K-Score, delete button |
-| Opportunities | `/opportunities` | Strategy screener — Top Picks / Swing / Short-Term / Long-Term / Growth, filterable by market |
+| Dashboard | `/` | Market overview panel (US + HK indices, Portfolio Pulse), per-user stock grid with live signals, K-Score; ✕ removes from watchlist, + Add Stock auto-adds to watchlist |
+| Opportunities | `/opportunities` | Strategy screener over the user's watchlist — Top Picks / Swing / Short-Term / Long-Term / Growth, filterable by market |
 | Stock Detail | `/stock/[symbol]` | Live price card (60 s refresh), candlestick chart, AI signal (BUY/HOLD/WAIT/SELL), K-Score, ML prediction, financials, analyst ratings & price targets, AI chat, news |
-| Rankings | `/rankings` | Leaderboard sorted by K-Score with full sub-score breakdown |
+| Rankings | `/rankings` | Per-user leaderboard sorted by K-Score — shows only the logged-in user's watchlist stocks |
 | Watchlist | `/watchlist` | Curated list with notes, price alerts, signal filter, sort controls |
 | Positions | `/positions` | Portfolio P&L tracker with allocation chart, trade history, CSV export |
 | Strategies | `/strategies` | Rule DSL strategy builder + backtester |
 | Portfolio | `/portfolio` | Quantitative portfolio optimizer (MVO / Risk Parity / HRP / AI) |
 | Alerts | `/alerts` | Create and manage stock alerts; notification history |
-| Settings | `/settings` | Data sources, news sources, AI provider, notifications, ML defaults |
+| Settings | `/settings` | Data sources, news sources, AI provider, notifications, ML defaults; admin-only User Management section |
 
 ## Default account
 
@@ -116,8 +118,11 @@ Or use the **⚡ Train All** button on the dashboard to ingest + train all ML mo
 |-------|-------|
 | Username | `lausing` |
 | Password | `120402` |
+| Role | admin |
 
-Password can be reset on the Login page → **Reset Password** tab.
+The admin account is created automatically on first boot. Password can be reset on the Login page → **Reset Password** tab, or in Settings → Change Password.
+
+Admins can create additional user accounts, reset passwords, and toggle users in **Settings → User Management**.
 
 ## Documentation
 

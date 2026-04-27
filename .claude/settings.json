@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(curl -s http://localhost:8000/stocks/market_overview)"
+      "Bash(curl -s http://localhost:8000/stocks/market_overview)",
+      "Bash(curl -s -X POST http://localhost:8000/auth/login -H 'content-type: application/json' -d '{\"username\":\"lausing\",\"password\":\"120402\"}')",
+      "Bash(curl -s -X POST http://localhost:3000/api/auth/login -H 'content-type: application/json' -d '{\"username\":\"lausing\",\"password\":\"120402\"}')",
+      "Bash(curl -s \"http://localhost:8000/stocks?market=HK\")",
+      "Bash(python3 -c \"import sys,json; [print\\(s['symbol'], s['name'], s.get\\('name_zh',''\\)\\) for s in json.load\\(sys.stdin\\)]\")"
     ]
   }
 }

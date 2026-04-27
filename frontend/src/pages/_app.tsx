@@ -14,6 +14,7 @@ const PUBLIC_PATHS = ['/login'];
 export default function App({ Component, pageProps }: AppProps) {
   const router = useRouter();
   const [username, setUsername] = useState<string | null>(null);
+  const [role, setRole] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -21,6 +22,7 @@ export default function App({ Component, pageProps }: AppProps) {
     const session = getSession();
     if (session) {
       setUsername(session.username);
+      setRole(session.role);
     } else if (!PUBLIC_PATHS.includes(router.pathname)) {
       router.replace('/login');
     }
@@ -67,9 +69,8 @@ export default function App({ Component, pageProps }: AppProps) {
 
   function handleLogout() {
     logout();
-    setUsername(null);
     if (alertTimerRef.current) clearInterval(alertTimerRef.current);
-    router.push('/login');
+    window.location.href = '/login';
   }
 
   if (!checked) return null;
@@ -101,6 +102,11 @@ export default function App({ Component, pageProps }: AppProps) {
             <NotificationBell />
             <span style={{ fontSize: '12px', color: '#475569' }}>
               👤 <span style={{ color: '#94a3b8' }}>{username}</span>
+              {role === 'admin' && (
+                <span style={{ marginLeft: '5px', fontSize: '10px', color: '#fb7185', padding: '1px 5px', borderRadius: '3px', background: 'rgba(225,29,72,0.15)', border: '1px solid rgba(225,29,72,0.3)' }}>
+                  admin
+                </span>
+              )}
             </span>
             <Link
               href="/settings"

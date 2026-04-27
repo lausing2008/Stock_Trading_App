@@ -1,7 +1,16 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
+function authHeader(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  const token = localStorage.getItem('stockai_jwt');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, { ...init, headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) } });
+  const r = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: { 'content-type': 'application/json', ...authHeader(), ...(init?.headers ?? {}) },
+  });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return (await r.json()) as T;
 }
@@ -40,12 +49,22 @@ export const api = {
     const items = await request<WatchlistItem[]>(`/watchlist`);
     return items.some(i => i.symbol === symbol);
   },
+
+  // User management (admin)
+  listUsers: () => request<AppUser[]>(`/auth/users`),
+  createUser: (username: string, password: string, role: string) =>
+    request<AppUser>(`/auth/users`, { method: 'POST', body: JSON.stringify({ username, password, role }) }),
+  deleteUser: (username: string) => request(`/auth/users/${username}`, { method: 'DELETE' }),
+  adminResetPassword: (username: string, newPassword: string) =>
+    request(`/auth/users/${username}/reset-password`, { method: 'PUT', body: JSON.stringify({ new_password: newPassword }) }),
+  toggleUser: (username: string) => request<{ is_active: boolean }>(`/auth/users/${username}/toggle`, { method: 'PUT' }),
 };
 
 export type Stock = {
   id: number;
   symbol: string;
   name: string;
+  name_zh?: string | null;
   market: string;
   exchange: string;
   sector?: string;
@@ -71,7 +90,7 @@ export type Signal = {
 };
 
 export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null };
-export type RankingRow = { symbol: string; name: string; score: number; market: string; fair_price?: number; sector?: string; technical?: number; momentum?: number; value?: number; growth?: number; volatility?: number };
+export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number; market: string; fair_price?: number; sector?: string; technical?: number; momentum?: number; value?: number; growth?: number; volatility?: number };
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {
   backtest_id: number;
@@ -96,8 +115,9 @@ export type PortfolioWeights = {
 };
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string };
 export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };
-export type WatchlistItem = { symbol: string; name: string; market: string; exchange: string; sector?: string; currency: string; added_at: string };
+export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
+export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; created_at: string };
 
 export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };
 export type Levels = {

@@ -23,14 +23,14 @@ _US_SEED = [
 ]
 
 _HK_SEED = [
-    ("0700.HK", Exchange.HKEX, "Tencent Holdings", "Technology"),
-    ("0005.HK", Exchange.HKEX, "HSBC Holdings", "Financial"),
-    ("0939.HK", Exchange.HKEX, "China Construction Bank", "Financial"),
-    ("1299.HK", Exchange.HKEX, "AIA Group", "Financial"),
-    ("9988.HK", Exchange.HKEX, "Alibaba Group", "Consumer Cyclical"),
-    ("3690.HK", Exchange.HKEX, "Meituan", "Consumer Cyclical"),
-    ("0388.HK", Exchange.HKEX, "HKEX", "Financial"),
-    ("1810.HK", Exchange.HKEX, "Xiaomi", "Technology"),
+    ("0700.HK", Exchange.HKEX, "Tencent Holdings", "Technology", "騰訊控股"),
+    ("0005.HK", Exchange.HKEX, "HSBC Holdings", "Financial", "匯豐控股"),
+    ("0939.HK", Exchange.HKEX, "China Construction Bank", "Financial", "建設銀行"),
+    ("1299.HK", Exchange.HKEX, "AIA Group", "Financial", "友邦保險"),
+    ("9988.HK", Exchange.HKEX, "Alibaba Group", "Consumer Cyclical", "阿里巴巴"),
+    ("3690.HK", Exchange.HKEX, "Meituan", "Consumer Cyclical", "美團"),
+    ("0388.HK", Exchange.HKEX, "HKEX", "Financial", "香港交易所"),
+    ("1810.HK", Exchange.HKEX, "Xiaomi", "Technology", "小米集團"),
 ]
 
 
@@ -41,9 +41,9 @@ def seed() -> int:
         rows.append(
             {"symbol": symbol, "exchange": exch, "market": Market.US, "name": name, "sector": sector, "currency": "USD"}
         )
-    for symbol, exch, name, sector in _HK_SEED:
+    for symbol, exch, name, sector, name_zh in _HK_SEED:
         rows.append(
-            {"symbol": symbol, "exchange": exch, "market": Market.HK, "name": name, "sector": sector, "currency": "HKD"}
+            {"symbol": symbol, "exchange": exch, "market": Market.HK, "name": name, "name_zh": name_zh, "sector": sector, "currency": "HKD"}
         )
 
     with SessionLocal() as session:
