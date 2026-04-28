@@ -259,7 +259,7 @@ export default function Home() {
       return 0;
     });
     return list;
-  }, [stocks, search, market, sort, showWatchedOnly, rankMap, watchedSet]);
+  }, [stocks, search, market, sort, rankMap, watchedSet, watchlist]);
 
   const usCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'US').length ?? 0;
   const hkCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'HK').length ?? 0;

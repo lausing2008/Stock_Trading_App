@@ -3,9 +3,20 @@ import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem } from '@/lib/api';
+import { askAI, isAiConfigured } from '@/lib/ai';
 
 type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth';
 type Market = 'all' | 'US' | 'HK';
+type OutlookDirection = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+
+interface OutlookItem {
+  symbol: string;
+  direction: OutlookDirection;
+  horizon: string;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+  catalysts: string[];
+}
 
 const STRATEGIES: { key: Strategy; label: string; icon: string; tagline: string; desc: string }[] = [
   { key: 'all',      label: 'Top Picks',     icon: '⭐', tagline: 'Best overall K-Score',         desc: 'Highest composite score across technical, momentum, value, growth, and volatility.' },
@@ -20,6 +31,18 @@ const SIG_COLOR: Record<string, { color: string; bg: string; border: string }> =
   HOLD: { color: '#facc15', bg: 'rgba(250,204,21,0.12)', border: 'rgba(250,204,21,0.35)' },
   WAIT: { color: '#fb923c', bg: 'rgba(251,146,60,0.12)', border: 'rgba(251,146,60,0.35)' },
   SELL: { color: '#f87171', bg: 'rgba(239,68,68,0.12)',  border: 'rgba(239,68,68,0.35)'  },
+};
+
+const OUTLOOK_STYLE: Record<OutlookDirection, { color: string; bg: string; border: string; glow: string; icon: string }> = {
+  BULLISH: { color: '#4ade80', bg: 'rgba(34,197,94,0.12)',  border: 'rgba(34,197,94,0.35)',  glow: 'rgba(34,197,94,0.08)',  icon: '▲' },
+  BEARISH: { color: '#f87171', bg: 'rgba(239,68,68,0.12)',  border: 'rgba(239,68,68,0.35)',  glow: 'rgba(239,68,68,0.06)',  icon: '▼' },
+  NEUTRAL: { color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.2)', glow: 'rgba(148,163,184,0.04)', icon: '●' },
+};
+
+const CONF_COLOR: Record<string, string> = {
+  high:   '#818cf8',
+  medium: '#fb923c',
+  low:    '#64748b',
 };
 
 function scoreColor(n: number) {
@@ -123,6 +146,13 @@ export default function Opportunities() {
   const [strategy, setStrategy] = useState<Strategy>('all');
   const [market, setMarket] = useState<Market>('all');
 
+  // Near-term outlook state
+  const [outlook, setOutlook] = useState<OutlookItem[] | null>(null);
+  const [outlookLoading, setOutlookLoading] = useState(false);
+  const [outlookError, setOutlookError] = useState<string | null>(null);
+  const [outlookStatus, setOutlookStatus] = useState('');
+  const [outlookCollapsed, setOutlookCollapsed] = useState(false);
+
   const { data: rankData, isLoading } = useSWR('rankings-all', () => api.rankings());
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData } = useSWR('signals-all', () => api.allSignals());
@@ -160,7 +190,105 @@ export default function Opportunities() {
       .slice(0, 20);
   }, [rankData, priceMap, signalMap, strategy, market, watchedSet]);
 
+  async function generateOutlook() {
+    if (!isAiConfigured()) {
+      setOutlookError('No AI provider configured. Go to Settings → AI Assistant to add your API key.');
+      return;
+    }
+    const symbols = watchlist?.map(w => w.symbol) ?? [];
+    if (symbols.length === 0) {
+      setOutlookError('Your watchlist is empty. Add stocks first.');
+      return;
+    }
+
+    setOutlookLoading(true);
+    setOutlookError(null);
+    setOutlook(null);
+    setOutlookCollapsed(false);
+
+    try {
+      setOutlookStatus(`Fetching latest news for ${symbols.length} stocks…`);
+      const newsResults = await Promise.allSettled(
+        symbols.map(sym => api.getNews(sym, 'yfinance,google').catch(() => [] as { title: string; sentiment_label: string }[]))
+      );
+
+      setOutlookStatus('Analysing signals, trends, and news with AI…');
+
+      const stockContexts = symbols.map((sym, i) => {
+        const r = rankData?.rankings.find(row => row.symbol === sym);
+        const sig = signalMap[sym];
+        const lp = priceMap[sym];
+        const newsArr = newsResults[i].status === 'fulfilled'
+          ? (newsResults[i] as PromiseFulfilledResult<{ title: string; sentiment_label: string }[]>).value
+          : [];
+
+        if (!r) return null;
+
+        const headlines = newsArr
+          .slice(0, 5)
+          .map((n) => `  - [${n.sentiment_label}] ${n.title}`)
+          .join('\n') || '  (no recent news)';
+
+        return `Symbol: ${sym}
+Name: ${r.name}${r.name_zh ? ` (${r.name_zh})` : ''}
+Sector: ${r.sector ?? 'Unknown'} | Market: ${r.market}
+AI Signal: ${sig?.signal ?? 'N/A'} (${sig?.confidence?.toFixed(0) ?? 0}% confidence)
+K-Score: ${r.score.toFixed(0)} | Technical: ${(r.technical ?? 0).toFixed(0)} | Momentum: ${(r.momentum ?? 0).toFixed(0)} | Value: ${(r.value ?? 0).toFixed(0)} | Growth: ${(r.growth ?? 0).toFixed(0)}
+Today's Change: ${lp?.change_pct != null ? `${lp.change_pct >= 0 ? '+' : ''}${lp.change_pct.toFixed(2)}%` : 'N/A'}
+Recent News Headlines:
+${headlines}`;
+      }).filter(Boolean) as string[];
+
+      const systemPrompt = `You are a quantitative stock analyst specializing in short-term price prediction. Your task: for each stock, predict the near-term (2–5 day) price direction based on the AI signal, K-Score sub-scores, price momentum, and news headlines.
+
+Be direct and specific. Identify the single most important near-term catalyst or risk.
+
+Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON. Each element must have exactly these fields:
+{
+  "symbol": "string",
+  "direction": "BULLISH" | "BEARISH" | "NEUTRAL",
+  "horizon": "e.g. 2–3 days",
+  "confidence": "high" | "medium" | "low",
+  "reason": "1–2 sentences: the primary near-term driver, specific and actionable.",
+  "catalysts": ["bullet 1 (≤8 words)", "bullet 2", "bullet 3"]
+}`;
+
+      const userMsg = `Predict near-term price direction for these ${stockContexts.length} stocks:\n\n${stockContexts.join('\n\n---\n\n')}`;
+
+      const raw = await askAI([{ role: 'user', content: userMsg }], systemPrompt, 8192);
+
+      const jsonMatch = raw.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) throw new Error('AI response did not contain a JSON array. Try again.');
+
+      let parsed: OutlookItem[];
+      try {
+        parsed = JSON.parse(jsonMatch[0]) as OutlookItem[];
+      } catch {
+        throw new Error('AI response was cut off or malformed. Try again (fewer stocks or a different AI model may help).');
+      }
+
+      const dirOrder: Record<OutlookDirection, number> = { BULLISH: 0, NEUTRAL: 1, BEARISH: 2 };
+      const confOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
+      parsed.sort((a, b) =>
+        dirOrder[a.direction] - dirOrder[b.direction] ||
+        confOrder[a.confidence] - confOrder[b.confidence]
+      );
+
+      setOutlook(parsed);
+      setOutlookStatus('');
+    } catch (e: unknown) {
+      setOutlookError(e instanceof Error ? e.message : 'Failed to generate outlook.');
+    } finally {
+      setOutlookLoading(false);
+      setOutlookStatus('');
+    }
+  }
+
   const active = STRATEGIES.find(s => s.key === strategy)!;
+
+  const bullCount  = outlook?.filter(o => o.direction === 'BULLISH').length ?? 0;
+  const bearCount  = outlook?.filter(o => o.direction === 'BEARISH').length ?? 0;
+  const neutCount  = outlook?.filter(o => o.direction === 'NEUTRAL').length ?? 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -172,6 +300,233 @@ export default function Opportunities() {
           Top stocks ranked by strategy using K-Score sub-scores, AI signals, and live price data. Updated on every page load.
         </p>
       </div>
+
+      {/* ── Near-Term AI Outlook section ─────────────────────────────── */}
+      <div style={{
+        borderRadius: '14px',
+        border: '1px solid rgba(129,140,248,0.2)',
+        background: 'linear-gradient(135deg, rgba(79,70,229,0.05) 0%, rgba(15,23,42,0.95) 100%)',
+        overflow: 'hidden',
+      }}>
+        {/* Section header */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '14px 18px',
+          borderBottom: outlook && !outlookCollapsed ? '1px solid rgba(129,140,248,0.12)' : 'none',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{
+              width: '32px', height: '32px', borderRadius: '8px',
+              background: 'rgba(129,140,248,0.15)', border: '1px solid rgba(129,140,248,0.25)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px',
+            }}>🔮</div>
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#c7d2fe' }}>Near-Term AI Outlook</div>
+              <div style={{ fontSize: '11px', color: '#475569' }}>
+                AI prediction for next 2–5 days based on news, signals, momentum &amp; business trends
+              </div>
+            </div>
+            {outlook && (
+              <div style={{ display: 'flex', gap: '6px', marginLeft: '8px' }}>
+                {bullCount > 0 && (
+                  <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '10px', background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)', color: '#4ade80' }}>
+                    ▲ {bullCount} bullish
+                  </span>
+                )}
+                {bearCount > 0 && (
+                  <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '10px', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171' }}>
+                    ▼ {bearCount} bearish
+                  </span>
+                )}
+                {neutCount > 0 && (
+                  <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '10px', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.2)', color: '#94a3b8' }}>
+                    ● {neutCount} neutral
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {outlook && (
+              <button
+                onClick={() => setOutlookCollapsed(c => !c)}
+                style={{
+                  background: 'transparent', border: '1px solid #1e293b',
+                  color: '#475569', padding: '4px 10px', borderRadius: '6px',
+                  fontSize: '11px', cursor: 'pointer',
+                }}
+              >
+                {outlookCollapsed ? 'Show' : 'Hide'}
+              </button>
+            )}
+            <button
+              onClick={generateOutlook}
+              disabled={outlookLoading}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                padding: '7px 14px', borderRadius: '8px', border: 'none',
+                background: outlookLoading ? 'rgba(79,70,229,0.4)' : 'linear-gradient(135deg, #4f46e5, #6366f1)',
+                color: '#fff', fontSize: '12px', fontWeight: 700,
+                cursor: outlookLoading ? 'not-allowed' : 'pointer',
+                boxShadow: outlookLoading ? 'none' : '0 4px 12px rgba(79,70,229,0.3)',
+                transition: 'all 0.15s', whiteSpace: 'nowrap',
+              }}
+            >
+              {outlookLoading ? (
+                <>
+                  <span style={{ display: 'inline-block', animation: 'spin 0.8s linear infinite' }}>↻</span>
+                  Analysing…
+                </>
+              ) : outlook ? '↺ Refresh' : '✦ Generate Outlook'}
+            </button>
+          </div>
+        </div>
+
+        {/* Loading */}
+        {outlookLoading && (
+          <div style={{ padding: '32px 18px', textAlign: 'center' }}>
+            <div style={{ fontSize: '24px', marginBottom: '10px', animation: 'pulse 1.5s ease-in-out infinite' }}>🔮</div>
+            <div style={{ fontSize: '13px', color: '#818cf8', fontWeight: 600 }}>{outlookStatus || 'Generating outlook…'}</div>
+            <div style={{ fontSize: '11px', color: '#334155', marginTop: '4px' }}>Fetching news + running AI analysis on all your watchlist stocks</div>
+          </div>
+        )}
+
+        {/* Error */}
+        {outlookError && !outlookLoading && (
+          <div style={{ margin: '14px 18px', padding: '12px 14px', borderRadius: '8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', fontSize: '13px', color: '#f87171' }}>
+            {outlookError}
+          </div>
+        )}
+
+        {/* Empty prompt */}
+        {!outlook && !outlookLoading && !outlookError && (
+          <div style={{ padding: '28px 18px', textAlign: 'center', color: '#334155' }}>
+            <div style={{ fontSize: '12px', color: '#475569', marginBottom: '6px' }}>
+              Click <strong style={{ color: '#818cf8' }}>Generate Outlook</strong> to get AI-powered near-term predictions for every stock in your watchlist.
+            </div>
+            <div style={{ fontSize: '11px', color: '#334155' }}>
+              Analyses recent news, business catalysts, AI signals, and price momentum to predict direction over the next 2–5 days.
+            </div>
+          </div>
+        )}
+
+        {/* Results grid */}
+        {outlook && !outlookLoading && !outlookCollapsed && (
+          <div style={{ padding: '14px 18px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '10px' }}>
+            {outlook.map(item => {
+              const style = OUTLOOK_STYLE[item.direction];
+              const r = rankData?.rankings.find(row => row.symbol === item.symbol);
+              const sig = signalMap[item.symbol];
+              const lp = priceMap[item.symbol];
+
+              return (
+                <Link key={item.symbol} href={`/stock/${item.symbol}`} style={{ textDecoration: 'none' }}>
+                  <div
+                    className="outlook-card"
+                    style={{
+                      borderRadius: '10px',
+                      border: `1px solid ${style.border}`,
+                      background: `linear-gradient(135deg, ${style.glow} 0%, #0f172a 100%)`,
+                      padding: '14px',
+                      transition: 'all 0.15s',
+                      height: '100%',
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    {/* Top row: symbol + direction badge */}
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '8px' }}>
+                      <div>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: '#f1f5f9' }}>{item.symbol}</div>
+                        <div style={{ fontSize: '10px', color: '#475569', marginTop: '1px' }}>
+                          {r?.name_zh || r?.name || ''}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                        <span style={{
+                          fontSize: '11px', fontWeight: 800, padding: '3px 10px', borderRadius: '6px',
+                          color: style.color, background: style.bg, border: `1px solid ${style.border}`,
+                          letterSpacing: '0.04em',
+                        }}>
+                          {style.icon} {item.direction}
+                        </span>
+                        <span style={{
+                          fontSize: '9px', fontWeight: 700,
+                          color: CONF_COLOR[item.confidence],
+                          textTransform: 'uppercase', letterSpacing: '0.05em',
+                        }}>
+                          {item.confidence} confidence
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Horizon + current signal */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', background: 'rgba(129,140,248,0.12)', border: '1px solid rgba(129,140,248,0.2)', color: '#818cf8' }}>
+                        ⏱ {item.horizon}
+                      </span>
+                      {sig && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: SIG_COLOR[sig.signal]?.color, background: SIG_COLOR[sig.signal]?.bg, border: `1px solid ${SIG_COLOR[sig.signal]?.border}` }}>
+                          {sig.signal} {sig.confidence.toFixed(0)}%
+                        </span>
+                      )}
+                      {lp?.change_pct != null && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, color: lp.change_pct >= 0 ? '#4ade80' : '#f87171' }}>
+                          {lp.change_pct >= 0 ? '▲' : '▼'} {Math.abs(lp.change_pct).toFixed(2)}%
+                        </span>
+                      )}
+                    </div>
+
+                    {/* AI reason */}
+                    <p style={{ fontSize: '11px', color: '#94a3b8', lineHeight: 1.5, margin: '0 0 8px', fontStyle: 'italic' }}>
+                      "{item.reason}"
+                    </p>
+
+                    {/* Catalyst bullets */}
+                    {item.catalysts?.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                        {item.catalysts.map((c, i) => (
+                          <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '5px' }}>
+                            <span style={{ fontSize: '8px', color: style.color, flexShrink: 0, marginTop: '2px' }}>{style.icon}</span>
+                            <span style={{ fontSize: '10px', color: '#64748b', lineHeight: 1.4 }}>{c}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* K-score footer */}
+                    {r && (
+                      <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.04)', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        {[
+                          { l: 'T', v: r.technical, t: 'Technical' },
+                          { l: 'M', v: r.momentum,  t: 'Momentum'  },
+                          { l: 'V', v: r.value,     t: 'Value'     },
+                          { l: 'G', v: r.growth,    t: 'Growth'    },
+                        ].map(({ l, v, t }) => v != null ? (
+                          <div key={l} title={`${t}: ${v.toFixed(0)}`} style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                            <span style={{ fontSize: '8px', color: '#334155', fontWeight: 700 }}>{l}</span>
+                            <div style={{ width: '24px', height: '3px', borderRadius: '2px', background: '#1e293b', overflow: 'hidden' }}>
+                              <div style={{ height: '100%', width: `${v}%`, background: scoreColor(v), borderRadius: '2px' }} />
+                            </div>
+                          </div>
+                        ) : null)}
+                        <span style={{ fontSize: '9px', color: '#334155', marginLeft: 'auto' }}>K {r.score.toFixed(0)}</span>
+                      </div>
+                    )}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Disclaimer */}
+        {outlook && !outlookLoading && !outlookCollapsed && (
+          <div style={{ padding: '8px 18px 12px', fontSize: '10px', color: '#1e293b', textAlign: 'center' }}>
+            AI predictions are for informational purposes only and do not constitute financial advice. Always do your own research.
+          </div>
+        )}
+      </div>
+      {/* ── End Near-Term Outlook ────────────────────────────────────── */}
 
       {/* Strategy selector */}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -368,6 +723,9 @@ export default function Opportunities() {
 
       <style>{`
         .opp-card:hover { border-color: #334155 !important; background: #0f1829 !important; }
+        .outlook-card:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
       `}</style>
     </div>
   );

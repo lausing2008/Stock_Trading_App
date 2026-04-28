@@ -59,10 +59,12 @@ async def _claude(req: AiChatRequest) -> AiChatResponse:
         body["system"] = req.system
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
     except httpx.TimeoutException:
-        raise HTTPException(504, "Claude API timed out")
+        raise HTTPException(504, "Claude API timed out after 120 s")
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"Network error contacting Claude: {exc}")
 
     if r.status_code != 200:
         try:
@@ -71,12 +73,13 @@ async def _claude(req: AiChatRequest) -> AiChatResponse:
             detail = r.text
         raise HTTPException(r.status_code, f"Claude error: {detail}")
 
-    data = r.json()
-    return AiChatResponse(
-        content=data["content"][0]["text"],
-        model=data.get("model", req.model),
-        provider="claude",
-    )
+    try:
+        data = r.json()
+        content = data["content"][0]["text"]
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to parse Claude response: {exc}")
+
+    return AiChatResponse(content=content, model=data.get("model", req.model), provider="claude")
 
 
 async def _deepseek(req: AiChatRequest) -> AiChatResponse:
@@ -95,10 +98,12 @@ async def _deepseek(req: AiChatRequest) -> AiChatResponse:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             r = await client.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=body)
     except httpx.TimeoutException:
-        raise HTTPException(504, "DeepSeek API timed out")
+        raise HTTPException(504, "DeepSeek API timed out after 120 s")
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"Network error contacting DeepSeek: {exc}")
 
     if r.status_code != 200:
         try:
@@ -107,9 +112,10 @@ async def _deepseek(req: AiChatRequest) -> AiChatResponse:
             detail = r.text
         raise HTTPException(r.status_code, f"DeepSeek error: {detail}")
 
-    data = r.json()
-    return AiChatResponse(
-        content=data["choices"][0]["message"]["content"],
-        model=data.get("model", req.model),
-        provider="deepseek",
-    )
+    try:
+        data = r.json()
+        content = data["choices"][0]["message"]["content"]
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to parse DeepSeek response: {exc}")
+
+    return AiChatResponse(content=content, model=data.get("model", req.model), provider="deepseek")

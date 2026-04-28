@@ -21,6 +21,7 @@ export function isAiConfigured(): boolean {
 export async function askAI(
   messages: AiMessage[],
   system?: string,
+  maxTokens = 2048,
 ): Promise<string> {
   const s = loadSettings();
   if (s.aiProvider === 'none') {
@@ -42,7 +43,7 @@ export async function askAI(
       api_key: apiKey,
       messages,
       system,
-      max_tokens: 2048,
+      max_tokens: maxTokens,
     }),
   });
 
