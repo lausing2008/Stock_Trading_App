@@ -8,7 +8,9 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY frontend .
 ARG API_GATEWAY_URL=http://api-gateway:8000
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
 ENV API_GATEWAY_URL=${API_GATEWAY_URL}
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 RUN npm run build
 
 FROM node:20-alpine AS runtime
