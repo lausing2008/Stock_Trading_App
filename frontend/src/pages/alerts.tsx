@@ -7,7 +7,7 @@ import {
   type StockAlert, type ConditionType, type AlertCondition,
 } from '@/lib/alerts';
 import { loadSettings } from '@/lib/settings';
-import { api, type Stock } from '@/lib/api';
+import { api, type WatchlistItem } from '@/lib/api';
 
 const CONDITION_OPTIONS: { value: ConditionType; label: string; hasThreshold: boolean; unit: string }[] = [
   { value: 'price_above',      label: 'Price rises above',     hasThreshold: true,  unit: '$' },
@@ -50,7 +50,7 @@ const lbl: React.CSSProperties = {
 };
 
 export default function AlertsPage() {
-  const { data: stocks } = useSWR<Stock[]>('stocks', () => api.listStocks());
+  const { data: stocks } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
   const settings = loadSettings();
 
   const [alerts, setAlerts] = useState<StockAlert[]>([]);

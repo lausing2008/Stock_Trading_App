@@ -17,7 +17,8 @@
       "Bash(curl -s -X POST http://localhost:8000/ai/chat -H 'Content-Type: application/json' -d '{\"provider\":\"claude\",\"model\":\"claude-sonnet-4-6\",\"api_key\":\"test\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}')",
       "Bash(docker exec *)",
       "Bash(python3 -c \"import json,sys; paths=json.load\\(sys.stdin\\)['paths']; print\\('\\\\n'.join\\(k for k in paths.keys\\(\\)\\)\\)\")",
-      "Bash(docker-compose -f docker/docker-compose.yml build frontend)"
+      "Bash(docker-compose -f docker/docker-compose.yml build frontend)",
+      "Bash(curl -s -X POST \"http://localhost:8005/signals/refresh?market=US\")"
     ]
   }
 }

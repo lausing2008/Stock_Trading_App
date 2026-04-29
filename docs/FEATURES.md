@@ -3,6 +3,8 @@
 Complete reference for every feature in StockAI — what it does, where to find it,
 and how it works under the hood.
 
+> For K-Score and Fair Value calculation details, see [SCORING.md](SCORING.md).
+
 ---
 
 ## Login (`/login`)
@@ -65,7 +67,7 @@ The grid shows only the stocks in the logged-in user's watchlist. Each card show
 - **Day change** — percentage and direction arrow, color-coded green/red
 - **K-Score** — composite 0–100 score (green ≥ 70 / yellow ≥ 50 / red < 50)
 - **BUY / HOLD / WAIT / SELL badge** — real TA + ML signal from the signal engine
-- **Fair price** — DCF-lite value from the ranking engine
+- **Fair price** — 200-day SMA from the ranking engine (see [SCORING.md](SCORING.md))
 
 ### Toolbar
 - **↻ Refresh** — re-fetches all data sources simultaneously
@@ -90,7 +92,7 @@ Full drill-down page for a single stock.
 ### Header
 - Symbol, company name (with Chinese name subtitle for HK stocks), market, exchange, sector
 - **Live Price card** — real-time price, day change % (color-coded), and previous close. Fetched from yfinance `fast_info` via the shared `latest-prices` SWR key, auto-refreshes every 60 s. Falls back to "Last Close" from the DB if the live quote is unavailable.
-- **Fair Value** card — DCF-lite derived fair price with K-Score
+- **Fair Value** card — 200-day SMA fair price with K-Score (see [SCORING.md](SCORING.md))
 - **AI Signal** card — BUY / HOLD / WAIT / SELL with bullish probability %; colour-coded green / yellow / orange / red
 - **↻ Refresh** / **☆ Watch** toggle
 
@@ -585,8 +587,8 @@ Clearing `stockai_jwt` from `localStorage` logs the user out. Clearing all stora
 |-----------|-------|---------------|
 | Technical | 0–100 | SMA trend, RSI health, MACD direction, golden/death cross |
 | Momentum | 0–100 | 1-week, 1-month, 3-month price rate-of-change |
-| Value | 0–100 | P/E, P/B, EV/EBITDA vs sector; DCF-lite fair price |
-| Growth | 0–100 | Revenue + earnings growth (YoY) |
+| Value | 0–100 | Discount from 52-week high (price proxy; fundamentals not yet integrated) |
+| Growth | 0–100 | 12-month price CAGR (price proxy; earnings/revenue growth not yet integrated) |
 | Volatility | 0–100 | Inverse of 30-day realized volatility |
 | **K-Score** | 0–100 | Weighted composite — above 70 is strong, below 40 is weak |
 

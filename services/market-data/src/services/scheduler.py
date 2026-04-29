@@ -1,26 +1,74 @@
-"""Daily scheduler — refreshes prices outside trading hours."""
+"""Market-aware scheduler — refreshes prices, rankings, signals, and ML models
+around trading hours for US (NYSE/NASDAQ) and HK (HKEX) markets.
+
+Schedule (times are in the local market timezone, DST handled automatically):
+
+  US (America/New_York):
+    09:00  pre-open         ingest + rankings + signals
+    10:45  intra-day 1      ingest + rankings + signals
+    12:45  intra-day 2      ingest + rankings + signals
+    14:45  intra-day 3      ingest + rankings + signals
+    16:30  post-close       ingest + rankings + signals + ML retrain
+
+  HK (Asia/Hong_Kong, UTC+8, no DST):
+    09:00  pre-open         ingest + rankings + signals
+    10:30  intra-day 1      ingest + rankings + signals
+    14:15  intra-day 2      ingest + rankings + signals  (post-lunch)
+    15:30  intra-day 3      ingest + rankings + signals
+    16:30  post-close       ingest + rankings + signals + ML retrain
+"""
+from __future__ import annotations
+
+import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
+from common.config import get_settings
 from common.logging import get_logger
 from db import SessionLocal, Stock
 
 from .ingestion import ingest_universe
 
 log = get_logger("scheduler")
-
+_settings = get_settings()
 _scheduler: BackgroundScheduler | None = None
 
 
-def _daily_refresh() -> None:
+def _symbols_for(market: str) -> list[str]:
     with SessionLocal() as session:
-        symbols = list(session.execute(select(Stock.symbol).where(Stock.active.is_(True))).scalars())
+        return list(
+            session.execute(
+                select(Stock.symbol).where(Stock.active.is_(True), Stock.market == market)
+            ).scalars()
+        )
+
+
+def _post(url: str, **kwargs) -> None:
+    try:
+        with httpx.Client(timeout=15) as client:
+            client.post(url, **kwargs)
+    except Exception as exc:
+        log.warning("scheduler.http_error", url=url, error=str(exc))
+
+
+def _refresh_market(market: str, *, post_close: bool = False) -> None:
+    symbols = _symbols_for(market)
     if not symbols:
-        log.info("scheduler.skip", reason="empty_universe")
+        log.info("scheduler.skip", market=market, reason="no_symbols")
         return
-    log.info("scheduler.run", count=len(symbols))
+
+    log.info("scheduler.refresh_start", market=market, count=len(symbols), post_close=post_close)
+
     ingest_universe(symbols, "1d")
+
+    _post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": market})
+    _post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": market})
+
+    if post_close:
+        _post(f"{_settings.ml_prediction_url}/ml/train_all")
+
+    log.info("scheduler.refresh_done", market=market, post_close=post_close)
 
 
 def start_scheduler() -> None:
@@ -28,7 +76,60 @@ def start_scheduler() -> None:
     if _scheduler is not None:
         return
     _scheduler = BackgroundScheduler(timezone="UTC")
-    # Daily 22:30 UTC — after US close, before HK open
-    _scheduler.add_job(_daily_refresh, CronTrigger(hour=22, minute=30), id="daily_refresh", replace_existing=True)
+
+    # ── US Market (America/New_York — DST handled automatically) ────────────
+    _scheduler.add_job(
+        lambda: _refresh_market("US"),
+        CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+        id="us_pre_open", replace_existing=True,
+    )
+    _scheduler.add_job(
+        lambda: _refresh_market("US"),
+        CronTrigger(hour=10, minute=45, day_of_week="mon-fri", timezone="America/New_York"),
+        id="us_intra_1", replace_existing=True,
+    )
+    _scheduler.add_job(
+        lambda: _refresh_market("US"),
+        CronTrigger(hour=12, minute=45, day_of_week="mon-fri", timezone="America/New_York"),
+        id="us_intra_2", replace_existing=True,
+    )
+    _scheduler.add_job(
+        lambda: _refresh_market("US"),
+        CronTrigger(hour=14, minute=45, day_of_week="mon-fri", timezone="America/New_York"),
+        id="us_intra_3", replace_existing=True,
+    )
+    _scheduler.add_job(
+        lambda: _refresh_market("US", post_close=True),
+        CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
+        id="us_post_close", replace_existing=True,
+    )
+
+    # ── HK Market (Asia/Hong_Kong — UTC+8, no DST) ──────────────────────────
+    _scheduler.add_job(
+        lambda: _refresh_market("HK"),
+        CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="hk_pre_open", replace_existing=True,
+    )
+    _scheduler.add_job(
+        lambda: _refresh_market("HK"),
+        CronTrigger(hour=10, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="hk_intra_1", replace_existing=True,
+    )
+    _scheduler.add_job(
+        lambda: _refresh_market("HK"),
+        CronTrigger(hour=14, minute=15, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="hk_intra_2", replace_existing=True,
+    )
+    _scheduler.add_job(
+        lambda: _refresh_market("HK"),
+        CronTrigger(hour=15, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="hk_intra_3", replace_existing=True,
+    )
+    _scheduler.add_job(
+        lambda: _refresh_market("HK", post_close=True),
+        CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="hk_post_close", replace_existing=True,
+    )
+
     _scheduler.start()
-    log.info("scheduler.started")
+    log.info("scheduler.started", jobs=10)

@@ -1,5 +1,5 @@
 'use client';
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { api, type Stock, type WatchlistItem, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex } from '@/lib/api';
@@ -176,6 +176,9 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [trainState, setTrainState] = useState<null | 'running' | 'done' | 'error'>(null);
   const [trainInfo, setTrainInfo] = useState<{ ingestCount?: number; trainCount?: number; error?: string } | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  const autoRefreshRef = useRef(autoRefresh);
 
   const watchedSet = new Set(watchlist?.map(w => w.symbol) ?? []);
   const rankMap = useMemo(() => {
@@ -199,8 +202,19 @@ export default function Home() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await Promise.all([mutateStocks(), mutateWatchlist(), mutateRankings(), mutatePrices(), mutateSignals()]);
+    setLastRefreshed(new Date());
     setRefreshing(false);
   }, [mutateStocks, mutateWatchlist, mutateRankings, mutatePrices, mutateSignals]);
+
+  // Keep ref in sync so the interval callback always sees current value
+  useEffect(() => { autoRefreshRef.current = autoRefresh; }, [autoRefresh]);
+
+  // Auto-refresh: re-fetch all data every 5 minutes while active
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(() => { handleRefresh(); }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [autoRefresh, handleRefresh]);
 
   async function handleTrainAll() {
     if (trainState === 'running') return;
@@ -297,6 +311,11 @@ export default function Home() {
 
         {/* Action buttons */}
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {lastRefreshed && (
+            <span style={{ fontSize: '11px', color: '#334155' }}>
+              {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
           <button
             onClick={handleRefresh}
             disabled={refreshing}
@@ -312,6 +331,25 @@ export default function Home() {
           >
             <span style={{ display: 'inline-block', fontSize: '15px', lineHeight: 1, animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
             {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+          <button
+            onClick={() => setAutoRefresh(v => !v)}
+            title={autoRefresh ? 'Auto-refresh ON — updates every 5 min. Click to turn off.' : 'Turn on auto-refresh (every 5 min)'}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '5px',
+              padding: '7px 12px', borderRadius: '6px',
+              border: `1px solid ${autoRefresh ? 'rgba(34,197,94,0.35)' : 'rgba(148,163,184,0.15)'}`,
+              background: autoRefresh ? 'rgba(34,197,94,0.07)' : 'rgba(255,255,255,0.03)',
+              color: autoRefresh ? '#4ade80' : '#64748b',
+              cursor: 'pointer', fontSize: '13px', transition: 'all 0.2s',
+            }}
+          >
+            <span style={{
+              width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0,
+              background: autoRefresh ? '#4ade80' : '#475569',
+              animation: autoRefresh ? 'pulse 2s ease-in-out infinite' : 'none',
+            }} />
+            Auto
           </button>
           <button
             onClick={handleTrainAll}
@@ -636,6 +674,7 @@ export default function Home() {
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.4; transform:scale(1.4); } }
         .stock-card:hover { border-color: #334155 !important; background: #0f1829 !important; }
         .stock-card:hover .delete-btn { color: #475569 !important; }
         .delete-btn:hover { color: #ef4444 !important; }
