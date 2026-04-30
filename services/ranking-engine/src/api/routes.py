@@ -15,6 +15,14 @@ from ..scoring import compute_kscore
 router = APIRouter(prefix="/rankings", tags=["rankings"])
 
 
+def _clean(v):
+    """Return None for NaN/Inf so the response stays JSON-safe."""
+    import math
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return None
+    return v
+
+
 def _load_prices(session: Session, stock_id: int, lookback: int = 300) -> pd.DataFrame:
     since = date.today() - timedelta(days=lookback * 2)
     rows = session.execute(
@@ -45,7 +53,8 @@ def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     if df.empty:
         raise HTTPException(404, f"No price data for {symbol}")
     comp = compute_kscore(df)
-    return {"symbol": symbol, **asdict(comp)}
+    d = {k: _clean(v) for k, v in asdict(comp).items()}
+    return {"symbol": symbol, **d}
 
 
 @router.get("")
@@ -72,16 +81,16 @@ def leaderboard(
                 "name_zh": s.name_zh,
                 "market": s.market.value,
                 "sector": s.sector,
-                "score": comp.score,
-                "technical": comp.technical,
-                "momentum": comp.momentum,
-                "value": comp.value,
-                "growth": comp.growth,
-                "volatility": comp.volatility,
-                "fair_price": comp.fair_price,
+                "score": _clean(comp.score),
+                "technical": _clean(comp.technical),
+                "momentum": _clean(comp.momentum),
+                "value": _clean(comp.value),
+                "growth": _clean(comp.growth),
+                "volatility": _clean(comp.volatility),
+                "fair_price": _clean(comp.fair_price),
             }
         )
-    results.sort(key=lambda r: r["score"], reverse=True)
+    results.sort(key=lambda r: r["score"] or 0, reverse=True)
     return {"as_of": str(date.today()), "rankings": results[:limit]}
 
 
