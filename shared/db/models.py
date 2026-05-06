@@ -81,6 +81,7 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     watchlist_items: Mapped[list["WatchlistItem"]] = relationship(back_populates="user")
+    watchlists: Mapped[list["Watchlist"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Stock(Base):
@@ -234,6 +235,20 @@ class PortfolioHolding(Base):
     portfolio: Mapped[Portfolio] = relationship(back_populates="holdings")
 
 
+class Watchlist(Base):
+    __tablename__ = "watchlists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="watchlists")
+    items: Mapped[list["WatchlistItem"]] = relationship(back_populates="watchlist", cascade="all, delete-orphan")
+
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_watchlist_user_name"),)
+
+
 class WatchlistItem(Base):
     __tablename__ = "watchlist_items"
 
@@ -242,8 +257,12 @@ class WatchlistItem(Base):
     user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    watchlist_id: Mapped[int | None] = mapped_column(
+        ForeignKey("watchlists.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User | None"] = relationship(back_populates="watchlist_items")
+    watchlist: Mapped["Watchlist | None"] = relationship(back_populates="items")
 
     __table_args__ = (UniqueConstraint("user_id", "stock_id", name="uq_watchlist_user_stock"),)

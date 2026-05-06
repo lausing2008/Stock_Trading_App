@@ -42,9 +42,13 @@ export const api = {
   addStock: (symbol: string) => request<{ status: string; symbol: string; name: string; sector?: string }>(`/admin/add_stock`, { method: 'POST', body: JSON.stringify({ symbol }) }),
   deleteStock: (symbol: string) => request<{ status: string; symbol: string }>(`/admin/stocks/${symbol}`, { method: 'DELETE' }),
   marketOverview: () => request<MarketIndex[]>(`/stocks/market_overview`),
-  listWatchlist: () => request<WatchlistItem[]>(`/watchlist`),
-  addToWatchlist: (symbol: string) => request<WatchlistItem>(`/watchlist/${symbol}`, { method: 'POST' }),
-  removeFromWatchlist: (symbol: string) => request(`/watchlist/${symbol}`, { method: 'DELETE' }),
+  listWatchlists: () => request<WatchlistMeta[]>(`/watchlists`),
+  createWatchlist: (name: string) => request<WatchlistMeta>(`/watchlists`, { method: 'POST', body: JSON.stringify({ name }) }),
+  renameWatchlist: (id: number, name: string) => request<WatchlistMeta>(`/watchlists/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+  deleteWatchlist: (id: number) => request(`/watchlists/${id}`, { method: 'DELETE' }),
+  listWatchlist: (listId?: number) => request<WatchlistItem[]>(`/watchlist${listId != null ? `?list_id=${listId}` : ''}`),
+  addToWatchlist: (symbol: string, listId?: number) => request<WatchlistItem>(`/watchlist/${symbol}${listId != null ? `?list_id=${listId}` : ''}`, { method: 'POST' }),
+  removeFromWatchlist: (symbol: string, listId?: number) => request(`/watchlist/${symbol}${listId != null ? `?list_id=${listId}` : ''}`, { method: 'DELETE' }),
   isWatched: async (symbol: string): Promise<boolean> => {
     const items = await request<WatchlistItem[]>(`/watchlist`);
     return items.some(i => i.symbol === symbol);
@@ -116,6 +120,7 @@ export type PortfolioWeights = {
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string };
 export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string };
+export type WatchlistMeta = { id: number; name: string; item_count: number; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; created_at: string };
 

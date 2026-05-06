@@ -2,7 +2,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
-import { api, type Stock, type WatchlistItem, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex } from '@/lib/api';
+import { api, type Stock, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex } from '@/lib/api';
 import AddStockModal from '@/components/AddStockModal';
 
 const SECTOR_COLOR: Record<string, { text: string; bg: string }> = {
@@ -162,6 +162,7 @@ function MarketOverview({ indices, signals }: { indices: MarketIndex[]; signals:
 export default function Home() {
   const { data: stocks, error, mutate: mutateStocks } = useSWR<Stock[]>('stocks', () => api.listStocks());
   const { data: watchlist, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: watchlists, mutate: mutateWatchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
@@ -250,9 +251,10 @@ export default function Home() {
     } finally { setDeleting(null); }
   }
 
-  async function handleAdded(symbol: string) {
-    try { await api.addToWatchlist(symbol); } catch {}
+  async function handleAdded(symbol: string, listId?: number) {
+    try { await api.addToWatchlist(symbol, listId); } catch {}
     await mutateWatchlist();
+    mutateWatchlists();
     setTimeout(() => { mutateStocks(); globalMutate('rankings-all'); globalMutate('latest-prices'); }, 1500);
   }
 
@@ -669,7 +671,7 @@ export default function Home() {
       )}
 
       {showAddModal && (
-        <AddStockModal onClose={() => setShowAddModal(false)} onAdded={handleAdded} />
+        <AddStockModal onClose={() => setShowAddModal(false)} onAdded={handleAdded} lists={watchlists ?? []} />
       )}
 
       <style>{`

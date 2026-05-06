@@ -46,7 +46,7 @@ _HK_ZH_NAMES = {
 }
 
 
-def _run_migrations() -> None:
+def _run_migrations() -> None:  # noqa: C901
     with engine.begin() as conn:
         # Add Chinese name column and backfill known HK stocks
         conn.execute(text(
@@ -82,6 +82,51 @@ def _run_migrations() -> None:
                     ADD CONSTRAINT uq_watchlist_user_stock UNIQUE (user_id, stock_id);
                 END IF;
             END $$
+        """))
+        # ── Named watchlists ───────────────────────────────────────────────
+        # Create watchlists table
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS watchlists (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name       VARCHAR(128) NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT now(),
+                UNIQUE(user_id, name)
+            )
+        """))
+        # Add watchlist_id FK to watchlist_items
+        conn.execute(text("""
+            ALTER TABLE watchlist_items
+            ADD COLUMN IF NOT EXISTS watchlist_id INTEGER
+            REFERENCES watchlists(id) ON DELETE CASCADE
+        """))
+        # Create default "My Watchlist" for every user that has items
+        conn.execute(text("""
+            INSERT INTO watchlists (user_id, name)
+            SELECT DISTINCT user_id, 'My Watchlist'
+            FROM watchlist_items
+            WHERE user_id IS NOT NULL
+            ON CONFLICT (user_id, name) DO NOTHING
+        """))
+        # Assign orphaned items to their owner's default watchlist
+        conn.execute(text("""
+            UPDATE watchlist_items wi
+            SET watchlist_id = w.id
+            FROM watchlists w
+            WHERE w.user_id = wi.user_id
+              AND w.name    = 'My Watchlist'
+              AND wi.watchlist_id IS NULL
+        """))
+        # Partial unique index: one stock per watchlist
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_uq_wl_item
+            ON watchlist_items (watchlist_id, stock_id)
+            WHERE watchlist_id IS NOT NULL
+        """))
+        # Drop the old per-user constraint that blocks multi-list membership
+        conn.execute(text("""
+            ALTER TABLE watchlist_items
+            DROP CONSTRAINT IF EXISTS uq_watchlist_user_stock
         """))
 
 

@@ -1,8 +1,8 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { api, type WatchlistItem, type RankingRow, type LatestPrice, type SignalSummary } from '@/lib/api';
+import { api, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock } from '@/lib/api';
 import { storage } from '@/lib/storage';
 
 /* ── helpers ────────────────────────────────────────────── */
@@ -108,15 +108,157 @@ function AlertModal({ symbol, price, initial, onSave, onClose }: { symbol: strin
   );
 }
 
+/* ── Create watchlist modal ─────────────────────────────── */
+function CreateWatchlistModal({ onSave, onClose }: { onSave: (name: string) => Promise<void>; onClose: () => void }) {
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setSaving(true);
+    await onSave(name.trim());
+    setSaving(false);
+    onClose();
+  }
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.8)', backdropFilter: 'blur(4px)' }} />
+      <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '340px', borderRadius: '14px', background: '#0d1424', border: '1px solid rgba(99,102,241,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
+        <div style={{ height: '3px', background: 'linear-gradient(90deg,#4f46e5,#818cf8,#4f46e5)' }} />
+        <form onSubmit={submit} style={{ padding: '18px 20px 20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '14px' }}>
+            <span style={{ fontWeight: 700, fontSize: '14px', color: '#f1f5f9' }}>New Watchlist</span>
+            <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer' }}>✕</button>
+          </div>
+          <input
+            autoFocus
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="e.g. Tech Stocks, Dividend Plays…"
+            maxLength={64}
+            style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box' }}
+          />
+          <button
+            type="submit"
+            disabled={!name.trim() || saving}
+            style={{ marginTop: '12px', width: '100%', borderRadius: '8px', padding: '9px', background: name.trim() ? 'linear-gradient(135deg,#4f46e5,#6366f1)' : 'rgba(255,255,255,0.05)', border: 'none', color: name.trim() ? '#fff' : '#475569', fontSize: '13px', fontWeight: 700, cursor: name.trim() ? 'pointer' : 'default' }}
+          >
+            {saving ? 'Creating…' : 'Create Watchlist'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ── Add-to-list modal ──────────────────────────────────── */
+function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
+  listId: number;
+  currentSymbols: Set<string>;
+  onClose: () => void;
+  onAdded: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [adding, setAdding] = useState<string | null>(null);
+  const [added, setAdded] = useState<Set<string>>(new Set());
+  const { data: stocks } = useSWR<Stock[]>('stocks-universe', () => api.listStocks());
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', fn);
+    return () => window.removeEventListener('keydown', fn);
+  }, [onClose]);
+
+  const filtered = useMemo(() => {
+    if (!stocks) return [];
+    const q = query.trim().toLowerCase();
+    return stocks.filter(s =>
+      !q || s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
+    ).slice(0, 50);
+  }, [stocks, query]);
+
+  async function addStock(symbol: string) {
+    setAdding(symbol);
+    await api.addToWatchlist(symbol, listId);
+    setAdded(prev => new Set(prev).add(symbol));
+    setAdding(null);
+    onAdded();
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(6px)' }} />
+      <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '480px', maxHeight: '80vh', borderRadius: '16px', background: 'linear-gradient(160deg, #0d1424 0%, #090e1a 100%)', border: '1px solid rgba(99,102,241,0.3)', boxShadow: '0 32px 64px rgba(0,0,0,0.6)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ height: '3px', background: 'linear-gradient(90deg, #4f46e5, #818cf8, #4f46e5)', flexShrink: 0 }} />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 20px 14px', flexShrink: 0 }}>
+          <span style={{ fontSize: '15px', fontWeight: 700, color: '#f1f5f9' }}>Add stocks to list</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px' }}>✕</button>
+        </div>
+        <div style={{ padding: '0 20px 12px', flexShrink: 0 }}>
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search by symbol or name…"
+            style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box' }}
+          />
+        </div>
+        <div style={{ overflowY: 'auto', padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          {!stocks && <div style={{ color: '#475569', fontSize: '13px', padding: '12px 0' }}>Loading…</div>}
+          {filtered.map(stock => {
+            const inList = currentSymbols.has(stock.symbol) || added.has(stock.symbol);
+            const isAdding = adding === stock.symbol;
+            return (
+              <div key={stock.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 12px', borderRadius: '8px', background: inList ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${inList ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.05)'}` }}>
+                <div style={{ minWidth: 0 }}>
+                  <span style={{ fontWeight: 700, fontSize: '13px', color: '#f1f5f9', fontFamily: 'ui-monospace, monospace' }}>{stock.symbol}</span>
+                  <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{stock.name}</span>
+                </div>
+                <button
+                  onClick={() => !inList && addStock(stock.symbol)}
+                  disabled={inList || isAdding}
+                  style={{ flexShrink: 0, marginLeft: '8px', padding: '5px 12px', borderRadius: '6px', border: 'none', fontSize: '12px', fontWeight: 700, cursor: inList ? 'default' : 'pointer', background: inList ? 'rgba(34,197,94,0.1)' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: inList ? '#4ade80' : '#fff', opacity: isAdding ? 0.6 : 1 }}
+                >
+                  {isAdding ? '…' : inList ? '✓' : '+ Add'}
+                </button>
+              </div>
+            );
+          })}
+          {stocks && filtered.length === 0 && (
+            <div style={{ color: '#475569', fontSize: '13px', padding: '16px 0', textAlign: 'center' }}>No tracked stocks match "{query}"</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Main ───────────────────────────────────────────────── */
 export default function Watchlist() {
   const router = useRouter();
-  const { data, error, isLoading, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+
+  // Watchlist meta (tabs)
+  const { data: lists, mutate: mutateLists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
+  const [activeListId, setActiveListId] = useState<number | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  // Resolve active list id from fetched lists
+  const resolvedListId = activeListId ?? lists?.[0]?.id ?? null;
+
+  const { data, error, isLoading, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>(
+    resolvedListId != null ? ['watchlist', resolvedListId] : null,
+    () => api.listWatchlist(resolvedListId!),
+  );
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
 
+  const [showAddToList, setShowAddToList] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [moveMenu, setMoveMenu] = useState<string | null>(null);
+  const [moving, setMoving] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [sigFilter, setSigFilter] = useState<SigFilter>('ALL');
   const [sortKey, setSortKey] = useState<SortKey>('symbol');
@@ -133,15 +275,52 @@ export default function Watchlist() {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([mutateWatchlist(), mutateRankings(), mutatePrices(), mutateSignals()]);
+    await Promise.all([mutateWatchlist(), mutateRankings(), mutatePrices(), mutateSignals(), mutateLists()]);
     setRefreshing(false);
-  }, [mutateWatchlist, mutateRankings, mutatePrices, mutateSignals]);
+  }, [mutateWatchlist, mutateRankings, mutatePrices, mutateSignals, mutateLists]);
 
   async function remove(symbol: string) {
     setRemoving(symbol);
-    await api.removeFromWatchlist(symbol);
-    mutateWatchlist(); globalMutate('watchlist');
+    await api.removeFromWatchlist(symbol, resolvedListId ?? undefined);
+    mutateWatchlist();
+    mutateLists();
     setRemoving(null);
+  }
+
+  async function moveToList(symbol: string, targetId: number) {
+    setMoveMenu(null);
+    setMoving(symbol);
+    await api.addToWatchlist(symbol, targetId);
+    await api.removeFromWatchlist(symbol, resolvedListId ?? undefined);
+    mutateWatchlist();
+    mutateLists();
+    globalMutate(['watchlist', targetId]);
+    setMoving(null);
+  }
+
+  useEffect(() => {
+    if (!moveMenu) return;
+    function handler(e: MouseEvent) {
+      const el = document.getElementById(`move-menu-${moveMenu}`);
+      if (el && !el.contains(e.target as Node)) setMoveMenu(null);
+    }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [moveMenu]);
+
+  async function handleCreateWatchlist(name: string) {
+    await api.createWatchlist(name);
+    const updated = await mutateLists();
+    const newList = updated?.find(l => l.name === name);
+    if (newList) setActiveListId(newList.id);
+  }
+
+  async function handleDeleteWatchlist(id: number) {
+    setDeletingId(id);
+    await api.deleteWatchlist(id);
+    await mutateLists();
+    if (activeListId === id) setActiveListId(null);
+    setDeletingId(null);
   }
 
   function saveNote(symbol: string, val: string) {
@@ -202,14 +381,52 @@ export default function Watchlist() {
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-        <div>
-          <h1 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>Watchlist</h1>
-          {data && data.length > 0 && <p style={{ fontSize: '12px', color: '#475569', margin: '4px 0 0' }}>{data.length} stocks tracked</p>}
-        </div>
+        <h1 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>Watchlist</h1>
         <button onClick={handleRefresh} disabled={refreshing} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: refreshing ? '#818cf8' : '#64748b', cursor: 'pointer', fontSize: '13px' }}>
           <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
           {refreshing ? 'Refreshing…' : 'Refresh'}
         </button>
+      </div>
+
+      {/* Watchlist tabs */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+        {(lists ?? []).map(list => {
+          const isActive = list.id === resolvedListId;
+          return (
+            <div key={list.id} style={{ display: 'flex', alignItems: 'center', borderRadius: '8px', border: `1px solid ${isActive ? 'rgba(99,102,241,0.5)' : '#1e293b'}`, background: isActive ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.02)', overflow: 'hidden' }}>
+              <button
+                onClick={() => setActiveListId(list.id)}
+                style={{ padding: '6px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: isActive ? 700 : 400, color: isActive ? '#818cf8' : '#64748b', whiteSpace: 'nowrap' }}
+              >
+                {list.name}
+                <span style={{ marginLeft: '6px', fontSize: '11px', color: isActive ? '#6366f1' : '#334155' }}>{list.item_count}</span>
+              </button>
+              {(lists ?? []).length > 1 && (
+                <button
+                  onClick={() => handleDeleteWatchlist(list.id)}
+                  disabled={deletingId === list.id}
+                  title="Delete watchlist"
+                  style={{ padding: '4px 8px', background: 'none', border: 'none', borderLeft: '1px solid rgba(255,255,255,0.05)', cursor: 'pointer', color: '#334155', fontSize: '11px' }}
+                  className="del-tab-btn"
+                >✕</button>
+              )}
+            </div>
+          );
+        })}
+        <button
+          onClick={() => setShowCreateModal(true)}
+          style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '8px', border: '1px dashed #334155', background: 'transparent', color: '#475569', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}
+        >
+          + New Watchlist
+        </button>
+        {resolvedListId != null && (
+          <button
+            onClick={() => setShowAddToList(true)}
+            style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 14px', borderRadius: '8px', border: '1px solid rgba(99,102,241,0.35)', background: 'rgba(99,102,241,0.08)', color: '#818cf8', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+          >
+            + Add Stocks
+          </button>
+        )}
       </div>
 
       {isLoading && <div style={{ color: '#475569', fontSize: '13px' }}>Loading…</div>}
@@ -330,6 +547,33 @@ export default function Watchlist() {
                     <button onClick={() => setNoteModal(item.symbol)} title="Add note" style={{ background: note ? 'rgba(99,102,241,0.1)' : 'transparent', border: `1px solid ${note ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '3px 7px', color: note ? '#818cf8' : '#475569', fontSize: '11px', cursor: 'pointer' }}>📝</button>
                     <button onClick={() => setAlertModal(item.symbol)} title="Set price alert" style={{ background: alert ? 'rgba(250,204,21,0.1)' : 'transparent', border: `1px solid ${alert ? 'rgba(250,204,21,0.3)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '3px 7px', color: alert ? '#facc15' : '#475569', fontSize: '11px', cursor: 'pointer' }}>🔔</button>
                     <button onClick={() => router.push(`/positions?add=${item.symbol}`)} title="Add to positions" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '5px', padding: '3px 8px', color: '#818cf8', fontSize: '10px', fontWeight: 700, cursor: 'pointer' }}>+ POS</button>
+                    {(lists ?? []).length > 1 && (
+                      <div id={`move-menu-${item.symbol}`} style={{ position: 'relative' }}>
+                        <button
+                          onClick={() => setMoveMenu(moveMenu === item.symbol ? null : item.symbol)}
+                          disabled={moving === item.symbol}
+                          title="Move to another list"
+                          style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '5px', padding: '3px 7px', color: '#475569', fontSize: '11px', cursor: 'pointer' }}
+                        >
+                          {moving === item.symbol ? '…' : '⇄'}
+                        </button>
+                        {moveMenu === item.symbol && (
+                          <div style={{ position: 'absolute', bottom: 'calc(100% + 4px)', right: 0, zIndex: 50, background: '#0d1424', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.5)', padding: '5px', minWidth: '140px' }}>
+                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '3px 8px 6px' }}>Move to</div>
+                            {(lists ?? []).filter(l => l.id !== resolvedListId).map(l => (
+                              <button
+                                key={l.id}
+                                onClick={() => moveToList(item.symbol, l.id)}
+                                style={{ display: 'block', width: '100%', padding: '7px 10px', borderRadius: '5px', border: 'none', background: 'transparent', color: '#94a3b8', fontSize: '12px', cursor: 'pointer', textAlign: 'left' }}
+                                className="move-list-btn"
+                              >
+                                {l.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <button onClick={() => remove(item.symbol)} disabled={removing === item.symbol} style={{ background: 'transparent', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '12px', padding: '3px 5px' }} className="remove-btn">✕</button>
                   </div>
                 </div>
@@ -350,11 +594,22 @@ export default function Watchlist() {
 
       {noteModal  && <NoteModal  symbol={noteModal}  initial={notes[noteModal] ?? ''}  onSave={v => saveNote(noteModal, v)}  onClose={() => setNoteModal(null)} />}
       {alertModal && <AlertModal symbol={alertModal} price={priceMap[alertModal]?.price} initial={alerts[alertModal]} onSave={(t, d) => saveAlert(alertModal, t, d)} onClose={() => setAlertModal(null)} />}
+      {showCreateModal && <CreateWatchlistModal onSave={handleCreateWatchlist} onClose={() => setShowCreateModal(false)} />}
+      {showAddToList && resolvedListId != null && (
+        <AddToListModal
+          listId={resolvedListId}
+          currentSymbols={new Set(data?.map(d => d.symbol) ?? [])}
+          onClose={() => setShowAddToList(false)}
+          onAdded={() => { mutateWatchlist(); mutateLists(); }}
+        />
+      )}
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         .watch-card:hover { border-color: #334155 !important; }
         .remove-btn:hover { color: #f87171 !important; }
+        .del-tab-btn:hover { color: #f87171 !important; }
+        .move-list-btn:hover { background: rgba(99,102,241,0.1) !important; color: #818cf8 !important; }
       `}</style>
     </div>
   );

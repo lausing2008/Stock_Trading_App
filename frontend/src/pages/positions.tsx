@@ -15,9 +15,29 @@ type SortKey  = 'symbol' | 'pnl' | 'pnlPct' | 'value' | 'change' | 'score';
 
 const STORAGE_KEY = 'positions';
 const TRADES_KEY  = 'trades';
-function loadPositions(): Position[] { if (typeof window === 'undefined') return []; try { return JSON.parse(storage.getItem(STORAGE_KEY) ?? '[]'); } catch { return []; } }
+function loadPositions(): Position[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const val = storage.getItem(STORAGE_KEY);
+    if (val) return JSON.parse(val);
+    // Migrate from pre-multiuser key 'stockai_positions'
+    const legacy = localStorage.getItem('stockai_positions');
+    if (legacy) { const data = JSON.parse(legacy); savePositions(data); return data; }
+    return [];
+  } catch { return []; }
+}
 function savePositions(p: Position[]) { storage.setItem(STORAGE_KEY, JSON.stringify(p)); }
-function loadTrades(): Record<string, Trade[]> { if (typeof window === 'undefined') return {}; try { return JSON.parse(storage.getItem(TRADES_KEY) ?? '{}'); } catch { return {}; } }
+function loadTrades(): Record<string, Trade[]> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const val = storage.getItem(TRADES_KEY);
+    if (val) return JSON.parse(val);
+    // Migrate from pre-multiuser key 'stockai_trades'
+    const legacy = localStorage.getItem('stockai_trades');
+    if (legacy) { const data = JSON.parse(legacy); saveTrades(data); return data; }
+    return {};
+  } catch { return {}; }
+}
 function saveTrades(t: Record<string, Trade[]>) { storage.setItem(TRADES_KEY, JSON.stringify(t)); }
 
 /* ─── Helpers ────────────────────────────────────────────── */

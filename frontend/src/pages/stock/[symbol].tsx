@@ -4,7 +4,7 @@ import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Prediction, type NewsItem, type LatestPrice } from '@/lib/api';
+import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta } from '@/lib/api';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 
@@ -51,7 +51,10 @@ export default function StockDetail() {
   );
 
   const [watched, setWatched] = useState(false);
-  const [watchPending, setWatchPending] = useState(false);
+  const [watchMenuOpen, setWatchMenuOpen] = useState(false);
+  const [listStates, setListStates] = useState<Record<number, boolean> | null>(null);
+  const [listPending, setListPending] = useState<number | null>(null);
+  const watchMenuRef = useRef<HTMLDivElement>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [mlResult, setMlResult] = useState<Prediction | null>(null);
   const [mlModel, setMlModel] = useState('xgboost');
@@ -68,23 +71,63 @@ export default function StockDetail() {
   const [aiOpen, setAiOpen] = useState(false);
   const aiBottomRef = useRef<HTMLDivElement>(null);
 
+  const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
+
   useEffect(() => {
     if (!symbol) return;
     api.isWatched(symbol).then(setWatched).catch(() => {});
   }, [symbol]);
 
+  useEffect(() => {
+    if (!watchMenuOpen) return;
+    function handler(e: MouseEvent) {
+      if (watchMenuRef.current && !watchMenuRef.current.contains(e.target as Node)) {
+        setWatchMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [watchMenuOpen]);
+
+  async function openWatchMenu() {
+    const opening = !watchMenuOpen;
+    setWatchMenuOpen(opening);
+    if (opening && watchlists?.length) {
+      setListStates(null);
+      const states: Record<number, boolean> = {};
+      await Promise.all(watchlists.map(async (wl: WatchlistMeta) => {
+        try {
+          const items = await api.listWatchlist(wl.id);
+          states[wl.id] = items.some(i => i.symbol === symbol);
+        } catch { states[wl.id] = false; }
+      }));
+      setListStates(states);
+      setWatched(Object.values(states).some(v => v));
+    }
+  }
+
+  async function toggleListItem(listId: number) {
+    if (!listStates) return;
+    setListPending(listId);
+    try {
+      const inList = listStates[listId];
+      if (inList) {
+        await api.removeFromWatchlist(symbol, listId);
+      } else {
+        await api.addToWatchlist(symbol, listId);
+      }
+      const newStates = { ...listStates, [listId]: !inList };
+      setListStates(newStates);
+      setWatched(Object.values(newStates).some(v => v));
+    } finally {
+      setListPending(null);
+    }
+  }
+
   async function handleRefresh() {
     setRefreshing(true);
     await Promise.all([mutateOverview(), mutateNews()]);
     setRefreshing(false);
-  }
-
-  async function toggleWatch() {
-    setWatchPending(true);
-    try {
-      if (watched) { await api.removeFromWatchlist(symbol); setWatched(false); }
-      else { await api.addToWatchlist(symbol); setWatched(true); }
-    } finally { setWatchPending(false); }
   }
 
   async function runML() {
@@ -251,18 +294,57 @@ export default function StockDetail() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <RefreshButton onClick={handleRefresh} loading={refreshing} />
-          <button
-            onClick={toggleWatch}
-            disabled={watchPending}
-            style={{
-              padding: '6px 14px', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: 'pointer',
-              border: watched ? 'none' : '1px solid #475569',
-              background: watched ? '#4f46e5' : 'transparent',
-              color: watched ? '#ffffff' : '#cbd5e1', transition: 'all 0.15s',
-            }}
-          >
-            {watched ? '★ Watching' : '☆ Watch'}
-          </button>
+          <div ref={watchMenuRef} style={{ position: 'relative' }}>
+            <button
+              onClick={openWatchMenu}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                padding: '6px 14px', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+                border: watched ? 'none' : '1px solid #475569',
+                background: watched ? '#4f46e5' : 'transparent',
+                color: watched ? '#ffffff' : '#cbd5e1', transition: 'all 0.15s',
+              }}
+            >
+              {watched ? '★ Watching' : '☆ Watch'}
+              <span style={{ fontSize: '10px', opacity: 0.6 }}>▾</span>
+            </button>
+            {watchMenuOpen && (
+              <div style={{
+                position: 'absolute', right: 0, top: 'calc(100% + 4px)', zIndex: 100,
+                background: '#0d1424', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '10px',
+                boxShadow: '0 16px 32px rgba(0,0,0,0.5)', padding: '6px', minWidth: '180px',
+              }}>
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '4px 8px 6px' }}>
+                  Add to watchlist
+                </div>
+                {listStates === null && (
+                  <div style={{ padding: '8px 10px', fontSize: '12px', color: '#475569' }}>Loading…</div>
+                )}
+                {listStates !== null && (watchlists ?? []).map((wl: WatchlistMeta) => {
+                  const inList = listStates[wl.id];
+                  const pending = listPending === wl.id;
+                  return (
+                    <button
+                      key={wl.id}
+                      onClick={() => toggleListItem(wl.id)}
+                      disabled={pending}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
+                        padding: '8px 10px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                        background: inList ? 'rgba(99,102,241,0.12)' : 'transparent',
+                        color: inList ? '#818cf8' : '#94a3b8', fontSize: '13px', textAlign: 'left',
+                        transition: 'all 0.1s',
+                      }}
+                    >
+                      <span>{pending ? '…' : inList ? '★' : '☆'}</span>
+                      <span style={{ flex: 1 }}>{wl.name}</span>
+                      <span style={{ fontSize: '11px', color: '#334155' }}>{wl.item_count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { api } from '@/lib/api';
+import { api, type WatchlistMeta } from '@/lib/api';
 
-type Props = { onClose: () => void; onAdded: (symbol: string) => void };
+type Props = { onClose: () => void; onAdded: (symbol: string, listId?: number) => void; lists?: WatchlistMeta[] };
 
 const QUICK_ADD = [
   { symbol: 'AAPL',    label: 'Apple',       flag: '🇺🇸' },
@@ -14,12 +14,15 @@ const QUICK_ADD = [
   { symbol: 'COIN',    label: 'Coinbase',    flag: '🇺🇸' },
 ];
 
-export default function AddStockModal({ onClose, onAdded }: Props) {
+export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
   const [symbol, setSymbol] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [result, setResult] = useState<{ name: string; sector?: string } | null>(null);
+  const [result, setResult] = useState<{ name: string; sector?: string; sym: string } | null>(null);
   const [errMsg, setErrMsg]   = useState('');
+  const [selectedListId, setSelectedListId] = useState<number | undefined>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const multiList = lists.length > 1;
 
   useEffect(() => { inputRef.current?.focus(); }, []);
   useEffect(() => {
@@ -37,14 +40,24 @@ export default function AddStockModal({ onClose, onAdded }: Props) {
     setErrMsg('');
     try {
       const res = await api.addStock(sym);
-      setResult({ name: res.name, sector: res.sector });
+      setResult({ name: res.name, sector: res.sector, sym });
       setStatus('success');
-      onAdded(sym);
+      if (!multiList) {
+        // Only one watchlist — add immediately
+        onAdded(sym, lists[0]?.id);
+      }
+      // If multiList, wait for user to pick a watchlist below
     } catch (err: unknown) {
       setStatus('error');
       const msg = err instanceof Error ? err.message : String(err);
       setErrMsg(msg.includes('404') ? `"${sym}" not found on Yahoo Finance.` : 'Failed to add — check the ticker symbol.');
     }
+  }
+
+  function confirmList(listId: number) {
+    if (!result) return;
+    setSelectedListId(listId);
+    onAdded(result.sym, listId);
   }
 
   function pick(sym: string) {
@@ -183,22 +196,57 @@ export default function AddStockModal({ onClose, onAdded }: Props) {
 
           {/* Status feedback */}
           {isSuccess && result && (
-            <div style={{
-              display: 'flex', alignItems: 'flex-start', gap: '12px',
-              padding: '12px 16px', borderRadius: '10px',
-              background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.2)',
-            }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               <div style={{
-                width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
-                background: 'rgba(34,197,94,0.2)', display: 'flex', alignItems: 'center',
-                justifyContent: 'center', fontSize: '11px', color: '#4ade80', marginTop: '1px',
-              }}>✓</div>
-              <div>
-                <div style={{ fontSize: '13px', fontWeight: 600, color: '#86efac' }}>{result.name}</div>
-                <div style={{ fontSize: '11px', color: '#16a34a', marginTop: '3px' }}>
-                  {result.sector && <span>{result.sector} · </span>}Price data ingesting in background
+                display: 'flex', alignItems: 'flex-start', gap: '12px',
+                padding: '12px 16px', borderRadius: '10px',
+                background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.2)',
+              }}>
+                <div style={{
+                  width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
+                  background: 'rgba(34,197,94,0.2)', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', fontSize: '11px', color: '#4ade80', marginTop: '1px',
+                }}>✓</div>
+                <div>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#86efac' }}>{result.name}</div>
+                  <div style={{ fontSize: '11px', color: '#16a34a', marginTop: '3px' }}>
+                    {result.sector && <span>{result.sector} · </span>}Price data ingesting in background
+                  </div>
                 </div>
               </div>
+
+              {/* Watchlist picker — only shown when user has multiple lists */}
+              {multiList && (
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>
+                    Add to watchlist
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {lists.map(list => {
+                      const picked = selectedListId === list.id;
+                      return (
+                        <button
+                          key={list.id}
+                          onClick={() => confirmList(list.id)}
+                          disabled={picked}
+                          style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            padding: '9px 14px', borderRadius: '8px', border: `1px solid ${picked ? 'rgba(99,102,241,0.5)' : 'rgba(255,255,255,0.08)'}`,
+                            background: picked ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.03)',
+                            color: picked ? '#818cf8' : '#94a3b8', cursor: picked ? 'default' : 'pointer',
+                            fontSize: '13px', fontWeight: picked ? 700 : 400, transition: 'all 0.15s',
+                          }}
+                        >
+                          <span>{list.name}</span>
+                          <span style={{ fontSize: '11px', color: picked ? '#6366f1' : '#334155' }}>
+                            {picked ? '✓ Added' : `${list.item_count} stocks`}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
