@@ -54,6 +54,12 @@ export const api = {
     return items.some(i => i.symbol === symbol);
   },
 
+  // Price alerts
+  listAlerts: () => request<PriceAlert[]>(`/alerts`),
+  createAlert: (body: { symbol: string; condition: string; threshold: number; email: string; note?: string }) =>
+    request<PriceAlert>(`/alerts`, { method: 'POST', body: JSON.stringify(body) }),
+  deleteAlert: (id: number) => request(`/alerts/${id}`, { method: 'DELETE' }),
+
   // User management (admin)
   listUsers: () => request<AppUser[]>(`/auth/users`),
   createUser: (username: string, password: string, role: string) =>
@@ -123,6 +129,7 @@ export type WatchlistItem = { symbol: string; name: string; name_zh?: string | n
 export type WatchlistMeta = { id: number; name: string; item_count: number; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; created_at: string };
+export type PriceAlert = { id: number; symbol: string; condition: 'above' | 'below'; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };
 
 export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };
 export type Levels = {

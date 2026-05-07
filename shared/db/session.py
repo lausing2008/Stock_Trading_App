@@ -128,6 +128,34 @@ def _run_migrations() -> None:  # noqa: C901
             ALTER TABLE watchlist_items
             DROP CONSTRAINT IF EXISTS uq_watchlist_user_stock
         """))
+        # ── Price alerts ───────────────────────────────────────────────────────
+        conn.execute(text("""
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'alertcondition') THEN
+                    CREATE TYPE alertcondition AS ENUM ('above', 'below');
+                END IF;
+            END $$
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS price_alerts (
+                id           SERIAL PRIMARY KEY,
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                symbol       VARCHAR(32) NOT NULL,
+                condition    alertcondition NOT NULL,
+                threshold    FLOAT NOT NULL,
+                email        VARCHAR(256),
+                note         VARCHAR(512),
+                triggered    BOOLEAN NOT NULL DEFAULT FALSE,
+                triggered_at TIMESTAMP,
+                created_at   TIMESTAMP NOT NULL DEFAULT now()
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_price_alerts_user ON price_alerts (user_id)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_price_alerts_symbol ON price_alerts (symbol)"
+        ))
 
 
 def _seed_admin() -> None:

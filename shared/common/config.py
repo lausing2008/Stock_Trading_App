@@ -42,6 +42,17 @@ class Settings(BaseSettings):
     parquet_dir: str = "/data/parquet"
     model_dir: str = "/data/models"
 
+    # Email — set EMAIL_PROVIDER=ses or EMAIL_PROVIDER=smtp
+    email_provider: str = ""          # "ses" | "smtp" | "" (disabled)
+    email_from: str = ""              # sender address shown in From:
+    # SMTP (Gmail or any SMTP relay)
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""           # Gmail: use an App Password
+    # AWS SES
+    ses_region: str = "us-east-1"
+
 
 @lru_cache
 def get_settings() -> Settings:

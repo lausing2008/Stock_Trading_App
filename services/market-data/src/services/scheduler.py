@@ -22,13 +22,16 @@ from __future__ import annotations
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from datetime import datetime
+
 from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import SessionLocal, Stock
+from db import PriceAlert, SessionLocal, Stock
 
 from .ingestion import ingest_universe
+from .email_service import send_price_alert_email
 
 log = get_logger("scheduler")
 _settings = get_settings()
@@ -69,6 +72,64 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
         _post(f"{_settings.ml_prediction_url}/ml/train_all")
 
     log.info("scheduler.refresh_done", market=market, post_close=post_close)
+
+
+def check_price_alerts() -> None:
+    """Check all untriggered alerts against latest live prices and fire emails."""
+    try:
+        import yfinance as yf
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(PriceAlert.triggered.is_(False))
+            ).scalars().all()
+            if not alerts:
+                return
+
+            # Fetch live prices for all unique symbols at once
+            symbols = list({a.symbol for a in alerts})
+            tickers = yf.Tickers(" ".join(symbols))
+            prices: dict[str, float] = {}
+            for sym in symbols:
+                try:
+                    p = tickers.tickers[sym].fast_info.last_price
+                    if p:
+                        prices[sym] = float(p)
+                except Exception:
+                    pass
+
+            fired = 0
+            for alert in alerts:
+                price = prices.get(alert.symbol)
+                if price is None:
+                    continue
+                triggered = (
+                    (alert.condition.value == "above" and price >= alert.threshold) or
+                    (alert.condition.value == "below" and price <= alert.threshold)
+                )
+                if not triggered:
+                    continue
+
+                alert.triggered = True
+                alert.triggered_at = datetime.utcnow()
+                session.flush()
+
+                if alert.email:
+                    send_price_alert_email(
+                        to=alert.email,
+                        symbol=alert.symbol,
+                        condition=alert.condition.value,
+                        threshold=alert.threshold,
+                        price=price,
+                        note=alert.note,
+                    )
+                fired += 1
+                log.info("alert.triggered", symbol=alert.symbol, price=price, threshold=alert.threshold)
+
+            session.commit()
+            if fired:
+                log.info("alert.check_done", fired=fired, checked=len(alerts))
+    except Exception as exc:
+        log.error("alert.check_error", error=str(exc))
 
 
 def start_scheduler() -> None:
@@ -131,5 +192,14 @@ def start_scheduler() -> None:
         id="hk_post_close", replace_existing=True,
     )
 
+    # ── Price alert checker — every minute ──────────────────────────────────
+    _scheduler.add_job(
+        check_price_alerts,
+        "interval",
+        minutes=1,
+        id="price_alert_check",
+        replace_existing=True,
+    )
+
     _scheduler.start()
-    log.info("scheduler.started", jobs=10)
+    log.info("scheduler.started", jobs=11)

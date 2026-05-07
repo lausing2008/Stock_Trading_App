@@ -26,6 +26,7 @@ _ROUTES = {
     "watchlist": _settings.market_data_url,
     "watchlists": _settings.market_data_url,
     "auth": _settings.market_data_url,
+    "alerts": _settings.market_data_url,
 }
 
 

@@ -4,7 +4,7 @@ import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta } from '@/lib/api';
+import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert } from '@/lib/api';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 
@@ -74,6 +74,43 @@ export default function StockDetail() {
   const aiBottomRef = useRef<HTMLDivElement>(null);
 
   const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
+  const { data: alerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
+    symbol ? `alerts-${symbol}` : null,
+    () => api.listAlerts().then(all => all.filter(a => a.symbol === symbol)),
+  );
+
+  // Alert form state
+  const [alertOpen, setAlertOpen] = useState<boolean>(false);
+  const [alertCondition, setAlertCondition] = useState<'above' | 'below'>('above');
+  const [alertThreshold, setAlertThreshold] = useState<string>('');
+  const [alertEmail, setAlertEmail] = useState<string>('');
+  const [alertNote, setAlertNote] = useState<string>('');
+  const [alertSaving, setAlertSaving] = useState<boolean>(false);
+  const [alertMsg, setAlertMsg] = useState<string>('');
+
+  async function createAlert() {
+    const threshold = parseFloat(alertThreshold);
+    if (!threshold || !alertEmail) return;
+    setAlertSaving(true);
+    setAlertMsg('');
+    try {
+      await api.createAlert({ symbol, condition: alertCondition, threshold, email: alertEmail, note: alertNote || undefined });
+      setAlertMsg('Alert set!');
+      setAlertThreshold('');
+      setAlertNote('');
+      mutateAlerts();
+      setTimeout(() => { setAlertMsg(''); setAlertOpen(false); }, 1500);
+    } catch {
+      setAlertMsg('Failed to save alert.');
+    } finally {
+      setAlertSaving(false);
+    }
+  }
+
+  async function removeAlert(id: number) {
+    await api.deleteAlert(id);
+    mutateAlerts();
+  }
 
   useEffect(() => {
     if (!symbol) return;
@@ -1066,6 +1103,102 @@ export default function StockDetail() {
               </>
             )}
           </div>
+        )}
+      </div>
+
+      {/* Price Alerts */}
+      <div style={{ marginBottom: '32px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+          <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Price Alerts</h2>
+          <button
+            onClick={() => setAlertOpen((prev: boolean) => !prev)}
+            style={{ fontSize: '12px', padding: '5px 12px', borderRadius: '6px', border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.08)', color: '#818cf8', cursor: 'pointer' }}
+          >
+            + New Alert
+          </button>
+        </div>
+
+        {alertOpen && (
+          <div style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '10px', padding: '16px', marginBottom: '12px', display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <label style={{ fontSize: '11px', color: '#64748b' }}>Condition</label>
+              <select
+                value={alertCondition}
+                onChange={e => setAlertCondition(e.target.value as 'above' | 'below')}
+                style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px' }}
+              >
+                <option value="above">Price rises above</option>
+                <option value="below">Price falls below</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <label style={{ fontSize: '11px', color: '#64748b' }}>Target price</label>
+              <input
+                type="number"
+                placeholder={curPrice ? curPrice.toFixed(2) : '0.00'}
+                value={alertThreshold}
+                onChange={e => setAlertThreshold(e.target.value)}
+                style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '110px' }}
+              />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '180px' }}>
+              <label style={{ fontSize: '11px', color: '#64748b' }}>Send email to</label>
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={alertEmail}
+                onChange={e => setAlertEmail(e.target.value)}
+                style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '100%' }}
+              />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '160px' }}>
+              <label style={{ fontSize: '11px', color: '#64748b' }}>Note (optional)</label>
+              <input
+                type="text"
+                placeholder="e.g. Buy signal"
+                value={alertNote}
+                onChange={e => setAlertNote(e.target.value)}
+                style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '100%' }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <button
+                onClick={createAlert}
+                disabled={alertSaving || !alertThreshold || !alertEmail}
+                style={{ padding: '7px 16px', borderRadius: '6px', border: 'none', background: alertSaving || !alertThreshold || !alertEmail ? '#334155' : '#6366f1', color: '#fff', fontSize: '13px', cursor: alertSaving || !alertThreshold || !alertEmail ? 'not-allowed' : 'pointer' }}
+              >
+                {alertSaving ? 'Saving…' : 'Set Alert'}
+              </button>
+              {alertMsg && <span style={{ fontSize: '12px', color: alertMsg === 'Alert set!' ? '#4ade80' : '#f87171' }}>{alertMsg}</span>}
+            </div>
+          </div>
+        )}
+
+        {alerts && alerts.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {alerts.map(a => (
+              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: a.triggered ? 'rgba(30,41,59,0.4)' : 'rgba(30,41,59,0.7)', border: `1px solid ${a.triggered ? 'rgba(148,163,184,0.1)' : 'rgba(99,102,241,0.2)'}`, borderRadius: '8px', padding: '10px 14px' }}>
+                <span style={{ fontSize: '18px' }}>{a.condition === 'above' ? '▲' : '▼'}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '13px', color: a.triggered ? '#64748b' : '#e2e8f0' }}>
+                    {a.condition === 'above' ? 'Rises above' : 'Falls below'} <strong>{a.threshold}</strong>
+                    {a.note && <span style={{ color: '#64748b', marginLeft: '8px' }}>— {a.note}</span>}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>→ {a.email}</div>
+                </div>
+                {a.triggered && (
+                  <span style={{ fontSize: '11px', background: 'rgba(74,222,128,0.1)', color: '#4ade80', padding: '2px 8px', borderRadius: '4px' }}>Triggered</span>
+                )}
+                <button
+                  onClick={() => removeAlert(a.id)}
+                  style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px', lineHeight: 1, padding: '2px 4px' }}
+                  title="Delete alert"
+                >×</button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: '12px', color: '#475569' }}>No alerts set for {symbol}. Click "+ New Alert" to get notified by email when the price hits your target.</div>
         )}
       </div>
 

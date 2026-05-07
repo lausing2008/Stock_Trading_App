@@ -82,6 +82,7 @@ class User(Base):
 
     watchlist_items: Mapped[list["WatchlistItem"]] = relationship(back_populates="user")
     watchlists: Mapped[list["Watchlist"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    price_alerts: Mapped[list["PriceAlert"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Stock(Base):
@@ -266,3 +267,25 @@ class WatchlistItem(Base):
     watchlist: Mapped["Watchlist | None"] = relationship(back_populates="items")
 
     __table_args__ = (UniqueConstraint("user_id", "stock_id", name="uq_watchlist_user_stock"),)
+
+
+class AlertCondition(str, enum.Enum):
+    ABOVE = "above"
+    BELOW = "below"
+
+
+class PriceAlert(Base):
+    __tablename__ = "price_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    condition: Mapped[AlertCondition] = mapped_column(SAEnum(AlertCondition, name="alertcondition"))
+    threshold: Mapped[float] = mapped_column(Float)
+    email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    triggered: Mapped[bool] = mapped_column(Boolean, default=False)
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="price_alerts")
