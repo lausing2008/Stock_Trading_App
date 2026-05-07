@@ -76,7 +76,7 @@ curl -X POST http://localhost:8000/admin/ingest \
      -d '{"symbols":["AAPL","MSFT","NVDA","GOOGL","0700.HK","9988.HK"]}'
 
 open http://localhost:3000
-# Login: username lausing / password 120402
+# Login: username lausing / password 123456
 ```
 
 Or use the **⚡ Train All** button on the dashboard to ingest + train all ML models in one click.
@@ -117,7 +117,7 @@ Or use the **⚡ Train All** button on the dashboard to ingest + train all ML mo
 | Field | Value |
 |-------|-------|
 | Username | `lausing` |
-| Password | `120402` |
+| Password | `123456` |
 | Role | admin |
 
 The admin account is created automatically on first boot. Password can be reset on the Login page → **Reset Password** tab, or in Settings → Change Password.

@@ -56,6 +56,8 @@ export default function StockDetail() {
   const [listPending, setListPending] = useState<number | null>(null);
   const watchMenuRef = useRef<HTMLDivElement>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [fullRefreshing, setFullRefreshing] = useState(false);
+  const [fullRefreshMsg, setFullRefreshMsg] = useState('');
   const [mlResult, setMlResult] = useState<Prediction | null>(null);
   const [mlModel, setMlModel] = useState('xgboost');
   const [mlLoading, setMlLoading] = useState(false);
@@ -128,6 +130,23 @@ export default function StockDetail() {
     setRefreshing(true);
     await Promise.all([mutateOverview(), mutateNews()]);
     setRefreshing(false);
+  }
+
+  async function handleFullRefresh() {
+    setFullRefreshing(true);
+    setFullRefreshMsg('Re-fetching full price history…');
+    try {
+      await api.ingest([symbol], true);
+      setFullRefreshMsg('Reloading chart…');
+      await Promise.all([mutateOverview(), mutateNews()]);
+      setFullRefreshMsg('Done');
+      setTimeout(() => setFullRefreshMsg(''), 3000);
+    } catch {
+      setFullRefreshMsg('Ingest failed — check backend logs');
+      setTimeout(() => setFullRefreshMsg(''), 4000);
+    } finally {
+      setFullRefreshing(false);
+    }
   }
 
   async function runML() {
@@ -292,8 +311,32 @@ export default function StockDetail() {
             );
           })()}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <RefreshButton onClick={handleRefresh} loading={refreshing} />
+          <button
+            onClick={handleFullRefresh}
+            disabled={fullRefreshing}
+            title="Re-fetch price data from source, then reload"
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '6px 13px', borderRadius: '6px',
+              border: '1px solid rgba(99,102,241,0.35)',
+              background: fullRefreshing ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.08)',
+              color: fullRefreshing ? '#818cf8' : '#6366f1',
+              cursor: fullRefreshing ? 'not-allowed' : 'pointer',
+              fontSize: '12px', fontWeight: 600, transition: 'all 0.15s',
+            }}
+          >
+            <span style={{ display: 'inline-block', fontSize: '14px', lineHeight: 1, animation: fullRefreshing ? 'spin 0.8s linear infinite' : 'none' }}>⟳</span>
+            {fullRefreshing ? 'Fetching…' : 'Full Refresh'}
+          </button>
+          </div>
+          {fullRefreshMsg && (
+            <div style={{ fontSize: '11px', color: fullRefreshMsg === 'Done' ? '#4ade80' : fullRefreshMsg.includes('failed') ? '#f87171' : '#818cf8' }}>
+              {fullRefreshMsg}
+            </div>
+          )}
           <div ref={watchMenuRef} style={{ position: 'relative' }}>
             <button
               onClick={openWatchMenu}

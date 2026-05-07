@@ -49,6 +49,7 @@ _HK_NAME_ZH: dict[str, str] = {
 class IngestRequest(BaseModel):
     symbols: list[str]
     timeframe: str = "1d"
+    force: bool = False
 
 
 class AddStockRequest(BaseModel):
@@ -65,9 +66,9 @@ def run_seed():
 def run_ingest(req: IngestRequest):
     """Synchronously ingest all requested symbols (parallel for multi-symbol)."""
     if len(req.symbols) == 1:
-        result = ingest_symbol(req.symbols[0], timeframe=req.timeframe)
+        result = ingest_symbol(req.symbols[0], timeframe=req.timeframe, force=req.force)
         return {"status": "ok", "symbols": 1, "results": [result]}
-    results = ingest_universe(req.symbols, req.timeframe)
+    results = ingest_universe(req.symbols, req.timeframe, force=req.force)
     ok = sum(1 for r in results if "error" not in r)
     return {"status": "ok", "symbols": ok, "total": len(results), "results": results}
 

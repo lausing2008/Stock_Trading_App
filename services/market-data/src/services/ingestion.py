@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from common.config import get_settings
@@ -55,8 +55,13 @@ def ingest_symbol(
     timeframe: str = "1d",
     lookback_days: int = 365 * 3,
     provider: str | None = None,
+    force: bool = False,
 ) -> dict:
-    """Idempotent incremental ingest — loads only bars newer than DB head."""
+    """Idempotent incremental ingest — loads only bars newer than DB head.
+
+    If force=True, deletes all existing price rows for the symbol+timeframe first,
+    then re-fetches the full lookback_days window from scratch.
+    """
     adapter = get_adapter(provider, market)
     tf = TimeFrame(timeframe)
 
@@ -67,7 +72,14 @@ def ingest_symbol(
         if stock is None:
             raise IngestionError(f"Unknown symbol: {symbol} (seed universe first)")
 
-        head = _last_bar_ts(session, stock.id, tf)
+        if force:
+            session.execute(
+                delete(Price).where(Price.stock_id == stock.id, Price.timeframe == tf)
+            )
+            session.commit()
+            log.info("ingest.force_delete", symbol=symbol, tf=timeframe)
+
+        head = None if force else _last_bar_ts(session, stock.id, tf)
         start = (head.date() + timedelta(days=1)) if head else (date.today() - timedelta(days=lookback_days))
         end = date.today() + timedelta(days=1)
 
@@ -122,13 +134,13 @@ def _bust_live_price_cache() -> None:
         pass
 
 
-def ingest_universe(symbols: list[str], timeframe: str = "1d", max_workers: int = 6) -> list[dict]:
+def ingest_universe(symbols: list[str], timeframe: str = "1d", max_workers: int = 6, force: bool = False) -> list[dict]:
     """Fetch all symbols in parallel (I/O-bound — safe to thread)."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def _fetch(sym: str) -> dict:
         try:
-            return ingest_symbol(sym, timeframe=timeframe)
+            return ingest_symbol(sym, timeframe=timeframe, force=force)
         except Exception as exc:
             log.error("ingest.symbol_failed", symbol=sym, error=str(exc))
             return {"symbol": sym, "error": str(exc)}

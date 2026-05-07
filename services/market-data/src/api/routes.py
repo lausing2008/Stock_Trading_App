@@ -1,6 +1,21 @@
 """/stocks, /stocks/{symbol}/prices — read API for market data."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import json
+
+_MARKET_UTC_OFFSET_H = {"HK": 8, "CN": 8}
+
+def _local_date(ts: datetime, market: str) -> str:
+    """Return YYYY-MM-DD in the stock's local market timezone.
+
+    Daily bars for non-US markets are stored as UTC-naive UTC times that
+    represent midnight of the LOCAL trading date (e.g. 2026-05-05 16:00 UTC
+    for a HK bar dated 2026-05-06 HKT). Add the UTC offset to recover the
+    correct local date.
+    """
+    offset = _MARKET_UTC_OFFSET_H.get(market, 0)
+    if offset and ts.hour >= (24 - offset):
+        return (ts + timedelta(hours=offset)).strftime("%Y-%m-%d")
+    return ts.strftime("%Y-%m-%d")
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -417,7 +432,7 @@ def get_prices(
     rows = list(session.execute(stmt).scalars())
     return [
         PriceOut(
-            ts=r.ts.isoformat(),
+            ts=_local_date(r.ts, stock.market),
             open=r.open,
             high=r.high,
             low=r.low,

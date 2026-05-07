@@ -53,5 +53,10 @@ class DataAdapter(ABC):
             df[col] = None
         df = df[OHLCV_COLUMNS].copy()
         df = df.dropna(subset=["open", "high", "low", "close"])
-        df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_localize(None)
+        ts_parsed = pd.to_datetime(df["ts"])
+        if ts_parsed.dt.tz is not None:
+            # Preserve the LOCAL market date (not UTC date) for daily bars
+            df["ts"] = pd.to_datetime(ts_parsed.dt.date)
+        else:
+            df["ts"] = ts_parsed.dt.normalize()
         return df.reset_index(drop=True)
