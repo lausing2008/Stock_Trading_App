@@ -189,7 +189,7 @@ export default function Positions() {
     const pnlPct = pnl != null && cost > 0 ? (pnl / cost) * 100 : null;
     const dayPnl = lp?.change_pct != null && mktVal != null ? mktVal * (lp.change_pct / 100) / (1 + lp.change_pct / 100) : null;
     const rank = rankMap[p.symbol];
-    const sig  = signalMap[p.symbol]?.signal ?? signalFromScore(rank?.score);
+    const sig  = signalMap[p.symbol]?.signal ?? signalFromScore(rank?.score ?? undefined);
     return { ...p, cur, cost, mktVal, pnl, pnlPct, dayPnl, changeUp: (lp?.change_pct ?? 0) >= 0, changePct: lp?.change_pct ?? null, rank, sig };
   }), [positions, priceMap, rankMap, signalMap]);
 

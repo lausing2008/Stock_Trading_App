@@ -19,10 +19,7 @@ export default function RankingsPage() {
     return m;
   }, [pricesData]);
 
-  const filteredRankings = useMemo(
-    () => data ? { rankings: data.rankings.filter(r => watchedSet.has(r.symbol)) } : undefined,
-    [data, watchedSet],
-  );
+  const filteredRankings = data;
 
   return (
     <div>

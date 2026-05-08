@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { api, type WatchlistMeta } from '@/lib/api';
 
-type Props = { onClose: () => void; onAdded: (symbol: string, listId?: number) => void; lists?: WatchlistMeta[] };
+type Props = { onClose: () => void; onAdded: (symbol: string, listId?: number) => Promise<void>; lists?: WatchlistMeta[] };
 
 const QUICK_ADD = [
   { symbol: 'AAPL',    label: 'Apple',       flag: '🇺🇸' },
@@ -41,23 +41,29 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
     try {
       const res = await api.addStock(sym);
       setResult({ name: res.name, sector: res.sector, sym });
-      setStatus('success');
       if (!multiList) {
-        // Only one watchlist — add immediately
-        onAdded(sym, lists[0]?.id);
+        await onAdded(sym, lists[0]?.id);
       }
-      // If multiList, wait for user to pick a watchlist below
+      setStatus('success');
     } catch (err: unknown) {
       setStatus('error');
       const msg = err instanceof Error ? err.message : String(err);
-      setErrMsg(msg.includes('404') ? `"${sym}" not found on Yahoo Finance.` : 'Failed to add — check the ticker symbol.');
+      if (msg.includes('404')) setErrMsg(`"${sym}" not found on Yahoo Finance.`);
+      else if (msg.includes('401')) setErrMsg('Session expired — please log out and log in again.');
+      else setErrMsg('Failed to add — check the ticker symbol.');
     }
   }
 
-  function confirmList(listId: number) {
+  async function confirmList(listId: number) {
     if (!result) return;
     setSelectedListId(listId);
-    onAdded(result.sym, listId);
+    try {
+      await onAdded(result.sym, listId);
+    } catch (err: unknown) {
+      setSelectedListId(undefined);
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrMsg(msg.includes('401') ? 'Session expired — please log out and log in again.' : 'Failed to add to list.');
+    }
   }
 
   function pick(sym: string) {

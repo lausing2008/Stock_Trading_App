@@ -252,7 +252,7 @@ export default function Home() {
   }
 
   async function handleAdded(symbol: string, listId?: number) {
-    try { await api.addToWatchlist(symbol, listId); } catch {}
+    await api.addToWatchlist(symbol, listId);
     await mutateWatchlist();
     mutateWatchlists();
     setTimeout(() => { mutateStocks(); globalMutate('rankings-all'); globalMutate('latest-prices'); }, 1500);
@@ -280,7 +280,7 @@ export default function Home() {
   const usCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'US').length ?? 0;
   const hkCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'HK').length ?? 0;
   const topRanked = rankingsData?.rankings.filter(r => watchedSet.has(r.symbol)).reduce(
-    (best, r) => (!best || r.score > best.score) ? r : best,
+    (best, r) => (!best || (r.score ?? -1) > (best.score ?? -1)) ? r : best,
     null as RankingRow | null,
   );
 
@@ -305,7 +305,7 @@ export default function Home() {
               <div style={{ fontSize: '12px', color: '#64748b' }}>
                 Top:{' '}
                 <Link href={`/stock/${topRanked.symbol}`} style={{ color: '#818cf8' }}>{topRanked.symbol}</Link>
-                <span style={{ marginLeft: '4px', fontWeight: 700, color: scoreColor(topRanked.score) }}>{topRanked.score.toFixed(0)}</span>
+                <span style={{ marginLeft: '4px', fontWeight: 700, color: scoreColor(topRanked.score ?? 0) }}>{(topRanked.score ?? 0).toFixed(0)}</span>
               </div>
             </>
           )}
@@ -504,7 +504,7 @@ export default function Home() {
                 bg:     realSig.signal === 'BUY' ? 'rgba(34,197,94,0.1)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.1)' : realSig.signal === 'WAIT' ? 'rgba(251,146,60,0.1)' : 'rgba(250,204,21,0.1)',
                 border: realSig.signal === 'BUY' ? 'rgba(34,197,94,0.3)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.3)' : realSig.signal === 'WAIT' ? 'rgba(251,146,60,0.3)' : 'rgba(250,204,21,0.3)',
               }
-            : signalFromScore(rank?.score);
+            : signalFromScore(rank?.score ?? undefined);
           const sc     = SECTOR_COLOR[s.sector ?? ''];
           const changeUp = (lp?.change_pct ?? 0) >= 0;
 

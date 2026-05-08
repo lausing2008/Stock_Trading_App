@@ -100,7 +100,7 @@ export type Signal = {
 };
 
 export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null };
-export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number; market: string; fair_price?: number; sector?: string; technical?: number; momentum?: number; value?: number; growth?: number; volatility?: number };
+export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null };
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {
   backtest_id: number;

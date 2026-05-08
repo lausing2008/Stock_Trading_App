@@ -48,7 +48,7 @@ export default function App({ Component, pageProps }: AppProps) {
         for (const s of signalList) signals[s.symbol] = { signal: s.signal, confidence: s.confidence };
 
         const scores: Record<string, { score: number }> = {};
-        for (const r of (rankData.rankings ?? [])) scores[r.symbol] = { score: r.score };
+        for (const r of (rankData.rankings ?? [])) if (r.score != null) scores[r.symbol] = { score: r.score };
 
         const triggered = checkAlerts(prices, signals, scores);
         if (triggered.length > 0) {

@@ -338,7 +338,7 @@ export default function Watchlist() {
   /* Signal for each item: real signal engine first, K-Score fallback */
   function getSignal(symbol: string): string | null {
     if (signalMap[symbol]) return signalMap[symbol].signal;
-    return signalFromScore(rankMap[symbol]?.score);
+    return signalFromScore(rankMap[symbol]?.score ?? undefined);
   }
 
   /* Stats */

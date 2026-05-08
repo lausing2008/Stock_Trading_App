@@ -177,13 +177,13 @@ export function checkAlerts(
         }
         break;
       case 'score_above':
-        if (r && r.score > c.threshold) {
+        if (r && r.score != null && r.score > c.threshold) {
           message = `${alert.symbol} K-Score ${r.score.toFixed(0)} above ${c.threshold}`;
           value = r.score;
         }
         break;
       case 'score_below':
-        if (r && r.score < c.threshold) {
+        if (r && r.score != null && r.score < c.threshold) {
           message = `${alert.symbol} K-Score ${r.score.toFixed(0)} below ${c.threshold}`;
           value = r.score;
         }
