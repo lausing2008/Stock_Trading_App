@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import RankingsTable from '@/components/RankingsTable';
-import { api, type WatchlistItem, type LatestPrice } from '@/lib/api';
+import { api, type Stock, type WatchlistItem, type LatestPrice, type RankingRow } from '@/lib/api';
 
 export default function RankingsPage() {
   const [market, setMarket] = useState<'US' | 'HK' | ''>('');
@@ -10,6 +10,7 @@ export default function RankingsPage() {
     () => api.rankings(market || undefined),
   );
   const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: stocks } = useSWR<Stock[]>('stocks', () => api.listStocks());
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
 
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
@@ -19,7 +20,34 @@ export default function RankingsPage() {
     return m;
   }, [pricesData]);
 
-  const filteredRankings = data;
+  const rows = useMemo((): RankingRow[] => {
+    if (!data) return [];
+    const rankedSymbols = new Set(data.rankings.map(r => r.symbol));
+
+    // Ranked stocks filtered to user's watchlist
+    const ranked = data.rankings.filter(r => watchedSet.has(r.symbol));
+
+    // Watchlisted stocks not yet in rankings (insufficient price history)
+    const unranked: RankingRow[] = (stocks ?? [])
+      .filter(s => watchedSet.has(s.symbol) && !rankedSymbols.has(s.symbol))
+      .filter(s => !market || s.market === market.toUpperCase())
+      .map(s => ({
+        symbol: s.symbol,
+        name: s.name,
+        name_zh: s.name_zh,
+        market: s.market,
+        sector: s.sector ?? null,
+        score: null,
+        technical: null,
+        momentum: null,
+        value: null,
+        growth: null,
+        volatility: null,
+        fair_price: null,
+      }));
+
+    return [...ranked, ...unranked];
+  }, [data, watchedSet, stocks, market]);
 
   return (
     <div>
@@ -39,7 +67,7 @@ export default function RankingsPage() {
       </div>
       {isLoading && <div>Loading…</div>}
       {error && <div className="text-slate-300">Unable to load rankings.</div>}
-      {filteredRankings && <RankingsTable rows={filteredRankings.rankings} prices={priceMap} />}
+      {data && <RankingsTable rows={rows} prices={priceMap} />}
     </div>
   );
 }

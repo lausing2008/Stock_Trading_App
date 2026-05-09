@@ -22,9 +22,10 @@ export default function RankingsTable({ rows, prices }: { rows: RankingRow[]; pr
           {rows.map((r, i) => {
             const lp = prices?.[r.symbol];
             const changeUp = (lp?.change_pct ?? 0) >= 0;
+            const pending = r.score == null && r.technical == null;
             return (
-              <tr key={r.symbol} className="border-t border-slate-800 hover:bg-slate-900">
-                <td className="px-3 py-2 text-slate-500">{i + 1}</td>
+              <tr key={r.symbol} className={`border-t border-slate-800 hover:bg-slate-900${pending ? ' opacity-50' : ''}`}>
+                <td className="px-3 py-2 text-slate-500">{pending ? '—' : i + 1}</td>
                 <td className="px-3 py-2 font-medium">
                   <a href={`/stock/${r.symbol}`} className="text-indigo-400 hover:underline">{r.symbol}</a>
                 </td>
@@ -39,7 +40,9 @@ export default function RankingsTable({ rows, prices }: { rows: RankingRow[]; pr
                 <td className="px-3 py-2 text-right text-xs font-semibold" style={{ color: lp?.change_pct != null ? (changeUp ? '#4ade80' : '#f87171') : '#475569' }}>
                   {lp?.change_pct != null ? `${changeUp ? '▲' : '▼'} ${Math.abs(lp.change_pct).toFixed(2)}%` : '—'}
                 </td>
-                <td className="px-3 py-2 text-right font-semibold">{r.score != null ? r.score.toFixed(1) : '—'}</td>
+                <td className="px-3 py-2 text-right font-semibold">
+                  {pending ? <span className="text-xs text-slate-600">Pending data</span> : r.score != null ? r.score.toFixed(1) : '—'}
+                </td>
                 <td className="px-3 py-2 text-right text-indigo-400">{r.fair_price?.toFixed(2) ?? '—'}</td>
               </tr>
             );

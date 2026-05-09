@@ -23,7 +23,7 @@ export const api = {
     request<Price[]>(`/stocks/${symbol}/prices?timeframe=${tf}&limit=${limit}`),
   overview: (symbol: string) => request<Overview>(`/aggregate/overview/${symbol}`),
   rankings: (market?: string) =>
-    request<{ rankings: RankingRow[] }>(`/rankings${market ? `?market=${market}` : ''}`),
+    request<{ rankings: RankingRow[] }>(`/rankings?limit=500${market ? `&market=${market}` : ''}`),
   signal: (symbol: string) => request<Signal>(`/signals/${symbol}`),
   allSignals: () => request<SignalSummary[]>(`/signals`),
   predict: (symbol: string, model = 'xgboost') =>

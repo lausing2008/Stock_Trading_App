@@ -195,9 +195,9 @@ export default function Opportunities() {
       setOutlookError('No AI provider configured. Go to Settings → AI Assistant to add your API key.');
       return;
     }
-    const symbols = watchlist?.map(w => w.symbol) ?? [];
-    if (symbols.length === 0) {
-      setOutlookError('Your watchlist is empty. Add stocks first.');
+    const top20 = opportunities.slice(0, 20);
+    if (top20.length === 0) {
+      setOutlookError('No opportunities found. Add stocks to your watchlist first.');
       return;
     }
 
@@ -207,29 +207,25 @@ export default function Opportunities() {
     setOutlookCollapsed(false);
 
     try {
-      setOutlookStatus(`Fetching latest news for ${symbols.length} stocks…`);
+      setOutlookStatus(`Fetching latest news for ${top20.length} stocks…`);
       const newsResults = await Promise.allSettled(
-        symbols.map(sym => api.getNews(sym, 'yfinance,google').catch(() => [] as { title: string; sentiment_label: string }[]))
+        top20.map(o => api.getNews(o.row.symbol, 'yfinance,google').catch(() => [] as { title: string; sentiment_label: string }[]))
       );
 
       setOutlookStatus('Analysing signals, trends, and news with AI…');
 
-      const stockContexts = symbols.map((sym, i) => {
-        const r = rankData?.rankings.find(row => row.symbol === sym);
-        const sig = signalMap[sym];
-        const lp = priceMap[sym];
+      const stockContexts = top20.map((o, i) => {
+        const { row: r, sig, lp } = o;
         const newsArr = newsResults[i].status === 'fulfilled'
           ? (newsResults[i] as PromiseFulfilledResult<{ title: string; sentiment_label: string }[]>).value
           : [];
-
-        if (!r) return null;
 
         const headlines = newsArr
           .slice(0, 5)
           .map((n) => `  - [${n.sentiment_label}] ${n.title}`)
           .join('\n') || '  (no recent news)';
 
-        return `Symbol: ${sym}
+        return `Symbol: ${r.symbol}
 Name: ${r.name}${r.name_zh ? ` (${r.name_zh})` : ''}
 Sector: ${r.sector ?? 'Unknown'} | Market: ${r.market}
 AI Signal: ${sig?.signal ?? 'N/A'} (${sig?.confidence?.toFixed(0) ?? 0}% confidence)
@@ -237,7 +233,7 @@ K-Score: ${(r.score ?? 0).toFixed(0)} | Technical: ${(r.technical ?? 0).toFixed(
 Today's Change: ${lp?.change_pct != null ? `${lp.change_pct >= 0 ? '+' : ''}${lp.change_pct.toFixed(2)}%` : 'N/A'}
 Recent News Headlines:
 ${headlines}`;
-      }).filter(Boolean) as string[];
+      }) as string[];
 
       const systemPrompt = `You are a quantitative stock analyst specializing in short-term price prediction. Your task: for each stock, predict the near-term (2–5 day) price direction based on the AI signal, K-Score sub-scores, price momentum, and news headlines.
 

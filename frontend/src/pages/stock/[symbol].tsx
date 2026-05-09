@@ -56,6 +56,7 @@ export default function StockDetail() {
   const [listPending, setListPending] = useState<number | null>(null);
   const watchMenuRef = useRef<HTMLDivElement>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [analystRefreshing, setAnalystRefreshing] = useState(false);
   const [fullRefreshing, setFullRefreshing] = useState(false);
   const [fullRefreshMsg, setFullRefreshMsg] = useState('');
   const [mlResult, setMlResult] = useState<Prediction | null>(null);
@@ -794,9 +795,19 @@ export default function StockDetail() {
                           Via Yahoo Finance · consensus of Wall Street analysts · updated daily · not a personalised recommendation
                         </div>
                       </div>
-                      {totalAnalysts > 0 && (
-                        <span style={{ fontSize: '11px', color: '#475569' }}>{totalAnalysts} analysts</span>
-                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        {totalAnalysts > 0 && (
+                          <span style={{ fontSize: '11px', color: '#475569' }}>{totalAnalysts} analysts</span>
+                        )}
+                        <button
+                          onClick={async () => { setAnalystRefreshing(true); await mutateOverview(); setAnalystRefreshing(false); }}
+                          disabled={analystRefreshing}
+                          style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', borderRadius: '5px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: analystRefreshing ? '#818cf8' : '#64748b', cursor: analystRefreshing ? 'not-allowed' : 'pointer', fontSize: '11px' }}
+                        >
+                          <span style={{ display: 'inline-block', fontSize: '12px', lineHeight: 1, animation: analystRefreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
+                          {analystRefreshing ? 'Refreshing…' : 'Refresh'}
+                        </button>
+                      </div>
                     </div>
 
                     <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
