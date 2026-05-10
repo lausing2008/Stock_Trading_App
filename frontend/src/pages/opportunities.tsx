@@ -66,12 +66,12 @@ function scoreFor(
   const upside = r.fair_price && lp?.price ? ((r.fair_price - lp.price) / lp.price) * 100 : 0;
 
   switch (strategy) {
-    case 'all':      return r.score;
+    case 'all':      return r.score ?? 0;
     case 'swing':    return tech * 0.40 + mom * 0.25 + sigB + conf * 0.15;
     case 'short':    return mom  * 0.50 + tech * 0.25 + Math.abs(chg) * 3 + vlt * 0.10;
     case 'longterm': return val  * 0.40 + grow * 0.30 + Math.max(0, upside) * 0.6 + vlt * 0.15;
     case 'growth':   return grow * 0.50 + mom  * 0.30 + tech * 0.20;
-    default:         return r.score;
+    default:         return r.score ?? 0;
   }
 }
 
@@ -130,7 +130,7 @@ function getKeyMetric(
     case 'growth':
       return { label: 'Growth', value: `${(r.growth ?? 0).toFixed(0)}/100`, color: scoreColor(r.growth ?? 0) };
     default:
-      return { label: 'K-Score', value: r.score.toFixed(0), color: scoreColor(r.score) };
+      return { label: 'K-Score', value: (r.score ?? 0).toFixed(0), color: scoreColor(r.score ?? 0) };
   }
 }
 
@@ -178,7 +178,7 @@ export default function Opportunities() {
     return all
       .filter(r => watchedSet.has(r.symbol))
       .filter(r => market === 'all' || r.market === market)
-      .filter(r => r.score > 0)
+      .filter(r => (r.score ?? 0) > 0)
       .filter(r => filter(r, signalMap[r.symbol]))
       .map(r => ({
         row: r,
@@ -195,9 +195,14 @@ export default function Opportunities() {
       setOutlookError('No AI provider configured. Go to Settings → AI Assistant to add your API key.');
       return;
     }
-    const symbols = watchlist?.map(w => w.symbol) ?? [];
+    // Use top opportunities (ranked by strategy score), capped at 20 to stay within AI token limits.
+    // Fall back to watchlist if no opportunities match the current filter.
+    const sourceSymbols = opportunities.length > 0
+      ? opportunities.slice(0, 20).map(o => o.row.symbol)
+      : (watchlist ?? []).slice(0, 20).map(w => w.symbol);
+    const symbols = sourceSymbols;
     if (symbols.length === 0) {
-      setOutlookError('Your watchlist is empty. Add stocks first.');
+      setOutlookError('No stocks to analyse. Add stocks to your watchlist first.');
       return;
     }
 
@@ -207,7 +212,7 @@ export default function Opportunities() {
     setOutlookCollapsed(false);
 
     try {
-      setOutlookStatus(`Fetching latest news for ${symbols.length} stocks…`);
+      setOutlookStatus(`Fetching news for top ${symbols.length} opportunities…`);
       const newsResults = await Promise.allSettled(
         symbols.map(sym => api.getNews(sym, 'yfinance,google').catch(() => [] as { title: string; sentiment_label: string }[]))
       );
@@ -225,7 +230,7 @@ export default function Opportunities() {
         if (!r) return null;
 
         const headlines = newsArr
-          .slice(0, 5)
+          .slice(0, 3)
           .map((n) => `  - [${n.sentiment_label}] ${n.title}`)
           .join('\n') || '  (no recent news)';
 
@@ -233,7 +238,7 @@ export default function Opportunities() {
 Name: ${r.name}${r.name_zh ? ` (${r.name_zh})` : ''}
 Sector: ${r.sector ?? 'Unknown'} | Market: ${r.market}
 AI Signal: ${sig?.signal ?? 'N/A'} (${sig?.confidence?.toFixed(0) ?? 0}% confidence)
-K-Score: ${r.score.toFixed(0)} | Technical: ${(r.technical ?? 0).toFixed(0)} | Momentum: ${(r.momentum ?? 0).toFixed(0)} | Value: ${(r.value ?? 0).toFixed(0)} | Growth: ${(r.growth ?? 0).toFixed(0)}
+K-Score: ${(r.score ?? 0).toFixed(0)} | Technical: ${(r.technical ?? 0).toFixed(0)} | Momentum: ${(r.momentum ?? 0).toFixed(0)} | Value: ${(r.value ?? 0).toFixed(0)} | Growth: ${(r.growth ?? 0).toFixed(0)}
 Today's Change: ${lp?.change_pct != null ? `${lp.change_pct >= 0 ? '+' : ''}${lp.change_pct.toFixed(2)}%` : 'N/A'}
 Recent News Headlines:
 ${headlines}`;
@@ -509,7 +514,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                             </div>
                           </div>
                         ) : null)}
-                        <span style={{ fontSize: '9px', color: '#334155', marginLeft: 'auto' }}>K {r.score.toFixed(0)}</span>
+                        <span style={{ fontSize: '9px', color: '#334155', marginLeft: 'auto' }}>K {(r.score ?? 0).toFixed(0)}</span>
                       </div>
                     )}
                   </div>
@@ -667,7 +672,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                       </div>
                     ))}
                     {reasons.length === 0 && (
-                      <span style={{ fontSize: '11px', color: '#334155' }}>K-Score: {r.score.toFixed(0)} — view stock detail for full analysis</span>
+                      <span style={{ fontSize: '11px', color: '#334155' }}>K-Score: {(r.score ?? 0).toFixed(0)} — view stock detail for full analysis</span>
                     )}
                   </div>
 
@@ -712,7 +717,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                     </div>
                   )}
                   <div style={{ fontSize: '10px', color: '#334155', marginTop: '4px' }}>
-                    K {r.score.toFixed(0)}
+                    K {(r.score ?? 0).toFixed(0)}
                   </div>
                 </div>
               </div>

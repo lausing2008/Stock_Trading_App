@@ -42,6 +42,7 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
       const res = await api.addStock(sym);
       setResult({ name: res.name, sector: res.sector, sym });
       setStatus('success');
+      setSymbol('');
       if (!multiList) {
         // Only one watchlist — add immediately
         onAdded(sym, lists[0]?.id);

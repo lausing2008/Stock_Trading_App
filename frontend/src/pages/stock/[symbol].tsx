@@ -56,6 +56,7 @@ export default function StockDetail() {
   const [listPending, setListPending] = useState<number | null>(null);
   const watchMenuRef = useRef<HTMLDivElement>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [fundRefreshing, setFundRefreshing] = useState(false);
   const [fullRefreshing, setFullRefreshing] = useState(false);
   const [fullRefreshMsg, setFullRefreshMsg] = useState('');
   const [mlResult, setMlResult] = useState<Prediction | null>(null);
@@ -183,6 +184,16 @@ export default function StockDetail() {
       setTimeout(() => setFullRefreshMsg(''), 4000);
     } finally {
       setFullRefreshing(false);
+    }
+  }
+
+  async function handleFundRefresh() {
+    setFundRefreshing(true);
+    try {
+      await api.refreshFundamentals(symbol);
+      await mutateOverview();
+    } finally {
+      setFundRefreshing(false);
     }
   }
 
@@ -794,9 +805,27 @@ export default function StockDetail() {
                           Via Yahoo Finance · consensus of Wall Street analysts · updated daily · not a personalised recommendation
                         </div>
                       </div>
-                      {totalAnalysts > 0 && (
-                        <span style={{ fontSize: '11px', color: '#475569' }}>{totalAnalysts} analysts</span>
-                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {totalAnalysts > 0 && (
+                          <span style={{ fontSize: '11px', color: '#475569' }}>{totalAnalysts} analysts</span>
+                        )}
+                        <button
+                          onClick={handleFundRefresh}
+                          disabled={fundRefreshing}
+                          title="Force-refresh analyst data (bypasses 24h cache)"
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '4px',
+                            padding: '3px 8px', borderRadius: '5px', fontSize: '11px',
+                            border: '1px solid rgba(148,163,184,0.15)',
+                            background: 'rgba(255,255,255,0.03)',
+                            color: fundRefreshing ? '#818cf8' : '#475569',
+                            cursor: fundRefreshing ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          <span style={{ display: 'inline-block', animation: fundRefreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
+                          {fundRefreshing ? 'Refreshing…' : 'Refresh'}
+                        </button>
+                      </div>
                     </div>
 
                     <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>

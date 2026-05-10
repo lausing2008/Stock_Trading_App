@@ -28,7 +28,7 @@ function sigStyle(label: string) {
   if (label === 'WAIT') return { color: '#fb923c', bg: 'rgba(251,146,60,0.1)',  border: 'rgba(251,146,60,0.3)'  };
   return                       { color: '#facc15', bg: 'rgba(250,204,21,0.1)',  border: 'rgba(250,204,21,0.3)'  };
 }
-function signalFromScore(score?: number) {
+function signalFromScore(score?: number | null) {
   if (score == null) return null;
   return score >= 65 ? 'BUY' : score >= 40 ? 'HOLD' : 'SELL';
 }

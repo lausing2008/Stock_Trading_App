@@ -71,18 +71,6 @@ def _run_migrations() -> None:  # noqa: C901
             ALTER TABLE watchlist_items
             DROP CONSTRAINT IF EXISTS watchlist_items_stock_id_key
         """))
-        # Add per-user unique constraint if not already present
-        conn.execute(text("""
-            DO $$ BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_constraint
-                    WHERE conname = 'uq_watchlist_user_stock'
-                ) THEN
-                    ALTER TABLE watchlist_items
-                    ADD CONSTRAINT uq_watchlist_user_stock UNIQUE (user_id, stock_id);
-                END IF;
-            END $$
-        """))
         # ── Named watchlists ───────────────────────────────────────────────
         # Create watchlists table
         conn.execute(text("""

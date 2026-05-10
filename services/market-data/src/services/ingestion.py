@@ -12,7 +12,7 @@ from common.config import get_settings
 from common.logging import get_logger
 from db import Price, SessionLocal, Stock, TimeFrame
 
-from ..adapters import get_adapter
+from ..adapters import get_adapter, get_adapters
 
 log = get_logger("ingestion")
 
@@ -62,7 +62,7 @@ def ingest_symbol(
     If force=True, deletes all existing price rows for the symbol+timeframe first,
     then re-fetches the full lookback_days window from scratch.
     """
-    adapter = get_adapter(provider, market)
+    adapters = [get_adapter(provider, market)] if provider else get_adapters(market, timeframe)
     tf = TimeFrame(timeframe)
 
     with SessionLocal() as session:
@@ -86,7 +86,17 @@ def ingest_symbol(
         if start >= end:
             return {"symbol": symbol, "inserted": 0, "skipped": "up_to_date"}
 
-        ohlcv = adapter.fetch_ohlcv(symbol, start, end, timeframe)
+        last_err: Exception | None = None
+        ohlcv = None
+        for adapter in adapters:
+            try:
+                ohlcv = adapter.fetch_ohlcv(symbol, start, end, timeframe)
+                break
+            except Exception as exc:
+                log.warning("ingest.adapter_failed", adapter=adapter.name, symbol=symbol, error=str(exc))
+                last_err = exc
+        if ohlcv is None:
+            raise IngestionError(f"All adapters failed for {symbol}: {last_err}")
         df = validate_ohlcv(ohlcv.df, symbol)
         if df.empty:
             return {"symbol": symbol, "inserted": 0, "skipped": "no_bars"}

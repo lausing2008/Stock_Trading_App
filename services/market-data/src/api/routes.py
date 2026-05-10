@@ -303,15 +303,17 @@ def _safe(info: dict, key: str):
 
 
 @router.get("/{symbol}/fundamentals", response_model=FundamentalsOut)
-def get_fundamentals(symbol: str):
-    """Live company fundamentals from yfinance, Redis-cached for 24 h."""
+def get_fundamentals(symbol: str, refresh: bool = False):
+    """Live company fundamentals from yfinance, Redis-cached for 24 h.
+    Pass ?refresh=true to bypass the cache and force a fresh fetch."""
     cache_key = f"stockai:fundamentals:v2:{symbol.upper()}"
-    try:
-        cached = _get_redis().get(cache_key)
-        if cached:
-            return json.loads(cached)
-    except Exception:
-        pass
+    if not refresh:
+        try:
+            cached = _get_redis().get(cache_key)
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            pass
 
     info: dict = {}
     ticker = None

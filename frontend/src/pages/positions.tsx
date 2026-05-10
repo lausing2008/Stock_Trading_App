@@ -22,7 +22,7 @@ function loadPositions(): Position[] {
     if (val) return JSON.parse(val);
     // Migrate from pre-multiuser key 'stockai_positions'
     const legacy = localStorage.getItem('stockai_positions');
-    if (legacy) { const data = JSON.parse(legacy); savePositions(data); return data; }
+    if (legacy) { const data = JSON.parse(legacy); savePositions(data); localStorage.removeItem('stockai_positions'); return data; }
     return [];
   } catch { return []; }
 }
@@ -34,7 +34,7 @@ function loadTrades(): Record<string, Trade[]> {
     if (val) return JSON.parse(val);
     // Migrate from pre-multiuser key 'stockai_trades'
     const legacy = localStorage.getItem('stockai_trades');
-    if (legacy) { const data = JSON.parse(legacy); saveTrades(data); return data; }
+    if (legacy) { const data = JSON.parse(legacy); saveTrades(data); localStorage.removeItem('stockai_trades'); return data; }
     return {};
   } catch { return {}; }
 }
@@ -50,7 +50,7 @@ function sigStyle(label: string) {
   if (label === 'SELL') return { color: '#f87171', bg: 'rgba(239,68,68,0.1)',  border: 'rgba(239,68,68,0.25)'  };
   return                       { color: '#facc15', bg: 'rgba(250,204,21,0.1)', border: 'rgba(250,204,21,0.25)' };
 }
-function signalFromScore(s?: number) { if (s == null) return null; return s >= 65 ? 'BUY' : s >= 40 ? 'HOLD' : 'SELL'; }
+function signalFromScore(s?: number | null) { if (s == null) return null; return s >= 65 ? 'BUY' : s >= 40 ? 'HOLD' : 'SELL'; }
 
 function exportCSV(rows: { symbol: string; shares: number; avgCost: number; curPrice: number | null; mktVal: number | null; pnl: number | null; pnlPct: number | null; currency: string }[]) {
   const header = 'Symbol,Shares,Avg Cost,Current Price,Market Value,P&L ($),P&L (%),Currency';

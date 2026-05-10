@@ -22,8 +22,12 @@ export const api = {
   getPrices: (symbol: string, tf = '1d', limit = 400) =>
     request<Price[]>(`/stocks/${symbol}/prices?timeframe=${tf}&limit=${limit}`),
   overview: (symbol: string) => request<Overview>(`/aggregate/overview/${symbol}`),
-  rankings: (market?: string) =>
-    request<{ rankings: RankingRow[] }>(`/rankings${market ? `?market=${market}` : ''}`),
+  refreshFundamentals: (symbol: string) => request<unknown>(`/stocks/${symbol}/fundamentals?refresh=true`),
+  rankings: (market?: string) => {
+    const params = new URLSearchParams({ limit: '500' });
+    if (market) params.set('market', market);
+    return request<{ rankings: RankingRow[] }>(`/rankings?${params}`);
+  },
   signal: (symbol: string) => request<Signal>(`/signals/${symbol}`),
   allSignals: () => request<SignalSummary[]>(`/signals`),
   predict: (symbol: string, model = 'xgboost') =>
@@ -68,6 +72,8 @@ export const api = {
   adminResetPassword: (username: string, newPassword: string) =>
     request(`/auth/users/${username}/reset-password`, { method: 'PUT', body: JSON.stringify({ new_password: newPassword }) }),
   toggleUser: (username: string) => request<{ is_active: boolean }>(`/auth/users/${username}/toggle`, { method: 'PUT' }),
+  pushConfig: (keys: { polygon_api_key?: string; alpha_vantage_api_key?: string }) =>
+    request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
 };
 
 export type Stock = {
@@ -100,7 +106,7 @@ export type Signal = {
 };
 
 export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null };
-export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number; market: string; fair_price?: number; sector?: string; technical?: number; momentum?: number; value?: number; growth?: number; volatility?: number };
+export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number; sector?: string; technical?: number; momentum?: number; value?: number; growth?: number; volatility?: number };
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {
   backtest_id: number;

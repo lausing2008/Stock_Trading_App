@@ -39,7 +39,7 @@ export default function RankingsTable({ rows, prices }: { rows: RankingRow[]; pr
                 <td className="px-3 py-2 text-right text-xs font-semibold" style={{ color: lp?.change_pct != null ? (changeUp ? '#4ade80' : '#f87171') : '#475569' }}>
                   {lp?.change_pct != null ? `${changeUp ? '▲' : '▼'} ${Math.abs(lp.change_pct).toFixed(2)}%` : '—'}
                 </td>
-                <td className="px-3 py-2 text-right font-semibold">{r.score.toFixed(1)}</td>
+                <td className="px-3 py-2 text-right font-semibold">{r.score != null ? r.score.toFixed(1) : '—'}</td>
                 <td className="px-3 py-2 text-right text-indigo-400">{r.fair_price?.toFixed(2) ?? '—'}</td>
               </tr>
             );

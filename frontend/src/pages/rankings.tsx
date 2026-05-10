@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import RankingsTable from '@/components/RankingsTable';
-import { api, type WatchlistItem, type LatestPrice } from '@/lib/api';
+import { api, type LatestPrice } from '@/lib/api';
 
 export default function RankingsPage() {
   const [market, setMarket] = useState<'US' | 'HK' | ''>('');
@@ -9,20 +9,13 @@ export default function RankingsPage() {
     `rankings-${market}`,
     () => api.rankings(market || undefined),
   );
-  const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
 
-  const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
     for (const p of pricesData ?? []) m[p.symbol] = p;
     return m;
   }, [pricesData]);
-
-  const filteredRankings = useMemo(
-    () => data ? { rankings: data.rankings.filter(r => watchedSet.has(r.symbol)) } : undefined,
-    [data, watchedSet],
-  );
 
   return (
     <div>
@@ -42,7 +35,7 @@ export default function RankingsPage() {
       </div>
       {isLoading && <div>Loading…</div>}
       {error && <div className="text-slate-300">Unable to load rankings.</div>}
-      {filteredRankings && <RankingsTable rows={filteredRankings.rankings} prices={priceMap} />}
+      {data && <RankingsTable rows={data.rankings} prices={priceMap} />}
     </div>
   );
 }

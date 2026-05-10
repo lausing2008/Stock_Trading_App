@@ -16,7 +16,7 @@ const SECTOR_COLOR: Record<string, { text: string; bg: string }> = {
   Industrials:              { text: '#22d3ee', bg: 'rgba(21,94,117,0.3)' },
 };
 
-function signalFromScore(score: number | undefined) {
+function signalFromScore(score: number | null | undefined) {
   if (score == null) return null;
   if (score >= 65) return { label: 'BUY',  color: '#4ade80', bg: 'rgba(34,197,94,0.1)',  border: 'rgba(34,197,94,0.3)'  };
   if (score >= 40) return { label: 'HOLD', color: '#facc15', bg: 'rgba(250,204,21,0.1)', border: 'rgba(250,204,21,0.3)' };
@@ -279,8 +279,8 @@ export default function Home() {
 
   const usCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'US').length ?? 0;
   const hkCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'HK').length ?? 0;
-  const topRanked = rankingsData?.rankings.filter(r => watchedSet.has(r.symbol)).reduce(
-    (best, r) => (!best || r.score > best.score) ? r : best,
+  const topRanked = rankingsData?.rankings.filter(r => watchedSet.has(r.symbol) && r.score != null).reduce(
+    (best, r) => (!best || (r.score ?? 0) > (best.score ?? 0)) ? r : best,
     null as RankingRow | null,
   );
 
@@ -305,7 +305,7 @@ export default function Home() {
               <div style={{ fontSize: '12px', color: '#64748b' }}>
                 Top:{' '}
                 <Link href={`/stock/${topRanked.symbol}`} style={{ color: '#818cf8' }}>{topRanked.symbol}</Link>
-                <span style={{ marginLeft: '4px', fontWeight: 700, color: scoreColor(topRanked.score) }}>{topRanked.score.toFixed(0)}</span>
+                <span style={{ marginLeft: '4px', fontWeight: 700, color: scoreColor(topRanked.score ?? 0) }}>{topRanked.score?.toFixed(0) ?? '—'}</span>
               </div>
             </>
           )}
