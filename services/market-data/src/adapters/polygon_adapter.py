@@ -11,7 +11,7 @@ from common.config import get_settings
 from common.logging import get_logger
 
 from .base import DataAdapter, OHLCV
-from .registry import register_adapter
+from .registry import get_runtime_key, register_adapter
 
 log = get_logger("polygon_adapter")
 
@@ -33,19 +33,23 @@ class PolygonAdapter(DataAdapter):
     def __init__(self) -> None:
         self._key = get_settings().polygon_api_key
 
+    def _active_key(self) -> str:
+        return get_runtime_key("polygon") or self._key or ""
+
     def supports(self, market: str, timeframe: str) -> bool:
-        return market == "US" and timeframe in _TF_MULT and bool(self._key)
+        return market == "US" and timeframe in _TF_MULT and bool(self._active_key())
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=20), reraise=True)
     def fetch_ohlcv(self, symbol: str, start: date, end: date, timeframe: str = "1d") -> OHLCV:
-        if not self._key:
+        key = self._active_key()
+        if not key:
             raise RuntimeError("POLYGON_API_KEY not configured")
         mult, span = _TF_MULT[timeframe]
         url = (
             f"{self._BASE}/v2/aggs/ticker/{symbol}/range/{mult}/{span}/"
             f"{start.isoformat()}/{end.isoformat()}"
         )
-        params = {"adjusted": "true", "sort": "asc", "limit": 50000, "apiKey": self._key}
+        params = {"adjusted": "true", "sort": "asc", "limit": 50000, "apiKey": key}
         log.info("polygon.fetch", symbol=symbol, tf=timeframe)
         with httpx.Client(timeout=30) as client:
             r = client.get(url, params=params)

@@ -1,5 +1,5 @@
 """Admin endpoints: trigger ingestion + seed universe + add individual stock."""
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 import yfinance as yf
@@ -7,8 +7,10 @@ import yfinance as yf
 from common.logging import get_logger
 from db import Exchange, Market, SessionLocal, Stock, init_db
 
+from ..adapters.registry import set_runtime_key
 from ..services.ingestion import ingest_symbol, ingest_universe
 from ..services.seed_universe import seed
+from .auth import User, get_admin_user
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 log = get_logger("admin")
@@ -44,6 +46,21 @@ _HK_NAME_ZH: dict[str, str] = {
     "0981.HK": "中芯國際", "9961.HK": "攜程集團",
     "6082.HK": "壁仞科技", "6613.HK": "藍思科技",
 }
+
+
+class ConfigRequest(BaseModel):
+    polygon_api_key: str | None = None
+    alpha_vantage_api_key: str | None = None
+
+
+@router.post("/config")
+def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
+    if req.polygon_api_key is not None:
+        set_runtime_key("polygon", req.polygon_api_key)
+    if req.alpha_vantage_api_key is not None:
+        set_runtime_key("alpha_vantage", req.alpha_vantage_api_key)
+    log.info("admin.config_updated")
+    return {"status": "ok"}
 
 
 class IngestRequest(BaseModel):

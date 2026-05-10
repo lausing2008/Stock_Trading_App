@@ -186,6 +186,10 @@ export default function SettingsPage() {
     saveSettings(s);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+    api.pushConfig({
+      polygon_api_key: s.polygonApiKey || undefined,
+      alpha_vantage_api_key: s.alphaVantageApiKey || undefined,
+    }).catch(() => {});
   }
 
   async function testAiConnection() {

@@ -11,9 +11,9 @@ export default function RankingsPage() {
   );
   const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
   const { data: stocks } = useSWR<Stock[]>('stocks', () => api.listStocks());
+  const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
 
-  const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
     for (const p of pricesData ?? []) m[p.symbol] = p;

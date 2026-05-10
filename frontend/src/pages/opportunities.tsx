@@ -197,7 +197,7 @@ export default function Opportunities() {
     }
     const top20 = opportunities.slice(0, 20);
     if (top20.length === 0) {
-      setOutlookError('No opportunities found. Add stocks to your watchlist first.');
+      setOutlookError('No stocks to analyse. Add stocks to your watchlist first.');
       return;
     }
 
@@ -207,7 +207,7 @@ export default function Opportunities() {
     setOutlookCollapsed(false);
 
     try {
-      setOutlookStatus(`Fetching latest news for ${top20.length} stocks…`);
+      setOutlookStatus(`Fetching news for top ${top20.length} opportunities…`);
       const newsResults = await Promise.allSettled(
         top20.map(o => api.getNews(o.row.symbol, 'yfinance,google').catch(() => [] as { title: string; sentiment_label: string }[]))
       );
@@ -221,7 +221,7 @@ export default function Opportunities() {
           : [];
 
         const headlines = newsArr
-          .slice(0, 5)
+          .slice(0, 3)
           .map((n) => `  - [${n.sentiment_label}] ${n.title}`)
           .join('\n') || '  (no recent news)';
 

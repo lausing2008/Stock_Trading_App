@@ -23,6 +23,13 @@ export default function App({ Component, pageProps }: AppProps) {
     if (session) {
       setUsername(session.username);
       setRole(session.role);
+      const settings = loadSettings();
+      if (settings.polygonApiKey || settings.alphaVantageApiKey) {
+        api.pushConfig({
+          polygon_api_key: settings.polygonApiKey || undefined,
+          alpha_vantage_api_key: settings.alphaVantageApiKey || undefined,
+        }).catch(() => {});
+      }
     } else if (!PUBLIC_PATHS.includes(router.pathname)) {
       router.replace('/login');
     }
