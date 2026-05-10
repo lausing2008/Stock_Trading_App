@@ -60,7 +60,7 @@ def rank_symbol(symbol: str, session: Session = Depends(get_session)):
 @router.get("")
 def leaderboard(
     market: str | None = None,
-    limit: int = Query(50, le=500),
+    limit: int = Query(500, le=500),
     session: Session = Depends(get_session),
 ):
     stmt = select(Stock).where(Stock.active.is_(True))
