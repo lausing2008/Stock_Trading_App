@@ -120,7 +120,6 @@ export function checkAlerts(
   signals: SignalMap,
   scores: ScoreMap,
 ): Notification[] {
-  const alerts = loadAlerts().filter(a => a.enabled);
   const now = Date.now();
   const triggered: Notification[] = [];
   const updated: StockAlert[] = [];
