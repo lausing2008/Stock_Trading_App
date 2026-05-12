@@ -97,8 +97,25 @@ Full drill-down page for a single stock.
 - **↻ Refresh** / **☆ Watch** toggle
 
 ### Chart
+
+**Time range selector** — row of buttons above the chart to zoom into a specific window of history. All data is loaded once on page open; switching ranges is instant (no extra API call).
+
+| Button | Trading bars shown |
+|--------|--------------------|
+| 5D | 5 bars — last week |
+| 1M | 21 bars — last month |
+| 3M | 63 bars — last quarter (default) |
+| 6M | 126 bars — last 6 months |
+| 1Y | 252 bars — last year |
+| All | Full history in DB (up to ~5 years) |
+
+A small bar count is displayed next to the buttons so you can see exactly how much data is visible. SMA, Bollinger Band, RSI, and MACD overlays are cropped to the selected window automatically.
+
+**History depth:** The overview endpoint fetches up to `1260` daily bars (~5 years of trading days). Actual depth depends on how far back yfinance has data for the stock — typically 5+ years for major US and HK equities. Run **Full Refresh** on the stock detail page to re-fetch the maximum available history.
+
+**Chart features:**
 - Candlestick chart (lightweight-charts)
-- SMA20, SMA50, EMA20, Bollinger Bands overlaid
+- SMA20, SMA50, SMA200, Bollinger Bands overlaid
 - Volume histogram, Support/Resistance levels, Fibonacci retracement
 
 ### Sidebar
@@ -585,7 +602,7 @@ Clearing `stockai_jwt` from `localStorage` logs the user out. Clearing all stora
 
 | Sub-score | Range | What drives it |
 |-----------|-------|---------------|
-| Technical | 0–100 | SMA trend, RSI health, MACD direction, golden/death cross |
+| Technical | 0–100 | SMA(50/200) trend alignment, RSI(14), ADX(14) trend-strength bonus |
 | Momentum | 0–100 | 1-week, 1-month, 3-month price rate-of-change |
 | Value | 0–100 | Discount from 52-week high (price proxy; fundamentals not yet integrated) |
 | Growth | 0–100 | 12-month price CAGR (price proxy; earnings/revenue growth not yet integrated) |

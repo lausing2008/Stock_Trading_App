@@ -40,24 +40,54 @@ def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
     return 100 - 100 / (1 + rs)
 
 
+def _adx_value(df: pd.DataFrame, period: int = 14) -> float:
+    """Return ADX scalar. Returns 20.0 (neutral) if insufficient data."""
+    high  = df["high"].astype(float)
+    low   = df["low"].astype(float)
+    close = df["close"].astype(float)
+
+    prev_close = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+
+    up_move   = high.diff()
+    down_move = (-low.diff())
+    dm_plus  = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    dm_minus = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    atr      = tr.ewm(alpha=1 / period, adjust=False).mean()
+    di_plus  = 100 * dm_plus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
+    di_minus = 100 * dm_minus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
+
+    dx  = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)
+    adx = dx.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]
+    return float(adx) if not pd.isna(adx) else 20.0
+
+
 def _technical_score(df: pd.DataFrame) -> float:
     close = df["close"]
-    sma50 = close.rolling(50).mean().iloc[-1]
+    sma50  = close.rolling(50).mean().iloc[-1]
     sma200 = close.rolling(200).mean().iloc[-1]
-    above_50 = 1 if close.iloc[-1] > sma50 else 0
-    above_200 = 1 if close.iloc[-1] > sma200 else 0
-    golden = 1 if sma50 > sma200 else 0
+    above_sma50        = 1 if close.iloc[-1] > sma50  else 0
+    above_sma200       = 1 if close.iloc[-1] > sma200 else 0
+    sma50_above_sma200 = 1 if sma50 > sma200           else 0
+
     r = _rsi(close).iloc[-1]
     rsi_score = 100 - abs(r - 55)  # peak at 55 (bullish but not overbought)
-    return np.clip((above_50 + above_200 + golden) / 3 * 60 + rsi_score * 0.4, 0, 100)
+
+    adx = _adx_value(df)
+    # ADX boost: strong trend (>25) lifts score; very weak trend (<15) drags it
+    adx_boost = np.clip((adx - 15) / 25, 0, 1) * 10  # 0–10 bonus
+
+    base = (above_sma50 + above_sma200 + sma50_above_sma200) / 3 * 60 + rsi_score * 0.4
+    return float(np.clip(base + adx_boost, 0, 100))
 
 
 def _momentum_score(df: pd.DataFrame) -> float:
     c = df["close"]
     if len(c) < 126:
         return 50.0
-    r1m = c.iloc[-1] / c.iloc[-21] - 1
-    r3m = c.iloc[-1] / c.iloc[-63] - 1
+    r1m = c.iloc[-1] / c.iloc[-21]  - 1
+    r3m = c.iloc[-1] / c.iloc[-63]  - 1
     r6m = c.iloc[-1] / c.iloc[-126] - 1
     raw = 0.5 * r3m + 0.3 * r6m + 0.2 * r1m
     return float(np.clip(50 + raw * 150, 0, 100))
@@ -74,7 +104,7 @@ def _volatility_score(df: pd.DataFrame) -> float:
 
 def _value_proxy(df: pd.DataFrame) -> float:
     """Proxy: distance below 52w high. Deep discount → higher value."""
-    high_52 = df["close"].tail(252).max()
+    high_52  = df["close"].tail(252).max()
     discount = 1 - df["close"].iloc[-1] / high_52
     return float(np.clip(discount * 200, 0, 100))
 
@@ -89,20 +119,20 @@ def _growth_proxy(df: pd.DataFrame) -> float:
 
 def compute_kscore(df: pd.DataFrame) -> KScoreComponents:
     tech = _technical_score(df)
-    mom = _momentum_score(df)
-    val = _value_proxy(df)
-    gro = _growth_proxy(df)
-    vol = _volatility_score(df)
+    mom  = _momentum_score(df)
+    val  = _value_proxy(df)
+    gro  = _growth_proxy(df)
+    vol  = _volatility_score(df)
 
     score = (
-        _WEIGHTS["technical"] * tech
+        _WEIGHTS["technical"]  * tech
         + _WEIGHTS["momentum"] * mom
-        + _WEIGHTS["value"] * val
-        + _WEIGHTS["growth"] * gro
+        + _WEIGHTS["value"]    * val
+        + _WEIGHTS["growth"]   * gro
         + _WEIGHTS["volatility"] * vol
     )
     sma200 = df["close"].rolling(200).mean().iloc[-1]
-    fair = float(sma200) if not pd.isna(sma200) else None
+    fair   = float(sma200) if not pd.isna(sma200) else None
 
     return KScoreComponents(
         technical=round(tech, 2),

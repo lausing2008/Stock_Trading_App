@@ -34,23 +34,26 @@ All sub-scores are clipped to [0, 100]. The composite is also clipped to [0, 100
 
 ### Technical (weight 25%)
 
-Measures trend alignment and RSI positioning.
+Measures trend alignment, RSI positioning, and trend strength (ADX).
 
-**Inputs:** daily `close`, minimum ~50 rows recommended.
+**Inputs:** daily `open`, `high`, `low`, `close` — minimum ~50 rows recommended.
 
 **Signals:**
-- `above_50` = 1 if close > SMA(50), else 0
-- `above_200` = 1 if close > SMA(200), else 0
-- `golden_cross` = 1 if SMA(50) > SMA(200), else 0
+- `above_sma50` = 1 if close > SMA(50), else 0
+- `above_sma200` = 1 if close > SMA(200), else 0
+- `sma50_above_sma200` = 1 if SMA(50) > SMA(200), else 0 — bullish regime
 - `rsi_score` = `100 − |RSI(14) − 55|` — peaks at RSI 55 (bullish but not overbought)
+- `adx_boost` = `clip((ADX(14) − 15) / 25, 0, 1) × 10` — 0–10 bonus for trending markets
 
 **Formula:**
 ```
-Technical = clip( (above_50 + above_200 + golden_cross) / 3 × 60 + rsi_score × 0.4, 0, 100 )
+base       = (above_sma50 + above_sma200 + sma50_above_sma200) / 3 × 60 + rsi_score × 0.4
+Technical  = clip( base + adx_boost, 0, 100 )
 ```
 
-- MA signals contribute up to 60 pts; RSI contributes up to 40 pts.
-- All three MA signals firing = 60 pts; RSI at exactly 55 = 40 pts → max 100.
+- MA signals contribute up to 60 pts; RSI up to 40 pts; ADX adds up to 10 bonus pts.
+- All three MA signals + RSI at 55 + strong trend (ADX > 40) → near 110 before clipping to 100.
+- ADX below 15 (choppy/ranging market) contributes 0 bonus — trend signals are less reliable in flat markets.
 
 ---
 
@@ -173,7 +176,7 @@ This is a **trend-based mean-reversion anchor**, not an intrinsic value estimate
 
 | Sub-score | Strengths | Weaknesses |
 |-----------|-----------|------------|
-| Technical | Objective, reacts to price quickly | Lags — all signals are backward-looking |
+| Technical | Objective, reacts to price quickly; ADX filters out choppy-market noise | Lags — all signals are backward-looking |
 | Momentum | Empirically validated factor in academic literature | Prone to sharp reversals at extremes |
 | Volatility | Reliable risk proxy | Low vol doesn't mean low risk (gap risk, illiquidity) |
 | Value | Simple, data-always-available | Conflates "cheap" with "fallen" |

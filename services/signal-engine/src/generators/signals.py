@@ -51,47 +51,120 @@ def _fetch_ml_probability(symbol: str) -> float | None:
     return None
 
 
-def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
+def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
+    """Return (ADX, +DI, -DI). ADX > 25 = trending, > 40 = strong trend."""
+    high = df["high"].astype(float)
+    low  = df["low"].astype(float)
     close = df["close"].astype(float)
-    reasons = {}
 
-    sma50 = close.rolling(50).mean().iloc[-1]
-    sma200 = close.rolling(200).mean().iloc[-1]
-    above_50 = close.iloc[-1] > sma50
-    golden = sma50 > sma200
-    reasons["trend_above_sma50"] = bool(above_50)
-    reasons["golden_cross"] = bool(golden)
+    prev_close = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
 
-    # RSI
+    up_move   = high.diff()
+    down_move = (-low.diff())
+    dm_plus  = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    dm_minus = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    atr      = tr.ewm(alpha=1 / period, adjust=False).mean()
+    di_plus  = 100 * dm_plus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
+    di_minus = 100 * dm_minus.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, np.nan)
+
+    dx  = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)
+    adx = dx.ewm(alpha=1 / period, adjust=False).mean()
+
+    return (
+        float(adx.iloc[-1])      if not pd.isna(adx.iloc[-1])      else 20.0,
+        float(di_plus.iloc[-1])  if not pd.isna(di_plus.iloc[-1])  else 0.0,
+        float(di_minus.iloc[-1]) if not pd.isna(di_minus.iloc[-1]) else 0.0,
+    )
+
+
+def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
+    close  = df["close"].astype(float)
+    volume = df["volume"].astype(float)
+    reasons: dict = {}
+
+    # ── Trend: SMA50 / SMA200 ─────────────────────────────────────────────
+    sma50_s  = close.rolling(50).mean()
+    sma200_s = close.rolling(200).mean()
+    sma50  = sma50_s.iloc[-1]
+    sma200 = sma200_s.iloc[-1]
+
+    above_sma50        = bool(close.iloc[-1] > sma50)
+    sma50_above_sma200 = bool(sma50 > sma200)
+
+    # True crossover events (only fire on the bar the cross happens)
+    golden_cross_event = False
+    death_cross_event  = False
+    if len(sma50_s.dropna()) >= 2 and len(sma200_s.dropna()) >= 2:
+        prev50, prev200 = sma50_s.iloc[-2], sma200_s.iloc[-2]
+        golden_cross_event = bool(prev50 <= prev200 and sma50 > sma200)
+        death_cross_event  = bool(prev50 >= prev200 and sma50 < sma200)
+
+    reasons["trend_above_sma50"]    = above_sma50
+    reasons["sma50_above_sma200"]   = sma50_above_sma200
+    reasons["golden_cross_event"]   = golden_cross_event   # fired today
+    reasons["death_cross_event"]    = death_cross_event    # fired today
+
+    # ── RSI ───────────────────────────────────────────────────────────────
     d = close.diff()
     g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
     l = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
-    rs = g / l.replace(0, np.nan)
-    rsi = 100 - 100 / (1 + rs)
-    reasons["rsi"] = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None
+    rsi = 100 - 100 / (1 + g / l.replace(0, np.nan))
+    rsi_val = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None
+    reasons["rsi"] = rsi_val
 
-    # MACD histogram sign
+    # ── MACD histogram ────────────────────────────────────────────────────
     macd = close.ewm(span=12).mean() - close.ewm(span=26).mean()
-    sig = macd.ewm(span=9).mean()
-    hist = macd - sig
-    reasons["macd_hist"] = float(hist.iloc[-1])
+    hist = macd - macd.ewm(span=9).mean()
+    macd_hist = float(hist.iloc[-1])
+    # Histogram turning up (momentum shift) is more meaningful than sign alone
+    macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
+    reasons["macd_hist"]   = macd_hist
+    reasons["macd_rising"] = macd_rising
 
-    # Volume expansion
-    vol = df["volume"].astype(float)
-    vol_z = (vol.iloc[-1] - vol.rolling(20).mean().iloc[-1]) / vol.rolling(20).std().iloc[-1]
+    # ── Bollinger Bands %B ────────────────────────────────────────────────
+    sma20 = close.rolling(20).mean()
+    std20 = close.rolling(20).std()
+    bb_upper = sma20 + 2 * std20
+    bb_lower = sma20 - 2 * std20
+    band_width = bb_upper.iloc[-1] - bb_lower.iloc[-1]
+    bb_pct_b = float((close.iloc[-1] - bb_lower.iloc[-1]) / band_width) if band_width > 0 else 0.5
+    # 0 = at lower band (oversold zone), 0.5 = midline, 1 = upper band (overbought zone)
+    reasons["bb_pct_b"] = round(bb_pct_b, 3)
+
+    # ── ADX — trend strength ──────────────────────────────────────────────
+    adx_val, di_plus, di_minus = _adx(df)
+    trending = adx_val > 25          # meaningful directional move
+    bullish_trend = trending and di_plus > di_minus
+    reasons["adx"]           = round(adx_val, 1)
+    reasons["adx_trending"]  = trending
+    reasons["adx_bullish"]   = bullish_trend
+
+    # ── OBV trend (volume-confirmed direction) ────────────────────────────
+    direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+    obv = (volume * direction).cumsum()
+    obv_bullish = bool(obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1])
+    reasons["obv_bullish"] = obv_bullish
+
+    # ── Volume expansion ──────────────────────────────────────────────────
+    vol_z = (volume.iloc[-1] - volume.rolling(20).mean().iloc[-1]) / volume.rolling(20).std().iloc[-1]
     reasons["volume_z"] = float(vol_z) if not pd.isna(vol_z) else None
 
+    # ── Score ─────────────────────────────────────────────────────────────
     score = 0.0
-    if above_50:
-        score += 0.25
-    if golden:
-        score += 0.20
-    if reasons["rsi"] is not None and 40 < reasons["rsi"] < 70:
-        score += 0.20
-    if reasons["macd_hist"] and reasons["macd_hist"] > 0:
-        score += 0.20
-    if reasons["volume_z"] and reasons["volume_z"] > 0.5:
-        score += 0.15
+    if above_sma50:                                         score += 0.15
+    if sma50_above_sma200:                                  score += 0.10
+    if golden_cross_event:                                  score += 0.10  # bonus on event
+    if death_cross_event:                                   score -= 0.10  # penalty on event
+    if rsi_val is not None and 40 < rsi_val < 70:           score += 0.15
+    if macd_hist > 0 and macd_rising:                       score += 0.15
+    elif macd_hist > 0:                                     score += 0.08
+    if 0.2 < bb_pct_b < 0.8:                               score += 0.10  # not at extremes
+    if bullish_trend:                                       score += 0.10
+    if obv_bullish:                                         score += 0.10
+    if reasons["volume_z"] and reasons["volume_z"] > 0.5:  score += 0.05
+
     return float(np.clip(score, 0, 1)), reasons
 
 

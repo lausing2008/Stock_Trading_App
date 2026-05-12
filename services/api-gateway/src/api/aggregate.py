@@ -31,7 +31,7 @@ async def overview(symbol: str):
     async with httpx.AsyncClient() as client:
         tasks = {
             "price": _get(client, f"{_settings.market_data_url}/stocks/{symbol}"),
-            "prices": _get(client, f"{_settings.market_data_url}/stocks/{symbol}/prices?limit=400"),
+            "prices": _get(client, f"{_settings.market_data_url}/stocks/{symbol}/prices?limit=1260"),
             "indicators": _get(client, f"{_settings.technical_analysis_url}/ta/{symbol}/indicators"),
             "patterns": _get(client, f"{_settings.technical_analysis_url}/ta/{symbol}/patterns"),
             "levels": _get(client, f"{_settings.technical_analysis_url}/ta/{symbol}/levels"),
