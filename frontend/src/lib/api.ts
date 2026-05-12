@@ -12,6 +12,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'content-type': 'application/json', ...authHeader(), ...(init?.headers ?? {}) },
   });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  if (r.status === 204 || r.headers.get('content-length') === '0') return undefined as T;
   return (await r.json()) as T;
 }
 
@@ -60,9 +61,14 @@ export const api = {
 
   // Price alerts
   listAlerts: () => request<PriceAlert[]>(`/alerts`),
-  createAlert: (body: { symbol: string; condition: string; threshold: number; email: string; note?: string }) =>
+  createAlert: (body: { symbol: string; condition: string; threshold: number; email?: string; note?: string }) =>
     request<PriceAlert>(`/alerts`, { method: 'POST', body: JSON.stringify(body) }),
   deleteAlert: (id: number) => request(`/alerts/${id}`, { method: 'DELETE' }),
+
+  // User profile
+  getMe: () => request<AppUser>(`/auth/me`),
+  updateProfile: (body: { email?: string }) =>
+    request<AppUser>(`/auth/me`, { method: 'PUT', body: JSON.stringify(body) }),
 
   // User management (admin)
   listUsers: () => request<AppUser[]>(`/auth/users`),
@@ -134,7 +140,7 @@ export type MarketIndex = { name: string; ticker: string; market: string; price:
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string };
 export type WatchlistMeta = { id: number; name: string; item_count: number; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
-export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; created_at: string };
+export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: 'above' | 'below'; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };
 
 export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };

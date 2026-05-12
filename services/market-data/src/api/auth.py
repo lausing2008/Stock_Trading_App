@@ -100,10 +100,15 @@ class UserOut(BaseModel):
     username: str
     role: str
     is_active: bool
+    email: str | None = None
     created_at: str
 
     class Config:
         from_attributes = True
+
+
+class UpdateProfileRequest(BaseModel):
+    email: str | None = None
 
 
 # ── Public endpoints ──────────────────────────────────────────────────────────
@@ -142,7 +147,26 @@ def reset_password_public(body: ResetPasswordRequest, session: Session = Depends
 def me(current: User = Depends(get_current_user)):
     return UserOut(
         id=current.id, username=current.username, role=current.role.value.lower(),
-        is_active=current.is_active, created_at=current.created_at.isoformat(),
+        is_active=current.is_active, email=current.email,
+        created_at=current.created_at.isoformat(),
+    )
+
+
+@router.put("/me", response_model=UserOut)
+def update_me(
+    body: UpdateProfileRequest,
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    user = session.get(User, current.id)
+    if body.email is not None:
+        user.email = body.email.strip() or None
+    session.commit()
+    session.refresh(user)
+    return UserOut(
+        id=user.id, username=user.username, role=user.role.value.lower(),
+        is_active=user.is_active, email=user.email,
+        created_at=user.created_at.isoformat(),
     )
 
 
@@ -170,7 +194,7 @@ def list_users(admin: User = Depends(get_admin_user), session: Session = Depends
     return [
         UserOut(
             id=u.id, username=u.username, role=u.role.value.lower(),
-            is_active=u.is_active, created_at=u.created_at.isoformat(),
+            is_active=u.is_active, email=u.email, created_at=u.created_at.isoformat(),
         )
         for u in rows
     ]
@@ -201,7 +225,7 @@ def create_user(
     session.refresh(user)
     return UserOut(
         id=user.id, username=user.username, role=user.role.value.lower(),
-        is_active=user.is_active, created_at=user.created_at.isoformat(),
+        is_active=user.is_active, email=user.email, created_at=user.created_at.isoformat(),
     )
 
 

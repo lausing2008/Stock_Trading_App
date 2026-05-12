@@ -1182,16 +1182,6 @@ export default function StockDetail() {
                 style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '110px' }}
               />
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '180px' }}>
-              <label style={{ fontSize: '11px', color: '#64748b' }}>Send email to</label>
-              <input
-                type="email"
-                placeholder="you@example.com"
-                value={alertEmail}
-                onChange={e => setAlertEmail(e.target.value)}
-                style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '100%' }}
-              />
-            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '160px' }}>
               <label style={{ fontSize: '11px', color: '#64748b' }}>Note (optional)</label>
               <input
@@ -1202,6 +1192,23 @@ export default function StockDetail() {
                 style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '100%' }}
               />
             </div>
+            {/* Show email field only if no account email is saved */}
+            {!alertEmail ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '180px' }}>
+                <label style={{ fontSize: '11px', color: '#f87171' }}>Email required — set in Settings or enter below</label>
+                <input
+                  type="email"
+                  placeholder="you@example.com"
+                  value={alertEmail}
+                  onChange={e => setAlertEmail(e.target.value)}
+                  style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '100%' }}
+                />
+              </div>
+            ) : (
+              <div style={{ fontSize: '11px', color: '#475569', alignSelf: 'center' }}>
+                → {alertEmail}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <button
                 onClick={createAlert}

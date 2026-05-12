@@ -20,7 +20,7 @@ class AlertCreate(BaseModel):
     symbol: str
     condition: str        # "above" | "below"
     threshold: float
-    email: str
+    email: str | None = None   # falls back to user's account email
     note: str | None = None
 
 
@@ -50,12 +50,16 @@ def create_alert(
     except ValueError:
         raise HTTPException(400, "condition must be 'above' or 'below'")
 
+    email = body.email or user.email
+    if not email:
+        raise HTTPException(400, "No email address — set one in Settings → Profile or provide one with the alert")
+
     alert = PriceAlert(
         user_id=user.id,
         symbol=body.symbol.upper(),
         condition=cond,
         threshold=body.threshold,
-        email=body.email,
+        email=email,
         note=body.note,
     )
     session.add(alert)

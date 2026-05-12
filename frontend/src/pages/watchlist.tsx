@@ -2,25 +2,17 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { api, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock } from '@/lib/api';
+import { api, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert } from '@/lib/api';
 import { storage } from '@/lib/storage';
 
 /* ── helpers ────────────────────────────────────────────── */
-const NOTES_KEY  = 'watch_notes';
-const ALERTS_KEY = 'watch_price_alerts';
+const NOTES_KEY = 'watch_notes';
 
 function loadNotes(): Record<string, string> {
   if (typeof window === 'undefined') return {};
   try { return JSON.parse(storage.getItem(NOTES_KEY) ?? '{}'); } catch { return {}; }
 }
 function saveNotes(n: Record<string, string>) { storage.setItem(NOTES_KEY, JSON.stringify(n)); }
-function loadAlerts(): Record<string, { target: number; dir: 'above' | 'below' }> {
-  if (typeof window === 'undefined') return {};
-  try { return JSON.parse(storage.getItem(ALERTS_KEY) ?? '{}'); } catch { return {}; }
-}
-function saveAlerts(a: Record<string, { target: number; dir: 'above' | 'below' }>) {
-  storage.setItem(ALERTS_KEY, JSON.stringify(a));
-}
 
 function sigStyle(label: string) {
   if (label === 'BUY')  return { color: '#4ade80', bg: 'rgba(34,197,94,0.1)',   border: 'rgba(34,197,94,0.3)'   };
@@ -70,37 +62,84 @@ function NoteModal({ symbol, initial, onSave, onClose }: { symbol: string; initi
 }
 
 /* ── Alert modal ────────────────────────────────────────── */
-function AlertModal({ symbol, price, initial, onSave, onClose }: { symbol: string; price?: number; initial?: { target: number; dir: 'above' | 'below' }; onSave: (target: number, dir: 'above' | 'below') => void; onClose: () => void }) {
-  const [target, setTarget] = useState(initial?.target?.toString() ?? '');
-  const [dir, setDir] = useState<'above' | 'below'>(initial?.dir ?? 'above');
+function AlertModal({ symbol, price, existingAlerts, onAdd, onDelete, onClose }: {
+  symbol: string;
+  price?: number;
+  existingAlerts: import('@/lib/api').PriceAlert[];
+  onAdd: (target: number, dir: 'above' | 'below') => Promise<void>;
+  onDelete: (id: number) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [target, setTarget] = useState('');
+  const [dir, setDir] = useState<'above' | 'below'>('above');
+  const [adding, setAdding] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  async function handleAdd() {
+    const t = parseFloat(target);
+    if (!(t > 0)) return;
+    setAdding(true);
+    await onAdd(t, dir);
+    setTarget('');
+    setAdding(false);
+  }
+
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
       <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.8)', backdropFilter: 'blur(4px)' }} />
-      <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '320px', borderRadius: '14px', background: '#0d1424', border: '1px solid rgba(250,204,21,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
+      <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '340px', borderRadius: '14px', background: '#0d1424', border: '1px solid rgba(250,204,21,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
         <div style={{ height: '3px', background: 'linear-gradient(90deg,#ca8a04,#facc15,#ca8a04)' }} />
         <div style={{ padding: '18px 20px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ fontWeight: 700, fontSize: '14px', color: '#f1f5f9' }}>🔔 Price Alert — {symbol}</span>
+            <span style={{ fontWeight: 700, fontSize: '14px', color: '#f1f5f9' }}>🔔 Price Alerts — {symbol}</span>
             <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer' }}>✕</button>
           </div>
-          {price && <div style={{ fontSize: '11px', color: '#475569' }}>Current: <span style={{ color: '#94a3b8', fontWeight: 600 }}>${fmt2(price)}</span></div>}
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {(['above', 'below'] as const).map(d => (
-              <button key={d} onClick={() => setDir(d)} style={{ flex: 1, padding: '7px', borderRadius: '6px', border: `1px solid ${dir === d ? 'rgba(250,204,21,0.4)' : 'rgba(255,255,255,0.08)'}`, background: dir === d ? 'rgba(250,204,21,0.1)' : 'transparent', color: dir === d ? '#facc15' : '#64748b', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
-                {d === 'above' ? '▲ Above' : '▼ Below'}
-              </button>
-            ))}
-          </div>
-          <input
-            type="number" step="any" min="0"
-            value={target}
-            onChange={e => setTarget(e.target.value)}
-            placeholder="Target price"
-            style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', width: '100%', boxSizing: 'border-box' }}
-          />
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button onClick={() => { const t = parseFloat(target); if (t > 0) { onSave(t, dir); onClose(); } }} style={{ flex: 1, borderRadius: '8px', padding: '8px', background: 'linear-gradient(135deg,#ca8a04,#facc15)', border: 'none', color: '#000', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>Set Alert</button>
-            {initial && <button onClick={() => { onSave(0, dir); onClose(); }} style={{ borderRadius: '8px', padding: '8px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', fontSize: '12px', cursor: 'pointer' }}>Remove</button>}
+          {price != null && <div style={{ fontSize: '11px', color: '#475569' }}>Current: <span style={{ color: '#94a3b8', fontWeight: 600 }}>${fmt2(price)}</span></div>}
+
+          {/* Existing alerts list */}
+          {existingAlerts.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ fontSize: '11px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Active alerts</div>
+              {existingAlerts.map(a => (
+                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px', borderRadius: '7px', background: a.triggered ? 'rgba(34,197,94,0.06)' : 'rgba(250,204,21,0.06)', border: `1px solid ${a.triggered ? 'rgba(34,197,94,0.2)' : 'rgba(250,204,21,0.15)'}` }}>
+                  <span style={{ fontSize: '12px', color: a.condition === 'above' ? '#4ade80' : '#f87171', fontWeight: 700 }}>{a.condition === 'above' ? '▲' : '▼'}</span>
+                  <span style={{ fontSize: '13px', color: '#f1f5f9', fontWeight: 600, flex: 1 }}>${fmt2(a.threshold)}</span>
+                  {a.triggered && <span style={{ fontSize: '10px', color: '#4ade80', fontWeight: 700 }}>✓ fired</span>}
+                  <button
+                    onClick={async () => { setDeletingId(a.id); await onDelete(a.id); setDeletingId(null); }}
+                    disabled={deletingId === a.id}
+                    style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '12px', padding: '2px 4px', opacity: deletingId === a.id ? 0.4 : 1 }}
+                  >✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add new alert */}
+          <div style={{ borderTop: existingAlerts.length > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none', paddingTop: existingAlerts.length > 0 ? '10px' : '0', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {existingAlerts.length > 0 && <div style={{ fontSize: '11px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Add another</div>}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {(['above', 'below'] as const).map(d => (
+                <button key={d} onClick={() => setDir(d)} style={{ flex: 1, padding: '7px', borderRadius: '6px', border: `1px solid ${dir === d ? 'rgba(250,204,21,0.4)' : 'rgba(255,255,255,0.08)'}`, background: dir === d ? 'rgba(250,204,21,0.1)' : 'transparent', color: dir === d ? '#facc15' : '#64748b', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
+                  {d === 'above' ? '▲ Above' : '▼ Below'}
+                </button>
+              ))}
+            </div>
+            <input
+              type="number" step="any" min="0"
+              value={target}
+              onChange={e => setTarget(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAdd()}
+              placeholder="Target price"
+              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', width: '100%', boxSizing: 'border-box' }}
+            />
+            <button
+              onClick={handleAdd}
+              disabled={adding || !(parseFloat(target) > 0)}
+              style={{ borderRadius: '8px', padding: '8px', background: parseFloat(target) > 0 ? 'linear-gradient(135deg,#ca8a04,#facc15)' : 'rgba(255,255,255,0.05)', border: 'none', color: parseFloat(target) > 0 ? '#000' : '#475569', fontSize: '13px', fontWeight: 700, cursor: parseFloat(target) > 0 ? 'pointer' : 'default', opacity: adding ? 0.6 : 1 }}
+            >
+              {adding ? '…' : '+ Add Alert'}
+            </button>
           </div>
         </div>
       </div>
@@ -255,6 +294,8 @@ export default function Watchlist() {
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
 
+  const { data: alertsData, mutate: mutateAlerts } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { refreshInterval: 30_000 });
+
   const [showAddToList, setShowAddToList] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [moveMenu, setMoveMenu] = useState<string | null>(null);
@@ -263,11 +304,20 @@ export default function Watchlist() {
   const [sigFilter, setSigFilter] = useState<SigFilter>('ALL');
   const [sortKey, setSortKey] = useState<SortKey>('symbol');
   const [notes, setNotes] = useState<Record<string, string>>({});
-  const [alerts, setAlerts] = useState<Record<string, { target: number; dir: 'above' | 'below' }>>({});
   const [noteModal, setNoteModal] = useState<string | null>(null);
   const [alertModal, setAlertModal] = useState<string | null>(null);
+  const [alertToast, setAlertToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
-  useEffect(() => { setNotes(loadNotes()); setAlerts(loadAlerts()); }, []);
+  useEffect(() => { setNotes(loadNotes()); }, []);
+
+  const alertMap = useMemo(() => {
+    const m: Record<string, PriceAlert[]> = {};
+    for (const a of alertsData ?? []) {
+      if (!m[a.symbol]) m[a.symbol] = [];
+      m[a.symbol].push(a);
+    }
+    return m;
+  }, [alertsData]);
 
   const rankMap = useMemo(() => { const m: Record<string, RankingRow> = {}; for (const r of rankingsData?.rankings ?? []) m[r.symbol] = r; return m; }, [rankingsData]);
   const priceMap = useMemo(() => { const m: Record<string, LatestPrice> = {}; for (const p of pricesData ?? []) m[p.symbol] = p; return m; }, [pricesData]);
@@ -275,9 +325,9 @@ export default function Watchlist() {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([mutateWatchlist(), mutateRankings(), mutatePrices(), mutateSignals(), mutateLists()]);
+    await Promise.all([mutateWatchlist(), mutateRankings(), mutatePrices(), mutateSignals(), mutateLists(), mutateAlerts()]);
     setRefreshing(false);
-  }, [mutateWatchlist, mutateRankings, mutatePrices, mutateSignals, mutateLists]);
+  }, [mutateWatchlist, mutateRankings, mutatePrices, mutateSignals, mutateLists, mutateAlerts]);
 
   async function remove(symbol: string) {
     setRemoving(symbol);
@@ -328,11 +378,27 @@ export default function Watchlist() {
     if (!val) delete next[symbol];
     setNotes(next); saveNotes(next);
   }
-  function saveAlert(symbol: string, target: number, dir: 'above' | 'below') {
-    const next = { ...alerts };
-    if (target === 0) delete next[symbol];
-    else next[symbol] = { target, dir };
-    setAlerts(next); saveAlerts(next);
+  async function handleAddAlert(symbol: string, target: number, dir: 'above' | 'below') {
+    try {
+      await api.createAlert({ symbol, condition: dir, threshold: target });
+      setAlertToast({ msg: `Alert added: ${symbol} ${dir} $${target}`, ok: true });
+      await mutateAlerts();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to create alert';
+      setAlertToast({ msg: msg.includes('No email') ? 'No email on account — set one in Settings → Profile' : msg, ok: false });
+    }
+    setTimeout(() => setAlertToast(null), 4000);
+  }
+
+  async function handleDeleteAlert(id: number) {
+    try {
+      await api.deleteAlert(id);
+      await mutateAlerts();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to delete alert';
+      setAlertToast({ msg, ok: false });
+      setTimeout(() => setAlertToast(null), 4000);
+    }
   }
 
   /* Signal for each item: real signal engine first, K-Score fallback */
@@ -378,6 +444,13 @@ export default function Watchlist() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+      {/* Alert toast */}
+      {alertToast && (
+        <div style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 2000, padding: '12px 20px', borderRadius: '10px', background: alertToast.ok ? '#0f2a1e' : '#1f0a0a', border: `1px solid ${alertToast.ok ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)'}`, color: alertToast.ok ? '#4ade80' : '#f87171', fontSize: '13px', fontWeight: 600, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
+          {alertToast.ok ? '🔔 ' : '⚠️ '}{alertToast.msg}
+        </div>
+      )}
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
@@ -479,11 +552,12 @@ export default function Watchlist() {
             const sig     = sigLabel ? sigStyle(sigLabel) : null;
             const changeUp = (lp?.change_pct ?? 0) >= 0;
             const note    = notes[item.symbol];
-            const alert   = alerts[item.symbol];
-            const alertTriggered = alert && lp && (alert.dir === 'above' ? lp.price >= alert.target : lp.price <= alert.target);
+            const itemAlerts = alertMap[item.symbol] ?? [];
+            const hasAlert = itemAlerts.length > 0;
+            const triggeredAlerts = itemAlerts.filter(a => a.triggered || (lp && (a.condition === 'above' ? lp.price >= a.threshold : lp.price <= a.threshold)));
 
             return (
-              <div key={item.symbol} style={{ position: 'relative', borderRadius: '10px', border: `1px solid ${alertTriggered ? 'rgba(250,204,21,0.4)' : '#1e293b'}`, background: '#0f172a', padding: '14px', transition: 'border-color 0.15s' }} className="watch-card">
+              <div key={item.symbol} style={{ position: 'relative', borderRadius: '10px', border: `1px solid ${triggeredAlerts.length > 0 ? 'rgba(250,204,21,0.4)' : '#1e293b'}`, background: '#0f172a', padding: '14px', transition: 'border-color 0.15s' }} className="watch-card">
 
                 {/* Top row: symbol + price */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
@@ -527,9 +601,9 @@ export default function Watchlist() {
                 </div>
 
                 {/* Alert triggered banner */}
-                {alertTriggered && (
+                {triggeredAlerts.length > 0 && (
                   <div style={{ borderRadius: '6px', padding: '5px 10px', background: 'rgba(250,204,21,0.1)', border: '1px solid rgba(250,204,21,0.3)', fontSize: '11px', color: '#facc15', marginBottom: '10px', fontWeight: 600 }}>
-                    🔔 Alert: price {alert.dir} ${alert.target.toFixed(2)}
+                    🔔 {triggeredAlerts.map(a => `${a.condition} $${a.threshold.toFixed(2)}`).join(' · ')}
                   </div>
                 )}
 
@@ -545,7 +619,9 @@ export default function Watchlist() {
                   {item.sector && <span style={{ fontSize: '10px', color: '#475569', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100px' }}>{item.sector}</span>}
                   <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px', alignItems: 'center' }}>
                     <button onClick={() => setNoteModal(item.symbol)} title="Add note" style={{ background: note ? 'rgba(99,102,241,0.1)' : 'transparent', border: `1px solid ${note ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '3px 7px', color: note ? '#818cf8' : '#475569', fontSize: '11px', cursor: 'pointer' }}>📝</button>
-                    <button onClick={() => setAlertModal(item.symbol)} title="Set price alert" style={{ background: alert ? 'rgba(250,204,21,0.1)' : 'transparent', border: `1px solid ${alert ? 'rgba(250,204,21,0.3)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '3px 7px', color: alert ? '#facc15' : '#475569', fontSize: '11px', cursor: 'pointer' }}>🔔</button>
+                    <button onClick={() => setAlertModal(item.symbol)} title="Set price alert" style={{ background: hasAlert ? 'rgba(250,204,21,0.1)' : 'transparent', border: `1px solid ${hasAlert ? 'rgba(250,204,21,0.3)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '3px 7px', color: hasAlert ? '#facc15' : '#475569', fontSize: '11px', cursor: 'pointer', position: 'relative' }}>
+                      🔔{hasAlert && itemAlerts.length > 1 && <span style={{ position: 'absolute', top: '-4px', right: '-4px', background: '#facc15', color: '#000', fontSize: '9px', fontWeight: 800, borderRadius: '50%', width: '14px', height: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>{itemAlerts.length}</span>}
+                    </button>
                     <button onClick={() => router.push(`/positions?add=${item.symbol}`)} title="Add to positions" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '5px', padding: '3px 8px', color: '#818cf8', fontSize: '10px', fontWeight: 700, cursor: 'pointer' }}>+ POS</button>
                     {(lists ?? []).length > 1 && (
                       <div id={`move-menu-${item.symbol}`} style={{ position: 'relative' }}>
@@ -593,7 +669,7 @@ export default function Watchlist() {
       )}
 
       {noteModal  && <NoteModal  symbol={noteModal}  initial={notes[noteModal] ?? ''}  onSave={v => saveNote(noteModal, v)}  onClose={() => setNoteModal(null)} />}
-      {alertModal && <AlertModal symbol={alertModal} price={priceMap[alertModal]?.price} initial={alerts[alertModal]} onSave={(t, d) => saveAlert(alertModal, t, d)} onClose={() => setAlertModal(null)} />}
+      {alertModal && <AlertModal symbol={alertModal} price={priceMap[alertModal]?.price} existingAlerts={alertMap[alertModal] ?? []} onAdd={(t, d) => handleAddAlert(alertModal, t, d)} onDelete={handleDeleteAlert} onClose={() => setAlertModal(null)} />}
       {showCreateModal && <CreateWatchlistModal onSave={handleCreateWatchlist} onClose={() => setShowCreateModal(false)} />}
       {showAddToList && resolvedListId != null && (
         <AddToListModal

@@ -96,6 +96,31 @@ export default function SettingsPage() {
   const session = getSession();
   const isAdmin = session?.role === 'admin';
 
+  // Profile email
+  const [profileEmail, setProfileEmail] = useState('');
+  const [emailMsg, setEmailMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [emailSaving, setEmailSaving] = useState(false);
+
+  useEffect(() => {
+    api.getMe().then(u => { if (u.email) setProfileEmail(u.email); }).catch(() => {});
+  }, []);
+
+  async function handleSaveEmail(e: React.FormEvent) {
+    e.preventDefault();
+    setEmailSaving(true);
+    setEmailMsg(null);
+    try {
+      await api.updateProfile({ email: profileEmail.trim() || undefined });
+      if (profileEmail.trim()) localStorage.setItem('stockai_alert_email', profileEmail.trim());
+      setEmailMsg({ ok: true, text: 'Email saved.' });
+      setTimeout(() => setEmailMsg(null), 3000);
+    } catch {
+      setEmailMsg({ ok: false, text: 'Failed to save email.' });
+    } finally {
+      setEmailSaving(false);
+    }
+  }
+
   // Change-password (from settings)
   const [cpOld, setCpOld] = useState('');
   const [cpNew, setCpNew] = useState('');
@@ -610,6 +635,34 @@ export default function SettingsPage() {
       <div style={section('#f59e0b')}>
         <div style={sectionBar('linear-gradient(90deg,#f59e0b,#fbbf24,#f59e0b)')} />
         <div style={sectionHead}>Account — {session?.username}</div>
+
+        {/* Email */}
+        <form onSubmit={handleSaveEmail} style={{ padding: '16px 20px', borderBottom: '1px solid #1e293b', display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+          <div style={{ flex: 1 }}>
+            <label style={lbl}>Alert Email</label>
+            <input
+              type="email"
+              value={profileEmail}
+              onChange={e => setProfileEmail(e.target.value)}
+              placeholder="you@example.com"
+              style={inp}
+            />
+            <div style={hint}>Price alert emails are sent here. Set it once — no need to type it per alert.</div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingBottom: '2px' }}>
+            {emailMsg && (
+              <span style={{ fontSize: '12px', color: emailMsg.ok ? '#4ade80' : '#f87171' }}>{emailMsg.text}</span>
+            )}
+            <button
+              type="submit"
+              disabled={emailSaving}
+              style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#f59e0b', color: '#0f172a', fontSize: '13px', fontWeight: 700, cursor: emailSaving ? 'not-allowed' : 'pointer', opacity: emailSaving ? 0.6 : 1 }}
+            >
+              {emailSaving ? 'Saving…' : 'Save Email'}
+            </button>
+          </div>
+        </form>
+
         <form onSubmit={handleChangePassword} style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div style={grid2}>
             <div>

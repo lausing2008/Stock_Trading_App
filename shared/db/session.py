@@ -116,6 +116,10 @@ def _run_migrations() -> None:  # noqa: C901
             ALTER TABLE watchlist_items
             DROP CONSTRAINT IF EXISTS uq_watchlist_user_stock
         """))
+        # ── User email ─────────────────────────────────────────────────────────
+        conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(256)"
+        ))
         # ── Price alerts ───────────────────────────────────────────────────────
         conn.execute(text("""
             DO $$ BEGIN
