@@ -252,7 +252,7 @@ export default function Home() {
   }
 
   async function handleAdded(symbol: string, listId?: number) {
-    try { await api.addToWatchlist(symbol, listId); } catch {}
+    await api.addToWatchlist(symbol, listId);
     await mutateWatchlist();
     mutateWatchlists();
     setTimeout(() => { mutateStocks(); globalMutate('rankings-all'); globalMutate('latest-prices'); }, 1500);
@@ -504,7 +504,7 @@ export default function Home() {
                 bg:     realSig.signal === 'BUY' ? 'rgba(34,197,94,0.1)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.1)' : realSig.signal === 'WAIT' ? 'rgba(251,146,60,0.1)' : 'rgba(250,204,21,0.1)',
                 border: realSig.signal === 'BUY' ? 'rgba(34,197,94,0.3)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.3)' : realSig.signal === 'WAIT' ? 'rgba(251,146,60,0.3)' : 'rgba(250,204,21,0.3)',
               }
-            : signalFromScore(rank?.score);
+            : signalFromScore(rank?.score ?? undefined);
           const sc     = SECTOR_COLOR[s.sector ?? ''];
           const changeUp = (lp?.change_pct ?? 0) >= 0;
 
