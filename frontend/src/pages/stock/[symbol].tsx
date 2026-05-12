@@ -89,6 +89,12 @@ export default function StockDetail() {
   const [alertSaving, setAlertSaving] = useState<boolean>(false);
   const [alertMsg, setAlertMsg] = useState<string>('');
 
+  // Pre-fill email from last used value
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null;
+    if (saved) setAlertEmail(saved);
+  }, []);
+
   async function createAlert() {
     const threshold = parseFloat(alertThreshold);
     if (!threshold || !alertEmail) return;
@@ -96,6 +102,7 @@ export default function StockDetail() {
     setAlertMsg('');
     try {
       await api.createAlert({ symbol, condition: alertCondition, threshold, email: alertEmail, note: alertNote || undefined });
+      localStorage.setItem('stockai_alert_email', alertEmail);
       setAlertMsg('Alert set!');
       setAlertThreshold('');
       setAlertNote('');
@@ -1140,7 +1147,12 @@ export default function StockDetail() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
           <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Price Alerts</h2>
           <button
-            onClick={() => setAlertOpen((prev: boolean) => !prev)}
+            onClick={() => {
+              if (!alertOpen && curPrice != null && !alertThreshold) {
+                setAlertThreshold(curPrice.toFixed(2));
+              }
+              setAlertOpen((prev: boolean) => !prev);
+            }}
             style={{ fontSize: '12px', padding: '5px 12px', borderRadius: '6px', border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.08)', color: '#818cf8', cursor: 'pointer' }}
           >
             + New Alert

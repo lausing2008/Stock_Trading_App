@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import useSWR from 'swr';
-import { api, type PriceAlert, type WatchlistItem } from '@/lib/api';
+import { api, type PriceAlert, type Stock } from '@/lib/api';
 
 function relTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -24,7 +24,7 @@ const lbl: React.CSSProperties = {
 };
 
 export default function AlertsPage() {
-  const { data: stocks } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: stocks } = useSWR<Stock[]>('stocks-all', () => api.listStocks());
   const { data: alerts, mutate } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { refreshInterval: 30000 });
 
   const [symbol, setSymbol]       = useState('');
@@ -36,6 +36,11 @@ export default function AlertsPage() {
   const [saved, setSaved]         = useState(false);
   const [error, setError]         = useState('');
 
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null;
+    if (saved) setEmail(saved);
+  }, []);
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!symbol || !threshold || !email) return;
@@ -43,6 +48,7 @@ export default function AlertsPage() {
     setError('');
     try {
       await api.createAlert({ symbol, condition, threshold: parseFloat(threshold), email, note: note || undefined });
+      localStorage.setItem('stockai_alert_email', email);
       await mutate();
       setThreshold('');
       setNote('');
