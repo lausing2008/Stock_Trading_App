@@ -209,6 +209,113 @@ def market_overview():
     return results
 
 
+_FEAR_GREED_KEY = "stockai:fear_greed"
+_FEAR_GREED_TTL = 60 * 60  # 1 hour
+
+
+def _compute_fear_greed() -> dict:
+    """Compute a market Fear & Greed score (0–100) from VIX + S&P momentum.
+
+    Components (equal weight):
+    1. VIX: low VIX → greed (inverted scale)
+    2. S&P 500 vs 125-day MA: above → greed
+    3. S&P 500 momentum (20-day return)
+    4. Put/Call proxy: VIX vs 20-day VIX avg (spike → fear)
+    """
+    import pandas as pd
+
+    def _rating(s: float) -> str:
+        if s < 25: return "Extreme Fear"
+        if s < 45: return "Fear"
+        if s < 55: return "Neutral"
+        if s < 75: return "Greed"
+        return "Extreme Greed"
+
+    spx = yf.download("^GSPC", period="9mo", interval="1d", progress=False, auto_adjust=True)
+    vix = yf.download("^VIX",  period="9mo", interval="1d", progress=False, auto_adjust=True)
+
+    if spx.empty or vix.empty:
+        raise ValueError("no data")
+
+    spx_close = spx["Close"].squeeze()
+    vix_close = vix["Close"].squeeze()
+
+    # 1. VIX component: VIX 10→100, 10=max greed 40=max fear
+    vix_now = float(vix_close.iloc[-1])
+    vix_score = float(100 - min(max((vix_now - 10) / 30 * 100, 0), 100))
+
+    # 2. S&P vs 125-day MA
+    ma125 = spx_close.rolling(125).mean().iloc[-1]
+    spx_now = float(spx_close.iloc[-1])
+    ma_score = 75.0 if spx_now > float(ma125) else 25.0
+
+    # 3. 20-day momentum
+    r20 = float(spx_close.iloc[-1] / spx_close.iloc[-21] - 1) if len(spx_close) > 21 else 0.0
+    mom_score = float(min(max(50 + r20 * 300, 0), 100))
+
+    # 4. VIX spike vs 20-day avg (spike = fear)
+    vix_ma20 = float(vix_close.rolling(20).mean().iloc[-1])
+    spike_ratio = vix_now / vix_ma20 if vix_ma20 else 1.0
+    spike_score = float(min(max(100 - (spike_ratio - 1) * 200, 0), 100))
+
+    score = round((vix_score + ma_score + mom_score + spike_score) / 4, 1)
+
+    # History: same calc on shifted dates
+    def _score_at(offset: int) -> float | None:
+        try:
+            i = -1 - offset
+            v = float(vix_close.iloc[i])
+            s = float(spx_close.iloc[i])
+            ma = float(spx_close.rolling(125).mean().iloc[i])
+            r = float(spx_close.iloc[i] / spx_close.iloc[i - 20] - 1) if abs(i - 20) < len(spx_close) else 0.0
+            vm = float(vix_close.rolling(20).mean().iloc[i])
+            vs = 100 - min(max((v - 10) / 30 * 100, 0), 100)
+            ms = 75.0 if s > ma else 25.0
+            mo = min(max(50 + r * 300, 0), 100)
+            sp = min(max(100 - (v / vm - 1) * 200 if vm else 100, 0), 100)
+            return round((vs + ms + mo + sp) / 4, 1)
+        except Exception:
+            return None
+
+    return {
+        "score": score,
+        "rating": _rating(score),
+        "previous_close": _score_at(1),
+        "previous_1_week": _score_at(5),
+        "previous_1_month": _score_at(21),
+        "previous_1_year": _score_at(252),
+        "components": {
+            "vix": round(vix_score, 1),
+            "sp500_vs_ma": round(ma_score, 1),
+            "momentum": round(mom_score, 1),
+            "vix_spike": round(spike_score, 1),
+        },
+    }
+
+
+@router.get("/fear_greed")
+def fear_greed():
+    """Computed Fear & Greed Index (0–100) from VIX + S&P momentum. Redis-cached 1 h."""
+    try:
+        cached = _get_redis().get(_FEAR_GREED_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        result = _compute_fear_greed()
+    except Exception as exc:
+        log.warning("fear_greed.compute_failed", error=str(exc))
+        raise HTTPException(503, "Fear & Greed data unavailable")
+
+    try:
+        _get_redis().setex(_FEAR_GREED_KEY, _FEAR_GREED_TTL, json.dumps(result))
+    except Exception:
+        pass
+    return result
+
+
 @router.get("/latest_prices", response_model=list[LatestPriceOut])
 def latest_prices(session: Session = Depends(get_session)):
     """Live prices from yfinance fast_info, Redis-cached for 60 s; DB fallback."""
@@ -258,6 +365,7 @@ class FundamentalsOut(BaseModel):
     forward_pe: float | None = None
     price_to_book: float | None = None
     ev_to_ebitda: float | None = None
+    ev_to_revenue: float | None = None
     # Income statement (TTM)
     total_revenue: int | None = None
     gross_profit: int | None = None
@@ -363,6 +471,7 @@ def get_fundamentals(symbol: str, refresh: bool = False):
         forward_pe=_safe(info, "forwardPE"),
         price_to_book=_safe(info, "priceToBook"),
         ev_to_ebitda=_safe(info, "enterpriseToEbitda"),
+        ev_to_revenue=_safe(info, "enterpriseToRevenue"),
         total_revenue=_safe(info, "totalRevenue"),
         gross_profit=_safe(info, "grossProfits"),
         net_income=_safe(info, "netIncomeToCommon"),
