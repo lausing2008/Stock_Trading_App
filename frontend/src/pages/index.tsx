@@ -225,14 +225,17 @@ export default function Home() {
       const syms = watchlist?.map(w => w.symbol) ?? [];
       if (syms.length === 0) { setTrainState(null); return; }
       // Step 1: ingest latest price data
-      const ingestRes = await api.ingest(syms);
-      // Step 2: refresh UI with newly ingested prices
-      await Promise.all([mutatePrices(), mutateRankings()]);
+      let ingestCount = syms.length;
+      try {
+        const ingestRes = await api.ingest(syms);
+        ingestCount = ingestRes.symbols ?? syms.length;
+      } catch { /* ingest failure is non-fatal — train with existing data */ }
+      // Step 2: refresh UI (best-effort — don't abort training if these fail)
+      await Promise.all([mutatePrices().catch(() => {}), mutateRankings().catch(() => {})]);
       // Step 3: schedule ML training for all
       const trainRes = await api.trainAll();
-      setTrainInfo({ ingestCount: ingestRes.symbols ?? syms.length, trainCount: trainRes.count });
+      setTrainInfo({ ingestCount, trainCount: trainRes.count });
       setTrainState('done');
-      // Signals update after models finish (~2-5 min); do a lazy refresh
       setTimeout(() => mutateSignals(), 5000);
     } catch (err) {
       setTrainInfo({ error: err instanceof Error ? err.message : 'Unknown error' });

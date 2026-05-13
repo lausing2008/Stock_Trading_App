@@ -436,8 +436,14 @@ docker compose -f docker/docker-compose.yml logs -f market-data
 docker compose -f docker/docker-compose.yml restart market-data
 
 # Rebuild and redeploy frontend after code changes
+# (compose handles stop + remove + restart automatically)
 docker compose -f docker/docker-compose.yml build \
   --build-arg NEXT_PUBLIC_API_URL=https://stockai.yourdomain.com frontend
+docker compose -f docker/docker-compose.yml up -d frontend
+
+# If you get "container name already in use" (happens when container was started
+# manually with docker run instead of via compose):
+docker stop stockai-frontend-1 && docker rm stockai-frontend-1
 docker compose -f docker/docker-compose.yml up -d frontend
 
 # Check disk usage

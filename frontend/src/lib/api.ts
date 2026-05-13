@@ -2,7 +2,7 @@ const BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 function authHeader(): Record<string, string> {
   if (typeof window === 'undefined') return {};
-  const token = localStorage.getItem('stockai_jwt');
+  const token = localStorage.getItem('stockai_jwt')?.trim() || null;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
