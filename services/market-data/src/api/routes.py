@@ -2,6 +2,8 @@
 from datetime import date, datetime, timedelta
 import json
 
+import pandas as pd
+
 _MARKET_UTC_OFFSET_H = {"HK": 8, "CN": 8}
 
 def _local_date(ts: datetime, market: str) -> str:
@@ -90,13 +92,27 @@ class LatestPriceOut(BaseModel):
 
 
 def _fetch_live_one(symbol: str, currency: str) -> dict | None:
-    """Fetch live quote for one symbol via yfinance fast_info."""
+    """Fetch live quote for one symbol via yfinance fast_info with fallback."""
     try:
-        fi = yf.Ticker(symbol).fast_info
-        price = fi.last_price
-        prev_close = getattr(fi, "previous_close", None)
+        ticker = yf.Ticker(symbol)
+        price = None
+        prev_close = None
+        try:
+            fi = ticker.fast_info
+            price = fi.last_price
+            prev_close = getattr(fi, "previous_close", None)
+        except Exception as fallback_exc:
+            log.info("yfinance.fast_info.fallback", symbol=symbol, error=str(fallback_exc))
+            hist = ticker.history(period="2d", interval="1d", auto_adjust=False)
+            if hist is not None and not hist.empty and "Close" in hist.columns:
+                if isinstance(hist.index, pd.MultiIndex):
+                    hist.index = hist.index.droplevel(0)
+                price = hist["Close"].iloc[-1]
+                prev_close = hist["Close"].iloc[-2] if len(hist) > 1 else None
+
         if price is None:
             return None
+
         change_pct = ((price - prev_close) / prev_close * 100) if prev_close else None
         return {
             "symbol": symbol,

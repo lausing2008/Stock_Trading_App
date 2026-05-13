@@ -29,7 +29,7 @@ class AlertOut(BaseModel):
     symbol: str
     condition: str
     threshold: float
-    email: str
+    email: str | None
     note: str | None
     triggered: bool
     triggered_at: datetime | None
@@ -50,9 +50,7 @@ def create_alert(
     except ValueError:
         raise HTTPException(400, "condition must be 'above' or 'below'")
 
-    email = body.email or user.email
-    if not email:
-        raise HTTPException(400, "No email address — set one in Settings → Profile or provide one with the alert")
+    email = body.email.strip() if body.email else user.email
 
     alert = PriceAlert(
         user_id=user.id,

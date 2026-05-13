@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { api, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert } from '@/lib/api';
+import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert } from '@/lib/api';
 import { storage } from '@/lib/storage';
 
 /* ── helpers ────────────────────────────────────────────── */
@@ -62,10 +62,11 @@ function NoteModal({ symbol, initial, onSave, onClose }: { symbol: string; initi
 }
 
 /* ── Alert modal ────────────────────────────────────────── */
-function AlertModal({ symbol, price, existingAlerts, onAdd, onDelete, onClose }: {
+function AlertModal({ symbol, price, existingAlerts, hasEmail, onAdd, onDelete, onClose }: {
   symbol: string;
   price?: number;
   existingAlerts: import('@/lib/api').PriceAlert[];
+  hasEmail: boolean;
   onAdd: (target: number, dir: 'above' | 'below') => Promise<void>;
   onDelete: (id: number) => Promise<void>;
   onClose: () => void;
@@ -95,6 +96,9 @@ function AlertModal({ symbol, price, existingAlerts, onAdd, onDelete, onClose }:
             <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer' }}>✕</button>
           </div>
           {price != null && <div style={{ fontSize: '11px', color: '#475569' }}>Current: <span style={{ color: '#94a3b8', fontWeight: 600 }}>${fmt2(price)}</span></div>}
+          {!hasEmail && <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.16)', color: '#fecaca', fontSize: '12px', lineHeight: 1.5 }}>
+            No email configured. Alerts will still be saved, but notifications require an email address. <Link href="/settings" style={{ color: '#fbbf24', textDecoration: 'underline' }}>Go to Settings</Link>.
+          </div>}
 
           {/* Existing alerts list */}
           {existingAlerts.length > 0 && (
@@ -295,6 +299,8 @@ export default function Watchlist() {
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
 
   const { data: alertsData, mutate: mutateAlerts } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { refreshInterval: 30_000 });
+  const { data: me } = useSWR<AppUser>('me', () => api.getMe());
+  const hasEmail = me === undefined ? true : Boolean(me.email);
 
   const [showAddToList, setShowAddToList] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -669,7 +675,7 @@ export default function Watchlist() {
       )}
 
       {noteModal  && <NoteModal  symbol={noteModal}  initial={notes[noteModal] ?? ''}  onSave={v => saveNote(noteModal, v)}  onClose={() => setNoteModal(null)} />}
-      {alertModal && <AlertModal symbol={alertModal} price={priceMap[alertModal]?.price} existingAlerts={alertMap[alertModal] ?? []} onAdd={(t, d) => handleAddAlert(alertModal, t, d)} onDelete={handleDeleteAlert} onClose={() => setAlertModal(null)} />}
+      {alertModal && <AlertModal symbol={alertModal} price={priceMap[alertModal]?.price} existingAlerts={alertMap[alertModal] ?? []} hasEmail={hasEmail} onAdd={(t, d) => handleAddAlert(alertModal, t, d)} onDelete={handleDeleteAlert} onClose={() => setAlertModal(null)} />}
       {showCreateModal && <CreateWatchlistModal onSave={handleCreateWatchlist} onClose={() => setShowCreateModal(false)} />}
       {showAddToList && resolvedListId != null && (
         <AddToListModal
