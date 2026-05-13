@@ -263,9 +263,8 @@ export default function StockDetail() {
     setTrainAllMsg('');
     try {
       const stocks = await api.listStocks();
-      await api.ingest(stocks.map(s => s.symbol));
-      // Refresh this stock's chart with newly ingested prices
-      await mutateOverview();
+      try { await api.ingest(stocks.map(s => s.symbol)); } catch { /* non-fatal */ }
+      await mutateOverview().catch(() => {});
       const res = await api.trainAll();
       setTrainAllState('done');
       setTrainAllMsg(`✓ Ingested ${stocks.length} stocks · Scheduled ${res.count} ML models — ready in ~2–5 min`);

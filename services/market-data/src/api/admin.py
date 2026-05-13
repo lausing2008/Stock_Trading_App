@@ -83,9 +83,17 @@ def run_seed():
 def run_ingest(req: IngestRequest):
     """Synchronously ingest all requested symbols (parallel for multi-symbol)."""
     if len(req.symbols) == 1:
-        result = ingest_symbol(req.symbols[0], timeframe=req.timeframe, force=req.force)
-        return {"status": "ok", "symbols": 1, "results": [result]}
-    results = ingest_universe(req.symbols, req.timeframe, force=req.force)
+        try:
+            result = ingest_symbol(req.symbols[0], timeframe=req.timeframe, force=req.force)
+        except Exception as exc:
+            log.error("ingest.symbol_failed", symbol=req.symbols[0], error=str(exc))
+            result = {"symbol": req.symbols[0], "error": str(exc)}
+        return {"status": "ok", "symbols": 1 if "error" not in result else 0, "results": [result]}
+    try:
+        results = ingest_universe(req.symbols, req.timeframe, force=req.force)
+    except Exception as exc:
+        log.error("ingest.universe_failed", error=str(exc))
+        results = [{"symbol": s, "error": str(exc)} for s in req.symbols]
     ok = sum(1 for r in results if "error" not in r)
     return {"status": "ok", "symbols": ok, "total": len(results), "results": results}
 

@@ -55,10 +55,15 @@ def _artifact_path(symbol: str, model_name: str) -> Path:
 
 
 def train_model(symbol: str, model_name: str = "xgboost", horizon: int = 5) -> dict:
-    df = _load_prices(symbol)
+    try:
+        df = _load_prices(symbol)
+    except ValueError as exc:
+        log.warning("train.skipped", symbol=symbol, reason=str(exc))
+        return {"symbol": symbol, "skipped": True, "reason": str(exc)}
     X, y_dir, _ = build_features(df, horizon=horizon)
     if len(X) < 200:
-        raise ValueError(f"Not enough samples for {symbol}: {len(X)}")
+        log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} samples")
+        return {"symbol": symbol, "skipped": True, "reason": f"only {len(X)} samples"}
 
     split = int(len(X) * 0.8)
     X_train, X_test = X.iloc[:split], X.iloc[split:]

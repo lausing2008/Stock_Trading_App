@@ -4,7 +4,7 @@ through the gateway without knowing about internal service hosts.
 from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from common.config import get_settings
@@ -45,15 +45,26 @@ async def reverse_proxy(full_path: str, request: Request):
 
     url = f"{upstream}/{full_path}"
     body = await request.body()
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.request(
-            request.method,
-            url,
-            params=dict(request.query_params),
-            content=body,
-            headers={k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")},
-        )
+    # Strip headers with illegal values (e.g. 'Bearer ' with no token)
+    safe_headers = {}
+    for k, v in request.headers.items():
+        if k.lower() in ("host", "content-length"):
+            continue
+        if k.lower() == "authorization" and v.strip() in ("", "Bearer", "Bearer "):
+            continue
+        safe_headers[k] = v
     try:
-        return JSONResponse(r.json(), status_code=r.status_code)
-    except ValueError:
-        return JSONResponse({"raw": r.text}, status_code=r.status_code)
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.request(
+                request.method,
+                url,
+                params=dict(request.query_params),
+                content=body,
+                headers=safe_headers,
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Upstream service timed out")
+    except Exception as exc:
+        raise HTTPException(502, f"Upstream error: {exc}")
+    content_type = r.headers.get("content-type", "application/json").split(";")[0].strip()
+    return Response(content=r.content, status_code=r.status_code, media_type=content_type)
