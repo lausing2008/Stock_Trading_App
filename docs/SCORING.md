@@ -209,3 +209,77 @@ Sort the Rankings page by K-Score to surface the strongest stocks in your watchl
 
 ### In the AI Outlook
 The Generate Outlook feature sends each stock's K-Score sub-scores, AI signal confidence, price change, and recent news to the model. The sub-score breakdown is more informative than the headline K-Score number alone — the AI uses the individual components to identify the primary near-term catalyst or risk.
+
+---
+
+## Combining AI Signal and Analyst Ratings
+
+These two indicators answer different questions and operate on different time horizons. Using them together is more powerful than either alone.
+
+### What each one measures
+
+| | AI Signal | Analyst Ratings |
+|---|---|---|
+| **Source** | Price history (TA + ML) | Wall Street analysts (fundamentals) |
+| **Horizon** | Days to weeks | 6–12 months |
+| **Inputs** | RSI, MACD, Bollinger, ADX, OBV, SMA crossovers, XGBoost model | Earnings estimates, revenue growth, sector outlook, DCF |
+| **Updates** | Every request (live) | Quarterly (cached 24 h) |
+| **Strength** | Timing — catches overbought/oversold conditions | Direction — identifies fundamentally strong businesses |
+| **Weakness** | No fundamental grounding; can be wrong in trending markets | No timing; stock can fall 20% before analysts downgrade |
+
+### Decision framework
+
+**Core principle: analysts filter the universe, AI Signal times the entry.**
+
+| Analyst | AI Signal | Interpretation | Action |
+|---------|-----------|----------------|--------|
+| STRONG BUY / BUY | BUY | Best setup — fundamentals + technicals aligned | Enter position |
+| STRONG BUY / BUY | HOLD | Bullish lean, not yet confirmed technically | Start a small position; add on BUY flip |
+| STRONG BUY / BUY | WAIT | Good stock, extended short-term | Wait for pullback; watch for BUY flip |
+| STRONG BUY / BUY | SELL (RSI > 70) | Overbought but fundamentally strong | Hold existing; do not add; wait for AI to reset |
+| HOLD | BUY | Technical bounce but no fundamental catalyst | Small speculative position only; tight stop |
+| HOLD | SELL | Neither side likes it | Avoid or exit |
+| SELL / UNDERPERFORM | Any | Fundamental thesis broken | Exit regardless of AI signal |
+
+### The highest-conviction entry
+
+**Analyst = BUY + AI Signal = WAIT or just-flipped BUY + MACD turning positive + RSI 40–55**
+
+This combination means: the business is fundamentally sound, the stock pulled back enough to cool the technicals, and momentum is starting to recover. This is typically the best risk/reward entry — you're buying a good company after a dip, with early technical confirmation.
+
+### Reading the AI Signal `reasons` field
+
+The signal API (`GET /signals/{symbol}`) exposes the underlying indicator values. Key ones:
+
+| Field | What it tells you |
+|---|---|
+| `rsi` | < 40 = oversold (likely a buy dip); > 70 = overbought (risk of pullback) |
+| `macd_rising` | `true` = momentum just shifted positive — early entry signal |
+| `macd_hist` | Positive + rising = strong BUY confirmation; negative + falling = strong SELL |
+| `adx_trending` | `true` (ADX > 25) = signals are more reliable; `false` = market is choppy, reduce conviction |
+| `adx_bullish` | `true` = directional move is upward — trend is your friend |
+| `obv_bullish` | `true` = volume is confirming price direction — high conviction |
+| `bb_pct_b` | > 0.85 = near upper Bollinger Band (overbought zone); < 0.15 = near lower band (oversold) |
+
+### Common real-world scenarios
+
+**Scenario 1 — KGS-type divergence (AI: SELL, Analyst: Strong BUY)**
+Stock has run up fast. RSI ~80, near upper Bollinger Band. Analysts still love the fundamentals but the technical picture is extended.
+- If you own it: hold, don't add.
+- If you don't own it: wait. A 5–15% pullback that brings RSI back to 50–60 with MACD flattening is the entry point. Set an alert at a key support level.
+
+**Scenario 2 — Both say BUY**
+Highest conviction. Size the position normally and hold as long as analysts remain positive and AI Signal stays BUY or HOLD.
+
+**Scenario 3 — Analyst downgrades to HOLD mid-position**
+This is a warning sign even if AI Signal is still BUY. Trim the position. Analysts downgrade slowly — by the time it reaches SELL the damage is usually done.
+
+**Scenario 4 — AI flips SELL after a big gain**
+Lock in partial profits (e.g. sell half). Let the rest run unless analysts also turn cautious.
+
+### What this app cannot do
+
+- These signals do not account for macro events, earnings surprises, or geopolitical risk.
+- Analyst ratings from yfinance have a 24-hour cache and may lag intraday downgrades.
+- The AI Signal is trained on historical price patterns — it can be wrong in regime changes (e.g. a sector rotation or a Federal Reserve surprise).
+- Nothing here is personalized investment advice.
