@@ -4,7 +4,7 @@ import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert } from '@/lib/api';
+import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed } from '@/lib/api';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 
@@ -75,6 +75,8 @@ export default function StockDetail() {
   const aiBottomRef = useRef<HTMLDivElement>(null);
 
   const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
+  const { data: fearGreed } = useSWR<FearGreed>('fear-greed', () => api.fearGreed(), { refreshInterval: 3_600_000 });
+
   const { data: alerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
     symbol ? `alerts-${symbol}` : null,
     () => api.listAlerts().then(all => all.filter(a => a.symbol === symbol)),
@@ -445,6 +447,30 @@ export default function StockDetail() {
         </div>
       </div>
 
+      {/* Key metrics strip */}
+      {data.fundamentals && (() => {
+        const f = data.fundamentals!;
+        const evSales = f.ev_to_revenue;
+        const items: [string, string][] = [
+          ['P/E (TTM)', f.trailing_pe != null ? `${f.trailing_pe.toFixed(1)}x` : '—'],
+          ['Fwd P/E', f.forward_pe != null ? `${f.forward_pe.toFixed(1)}x` : '—'],
+          ['EV / Sales', evSales != null ? `${evSales.toFixed(1)}x` : '—'],
+          ['EV / EBITDA', f.ev_to_ebitda != null ? `${f.ev_to_ebitda.toFixed(1)}x` : '—'],
+          ['P/B', f.price_to_book != null ? `${f.price_to_book.toFixed(1)}x` : '—'],
+          ['Beta', f.beta != null ? f.beta.toFixed(2) : '—'],
+        ];
+        return (
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {items.map(([label, val]) => (
+              <div key={label} style={{ padding: '7px 14px', borderRadius: '8px', border: '1px solid #1e293b', background: 'rgba(255,255,255,0.02)', textAlign: 'center', minWidth: '80px' }}>
+                <div style={{ fontSize: '9px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>{val}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* Main layout: chart left, sidebar right */}
       <div className="grid gap-4" style={{ gridTemplateColumns: '1fr 320px' }}>
         {/* Chart */}
@@ -484,6 +510,86 @@ export default function StockDetail() {
               </div>
             </div>
           )}
+
+          {/* Fear & Greed Index */}
+          {fearGreed && (() => {
+            const score = fearGreed.score;
+            const ratingColor: Record<string, string> = {
+              'Extreme Fear': '#ef4444',
+              'Fear': '#f97316',
+              'Neutral': '#facc15',
+              'Greed': '#86efac',
+              'Extreme Greed': '#22c55e',
+            };
+            const color = ratingColor[fearGreed.rating] ?? '#94a3b8';
+            // Needle angle: score 0→-90deg, score 100→+90deg
+            const angle = (score / 100) * 180 - 90;
+            return (
+              <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-slate-300">Fear &amp; Greed Index</h3>
+                  <span style={{ fontSize: '10px', color: '#475569' }}>CNN · 1 h cache</span>
+                </div>
+                {/* Gauge */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                  <div style={{ position: 'relative', width: '140px', height: '72px', overflow: 'hidden' }}>
+                    {/* Half-circle arc */}
+                    <svg width="140" height="72" viewBox="0 0 140 72">
+                      {/* Background arc */}
+                      <path d="M 10 70 A 60 60 0 0 1 130 70" fill="none" stroke="#1e293b" strokeWidth="12" strokeLinecap="round"/>
+                      {/* Colored arc segments */}
+                      {[
+                        { start: 0,  end: 36,  color: '#ef4444' },
+                        { start: 36, end: 72,  color: '#f97316' },
+                        { start: 72, end: 108, color: '#facc15' },
+                        { start: 108,end: 144, color: '#86efac' },
+                        { start: 144,end: 180, color: '#22c55e' },
+                      ].map(seg => {
+                        const r = 60, cx = 70, cy = 70;
+                        const toRad = (d: number) => (d - 180) * Math.PI / 180;
+                        const x1 = cx + r * Math.cos(toRad(seg.start));
+                        const y1 = cy + r * Math.sin(toRad(seg.start));
+                        const x2 = cx + r * Math.cos(toRad(seg.end));
+                        const y2 = cy + r * Math.sin(toRad(seg.end));
+                        return (
+                          <path key={seg.start}
+                            d={`M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`}
+                            fill="none" stroke={seg.color} strokeWidth="10" strokeLinecap="butt" opacity="0.85"
+                          />
+                        );
+                      })}
+                      {/* Needle */}
+                      <line
+                        x1="70" y1="70"
+                        x2={70 + 52 * Math.cos((angle - 90) * Math.PI / 180)}
+                        y2={70 + 52 * Math.sin((angle - 90) * Math.PI / 180)}
+                        stroke={color} strokeWidth="2.5" strokeLinecap="round"
+                      />
+                      <circle cx="70" cy="70" r="5" fill={color} />
+                    </svg>
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '24px', fontWeight: 800, color, lineHeight: 1 }}>{score}</div>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color, marginTop: '2px' }}>{fearGreed.rating}</div>
+                  </div>
+                  {/* History row */}
+                  <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+                    {[
+                      ['Prev', fearGreed.previous_close],
+                      ['1W', fearGreed.previous_1_week],
+                      ['1M', fearGreed.previous_1_month],
+                      ['1Y', fearGreed.previous_1_year],
+                    ].map(([lbl, val]) => (
+                      <div key={lbl as string} style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: '9px', color: '#475569', fontWeight: 700, textTransform: 'uppercase' }}>{lbl}</div>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8' }}>{val != null ? (val as number).toFixed(0) : '—'}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ML Prediction */}
           <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
@@ -668,6 +774,7 @@ export default function StockDetail() {
                   {card('P/E (TTM)', fmtX(f.trailing_pe))}
                   {card('Forward P/E', fmtX(f.forward_pe))}
                   {card('P/B Ratio', fmtX(f.price_to_book))}
+                  {card('EV / Sales', fmtX(f.ev_to_revenue))}
                   {card('EV / EBITDA', fmtX(f.ev_to_ebitda))}
                 </div>
               </div>

@@ -47,6 +47,7 @@ export const api = {
   addStock: (symbol: string) => request<{ status: string; symbol: string; name: string; sector?: string }>(`/admin/add_stock`, { method: 'POST', body: JSON.stringify({ symbol }) }),
   deleteStock: (symbol: string) => request<{ status: string; symbol: string }>(`/admin/stocks/${symbol}`, { method: 'DELETE' }),
   marketOverview: () => request<MarketIndex[]>(`/stocks/market_overview`),
+  fearGreed: () => request<FearGreed>(`/stocks/fear_greed`),
   listWatchlists: () => request<WatchlistMeta[]>(`/watchlists`),
   createWatchlist: (name: string) => request<WatchlistMeta>(`/watchlists`, { method: 'POST', body: JSON.stringify({ name }) }),
   renameWatchlist: (id: number, name: string) => request<WatchlistMeta>(`/watchlists/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
@@ -142,6 +143,7 @@ export type WatchlistMeta = { id: number; name: string; item_count: number; crea
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: 'above' | 'below'; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };
+export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
 
 export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };
 export type Levels = {
@@ -158,6 +160,7 @@ export type Fundamentals = {
   forward_pe: number | null;
   price_to_book: number | null;
   ev_to_ebitda: number | null;
+  ev_to_revenue: number | null;
   // Income statement
   total_revenue: number | null;
   gross_profit: number | null;
