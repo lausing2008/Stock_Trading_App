@@ -10,7 +10,6 @@ import NotificationBell from '@/components/NotificationBell';
 import { api } from '@/lib/api';
 
 const PUBLIC_PATHS = ['/login', '/gate'];
-const GATE_ENABLED = process.env.NEXT_PUBLIC_GATE_ENABLED === 'true';
 const GATE_COOKIE  = 'stockai_gate';
 
 function hasGateCookie() {
@@ -26,27 +25,47 @@ export default function App({ Component, pageProps }: AppProps) {
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    // Site-wide password gate — checked before JWT auth
-    if (GATE_ENABLED && !hasGateCookie() && !PUBLIC_PATHS.includes(router.pathname)) {
-      router.replace(`/gate?next=${encodeURIComponent(router.pathname)}`);
+    if (PUBLIC_PATHS.includes(router.pathname)) {
+      // Gate page and login page — skip all checks
+      setChecked(true);
       return;
     }
 
-    const session = getSession();
-    if (session) {
-      setUsername(session.username);
-      setRole(session.role);
-      const settings = loadSettings();
-      if (settings.polygonApiKey || settings.alphaVantageApiKey) {
-        api.pushConfig({
-          polygon_api_key: settings.polygonApiKey || undefined,
-          alpha_vantage_api_key: settings.alphaVantageApiKey || undefined,
-        }).catch(() => {});
+    async function doCheck() {
+      // Site-wide password gate — query the API (Node.js runtime) to see if a
+      // SITE_PASSWORD is configured, since that env var is only readable server-side.
+      if (!hasGateCookie()) {
+        try {
+          const r = await fetch('/api/gate');
+          const { enabled } = await r.json() as { enabled: boolean };
+          if (enabled) {
+            router.replace(`/gate?next=${encodeURIComponent(router.pathname)}`);
+            return;
+          }
+        } catch {
+          // If the gate API is unreachable, let the user through
+        }
       }
-    } else if (!PUBLIC_PATHS.includes(router.pathname)) {
-      router.replace('/login');
+
+      // JWT auth check
+      const session = getSession();
+      if (session) {
+        setUsername(session.username);
+        setRole(session.role);
+        const settings = loadSettings();
+        if (settings.polygonApiKey || settings.alphaVantageApiKey) {
+          api.pushConfig({
+            polygon_api_key: settings.polygonApiKey || undefined,
+            alpha_vantage_api_key: settings.alphaVantageApiKey || undefined,
+          }).catch(() => {});
+        }
+      } else {
+        router.replace('/login');
+      }
+      setChecked(true);
     }
-    setChecked(true);
+
+    doCheck();
   }, [router.pathname]);
 
   // Global alert checker — runs every 60 s when logged in
