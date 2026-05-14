@@ -94,7 +94,26 @@ Full drill-down page for a single stock.
 - **Live Price card** — real-time price, day change % (color-coded), and previous close. Fetched from yfinance `fast_info` via the shared `latest-prices` SWR key, auto-refreshes every 60 s. Falls back to "Last Close" from the DB if the live quote is unavailable.
 - **Fair Value** card — 200-day SMA fair price with K-Score (see [SCORING.md](SCORING.md))
 - **AI Signal** card — BUY / HOLD / WAIT / SELL with bullish probability %; colour-coded green / yellow / orange / red
+- **Earnings Calendar badge** — shown when yfinance reports a future earnings date. Displays number of days until the next earnings release and the date itself. Color-coded by urgency:
+  - Indigo — more than 21 days away
+  - Yellow — within 21 days (⚠ watch for volatility)
+  - Red — within 7 days (⚠ Earnings Soon — results may invalidate the current signal)
 - **↻ Refresh** / **☆ Watch** toggle
+
+### Key Metrics Strip
+
+A row of compact pill cards shown directly below the header, providing instant access to the most-used valuation ratios without scrolling to Company Financials.
+
+| Metric | Source field | Notes |
+|--------|-------------|-------|
+| **P/E (TTM)** | `trailingPE` | Trailing 12-month price-to-earnings |
+| **Fwd P/E** | `forwardPE` | Forward 12-month P/E based on analyst EPS estimates |
+| **EV / Sales** | `enterpriseToRevenue` | Enterprise Value ÷ Revenue — valuation independent of capital structure |
+| **EV / EBITDA** | `enterpriseToEbitda` | Enterprise Value ÷ EBITDA — most used for cross-sector comparison |
+| **P/B** | `priceToBook` | Price ÷ Book Value per share |
+| **Beta** | `beta` | Market sensitivity (1.0 = moves with market; >1 = more volatile) |
+
+Displayed as `—` when data is unavailable for the specific stock.
 
 ### Chart
 
@@ -120,7 +139,12 @@ A small bar count is displayed next to the buttons so you can see exactly how mu
 
 ### Sidebar
 - **AI Signal** — BUY/SELL/HOLD, confidence, bullish probability bar
+- **Signal Alert button** — subscribe to email notifications when the AI Signal improves (see [Signal Change Email Notifications](#signal-change-email-notifications) below). Shows 🔔 "Signal alert on" (purple, active) or 🔕 "Notify on signal improvement" (grey, inactive). Displays the last known signal as a badge when active.
 - **K-Score** — composite + five sub-scores + fair price
+- **Fear & Greed Index gauge** — semi-circular dial (0–100) with five color zones: red (Extreme Fear) → orange (Fear) → yellow (Neutral) → light green (Greed) → green (Extreme Greed). Computed every hour from VIX + S&P 500 data. Shows previous close, 1-week, 1-month, and 1-year historical scores below the dial. Includes a **Market Regime** sub-section:
+  - Green dot + "Bull Market" — S&P 500 is currently **above** its 200-day MA
+  - Red dot + "Bear Market" — S&P 500 is currently **below** its 200-day MA
+  - Percentage shown (e.g. "+9.8% vs 200MA") indicates how far above or below
 - **ML Prediction** — predict/train per model, Train All shortcut
 - **Chart Patterns** — detected patterns with confidence %
 - **Support & Resistance** — up to 6 levels, color-coded
@@ -129,7 +153,7 @@ A small bar count is displayed next to the buttons so you can see exactly how mu
 ### Company Financials
 Fetched from yfinance `.info`, Redis-cached 24 h.
 
-**Valuation** — Market Cap, Enterprise Value, P/E (TTM), Forward P/E, P/B, EV/EBITDA
+**Valuation** — Market Cap, Enterprise Value, P/E (TTM), Forward P/E, P/B, EV/Sales, EV/EBITDA
 
 **Financials (TTM)** — Revenue (+ YoY growth), Gross Profit, Net Income, EBITDA, Free Cash Flow, Operating Cash Flow
 
@@ -149,6 +173,22 @@ Fetched from yfinance `.info`, Redis-cached 24 h.
 
 > **Reliability note:** Analyst data is sourced from Yahoo Finance, which aggregates ratings from major investment banks. Coverage is excellent for US large-cap stocks (20–50 analysts) and thinner for small caps or HK stocks. The consensus mean is a useful directional indicator but analyst price targets scatter widely — treat them as one input alongside K-Score, technical signals, and your own research.
 
+**Insider Activity (Last 6 Months)** — summarises open-market insider transactions reported to the SEC (sourced from Yahoo Finance).
+- **Buy / Sell bar** — proportional green/red bar showing the relative volume of purchases vs sales
+- **Share counts** — number of shares purchased and sold, with transaction count next to purchases
+- **Net summary card** — net shares (purchases minus sales); green if net buyers, red if net sellers. Shows % of float when available.
+
+| Reading insider activity | What it suggests |
+|--------------------------|-----------------|
+| Strong net buying (large share count, multiple transactions) | Insiders believe the stock is undervalued. Most bullish signal. |
+| Net buying in single large transaction | Likely an option exercise or compensation — less meaningful |
+| Net selling, but small % of holdings | Routine liquidity, portfolio balancing — neutral |
+| Heavy net selling (>2% of float) | Worth investigating — insiders may know something. Check recent filings. |
+
+> **Important:** insider activity from yfinance covers only the most recent 6-month SEC filing summary. It does not include exercise-of-options transactions (which inflate sell counts artificially). Small companies may have very few transactions. Always check the raw SEC Form 4 filings for full context.
+
+> **Source:** SEC Form 4 filings aggregated by Yahoo Finance. Data is refreshed as part of the 24-hour fundamentals cache.
+
 ### AI Chat Panel
 Collapsible "Ask AI" panel below the financials section.
 
@@ -164,6 +204,95 @@ Collapsible "Ask AI" panel below the financials section.
 - Articles from the enabled news sources (configurable in Settings)
 - Bullish / Bearish / Neutral sentiment badges (VADER scoring)
 - Click headline to open original article
+
+---
+
+## Signal Change Email Notifications
+
+Proactive email alerts that fire when the AI Signal improves **and** the stock's analyst consensus is bullish. This feature is designed for stocks you believe in fundamentally but where the technicals haven't yet confirmed an entry — the notification tells you when both signals are aligned.
+
+### How to subscribe
+
+On any stock detail page, click the **🔕 Notify on signal improvement** button in the sidebar (below the AI Signal card). It turns purple with a 🔔 icon when active. Click again to unsubscribe. The alert is stored server-side (PostgreSQL `signal_alerts` table) and fires even if you aren't logged in at the time.
+
+By default, alert emails are sent to the email address on your account (set in Settings). You can change the email address via `PUT /auth/me` or by updating your profile.
+
+### Trigger conditions — BOTH must be true
+
+An email is sent only when **both** of the following conditions are simultaneously met at the time of a market refresh:
+
+**Condition 1 — AI Signal has improved** (one of these transitions):
+
+| Previous signal | New signal | Meaning |
+|-----------------|-----------|---------|
+| SELL | HOLD | Stock is moving out of sell territory |
+| SELL | WAIT | Slight recovery from sell — still cautious |
+| SELL | BUY | Strong reversal — SELL flipping directly to BUY |
+| WAIT | HOLD | Stabilising from a bearish lean |
+| WAIT | BUY | Turning bullish from a cautious signal |
+| HOLD | BUY | Bullish confirmation from a neutral position |
+
+Transitions that go the wrong way (e.g. BUY → HOLD, HOLD → SELL) do **not** trigger a notification. The signal always needs to be improving.
+
+**Condition 2 — Analyst consensus is bullish:**
+
+| Rating value | Qualifies? |
+|-------------|-----------|
+| `strong_buy` | ✓ Yes |
+| `buy` | ✓ Yes |
+| `outperform` | ✓ Yes |
+| `hold` | ✗ No |
+| `underperform` | ✗ No |
+| `sell` / `strong_sell` | ✗ No |
+
+The analyst rating is fetched from the cached fundamentals endpoint at check time. If the fundamentals cache has expired, a fresh fetch is made.
+
+### When checks run
+
+Signal alerts are checked at the end of every scheduled market refresh — 5 times per trading day per market:
+
+| Market | Check times (local market time) |
+|--------|---------------------------------|
+| US (NYSE/NASDAQ) | 09:00, 10:45, 12:45, 14:45, 16:30 |
+| HK (HKEX) | 09:00, 10:30, 14:15, 15:30, 16:30 |
+
+The 16:30 post-close check is the most complete — it runs after the final price bar of the day is ingested and rankings/signals are refreshed.
+
+### What the email contains
+
+The signal alert email includes:
+- **Signal transition** — the previous and new signal values in a styled badge (e.g. SELL → BUY)
+- **Analyst consensus** — the current Wall Street rating and a brief description of the transition
+- **Bullish probability and confidence** — from the signal engine at the time of the alert
+- **Reasons table** — a detailed breakdown of every indicator behind the signal, so you can see *why* it changed:
+
+| Row | What it shows |
+|-----|--------------|
+| Trend above SMA50 | Yes / No |
+| SMA50 above SMA200 | Yes / No — golden cross regime |
+| Golden cross fired | Yes / No — recent SMA50 × SMA200 crossover event |
+| RSI (14) | Numeric value with zone note (oversold / recovering / bullish / overbought) |
+| MACD histogram | Value + ↑ rising or ↓ flat/falling |
+| Bollinger %B | 0–1 position within the bands (>0.85 = upper band, <0.15 = lower band) |
+| ADX | Trend strength numeric with zone note (weak / moderate / strong trend) |
+| Volume (OBV bullish) | Yes / No — On-Balance Volume confirming price direction |
+| Volume Z-score | Standard deviations above average daily volume |
+| ML probability | XGBoost bullish probability % |
+| Next earnings | Date + days away |
+| Insider activity (6M) | Shares bought / sold + net, % of float |
+
+- **Earnings warning** — if earnings are within 7 days, a yellow warning banner appears at the bottom of the email reminding you that results may override the signal. If within 21 days, a plain note is included.
+
+### What the email does NOT do
+
+- It does not repeat for the same transition. Once fired, the alert's `last_signal` is updated — the same SELL→BUY event will not trigger again.
+- It will fire again if the signal drops back to SELL and then rises to BUY a second time (new transition).
+- Price alerts (separate feature — see [Alerts](#alerts-alerts)) are not affected by this system.
+- This is not personalized investment advice. The email includes a disclaimer.
+
+### Unsubscribing
+
+Click the 🔔 "Signal alert on" button on the stock detail page to unsubscribe. This deletes the alert from the server — no further emails will be sent for that stock unless you re-subscribe.
 
 ---
 
@@ -451,8 +580,28 @@ GET  /stocks                           # list all tracked stocks
 GET  /stocks/{symbol}/prices           # OHLCV history from DB
 GET  /stocks/latest_prices             # live prices (yfinance fast_info, Redis 60 s cache)
 GET  /stocks/market_overview           # live index quotes: S&P 500, NASDAQ, DJI, VIX, HSI (Redis 60 s)
+GET  /stocks/fear_greed                # computed Fear & Greed index (Redis 1 h cache)
+                                       #   → score, rating, history, sp500_regime, sp500_vs_ma200_pct
 GET  /stocks/{symbol}/fundamentals     # company financials (yfinance .info, Redis 24 h cache)
+                                       #   ?refresh=true to bypass cache
+                                       #   → includes next_earnings_date, days_to_earnings,
+                                       #       insider_buy_shares_6m, insider_sell_shares_6m,
+                                       #       insider_buy_transactions_6m, insider_net_pct
 GET  /stocks/{symbol}/news?sources=yfinance,google   # news + sentiment (filterable by source)
+```
+
+### Price Alerts
+```
+GET    /alerts                         # list current user's price alerts
+POST   /alerts   {symbol, condition, threshold, email?, note?}   # create alert
+DELETE /alerts/{id}                    # delete alert
+```
+
+### Signal Change Alerts
+```
+GET    /signal-alerts                  # list current user's signal alerts
+POST   /signal-alerts   {symbol, email?}   # subscribe (idempotent — returns existing if duplicate)
+DELETE /signal-alerts/{id}             # unsubscribe
 ```
 
 ### Signals
@@ -543,10 +692,14 @@ POST /ai/chat
 | Stock detail chart (OHLCV) | DB `prices` table | As of last ingest |
 | Company Financials | yfinance `.info` | Redis 24 h TTL (quarterly data) |
 | Analyst ratings & price targets | yfinance `.info` + `recommendations_summary` | Redis 24 h TTL (updates in step with fundamentals) |
+| **Earnings calendar** | yfinance `.calendar` | Redis 24 h TTL (same fundamentals cache) |
+| **Insider activity (6M)** | yfinance `.insider_purchases` | Redis 24 h TTL (same fundamentals cache) |
 | News | yfinance + Google News RSS | Redis 30 min TTL per source combination |
 | K-Score / Fair price | DB `rankings` table | As of last rankings refresh |
 | AI Signal | DB `signals` table (TA + ML) | As of last stock detail view |
 | ML prediction | Trained model inference | On demand |
+| **Fear & Greed Index** | Computed from yfinance ^GSPC + ^VIX | Redis 1 h TTL; SWR 1 h refresh on stock detail page |
+| **Market Regime (S&P vs 200MA)** | Computed alongside Fear & Greed | Redis 1 h TTL (same cache entry) |
 
 ---
 
@@ -556,8 +709,11 @@ POST /ai/chat
 |-----|----------|-----|
 | `stockai:live_prices` | Array of live price objects for all active stocks | 60 s |
 | `stockai:market_overview` | Array of index quotes (^GSPC, ^IXIC, ^DJI, ^VIX, ^HSI) | 60 s |
-| `stockai:fundamentals:v2:{SYMBOL}` | Company fundamentals JSON for one symbol (includes analyst ratings breakdown) | 24 h |
+| `stockai:fear_greed` | Computed Fear & Greed score, rating, history, S&P regime | 1 h |
+| `stockai:fundamentals:v2:{SYMBOL}` | Company fundamentals JSON — includes analyst ratings, earnings calendar, and insider activity | 24 h |
 | `stockai:news:{SYMBOL}:{sources}` | News articles for one symbol + source combination | 30 min |
+
+> To force a fresh fundamentals fetch (bypass the 24 h cache), use `GET /stocks/{symbol}/fundamentals?refresh=true`. To force a fresh Fear & Greed fetch, delete the `stockai:fear_greed` Redis key and re-request the endpoint.
 
 ---
 

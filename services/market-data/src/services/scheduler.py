@@ -28,10 +28,10 @@ from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import PriceAlert, SessionLocal, Stock
+from db import PriceAlert, SignalAlert, SessionLocal, Stock
 
 from .ingestion import ingest_universe
-from .email_service import send_price_alert_email
+from .email_service import send_price_alert_email, send_signal_alert_email
 
 log = get_logger("scheduler")
 _settings = get_settings()
@@ -71,7 +71,92 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     if post_close:
         _post(f"{_settings.ml_prediction_url}/ml/train_all")
 
+    check_signal_alerts()
     log.info("scheduler.refresh_done", market=market, post_close=post_close)
+
+
+_QUALIFYING_TRANSITIONS = {
+    ("SELL", "HOLD"), ("SELL", "WAIT"), ("SELL", "BUY"),
+    ("WAIT", "HOLD"), ("WAIT", "BUY"),
+    ("HOLD", "BUY"),
+}
+_BULLISH_ANALYST = {"buy", "strong_buy", "strongbuy", "outperform"}
+
+
+def check_signal_alerts() -> None:
+    """Fire signal-change notifications when AI Signal improves AND analyst is BUY/STRONG BUY."""
+    try:
+        with SessionLocal() as session:
+            alerts = session.execute(select(SignalAlert)).scalars().all()
+            if not alerts:
+                return
+
+            symbols = list({a.symbol for a in alerts})
+
+            # Fetch current signals (keep full payload for reasons)
+            signals: dict[str, str] = {}
+            signal_details: dict[str, dict] = {}
+            for sym in symbols:
+                try:
+                    r = httpx.get(f"{_settings.signal_engine_url}/signals/{sym}", timeout=10)
+                    if r.status_code == 200:
+                        payload = r.json()
+                        signals[sym] = payload.get("signal", "")
+                        signal_details[sym] = payload
+                except Exception:
+                    pass
+
+            # Fetch analyst ratings + fundamentals (earnings, insider data)
+            analyst_ratings: dict[str, str] = {}
+            fundamentals_cache: dict[str, dict] = {}
+            for sym in symbols:
+                try:
+                    r = httpx.get(f"{_settings.market_data_url}/stocks/{sym}/fundamentals", timeout=10)
+                    if r.status_code == 200:
+                        payload = r.json()
+                        analyst_ratings[sym] = (payload.get("recommendation") or "").lower()
+                        fundamentals_cache[sym] = payload
+                except Exception:
+                    pass
+
+            fired = 0
+            for alert in alerts:
+                current = signals.get(alert.symbol)
+                if not current:
+                    continue
+
+                prev = alert.last_signal
+
+                # Always update tracked signal, even if we don't fire
+                if prev == current:
+                    continue
+
+                qualifying = (prev, current) in _QUALIFYING_TRANSITIONS
+                analyst_ok = analyst_ratings.get(alert.symbol, "") in _BULLISH_ANALYST
+
+                alert.last_signal = current  # update regardless
+
+                if not qualifying or not analyst_ok:
+                    continue
+
+                email_ok = send_signal_alert_email(
+                    to=alert.email or "",
+                    symbol=alert.symbol,
+                    prev_signal=prev,
+                    new_signal=current,
+                    analyst=analyst_ratings.get(alert.symbol, "buy"),
+                    signal_data=signal_details.get(alert.symbol, {}),
+                    fundamentals=fundamentals_cache.get(alert.symbol),
+                )
+                if email_ok:
+                    fired += 1
+                    log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current)
+
+            session.commit()
+            if fired:
+                log.info("signal_alert.check_done", fired=fired)
+    except Exception as exc:
+        log.error("signal_alert.check_error", error=str(exc))
 
 
 def check_price_alerts() -> None:

@@ -148,6 +148,24 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_price_alerts_symbol ON price_alerts (symbol)"
         ))
+        # ── Signal alerts ──────────────────────────────────────────────────────
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS signal_alerts (
+                id           SERIAL PRIMARY KEY,
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                symbol       VARCHAR(32) NOT NULL,
+                email        VARCHAR(256),
+                last_signal  VARCHAR(16),
+                created_at   TIMESTAMP NOT NULL DEFAULT now(),
+                UNIQUE(user_id, symbol)
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_signal_alerts_user ON signal_alerts (user_id)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_signal_alerts_symbol ON signal_alerts (symbol)"
+        ))
 
 
 def _seed_admin() -> None:

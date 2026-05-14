@@ -66,6 +66,12 @@ export const api = {
     request<PriceAlert>(`/alerts`, { method: 'POST', body: JSON.stringify(body) }),
   deleteAlert: (id: number) => request(`/alerts/${id}`, { method: 'DELETE' }),
 
+  // Signal alerts
+  listSignalAlerts: () => request<SignalAlertItem[]>(`/signal-alerts`),
+  createSignalAlert: (symbol: string, email?: string) =>
+    request<SignalAlertItem>(`/signal-alerts`, { method: 'POST', body: JSON.stringify({ symbol, email }) }),
+  deleteSignalAlert: (id: number) => request(`/signal-alerts/${id}`, { method: 'DELETE' }),
+
   // User profile
   getMe: () => request<AppUser>(`/auth/me`),
   updateProfile: (body: { email?: string }) =>
@@ -143,7 +149,8 @@ export type WatchlistMeta = { id: number; name: string; item_count: number; crea
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: 'above' | 'below'; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };
-export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
+export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; created_at: string };
+export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
 
 export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };
 export type Levels = {
@@ -205,6 +212,14 @@ export type Fundamentals = {
   analyst_hold: number | null;
   analyst_underperform: number | null;
   analyst_sell: number | null;
+  // Earnings calendar
+  next_earnings_date: string | null;
+  days_to_earnings: number | null;
+  // Insider activity
+  insider_buy_shares_6m: number | null;
+  insider_sell_shares_6m: number | null;
+  insider_buy_transactions_6m: number | null;
+  insider_net_pct: number | null;
 };
 
 export type Overview = {

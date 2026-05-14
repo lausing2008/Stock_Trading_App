@@ -84,6 +84,7 @@ class User(Base):
     watchlist_items: Mapped[list["WatchlistItem"]] = relationship(back_populates="user")
     watchlists: Mapped[list["Watchlist"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     price_alerts: Mapped[list["PriceAlert"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    signal_alerts: Mapped[list["SignalAlert"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Stock(Base):
@@ -290,3 +291,16 @@ class PriceAlert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="price_alerts")
+
+
+class SignalAlert(Base):
+    __tablename__ = "signal_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    last_signal: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="signal_alerts")
