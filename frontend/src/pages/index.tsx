@@ -262,10 +262,9 @@ export default function Home() {
   }
 
   const filtered = useMemo(() => {
-    if (!stocks || !watchlist) return [];
-    let list = stocks.filter(s => {
-      if (!watchedSet.has(s.symbol)) return false;
-      const q = search.toLowerCase();
+    if (!watchlist) return [];
+    const q = search.toLowerCase();
+    let list = watchlist.filter(s => {
       if (q && !s.symbol.toLowerCase().includes(q) && !s.name.toLowerCase().includes(q)) return false;
       if (market !== 'all' && s.market !== market) return false;
       return true;
@@ -278,10 +277,10 @@ export default function Home() {
       return 0;
     });
     return list;
-  }, [stocks, search, market, sort, rankMap, watchedSet, watchlist]);
+  }, [watchlist, search, market, sort, rankMap]);
 
-  const usCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'US').length ?? 0;
-  const hkCount  = stocks?.filter(s => watchedSet.has(s.symbol) && s.market === 'HK').length ?? 0;
+  const usCount  = watchlist?.filter(s => s.market === 'US').length ?? 0;
+  const hkCount  = watchlist?.filter(s => s.market === 'HK').length ?? 0;
   const topRanked = rankingsData?.rankings.filter(r => watchedSet.has(r.symbol) && r.score != null).reduce(
     (best, r) => (!best || (r.score ?? 0) > (best.score ?? 0)) ? r : best,
     null as RankingRow | null,
