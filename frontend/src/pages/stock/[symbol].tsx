@@ -1186,6 +1186,62 @@ export default function StockDetail() {
                         </div>
                       </div>
 
+                      {/* Recent analyst actions from individual firms */}
+                      {f.analyst_actions && f.analyst_actions.length > 0 && (() => {
+                        const ACTION_COLOR: Record<string, string> = {
+                          Upgraded:   '#22c55e',
+                          Downgraded: '#ef4444',
+                          'Initiated Coverage On': '#818cf8',
+                          Initiated:  '#818cf8',
+                          Maintained: '#94a3b8',
+                          Reiterated: '#94a3b8',
+                          'Lowered Target': '#fb923c',
+                          'Raised Target':  '#4ade80',
+                        };
+                        const actionColor = (a: string) => {
+                          for (const [k, v] of Object.entries(ACTION_COLOR)) {
+                            if (a.toLowerCase().includes(k.toLowerCase())) return v;
+                          }
+                          return '#64748b';
+                        };
+                        const gradeColor = (g: string) => {
+                          const l = g.toLowerCase();
+                          if (l.includes('strong buy') || l.includes('overweight') || l.includes('outperform') || l.includes('buy')) return '#22c55e';
+                          if (l.includes('sell') || l.includes('underweight') || l.includes('underperform')) return '#ef4444';
+                          if (l.includes('hold') || l.includes('neutral') || l.includes('equal')) return '#facc15';
+                          return '#94a3b8';
+                        };
+                        return (
+                          <div>
+                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
+                              Recent Analyst Actions <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: '#334155' }}>· last 90 days</span>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              {f.analyst_actions.map((a, i) => (
+                                <div key={i} style={{ display: 'grid', gridTemplateColumns: '70px 1fr auto', gap: '8px', alignItems: 'center', padding: '5px 8px', borderRadius: '6px', background: 'rgba(255,255,255,0.02)', borderBottom: i < f.analyst_actions.length - 1 ? '1px solid rgba(30,41,59,0.5)' : 'none' }}>
+                                  <span style={{ fontSize: '10px', color: '#475569', fontVariantNumeric: 'tabular-nums' }}>{a.date.slice(5)}</span>
+                                  <div style={{ minWidth: 0 }}>
+                                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#cbd5e1', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.firm || '—'}</span>
+                                    <span style={{ fontSize: '11px', color: actionColor(a.action) }}>{a.action}</span>
+                                  </div>
+                                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                    {a.from_grade && a.to_grade && a.from_grade !== a.to_grade ? (
+                                      <span style={{ fontSize: '11px' }}>
+                                        <span style={{ color: gradeColor(a.from_grade) }}>{a.from_grade}</span>
+                                        <span style={{ color: '#475569', margin: '0 4px' }}>→</span>
+                                        <span style={{ color: gradeColor(a.to_grade), fontWeight: 700 }}>{a.to_grade}</span>
+                                      </span>
+                                    ) : a.to_grade ? (
+                                      <span style={{ fontSize: '11px', fontWeight: 700, color: gradeColor(a.to_grade) }}>{a.to_grade}</span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                     </div>
                   </div>
                 );

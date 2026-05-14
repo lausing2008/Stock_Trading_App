@@ -426,6 +426,8 @@ class FundamentalsOut(BaseModel):
     insider_sell_shares_6m: int | None = None
     insider_buy_transactions_6m: int | None = None
     insider_net_pct: float | None = None    # % net shares purchased
+    # Individual analyst actions (last 90 days)
+    analyst_actions: list[dict] = []
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
@@ -495,6 +497,31 @@ def get_fundamentals(symbol: str, refresh: bool = False):
                         next_ed = future[0] if isinstance(future[0], _date) else future[0].date()
                         next_earnings_date = next_ed.strftime("%Y-%m-%d")
                         days_to_earnings = (next_ed - today).days
+    except Exception:
+        pass
+
+    # Analyst upgrades/downgrades — individual firm actions (last 90 days)
+    analyst_actions: list[dict] = []
+    try:
+        if ticker is not None:
+            ud = ticker.upgrades_downgrades
+            if ud is not None and not ud.empty:
+                from datetime import date as _adate, timedelta as _td
+                cutoff = _adate.today() - _td(days=90)
+                if hasattr(ud.index, 'date'):
+                    ud = ud[ud.index.date >= cutoff]
+                ud = ud.sort_index(ascending=False).head(20)
+                for idx, row in ud.iterrows():
+                    action = str(row.get("Action", "")).strip()
+                    if not action:
+                        continue
+                    analyst_actions.append({
+                        "date":       (idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]),
+                        "firm":       str(row.get("Firm", "")).strip(),
+                        "from_grade": str(row.get("FromGrade", "")).strip(),
+                        "to_grade":   str(row.get("ToGrade",   "")).strip(),
+                        "action":     action,
+                    })
     except Exception:
         pass
 
@@ -592,6 +619,7 @@ def get_fundamentals(symbol: str, refresh: bool = False):
         insider_sell_shares_6m=insider_sell_shares_6m,
         insider_buy_transactions_6m=insider_buy_transactions_6m,
         insider_net_pct=insider_net_pct,
+        analyst_actions=analyst_actions,
     )
 
     try:

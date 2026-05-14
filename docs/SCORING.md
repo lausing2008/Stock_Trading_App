@@ -308,9 +308,24 @@ Insider buying is one of the most reliable confirmation signals because insiders
 | Net selling, small %, single insider | Neutral — likely routine liquidity, ignore |
 | No insider data | Available for most US large-caps only; absence of data ≠ negative signal |
 
-**Best combination**: Analyst = BUY + AI Signal just flipped BUY + insider net buying (large) + earnings > 30 days away. This four-way alignment is rare but represents the highest-conviction setup in the app.
+**Recent Analyst Actions**
 
-**Worst combination**: AI Signal = BUY but analyst = HOLD, insider net selling > 2% of float, and earnings within 7 days. In this case the signal is likely noise — the technicals may be reacting to pre-earnings positioning rather than a sustainable trend.
+The stock detail page shows a table of individual firm events from the last 90 days — upgrades, downgrades, initiations, and target changes. Use this to understand the *direction* of Wall Street sentiment, not just the current aggregate:
+
+| Pattern | Interpretation |
+|---------|---------------|
+| 3+ upgrades in the last 30 days | Accelerating bullish consensus — strong confirmation of a BUY signal |
+| Mix of upgrades and downgrades | Divided opinion — rely more on the AI signal and your own analysis |
+| Recent downgrade after a run | Caution even if consensus is still BUY — momentum may be fading |
+| Initiation by a major firm (Goldman, MS, JPMorgan) | Fresh coverage can move the stock; note the grade they opened with |
+| "Raised Target" actions | Analysts chasing price up — bullish but late-cycle signal |
+| "Lowered Target" with no grade change | Analysts reducing expectations while holding rating — watch for further deterioration |
+
+**Note on per-firm price targets:** Individual dollar targets per firm (e.g. "Goldman Sachs: $180") are proprietary data not available through Yahoo Finance's free API. Only aggregate targets (mean, low, median, high across all analysts) are shown. The Recent Analyst Actions table shows grade changes only — not dollar targets per firm. A paid integration (e.g. Financial Modeling Prep) would be required to add per-firm targets.
+
+**Best combination**: Analyst = BUY + recent upgrades trend + AI Signal just flipped BUY + insider net buying (large) + earnings > 30 days away. This five-way alignment is rare but represents the highest-conviction setup in the app.
+
+**Worst combination**: AI Signal = BUY but analyst = HOLD with recent downgrades, insider net selling > 2% of float, and earnings within 7 days. In this case the signal is likely noise — the technicals may be reacting to pre-earnings positioning rather than a sustainable trend.
 
 ---
 

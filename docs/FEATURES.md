@@ -169,7 +169,36 @@ Fetched from yfinance `.info`, Redis-cached 24 h.
 - **Price target range visualization** — gradient bar with absolute-positioned markers for Low / Median / Mean / High analyst targets, plus the current live price as a white dot; upside % from current to mean target shown inline
 - **Buy Zone card** — suggested entry range from analyst low target to current price; shows nearest technical support level and upside % to mean target; warns if price is already above analyst consensus
 - **Sell / Target Zone card** — suggested take-profit range from analyst mean to high target; also shows K-Score fair value and nearest resistance level
+- **Recent Analyst Actions** — table of individual firm activity from the last 90 days (see below)
 - **Reliability disclaimer** — "Via Yahoo Finance · consensus of Wall Street analysts · updated daily · not a personalised recommendation" shown in the section header
+
+#### Recent Analyst Actions table
+
+Shows up to 20 individual analyst firm events from the last 90 days, sorted newest first. Each row shows:
+
+| Column | What it contains |
+|--------|-----------------|
+| Date | MM-DD of the analyst action |
+| Firm | Investment bank or brokerage name (e.g. Goldman Sachs, Morgan Stanley) |
+| Action | What the analyst did — see colour coding below |
+| Grade change | Previous rating → new rating (e.g. Hold → Buy), colour-coded by grade |
+
+**Action colour coding:**
+
+| Colour | Actions |
+|--------|---------|
+| Green | Upgraded |
+| Red | Downgraded |
+| Purple | Initiated Coverage On |
+| Light green | Raised Target |
+| Orange | Lowered Target |
+| Grey | Maintained, Reiterated |
+
+**Grade colour coding:** Strong Buy / Overweight / Outperform / Buy = green · Hold / Neutral / Equal Weight = yellow · Sell / Underweight / Underperform = red
+
+**Data source:** `ticker.upgrades_downgrades` via yfinance, cached as part of the 24-hour fundamentals cache. Click **Refresh** in the section header to bypass the cache.
+
+**Why there are no per-firm dollar price targets:** Individual analyst price targets (e.g. "Goldman Sachs: $180") are proprietary data sold by Bloomberg Terminal, FactSet, and Refinitiv. They are not available through Yahoo Finance's free API. The aggregate Low / Mean / Median / High targets shown in the Price Target Range bar above represent the spread across all contributing analysts — that is the closest available proxy for what individual firms are targeting. Adding per-firm targets would require a paid integration (e.g. Financial Modeling Prep).
 
 > **Reliability note:** Analyst data is sourced from Yahoo Finance, which aggregates ratings from major investment banks. Coverage is excellent for US large-cap stocks (20–50 analysts) and thinner for small caps or HK stocks. The consensus mean is a useful directional indicator but analyst price targets scatter widely — treat them as one input alongside K-Score, technical signals, and your own research.
 
@@ -731,6 +760,7 @@ POST /ai/chat
 | Stock detail chart (OHLCV) | DB `prices` table | As of last ingest |
 | Company Financials | yfinance `.info` | Redis 24 h TTL (quarterly data) |
 | Analyst ratings & price targets | yfinance `.info` + `recommendations_summary` | Redis 24 h TTL (updates in step with fundamentals) |
+| Recent analyst firm actions | yfinance `upgrades_downgrades` (last 90 days, up to 20 rows) | Redis 24 h TTL — click Refresh to force |
 | **Earnings calendar** | yfinance `.calendar` | Redis 24 h TTL (same fundamentals cache) |
 | **Insider activity (6M)** | yfinance `.insider_purchases` | Redis 24 h TTL (same fundamentals cache) |
 | News | yfinance + Google News RSS | Redis 30 min TTL per source combination |

@@ -220,6 +220,8 @@ export type Fundamentals = {
   insider_sell_shares_6m: number | null;
   insider_buy_transactions_6m: number | null;
   insider_net_pct: number | null;
+  // Individual analyst firm actions (last 90 days)
+  analyst_actions: { date: string; firm: string; from_grade: string; to_grade: string; action: string }[];
 };
 
 export type Overview = {
