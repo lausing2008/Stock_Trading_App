@@ -6,11 +6,13 @@ import type { Price, Overview, Levels } from '@/lib/api';
 type Props = { prices: Price[]; indicators?: Overview['indicators']; levels?: Levels };
 
 const RANGES = [
-  { label: '5D',  days: 5   },
-  { label: '1M',  days: 21  },
-  { label: '3M',  days: 63  },
-  { label: '6M',  days: 126 },
-  { label: '1Y',  days: 252 },
+  { label: '1D',  days: 1    },
+  { label: '5D',  days: 5    },
+  { label: '1M',  days: 21   },
+  { label: '3M',  days: 63   },
+  { label: '6M',  days: 126  },
+  { label: '1Y',  days: 252  },
+  { label: '5Y',  days: 1260 },
   { label: 'All', days: null },
 ] as const;
 type RangeLabel = typeof RANGES[number]['label'];
@@ -144,6 +146,10 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
         });
       }
     }
+
+    // Fit all data into view — prevents the chart appearing truncated or
+    // zoomed to a sub-range when switching between range buttons.
+    chart.timeScale().fitContent();
 
     // ── RSI chart ──────────────────────────────────────────────────────────
     let rsiChart: IChartApi | null = null;

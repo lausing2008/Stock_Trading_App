@@ -316,9 +316,25 @@ Insider buying is one of the most reliable confirmation signals because insiders
 
 ### Signal Change Email Notifications
 
-When you subscribe to signal alerts on a stock (🔔 button in the sidebar), you receive an email when the AI Signal improves **and** the analyst consensus qualifies as bullish. See [FEATURES.md — Signal Change Email Notifications](FEATURES.md#signal-change-email-notifications) for the complete trigger conditions, check schedule, and email contents.
+When you subscribe to signal alerts on a stock (🔔 button in the sidebar), you receive two kinds of emails:
 
-The email includes the full reasons table (all indicator values at the time of the alert), the next earnings date, and an insider activity summary — giving you everything in one place to decide whether to act.
+**Entry signals** — fires when the AI Signal improves (any transition toward BUY) **and** the analyst consensus is bullish. Both conditions must be true simultaneously.
+
+**Exit warnings** — fires when a BUY signal deteriorates (BUY → HOLD, BUY → WAIT, or BUY → SELL), regardless of analyst consensus. Exit warnings use a red ⚠ SELL Alert subject and include a red call-to-action banner in the email body. They are not filtered by analyst rating because a technical reversal is actionable whether or not Wall Street has caught up yet.
+
+Both email types include the full reasons table (all indicator values), the next earnings date, and an insider activity summary. See [FEATURES.md — Signal Change Email Notifications](FEATURES.md#signal-change-email-notifications) for the complete trigger tables, check schedule, and email format details.
+
+#### How exit warnings fit the decision framework
+
+The framework encourages you to act on signal transitions when multiple factors align. Exit warnings are designed around this logic:
+
+| Transition | Recommended interpretation |
+|-----------|---------------------------|
+| BUY → HOLD | Momentum is softening. Avoid adding. Watch for the next refresh — if it recovers to BUY, no action needed. |
+| BUY → WAIT | Signal is deteriorating. Consider taking partial profits or tightening your stop-loss. |
+| BUY → SELL | AI has reversed. Review the reasons table in the email. If RSI is overbought, MACD is falling, and OBV is declining, the technical thesis has broken — consider exiting. |
+
+Cross-reference with the analyst rating in the email: if the analyst is still BUY but AI is SELL, this is a divergence worth investigating (see Scenario 1 in the decision scenarios above).
 
 ### What this app cannot do
 

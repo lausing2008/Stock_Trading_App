@@ -9,7 +9,14 @@ import { loadSettings } from '@/lib/settings';
 import NotificationBell from '@/components/NotificationBell';
 import { api } from '@/lib/api';
 
-const PUBLIC_PATHS = ['/login'];
+const PUBLIC_PATHS = ['/login', '/gate'];
+const GATE_ENABLED = process.env.NEXT_PUBLIC_GATE_ENABLED === 'true';
+const GATE_COOKIE  = 'stockai_gate';
+
+function hasGateCookie() {
+  if (typeof document === 'undefined') return false;
+  return document.cookie.split(';').some(c => c.trim().startsWith(`${GATE_COOKIE}=`));
+}
 
 export default function App({ Component, pageProps }: AppProps) {
   const router = useRouter();
@@ -19,6 +26,12 @@ export default function App({ Component, pageProps }: AppProps) {
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    // Site-wide password gate — checked before JWT auth
+    if (GATE_ENABLED && !hasGateCookie() && !PUBLIC_PATHS.includes(router.pathname)) {
+      router.replace(`/gate?next=${encodeURIComponent(router.pathname)}`);
+      return;
+    }
+
     const session = getSession();
     if (session) {
       setUsername(session.username);
