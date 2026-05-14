@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { loadNotifications, markAllRead, clearNotifications, getUnreadCount } from '@/lib/alerts';
+import { loadNotifications, markAllRead, clearNotifications, getUnreadCount, toggleAlert, loadAlerts } from '@/lib/alerts';
 
 export default function NotificationBell() {
   const [open, setOpen] = useState(false);
@@ -98,26 +98,37 @@ export default function NotificationBell() {
                 No notifications yet.<br />Set up alerts to get notified.
               </div>
             ) : (
-              notifications.map(n => (
-                <div key={n.id} style={{
-                  padding: '11px 16px',
-                  borderBottom: '1px solid rgba(30,41,59,0.6)',
-                  background: n.read ? 'transparent' : 'rgba(99,102,241,0.05)',
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'flex-start' }}>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', flex: 1 }}>
-                      <span style={{
-                        fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px',
-                        background: 'rgba(99,102,241,0.15)', color: '#818cf8', flexShrink: 0, marginTop: '1px',
-                      }}>
-                        {n.symbol}
-                      </span>
-                      <span style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.4 }}>{n.message}</span>
+              notifications.map(n => {
+                const ruleEnabled = loadAlerts().find(a => a.id === n.alertId)?.enabled ?? false;
+                return (
+                  <div key={n.id} style={{
+                    padding: '11px 16px',
+                    borderBottom: '1px solid rgba(30,41,59,0.6)',
+                    background: n.read ? 'transparent' : 'rgba(99,102,241,0.05)',
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'flex-start' }}>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', flex: 1 }}>
+                        <span style={{
+                          fontSize: '10px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px',
+                          background: 'rgba(99,102,241,0.15)', color: '#818cf8', flexShrink: 0, marginTop: '1px',
+                        }}>
+                          {n.symbol}
+                        </span>
+                        <span style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.4 }}>{n.message}</span>
+                      </div>
+                      <span style={{ fontSize: '10px', color: '#334155', flexShrink: 0 }}>{relTime(n.triggeredAt)}</span>
                     </div>
-                    <span style={{ fontSize: '10px', color: '#334155', flexShrink: 0 }}>{relTime(n.triggeredAt)}</span>
+                    {ruleEnabled && (
+                      <button
+                        onClick={() => { toggleAlert(n.alertId); refresh(); }}
+                        style={{ marginTop: '6px', fontSize: '10px', color: '#f87171', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                      >
+                        Stop this alert
+                      </button>
+                    )}
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 

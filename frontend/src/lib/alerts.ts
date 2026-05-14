@@ -194,7 +194,8 @@ export function checkAlerts(
         id: uid(), alertId: alert.id, symbol: alert.symbol,
         message, triggeredAt: new Date().toISOString(), read: false, currentValue: value,
       });
-      updated.push({ ...alert, lastTriggered: new Date().toISOString() });
+      // Auto-disable after firing — price/signal alerts are one-shot
+      updated.push({ ...alert, enabled: false, lastTriggered: new Date().toISOString() });
     } else {
       updated.push(alert);
     }
