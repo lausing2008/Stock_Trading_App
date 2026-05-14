@@ -75,10 +75,14 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     log.info("scheduler.refresh_done", market=market, post_close=post_close)
 
 
-_QUALIFYING_TRANSITIONS = {
+_BULLISH_TRANSITIONS = {
     ("SELL", "HOLD"), ("SELL", "WAIT"), ("SELL", "BUY"),
     ("WAIT", "HOLD"), ("WAIT", "BUY"),
     ("HOLD", "BUY"),
+}
+# Fired regardless of analyst rating — these are exit warnings
+_BEARISH_TRANSITIONS = {
+    ("BUY", "HOLD"), ("BUY", "WAIT"), ("BUY", "SELL"),
 }
 _BULLISH_ANALYST = {"buy", "strong_buy", "strongbuy", "outperform"}
 
@@ -131,12 +135,17 @@ def check_signal_alerts() -> None:
                 if prev == current:
                     continue
 
-                qualifying = (prev, current) in _QUALIFYING_TRANSITIONS
+                is_bullish = (prev, current) in _BULLISH_TRANSITIONS
+                is_bearish = (prev, current) in _BEARISH_TRANSITIONS
                 analyst_ok = analyst_ratings.get(alert.symbol, "") in _BULLISH_ANALYST
 
                 alert.last_signal = current  # update regardless
 
-                if not qualifying or not analyst_ok:
+                # Bullish transitions require bullish analyst consensus.
+                # Bearish transitions (exit warnings) fire regardless of analyst.
+                if not is_bullish and not is_bearish:
+                    continue
+                if is_bullish and not analyst_ok:
                     continue
 
                 email_ok = send_signal_alert_email(

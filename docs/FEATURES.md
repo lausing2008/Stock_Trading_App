@@ -139,7 +139,7 @@ A small bar count is displayed next to the buttons so you can see exactly how mu
 
 ### Sidebar
 - **AI Signal** — BUY/SELL/HOLD, confidence, bullish probability bar
-- **Signal Alert button** — subscribe to email notifications when the AI Signal improves (see [Signal Change Email Notifications](#signal-change-email-notifications) below). Shows 🔔 "Signal alert on" (purple, active) or 🔕 "Notify on signal improvement" (grey, inactive). Displays the last known signal as a badge when active.
+- **Signal Alert button** — subscribe to email notifications for both entry signals (AI Signal improving) and exit warnings (AI Signal deteriorating from BUY). See [Signal Change Email Notifications](#signal-change-email-notifications) below. Shows 🔔 "Signal alert on" (purple, active) or 🔕 "Notify on signal improvement" (grey, inactive). Displays the last known signal as a badge when active.
 - **K-Score** — composite + five sub-scores + fair price
 - **Fear & Greed Index gauge** — semi-circular dial (0–100) with five color zones: red (Extreme Fear) → orange (Fear) → yellow (Neutral) → light green (Greed) → green (Extreme Greed). Computed every hour from VIX + S&P 500 data. Shows previous close, 1-week, 1-month, and 1-year historical scores below the dial. Includes a **Market Regime** sub-section:
   - Green dot + "Bull Market" — S&P 500 is currently **above** its 200-day MA
@@ -209,7 +209,7 @@ Collapsible "Ask AI" panel below the financials section.
 
 ## Signal Change Email Notifications
 
-Proactive email alerts that fire when the AI Signal improves **and** the stock's analyst consensus is bullish. This feature is designed for stocks you believe in fundamentally but where the technicals haven't yet confirmed an entry — the notification tells you when both signals are aligned.
+Proactive email alerts that cover **two scenarios**: entry signals (when the AI Signal is improving and conditions are aligned) and exit warnings (when a stock you hold on a BUY signal starts to deteriorate). One subscription covers both — no separate setup required.
 
 ### How to subscribe
 
@@ -217,11 +217,17 @@ On any stock detail page, click the **🔕 Notify on signal improvement** button
 
 By default, alert emails are sent to the email address on your account (set in Settings). You can change the email address via `PUT /auth/me` or by updating your profile.
 
-### Trigger conditions — BOTH must be true
+### Trigger conditions
 
-An email is sent only when **both** of the following conditions are simultaneously met at the time of a market refresh:
+There are two independent trigger types. Each has different filtering rules.
 
-**Condition 1 — AI Signal has improved** (one of these transitions):
+---
+
+#### Type 1 — Entry Signal (AI Signal improving)
+
+Fires when the signal improves **and** analyst consensus is bullish. Designed for stocks you're watching but haven't entered yet — the email tells you when both the AI and Wall Street are aligned.
+
+**Signal must improve** (one of these transitions):
 
 | Previous signal | New signal | Meaning |
 |-----------------|-----------|---------|
@@ -232,9 +238,7 @@ An email is sent only when **both** of the following conditions are simultaneous
 | WAIT | BUY | Turning bullish from a cautious signal |
 | HOLD | BUY | Bullish confirmation from a neutral position |
 
-Transitions that go the wrong way (e.g. BUY → HOLD, HOLD → SELL) do **not** trigger a notification. The signal always needs to be improving.
-
-**Condition 2 — Analyst consensus is bullish:**
+**Analyst consensus must also be bullish:**
 
 | Rating value | Qualifies? |
 |-------------|-----------|
@@ -245,7 +249,27 @@ Transitions that go the wrong way (e.g. BUY → HOLD, HOLD → SELL) do **not** 
 | `underperform` | ✗ No |
 | `sell` / `strong_sell` | ✗ No |
 
-The analyst rating is fetched from the cached fundamentals endpoint at check time. If the fundamentals cache has expired, a fresh fetch is made.
+Both conditions must be true simultaneously. If the analyst rating is neutral or bearish, no email is sent even if the AI signal improved.
+
+---
+
+#### Type 2 — Exit Warning (AI Signal deteriorating from BUY)
+
+Fires whenever the signal weakens from BUY — **regardless of analyst consensus**. Designed for stocks you are already holding: you need this warning even when analysts still like the stock, because the AI may be picking up technical deterioration before the fundamentals show it.
+
+**Signal must be deteriorating from BUY** (one of these transitions):
+
+| Previous signal | New signal | Email subject prefix | Urgency |
+|-----------------|-----------|----------------------|---------|
+| BUY | HOLD | Signal Alert | Low — momentum fading, monitor the position |
+| BUY | WAIT | Signal Alert | Medium — signal deteriorating, consider reducing |
+| BUY | SELL | ⚠ SELL Alert | High — full exit signal, review immediately |
+
+No analyst filter is applied. The email fires as soon as the transition is detected at any of the 5 daily check times.
+
+The analyst rating is still **displayed** in the email body (so you can see if analysts have also turned negative) but it is not a gating condition for exit warnings.
+
+---
 
 ### When checks run
 
@@ -260,33 +284,48 @@ The 16:30 post-close check is the most complete — it runs after the final pric
 
 ### What the email contains
 
-The signal alert email includes:
-- **Signal transition** — the previous and new signal values in a styled badge (e.g. SELL → BUY)
-- **Analyst consensus** — the current Wall Street rating and a brief description of the transition
+Both entry and exit emails share the same structure. Exit warnings (BUY → SELL) are visually differentiated:
+
+| Element | Entry signal email | Exit warning email |
+|---------|-------------------|--------------------|
+| Subject prefix | `Signal Alert:` | `⚠ SELL Alert:` |
+| Header colour | Purple | Red |
+| Header icon | 📊 | ⚠ |
+| "From" signal badge | Red (previous signal) | Green (was BUY) |
+| "To" signal badge | Green (BUY) | Red (SELL/WAIT/HOLD) |
+| Call-to-action banner | "Both indicators are aligned — review before acting" | Red banner: "AI signal has reversed — consider reviewing your position" |
+
+All emails include:
+- **Signal transition** — the previous and new signal values in a styled badge (e.g. BUY → SELL)
+- **Analyst consensus** — the current Wall Street rating and a description of the transition mood
 - **Bullish probability and confidence** — from the signal engine at the time of the alert
-- **Reasons table** — a detailed breakdown of every indicator behind the signal, so you can see *why* it changed:
+- **Reasons table** — a full breakdown of every indicator behind the signal so you can see *why* it changed:
 
 | Row | What it shows |
 |-----|--------------|
+| Market regime | Bull (S&P above 200MA) or Bear (higher BUY threshold applied) |
 | Trend above SMA50 | Yes / No |
 | SMA50 above SMA200 | Yes / No — golden cross regime |
 | Golden cross fired | Yes / No — recent SMA50 × SMA200 crossover event |
+| Death cross fired | ⚠ Yes / No — recent SMA50 dropping below SMA200 |
 | RSI (14) | Numeric value with zone note (oversold / recovering / bullish / overbought) |
-| MACD histogram | Value + ↑ rising or ↓ flat/falling |
-| Bollinger %B | 0–1 position within the bands (>0.85 = upper band, <0.15 = lower band) |
-| ADX | Trend strength numeric with zone note (weak / moderate / strong trend) |
+| Stoch RSI %K | 0–100 with oversold / overbought / cross-up note |
+| RSI divergence | Bullish (price down, RSI up) or Bearish (price up, RSI fading) |
+| MACD histogram | Value + ↑ rising or ↓ falling; notes zero-line crossover |
+| Bollinger %B | 0–1 position within the bands |
+| ADX | Trend strength with zone note (weak / moderate / strong) |
 | Volume (OBV bullish) | Yes / No — On-Balance Volume confirming price direction |
 | Volume Z-score | Standard deviations above average daily volume |
 | ML probability | XGBoost bullish probability % |
 | Next earnings | Date + days away |
 | Insider activity (6M) | Shares bought / sold + net, % of float |
 
-- **Earnings warning** — if earnings are within 7 days, a yellow warning banner appears at the bottom of the email reminding you that results may override the signal. If within 21 days, a plain note is included.
+- **Earnings warning** — if earnings are within 7 days, a yellow warning banner appears reminding you that results may override the signal. If within 21 days, a plain note is included.
 
 ### What the email does NOT do
 
-- It does not repeat for the same transition. Once fired, the alert's `last_signal` is updated — the same SELL→BUY event will not trigger again.
-- It will fire again if the signal drops back to SELL and then rises to BUY a second time (new transition).
+- It does not repeat for the same transition. Once fired, `last_signal` is updated — the same BUY→SELL will not fire again unless the signal recovers and then re-deteriorates.
+- A stock can generate multiple alerts in sequence as the signal moves through stages (e.g. BUY→HOLD fires, then separately HOLD→WAIT fires if conditions worsen further).
 - Price alerts (separate feature — see [Alerts](#alerts-alerts)) are not affected by this system.
 - This is not personalized investment advice. The email includes a disclaimer.
 

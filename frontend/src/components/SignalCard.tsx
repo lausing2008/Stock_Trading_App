@@ -9,19 +9,54 @@ const SIGNAL_COLOR: Record<string, string> = {
 
 type Reasons = {
   trend_above_sma50?: boolean;
-  golden_cross?: boolean;
+  sma50_above_sma200?: boolean;
+  golden_cross_event?: boolean;
+  death_cross_event?: boolean;
   rsi?: number | null;
+  stoch_rsi_k?: number | null;
+  stoch_rsi_oversold?: boolean;
+  stoch_rsi_overbought?: boolean;
+  stoch_rsi_cross_up?: boolean;
+  rsi_divergence?: string;
   macd_hist?: number | null;
+  macd_rising?: boolean;
+  macd_zero_cross_up?: boolean;
+  bb_pct_b?: number | null;
+  adx?: number | null;
+  adx_bullish?: boolean;
+  obv_bullish?: boolean;
   volume_z?: number | null;
   ml_probability?: number | null;
+  market_regime?: string;
   ta_score?: number | null;
 };
 
-type Factor = { label: string; bullish: boolean; detail: string };
+type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
 
 function buildReasons(r: Reasons): Factor[] {
   const factors: Factor[] = [];
 
+  // Market regime — shown first if bear
+  if (r.market_regime === 'bear') {
+    factors.push({
+      label: 'Market Regime',
+      bullish: false,
+      warning: true,
+      detail: 'S&P 500 below 200MA — bear market, higher BUY threshold applied',
+    });
+  }
+
+  // Death cross warning
+  if (r.death_cross_event) {
+    factors.push({
+      label: 'Death Cross',
+      bullish: false,
+      warning: true,
+      detail: 'SMA50 just crossed below SMA200 — major bearish signal',
+    });
+  }
+
+  // Trend
   if (r.trend_above_sma50 != null) {
     factors.push({
       label: 'Trend (SMA50)',
@@ -32,56 +67,113 @@ function buildReasons(r: Reasons): Factor[] {
     });
   }
 
-  if (r.golden_cross != null) {
+  if (r.sma50_above_sma200 != null) {
     factors.push({
-      label: r.golden_cross ? 'Golden Cross' : 'Death Cross',
-      bullish: r.golden_cross,
-      detail: r.golden_cross
-        ? 'SMA50 > SMA200 — long-term bull signal'
-        : 'SMA50 < SMA200 — long-term bear signal',
+      label: r.golden_cross_event ? '✦ Golden Cross' : 'SMA50 vs SMA200',
+      bullish: r.sma50_above_sma200,
+      detail: r.golden_cross_event
+        ? 'SMA50 just crossed above SMA200 — long-term bull signal'
+        : r.sma50_above_sma200
+          ? 'SMA50 above SMA200 — bull regime'
+          : 'SMA50 below SMA200 — bear regime',
     });
   }
 
+  // RSI
   if (r.rsi != null) {
     const rsi = r.rsi;
-    const overbought = rsi > 70;
-    const oversold = rsi < 30;
-    const healthy = rsi >= 40 && rsi <= 70;
+    const isIdeal = rsi >= 45 && rsi < 65;
+    const isRecovering = rsi >= 35 && rsi < 45;
+    const isExtended = rsi >= 65 && rsi < 72;
+    const isOverbought = rsi >= 72;
+    const isOversold = rsi < 35;
     factors.push({
       label: `RSI ${rsi.toFixed(0)}`,
-      bullish: healthy || oversold,
-      detail: overbought
-        ? `RSI ${rsi.toFixed(0)} — overbought, watch for pullback`
-        : oversold
-          ? `RSI ${rsi.toFixed(0)} — oversold, potential reversal`
-          : `RSI ${rsi.toFixed(0)} — healthy momentum range`,
+      bullish: isIdeal || isRecovering || isOversold,
+      detail: isOverbought
+        ? `RSI ${rsi.toFixed(0)} — overbought (>72), elevated pullback risk`
+        : isExtended
+          ? `RSI ${rsi.toFixed(0)} — extended but not extreme`
+          : isIdeal
+            ? `RSI ${rsi.toFixed(0)} — ideal entry zone (45–65)`
+            : isRecovering
+              ? `RSI ${rsi.toFixed(0)} — recovering from oversold`
+              : `RSI ${rsi.toFixed(0)} — oversold (<35), potential reversal`,
     });
   }
 
+  // Stochastic RSI
+  if (r.stoch_rsi_k != null) {
+    const k = r.stoch_rsi_k * 100;
+    const oversold   = r.stoch_rsi_oversold;
+    const overbought = r.stoch_rsi_overbought;
+    const crossUp    = r.stoch_rsi_cross_up;
+    factors.push({
+      label: `Stoch RSI ${k.toFixed(0)}`,
+      bullish: oversold || (crossUp ?? false),
+      detail: crossUp
+        ? `%K ${k.toFixed(0)} — just crossed up from oversold (strong entry signal)`
+        : oversold
+          ? `%K ${k.toFixed(0)} — oversold zone (<20), RSI at a low extreme`
+          : overbought
+            ? `%K ${k.toFixed(0)} — overbought zone (>80), RSI at a high extreme`
+            : `%K ${k.toFixed(0)} — neutral zone`,
+    });
+  }
+
+  // RSI divergence
+  if (r.rsi_divergence && r.rsi_divergence !== 'none') {
+    factors.push({
+      label: 'RSI Divergence',
+      bullish: r.rsi_divergence === 'bullish',
+      warning: r.rsi_divergence === 'bearish',
+      detail: r.rsi_divergence === 'bearish'
+        ? 'Price making higher highs but RSI declining — momentum fading, reversal risk'
+        : 'Price making lower lows but RSI recovering — hidden bullish momentum',
+    });
+  }
+
+  // MACD
   if (r.macd_hist != null) {
     const bullish = r.macd_hist > 0;
+    const zeroCross = r.macd_zero_cross_up;
     factors.push({
-      label: 'MACD',
-      bullish,
-      detail: bullish
-        ? `MACD histogram +${r.macd_hist.toFixed(3)} — bullish momentum building`
-        : `MACD histogram ${r.macd_hist.toFixed(3)} — bearish momentum`,
+      label: zeroCross ? '✦ MACD Zero Cross' : 'MACD',
+      bullish: bullish || (zeroCross ?? false),
+      detail: zeroCross
+        ? `MACD just crossed above zero — trend direction confirmed bullish`
+        : bullish
+          ? `Histogram +${r.macd_hist.toFixed(3)}${r.macd_rising ? ' ↑ rising' : ''} — bullish momentum`
+          : `Histogram ${r.macd_hist.toFixed(3)}${r.macd_rising ? ' ↑ recovering' : ' ↓ falling'} — bearish momentum`,
     });
   }
 
-  if (r.volume_z != null) {
-    const bullish = r.volume_z > 0.5;
+  // ADX
+  if (r.adx != null) {
+    const trending = r.adx > 25;
     factors.push({
-      label: 'Volume',
-      bullish,
-      detail: bullish
-        ? `Volume spike (z=${r.volume_z.toFixed(1)}) — strong conviction behind move`
-        : r.volume_z < -0.5
-          ? `Below-average volume (z=${r.volume_z.toFixed(1)}) — weak conviction`
-          : `Average volume (z=${r.volume_z.toFixed(1)}) — no strong signal`,
+      label: `ADX ${r.adx.toFixed(0)}`,
+      bullish: r.adx_bullish ?? false,
+      detail: !trending
+        ? `ADX ${r.adx.toFixed(0)} — weak/choppy market, signals less reliable`
+        : r.adx_bullish
+          ? `ADX ${r.adx.toFixed(0)} — strong bullish trend (+DI > −DI)`
+          : `ADX ${r.adx.toFixed(0)} — trending but bearish direction`,
     });
   }
 
+  // OBV
+  if (r.obv_bullish != null) {
+    factors.push({
+      label: 'OBV (Volume)',
+      bullish: r.obv_bullish,
+      detail: r.obv_bullish
+        ? 'On-Balance Volume trending up — volume confirming price direction'
+        : 'OBV trending down — volume not confirming the price move',
+    });
+  }
+
+  // ML
   if (r.ml_probability != null) {
     const pct = (r.ml_probability * 100).toFixed(1);
     const bullish = r.ml_probability > 0.5;
@@ -99,15 +191,23 @@ export default function SignalCard({ signal }: { signal: Signal }) {
   const reasons = signal.reasons as Reasons;
   const factors = buildReasons(reasons ?? {});
   const taScore = reasons?.ta_score;
+  const regime  = reasons?.market_regime;
 
   return (
     <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-slate-300">AI Signal</h3>
-        <span className={`rounded px-2.5 py-0.5 text-sm font-bold text-white ${SIGNAL_COLOR[signal.signal]}`}>
-          {signal.signal}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {regime === 'bear' && (
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', padding: '1px 6px', borderRadius: '4px' }}>
+              BEAR MKT
+            </span>
+          )}
+          <span className={`rounded px-2.5 py-0.5 text-sm font-bold text-white ${SIGNAL_COLOR[signal.signal]}`}>
+            {signal.signal}
+          </span>
+        </div>
       </div>
 
       {/* Scores */}
@@ -140,8 +240,11 @@ export default function SignalCard({ signal }: { signal: Signal }) {
           <div className="text-xs font-medium text-slate-400 mb-1">Why this signal:</div>
           {factors.map((f, i) => (
             <div key={i} className="flex items-start gap-2">
-              <span className={`mt-0.5 flex-shrink-0 text-xs font-bold ${f.bullish ? 'text-green-400' : 'text-red-400'}`}>
-                {f.bullish ? '▲' : '▼'}
+              <span style={{
+                marginTop: '2px', flexShrink: 0, fontSize: '11px', fontWeight: 700,
+                color: f.warning ? '#f97316' : f.bullish ? '#4ade80' : '#f87171',
+              }}>
+                {f.warning ? '⚠' : f.bullish ? '▲' : '▼'}
               </span>
               <div>
                 <span className="text-xs font-medium text-slate-300">{f.label}:</span>{' '}
