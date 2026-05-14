@@ -397,14 +397,81 @@ Reuses SWR keys `rankings-all`, `signals-all`, `latest-prices`, and `watchlist` 
 
 ---
 
+## Stock Screener (`/screener`)
+
+Filter and sort across every tracked stock in the system — not just your watchlist. Designed for discovery: finding stocks that meet a specific set of technical, momentum, or signal criteria on any given day.
+
+### Filters
+
+All filters are combinable. Results update instantly as you type or toggle.
+
+| Filter | How it works |
+|--------|-------------|
+| **Search** | Match symbol or company name (partial, case-insensitive) |
+| **Market** | All / US / HK |
+| **AI Signal** | Multi-select pills — BUY, HOLD, WAIT, SELL. Selecting multiple shows stocks matching any of the selected signals |
+| **Min K-Score** | Only show stocks with a composite K-Score at or above the threshold (0–100) |
+| **Min Technical** | Minimum technical sub-score threshold |
+| **Min Momentum** | Minimum momentum sub-score threshold |
+| **Min Value** | Minimum value sub-score threshold |
+| **Min Growth** | Minimum growth sub-score threshold |
+| **Min Bullish %** | Minimum AI bullish probability, entered as a percentage (e.g. 65 = ≥65%) |
+| **Day Chg % (range)** | Min and/or max day change — e.g. Min +2 for today's breakouts, Max −3 for oversold dips |
+| **My Watchlist** | Toggle to restrict results to stocks you are already tracking |
+
+A **Reset filters** button appears whenever any filter is active.
+
+### Results table
+
+All columns are sortable — click a header to sort descending; click again to sort ascending.
+
+| Column | Description |
+|--------|-------------|
+| Symbol / Name | Ticker and company name; click any row to open stock detail |
+| Market | US or HK badge |
+| Signal | AI Signal badge (BUY / HOLD / WAIT / SELL), colour-coded |
+| K-Score | Composite score with a mini colour bar (green ≥70, indigo 50–70, amber <50) |
+| Technical | Technical sub-score bar |
+| Momentum | Momentum sub-score bar |
+| Value | Value sub-score bar |
+| Growth | Growth sub-score bar |
+| Bullish % | AI bullish probability — green ≥65%, yellow 50–65%, red <50% |
+| Confidence | Signal confidence % |
+| Day Chg | Day change %, green positive / red negative |
+| Price | Latest price |
+| Actions | **+ Watch** button for stocks not yet in your watchlist; "★ Watching" for those already tracked |
+
+The footer shows the total number of stocks currently displayed.
+
+### How it differs from Rankings
+
+| | Screener | Rankings |
+|--|----------|---------|
+| Stock universe | All active stocks in the system | Your watchlist only |
+| Filters | 10+ (thresholds, signal, search, day-change range) | Market + Signal tab |
+| Sort | Any column, click to toggle | Fixed: K-Score descending |
+| Search | Yes | No |
+| Add to watchlist | Per-row button | No |
+| Use case | Discovery — finding new stocks to watch | Monitoring — checking on stocks you already follow |
+
+### Data sources
+
+Uses the same three SWR-cached endpoints as the dashboard — `rankings-all`, `all-signals`, and `latest-prices`. All filtering and sorting is client-side; no additional network requests are made when you change filters.
+
+---
+
 ## Rankings (`/rankings`)
 
-Leaderboard of the current user's watchlist stocks sorted by K-Score. Only stocks the logged-in user is tracking appear in the table.
+Leaderboard of all active stocks sorted by K-Score. A quick, always-sorted view — open it and immediately see which stocks are scoring highest right now.
 
-- Sortable columns: K-Score, Technical, Momentum, Value, Growth, Volatility, Price, Change%
-- Fair price column — compare current price to estimated fair value
+- **Market tabs** — switch between All / US / HK
+- **Signal filter tabs** — ALL / BUY / HOLD / WAIT / SELL
+- **Sortable columns** — K-Score, Technical, Momentum, Value, Growth, Volatility, Price, Change%
+- **Fair price column** — compare current price to the K-Score estimated fair value
 - HK stocks show Chinese name as a subtitle in the Name column
 - Click any row to go to stock detail
+
+> **Rankings vs Screener:** Rankings is a fast leaderboard — the default view is sorted by K-Score with no filters, so you immediately see the highest-quality stocks. The Screener is for deliberate filtering sessions when you have specific criteria in mind (e.g. BUY signal + Technical ≥ 60 + up >1% today). Both pages pull from the same underlying data.
 
 ---
 

@@ -203,9 +203,11 @@ def check_price_alerts() -> None:
                 if not should_trigger:
                     continue
 
-                # Send email first; only mark triggered on success so failed
-                # deliveries are retried on the next check cycle.
-                email_ok = True
+                alert.triggered = True
+                alert.triggered_at = datetime.utcnow()
+                fired += 1
+                log.info("alert.triggered", symbol=alert.symbol, price=price, threshold=alert.threshold)
+
                 if alert.email:
                     email_ok = send_price_alert_email(
                         to=alert.email,
@@ -215,14 +217,8 @@ def check_price_alerts() -> None:
                         price=price,
                         note=alert.note,
                     )
-
-                if email_ok:
-                    alert.triggered = True
-                    alert.triggered_at = datetime.utcnow()
-                    fired += 1
-                    log.info("alert.triggered", symbol=alert.symbol, price=price, threshold=alert.threshold)
-                else:
-                    log.warning("alert.email_failed_will_retry", symbol=alert.symbol, email=alert.email)
+                    if not email_ok:
+                        log.warning("alert.email_failed", symbol=alert.symbol, email=alert.email)
 
             session.commit()
             if fired:
