@@ -277,9 +277,53 @@ This is a warning sign even if AI Signal is still BUY. Trim the position. Analys
 **Scenario 4 — AI flips SELL after a big gain**
 Lock in partial profits (e.g. sell half). Let the rest run unless analysts also turn cautious.
 
+### Adding Earnings Calendar and Insider Activity to the framework
+
+Two additional data points are available on the stock detail page that should inform how you act on signal transitions:
+
+**Earnings Calendar**
+
+The earnings badge shows how many days until the next earnings release. This matters because:
+
+- An AI Signal transition (e.g. SELL → BUY) happening **within 7 days of earnings** carries much lower confidence. The market is pricing in uncertainty — the stock can swing 10–20% in either direction regardless of what the technicals say.
+- An AI Signal transition happening **more than 30 days before earnings** is more reliable as a technical setup — you have time for the thesis to develop before results can disrupt it.
+- If you're holding through earnings, consider reducing position size. If the signal fires and earnings are imminent, wait for the post-earnings price to settle before acting.
+
+| Days to earnings | Recommended action on a signal alert |
+|-----------------|--------------------------------------|
+| > 30 days | Act normally on the combined signal |
+| 14–30 days | Smaller initial position; leave room to add post-earnings |
+| 7–14 days | Watch only; wait for earnings before committing |
+| < 7 days | Do not act on the signal — earnings risk dominates |
+
+**Insider Activity**
+
+Insider buying is one of the most reliable confirmation signals because insiders have asymmetric information about their own business. Use it as a filter, not a trigger:
+
+| Insider pattern | How to weight it |
+|----------------|-----------------|
+| Net buying, multiple insiders, recent | Strong confirmation — raises conviction on a BUY signal |
+| Net buying, single executive | Moderate confirmation — could be a scheduled purchase |
+| Net selling, large %, multiple insiders | Caution flag — do not add; consider waiting even if AI says BUY |
+| Net selling, small %, single insider | Neutral — likely routine liquidity, ignore |
+| No insider data | Available for most US large-caps only; absence of data ≠ negative signal |
+
+**Best combination**: Analyst = BUY + AI Signal just flipped BUY + insider net buying (large) + earnings > 30 days away. This four-way alignment is rare but represents the highest-conviction setup in the app.
+
+**Worst combination**: AI Signal = BUY but analyst = HOLD, insider net selling > 2% of float, and earnings within 7 days. In this case the signal is likely noise — the technicals may be reacting to pre-earnings positioning rather than a sustainable trend.
+
+---
+
+### Signal Change Email Notifications
+
+When you subscribe to signal alerts on a stock (🔔 button in the sidebar), you receive an email when the AI Signal improves **and** the analyst consensus qualifies as bullish. See [FEATURES.md — Signal Change Email Notifications](FEATURES.md#signal-change-email-notifications) for the complete trigger conditions, check schedule, and email contents.
+
+The email includes the full reasons table (all indicator values at the time of the alert), the next earnings date, and an insider activity summary — giving you everything in one place to decide whether to act.
+
 ### What this app cannot do
 
 - These signals do not account for macro events, earnings surprises, or geopolitical risk.
 - Analyst ratings from yfinance have a 24-hour cache and may lag intraday downgrades.
 - The AI Signal is trained on historical price patterns — it can be wrong in regime changes (e.g. a sector rotation or a Federal Reserve surprise).
+- Insider data from yfinance covers SEC filings only; it may miss off-market transactions or have a delay of several days after the Form 4 is filed.
 - Nothing here is personalized investment advice.

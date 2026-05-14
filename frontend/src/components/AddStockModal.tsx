@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
-import { api, type WatchlistMeta } from '@/lib/api';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import useSWR from 'swr';
+import { api, type WatchlistMeta, type Stock } from '@/lib/api';
 
 type Props = { onClose: () => void; onAdded: (symbol: string, listId?: number) => Promise<void>; lists?: WatchlistMeta[] };
 
@@ -16,11 +17,24 @@ const QUICK_ADD = [
 
 export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
   const [symbol, setSymbol] = useState('');
+  const [query, setQuery] = useState('');
+  const [dropOpen, setDropOpen] = useState(false);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [result, setResult] = useState<{ name: string; sector?: string; sym: string } | null>(null);
   const [errMsg, setErrMsg]   = useState('');
   const [selectedListId, setSelectedListId] = useState<number | undefined>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dropRef  = useRef<HTMLDivElement>(null);
+
+  const { data: allStocks } = useSWR<Stock[]>('stocks-all', () => api.listStocks(), { revalidateOnFocus: false });
+
+  const filtered = useMemo(() => {
+    if (!query.trim() || !allStocks) return [];
+    const q = query.toUpperCase();
+    return allStocks
+      .filter(s => s.symbol.includes(q) || s.name.toUpperCase().includes(q) || (s.name_zh ?? '').includes(query))
+      .slice(0, 8);
+  }, [query, allStocks]);
 
   const multiList = lists.length > 1;
 
@@ -30,6 +44,15 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
   }, [onClose]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const fn = (e: MouseEvent) => {
+      if (dropRef.current && !dropRef.current.contains(e.target as Node)) setDropOpen(false);
+    };
+    document.addEventListener('mousedown', fn);
+    return () => document.removeEventListener('mousedown', fn);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -141,44 +164,87 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
         {/* Body */}
         <div style={{ padding: '0 24px 24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
-          {/* Input + Button */}
+          {/* Searchable combobox */}
           <form onSubmit={handleSubmit}>
             <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
-              Ticker Symbol
+              Search by name or ticker
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
-              <div style={{ position: 'relative', flex: 1 }}>
-                <span style={{
-                  position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)',
-                  color: '#475569', fontSize: '13px', fontWeight: 700, pointerEvents: 'none',
-                  fontFamily: 'ui-monospace, monospace',
-                }}>$</span>
+              <div ref={dropRef} style={{ position: 'relative', flex: 1 }}>
                 <input
                   ref={inputRef}
-                  value={symbol}
-                  onChange={e => { setSymbol(e.target.value.toUpperCase()); setStatus('idle'); setResult(null); setErrMsg(''); }}
-                  placeholder="NVDA, 0700.HK…"
-                  maxLength={12}
+                  value={query}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setQuery(v);
+                    setSymbol(v.toUpperCase());
+                    setDropOpen(true);
+                    setStatus('idle'); setResult(null); setErrMsg('');
+                  }}
+                  placeholder="Search: Apple, NVDA, 0700.HK…"
+                  maxLength={40}
+                  autoComplete="off"
                   style={{
-                    width: '100%', paddingLeft: '28px', paddingRight: '12px',
-                    paddingTop: '10px', paddingBottom: '10px',
-                    fontSize: '14px', fontWeight: 600, color: '#f1f5f9',
-                    fontFamily: 'ui-monospace, monospace',
+                    width: '100%', padding: '10px 12px',
+                    fontSize: '13px', fontWeight: 500, color: '#f1f5f9',
                     background: 'rgba(255,255,255,0.04)',
                     border: `1px solid ${isError ? 'rgba(239,68,68,0.5)' : isSuccess ? 'rgba(34,197,94,0.45)' : 'rgba(148,163,184,0.12)'}`,
-                    borderRadius: '8px', outline: 'none',
+                    borderRadius: '8px', outline: 'none', boxSizing: 'border-box',
                     transition: 'border-color 0.15s',
-                    boxSizing: 'border-box',
                   }}
-                  onFocus={e => { if (!isError && !isSuccess) e.target.style.borderColor = 'rgba(99,102,241,0.6)'; }}
-                  onBlur={e => { if (!isError && !isSuccess) e.target.style.borderColor = 'rgba(148,163,184,0.12)'; }}
+                  onFocus={() => setDropOpen(true)}
                 />
+                {/* Dropdown results */}
+                {dropOpen && filtered.length > 0 && (
+                  <div style={{
+                    position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 200,
+                    background: '#0d1424', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '10px',
+                    boxShadow: '0 16px 32px rgba(0,0,0,0.5)', overflow: 'hidden',
+                  }}>
+                    {filtered.map((s: Stock) => (
+                      <button
+                        key={s.symbol}
+                        type="button"
+                        onMouseDown={e => {
+                          e.preventDefault();
+                          setQuery(`${s.symbol} – ${s.name}`);
+                          setSymbol(s.symbol);
+                          setDropOpen(false);
+                          setStatus('idle'); setResult(null); setErrMsg('');
+                        }}
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          width: '100%', padding: '9px 14px', border: 'none',
+                          background: 'transparent', color: '#e2e8f0',
+                          cursor: 'pointer', textAlign: 'left', gap: '10px',
+                          borderBottom: '1px solid rgba(255,255,255,0.04)',
+                          transition: 'background 0.1s',
+                        }}
+                        className="stock-drop-item"
+                      >
+                        <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 700, fontSize: '13px', color: '#818cf8', minWidth: '70px' }}>
+                          {s.symbol}
+                        </span>
+                        <span style={{ flex: 1, fontSize: '12px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {s.name_zh ? `${s.name} · ${s.name_zh}` : s.name}
+                        </span>
+                        <span style={{ fontSize: '10px', color: '#475569', flexShrink: 0 }}>{s.market}</span>
+                      </button>
+                    ))}
+                    {allStocks && query.trim() && filtered.length === 0 && (
+                      <div style={{ padding: '10px 14px', fontSize: '12px', color: '#475569' }}>
+                        Not in universe — type exact ticker to add new stock
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <button
                 type="submit"
                 disabled={!symbol.trim() || isLoading}
                 style={{
-                  padding: '10px 20px', borderRadius: '8px', border: 'none', cursor: !symbol.trim() || isLoading ? 'not-allowed' : 'pointer',
+                  padding: '10px 20px', borderRadius: '8px', border: 'none',
+                  cursor: !symbol.trim() || isLoading ? 'not-allowed' : 'pointer',
                   fontSize: '13px', fontWeight: 700, color: '#ffffff',
                   background: isLoading ? 'rgba(99,102,241,0.4)' : 'linear-gradient(135deg, #4f46e5, #6366f1)',
                   opacity: !symbol.trim() || isLoading ? 0.5 : 1,
@@ -324,6 +390,7 @@ export default function AddStockModal({ onClose, onAdded, lists = [] }: Props) {
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         input::placeholder { color: #334155; }
+        .stock-drop-item:hover { background: rgba(99,102,241,0.1) !important; }
       `}</style>
     </div>
   );

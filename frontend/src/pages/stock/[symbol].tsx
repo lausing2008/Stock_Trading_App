@@ -4,7 +4,7 @@ import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed } from '@/lib/api';
+import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem } from '@/lib/api';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 
@@ -76,6 +76,10 @@ export default function StockDetail() {
 
   const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
   const { data: fearGreed } = useSWR<FearGreed>('fear-greed', () => api.fearGreed(), { refreshInterval: 3_600_000 });
+  const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>(
+    'signal-alerts', () => api.listSignalAlerts(),
+  );
+  const [signalAlertSaving, setSignalAlertSaving] = useState(false);
 
   const { data: alerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
     symbol ? `alerts-${symbol}` : null,
@@ -366,6 +370,26 @@ export default function StockDetail() {
               </div>
             );
           })()}
+          {/* Earnings warning badge */}
+          {data.fundamentals?.next_earnings_date && (() => {
+            const d = data.fundamentals!.days_to_earnings;
+            const isImminent = d != null && d <= 7;
+            const isSoon = d != null && d <= 21;
+            const bg = isImminent ? 'rgba(239,68,68,0.1)' : isSoon ? 'rgba(251,191,36,0.08)' : 'rgba(99,102,241,0.06)';
+            const border = isImminent ? 'rgba(239,68,68,0.4)' : isSoon ? 'rgba(251,191,36,0.3)' : 'rgba(99,102,241,0.2)';
+            const color = isImminent ? '#f87171' : isSoon ? '#fbbf24' : '#818cf8';
+            return (
+              <div style={{ padding: '8px 14px', borderRadius: '8px', border: `1px solid ${border}`, background: bg, textAlign: 'center', minWidth: '90px' }}>
+                <div style={{ fontSize: '9px', fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  {isImminent ? '⚠ Earnings Soon' : '📅 Earnings'}
+                </div>
+                <div style={{ fontSize: '13px', fontWeight: 800, color, marginTop: '2px' }}>
+                  {d != null ? `${d}d` : data.fundamentals!.next_earnings_date}
+                </div>
+                <div style={{ fontSize: '9px', color: '#475569', marginTop: '1px' }}>{data.fundamentals!.next_earnings_date}</div>
+              </div>
+            );
+          })()}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -489,6 +513,50 @@ export default function StockDetail() {
           {/* AI Signal */}
           {data.signal && <SignalCard signal={data.signal} />}
 
+          {/* Signal Alert subscription */}
+          {(() => {
+            const existing = signalAlerts?.find(a => a.symbol === symbol);
+            async function toggle() {
+              setSignalAlertSaving(true);
+              try {
+                if (existing) {
+                  await api.deleteSignalAlert(existing.id);
+                } else {
+                  await api.createSignalAlert(symbol);
+                }
+                await mutateSignalAlerts();
+              } catch { /* ignore */ } finally {
+                setSignalAlertSaving(false);
+              }
+            }
+            const active = !!existing;
+            return (
+              <button
+                onClick={toggle}
+                disabled={signalAlertSaving}
+                title={active ? 'Click to stop signal notifications for this stock' : 'Get emailed when AI Signal improves (SELL→HOLD or HOLD→BUY) while analysts rate it BUY'}
+                style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
+                  padding: '9px 14px', borderRadius: '8px', cursor: signalAlertSaving ? 'not-allowed' : 'pointer',
+                  border: active ? '1px solid rgba(99,102,241,0.5)' : '1px solid rgba(148,163,184,0.15)',
+                  background: active ? 'rgba(99,102,241,0.1)' : 'rgba(255,255,255,0.02)',
+                  color: active ? '#818cf8' : '#64748b',
+                  fontSize: '12px', fontWeight: 600, transition: 'all 0.15s', textAlign: 'left',
+                }}
+              >
+                <span style={{ fontSize: '14px' }}>{active ? '🔔' : '🔕'}</span>
+                <span style={{ flex: 1 }}>
+                  {signalAlertSaving ? 'Saving…' : active ? 'Signal alert on' : 'Notify on signal improvement'}
+                </span>
+                {active && existing?.last_signal && (
+                  <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.2)', padding: '2px 6px', borderRadius: '4px' }}>
+                    Last: {existing.last_signal}
+                  </span>
+                )}
+              </button>
+            );
+          })()}
+
           {/* K-Score */}
           {ranking && (
             <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
@@ -586,6 +654,25 @@ export default function StockDetail() {
                       </div>
                     ))}
                   </div>
+                  {/* Market regime */}
+                  {fearGreed.sp500_regime && (
+                    <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #1e293b', width: '100%' }}>
+                      <div style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>S&amp;P 500 Regime</div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: fearGreed.sp500_regime === 'bull' ? '#22c55e' : '#ef4444', display: 'inline-block', boxShadow: `0 0 6px ${fearGreed.sp500_regime === 'bull' ? '#22c55e' : '#ef4444'}` }} />
+                          <span style={{ fontSize: '13px', fontWeight: 800, color: fearGreed.sp500_regime === 'bull' ? '#4ade80' : '#f87171' }}>
+                            {fearGreed.sp500_regime === 'bull' ? 'Bull Market' : 'Bear Market'}
+                          </span>
+                        </div>
+                        {fearGreed.sp500_vs_ma200_pct != null && (
+                          <span style={{ fontSize: '11px', fontWeight: 700, color: fearGreed.sp500_vs_ma200_pct >= 0 ? '#4ade80' : '#f87171' }}>
+                            {fearGreed.sp500_vs_ma200_pct >= 0 ? '+' : ''}{fearGreed.sp500_vs_ma200_pct.toFixed(1)}% vs 200MA
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -1099,6 +1186,71 @@ export default function StockDetail() {
                         </div>
                       </div>
 
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Row 6 — Insider Activity */}
+              {(() => {
+                const f = data.fundamentals!;
+                const hasBuys = f.insider_buy_shares_6m != null || f.insider_sell_shares_6m != null;
+                if (!hasBuys) return null;
+                const buys = f.insider_buy_shares_6m ?? 0;
+                const sells = f.insider_sell_shares_6m ?? 0;
+                const net = buys - sells;
+                const total = buys + sells;
+                const buyPct = total > 0 ? (buys / total) * 100 : 0;
+                const netColor = net >= 0 ? '#22c55e' : '#ef4444';
+                const netLabel = net >= 0 ? 'Net Buyers' : 'Net Sellers';
+                return (
+                  <div style={{ borderRadius: '10px', border: '1px solid rgba(148,163,184,0.12)', background: 'rgba(255,255,255,0.02)', padding: '14px 16px' }}>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>
+                      Insider Activity (Last 6 Months)
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                      <div style={{ flex: 1, minWidth: '160px' }}>
+                        {total > 0 && (
+                          <div style={{ display: 'flex', height: '8px', borderRadius: '4px', overflow: 'hidden', marginBottom: '8px' }}>
+                            <div style={{ flex: buys, background: '#22c55e', minWidth: buys > 0 ? '4px' : 0 }} title={`Buys: ${buys.toLocaleString()} shares`} />
+                            <div style={{ flex: sells, background: '#ef4444', minWidth: sells > 0 ? '4px' : 0 }} title={`Sales: ${sells.toLocaleString()} shares`} />
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#22c55e', display: 'inline-block' }} />
+                            <span style={{ fontSize: '11px', color: '#64748b' }}>Buys</span>
+                            <span style={{ fontSize: '12px', fontWeight: 700, color: '#4ade80' }}>{buys.toLocaleString()}</span>
+                            {f.insider_buy_transactions_6m != null && (
+                              <span style={{ fontSize: '10px', color: '#334155' }}>({f.insider_buy_transactions_6m} txn)</span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#ef4444', display: 'inline-block' }} />
+                            <span style={{ fontSize: '11px', color: '#64748b' }}>Sales</span>
+                            <span style={{ fontSize: '12px', fontWeight: 700, color: '#f87171' }}>{sells.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'center', padding: '8px 14px', borderRadius: '8px', background: `${netColor}12`, border: `1px solid ${netColor}30` }}>
+                        <div style={{ fontSize: '11px', color: '#475569', marginBottom: '2px' }}>{netLabel}</div>
+                        <div style={{ fontSize: '18px', fontWeight: 800, color: netColor }}>
+                          {net >= 0 ? '+' : ''}{net.toLocaleString()}
+                        </div>
+                        {f.insider_net_pct != null && (
+                          <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>
+                            {f.insider_net_pct >= 0 ? '+' : ''}{(f.insider_net_pct * 100).toFixed(2)}% of float
+                          </div>
+                        )}
+                        {total > 0 && (
+                          <div style={{ fontSize: '10px', color: '#334155', marginTop: '2px' }}>
+                            {buyPct.toFixed(0)}% buy ratio
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#334155', marginTop: '8px' }}>
+                      Source: SEC filings via Yahoo Finance · open-market transactions only
                     </div>
                   </div>
                 );

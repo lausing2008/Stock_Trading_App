@@ -215,8 +215,8 @@ def _compute_fear_greed() -> dict:
         if s < 75: return "Greed"
         return "Extreme Greed"
 
-    spx = yf.download("^GSPC", period="9mo", interval="1d", progress=False, auto_adjust=True)
-    vix = yf.download("^VIX",  period="9mo", interval="1d", progress=False, auto_adjust=True)
+    spx = yf.download("^GSPC", period="14mo", interval="1d", progress=False, auto_adjust=True)
+    vix = yf.download("^VIX",  period="14mo", interval="1d", progress=False, auto_adjust=True)
 
     if spx.empty or vix.empty:
         raise ValueError("no data")
@@ -261,6 +261,11 @@ def _compute_fear_greed() -> dict:
         except Exception:
             return None
 
+    # Market regime: S&P 500 vs 200-day MA
+    ma200 = spx_close.rolling(200).mean().iloc[-1]
+    sp500_vs_ma200_pct = round((spx_now / float(ma200) - 1) * 100, 2) if not pd.isna(ma200) else None
+    sp500_regime = "bull" if (sp500_vs_ma200_pct is not None and sp500_vs_ma200_pct > 0) else "bear"
+
     return {
         "score": score,
         "rating": _rating(score),
@@ -268,6 +273,8 @@ def _compute_fear_greed() -> dict:
         "previous_1_week": _score_at(5),
         "previous_1_month": _score_at(21),
         "previous_1_year": _score_at(252),
+        "sp500_regime": sp500_regime,
+        "sp500_vs_ma200_pct": sp500_vs_ma200_pct,
         "components": {
             "vix": round(vix_score, 1),
             "sp500_vs_ma": round(ma_score, 1),
@@ -395,6 +402,14 @@ class FundamentalsOut(BaseModel):
     analyst_hold: int | None = None
     analyst_underperform: int | None = None
     analyst_sell: int | None = None
+    # Earnings calendar
+    next_earnings_date: str | None = None   # YYYY-MM-DD
+    days_to_earnings: int | None = None
+    # Insider activity (6-month summary)
+    insider_buy_shares_6m: int | None = None
+    insider_sell_shares_6m: int | None = None
+    insider_buy_transactions_6m: int | None = None
+    insider_net_pct: float | None = None    # % net shares purchased
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
@@ -448,6 +463,68 @@ def get_fundamentals(symbol: str, refresh: bool = False):
     except Exception:
         pass
 
+    # Earnings calendar
+    next_earnings_date: str | None = None
+    days_to_earnings: int | None = None
+    try:
+        if ticker is not None:
+            cal = ticker.calendar
+            if isinstance(cal, dict):
+                ed_list = cal.get("Earnings Date") or []
+                if ed_list:
+                    from datetime import date as _date
+                    today = _date.today()
+                    future = [d for d in ed_list if (d if isinstance(d, _date) else d.date()) >= today]
+                    if future:
+                        next_ed = future[0] if isinstance(future[0], _date) else future[0].date()
+                        next_earnings_date = next_ed.strftime("%Y-%m-%d")
+                        days_to_earnings = (next_ed - today).days
+    except Exception:
+        pass
+
+    # Insider activity (6-month summary)
+    # DataFrame layout: columns = ['Insider Purchases Last 6m', 'Shares', 'Trans']
+    # Row 0 = Purchases, Row 1 = Sales, Row 4 = % Net Shares Purchased (Sold)
+    insider_buy_shares_6m: int | None = None
+    insider_sell_shares_6m: int | None = None
+    insider_buy_transactions_6m: int | None = None
+    insider_net_pct: float | None = None
+    try:
+        if ticker is not None:
+            ip = ticker.insider_purchases
+            if ip is not None and not ip.empty:
+                def _col(df, *names):
+                    for n in names:
+                        if n in df.columns:
+                            return n
+                    return df.columns[1] if len(df.columns) > 1 else None
+
+                shares_col = _col(ip, "Shares")
+                trans_col  = _col(ip, "Trans", "Transactions")
+
+                def _safe_val(row_idx, col):
+                    try:
+                        v = ip.iloc[row_idx][col]
+                        return None if str(v) in ("nan", "None", "<NA>", "") else v
+                    except Exception:
+                        return None
+
+                def _to_int(v):
+                    try: return int(float(v)) if v is not None else None
+                    except: return None
+                def _to_float(v):
+                    try: return float(v) if v is not None else None
+                    except: return None
+
+                if shares_col:
+                    insider_buy_shares_6m        = _to_int(_safe_val(0, shares_col))
+                    insider_sell_shares_6m        = _to_int(_safe_val(1, shares_col))
+                    insider_net_pct               = _to_float(_safe_val(4, shares_col))
+                if trans_col:
+                    insider_buy_transactions_6m   = _to_int(_safe_val(0, trans_col))
+    except Exception:
+        pass
+
     data = FundamentalsOut(
         market_cap=_safe(info, "marketCap"),
         enterprise_value=_safe(info, "enterpriseValue"),
@@ -493,6 +570,12 @@ def get_fundamentals(symbol: str, refresh: bool = False):
         analyst_hold=a_hold,
         analyst_underperform=a_underperform,
         analyst_sell=a_sell,
+        next_earnings_date=next_earnings_date,
+        days_to_earnings=days_to_earnings,
+        insider_buy_shares_6m=insider_buy_shares_6m,
+        insider_sell_shares_6m=insider_sell_shares_6m,
+        insider_buy_transactions_6m=insider_buy_transactions_6m,
+        insider_net_pct=insider_net_pct,
     )
 
     try:
