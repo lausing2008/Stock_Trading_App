@@ -651,8 +651,6 @@ def get_prices(
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
     if not stock:
         raise HTTPException(404, f"Unknown symbol: {symbol}")
-    if not start:
-        start = date.today() - timedelta(days=365)
     if not end:
         end = date.today()
 
@@ -661,7 +659,7 @@ def get_prices(
         .where(
             Price.stock_id == stock.id,
             Price.timeframe == TimeFrame(timeframe),
-            Price.ts >= start,
+            *(Price.ts >= start,) if start else (),
             Price.ts <= end,
         )
         .order_by(Price.ts)

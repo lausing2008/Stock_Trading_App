@@ -82,6 +82,99 @@ When the user's watchlist is empty the grid shows "Your watchlist is empty — c
 
 ---
 
+## Refresh & Schedule
+
+This section explains how often each piece of data is refreshed, what triggers each refresh, and which components are updated together.
+
+### Scheduled market refresh — 5× per trading day
+
+The background scheduler (`scheduler.py` inside the `market-data` container) runs a full refresh cycle at these times. **All four steps happen in sequence on every run:**
+
+1. **Ingest prices** — fetches the latest daily OHLCV bar for every active stock from yfinance and writes it to the `prices` table
+2. **Refresh rankings** — recomputes K-Scores and sub-scores for every active stock using the new prices
+3. **Refresh signals** — reruns the TA + ML signal engine for every active stock; new signal is persisted in the `signals` table
+4. **Check signal alerts** — checks every subscribed alert against the new signals; fires entry/exit emails where conditions are met
+
+**US market (America/New_York timezone, DST-adjusted):**
+
+| Run | Local time | Notes |
+|-----|-----------|-------|
+| Pre-open | 09:00 | Before the US session opens |
+| Intra-day 1 | 10:45 | Mid-morning |
+| Intra-day 2 | 12:45 | Early afternoon |
+| Intra-day 3 | 14:45 | Late session |
+| Post-close | 16:30 | Most complete — includes ML retrain |
+
+**HK market (Asia/Hong_Kong timezone, UTC+8, no DST):**
+
+| Run | Local time | Notes |
+|-----|-----------|-------|
+| Pre-open | 09:00 | Before HKEX opens |
+| Intra-day 1 | 10:30 | Mid-morning |
+| Intra-day 2 | 14:15 | Post-lunch |
+| Intra-day 3 | 15:30 | Late session |
+| Post-close | 16:30 | Includes ML retrain |
+
+> The 16:30 post-close run is the most reliable. The earlier intra-day runs use whatever the last daily bar is at that moment — on some data providers this is the previous day's close until the session ends. The signal computed at 16:30 reflects the full completed trading day.
+
+### ML model retrain
+
+Runs **once per day**, at post-close (16:30) for both US and HK markets. Trains on the latest available price history. The intra-day runs (09:00–14:45) use the model trained from the previous close.
+
+### Price alerts — every 1 minute
+
+A separate job (`check_price_alerts`) runs independently every 60 seconds, 24/7. It fetches live prices via yfinance `fast_info` and fires an email the moment a threshold is crossed. Unlike signal alerts, price alerts are not tied to the market refresh cycle.
+
+### Frontend auto-refresh (browser)
+
+These happen automatically while you have the app open — no page reload needed:
+
+| Component | Refresh interval |
+|-----------|----------------|
+| Dashboard price cards | Every 60 s |
+| Watchlist prices | Every 60 s |
+| Positions prices | Every 60 s |
+| Stock detail live price card | Every 60 s |
+| Market overview indices | Every 60 s |
+| In-app alert checker | Every 60 s |
+
+The interval can be changed in **Settings → Price Refresh Interval** (30 s / 60 s / 2 min / 5 min).
+
+### On-demand refreshes
+
+Some data can be force-refreshed from the UI without waiting for the scheduler:
+
+| Button | Where | What it refreshes |
+|--------|-------|------------------|
+| **↻ Refresh** (stock detail header) | Stock detail | Re-fetches signal + ranking for this stock only |
+| **Full Refresh** (stock detail header) | Stock detail | Re-ingests price history + recomputes signal + ranking |
+| **Refresh** (Analyst Ratings section) | Stock detail | Bypasses 24 h fundamentals cache; fetches fresh yfinance data |
+| **⚡ Train All** (stock detail) | Stock detail | Triggers ML retrain for all watchlist stocks immediately |
+
+### Summary — what refreshes together
+
+```
+Every market refresh (5×/day):
+  └─ Prices (DB)
+  └─ Rankings / K-Scores (DB)
+  └─ AI Signals (DB)
+  └─ Signal alert emails (if conditions met)
+
+Every minute (independent):
+  └─ Price alert emails (if thresholds crossed)
+
+Every 60 s in the browser:
+  └─ Live price display (dashboard, watchlist, positions, stock detail)
+
+Every hour (Redis cache):
+  └─ Fear & Greed Index + Market Regime
+
+Every 24 hours (Redis cache):
+  └─ Company fundamentals, analyst ratings, earnings calendar, insider activity
+```
+
+---
+
 ## Stock Detail (`/stock/[symbol]`)
 
 Full drill-down page for a single stock.
@@ -831,9 +924,9 @@ POST /ai/chat
 | **Earnings calendar** | yfinance `.calendar` | Redis 24 h TTL (same fundamentals cache) |
 | **Insider activity (6M)** | yfinance `.insider_purchases` | Redis 24 h TTL (same fundamentals cache) |
 | News | yfinance + Google News RSS | Redis 30 min TTL per source combination |
-| K-Score / Fair price | DB `rankings` table | As of last rankings refresh |
-| AI Signal | DB `signals` table (TA + ML) | As of last stock detail view |
-| ML prediction | Trained model inference | On demand |
+| K-Score / Fair price | DB `rankings` table | Refreshed 5× per trading day (09:00, 10:45/10:30, 12:45/14:15, 14:45/15:30, 16:30) — see [Refresh & Schedule](#refresh--schedule) |
+| AI Signal | DB `signals` table (TA + ML) | Refreshed 5× per trading day, immediately after K-Scores — same schedule |
+| ML prediction | Trained model inference | Retrained once per day at post-close (16:30); intra-day runs use the previous close model |
 | **Fear & Greed Index** | Computed from yfinance ^GSPC + ^VIX | Redis 1 h TTL; SWR 1 h refresh on stock detail page |
 | **Market Regime (S&P vs 200MA)** | Computed alongside Fear & Greed | Redis 1 h TTL (same cache entry) |
 
