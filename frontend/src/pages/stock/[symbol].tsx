@@ -81,10 +81,12 @@ export default function StockDetail() {
   );
   const [signalAlertSaving, setSignalAlertSaving] = useState(false);
 
-  const { data: alerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
-    symbol ? `alerts-${symbol}` : null,
-    () => api.listAlerts().then(all => all.filter(a => a.symbol === symbol)),
+  const { data: allAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
+    'alerts',
+    () => api.listAlerts(),
+    { refreshInterval: 30_000 },
   );
+  const alerts = (allAlerts ?? []).filter(a => a.symbol === symbol);
 
   // Alert form state
   const [alertOpen, setAlertOpen] = useState<boolean>(false);

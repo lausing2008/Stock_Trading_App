@@ -12,9 +12,13 @@ const DonutChart = dynamic(() => import('@/components/DonutChart'), { ssr: false
 type Position = { id: string; symbol: string; shares: number; avgCost: number; currency: string; addedAt: string };
 type Trade    = { type: 'BUY' | 'SELL'; shares: number; price: number; date: string };
 type SortKey  = 'symbol' | 'pnl' | 'pnlPct' | 'value' | 'change' | 'score';
+type CashByMarket = { USD: number; HKD: number };
 
 const STORAGE_KEY = 'positions';
 const TRADES_KEY  = 'trades';
+const CASH_KEY    = 'positions_cash';
+
+function isHK(symbol: string) { return symbol.endsWith('.HK'); }
 function loadPositions(): Position[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -39,6 +43,11 @@ function loadTrades(): Record<string, Trade[]> {
   } catch { return {}; }
 }
 function saveTrades(t: Record<string, Trade[]>) { storage.setItem(TRADES_KEY, JSON.stringify(t)); }
+function loadCash(): CashByMarket {
+  if (typeof window === 'undefined') return { USD: 0, HKD: 0 };
+  try { const v = storage.getItem(CASH_KEY); return v ? JSON.parse(v) : { USD: 0, HKD: 0 }; } catch { return { USD: 0, HKD: 0 }; }
+}
+function saveCash(c: CashByMarket) { storage.setItem(CASH_KEY, JSON.stringify(c)); }
 
 /* ─── Helpers ────────────────────────────────────────────── */
 function pnlColor(v: number) { return v > 0 ? '#4ade80' : v < 0 ? '#f87171' : '#94a3b8'; }
@@ -117,6 +126,10 @@ export default function Positions() {
   const router  = useRouter();
   const [positions, setPositions] = useState<Position[]>([]);
   const [trades, setTrades]       = useState<Record<string, Trade[]>>({});
+  const [cash, setCash]           = useState<CashByMarket>({ USD: 0, HKD: 0 });
+  const [editingCash, setEditingCash] = useState<'USD' | 'HKD' | null>(null);
+  const [cashInput, setCashInput]     = useState('');
+  const [activeMarket, setActiveMarket] = useState<'US' | 'HK'>('US');
   const [modal, setModal]         = useState<{ mode: 'add' | 'buy' | 'sell'; posId?: string } | null>(null);
   const [showTradesFor, setShowTradesFor] = useState<string | null>(null);
   const [refreshing, setRefreshing]       = useState(false);
@@ -134,7 +147,7 @@ export default function Positions() {
     if (sym) { setModal({ mode: 'add' }); router.replace('/positions', undefined, { shallow: true }); }
   }, [router.query.add]);
 
-  useEffect(() => { setPositions(loadPositions()); setTrades(loadTrades()); }, []);
+  useEffect(() => { setPositions(loadPositions()); setTrades(loadTrades()); setCash(loadCash()); }, []);
 
   const priceMap   = useMemo(() => { const m: Record<string, LatestPrice> = {}; for (const p of pricesData ?? []) m[p.symbol] = p; return m; }, [pricesData]);
   const rankMap    = useMemo(() => { const m: Record<string, RankingRow> = {}; for (const r of rankingsData?.rankings ?? []) m[r.symbol] = r; return m; }, [rankingsData]);
@@ -179,6 +192,11 @@ export default function Positions() {
     if (modal.mode === 'sell') sellShares(modal.posId, shares, price);
   }
 
+  function updateCash(currency: 'USD' | 'HKD', value: number) {
+    const next = { ...cash, [currency]: isNaN(value) ? 0 : Math.max(0, value) };
+    setCash(next); saveCash(next);
+  }
+
   /* ── Enriched rows ── */
   const rows = useMemo(() => positions.map(p => {
     const lp  = priceMap[p.symbol];
@@ -205,20 +223,24 @@ export default function Positions() {
     return sortAsc ? diff : -diff;
   }), [rows, sortKey, sortAsc]);
 
-  /* ── Portfolio totals ── */
+  const usRows = useMemo(() => sortedRows.filter(r => !isHK(r.symbol)), [sortedRows]);
+  const hkRows = useMemo(() => sortedRows.filter(r => isHK(r.symbol)), [sortedRows]);
+
+  const MARKET_CONFIG = {
+    US: { label: '🇺🇸 US',  colors: ['#6366f1','#8b5cf6','#ec4899','#3b82f6','#06b6d4','#10b981','#f97316','#84cc16','#a855f7','#14b8a6','#ef4444','#f59e0b'], cashKey: 'USD' as const, cashPrefix: '$',    accentColor: '#6366f1' },
+    HK: { label: '🇭🇰 HK',  colors: ['#f59e0b','#ef4444','#f97316','#fbbf24','#fb923c','#e879f9','#34d399','#60a5fa','#a78bfa','#f472b6','#4ade80','#38bdf8'], cashKey: 'HKD' as const, cashPrefix: 'HK$', accentColor: '#f59e0b' },
+  };
+
+  const activeRows   = activeMarket === 'US' ? usRows : hkRows;
+  const activeCfg    = MARKET_CONFIG[activeMarket];
+  const activeCash   = cash[activeCfg.cashKey];
+
+  /* ── Portfolio totals (active market only) ── */
   const totals = useMemo(() => {
     let invested = 0, currentVal = 0, dayPnlTotal = 0;
-    for (const r of rows) { invested += r.cost; currentVal += r.mktVal ?? r.cost; if (r.dayPnl) dayPnlTotal += r.dayPnl; }
+    for (const r of activeRows) { invested += r.cost; currentVal += r.mktVal ?? r.cost; if (r.dayPnl) dayPnlTotal += r.dayPnl; }
     return { invested, currentVal, pnl: currentVal - invested, pnlPct: invested > 0 ? ((currentVal - invested) / invested) * 100 : 0, dayPnl: dayPnlTotal };
-  }, [rows]);
-
-  const best  = rows.filter(r => r.pnlPct != null).sort((a, b) => (b.pnlPct ?? 0) - (a.pnlPct ?? 0))[0];
-  const worst = rows.filter(r => r.pnlPct != null).sort((a, b) => (a.pnlPct ?? 0) - (b.pnlPct ?? 0))[0];
-
-  /* ── Donut chart data ── */
-  const chartValues = sortedRows.map(r => r.mktVal ?? r.cost);
-  const chartLabels = sortedRows.map(r => r.symbol);
-  const chartColors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#3b82f6','#f97316','#14b8a6','#ef4444','#84cc16','#06b6d4','#a855f7'];
+  }, [activeRows]);
 
   function sortBtn(key: SortKey, label: string) {
     const active = sortKey === key;
@@ -258,81 +280,21 @@ export default function Positions() {
         </div>
       </div>
 
-      {/* Summary stats */}
+      {/* Market tab switcher */}
       {rows.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
-          {[
-            { label: 'Positions',     value: String(rows.length),                                          sub: 'open',        color: '#e2e8f0' },
-            { label: 'Invested',      value: `$${fmt(totals.invested)}`,                                   sub: 'cost basis',  color: '#e2e8f0' },
-            { label: 'Market Value',  value: `$${fmt(totals.currentVal)}`,                                 sub: 'current',     color: '#e2e8f0' },
-            { label: "Today's P&L",   value: `${totals.dayPnl >= 0 ? '+' : ''}$${fmt(Math.abs(totals.dayPnl))}`,  sub: 'unrealized', color: pnlColor(totals.dayPnl) },
-            { label: 'Total P&L',     value: `${totals.pnl >= 0 ? '+' : ''}$${fmt(Math.abs(totals.pnl))}`, sub: `${totals.pnl >= 0 ? '+' : ''}${fmt(totals.pnlPct)}%`, color: pnlColor(totals.pnl) },
-          ].map(c => (
-            <div key={c.label} style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '13px 15px' }}>
-              <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '5px' }}>{c.label}</div>
-              <div style={{ fontSize: '18px', fontWeight: 700, color: c.color, lineHeight: 1.2 }}>{c.value}</div>
-              <div style={{ fontSize: '10px', color: '#475569', marginTop: '3px' }}>{c.sub}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Chart + highlights */}
-      {rows.length > 1 && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-
-          {/* Allocation donut */}
-          <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '16px' }}>
-            <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>Allocation</div>
-            <DonutChart labels={chartLabels} values={chartValues} colors={chartColors} height={220} />
-          </div>
-
-          {/* Best / Worst / Signal breakdown */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {best && (
-              <div style={{ borderRadius: '10px', border: '1px solid rgba(34,197,94,0.25)', background: 'rgba(34,197,94,0.06)', padding: '14px 16px' }}>
-                <div style={{ fontSize: '10px', color: '#4ade80', fontWeight: 700, letterSpacing: '0.07em', marginBottom: '6px' }}>🏆 BEST PERFORMER</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Link href={`/stock/${best.symbol}`} style={{ fontWeight: 800, fontSize: '16px', color: '#f1f5f9', fontFamily: 'monospace' }}>{best.symbol}</Link>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: '15px', fontWeight: 800, color: '#4ade80' }}>+{fmt(best.pnlPct ?? 0)}%</div>
-                    <div style={{ fontSize: '11px', color: '#16a34a' }}>+${fmt(best.pnl ?? 0)}</div>
-                  </div>
-                </div>
-              </div>
-            )}
-            {worst && worst.symbol !== best?.symbol && (
-              <div style={{ borderRadius: '10px', border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.06)', padding: '14px 16px' }}>
-                <div style={{ fontSize: '10px', color: '#f87171', fontWeight: 700, letterSpacing: '0.07em', marginBottom: '6px' }}>📉 WORST PERFORMER</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Link href={`/stock/${worst.symbol}`} style={{ fontWeight: 800, fontSize: '16px', color: '#f1f5f9', fontFamily: 'monospace' }}>{worst.symbol}</Link>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: '15px', fontWeight: 800, color: '#f87171' }}>{fmt(worst.pnlPct ?? 0)}%</div>
-                    <div style={{ fontSize: '11px', color: '#ef4444' }}>${fmt(worst.pnl ?? 0)}</div>
-                  </div>
-                </div>
-              </div>
-            )}
-            {/* Signal summary */}
-            <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '14px 16px', flex: 1 }}>
-              <div style={{ fontSize: '10px', color: '#475569', fontWeight: 700, letterSpacing: '0.07em', marginBottom: '10px' }}>SIGNALS IN PORTFOLIO</div>
-              {(['BUY','HOLD','SELL'] as const).map(s => {
-                const count = rows.filter(r => r.sig === s).length;
-                const pct   = rows.length > 0 ? (count / rows.length) * 100 : 0;
-                const c     = s === 'BUY' ? '#4ade80' : s === 'SELL' ? '#f87171' : '#facc15';
-                const bg    = s === 'BUY' ? 'rgba(34,197,94,0.2)' : s === 'SELL' ? 'rgba(239,68,68,0.2)' : 'rgba(250,204,21,0.2)';
-                return (
-                  <div key={s} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                    <span style={{ width: '34px', fontSize: '10px', fontWeight: 700, color: c }}>{s}</span>
-                    <div style={{ flex: 1, height: '6px', borderRadius: '3px', background: '#1e293b', overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${pct}%`, background: bg, borderRadius: '3px', transition: 'width 0.4s' }} />
-                    </div>
-                    <span style={{ fontSize: '11px', color: '#475569', width: '20px', textAlign: 'right' }}>{count}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+        <div style={{ display: 'flex', gap: '6px', borderBottom: '1px solid #1e293b', paddingBottom: '0' }}>
+          {(['US', 'HK'] as const).map(mkt => {
+            const cfg   = MARKET_CONFIG[mkt];
+            const count = mkt === 'US' ? usRows.length : hkRows.length;
+            const active = activeMarket === mkt;
+            return (
+              <button key={mkt} onClick={() => setActiveMarket(mkt)}
+                style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '9px 18px', border: 'none', borderBottom: active ? `2px solid ${cfg.accentColor}` : '2px solid transparent', background: 'transparent', color: active ? cfg.accentColor : '#475569', fontSize: '13px', fontWeight: active ? 700 : 500, cursor: 'pointer', marginBottom: '-1px', transition: 'color 0.15s' }}>
+                {cfg.label}
+                <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '10px', background: active ? `${cfg.accentColor}22` : '#1e293b', color: active ? cfg.accentColor : '#334155' }}>{count}</span>
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -346,27 +308,111 @@ export default function Positions() {
         </div>
       )}
 
-      {/* Table */}
-      {rows.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          {/* Sort bar */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#475569', paddingLeft: '2px' }}>
-            Sort: {sortBtn('symbol','Symbol')} {sortBtn('value','Value')} {sortBtn('pnl','P&L$')} {sortBtn('pnlPct','P&L%')} {sortBtn('change','Today')} {sortBtn('score','K-Score')}
-          </div>
+      {/* Active market content */}
+      {rows.length > 0 && (() => {
+        const mBest  = activeRows.filter(r => r.pnlPct != null).sort((a, b) => (b.pnlPct ?? 0) - (a.pnlPct ?? 0))[0];
+        const mWorst = activeRows.filter(r => r.pnlPct != null).sort((a, b) => (a.pnlPct ?? 0) - (b.pnlPct ?? 0))[0];
+        const p = activeCfg.cashPrefix;
+        return (
+          <>
+            {/* Summary stats */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+              {[
+                { label: 'Positions',    value: String(activeRows.length),                                                              sub: 'open',       color: '#e2e8f0' },
+                { label: 'Invested',     value: `${p}${fmt(totals.invested)}`,                                                          sub: 'cost basis', color: '#e2e8f0' },
+                { label: 'Market Value', value: `${p}${fmt(totals.currentVal)}`,                                                        sub: 'current',    color: '#e2e8f0' },
+                { label: "Today's P&L",  value: `${totals.dayPnl >= 0 ? '+' : ''}${p}${fmt(Math.abs(totals.dayPnl))}`,                sub: 'unrealized', color: pnlColor(totals.dayPnl) },
+                { label: 'Total P&L',    value: `${totals.pnl >= 0 ? '+' : ''}${p}${fmt(Math.abs(totals.pnl))}`,                      sub: `${totals.pnl >= 0 ? '+' : ''}${fmt(totals.pnlPct)}%`, color: pnlColor(totals.pnl) },
+              ].map(c => (
+                <div key={c.label} style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '13px 15px' }}>
+                  <div style={{ fontSize: '10px', color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '5px' }}>{c.label}</div>
+                  <div style={{ fontSize: '18px', fontWeight: 700, color: c.color, lineHeight: 1.2 }}>{c.value}</div>
+                  <div style={{ fontSize: '10px', color: '#475569', marginTop: '3px' }}>{c.sub}</div>
+                </div>
+              ))}
+              {/* Cash available card */}
+              <div style={{ borderRadius: '10px', border: `1px solid ${activeCfg.accentColor}33`, background: '#0f172a', padding: '13px 15px', cursor: 'pointer' }}
+                onClick={() => { if (editingCash !== activeCfg.cashKey) { setEditingCash(activeCfg.cashKey); setCashInput(String(activeCash)); } }}>
+                <div style={{ fontSize: '10px', color: activeCfg.accentColor, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '5px' }}>Cash Available</div>
+                {editingCash === activeCfg.cashKey ? (
+                  <form onSubmit={e => { e.preventDefault(); updateCash(activeCfg.cashKey, parseFloat(cashInput)); setEditingCash(null); }}>
+                    <input autoFocus type="number" min="0" step="any" value={cashInput} onChange={e => setCashInput(e.target.value)}
+                      style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: `1px solid ${activeCfg.accentColor}66`, borderRadius: '6px', padding: '4px 7px', fontSize: '13px', color: '#f1f5f9', outline: 'none', fontWeight: 700, boxSizing: 'border-box' }}
+                      onBlur={() => { updateCash(activeCfg.cashKey, parseFloat(cashInput)); setEditingCash(null); }} />
+                  </form>
+                ) : (
+                  <div style={{ fontSize: '18px', fontWeight: 700, color: activeCfg.accentColor, lineHeight: 1.2 }}>{p}{fmt(activeCash)}</div>
+                )}
+                <div style={{ fontSize: '10px', color: '#475569', marginTop: '3px' }}>click to edit</div>
+              </div>
+            </div>
 
-          {/* Column headers */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 70px 85px 85px 95px 105px 105px 120px', gap: '6px', padding: '6px 14px', fontSize: '10px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-            <div>Symbol</div>
-            <div style={{ textAlign: 'right' }}>Shares</div>
-            <div style={{ textAlign: 'right' }}>Avg Cost</div>
-            <div style={{ textAlign: 'right' }}>Cur Price</div>
-            <div style={{ textAlign: 'right' }}>Mkt Value</div>
-            <div style={{ textAlign: 'right' }}>P&L ($)</div>
-            <div style={{ textAlign: 'right' }}>P&L (%)</div>
-            <div style={{ textAlign: 'right' }}>Actions</div>
-          </div>
+            {/* Chart + highlights */}
+            {activeRows.length > 1 && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '16px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>Allocation</div>
+                  <DonutChart labels={activeRows.map(r => r.symbol)} values={activeRows.map(r => r.mktVal ?? r.cost)} colors={activeCfg.colors} height={210} />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {mBest && (
+                    <div style={{ borderRadius: '10px', border: '1px solid rgba(34,197,94,0.25)', background: 'rgba(34,197,94,0.06)', padding: '12px 14px' }}>
+                      <div style={{ fontSize: '10px', color: '#4ade80', fontWeight: 700, letterSpacing: '0.07em', marginBottom: '5px' }}>🏆 BEST PERFORMER</div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Link href={`/stock/${mBest.symbol}`} style={{ fontWeight: 800, fontSize: '15px', color: '#f1f5f9', fontFamily: 'monospace' }}>{mBest.symbol}</Link>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#4ade80' }}>+{fmt(mBest.pnlPct ?? 0)}%</div>
+                          <div style={{ fontSize: '11px', color: '#16a34a' }}>{p}{fmt(mBest.pnl ?? 0)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {mWorst && mWorst.symbol !== mBest?.symbol && (
+                    <div style={{ borderRadius: '10px', border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.06)', padding: '12px 14px' }}>
+                      <div style={{ fontSize: '10px', color: '#f87171', fontWeight: 700, letterSpacing: '0.07em', marginBottom: '5px' }}>📉 WORST PERFORMER</div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Link href={`/stock/${mWorst.symbol}`} style={{ fontWeight: 800, fontSize: '15px', color: '#f1f5f9', fontFamily: 'monospace' }}>{mWorst.symbol}</Link>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#f87171' }}>{fmt(mWorst.pnlPct ?? 0)}%</div>
+                          <div style={{ fontSize: '11px', color: '#ef4444' }}>{p}{fmt(mWorst.pnl ?? 0)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '12px 14px', flex: 1 }}>
+                    <div style={{ fontSize: '10px', color: '#475569', fontWeight: 700, letterSpacing: '0.07em', marginBottom: '8px' }}>SIGNALS IN PORTFOLIO</div>
+                    {(['BUY','HOLD','SELL'] as const).map(s => {
+                      const count = activeRows.filter(r => r.sig === s).length;
+                      const pct   = activeRows.length > 0 ? (count / activeRows.length) * 100 : 0;
+                      const c     = s === 'BUY' ? '#4ade80' : s === 'SELL' ? '#f87171' : '#facc15';
+                      const bg    = s === 'BUY' ? 'rgba(34,197,94,0.2)' : s === 'SELL' ? 'rgba(239,68,68,0.2)' : 'rgba(250,204,21,0.2)';
+                      return (
+                        <div key={s} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px' }}>
+                          <span style={{ width: '34px', fontSize: '10px', fontWeight: 700, color: c }}>{s}</span>
+                          <div style={{ flex: 1, height: '5px', borderRadius: '3px', background: '#1e293b', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${pct}%`, background: bg, borderRadius: '3px', transition: 'width 0.4s' }} />
+                          </div>
+                          <span style={{ fontSize: '11px', color: '#475569', width: '18px', textAlign: 'right' }}>{count}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
 
-          {sortedRows.map(r => {
+            {/* Table */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#475569', paddingLeft: '2px' }}>
+                Sort: {sortBtn('symbol','Symbol')} {sortBtn('value','Value')} {sortBtn('pnl','P&L$')} {sortBtn('pnlPct','P&L%')} {sortBtn('change','Today')} {sortBtn('score','K-Score')}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 70px 85px 85px 95px 105px 105px 120px', gap: '6px', padding: '6px 14px', fontSize: '10px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                <div>Symbol</div><div style={{ textAlign: 'right' }}>Shares</div><div style={{ textAlign: 'right' }}>Avg Cost</div><div style={{ textAlign: 'right' }}>Cur Price</div><div style={{ textAlign: 'right' }}>Mkt Value</div><div style={{ textAlign: 'right' }}>P&L ({activeCfg.cashKey})</div><div style={{ textAlign: 'right' }}>P&L (%)</div><div style={{ textAlign: 'right' }}>Actions</div>
+              </div>
+              {activeRows.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '30px 0', color: '#334155', fontSize: '13px' }}>No {activeMarket} positions yet.</div>
+              )}
+          {activeRows.map(r => {
             const ss = r.sig ? sigStyle(r.sig) : null;
             return (
               <div key={r.id}>
@@ -419,8 +465,10 @@ export default function Positions() {
               </div>
             );
           })}
-        </div>
-      )}
+            </div>
+          </>
+        );
+      })()}
 
       {modal && <TradeModal mode={modal.mode} position={modalPos} currentPrice={modalCurrentPrice} onConfirm={handleModalConfirm} onClose={() => setModal(null)} />}
 

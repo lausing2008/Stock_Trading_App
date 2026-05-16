@@ -457,6 +457,64 @@ Click the 🔔 "Signal alert on" button on the stock detail page to unsubscribe.
 
 ---
 
+## Fear & Greed Index
+
+A market sentiment gauge (0–100) shown on the stock detail page sidebar. Based on CNN's Fear & Greed methodology, computed from VIX levels and S&P 500 price data. Updated hourly.
+
+### Score interpretation
+
+| Range | Label | What it means |
+|-------|-------|---------------|
+| 0–24 | **Extreme Fear** | Panic selling — market is deeply oversold |
+| 25–44 | **Fear** | Cautious, risk-off mood — investors are nervous |
+| 45–55 | **Neutral** | Balanced sentiment — no strong directional bias |
+| 56–74 | **Greed** | Optimistic, risk-on mood — buyers in control |
+| 75–100 | **Extreme Greed** | Euphoria — everyone is buying, market overextended |
+
+### Higher score = do NOT buy more
+
+The index is a **contrarian indicator**. High scores signal danger, not opportunity:
+
+- **High score (Extreme Greed)** — the crowd is already all-in. Prices are extended, pullback risk is elevated. Avoid chasing. Consider trimming positions.
+- **Low score (Extreme Fear)** — the crowd is panic-selling. Stocks are often oversold. Better risk/reward for entering quality positions.
+
+> "Be fearful when others are greedy, and greedy when others are fearful." — Warren Buffett
+
+### How to use it alongside AI signals
+
+| Fear & Greed | AI Signal | Interpretation |
+|--------------|-----------|----------------|
+| Extreme Fear + BUY | BUY | Highest-conviction buy setup — market overreaction, individual stock has technical strength |
+| Extreme Fear + SELL | SELL | Broad selloff — wait for stabilization before acting |
+| Extreme Greed + BUY | BUY | Be cautious — good stock, but market is extended; size position conservatively |
+| Extreme Greed + SELL | SELL | Double warning — take profits or exit |
+| Neutral | Any | No sentiment overlay — rely on AI signal and K-Score alone |
+
+### What it does not tell you
+
+- It is a market-wide sentiment measure, not stock-specific. A single stock can be a great buy during Extreme Greed (e.g. sector rotation) or a bad buy during Extreme Fear (e.g. fundamental collapse).
+- It is not a timing tool. The market can remain in Extreme Greed for weeks before correcting.
+- Use it as a **risk filter** to size positions and manage stops, not as a standalone buy/sell trigger.
+
+### Historical scores
+
+The gauge shows four reference points below the dial: **Previous Close**, **1 Week Ago**, **1 Month Ago**, and **1 Year Ago**. These help you see whether sentiment is improving (fear → greed) or deteriorating (greed → fear), which provides directional context beyond the current reading.
+
+### Market Regime
+
+Displayed directly below the Fear & Greed dial:
+
+| Regime | Condition | Meaning |
+|--------|-----------|---------|
+| 🟢 Bull Market | S&P 500 above its 200-day MA | Long-term uptrend intact — trend-following signals are more reliable |
+| 🔴 Bear Market | S&P 500 below its 200-day MA | Long-term downtrend — treat BUY signals with extra caution; prefer smaller positions |
+
+The percentage shown (e.g. `+9.8% vs 200MA`) indicates how far above or below the S&P 500 currently sits. Large positive values in a Bull Market confirm trend strength; large negative values in a Bear Market suggest deeper selling pressure.
+
+**Best combination**: Extreme Fear + Bull Market regime + AI Signal = BUY. This means the broad market is panicking short-term but the long-term trend is intact — a classic buy-the-dip setup.
+
+---
+
 ## Opportunities (`/opportunities`)
 
 Strategy-filtered stock screener. Surfaces the best candidates from the **current user's watchlist** for each trading style. Only stocks the logged-in user is tracking are scored and ranked. Linked in the nav bar (highlighted purple).
