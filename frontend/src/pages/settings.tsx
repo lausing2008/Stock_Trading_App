@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
 import { getSession, changePassword } from '@/lib/auth';
 import { api, type AppUser } from '@/lib/api';
+import { storage } from '@/lib/storage';
 
 const inp: React.CSSProperties = {
   background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px',
@@ -137,6 +138,99 @@ export default function SettingsPage() {
   const [resetTarget, setResetTarget] = useState('');
   const [resetPwd, setResetPwd] = useState('');
   const [resetMsg, setResetMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Import / Export
+  const [ioStatus, setIoStatus]   = useState<{ ok: boolean; text: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
+
+  async function handleExport() {
+    setExporting(true);
+    setIoStatus(null);
+    try {
+      const [lists, alerts] = await Promise.all([api.listWatchlists(), api.listAlerts()]);
+      const watchlists = await Promise.all(
+        lists.map(async l => ({
+          id: l.id, name: l.name,
+          symbols: (await api.listWatchlist(l.id)).map(s => ({ symbol: s.symbol, market: s.market, currency: s.currency })),
+        }))
+      );
+      const bundle = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        exportedBy: session?.username ?? 'unknown',
+        watchlists,
+        positions: JSON.parse(storage.getItem('positions') ?? '[]'),
+        trades:    JSON.parse(storage.getItem('trades')    ?? '{}'),
+        cash:      JSON.parse(storage.getItem('positions_cash') ?? '{"USD":0,"HKD":0}'),
+        alerts:    alerts.map(a => ({ symbol: a.symbol, condition: a.condition, threshold: a.threshold, note: a.note })),
+      };
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+      const url  = URL.createObjectURL(blob);
+      const tag  = document.createElement('a');
+      tag.href = url; tag.download = `stockai-export-${new Date().toISOString().slice(0,10)}.json`; tag.click();
+      URL.revokeObjectURL(url);
+      setIoStatus({ ok: true, text: `Exported ${watchlists.reduce((n, l) => n + l.symbols.length, 0)} stocks, ${bundle.positions.length} positions, ${bundle.alerts.length} alerts.` });
+    } catch (e) {
+      setIoStatus({ ok: false, text: e instanceof Error ? e.message : 'Export failed.' });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setImporting(true);
+    setIoStatus(null);
+    try {
+      const text   = await file.text();
+      const bundle = JSON.parse(text);
+      if (!bundle.version || !bundle.watchlists) throw new Error('Invalid export file.');
+
+      let addedStocks = 0, skippedStocks = 0;
+
+      // ── Watchlists ──
+      const existingLists = await api.listWatchlists();
+      for (const exportedList of bundle.watchlists) {
+        let target = existingLists.find(l => l.name === exportedList.name);
+        if (!target) target = await api.createWatchlist(exportedList.name);
+        const existing = new Set((await api.listWatchlist(target.id)).map(s => s.symbol));
+        for (const s of exportedList.symbols) {
+          if (existing.has(s.symbol)) { skippedStocks++; continue; }
+          try { await api.addToWatchlist(s.symbol, target.id); addedStocks++; }
+          catch { skippedStocks++; }
+        }
+      }
+
+      // ── Positions & cash (localStorage) ──
+      if (bundle.positions?.length) {
+        const cur: { id: string; symbol: string }[] = JSON.parse(storage.getItem('positions') ?? '[]');
+        const curSymbols = new Set(cur.map(p => p.symbol));
+        const toAdd = bundle.positions.filter((p: { symbol: string }) => !curSymbols.has(p.symbol));
+        storage.setItem('positions', JSON.stringify([...cur, ...toAdd]));
+      }
+      if (bundle.trades) {
+        const cur: Record<string, unknown[]> = JSON.parse(storage.getItem('trades') ?? '{}');
+        for (const [id, t] of Object.entries(bundle.trades)) {
+          if (!cur[id]) cur[id] = t as unknown[];
+        }
+        storage.setItem('trades', JSON.stringify(cur));
+      }
+      if (bundle.cash) {
+        const cur = JSON.parse(storage.getItem('positions_cash') ?? '{"USD":0,"HKD":0}');
+        storage.setItem('positions_cash', JSON.stringify({ USD: cur.USD || bundle.cash.USD || 0, HKD: cur.HKD || bundle.cash.HKD || 0 }));
+      }
+
+      setIoStatus({ ok: true, text: `Imported ${addedStocks} new stocks (${skippedStocks} already existed), ${(bundle.positions ?? []).filter((p: { symbol: string }) => true).length} positions merged.` });
+    } catch (e) {
+      setIoStatus({ ok: false, text: e instanceof Error ? e.message : 'Import failed — check the file format.' });
+    } finally {
+      setImporting(false);
+    }
+  }
 
   useEffect(() => {
     if (isAdmin) {
@@ -699,6 +793,55 @@ export default function SettingsPage() {
       </div>
 
       {/* ── User Management (admin only) ───────────────────────────── */}
+      {/* ── Import / Export ── */}
+      <div style={section('#0ea5e9')}>
+        <div style={sectionBar('linear-gradient(90deg,#0ea5e9,#38bdf8,#0ea5e9)')} />
+        <div style={sectionHead}>Import / Export</div>
+        <div style={{ padding: '20px' }}>
+          <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#64748b', lineHeight: 1.6 }}>
+            Export your watchlists, positions, and cash balances to a JSON file. Import the file on any account or system to restore your data.
+          </p>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            {/* Export */}
+            <div style={{ borderRadius: '10px', border: '1px solid rgba(14,165,233,0.2)', background: 'rgba(14,165,233,0.04)', padding: '16px' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginBottom: '6px' }}>⬇ Export</div>
+              <div style={{ fontSize: '12px', color: '#475569', marginBottom: '14px', lineHeight: 1.5 }}>
+                Downloads a <code style={{ color: '#94a3b8', background: '#1e293b', padding: '1px 5px', borderRadius: '4px' }}>.json</code> file containing all your watchlists (with stock symbols), positions, trade history, and cash balances.
+              </div>
+              <button onClick={handleExport} disabled={exporting}
+                style={{ padding: '9px 20px', borderRadius: '8px', border: 'none', background: 'linear-gradient(135deg,#0284c7,#0ea5e9)', color: '#fff', fontSize: '13px', fontWeight: 600, cursor: exporting ? 'wait' : 'pointer', opacity: exporting ? 0.7 : 1 }}>
+                {exporting ? 'Exporting…' : 'Download Export'}
+              </button>
+            </div>
+
+            {/* Import */}
+            <div style={{ borderRadius: '10px', border: '1px solid rgba(14,165,233,0.2)', background: 'rgba(14,165,233,0.04)', padding: '16px' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginBottom: '6px' }}>⬆ Import</div>
+              <div style={{ fontSize: '12px', color: '#475569', marginBottom: '14px', lineHeight: 1.5 }}>
+                Select a previously exported <code style={{ color: '#94a3b8', background: '#1e293b', padding: '1px 5px', borderRadius: '4px' }}>.json</code> file. Stocks not already in your watchlist will be added. Positions are merged (existing ones are kept).
+              </div>
+              <input ref={importRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={handleImport} />
+              <button onClick={() => importRef.current?.click()} disabled={importing}
+                style={{ padding: '9px 20px', borderRadius: '8px', border: '1px solid rgba(14,165,233,0.4)', background: 'transparent', color: '#38bdf8', fontSize: '13px', fontWeight: 600, cursor: importing ? 'wait' : 'pointer', opacity: importing ? 0.7 : 1 }}>
+                {importing ? 'Importing…' : 'Select File to Import'}
+              </button>
+            </div>
+          </div>
+
+          {ioStatus && (
+            <div style={{ marginTop: '14px', padding: '10px 14px', borderRadius: '8px', background: ioStatus.ok ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${ioStatus.ok ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`, fontSize: '13px', color: ioStatus.ok ? '#4ade80' : '#f87171' }}>
+              {ioStatus.ok ? '✓ ' : '✕ '}{ioStatus.text}
+            </div>
+          )}
+
+          <div style={{ marginTop: '14px', fontSize: '11px', color: '#334155', lineHeight: 1.6 }}>
+            <strong style={{ color: '#475569' }}>What is included:</strong> Watchlists (all lists + symbols) · Positions + trade history · Cash balances (USD / HKD)<br />
+            <strong style={{ color: '#475569' }}>Not included:</strong> Price alerts (require email re-entry on the target account) · Signal alert subscriptions · Browser notifications
+          </div>
+        </div>
+      </div>
+
       {isAdmin && (
         <div style={section('#e11d48')}>
           <div style={sectionBar('linear-gradient(90deg,#e11d48,#fb7185,#e11d48)')} />
