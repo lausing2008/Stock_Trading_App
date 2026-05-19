@@ -62,6 +62,7 @@ class SignalType(str, enum.Enum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
+    WAIT = "WAIT"
 
 
 class SignalHorizon(str, enum.Enum):
