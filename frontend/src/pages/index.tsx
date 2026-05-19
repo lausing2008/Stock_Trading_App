@@ -23,6 +23,15 @@ function signalFromScore(score: number | null | undefined) {
   return               { label: 'SELL', color: '#f87171', bg: 'rgba(239,68,68,0.1)',  border: 'rgba(239,68,68,0.3)'  };
 }
 
+function signalAge(ts: string | null | undefined): { label: string; color: string } {
+  if (!ts) return { label: 'unknown', color: '#334155' };
+  const hrs = (Date.now() - new Date(ts).getTime()) / 3_600_000;
+  if (hrs < 1)  return { label: `${Math.round(hrs * 60)}m ago`, color: '#4ade80' };
+  if (hrs < 8)  return { label: `${Math.round(hrs)}h ago`,      color: '#facc15' };
+  if (hrs < 24) return { label: `${Math.round(hrs)}h ago`,      color: '#f97316' };
+  return               { label: `${Math.floor(hrs / 24)}d ago`,  color: '#f87171' };
+}
+
 function scoreColor(score: number) {
   if (score >= 70) return '#4ade80';
   if (score >= 50) return '#facc15';
@@ -175,6 +184,7 @@ export default function Home() {
   const [market, setMarket] = useState<MarketFilter>('all');
   const [sort, setSort] = useState<SortKey>('symbol');
   const [refreshing, setRefreshing] = useState(false);
+  const [sigRefreshing, setSigRefreshing] = useState(false);
   const [trainState, setTrainState] = useState<null | 'running' | 'done' | 'error'>(null);
   const [trainInfo, setTrainInfo] = useState<{ ingestCount?: number; trainCount?: number; error?: string } | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -206,6 +216,15 @@ export default function Home() {
     setLastRefreshed(new Date());
     setRefreshing(false);
   }, [mutateStocks, mutateWatchlist, mutateRankings, mutatePrices, mutateSignals]);
+
+  const handleRefreshSignals = useCallback(async () => {
+    setSigRefreshing(true);
+    try {
+      await api.refreshSignals();
+      await mutateSignals();
+    } catch { /* non-fatal */ }
+    setSigRefreshing(false);
+  }, [mutateSignals]);
 
   // Keep ref in sync so the interval callback always sees current value
   useEffect(() => { autoRefreshRef.current = autoRefresh; }, [autoRefresh]);
@@ -335,6 +354,23 @@ export default function Home() {
           >
             <span style={{ display: 'inline-block', fontSize: '15px', lineHeight: 1, animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
             {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+          <button
+            onClick={handleRefreshSignals}
+            disabled={sigRefreshing}
+            title="Recompute AI signals now (server-side) — forces fresh indicator calculations for all your stocks"
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '7px 14px', borderRadius: '6px',
+              border: `1px solid ${sigRefreshing ? 'rgba(129,140,248,0.4)' : 'rgba(129,140,248,0.2)'}`,
+              background: sigRefreshing ? 'rgba(99,102,241,0.1)' : 'rgba(99,102,241,0.05)',
+              color: sigRefreshing ? '#818cf8' : '#6366f1',
+              cursor: sigRefreshing ? 'not-allowed' : 'pointer',
+              fontSize: '13px', transition: 'all 0.15s',
+            }}
+          >
+            <span style={{ display: 'inline-block', fontSize: '13px', lineHeight: 1, animation: sigRefreshing ? 'spin 0.8s linear infinite' : 'none' }}>⚡</span>
+            {sigRefreshing ? 'Computing…' : 'Refresh Signals'}
           </button>
           <button
             onClick={() => setAutoRefresh(v => !v)}
@@ -507,6 +543,7 @@ export default function Home() {
                 border: realSig.signal === 'BUY' ? 'rgba(34,197,94,0.3)' : realSig.signal === 'SELL' ? 'rgba(239,68,68,0.3)' : realSig.signal === 'WAIT' ? 'rgba(251,146,60,0.3)' : 'rgba(250,204,21,0.3)',
               }
             : signalFromScore(rank?.score ?? undefined);
+          const age    = signalAge(realSig?.ts);
           const sc     = SECTOR_COLOR[s.sector ?? ''];
           const changeUp = (lp?.change_pct ?? 0) >= 0;
 
@@ -616,16 +653,23 @@ export default function Home() {
                   </span>
                 </div>
 
-                {/* Signal badge */}
-                {sig && (
-                  <span style={{
-                    fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px',
-                    color: sig.color, background: sig.bg, border: `1px solid ${sig.border}`,
-                    letterSpacing: '0.04em', whiteSpace: 'nowrap',
-                  }}>
-                    {sig.label}
-                  </span>
-                )}
+                {/* Signal badge + age */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
+                  {sig && (
+                    <span style={{
+                      fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px',
+                      color: sig.color, background: sig.bg, border: `1px solid ${sig.border}`,
+                      letterSpacing: '0.04em', whiteSpace: 'nowrap',
+                    }}>
+                      {sig.label}
+                    </span>
+                  )}
+                  {realSig?.ts && (
+                    <span style={{ fontSize: '9px', color: age.color, whiteSpace: 'nowrap' }} title={`Signal computed: ${new Date(realSig.ts).toLocaleString()}`}>
+                      {age.label}
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Bottom row: K-Score + fair price */}

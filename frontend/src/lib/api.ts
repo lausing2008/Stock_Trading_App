@@ -31,6 +31,7 @@ export const api = {
   },
   signal: (symbol: string) => request<Signal>(`/signals/${symbol}`),
   allSignals: () => request<SignalSummary[]>(`/signals`),
+  refreshSignals: (market?: string) => request<{ refreshed: number }>(`/signals/refresh`, { method: 'POST', body: JSON.stringify(market ? { market } : {}) }),
   predict: (symbol: string, model = 'xgboost') =>
     request<Prediction>(`/ml/predict`, { method: 'POST', body: JSON.stringify({ symbol, model }) }),
   trainModel: (symbol: string, model = 'xgboost') =>
@@ -118,7 +119,7 @@ export type Signal = {
   reasons: Record<string, unknown>;
 };
 
-export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null };
+export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null; ts: string | null };
 export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null };
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {

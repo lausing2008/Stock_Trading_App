@@ -4,6 +4,7 @@ Complete reference for every feature in StockAI — what it does, where to find 
 and how it works under the hood.
 
 > For K-Score and Fair Value calculation details, see [SCORING.md](SCORING.md).
+> For a full breakdown of how the AI Signal is computed and how to interpret it, see [AI_SIGNAL.md](AI_SIGNAL.md).
 
 ---
 

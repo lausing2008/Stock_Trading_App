@@ -23,7 +23,7 @@ def all_latest_signals(session: Session = Depends(get_session)):
         .subquery()
     )
     rows = session.execute(
-        select(Stock.symbol, Signal.signal, Signal.horizon, Signal.confidence, Signal.bullish_probability)
+        select(Stock.symbol, Signal.signal, Signal.horizon, Signal.confidence, Signal.bullish_probability, Signal.ts)
         .join(Signal, Stock.id == Signal.stock_id)
         .join(latest_subq, (Signal.stock_id == latest_subq.c.stock_id) & (Signal.ts == latest_subq.c.max_ts))
         .where(Stock.active.is_(True))
@@ -35,6 +35,7 @@ def all_latest_signals(session: Session = Depends(get_session)):
             "horizon": row.horizon.value,
             "confidence": row.confidence,
             "bullish_probability": row.bullish_probability,
+            "ts": row.ts.isoformat() if row.ts else None,
         }
         for row in rows
     ]

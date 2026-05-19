@@ -2,6 +2,8 @@
 
 Source: [`services/ranking-engine/src/scoring/kscore.py`](../services/ranking-engine/src/scoring/kscore.py)
 
+> For a full breakdown of how the AI Signal is computed and how to interpret it, see [AI_SIGNAL.md](AI_SIGNAL.md).
+
 ---
 
 ## K-Score (0–100)
