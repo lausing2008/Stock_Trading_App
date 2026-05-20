@@ -56,6 +56,7 @@ export default function StockDetail() {
   const [listPending, setListPending] = useState<number | null>(null);
   const watchMenuRef = useRef<HTMLDivElement>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [sigRefreshing, setSigRefreshing] = useState(false);
   const [fundRefreshing, setFundRefreshing] = useState(false);
   const [fullRefreshing, setFullRefreshing] = useState(false);
   const [fullRefreshMsg, setFullRefreshMsg] = useState('');
@@ -183,6 +184,15 @@ export default function StockDetail() {
     setRefreshing(true);
     await Promise.all([mutateOverview(), mutateNews()]);
     setRefreshing(false);
+  }
+
+  async function handleRefreshSignal() {
+    setSigRefreshing(true);
+    try {
+      await api.refreshSignal(symbol);
+      await mutateOverview();
+    } catch { /* non-fatal */ }
+    setSigRefreshing(false);
   }
 
   async function handleFullRefresh() {
@@ -396,6 +406,23 @@ export default function StockDetail() {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <RefreshButton onClick={handleRefresh} loading={refreshing} />
+          <button
+            onClick={handleRefreshSignal}
+            disabled={sigRefreshing}
+            title="Recompute AI signal now for this stock"
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '6px 13px', borderRadius: '6px',
+              border: `1px solid ${sigRefreshing ? 'rgba(129,140,248,0.4)' : 'rgba(129,140,248,0.2)'}`,
+              background: sigRefreshing ? 'rgba(99,102,241,0.1)' : 'rgba(99,102,241,0.05)',
+              color: sigRefreshing ? '#818cf8' : '#6366f1',
+              cursor: sigRefreshing ? 'not-allowed' : 'pointer',
+              fontSize: '12px', transition: 'all 0.15s',
+            }}
+          >
+            <span style={{ display: 'inline-block', fontSize: '13px', lineHeight: 1, animation: sigRefreshing ? 'spin 0.8s linear infinite' : 'none' }}>⚡</span>
+            {sigRefreshing ? 'Computing…' : 'Refresh Signal'}
+          </button>
           <button
             onClick={handleFullRefresh}
             disabled={fullRefreshing}

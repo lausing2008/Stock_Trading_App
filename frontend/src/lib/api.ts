@@ -31,6 +31,7 @@ export const api = {
   },
   signal: (symbol: string) => request<Signal>(`/signals/${symbol}`),
   allSignals: () => request<SignalSummary[]>(`/signals`),
+  refreshSignal: (symbol: string) => request<Signal>(`/signals/${symbol}?persist=true`),
   refreshSignals: (market?: string) => request<{ refreshed: number }>(`/signals/refresh`, { method: 'POST', body: JSON.stringify(market ? { market } : {}) }),
   predict: (symbol: string, model = 'xgboost') =>
     request<Prediction>(`/ml/predict`, { method: 'POST', body: JSON.stringify({ symbol, model }) }),
