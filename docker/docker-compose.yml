@@ -3,27 +3,12 @@ name: stockai
 x-py-common: &py-common
   env_file: ../.env
   depends_on:
-    postgres:
-      condition: service_healthy
     redis:
       condition: service_started
   networks: [stockai-net]
   restart: unless-stopped
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    env_file: ../.env
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    #ports: ["5432:5432"]
-    networks: [stockai-net]
-
   redis:
     image: redis:7-alpine
     #ports: ["6379:6379"]
@@ -108,7 +93,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  pgdata:
   datavol:
 
 networks:
