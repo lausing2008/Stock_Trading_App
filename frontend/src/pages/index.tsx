@@ -221,7 +221,15 @@ export default function Home() {
     setSigRefreshing(true);
     try {
       await api.refreshSignals();
-      await mutateSignals();
+      // Backend schedules a background job — poll until signals stop changing
+      // (each stock takes ~2-3 s; 20 stocks ≈ 40-60 s total)
+      let prev = JSON.stringify(await mutateSignals());
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, 6_000));
+        const next = JSON.stringify(await mutateSignals());
+        if (next === prev) break;
+        prev = next;
+      }
     } catch { /* non-fatal */ }
     setSigRefreshing(false);
   }, [mutateSignals]);
