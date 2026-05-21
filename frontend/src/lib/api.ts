@@ -42,6 +42,8 @@ export const api = {
     request<NewsItem[]>(`/stocks/${symbol}/news?sources=${encodeURIComponent(sources)}`),
   createStrategy: (body: unknown) => request<{ id: number }>(`/strategies`, { method: 'POST', body: JSON.stringify(body) }),
   listStrategies: () => request<{ id: number; name: string; description?: string }[]>(`/strategies`),
+  getStrategy: (sid: number) => request<{ id: number; name: string; rule_dsl: { entry: object; exit?: object }; description?: string }>(`/strategies/${sid}`),
+  deleteStrategy: (sid: number) => request<{ status: string; id: number }>(`/strategies/${sid}`, { method: 'DELETE' }),
   backtest: (body: unknown) => request<Backtest>(`/backtest`, { method: 'POST', body: JSON.stringify(body) }),
   optimizePortfolio: (body: unknown) => request<PortfolioWeights>(`/portfolio/optimize`, { method: 'POST', body: JSON.stringify(body) }),
   ingest: (symbols: string[], force = false) => request<{ status: string; symbols?: number }>(`/admin/ingest`, { method: 'POST', body: JSON.stringify({ symbols, force }) }),

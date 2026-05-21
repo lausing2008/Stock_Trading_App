@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type Overview } from '@/lib/api';
 import { askAI, isAiConfigured } from '@/lib/ai';
 
-type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth';
+type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth' | 'aisignal';
 type Market = 'all' | 'US' | 'HK';
 type OutlookDirection = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
 
@@ -16,14 +16,16 @@ interface OutlookItem {
   confidence: 'high' | 'medium' | 'low';
   reason: string;
   catalysts: string[];
+  key_risk?: string;
 }
 
 const STRATEGIES: { key: Strategy; label: string; icon: string; tagline: string; desc: string }[] = [
-  { key: 'all',      label: 'Top Picks',     icon: '⭐', tagline: 'Best overall K-Score',         desc: 'Highest composite score across technical, momentum, value, growth, and volatility.' },
-  { key: 'swing',    label: 'Swing Trade',   icon: '📊', tagline: '5–30 day hold',                desc: 'Strong AI signal + technical setup. Best for defined entry/exit around a catalyst or pattern.' },
-  { key: 'short',    label: 'Short-Term',    icon: '⚡', tagline: '1–5 day move',                 desc: 'High recent momentum and volume expansion. Best for capitalising on short breakouts or pullbacks.' },
-  { key: 'longterm', label: 'Long-Term',     icon: '🏛️', tagline: '6–24 month horizon',           desc: 'Undervalued fundamentals with strong growth trajectory. Buy and hold at or below fair value.' },
-  { key: 'growth',   label: 'Growth',        icon: '🚀', tagline: 'High growth momentum',         desc: 'Top growth + momentum scores. Companies growing revenue/earnings faster than the market.' },
+  { key: 'all',      label: 'Top Picks',  icon: '⭐', tagline: 'Best overall K-Score',       desc: 'Highest composite score across technical, momentum, value, growth, and volatility.' },
+  { key: 'swing',    label: 'Swing',      icon: '📊', tagline: '5–30 day hold',              desc: 'Strong AI signal + technical setup. Best for defined entry/exit around a catalyst or pattern.' },
+  { key: 'short',    label: 'Short-Term', icon: '⚡', tagline: '1–5 day move',               desc: 'High recent momentum and volume expansion. Best for capitalising on short breakouts or pullbacks.' },
+  { key: 'longterm', label: 'Long-Term',  icon: '🏛️', tagline: '6–24 month horizon',         desc: 'Undervalued fundamentals with strong growth trajectory. Buy and hold at or below fair value.' },
+  { key: 'growth',   label: 'Growth',     icon: '🚀', tagline: 'High growth momentum',       desc: 'Top growth + momentum scores. Companies growing revenue/earnings faster than the market.' },
+  { key: 'aisignal', label: 'AI Signal',  icon: '🤖', tagline: 'BUY-signal stocks only',     desc: 'Only stocks where the AI engine has issued an active BUY signal, ranked by signal confidence and bullish probability.' },
 ];
 
 const SIG_COLOR: Record<string, { color: string; bg: string; border: string }> = {
@@ -71,6 +73,7 @@ function scoreFor(
     case 'short':    return mom  * 0.50 + tech * 0.25 + Math.abs(chg) * 3 + vlt * 0.10;
     case 'longterm': return val  * 0.40 + grow * 0.30 + Math.max(0, upside) * 0.6 + vlt * 0.15;
     case 'growth':   return grow * 0.50 + mom  * 0.30 + tech * 0.20;
+    case 'aisignal': return conf * 0.70 + (sig?.bullish_probability ?? 0) * 0.50 + tech * 0.15 + mom * 0.10;
     default:         return r.score ?? 0;
   }
 }
@@ -129,6 +132,10 @@ function getKeyMetric(
       return { label: 'Value', value: `${(r.value ?? 0).toFixed(0)}/100`, color: scoreColor(r.value ?? 0) };
     case 'growth':
       return { label: 'Growth', value: `${(r.growth ?? 0).toFixed(0)}/100`, color: scoreColor(r.growth ?? 0) };
+    case 'aisignal':
+      return sig
+        ? { label: 'AI Confidence', value: `${sig.confidence.toFixed(0)}%`, color: scoreColor(sig.confidence) }
+        : null;
     default:
       return { label: 'K-Score', value: (r.score ?? 0).toFixed(0), color: scoreColor(r.score ?? 0) };
   }
@@ -342,6 +349,7 @@ const STRATEGY_FILTER: Record<Strategy, (r: RankingRow, sig?: SignalSummary) => 
   short:    (r) => (r.momentum ?? 0) >= 40,
   longterm: (r) => (r.value ?? 0) >= 40 || (r.growth ?? 0) >= 50,
   growth:   (r) => (r.growth ?? 0) >= 50,
+  aisignal: (_r, sig) => sig?.signal === 'BUY',
 };
 
 export default function Opportunities() {
@@ -461,23 +469,53 @@ export default function Opportunities() {
           : [];
 
         const headlines = newsArr
-          .slice(0, 3)
+          .slice(0, 5)
           .map((n) => `  - [${n.sentiment_label}] ${n.title}`)
           .join('\n') || '  (no recent news)';
+
+        const fairUpside = r.fair_price != null && lp?.price != null && lp.price > 0
+          ? (((r.fair_price - lp.price) / lp.price) * 100).toFixed(1)
+          : null;
 
         return `Symbol: ${r.symbol}
 Name: ${r.name}${r.name_zh ? ` (${r.name_zh})` : ''}
 Sector: ${r.sector ?? 'Unknown'} | Market: ${r.market}
-AI Signal: ${sig?.signal ?? 'N/A'} (${sig?.confidence?.toFixed(0) ?? 0}% confidence)
-K-Score: ${(r.score ?? 0).toFixed(0)} | Technical: ${(r.technical ?? 0).toFixed(0)} | Momentum: ${(r.momentum ?? 0).toFixed(0)} | Value: ${(r.value ?? 0).toFixed(0)} | Growth: ${(r.growth ?? 0).toFixed(0)}
-Today's Change: ${lp?.change_pct != null ? `${lp.change_pct >= 0 ? '+' : ''}${lp.change_pct.toFixed(2)}%` : 'N/A'}
-Recent News Headlines:
+Current Price: ${lp?.price != null ? lp.price.toFixed(2) : 'N/A'} | Today: ${lp?.change_pct != null ? `${lp.change_pct >= 0 ? '+' : ''}${lp.change_pct.toFixed(2)}%` : 'N/A'}
+AI Signal: ${sig?.signal ?? 'N/A'} | Horizon: ${sig?.horizon ?? 'N/A'} | Confidence: ${sig?.confidence?.toFixed(0) ?? 0}% | Bullish Probability: ${sig?.bullish_probability != null ? `${sig.bullish_probability.toFixed(0)}%` : 'N/A'}
+K-Score: ${(r.score ?? 0).toFixed(0)} | Technical: ${(r.technical ?? 0).toFixed(0)} | Momentum: ${(r.momentum ?? 0).toFixed(0)} | Value: ${(r.value ?? 0).toFixed(0)} | Growth: ${(r.growth ?? 0).toFixed(0)} | Volatility: ${(r.volatility ?? 0).toFixed(0)}
+Fair Value Upside: ${fairUpside != null ? `${Number(fairUpside) >= 0 ? '+' : ''}${fairUpside}%` : 'N/A'}
+Recent News Headlines (5 most recent):
 ${headlines}`;
       }) as string[];
 
-      const systemPrompt = `You are a quantitative stock analyst specializing in short-term price prediction. Your task: for each stock, predict the near-term (2–5 day) price direction based on the AI signal, K-Score sub-scores, price momentum, and news headlines.
+      const systemPrompt = `You are a senior quantitative analyst at a hedge fund. Your task is to produce near-term (2–5 day) price direction predictions for a watchlist of stocks. You have access to proprietary AI signals, multi-factor K-Scores, and live news sentiment.
 
-Be direct and specific. Identify the single most important near-term catalyst or risk.
+SCORING FRAMEWORK — use this to interpret inputs:
+- K-Score (0–100): composite rank; ≥70 is strong, ≤30 is weak
+- Technical sub-score: reflects RSI, EMA trend, breakout patterns
+- Momentum sub-score: recent price velocity and volume confirmation
+- Value sub-score: P/E, P/B, earnings yield vs peers
+- Growth sub-score: revenue/earnings growth trajectory
+- Volatility sub-score: LOWER = more stable (≥70 = low vol, ≤30 = high vol)
+- AI Signal: BUY/HOLD/WAIT/SELL; Bullish Probability ≥65% is meaningful confirmation
+- Fair Value Upside: model-estimated margin to intrinsic value; >10% is attractive, negative = overvalued
+
+ANALYTICAL RULES:
+1. BUY signal + Bullish Probability ≥65% + positive news = BULLISH with higher confidence
+2. BUY signal + weak momentum (<40) = cap confidence at "medium" — momentum hasn't confirmed
+3. SELL or WAIT signal + negative news = BEARISH regardless of high K-Score
+4. Conflicting signals (e.g. BUY signal but bearish news + high volatility) → NEUTRAL, low confidence
+5. Fair value upside >15% is a tailwind for bullish outlook; negative upside is a headwind
+6. High volatility score (≤30) alone does not make a stock BEARISH — it widens the uncertainty band
+7. Momentum sub-score ≥70 + positive news = strong near-term momentum catalyst
+8. Horizon should match the AI signal horizon when available (SHORT = 1–3 days, SWING = 3–7 days, LONG = 1–4 weeks)
+
+OUTPUT RULES:
+- Each "reason" must cite at least one specific data point (score, %, signal, or headline keyword)
+- Each catalyst bullet must be ≤10 words and actionable or observational (not generic)
+- "key_risk" must name the single biggest threat to the predicted direction (e.g. earnings miss, sector rotation, overbought RSI, macro headwind)
+- Never produce all BULLISH or all BEARISH — differentiate based on the data
+- confidence = "high" only when signal, momentum, news, AND fair value all point the same way
 
 Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON. Each element must have exactly these fields:
 {
@@ -485,11 +523,12 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
   "direction": "BULLISH" | "BEARISH" | "NEUTRAL",
   "horizon": "e.g. 2–3 days",
   "confidence": "high" | "medium" | "low",
-  "reason": "1–2 sentences: the primary near-term driver, specific and actionable.",
-  "catalysts": ["bullet 1 (≤8 words)", "bullet 2", "bullet 3"]
+  "reason": "1–2 sentences citing specific data points — primary near-term driver.",
+  "catalysts": ["bullet 1 (≤10 words)", "bullet 2", "bullet 3"],
+  "key_risk": "single biggest downside risk to this prediction (1 sentence)"
 }`;
 
-      const userMsg = `Predict near-term price direction for these ${stockContexts.length} stocks:\n\n${stockContexts.join('\n\n---\n\n')}`;
+      const userMsg = `Predict near-term price direction for these ${stockContexts.length} stocks. Apply the analytical framework strictly and differentiate conviction levels based on data alignment:\n\n${stockContexts.join('\n\n---\n\n')}`;
 
       const raw = await askAI([{ role: 'user', content: userMsg }], systemPrompt, 8192);
 
@@ -729,6 +768,14 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                       </div>
                     )}
 
+                    {/* Key risk */}
+                    {item.key_risk && (
+                      <div style={{ marginTop: '8px', display: 'flex', alignItems: 'flex-start', gap: '5px', padding: '5px 8px', borderRadius: '6px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.15)' }}>
+                        <span style={{ fontSize: '9px', color: '#fbbf24', flexShrink: 0, marginTop: '1px' }}>⚠</span>
+                        <span style={{ fontSize: '10px', color: '#78716c', lineHeight: 1.4 }}>{item.key_risk}</span>
+                      </div>
+                    )}
+
                     {/* K-score footer */}
                     {r && (
                       <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.04)', display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -769,7 +816,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
         {STRATEGIES.map(s => (
           <button
             key={s.key}
-            onClick={() => setStrategy(s.key)}
+            onClick={() => { setStrategy(s.key); if (typeof window !== 'undefined') localStorage.setItem('stockai_opp_strategy', s.key); }}
             style={{
               display: 'flex', alignItems: 'center', gap: '7px',
               padding: '10px 16px', borderRadius: '10px', cursor: 'pointer',
