@@ -279,6 +279,8 @@ class AlertCondition(str, enum.Enum):
     CROSS_BELOW_EMA = "cross_below_ema"
     NEW_52WK_HIGH   = "new_52wk_high"     # threshold unused (store 0)
     NEW_52WK_LOW    = "new_52wk_low"
+    GOLDEN_CROSS    = "golden_cross"      # EMA50 crosses above EMA200; threshold unused
+    DEATH_CROSS     = "death_cross"       # EMA50 crosses below EMA200; threshold unused
 
 
 class PriceAlert(Base):

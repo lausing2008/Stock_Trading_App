@@ -12,6 +12,30 @@ function relTime(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+function alertLabel(a: PriceAlert): string {
+  if (a.condition === 'above') return `Price rises above ${a.threshold}`;
+  if (a.condition === 'below') return `Price falls below ${a.threshold}`;
+  if (a.condition === 'cross_above_ema') return `Crosses above EMA${a.threshold}`;
+  if (a.condition === 'cross_below_ema') return `Crosses below EMA${a.threshold}`;
+  if (a.condition === 'new_52wk_high') return 'New 52-week high';
+  if (a.condition === 'new_52wk_low') return 'New 52-week low';
+  if (a.condition === 'golden_cross') return 'Golden Cross (EMA50 ↑ EMA200)';
+  if (a.condition === 'death_cross') return 'Death Cross (EMA50 ↓ EMA200)';
+  return a.condition;
+}
+
+function triggeredLabel(a: PriceAlert): string {
+  if (a.condition === 'above') return `Price rose above ${a.threshold}`;
+  if (a.condition === 'below') return `Price fell below ${a.threshold}`;
+  if (a.condition === 'cross_above_ema') return `Crossed above EMA${a.threshold}`;
+  if (a.condition === 'cross_below_ema') return `Crossed below EMA${a.threshold}`;
+  if (a.condition === 'new_52wk_high') return 'Hit new 52-week high';
+  if (a.condition === 'new_52wk_low') return 'Hit new 52-week low';
+  if (a.condition === 'golden_cross') return 'Golden Cross fired';
+  if (a.condition === 'death_cross') return 'Death Cross fired';
+  return a.condition;
+}
+
 const inp: React.CSSProperties = {
   background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px',
   padding: '9px 12px', fontSize: '13px', color: '#e2e8f0', outline: 'none',
@@ -23,18 +47,25 @@ const lbl: React.CSSProperties = {
   textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '5px',
 };
 
+const NO_THRESHOLD = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross'];
+const EMA_CONDITIONS = ['cross_above_ema', 'cross_below_ema'];
+
 export default function AlertsPage() {
   const { data: stocks } = useSWR<Stock[]>('stocks-all', () => api.listStocks());
   const { data: alerts, mutate } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { refreshInterval: 30000 });
 
   const [symbol, setSymbol]       = useState('');
-  const [condition, setCondition] = useState<'above' | 'below'>('above');
+  const [condition, setCondition] = useState('above');
   const [threshold, setThreshold] = useState('');
+  const [emaPeriod, setEmaPeriod] = useState('20');
   const [email, setEmail]         = useState('');
   const [note, setNote]           = useState('');
   const [saving, setSaving]       = useState(false);
   const [saved, setSaved]         = useState(false);
   const [error, setError]         = useState('');
+
+  const isEma        = EMA_CONDITIONS.includes(condition);
+  const isNoThreshold = NO_THRESHOLD.includes(condition);
 
   useEffect(() => {
     const saved = typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null;
@@ -43,11 +74,13 @@ export default function AlertsPage() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!symbol || !threshold || !email) return;
+    if (!symbol || !email) return;
+    if (!isNoThreshold && !isEma && !threshold) return;
+    const thresholdVal = isNoThreshold ? 0 : isEma ? parseInt(emaPeriod) : parseFloat(threshold);
     setSaving(true);
     setError('');
     try {
-      await api.createAlert({ symbol, condition, threshold: parseFloat(threshold), email, note: note || undefined });
+      await api.createAlert({ symbol, condition, threshold: thresholdVal, email, note: note || undefined });
       localStorage.setItem('stockai_alert_email', email);
       await mutate();
       setThreshold('');
@@ -68,8 +101,8 @@ export default function AlertsPage() {
     } catch {}
   }
 
-  const active   = (alerts ?? []).filter(a => !a.triggered);
-  const fired    = (alerts ?? []).filter(a => a.triggered);
+  const active = (alerts ?? []).filter(a => !a.triggered);
+  const fired  = (alerts ?? []).filter(a => a.triggered);
 
   return (
     <div style={{ maxWidth: '900px', margin: '0 auto', paddingTop: '8px' }}>
@@ -79,7 +112,7 @@ export default function AlertsPage() {
         <div>
           <h1 style={{ margin: 0, fontSize: '20px', fontWeight: 800, color: '#f1f5f9' }}>Price Alerts</h1>
           <div style={{ fontSize: '12px', color: '#475569', marginTop: '3px' }}>
-            {active.length} active · email sent when price is hit · checked every minute
+            {active.length} active · email sent when condition is met · checked every market refresh
           </div>
         </div>
       </div>
@@ -90,7 +123,7 @@ export default function AlertsPage() {
         <div style={{ padding: '20px 24px' }}>
           <h2 style={{ margin: '0 0 18px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Create Alert</h2>
           <form onSubmit={handleCreate}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px 1fr 1fr', gap: '12px', alignItems: 'end' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 200px 1fr', gap: '12px', alignItems: 'end' }}>
 
               <div>
                 <label style={lbl}>Stock</label>
@@ -104,39 +137,81 @@ export default function AlertsPage() {
 
               <div>
                 <label style={lbl}>Condition</label>
-                <select value={condition} onChange={e => setCondition(e.target.value as 'above' | 'below')} style={inp}>
-                  <option value="above">Price rises above</option>
-                  <option value="below">Price falls below</option>
+                <select value={condition} onChange={e => setCondition(e.target.value)} style={inp}>
+                  <optgroup label="Price">
+                    <option value="above">Price rises above</option>
+                    <option value="below">Price falls below</option>
+                  </optgroup>
+                  <optgroup label="Price vs EMA">
+                    <option value="cross_above_ema">Crosses above EMA</option>
+                    <option value="cross_below_ema">Crosses below EMA</option>
+                  </optgroup>
+                  <optgroup label="EMA50 vs EMA200">
+                    <option value="golden_cross">Golden Cross (EMA50 ↑ EMA200)</option>
+                    <option value="death_cross">Death Cross (EMA50 ↓ EMA200)</option>
+                  </optgroup>
+                  <optgroup label="Milestone">
+                    <option value="new_52wk_high">New 52-week high</option>
+                    <option value="new_52wk_low">New 52-week low</option>
+                  </optgroup>
                 </select>
               </div>
 
-              <div>
-                <label style={lbl}>Threshold ($)</label>
-                <input
-                  type="number" step="any" min="0"
-                  value={threshold}
-                  onChange={e => setThreshold(e.target.value)}
-                  placeholder="0.00"
-                  required
-                  style={inp}
-                />
-              </div>
-
-              <div>
-                <label style={lbl}>Email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  required
-                  style={inp}
-                />
-              </div>
+              {/* Dynamic third column */}
+              {!isNoThreshold && !isEma && (
+                <div>
+                  <label style={lbl}>Target price</label>
+                  <input
+                    type="number" step="any" min="0"
+                    value={threshold}
+                    onChange={e => setThreshold(e.target.value)}
+                    placeholder="0.00"
+                    required
+                    style={inp}
+                  />
+                </div>
+              )}
+              {isEma && (
+                <div>
+                  <label style={lbl}>EMA period</label>
+                  <select value={emaPeriod} onChange={e => setEmaPeriod(e.target.value)} style={inp}>
+                    <option value="20">20-day</option>
+                    <option value="50">50-day</option>
+                    <option value="200">200-day</option>
+                  </select>
+                </div>
+              )}
+              {isNoThreshold && (
+                <div>
+                  <label style={lbl}>Email</label>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    required
+                    style={inp}
+                  />
+                </div>
+              )}
             </div>
 
+            {/* Second row */}
             <div style={{ marginTop: '10px', display: 'flex', gap: '12px', alignItems: 'end' }}>
-              <div style={{ flex: 1 }}>
+              {!isNoThreshold && (
+                <div style={{ flex: 1 }}>
+                  <label style={lbl}>Email</label>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    required
+                    style={inp}
+                  />
+                </div>
+              )}
+              <div style={{ flex: 2 }}>
                 <label style={lbl}>Note (optional)</label>
                 <input
                   type="text"
@@ -192,7 +267,7 @@ export default function AlertsPage() {
                   {alert.symbol}
                 </span>
                 <span style={{ fontSize: '13px', color: '#cbd5e1', flex: 1 }}>
-                  Price {alert.condition === 'above' ? 'rises above' : 'falls below'} <strong style={{ color: '#f1f5f9' }}>${alert.threshold}</strong>
+                  {alertLabel(alert)}
                 </span>
                 {alert.note && (
                   <span style={{ fontSize: '11px', color: '#475569', fontStyle: 'italic' }}>{alert.note}</span>
@@ -227,7 +302,7 @@ export default function AlertsPage() {
                   ✓ {alert.symbol}
                 </span>
                 <span style={{ fontSize: '12px', color: '#64748b', flex: 1 }}>
-                  Price {alert.condition === 'above' ? 'rose above' : 'fell below'} ${alert.threshold}
+                  {triggeredLabel(alert)}
                 </span>
                 {alert.note && (
                   <span style={{ fontSize: '11px', color: '#334155', fontStyle: 'italic' }}>{alert.note}</span>
