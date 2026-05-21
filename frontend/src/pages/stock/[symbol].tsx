@@ -91,8 +91,9 @@ export default function StockDetail() {
 
   // Alert form state
   const [alertOpen, setAlertOpen] = useState<boolean>(false);
-  const [alertCondition, setAlertCondition] = useState<'above' | 'below'>('above');
+  const [alertCondition, setAlertCondition] = useState<string>('above');
   const [alertThreshold, setAlertThreshold] = useState<string>('');
+  const [alertEmaPeriod, setAlertEmaPeriod] = useState<string>('20');
   const [alertEmail, setAlertEmail] = useState<string>('');
   const [alertNote, setAlertNote] = useState<string>('');
   const [alertSaving, setAlertSaving] = useState<boolean>(false);
@@ -104,9 +105,13 @@ export default function StockDetail() {
     if (saved) setAlertEmail(saved);
   }, []);
 
+  const isEmaCondition = alertCondition === 'cross_above_ema' || alertCondition === 'cross_below_ema';
+  const is52wkCondition = alertCondition === 'new_52wk_high' || alertCondition === 'new_52wk_low';
+
   async function createAlert() {
-    const threshold = parseFloat(alertThreshold);
-    if (!threshold || !alertEmail) return;
+    if (!alertEmail) return;
+    const threshold = is52wkCondition ? 0 : isEmaCondition ? parseInt(alertEmaPeriod) : parseFloat(alertThreshold);
+    if (!is52wkCondition && !isEmaCondition && (!alertThreshold || isNaN(threshold))) return;
     setAlertSaving(true);
     setAlertMsg('');
     try {
@@ -1508,23 +1513,51 @@ export default function StockDetail() {
               <label style={{ fontSize: '11px', color: '#64748b' }}>Condition</label>
               <select
                 value={alertCondition}
-                onChange={e => setAlertCondition(e.target.value as 'above' | 'below')}
+                onChange={e => setAlertCondition(e.target.value)}
                 style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px' }}
               >
-                <option value="above">Price rises above</option>
-                <option value="below">Price falls below</option>
+                <optgroup label="Price">
+                  <option value="above">Price rises above</option>
+                  <option value="below">Price falls below</option>
+                </optgroup>
+                <optgroup label="Moving Average">
+                  <option value="cross_above_ema">Crosses above EMA</option>
+                  <option value="cross_below_ema">Crosses below EMA</option>
+                </optgroup>
+                <optgroup label="Milestone">
+                  <option value="new_52wk_high">New 52-week high</option>
+                  <option value="new_52wk_low">New 52-week low</option>
+                </optgroup>
               </select>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <label style={{ fontSize: '11px', color: '#64748b' }}>Target price</label>
-              <input
-                type="number"
-                placeholder={curPrice ? curPrice.toFixed(2) : '0.00'}
-                value={alertThreshold}
-                onChange={e => setAlertThreshold(e.target.value)}
-                style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '110px' }}
-              />
-            </div>
+            {/* Price threshold — only for above/below */}
+            {!isEmaCondition && !is52wkCondition && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '11px', color: '#64748b' }}>Target price</label>
+                <input
+                  type="number"
+                  placeholder={curPrice ? curPrice.toFixed(2) : '0.00'}
+                  value={alertThreshold}
+                  onChange={e => setAlertThreshold(e.target.value)}
+                  style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '110px' }}
+                />
+              </div>
+            )}
+            {/* EMA period selector */}
+            {isEmaCondition && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '11px', color: '#64748b' }}>EMA period</label>
+                <select
+                  value={alertEmaPeriod}
+                  onChange={e => setAlertEmaPeriod(e.target.value)}
+                  style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px' }}
+                >
+                  <option value="20">20-day</option>
+                  <option value="50">50-day</option>
+                  <option value="200">200-day</option>
+                </select>
+              </div>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '160px' }}>
               <label style={{ fontSize: '11px', color: '#64748b' }}>Note (optional)</label>
               <input
@@ -1555,8 +1588,8 @@ export default function StockDetail() {
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <button
                 onClick={createAlert}
-                disabled={alertSaving || !alertThreshold || !alertEmail}
-                style={{ padding: '7px 16px', borderRadius: '6px', border: 'none', background: alertSaving || !alertThreshold || !alertEmail ? '#334155' : '#6366f1', color: '#fff', fontSize: '13px', cursor: alertSaving || !alertThreshold || !alertEmail ? 'not-allowed' : 'pointer' }}
+                disabled={alertSaving || (!is52wkCondition && !isEmaCondition && !alertThreshold) || !alertEmail}
+                style={{ padding: '7px 16px', borderRadius: '6px', border: 'none', background: alertSaving || (!is52wkCondition && !isEmaCondition && !alertThreshold) || !alertEmail ? '#334155' : '#6366f1', color: '#fff', fontSize: '13px', cursor: alertSaving || (!is52wkCondition && !isEmaCondition && !alertThreshold) || !alertEmail ? 'not-allowed' : 'pointer' }}
               >
                 {alertSaving ? 'Saving…' : 'Set Alert'}
               </button>
@@ -1567,26 +1600,38 @@ export default function StockDetail() {
 
         {alerts && alerts.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {alerts.map(a => (
-              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: a.triggered ? 'rgba(30,41,59,0.4)' : 'rgba(30,41,59,0.7)', border: `1px solid ${a.triggered ? 'rgba(148,163,184,0.1)' : 'rgba(99,102,241,0.2)'}`, borderRadius: '8px', padding: '10px 14px' }}>
-                <span style={{ fontSize: '18px' }}>{a.condition === 'above' ? '▲' : '▼'}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '13px', color: a.triggered ? '#64748b' : '#e2e8f0' }}>
-                    {a.condition === 'above' ? 'Rises above' : 'Falls below'} <strong>{a.threshold}</strong>
-                    {a.note && <span style={{ color: '#64748b', marginLeft: '8px' }}>— {a.note}</span>}
+            {alerts.map(a => {
+              const isUp = a.condition === 'above' || a.condition === 'cross_above_ema' || a.condition === 'new_52wk_high';
+              const icon = isUp ? '▲' : '▼';
+              let label = '';
+              if (a.condition === 'above') label = `Rises above ${a.threshold}`;
+              else if (a.condition === 'below') label = `Falls below ${a.threshold}`;
+              else if (a.condition === 'cross_above_ema') label = `Crosses above EMA${a.threshold}`;
+              else if (a.condition === 'cross_below_ema') label = `Crosses below EMA${a.threshold}`;
+              else if (a.condition === 'new_52wk_high') label = 'New 52-week high';
+              else if (a.condition === 'new_52wk_low') label = 'New 52-week low';
+              else label = a.condition;
+              return (
+                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: a.triggered ? 'rgba(30,41,59,0.4)' : 'rgba(30,41,59,0.7)', border: `1px solid ${a.triggered ? 'rgba(148,163,184,0.1)' : 'rgba(99,102,241,0.2)'}`, borderRadius: '8px', padding: '10px 14px' }}>
+                  <span style={{ fontSize: '18px' }}>{icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '13px', color: a.triggered ? '#64748b' : '#e2e8f0' }}>
+                      {label}
+                      {a.note && <span style={{ color: '#64748b', marginLeft: '8px' }}>— {a.note}</span>}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>→ {a.email}</div>
                   </div>
-                  <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>→ {a.email}</div>
+                  {a.triggered && (
+                    <span style={{ fontSize: '11px', background: 'rgba(74,222,128,0.1)', color: '#4ade80', padding: '2px 8px', borderRadius: '4px' }}>Triggered</span>
+                  )}
+                  <button
+                    onClick={() => removeAlert(a.id)}
+                    style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px', lineHeight: 1, padding: '2px 4px' }}
+                    title="Delete alert"
+                  >×</button>
                 </div>
-                {a.triggered && (
-                  <span style={{ fontSize: '11px', background: 'rgba(74,222,128,0.1)', color: '#4ade80', padding: '2px 8px', borderRadius: '4px' }}>Triggered</span>
-                )}
-                <button
-                  onClick={() => removeAlert(a.id)}
-                  style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px', lineHeight: 1, padding: '2px 4px' }}
-                  title="Delete alert"
-                >×</button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div style={{ fontSize: '12px', color: '#475569' }}>No alerts set for {symbol}. Click "+ New Alert" to get notified by email when the price hits your target.</div>

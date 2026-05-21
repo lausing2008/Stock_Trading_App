@@ -275,6 +275,10 @@ class WatchlistItem(Base):
 class AlertCondition(str, enum.Enum):
     ABOVE = "above"
     BELOW = "below"
+    CROSS_ABOVE_EMA = "cross_above_ema"   # threshold = EMA period (20/50/200)
+    CROSS_BELOW_EMA = "cross_below_ema"
+    NEW_52WK_HIGH   = "new_52wk_high"     # threshold unused (store 0)
+    NEW_52WK_LOW    = "new_52wk_low"
 
 
 class PriceAlert(Base):

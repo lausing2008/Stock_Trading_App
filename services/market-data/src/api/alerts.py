@@ -48,7 +48,8 @@ def create_alert(
     try:
         cond = AlertCondition(body.condition)
     except ValueError:
-        raise HTTPException(400, "condition must be 'above' or 'below'")
+        valid = [c.value for c in AlertCondition]
+        raise HTTPException(400, f"condition must be one of: {valid}")
 
     email = body.email.strip() if body.email else user.email
 

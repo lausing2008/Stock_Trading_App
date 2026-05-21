@@ -22,13 +22,13 @@ from __future__ import annotations
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import PriceAlert, SignalAlert, SessionLocal, Stock
+from db import AlertCondition, Price, PriceAlert, SignalAlert, SessionLocal, Stock
 
 from .ingestion import ingest_universe
 from .email_service import send_price_alert_email, send_signal_alert_email
@@ -72,6 +72,7 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
         _post(f"{_settings.ml_prediction_url}/ml/train_all")
 
     check_signal_alerts()
+    check_technical_alerts()
     log.info("scheduler.refresh_done", market=market, post_close=post_close)
 
 
@@ -225,6 +226,129 @@ def check_price_alerts() -> None:
                 log.info("alert.check_done", fired=fired, checked=len(alerts))
     except Exception as exc:
         log.error("alert.check_error", error=str(exc))
+
+
+def check_technical_alerts() -> None:
+    """Check EMA crossover and 52-week high/low alerts using DB price history.
+
+    Runs after each market refresh (when fresh daily bars are ingested).
+    EMA period is stored in the threshold field (20, 50, or 200).
+    52-week conditions store 0 in threshold.
+    """
+    import pandas as pd
+
+    _TECHNICAL = {
+        AlertCondition.CROSS_ABOVE_EMA,
+        AlertCondition.CROSS_BELOW_EMA,
+        AlertCondition.NEW_52WK_HIGH,
+        AlertCondition.NEW_52WK_LOW,
+    }
+
+    try:
+        with SessionLocal() as session:
+            alerts = session.execute(
+                select(PriceAlert).where(
+                    PriceAlert.triggered.is_(False),
+                    PriceAlert.condition.in_(_TECHNICAL),
+                )
+            ).scalars().all()
+            if not alerts:
+                return
+
+            # Fetch 260 bars per unique symbol (enough for EMA200 + 52-week)
+            symbols = list({a.symbol for a in alerts})
+            prices_by_sym: dict[str, pd.Series] = {}
+            for sym in symbols:
+                try:
+                    stock = session.execute(
+                        select(Stock).where(Stock.symbol == sym)
+                    ).scalar_one_or_none()
+                    if not stock:
+                        continue
+                    rows = session.execute(
+                        select(Price.ts, Price.close)
+                        .where(Price.stock_id == stock.id)
+                        .order_by(Price.ts.asc())
+                        .limit(260)
+                    ).all()
+                    if len(rows) < 3:
+                        continue
+                    prices_by_sym[sym] = pd.Series(
+                        [float(r.close) for r in rows]
+                    )
+                except Exception as exc:
+                    log.warning("tech_alert.price_error", symbol=sym, error=str(exc))
+
+            fired = 0
+            for alert in alerts:
+                close = prices_by_sym.get(alert.symbol)
+                if close is None:
+                    continue
+                cond = alert.condition
+
+                try:
+                    if cond in (AlertCondition.CROSS_ABOVE_EMA, AlertCondition.CROSS_BELOW_EMA):
+                        period = int(alert.threshold)  # 20, 50, or 200
+                        if len(close) < period:
+                            continue
+                        ema = close.ewm(span=period, adjust=False).mean()
+                        prev_above = close.iloc[-2] > ema.iloc[-2]
+                        curr_above = close.iloc[-1] > ema.iloc[-1]
+                        crossed = (
+                            (cond == AlertCondition.CROSS_ABOVE_EMA and not prev_above and curr_above) or
+                            (cond == AlertCondition.CROSS_BELOW_EMA and prev_above and not curr_above)
+                        )
+                        if not crossed:
+                            continue
+                        direction = "crossed above" if cond == AlertCondition.CROSS_ABOVE_EMA else "crossed below"
+                        cond_label = f"{direction} EMA{period} ({ema.iloc[-1]:.2f})"
+                        threshold_val = float(ema.iloc[-1])
+
+                    elif cond == AlertCondition.NEW_52WK_HIGH:
+                        if len(close) < 2:
+                            continue
+                        high_52 = float(close.iloc[:-1].tail(251).max())
+                        if float(close.iloc[-1]) <= high_52:
+                            continue
+                        cond_label = f"hit a new 52-week high (prev high {high_52:.2f})"
+                        threshold_val = high_52
+
+                    elif cond == AlertCondition.NEW_52WK_LOW:
+                        if len(close) < 2:
+                            continue
+                        low_52 = float(close.iloc[:-1].tail(251).min())
+                        if float(close.iloc[-1]) >= low_52:
+                            continue
+                        cond_label = f"hit a new 52-week low (prev low {low_52:.2f})"
+                        threshold_val = low_52
+
+                    else:
+                        continue
+
+                    alert.triggered = True
+                    alert.triggered_at = datetime.now(timezone.utc)
+                    fired += 1
+                    log.info("tech_alert.triggered", symbol=alert.symbol, condition=cond_label)
+
+                    if alert.email:
+                        send_price_alert_email(
+                            to=alert.email,
+                            symbol=alert.symbol,
+                            condition=cond_label,
+                            threshold=threshold_val,
+                            price=float(close.iloc[-1]),
+                            note=alert.note,
+                        )
+
+                except Exception as exc:
+                    log.warning("tech_alert.check_error", symbol=alert.symbol, error=str(exc))
+
+            session.commit()
+            if fired:
+                log.info("tech_alert.check_done", fired=fired)
+
+    except Exception as exc:
+        log.error("tech_alert.error", error=str(exc))
 
 
 def start_scheduler() -> None:
