@@ -106,12 +106,12 @@ export default function StockDetail() {
   }, []);
 
   const isEmaCondition = alertCondition === 'cross_above_ema' || alertCondition === 'cross_below_ema';
-  const is52wkCondition = alertCondition === 'new_52wk_high' || alertCondition === 'new_52wk_low';
+  const isNoThreshold = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross'].includes(alertCondition);
 
   async function createAlert() {
     if (!alertEmail) return;
-    const threshold = is52wkCondition ? 0 : isEmaCondition ? parseInt(alertEmaPeriod) : parseFloat(alertThreshold);
-    if (!is52wkCondition && !isEmaCondition && (!alertThreshold || isNaN(threshold))) return;
+    const threshold = isNoThreshold ? 0 : isEmaCondition ? parseInt(alertEmaPeriod) : parseFloat(alertThreshold);
+    if (!isNoThreshold && !isEmaCondition && (!alertThreshold || isNaN(threshold))) return;
     setAlertSaving(true);
     setAlertMsg('');
     try {
@@ -1520,9 +1520,13 @@ export default function StockDetail() {
                   <option value="above">Price rises above</option>
                   <option value="below">Price falls below</option>
                 </optgroup>
-                <optgroup label="Moving Average">
+                <optgroup label="Price vs EMA">
                   <option value="cross_above_ema">Crosses above EMA</option>
                   <option value="cross_below_ema">Crosses below EMA</option>
+                </optgroup>
+                <optgroup label="EMA50 vs EMA200">
+                  <option value="golden_cross">Golden Cross (EMA50 ↑ EMA200)</option>
+                  <option value="death_cross">Death Cross (EMA50 ↓ EMA200)</option>
                 </optgroup>
                 <optgroup label="Milestone">
                   <option value="new_52wk_high">New 52-week high</option>
@@ -1531,7 +1535,7 @@ export default function StockDetail() {
               </select>
             </div>
             {/* Price threshold — only for above/below */}
-            {!isEmaCondition && !is52wkCondition && (
+            {!isEmaCondition && !isNoThreshold && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label style={{ fontSize: '11px', color: '#64748b' }}>Target price</label>
                 <input
@@ -1588,8 +1592,8 @@ export default function StockDetail() {
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <button
                 onClick={createAlert}
-                disabled={alertSaving || (!is52wkCondition && !isEmaCondition && !alertThreshold) || !alertEmail}
-                style={{ padding: '7px 16px', borderRadius: '6px', border: 'none', background: alertSaving || (!is52wkCondition && !isEmaCondition && !alertThreshold) || !alertEmail ? '#334155' : '#6366f1', color: '#fff', fontSize: '13px', cursor: alertSaving || (!is52wkCondition && !isEmaCondition && !alertThreshold) || !alertEmail ? 'not-allowed' : 'pointer' }}
+                disabled={alertSaving || (!isNoThreshold && !isEmaCondition && !alertThreshold) || !alertEmail}
+                style={{ padding: '7px 16px', borderRadius: '6px', border: 'none', background: alertSaving || (!isNoThreshold && !isEmaCondition && !alertThreshold) || !alertEmail ? '#334155' : '#6366f1', color: '#fff', fontSize: '13px', cursor: alertSaving || (!isNoThreshold && !isEmaCondition && !alertThreshold) || !alertEmail ? 'not-allowed' : 'pointer' }}
               >
                 {alertSaving ? 'Saving…' : 'Set Alert'}
               </button>
@@ -1601,7 +1605,7 @@ export default function StockDetail() {
         {alerts && alerts.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {alerts.map(a => {
-              const isUp = a.condition === 'above' || a.condition === 'cross_above_ema' || a.condition === 'new_52wk_high';
+              const isUp = ['above', 'cross_above_ema', 'new_52wk_high', 'golden_cross'].includes(a.condition);
               const icon = isUp ? '▲' : '▼';
               let label = '';
               if (a.condition === 'above') label = `Rises above ${a.threshold}`;
@@ -1610,6 +1614,8 @@ export default function StockDetail() {
               else if (a.condition === 'cross_below_ema') label = `Crosses below EMA${a.threshold}`;
               else if (a.condition === 'new_52wk_high') label = 'New 52-week high';
               else if (a.condition === 'new_52wk_low') label = 'New 52-week low';
+              else if (a.condition === 'golden_cross') label = 'Golden Cross (EMA50 ↑ EMA200)';
+              else if (a.condition === 'death_cross') label = 'Death Cross (EMA50 ↓ EMA200)';
               else label = a.condition;
               return (
                 <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: a.triggered ? 'rgba(30,41,59,0.4)' : 'rgba(30,41,59,0.7)', border: `1px solid ${a.triggered ? 'rgba(148,163,184,0.1)' : 'rgba(99,102,241,0.2)'}`, borderRadius: '8px', padding: '10px 14px' }}>

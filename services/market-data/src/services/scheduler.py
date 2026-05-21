@@ -242,6 +242,8 @@ def check_technical_alerts() -> None:
         AlertCondition.CROSS_BELOW_EMA,
         AlertCondition.NEW_52WK_HIGH,
         AlertCondition.NEW_52WK_LOW,
+        AlertCondition.GOLDEN_CROSS,
+        AlertCondition.DEATH_CROSS,
     }
 
     try:
@@ -321,6 +323,23 @@ def check_technical_alerts() -> None:
                             continue
                         cond_label = f"hit a new 52-week low (prev low {low_52:.2f})"
                         threshold_val = low_52
+
+                    elif cond in (AlertCondition.GOLDEN_CROSS, AlertCondition.DEATH_CROSS):
+                        if len(close) < 200:
+                            continue
+                        ema50 = close.ewm(span=50, adjust=False).mean()
+                        ema200 = close.ewm(span=200, adjust=False).mean()
+                        prev_above = ema50.iloc[-2] > ema200.iloc[-2]
+                        curr_above = ema50.iloc[-1] > ema200.iloc[-1]
+                        if cond == AlertCondition.GOLDEN_CROSS:
+                            if prev_above or not curr_above:
+                                continue
+                            cond_label = f"Golden Cross — EMA50 ({ema50.iloc[-1]:.2f}) crossed above EMA200 ({ema200.iloc[-1]:.2f})"
+                        else:
+                            if not prev_above or curr_above:
+                                continue
+                            cond_label = f"Death Cross — EMA50 ({ema50.iloc[-1]:.2f}) crossed below EMA200 ({ema200.iloc[-1]:.2f})"
+                        threshold_val = float(ema50.iloc[-1])
 
                     else:
                         continue
