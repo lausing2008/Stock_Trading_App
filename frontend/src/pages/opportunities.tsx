@@ -1,8 +1,8 @@
 'use client';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem } from '@/lib/api';
+import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type Overview } from '@/lib/api';
 import { askAI, isAiConfigured } from '@/lib/ai';
 
 type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth';
@@ -66,7 +66,7 @@ function scoreFor(
   const upside = r.fair_price && lp?.price ? ((r.fair_price - lp.price) / lp.price) * 100 : 0;
 
   switch (strategy) {
-    case 'all':      return r.score ?? 0;
+    case 'all':      return (r.score ?? 0) + (sig?.signal === 'BUY' ? 8 : sig?.signal === 'HOLD' ? 3 : 0);
     case 'swing':    return tech * 0.40 + mom * 0.25 + sigB + conf * 0.15;
     case 'short':    return mom  * 0.50 + tech * 0.25 + Math.abs(chg) * 3 + vlt * 0.10;
     case 'longterm': return val  * 0.40 + grow * 0.30 + Math.max(0, upside) * 0.6 + vlt * 0.15;
@@ -134,6 +134,208 @@ function getKeyMetric(
   }
 }
 
+interface AlertSuggestion {
+  label: string;
+  sublabel?: string;
+  condition: string;
+  threshold: number;
+  note: string;
+}
+
+function analyzeIndicators(
+  overview: Overview | null,
+  strategy: Strategy,
+  r: RankingRow,
+  lp?: LatestPrice,
+): AlertSuggestion[] {
+  const price = lp?.price;
+  if (!price) return [];
+
+  const out: AlertSuggestion[] = [];
+
+  if (overview?.indicators?.values) {
+    const vals = overview.indicators.values;
+
+    const last = (k: string): number | null => {
+      const arr = vals[k];
+      if (!arr) return null;
+      for (let i = arr.length - 1; i >= 0; i--) {
+        if (arr[i] != null) return arr[i]!;
+      }
+      return null;
+    };
+    const prevVal = (k: string): number | null => {
+      const arr = vals[k];
+      if (!arr) return null;
+      let found = 0;
+      for (let i = arr.length - 1; i >= 0; i--) {
+        if (arr[i] != null) {
+          if (found === 1) return arr[i]!;
+          found++;
+        }
+      }
+      return null;
+    };
+
+    const rsi    = last('rsi_14');
+    const sma20  = last('sma_20');
+    const sma50  = last('sma_50');
+    const sma200 = last('sma_200');
+    const bbUp   = last('bb_upper');
+    const bbLo   = last('bb_lower');
+    const bbMid  = last('bb_mid');
+    const hist     = last('hist');
+    const prevHist = prevVal('hist');
+
+    // ── RSI ───────────────────────────────────────────────────
+    if (rsi !== null) {
+      if (rsi >= 74) {
+        const stopAt = sma20 ? parseFloat(sma20.toFixed(2)) : parseFloat((price * 0.92).toFixed(2));
+        out.push({
+          label: `RSI ${rsi.toFixed(0)} — heavily overbought`,
+          sublabel: `Stop at SMA20 $${stopAt}`,
+          condition: 'below', threshold: stopAt,
+          note: 'RSI overbought stop',
+        });
+      } else if (rsi >= 65) {
+        out.push({
+          label: `RSI ${rsi.toFixed(0)} — extended, trailing stop`,
+          sublabel: `Stop −7% at $${(price * 0.93).toFixed(2)}`,
+          condition: 'below', threshold: parseFloat((price * 0.93).toFixed(2)),
+          note: 'RSI extended stop',
+        });
+      } else if (rsi <= 25) {
+        const target = sma20 ? parseFloat(sma20.toFixed(2)) : parseFloat((price * 1.08).toFixed(2));
+        out.push({
+          label: `RSI ${rsi.toFixed(0)} — severely oversold`,
+          sublabel: `Alert when price reclaims SMA20 $${target}`,
+          condition: 'above', threshold: target,
+          note: 'Oversold bounce trigger',
+        });
+      } else if (rsi <= 38) {
+        out.push({
+          label: `RSI ${rsi.toFixed(0)} — oversold, watch EMA20 reclaim`,
+          sublabel: 'Alert on EMA20 crossover',
+          condition: 'cross_above_ema', threshold: 20,
+          note: 'Oversold recovery entry',
+        });
+      }
+    }
+
+    // ── Bollinger Bands ───────────────────────────────────────
+    if (bbUp && bbLo && bbMid) {
+      const pos = (price - bbLo) / (bbUp - bbLo);
+      if (pos >= 0.90) {
+        out.push({
+          label: `At upper Bollinger Band ($${bbUp.toFixed(2)})`,
+          sublabel: `Mean reversion target BB mid $${bbMid.toFixed(2)}`,
+          condition: 'below', threshold: parseFloat(bbMid.toFixed(2)),
+          note: 'BB upper reversal',
+        });
+      } else if (pos <= 0.10) {
+        out.push({
+          label: `At lower Bollinger Band ($${bbLo.toFixed(2)})`,
+          sublabel: `Bounce target BB mid $${bbMid.toFixed(2)}`,
+          condition: 'above', threshold: parseFloat(bbMid.toFixed(2)),
+          note: 'BB lower bounce',
+        });
+      }
+    }
+
+    // ── MACD histogram crossover ──────────────────────────────
+    if (hist !== null && prevHist !== null) {
+      if (prevHist < 0 && hist >= 0) {
+        out.push({
+          label: 'MACD just turned bullish',
+          sublabel: 'Alert on EMA20 crossover to confirm momentum',
+          condition: 'cross_above_ema', threshold: 20,
+          note: 'MACD bullish crossover entry',
+        });
+      } else if (prevHist > 0 && hist <= 0) {
+        const stopAt = sma20 ? parseFloat(sma20.toFixed(2)) : parseFloat((price * 0.95).toFixed(2));
+        out.push({
+          label: 'MACD just turned bearish',
+          sublabel: `Exit signal — stop at $${stopAt}`,
+          condition: 'below', threshold: stopAt,
+          note: 'MACD bearish crossover exit',
+        });
+      }
+    }
+
+    // ── SMA200 test ───────────────────────────────────────────
+    if (sma200 && Math.abs(price - sma200) / sma200 < 0.04) {
+      out.push({
+        label: `Testing SMA200 ($${sma200.toFixed(2)}) — critical trend line`,
+        sublabel: price >= sma200 ? 'Alert if it breaks below' : 'Alert if it reclaims above',
+        condition: price >= sma200 ? 'below' : 'above',
+        threshold: parseFloat(sma200.toFixed(2)),
+        note: 'SMA200 level break',
+      });
+    }
+
+    // ── SMA50/200 gap → Golden / Death Cross ──────────────────
+    if (sma50 && sma200 && out.length < 3) {
+      const gap = Math.abs(sma50 - sma200) / sma200 * 100;
+      if (gap < 2.5) {
+        out.push({
+          label: sma50 < sma200
+            ? `Golden Cross imminent — SMA50/200 gap ${gap.toFixed(1)}%`
+            : `Death Cross risk — SMA50/200 gap ${gap.toFixed(1)}%`,
+          sublabel: sma50 < sma200 ? 'Bullish trend change signal' : 'Bearish trend change signal',
+          condition: sma50 < sma200 ? 'golden_cross' : 'death_cross',
+          threshold: 0,
+          note: sma50 < sma200 ? 'Golden Cross alert' : 'Death Cross alert',
+        });
+      }
+    }
+  }
+
+  // ── Nearby S/R levels ─────────────────────────────────────────
+  if (overview?.levels?.support_resistance && out.length < 4) {
+    const nearby = [...overview.levels.support_resistance]
+      .filter(lvl => {
+        const dist = Math.abs(lvl.price - price) / price;
+        return dist > 0.005 && dist < 0.07;
+      })
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 2);
+    for (const lvl of nearby) {
+      out.push({
+        label: `${lvl.kind === 'resistance' ? 'Resistance' : 'Support'} at $${lvl.price.toFixed(2)}`,
+        sublabel: `Strength ${lvl.strength.toFixed(0)} — ${lvl.price > price ? 'breakout target' : 'break-down watch'}`,
+        condition: lvl.price > price ? 'above' : 'below',
+        threshold: parseFloat(lvl.price.toFixed(2)),
+        note: `${lvl.kind} level`,
+      });
+    }
+  }
+
+  // ── Fair value target ─────────────────────────────────────────
+  if (r.fair_price && r.fair_price > price * 1.03 && out.length < 4) {
+    out.push({
+      label: `Fair value target $${r.fair_price.toFixed(2)}`,
+      sublabel: `+${(((r.fair_price - price) / price) * 100).toFixed(1)}% upside`,
+      condition: 'above',
+      threshold: parseFloat(r.fair_price.toFixed(2)),
+      note: 'Fair value target',
+    });
+  }
+
+  // ── Fallback stop loss if none generated ──────────────────────
+  if (!out.some(s => s.condition === 'below')) {
+    const stopPct = 0.08;
+    out.push({
+      label: `Stop loss −${(stopPct * 100).toFixed(0)}%`,
+      sublabel: `$${(price * (1 - stopPct)).toFixed(2)}`,
+      condition: 'below',
+      threshold: parseFloat((price * (1 - stopPct)).toFixed(2)),
+      note: 'Stop loss',
+    });
+  }
+
+  return out.slice(0, 4);
+}
+
 const STRATEGY_FILTER: Record<Strategy, (r: RankingRow, sig?: SignalSummary) => boolean> = {
   all:      () => true,
   swing:    (r, sig) => (sig?.signal === 'BUY' || sig?.signal === 'HOLD') && (r.technical ?? 0) >= 45,
@@ -145,6 +347,44 @@ const STRATEGY_FILTER: Record<Strategy, (r: RankingRow, sig?: SignalSummary) => 
 export default function Opportunities() {
   const [strategy, setStrategy] = useState<Strategy>('all');
   const [market, setMarket] = useState<Market>('all');
+
+  // Alert suggestion panel state
+  const [alertPanel, setAlertPanel] = useState<string | null>(null);
+  const [alertEmail, setAlertEmail] = useState('');
+  const [alertSaving, setAlertSaving] = useState<string | null>(null);
+  const [alertDone, setAlertDone] = useState<Set<string>>(new Set());
+  const [overviewCache, setOverviewCache] = useState<Record<string, Overview>>({});
+  const [loadingPanel, setLoadingPanel] = useState<string | null>(null);
+
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null;
+    if (saved) setAlertEmail(saved);
+  }, []);
+
+  async function openAlertPanel(symbol: string) {
+    if (alertPanel === symbol) { setAlertPanel(null); return; }
+    setAlertPanel(symbol);
+    if (!overviewCache[symbol]) {
+      setLoadingPanel(symbol);
+      try {
+        const ov = await api.overview(symbol);
+        setOverviewCache(prev => ({ ...prev, [symbol]: ov }));
+      } catch { /* non-fatal — will fall back to basic suggestions */ }
+      setLoadingPanel(null);
+    }
+  }
+
+  async function handleSetAlert(symbol: string, suggestion: AlertSuggestion) {
+    if (!alertEmail) return;
+    const key = `${symbol}:${suggestion.condition}:${suggestion.threshold}`;
+    setAlertSaving(key);
+    try {
+      await api.createAlert({ symbol, condition: suggestion.condition, threshold: suggestion.threshold, email: alertEmail, note: suggestion.note });
+      localStorage.setItem('stockai_alert_email', alertEmail);
+      setAlertDone(prev => new Set(prev).add(key));
+    } catch { /* non-fatal */ }
+    setAlertSaving(null);
+  }
 
   // Near-term outlook state
   const [outlook, setOutlook] = useState<OutlookItem[] | null>(null);
@@ -606,113 +846,206 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
           const reasons = getReasons(strategy, r, sig, lp);
           const keyMetric = getKeyMetric(strategy, r, sig, lp);
           const changeUp = (lp?.change_pct ?? 0) >= 0;
+          const panelOpen = alertPanel === r.symbol;
+          const panelLoading = loadingPanel === r.symbol;
+          const suggestions = analyzeIndicators(overviewCache[r.symbol] ?? null, strategy, r, lp);
 
           return (
-            <Link
-              key={r.symbol}
-              href={`/stock/${r.symbol}`}
-              style={{ textDecoration: 'none' }}
-            >
-              <div
-                className="opp-card"
-                style={{
-                  borderRadius: '12px', border: '1px solid #1e293b',
-                  background: '#0f172a', padding: '14px 18px',
-                  display: 'grid',
-                  gridTemplateColumns: '36px 1fr auto',
-                  gap: '14px', alignItems: 'center',
-                  transition: 'all 0.15s',
-                }}
-              >
-                {/* Rank badge */}
-                <div style={{
-                  width: '36px', height: '36px', borderRadius: '50%', flexShrink: 0,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: idx === 0 ? 'rgba(250,204,21,0.15)' : idx === 1 ? 'rgba(148,163,184,0.1)' : idx === 2 ? 'rgba(251,146,60,0.1)' : 'rgba(255,255,255,0.03)',
-                  border: idx === 0 ? '1px solid rgba(250,204,21,0.3)' : idx === 1 ? '1px solid rgba(148,163,184,0.2)' : idx === 2 ? '1px solid rgba(251,146,60,0.2)' : '1px solid #1e293b',
-                  fontSize: '13px', fontWeight: 800,
-                  color: idx === 0 ? '#facc15' : idx === 1 ? '#94a3b8' : idx === 2 ? '#fb923c' : '#334155',
-                }}>
-                  {idx + 1}
-                </div>
+            <div key={r.symbol}>
+              <Link href={`/stock/${r.symbol}`} style={{ textDecoration: 'none', display: 'block' }}>
+                <div
+                  className="opp-card"
+                  style={{
+                    borderRadius: panelOpen ? '12px 12px 0 0' : '12px',
+                    border: '1px solid #1e293b',
+                    borderBottom: panelOpen ? '1px solid rgba(99,102,241,0.3)' : '1px solid #1e293b',
+                    background: '#0f172a', padding: '14px 18px',
+                    display: 'grid',
+                    gridTemplateColumns: '36px 1fr auto',
+                    gap: '14px', alignItems: 'center',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {/* Rank badge */}
+                  <div style={{
+                    width: '36px', height: '36px', borderRadius: '50%', flexShrink: 0,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: idx === 0 ? 'rgba(250,204,21,0.15)' : idx === 1 ? 'rgba(148,163,184,0.1)' : idx === 2 ? 'rgba(251,146,60,0.1)' : 'rgba(255,255,255,0.03)',
+                    border: idx === 0 ? '1px solid rgba(250,204,21,0.3)' : idx === 1 ? '1px solid rgba(148,163,184,0.2)' : idx === 2 ? '1px solid rgba(251,146,60,0.2)' : '1px solid #1e293b',
+                    fontSize: '13px', fontWeight: 800,
+                    color: idx === 0 ? '#facc15' : idx === 1 ? '#94a3b8' : idx === 2 ? '#fb923c' : '#334155',
+                  }}>
+                    {idx + 1}
+                  </div>
 
-                {/* Main info */}
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: '16px', fontWeight: 800, color: '#f1f5f9' }}>{r.symbol}</span>
-                    <span style={{ fontSize: '11px', color: '#475569' }}>{r.name}</span>
-                    {/* Market badge */}
-                    <span style={{ fontSize: '9px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', background: r.market === 'US' ? 'rgba(59,130,246,0.15)' : 'rgba(236,72,153,0.15)', color: r.market === 'US' ? '#60a5fa' : '#f472b6', border: r.market === 'US' ? '1px solid rgba(59,130,246,0.25)' : '1px solid rgba(236,72,153,0.25)', letterSpacing: '0.05em' }}>
-                      {r.market}
-                    </span>
-                    {r.sector && <span style={{ fontSize: '9px', color: '#334155' }}>{r.sector}</span>}
-                    {/* Signal badge */}
-                    {sig && (
-                      <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px', color: sc.color, background: sc.bg, border: `1px solid ${sc.border}` }}>
-                        {sig.signal}
+                  {/* Main info */}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '16px', fontWeight: 800, color: '#f1f5f9' }}>{r.symbol}</span>
+                      <span style={{ fontSize: '11px', color: '#475569' }}>{r.name}</span>
+                      <span style={{ fontSize: '9px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', background: r.market === 'US' ? 'rgba(59,130,246,0.15)' : 'rgba(236,72,153,0.15)', color: r.market === 'US' ? '#60a5fa' : '#f472b6', border: r.market === 'US' ? '1px solid rgba(59,130,246,0.25)' : '1px solid rgba(236,72,153,0.25)', letterSpacing: '0.05em' }}>
+                        {r.market}
                       </span>
-                    )}
-                  </div>
+                      {r.sector && <span style={{ fontSize: '9px', color: '#334155' }}>{r.sector}</span>}
+                      {sig && (
+                        <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px', color: sc.color, background: sc.bg, border: `1px solid ${sc.border}` }}>
+                          {sig.signal}
+                        </span>
+                      )}
+                    </div>
 
-                  {/* Reason bullets */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                    {reasons.map((rr, i) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                        <span style={{ fontSize: '9px', color: rr.positive ? '#4ade80' : '#fb923c', flexShrink: 0 }}>{rr.positive ? '▲' : '▼'}</span>
-                        <span style={{ fontSize: '11px', color: '#64748b' }}>{rr.text}</span>
-                      </div>
-                    ))}
-                    {reasons.length === 0 && (
-                      <span style={{ fontSize: '11px', color: '#334155' }}>K-Score: {(r.score ?? 0).toFixed(0)} — view stock detail for full analysis</span>
-                    )}
-                  </div>
-
-                  {/* Sub-score bar */}
-                  <div style={{ display: 'flex', gap: '6px', marginTop: '8px', alignItems: 'center' }}>
-                    {[
-                      { label: 'T', val: r.technical, title: 'Technical' },
-                      { label: 'M', val: r.momentum,  title: 'Momentum'  },
-                      { label: 'V', val: r.value,     title: 'Value'     },
-                      { label: 'G', val: r.growth,    title: 'Growth'    },
-                    ].map(({ label, val, title }) => val != null ? (
-                      <div key={label} title={`${title}: ${val.toFixed(0)}`} style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
-                        <span style={{ fontSize: '9px', color: '#334155', fontWeight: 700 }}>{label}</span>
-                        <div style={{ width: '32px', height: '4px', borderRadius: '2px', background: '#1e293b', overflow: 'hidden' }}>
-                          <div style={{ height: '100%', width: `${val}%`, background: scoreColor(val), borderRadius: '2px' }} />
+                    {/* Reason bullets */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      {reasons.map((rr, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <span style={{ fontSize: '9px', color: rr.positive ? '#4ade80' : '#fb923c', flexShrink: 0 }}>{rr.positive ? '▲' : '▼'}</span>
+                          <span style={{ fontSize: '11px', color: '#64748b' }}>{rr.text}</span>
                         </div>
+                      ))}
+                      {reasons.length === 0 && (
+                        <span style={{ fontSize: '11px', color: '#334155' }}>K-Score: {(r.score ?? 0).toFixed(0)} — view stock detail for full analysis</span>
+                      )}
+                    </div>
+
+                    {/* Sub-score bar */}
+                    <div style={{ display: 'flex', gap: '6px', marginTop: '8px', alignItems: 'center' }}>
+                      {[
+                        { label: 'T', val: r.technical, title: 'Technical' },
+                        { label: 'M', val: r.momentum,  title: 'Momentum'  },
+                        { label: 'V', val: r.value,     title: 'Value'     },
+                        { label: 'G', val: r.growth,    title: 'Growth'    },
+                      ].map(({ label, val, title }) => val != null ? (
+                        <div key={label} title={`${title}: ${val.toFixed(0)}`} style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                          <span style={{ fontSize: '9px', color: '#334155', fontWeight: 700 }}>{label}</span>
+                          <div style={{ width: '32px', height: '4px', borderRadius: '2px', background: '#1e293b', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${val}%`, background: scoreColor(val), borderRadius: '2px' }} />
+                          </div>
+                        </div>
+                      ) : null)}
+                    </div>
+                  </div>
+
+                  {/* Right panel: price + key metric + bell */}
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    {lp ? (
+                      <>
+                        <div style={{ fontSize: '16px', fontWeight: 800, color: '#f1f5f9' }}>
+                          ${lp.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                        {lp.change_pct != null && (
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: changeUp ? '#4ade80' : '#f87171' }}>
+                            {changeUp ? '▲' : '▼'} {Math.abs(lp.change_pct).toFixed(2)}%
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div style={{ fontSize: '13px', color: '#334155' }}>—</div>
+                    )}
+                    {keyMetric && (
+                      <div style={{ marginTop: '6px', padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.03)', border: '1px solid #1e293b', display: 'inline-block' }}>
+                        <div style={{ fontSize: '9px', color: '#334155', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{keyMetric.label}</div>
+                        <div style={{ fontSize: '14px', fontWeight: 800, color: keyMetric.color ?? '#e2e8f0' }}>{keyMetric.value}</div>
                       </div>
-                    ) : null)}
+                    )}
+                    <div style={{ fontSize: '10px', color: '#334155', marginTop: '4px' }}>
+                      K {(r.score ?? 0).toFixed(0)}
+                    </div>
+                    {/* Bell button */}
+                    <button
+                      onClick={e => { e.preventDefault(); e.stopPropagation(); openAlertPanel(r.symbol); }}
+                      title="Suggest alerts"
+                      style={{
+                        marginTop: '8px', display: 'block', marginLeft: 'auto',
+                        background: panelOpen ? 'rgba(99,102,241,0.2)' : 'transparent',
+                        border: `1px solid ${panelOpen ? 'rgba(99,102,241,0.5)' : '#1e293b'}`,
+                        color: panelOpen ? '#818cf8' : '#334155',
+                        borderRadius: '6px', padding: '4px 8px', fontSize: '13px',
+                        cursor: 'pointer', transition: 'all 0.15s',
+                      }}
+                    >
+                      🔔
+                    </button>
                   </div>
                 </div>
+              </Link>
 
-                {/* Right panel: price + key metric */}
-                <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                  {lp ? (
-                    <>
-                      <div style={{ fontSize: '16px', fontWeight: 800, color: '#f1f5f9' }}>
-                        ${lp.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </div>
-                      {lp.change_pct != null && (
-                        <div style={{ fontSize: '11px', fontWeight: 600, color: changeUp ? '#4ade80' : '#f87171' }}>
-                          {changeUp ? '▲' : '▼'} {Math.abs(lp.change_pct).toFixed(2)}%
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div style={{ fontSize: '13px', color: '#334155' }}>—</div>
-                  )}
-                  {keyMetric && (
-                    <div style={{ marginTop: '6px', padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.03)', border: '1px solid #1e293b', display: 'inline-block' }}>
-                      <div style={{ fontSize: '9px', color: '#334155', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{keyMetric.label}</div>
-                      <div style={{ fontSize: '14px', fontWeight: 800, color: keyMetric.color ?? '#e2e8f0' }}>{keyMetric.value}</div>
+              {/* Alert suggestion panel */}
+              {panelOpen && (
+                <div style={{
+                  background: 'rgba(15,23,42,0.98)', border: '1px solid rgba(99,102,241,0.3)',
+                  borderTop: 'none', borderRadius: '0 0 12px 12px',
+                  padding: '12px 18px', display: 'flex', flexDirection: 'column', gap: '8px',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      {panelLoading ? `Analysing ${r.symbol} indicators…` : `Suggested alerts — ${r.symbol}`}
+                    </div>
+                    {overviewCache[r.symbol] && (
+                      <span style={{ fontSize: '10px', color: '#334155' }}>Based on RSI · MACD · BB · S/R levels</span>
+                    )}
+                  </div>
+
+                  {/* Loading */}
+                  {panelLoading && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 0', color: '#475569', fontSize: '12px' }}>
+                      <span style={{ display: 'inline-block', animation: 'spin 0.8s linear infinite' }}>↻</span>
+                      Fetching technical data…
                     </div>
                   )}
-                  <div style={{ fontSize: '10px', color: '#334155', marginTop: '4px' }}>
-                    K {(r.score ?? 0).toFixed(0)}
-                  </div>
+
+                  {/* Email row */}
+                  {!panelLoading && !alertEmail && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '11px', color: '#f87171', flexShrink: 0 }}>Email:</span>
+                      <input
+                        type="email"
+                        placeholder="you@example.com"
+                        value={alertEmail}
+                        onChange={e => setAlertEmail(e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        style={{ background: '#0f172a', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '6px', padding: '5px 9px', fontSize: '12px', color: '#e2e8f0', flex: 1 }}
+                      />
+                    </div>
+                  )}
+                  {!panelLoading && alertEmail && (
+                    <div style={{ fontSize: '10px', color: '#334155' }}>→ {alertEmail}</div>
+                  )}
+
+                  {/* Suggestion rows */}
+                  {!panelLoading && suggestions.map(s => {
+                    const key = `${r.symbol}:${s.condition}:${s.threshold}`;
+                    const done = alertDone.has(key);
+                    const saving = alertSaving === key;
+                    const isDown = s.condition.includes('below') || s.condition === 'death_cross';
+                    return (
+                      <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '10px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', padding: '8px 12px', border: '1px solid #1e293b' }}>
+                        <span style={{ fontSize: '12px', color: isDown ? '#fb923c' : '#4ade80', flexShrink: 0 }}>
+                          {isDown ? '▼' : '▲'}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '12px', color: '#cbd5e1' }}>{s.label}</div>
+                          {s.sublabel && <div style={{ fontSize: '10px', color: '#475569', marginTop: '1px' }}>{s.sublabel}</div>}
+                        </div>
+                        <button
+                          onClick={e => { e.stopPropagation(); handleSetAlert(r.symbol, s); }}
+                          disabled={saving || done || !alertEmail}
+                          style={{
+                            padding: '4px 12px', borderRadius: '5px', fontSize: '11px', fontWeight: 700,
+                            background: done ? 'rgba(34,197,94,0.15)' : saving ? '#1e293b' : !alertEmail ? '#1e293b' : 'rgba(99,102,241,0.2)',
+                            color: done ? '#4ade80' : saving ? '#475569' : !alertEmail ? '#334155' : '#818cf8',
+                            cursor: done || saving || !alertEmail ? 'not-allowed' : 'pointer',
+                            border: done ? '1px solid rgba(34,197,94,0.3)' : '1px solid rgba(99,102,241,0.2)',
+                            flexShrink: 0, transition: 'all 0.15s',
+                          }}
+                        >
+                          {done ? '✓ Set' : saving ? '…' : 'Set Alert'}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-            </Link>
+              )}
+            </div>
           );
         })}
       </div>
