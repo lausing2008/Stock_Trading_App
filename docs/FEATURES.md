@@ -124,7 +124,19 @@ Runs **once per day**, at post-close (16:30) for both US and HK markets. Trains 
 
 ### Price alerts — every 1 minute
 
-A separate job (`check_price_alerts`) runs independently every 60 seconds, 24/7. It fetches live prices via yfinance `fast_info` and fires an email the moment a threshold is crossed. Unlike signal alerts, price alerts are not tied to the market refresh cycle.
+A separate job (`check_price_alerts`) runs independently every 60 seconds, 24/7. It fetches live prices via yfinance `fast_info` and fires an email the moment a price threshold (`above` / `below`) is crossed. Unlike signal alerts, price alerts are not tied to the market refresh cycle.
+
+### Technical alerts — every market refresh (same schedule as prices/rankings/signals)
+
+`check_technical_alerts()` runs at the end of every market refresh cycle (5× per trading day per market). It reads the last 260 daily bars per symbol from the DB `prices` table, computes EMA/SMA series, and checks all untriggered technical alerts:
+
+| Alert type | How it fires |
+|-----------|-------------|
+| `cross_above_ema` / `cross_below_ema` | Compares price vs EMA on the last two bars |
+| `golden_cross` / `death_cross` | Compares EMA50 vs EMA200 on the last two bars |
+| `new_52wk_high` / `new_52wk_low` | Compares today's close vs prior 251-bar high/low |
+
+Technical alerts fire at most once (marked triggered). Requires ≥ EMA period bars for crossovers; ≥ 200 bars for Golden/Death Cross.
 
 ### Frontend auto-refresh (browser)
 
@@ -160,9 +172,10 @@ Every market refresh (5×/day):
   └─ Rankings / K-Scores (DB)
   └─ AI Signals (DB)
   └─ Signal alert emails (if conditions met)
+  └─ Technical alert emails (EMA crossover, Golden/Death Cross, 52wk high/low)
 
 Every minute (independent):
-  └─ Price alert emails (if thresholds crossed)
+  └─ Price alert emails (above/below threshold — live price check)
 
 Every 60 s in the browser:
   └─ Live price display (dashboard, watchlist, positions, stock detail)
@@ -522,17 +535,19 @@ Strategy-filtered stock screener. Surfaces the best candidates from the **curren
 
 ### Strategies
 
-| Strategy | Icon | Horizon | How stocks are ranked |
-|----------|------|---------|----------------------|
-| **Top Picks** | ⭐ | Any | Overall K-Score — best composite across all sub-scores |
-| **Swing Trade** | 📊 | 5–30 days | Technical score (40%) + Momentum (25%) + AI signal strength |
-| **Short-Term** | ⚡ | 1–5 days | Momentum (50%) + Technical (25%) + today's % move × 3 |
-| **Long-Term** | 🏛️ | 6–24 months | Value (40%) + Growth (30%) + upside to fair value (60%) |
-| **Growth** | 🚀 | Medium | Growth (50%) + Momentum (30%) + Technical (20%) |
+| Strategy | Icon | Horizon | How stocks are ranked | Min filter |
+|----------|------|---------|----------------------|-----------|
+| **Top Picks** | ⭐ | Any | K-Score + AI signal bonus (+8 BUY, +3 HOLD) | None |
+| **Swing Trade** | 📊 | 5–30 days | Technical (40%) + Momentum (25%) + signal strength | Signal = BUY or HOLD, Technical ≥ 45 |
+| **Short-Term** | ⚡ | 1–5 days | Momentum (50%) + Technical (25%) + today's % move × 3 | Momentum ≥ 40 |
+| **Long-Term** | 🏛️ | 6–24 months | Value (40%) + Growth (30%) + upside to fair value × 0.6 | Value ≥ 40 or Growth ≥ 50 |
+| **Growth** | 🚀 | Medium | Growth (50%) + Momentum (30%) + Technical (20%) | Growth ≥ 50 |
+
+**Top Picks scoring note:** The raw K-Score is blended with a signal bonus so that two stocks with equal composite scores are ranked with the BUY-signal stock higher. Non-BUY stocks are not excluded — they remain visible if their K-Score is high enough.
 
 ### Filters
 - **Market filter** — All / US / HK
-- Each strategy also applies a minimum sub-score filter (e.g. Growth requires growth score ≥ 50)
+- Each strategy also applies the minimum sub-score filter shown in the table above
 
 ### Per-stock card
 - **Rank badge** — gold / silver / bronze for top 3
@@ -542,10 +557,49 @@ Strategy-filtered stock screener. Surfaces the best candidates from the **curren
 - **T / M / V / G mini progress bars** — sub-score visualisation at a glance
 - **Key metric** — strategy-specific highlight (e.g. Upside % for Long-Term, Today % for Short-Term)
 - **Live price + day change** — same 60 s refresh as dashboard
-- Click card → stock detail page
+- **🔔 bell button** — click to open the alert suggestion panel (see below)
+- Click the card body → stock detail page
+
+### 🔔 Alert suggestion panel
+
+Click the bell icon on any opportunity card to open a panel of up to 4 data-driven alert suggestions for that stock. The panel fetches the full technical overview (RSI, MACD, Bollinger Bands, SMA levels, support/resistance) on first open and caches it for the session.
+
+Suggestions are generated in priority order:
+
+| Source | What is checked | Alert suggested |
+|--------|----------------|----------------|
+| RSI ≥ 74 | Heavily overbought | Stop loss at SMA20 |
+| RSI ≥ 65 | Extended | Stop loss −7% |
+| RSI ≤ 25 | Severely oversold | Alert above SMA20 (bounce trigger) |
+| RSI ≤ 38 | Oversold | EMA20 crossover (recovery entry) |
+| Bollinger upper (position ≥ 90%) | Near upper band | Stop at BB mid (mean reversion) |
+| Bollinger lower (position ≤ 10%) | Near lower band | Target BB mid (bounce play) |
+| MACD histogram just flipped positive | Bullish crossover | EMA20 crossover to confirm momentum |
+| MACD histogram just flipped negative | Bearish crossover | Stop at SMA20 |
+| Price within 4% of SMA200 | Key trend line test | Alert at SMA200 (above or below) |
+| SMA50/200 gap < 2.5% | Crossover imminent | Golden Cross or Death Cross alert |
+| Nearby S/R levels (0.5%–7% away) | Support/Resistance | Breakout or breakdown alert at the level |
+| Fair price > current × 1.03 | Upside exists | Take profit at fair value |
+| No stop loss generated above | Fallback | Stop loss −8% |
+
+Each suggestion shows a main label (the technical reason) and a sub-label (the specific price or action). Click **Set Alert** to create it instantly without navigating away. Multiple alerts can be set from the same panel. Indicator data is loaded once and cached — reopening the panel for the same stock is instant.
+
+### Near-Term AI Outlook
+
+A collapsible section at the top of the page powered by the configured AI assistant. Click **✦ Generate Outlook** to run an AI analysis of all opportunity stocks:
+
+1. Fetches the 3 most recent news headlines per stock
+2. Combines news, AI signal, K-Score sub-scores, and today's price change into a prompt
+3. Returns a BULLISH / BEARISH / NEUTRAL prediction with a horizon, confidence level, one-sentence reason, and 3 bullet-point catalysts
+4. Results are sorted: BULLISH (high confidence first) → NEUTRAL → BEARISH
+5. Each card links to the stock detail page
+
+The outlook section shows a summary count (e.g. "▲ 8 bullish · ▼ 3 bearish") and can be collapsed with the Hide button. Click **↺ Refresh** to re-run the analysis.
+
+Requires an AI provider configured in **Settings → AI Assistant**.
 
 ### Data source
-Reuses SWR keys `rankings-all`, `signals-all`, `latest-prices`, and `watchlist` (all already fetched by the dashboard — no extra network calls). All scoring is pure frontend computation; watchlist filtering is applied client-side before ranking.
+Reuses SWR keys `rankings-all`, `signals-all`, `latest-prices`, and `watchlist` (all already fetched by the dashboard — no extra network calls). All scoring is pure frontend computation; watchlist filtering is applied client-side before ranking. Alert suggestion data is fetched on-demand per stock via `GET /aggregate/overview/{symbol}`.
 
 ---
 
@@ -713,48 +767,80 @@ POST /portfolio/optimize
 
 ## Alerts (`/alerts`)
 
-Rule-based alerts that trigger when your tracked stocks meet a condition.
+Server-side email alerts. Rules are stored in PostgreSQL and checked automatically — alerts fire even when you are not logged in. Each alert sends an email to the address on your account (or a custom address you specify when creating the alert).
 
 ### Alert conditions
 
-| Condition | Trigger |
-|-----------|---------|
-| Price rises above `$X` | Live price > threshold |
-| Price falls below `$X` | Live price < threshold |
-| Day gain exceeds `X%` | Daily % change > threshold |
-| Day loss exceeds `X%` | Daily % change < −threshold |
-| Signal becomes BUY | ML+TA signal flips to BUY |
-| Signal becomes SELL | ML+TA signal flips to SELL |
-| K-Score rises above `X` | K-Score > threshold |
-| K-Score falls below `X` | K-Score < threshold |
+#### Price alerts — checked every minute
+
+| Condition | `condition` value | Threshold field |
+|-----------|------------------|----------------|
+| Price rises above $X | `above` | Target price |
+| Price falls below $X | `below` | Target price |
+
+Live prices are fetched via yfinance `fast_info`. Once triggered the alert is marked as fired and will not repeat.
+
+#### Technical alerts — checked after every market refresh (5× per trading day)
+
+| Condition | `condition` value | Threshold field | How it fires |
+|-----------|------------------|----------------|-------------|
+| Price crosses above EMA | `cross_above_ema` | EMA period (20, 50, or 200) | Price was below EMA on yesterday's bar, above on today's bar |
+| Price crosses below EMA | `cross_below_ema` | EMA period (20, 50, or 200) | Price was above EMA on yesterday's bar, below on today's bar |
+| Golden Cross | `golden_cross` | — (stored as 0) | EMA50 crossed above EMA200 between the last two daily bars |
+| Death Cross | `death_cross` | — (stored as 0) | EMA50 crossed below EMA200 between the last two daily bars |
+| New 52-week high | `new_52wk_high` | — (stored as 0) | Today's close exceeds the prior 251-bar high |
+| New 52-week low | `new_52wk_low` | — (stored as 0) | Today's close is below the prior 251-bar low |
+
+EMA crossovers require at least as many bars as the EMA period. Golden/Death Cross requires ≥ 200 bars. All technical checks run from the ingested price history in the DB — no live price API call is needed.
 
 ### Creating an alert
-- Select stock from your universe (dropdown)
-- Choose condition type
-- Enter threshold (where applicable)
-- Set cooldown (15 min / 30 min / 1 h / 4 h / 24 h) — prevents repeated triggers
 
-### Active alerts list
-- Toggle each alert on/off individually (CSS toggle switch)
-- Shows condition text, cooldown, last triggered time
-- Delete individual alerts
+**From `/alerts` (management page)**
+- Select stock from the full universe dropdown
+- Choose condition from the grouped dropdown (Price / Price vs EMA / EMA50 vs EMA200 / Milestone)
+- For `above`/`below`: enter a target price
+- For `cross_above_ema`/`cross_below_ema`: choose EMA period (20 / 50 / 200)
+- For `golden_cross`, `death_cross`, `new_52wk_high`, `new_52wk_low`: no threshold needed
+- Optionally add a note (shown in the email)
+- Email address pre-filled from last-used value (stored in `localStorage`)
 
-### Notification History
-- Up to 50 most recent triggered alerts
-- Symbol badge links to stock detail page
-- Relative timestamps (just now / 5m ago / 2h ago)
-- **Clear history** button
+**From the stock detail page**
+- Click **+ New Alert** in the Price Alerts section
+- Same grouped condition dropdown + dynamic threshold input
+- Pre-fills the current price as the default threshold for price alerts
 
-### How alerts are checked
-The global alert checker runs in the background every 60 seconds via `_app.tsx`:
-1. Fetches latest prices, signals, and K-Scores
-2. Evaluates every enabled alert against current values
-3. Respects the cooldown — skips re-triggering within the cooldown window
-4. Plays a notification sound (if enabled in Settings) and fires `stockai:notifications` DOM event
-5. The **🔔 notification bell** in the nav bar shows the unread count badge
+**From the Opportunities page**
+- Click the 🔔 bell icon on any opportunity card
+- The panel fetches live technical indicator data for that stock and suggests up to 4 data-driven alerts:
+  - RSI-based (e.g. stop at SMA20 when RSI is overbought; EMA20 crossover when oversold)
+  - Bollinger Band position (near upper/lower band)
+  - MACD histogram crossover (just turned bullish or bearish)
+  - SMA200 test (price within 4% of the 200-day average)
+  - Approaching Golden/Death Cross (SMA50/200 gap < 2.5%)
+  - Nearby support/resistance levels (within 7% of current price)
+  - Fair value target (if fair price is > 3% above current price)
+- Click **Set Alert** on any suggestion to create it instantly
 
-### Storage
-Alert rules and notifications are stored in **namespaced localStorage** under the active user's prefix. Each user's alerts are fully isolated from other users.
+### Active and triggered alerts
+
+The `/alerts` page shows two lists:
+- **Active** — alert has not yet fired; condition label + email + created time + delete button
+- **Triggered** — alert fired at least once; shows past-tense label + trigger time + delete button
+
+The stock detail page shows only alerts for the current symbol.
+
+### Alert email
+
+Price alerts include: symbol, condition met, threshold, actual price at trigger, and any note.
+
+Technical alerts include: symbol, a descriptive condition label (e.g. "crossed above EMA20 (value: 152.30)"), the last bar's closing price, and any note.
+
+### How alerts are stored and checked
+
+- Alert rules are stored server-side in the PostgreSQL `price_alerts` table
+- `check_price_alerts()` runs every minute via APScheduler — fetches live prices for all untriggered alert symbols at once using yfinance `Tickers`, marks triggered alerts, and fires emails
+- `check_technical_alerts()` runs at the end of every market refresh cycle — reads the last 260 daily bars per symbol from the DB `prices` table, computes EMA/SMA series, and checks all untriggered technical alerts
+- Email is sent via the configured email service (Gmail SMTP or AWS SES — see `.env`)
 
 ---
 
@@ -877,11 +963,21 @@ GET  /stocks/{symbol}/fundamentals     # company financials (yfinance .info, Red
 GET  /stocks/{symbol}/news?sources=yfinance,google   # news + sentiment (filterable by source)
 ```
 
-### Price Alerts
+### Price & Technical Alerts
 ```
 GET    /alerts                         # list current user's price alerts
 POST   /alerts   {symbol, condition, threshold, email?, note?}   # create alert
 DELETE /alerts/{id}                    # delete alert
+
+# Valid condition values:
+#   "above"           — price rises above threshold
+#   "below"           — price falls below threshold
+#   "cross_above_ema" — price crosses above EMA; threshold = period (20/50/200)
+#   "cross_below_ema" — price crosses below EMA; threshold = period (20/50/200)
+#   "golden_cross"    — EMA50 crosses above EMA200; threshold = 0
+#   "death_cross"     — EMA50 crosses below EMA200; threshold = 0
+#   "new_52wk_high"   — price hits a new 52-week high; threshold = 0
+#   "new_52wk_low"    — price hits a new 52-week low; threshold = 0
 ```
 
 ### Signal Change Alerts
