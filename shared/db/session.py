@@ -121,13 +121,10 @@ def _run_migrations() -> None:  # noqa: C901
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(256)"
         ))
         # ── Price alerts ───────────────────────────────────────────────────────
-        conn.execute(text("""
-            DO $$ BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'alertcondition') THEN
-                    CREATE TYPE alertcondition AS ENUM ('above', 'below');
-                END IF;
-            END $$
-        """))
+        # alertcondition enum is created by Base.metadata.create_all() from models.py.
+        # We only add values here for existing AWS DBs that were created before new conditions were added.
+        for _val in ('CROSS_ABOVE_EMA', 'CROSS_BELOW_EMA', 'NEW_52WK_HIGH', 'NEW_52WK_LOW', 'GOLDEN_CROSS', 'DEATH_CROSS'):
+            conn.execute(text(f"ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS '{_val}'"))
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS price_alerts (
                 id           SERIAL PRIMARY KEY,
