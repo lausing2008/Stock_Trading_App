@@ -190,26 +190,56 @@ export default function SettingsPage() {
       const bundle = JSON.parse(text);
       if (!bundle.version || !bundle.watchlists) throw new Error('Invalid export file.');
 
-      let addedStocks = 0, skippedStocks = 0;
+      // ── Step 1: ensure every symbol exists in the stocks table ──
+      // addStock is idempotent (returns "exists" if already there) and triggers
+      // background price ingestion. Run in parallel batches of 8.
+      const allSymbols: string[] = [
+        ...new Set(
+          (bundle.watchlists as { symbols: { symbol: string }[] }[])
+            .flatMap(l => l.symbols.map(s => s.symbol))
+        ),
+      ];
+      setIoStatus({ ok: true, text: `Adding ${allSymbols.length} stocks to database… (this may take a minute)` });
+      const BATCH = 8;
+      for (let i = 0; i < allSymbols.length; i += BATCH) {
+        await Promise.allSettled(allSymbols.slice(i, i + BATCH).map(sym => api.addStock(sym)));
+      }
 
-      // ── Watchlists ──
+      // ── Step 2: restore watchlists ──
+      let addedStocks = 0, skippedStocks = 0;
       const existingLists = await api.listWatchlists();
-      for (const exportedList of bundle.watchlists) {
+      for (const exportedList of bundle.watchlists as { name: string; symbols: { symbol: string }[] }[]) {
         let target = existingLists.find(l => l.name === exportedList.name);
         if (!target) target = await api.createWatchlist(exportedList.name);
         const existing = new Set((await api.listWatchlist(target.id)).map(s => s.symbol));
-        for (const s of exportedList.symbols) {
-          if (existing.has(s.symbol)) { skippedStocks++; continue; }
-          try { await api.addToWatchlist(s.symbol, target.id); addedStocks++; }
-          catch { skippedStocks++; }
-        }
+        await Promise.allSettled(
+          exportedList.symbols.map(async s => {
+            if (existing.has(s.symbol)) { skippedStocks++; return; }
+            try { await api.addToWatchlist(s.symbol, target!.id); addedStocks++; }
+            catch { skippedStocks++; }
+          })
+        );
       }
 
-      // ── Positions & cash (localStorage) ──
+      // ── Step 3: restore alerts ──
+      let addedAlerts = 0;
+      const alertEmail = typeof window !== 'undefined' ? (localStorage.getItem('stockai_alert_email') ?? '') : '';
+      if ((bundle.alerts as unknown[])?.length && alertEmail) {
+        await Promise.allSettled(
+          (bundle.alerts as { symbol: string; condition: string; threshold: number; note?: string }[]).map(async a => {
+            try {
+              await api.createAlert({ symbol: a.symbol, condition: a.condition, threshold: a.threshold, email: alertEmail, note: a.note });
+              addedAlerts++;
+            } catch { /* stock may not exist or alert already set */ }
+          })
+        );
+      }
+
+      // ── Step 4: positions & cash (localStorage) ──
       if (bundle.positions?.length) {
         const cur: { id: string; symbol: string }[] = JSON.parse(storage.getItem('positions') ?? '[]');
         const curSymbols = new Set(cur.map(p => p.symbol));
-        const toAdd = bundle.positions.filter((p: { symbol: string }) => !curSymbols.has(p.symbol));
+        const toAdd = (bundle.positions as { id: string; symbol: string }[]).filter(p => !curSymbols.has(p.symbol));
         storage.setItem('positions', JSON.stringify([...cur, ...toAdd]));
       }
       if (bundle.trades) {
@@ -224,9 +254,15 @@ export default function SettingsPage() {
         storage.setItem('positions_cash', JSON.stringify({ USD: cur.USD || bundle.cash.USD || 0, HKD: cur.HKD || bundle.cash.HKD || 0 }));
       }
 
-      setIoStatus({ ok: true, text: `Imported ${addedStocks} new stocks (${skippedStocks} already existed), ${(bundle.positions ?? []).filter((p: { symbol: string }) => true).length} positions merged.` });
-    } catch (e) {
-      setIoStatus({ ok: false, text: e instanceof Error ? e.message : 'Import failed — check the file format.' });
+      const parts = [`${addedStocks} stocks added to watchlist`];
+      if (skippedStocks) parts.push(`${skippedStocks} already there`);
+      if (addedAlerts)   parts.push(`${addedAlerts} alerts restored`);
+      const posCount = (bundle.positions ?? []).length;
+      if (posCount)      parts.push(`${posCount} positions merged`);
+      parts.push('Price data ingesting in background — refresh in a few minutes.');
+      setIoStatus({ ok: true, text: parts.join(' · ') });
+    } catch (err) {
+      setIoStatus({ ok: false, text: err instanceof Error ? err.message : 'Import failed — check the file format.' });
     } finally {
       setImporting(false);
     }

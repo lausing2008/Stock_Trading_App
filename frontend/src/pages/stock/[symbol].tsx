@@ -81,6 +81,7 @@ export default function StockDetail() {
     'signal-alerts', () => api.listSignalAlerts(),
   );
   const [signalAlertSaving, setSignalAlertSaving] = useState(false);
+  const [signalAlertError, setSignalAlertError] = useState('');
 
   const { data: allAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
     'alerts',
@@ -551,43 +552,57 @@ export default function StockDetail() {
           {(() => {
             const existing = signalAlerts?.find(a => a.symbol === symbol);
             async function toggle() {
+              setSignalAlertError('');
               setSignalAlertSaving(true);
               try {
                 if (existing) {
                   await api.deleteSignalAlert(existing.id);
                 } else {
-                  await api.createSignalAlert(symbol);
+                  const email = (typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null) ?? '';
+                  if (!email) {
+                    setSignalAlertError('Set an email in Settings → Profile first');
+                    return;
+                  }
+                  await api.createSignalAlert(symbol, email);
                 }
                 await mutateSignalAlerts();
-              } catch { /* ignore */ } finally {
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                setSignalAlertError(msg.includes('400') ? 'Set an email in Settings → Profile first' : 'Failed to save alert');
+              } finally {
                 setSignalAlertSaving(false);
               }
             }
             const active = !!existing;
             return (
-              <button
-                onClick={toggle}
-                disabled={signalAlertSaving}
-                title={active ? 'Click to stop signal notifications for this stock' : 'Get emailed when AI Signal improves (SELL→HOLD or HOLD→BUY) while analysts rate it BUY'}
-                style={{
-                  width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
-                  padding: '9px 14px', borderRadius: '8px', cursor: signalAlertSaving ? 'not-allowed' : 'pointer',
-                  border: active ? '1px solid rgba(99,102,241,0.5)' : '1px solid rgba(148,163,184,0.15)',
-                  background: active ? 'rgba(99,102,241,0.1)' : 'rgba(255,255,255,0.02)',
-                  color: active ? '#818cf8' : '#64748b',
-                  fontSize: '12px', fontWeight: 600, transition: 'all 0.15s', textAlign: 'left',
-                }}
-              >
-                <span style={{ fontSize: '14px' }}>{active ? '🔔' : '🔕'}</span>
-                <span style={{ flex: 1 }}>
-                  {signalAlertSaving ? 'Saving…' : active ? 'Signal alert on' : 'Notify on signal improvement'}
-                </span>
-                {active && existing?.last_signal && (
-                  <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.2)', padding: '2px 6px', borderRadius: '4px' }}>
-                    Last: {existing.last_signal}
+              <div>
+                <button
+                  onClick={toggle}
+                  disabled={signalAlertSaving}
+                  title={active ? 'Click to stop signal notifications for this stock' : 'Get emailed when AI Signal improves (SELL→HOLD or HOLD→BUY) while analysts rate it BUY'}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
+                    padding: '9px 14px', borderRadius: '8px', cursor: signalAlertSaving ? 'not-allowed' : 'pointer',
+                    border: active ? '1px solid rgba(99,102,241,0.5)' : '1px solid rgba(148,163,184,0.15)',
+                    background: active ? 'rgba(99,102,241,0.1)' : 'rgba(255,255,255,0.02)',
+                    color: active ? '#818cf8' : '#64748b',
+                    fontSize: '12px', fontWeight: 600, transition: 'all 0.15s', textAlign: 'left',
+                  }}
+                >
+                  <span style={{ fontSize: '14px' }}>{active ? '🔔' : '🔕'}</span>
+                  <span style={{ flex: 1 }}>
+                    {signalAlertSaving ? 'Saving…' : active ? 'Signal alert on' : 'Notify on signal improvement'}
                   </span>
+                  {active && existing?.last_signal && (
+                    <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.2)', padding: '2px 6px', borderRadius: '4px' }}>
+                      Last: {existing.last_signal}
+                    </span>
+                  )}
+                </button>
+                {signalAlertError && (
+                  <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#f87171' }}>{signalAlertError}</p>
                 )}
-              </button>
+              </div>
             );
           })()}
 
