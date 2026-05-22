@@ -80,22 +80,22 @@ def run_seed():
 
 
 @router.post("/ingest")
-def run_ingest(req: IngestRequest):
-    """Synchronously ingest all requested symbols (parallel for multi-symbol)."""
-    if len(req.symbols) == 1:
-        try:
-            result = ingest_symbol(req.symbols[0], timeframe=req.timeframe, force=req.force)
-        except Exception as exc:
-            log.error("ingest.symbol_failed", symbol=req.symbols[0], error=str(exc))
-            result = {"symbol": req.symbols[0], "error": str(exc)}
-        return {"status": "ok", "symbols": 1 if "error" not in result else 0, "results": [result]}
-    try:
-        results = ingest_universe(req.symbols, req.timeframe, force=req.force)
-    except Exception as exc:
-        log.error("ingest.universe_failed", error=str(exc))
-        results = [{"symbol": s, "error": str(exc)} for s in req.symbols]
-    ok = sum(1 for r in results if "error" not in r)
-    return {"status": "ok", "symbols": ok, "total": len(results), "results": results}
+def run_ingest(req: IngestRequest, tasks: BackgroundTasks):
+    """Queue ingest in the background — returns immediately to avoid proxy timeouts."""
+    def _run():
+        if len(req.symbols) == 1:
+            try:
+                ingest_symbol(req.symbols[0], timeframe=req.timeframe, force=req.force)
+            except Exception as exc:
+                log.error("ingest.symbol_failed", symbol=req.symbols[0], error=str(exc))
+        else:
+            try:
+                ingest_universe(req.symbols, req.timeframe, force=req.force)
+            except Exception as exc:
+                log.error("ingest.universe_failed", error=str(exc))
+
+    tasks.add_task(_run)
+    return {"status": "queued", "symbols": len(req.symbols), "queued": req.symbols}
 
 
 @router.delete("/stocks/{symbol}")
