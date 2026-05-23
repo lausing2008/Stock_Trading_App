@@ -1,3 +1,32 @@
+/**
+ * Client-side alert system for StockAI.
+ *
+ * Architecture
+ * ────────────
+ * Alerts are stored in localStorage (via `storage` wrapper) as `StockAlert[]`
+ * and evaluated in-browser by `checkAlerts()`, which is called every 60 seconds
+ * from `_app.tsx` after fetching the latest prices, signals, and rankings.
+ *
+ * When a condition fires, a `Notification` record is appended to a separate
+ * localStorage key and a `stockai:notifications` CustomEvent is dispatched on
+ * `window` so the `NotificationBell` component re-renders without polling.
+ *
+ * Alert lifecycle
+ * ───────────────
+ *  1. User creates an alert via the Alerts page → `addAlert()`
+ *  2. `_app.tsx` calls `checkAlerts(prices, signals, scores)` every 60 s
+ *  3. If the condition is met and the cooldown has elapsed, a Notification is
+ *     created and the alert is auto-disabled (one-shot behaviour)
+ *  4. The bell badge shows `getUnreadCount()`; opening the panel calls
+ *     `markAllRead()` to clear the badge
+ *
+ * Supported condition types
+ * ─────────────────────────
+ *  price_above / price_below     — latest trade price vs a fixed threshold
+ *  change_pct_above / below      — intraday % move vs a threshold
+ *  signal_buy / signal_sell      — AI signal becomes BUY or SELL
+ *  score_above / score_below     — K-Score composite ranking vs a threshold
+ */
 import { storage } from './storage';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -18,24 +47,30 @@ export type AlertCondition =
   | { type: 'score_above';       threshold: number }
   | { type: 'score_below';       threshold: number };
 
+/** A single alert rule owned by the user. */
 export type StockAlert = {
   id: string;
   symbol: string;
   name: string;
   condition: AlertCondition;
   enabled: boolean;
+  /** Minutes that must pass before the same alert can fire again. */
   cooldownMinutes: number;
   createdAt: string;
+  /** ISO timestamp of the last time this alert fired, used for cooldown. */
   lastTriggered?: string;
 };
 
+/** An in-app notification produced when an alert fires. Kept up to 100 entries. */
 export type Notification = {
   id: string;
+  /** The `StockAlert.id` that produced this notification. */
   alertId: string;
   symbol: string;
   message: string;
   triggeredAt: string;
   read: boolean;
+  /** The numeric value (price, change %, score) that crossed the threshold. */
   currentValue?: number;
 };
 
@@ -45,6 +80,8 @@ const ALERTS_KEY        = 'alert_rules';
 const NOTIFICATIONS_KEY = 'notifications';
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
+// All reads/writes go through the `storage` wrapper which namespaces keys per
+// user so that multi-user logins on the same browser don't share alert state.
 
 export function loadAlerts(): StockAlert[] {
   if (typeof window === 'undefined') return [];
@@ -76,6 +113,7 @@ export function loadNotifications(): Notification[] {
   catch { return []; }
 }
 
+/** Persists notifications, capping the list at 100 to bound storage usage. */
 export function saveNotifications(ns: Notification[]): void {
   storage.setItem(NOTIFICATIONS_KEY, JSON.stringify(ns.slice(0, 100)));
 }
@@ -115,6 +153,23 @@ type PriceMap  = Record<string, { price: number; change_pct: number | null }>;
 type SignalMap = Record<string, { signal: string; confidence: number }>;
 type ScoreMap  = Record<string, { score: number }>;
 
+/**
+ * Evaluate all enabled alert rules against the current market snapshot.
+ *
+ * Called by `_app.tsx` every 60 seconds with fresh data from three endpoints:
+ *   - `/stocks/latest_prices`  → prices
+ *   - `/signals`               → signals
+ *   - `/rankings`              → scores
+ *
+ * For each alert that fires:
+ *   - A `Notification` is created and prepended to the notification list
+ *   - The alert is auto-disabled (one-shot) and `lastTriggered` is set
+ *   - A `stockai:notifications` event is dispatched for the bell to update
+ *
+ * Alerts that have not exceeded their cooldown window are skipped silently.
+ *
+ * @returns Array of notifications that fired in this evaluation pass.
+ */
 export function checkAlerts(
   prices: PriceMap,
   signals: SignalMap,
@@ -217,6 +272,11 @@ function uid(): string {
 
 // ─── Sound ───────────────────────────────────────────────────────────────────
 
+/**
+ * Plays a short 880 Hz tone via the Web Audio API.
+ * Called when alerts fire if the user has enabled notification sounds in Settings.
+ * Silently no-ops in environments where AudioContext is unavailable (SSR, tests).
+ */
 export function playNotificationSound(): void {
   try {
     const ctx = new AudioContext();

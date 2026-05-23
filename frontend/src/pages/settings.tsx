@@ -344,6 +344,7 @@ export default function SettingsPage() {
     api.pushConfig({
       polygon_api_key: s.polygonApiKey || undefined,
       alpha_vantage_api_key: s.alphaVantageApiKey || undefined,
+      quiver_api_key: s.quiverApiKey || undefined,
     }).catch(() => {});
   }
 
@@ -502,6 +503,27 @@ export default function SettingsPage() {
             </div>
           </div>
         </SourceRow>
+      </div>
+
+      {/* ── Congressional & Insider Trading ────────────────────────────── */}
+      <div style={section('#fb923c')}>
+        <div style={sectionBar('linear-gradient(90deg,#fb923c,#fdba74,#fb923c)')} />
+        <div style={sectionHead}>Congressional & Insider Trading</div>
+
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #1e293b' }}>
+          <label style={lbl}>Quiver Quantitative API Key</label>
+          <KeyInput
+            id="quiver"
+            value={s.quiverApiKey}
+            onChange={v => update('quiverApiKey', v)}
+            placeholder="Enter your Quiver Quantitative API key"
+          />
+          <div style={hint}>
+            Free key at{' '}
+            <span style={{ color: '#fb923c' }}>quiverquant.com</span>
+            {' '}· Powers the Congressional Trade Tracker page with real-time STOCK Act disclosures.
+          </div>
+        </div>
       </div>
 
       {/* ── News Sources ───────────────────────────────────────────────── */}

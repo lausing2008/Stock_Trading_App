@@ -1,8 +1,40 @@
+/**
+ * Stock detail page (/stock/[symbol]) — per-symbol deep-dive with two AI features.
+ *
+ * AI provider: whichever is configured in Settings → AI Assistant
+ *              (Claude or DeepSeek). Uses temperature=0.2 (default).
+ *
+ * Feature 1 — Game Plan (generateGamePlan)
+ * ─────────────────────────────────────────
+ * Triggered by the "Generate 10-Day Game Plan" button, shown only when the
+ * AI signal is BUY or HOLD. Builds a context string containing:
+ *   - Current price, intraday change %, currency
+ *   - AI signal, confidence, bullish probability
+ *   - K-Score breakdown (technical, momentum, value, growth)
+ *   - Fair value estimate and analyst target / recommendation
+ *   - Beta, sector, next earnings date
+ *   - Nearest 2 support and 2 resistance levels (with strength)
+ *   - Fibonacci retracement levels
+ *   - Technical indicators: RSI, MACD, SMA50/200, ADX, Stoch RSI
+ *   - VWAP(20d), weekly alignment, active chart patterns, earnings warning
+ * System prompt: professional swing trader producing a strict JSON GamePlan
+ * with 3 entry orders (two limit buys + one breakout), stop loss, take profit,
+ * 3 catalysts, and a single-sentence risk statement. max_tokens=1024.
+ *
+ * Feature 2 — AI Chat (handleChat)
+ * ──────────────────────────────────
+ * Free-form Q&A panel in the sidebar. The same context string used for the
+ * game plan is prepended as a system prompt on the first message, giving the
+ * AI full knowledge of the stock's current state. Subsequent turns append to
+ * the conversation history so the AI maintains context across the session.
+ * max_tokens=2048 (default).
+ */
 import { useRouter } from 'next/router';
 import { useState, useEffect, useRef } from 'react';
 import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
+import PositionSizer from '@/components/PositionSizer';
 import NewsCard from '@/components/NewsCard';
 import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem } from '@/lib/api';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -285,6 +317,10 @@ TECHNICAL INDICATORS:
   MACD hist: ${reasons.macd_hist != null ? Number(reasons.macd_hist).toFixed(3) : '?'} (${reasons.macd_rising ? 'rising' : 'falling'})
   Above SMA50: ${reasons.trend_above_sma50 ? 'Yes' : 'No'} | SMA50>SMA200: ${reasons.sma50_above_sma200 ? 'Yes' : 'No'}
   ADX: ${reasons.adx != null ? Number(reasons.adx).toFixed(1) : '?'} | Stoch RSI %K: ${reasons.stoch_rsi_k != null ? (Number(reasons.stoch_rsi_k) * 100).toFixed(0) : '?'}%
+  VWAP(20d): ${reasons.price_above_vwap === true ? 'Price ABOVE VWAP' : reasons.price_above_vwap === false ? 'Price BELOW VWAP' : 'N/A'}${reasons.vwap_20 != null ? ` ($${Number(reasons.vwap_20).toFixed(2)})` : ''}
+  Weekly alignment: ${reasons.weekly_alignment === true ? 'CONFIRMED (daily+weekly agree)' : reasons.weekly_alignment === false ? 'CONFLICT (timeframes diverge)' : 'N/A'} | Weekly TA score: ${reasons.weekly_ta_score != null ? (Number(reasons.weekly_ta_score) * 100).toFixed(0) : '?'}
+  Active chart patterns: ${(reasons.active_patterns as string[] | undefined)?.length ? (reasons.active_patterns as string[]).join(', ') : 'none'}
+  Earnings warning: ${reasons.earnings_warning ?? 'none'}${reasons.days_to_earnings != null ? ` (${reasons.days_to_earnings}d to earnings)` : ''}
   Market regime: ${reasons.market_regime ?? 'unknown'}`;
 
     const systemPrompt = `You are a professional swing trader generating a concrete 10-day trade plan for a stock that has just received a BUY AI signal.
@@ -657,6 +693,23 @@ Return ONLY valid JSON — no markdown, no prose:
         <div className="space-y-3">
           {/* AI Signal */}
           {data.signal && <SignalCard signal={data.signal} />}
+
+          {/* Position Sizer */}
+          {(() => {
+            const lp2 = allPrices?.find(p => p.symbol === symbol);
+            const curPx = lp2?.price ?? data.prices?.at(-1)?.close ?? undefined;
+            const nearestSupport = data.levels?.support_resistance
+              ?.filter(l => curPx == null || l.price < curPx)
+              .sort((a, b) => b.price - a.price)[0]?.price ?? undefined;
+            return (
+              <PositionSizer
+                symbol={symbol as string}
+                entryPrice={curPx}
+                stopLoss={nearestSupport}
+                takeProfit={data.fundamentals?.target_price ?? undefined}
+              />
+            );
+          })()}
 
           {/* Signal Alert subscription */}
           {(() => {

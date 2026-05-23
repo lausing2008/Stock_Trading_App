@@ -51,6 +51,7 @@ _HK_NAME_ZH: dict[str, str] = {
 class ConfigRequest(BaseModel):
     polygon_api_key: str | None = None
     alpha_vantage_api_key: str | None = None
+    quiver_api_key: str | None = None
 
 
 @router.post("/config")
@@ -59,6 +60,9 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         set_runtime_key("polygon", req.polygon_api_key)
     if req.alpha_vantage_api_key is not None:
         set_runtime_key("alpha_vantage", req.alpha_vantage_api_key)
+    if req.quiver_api_key is not None:
+        from .congress import set_quiver_key
+        set_quiver_key(req.quiver_api_key)
     log.info("admin.config_updated")
     return {"status": "ok"}
 

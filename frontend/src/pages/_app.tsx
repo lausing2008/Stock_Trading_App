@@ -57,6 +57,7 @@ export default function App({ Component, pageProps }: AppProps) {
           api.pushConfig({
             polygon_api_key: settings.polygonApiKey || undefined,
             alpha_vantage_api_key: settings.alphaVantageApiKey || undefined,
+            quiver_api_key: settings.quiverApiKey || undefined,
           }).catch(() => {});
         }
       } else {
@@ -122,7 +123,7 @@ export default function App({ Component, pageProps }: AppProps) {
 
   return (
     <div>
-      <header className="border border-slate-800 bg-slate-900">
+      <header className="border border-slate-800 bg-slate-900" style={{ position: 'sticky', top: 0, zIndex: 500 }}>
         <div className="container-xl" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Link href="/" className="text-lg font-bold">
             <span style={{ color: '#818cf8' }}>Stock</span>AI
@@ -130,6 +131,7 @@ export default function App({ Component, pageProps }: AppProps) {
           <nav className="flex gap-4 text-sm text-slate-300">
             <Link href="/">Dashboard</Link>
             <Link href="/opportunities" style={{ color: '#a78bfa', fontWeight: 600 }}>Opportunities</Link>
+            <Link href="/forecast" style={{ color: '#4ade80', fontWeight: 700 }}>Forecast</Link>
             <Link href="/screener">Screener</Link>
             <Link href="/rankings">Rankings</Link>
             <Link href="/watchlist">Watchlist</Link>
@@ -137,6 +139,9 @@ export default function App({ Component, pageProps }: AppProps) {
             <Link href="/portfolio">Portfolio</Link>
             <Link href="/strategies">Strategies</Link>
             <Link href="/alerts">Alerts</Link>
+            <Link href="/journal" style={{ color: '#34d399', fontWeight: 600 }}>Journal</Link>
+            <Link href="/signal-accuracy" style={{ color: '#a78bfa' }}>Accuracy</Link>
+            <Link href="/insider" style={{ color: '#fb923c', fontWeight: 600 }}>Insider</Link>
           </nav>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <NotificationBell />

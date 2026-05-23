@@ -89,8 +89,29 @@ export const api = {
   adminResetPassword: (username: string, newPassword: string) =>
     request(`/auth/users/${username}/reset-password`, { method: 'PUT', body: JSON.stringify({ new_password: newPassword }) }),
   toggleUser: (username: string) => request<{ is_active: boolean }>(`/auth/users/${username}/toggle`, { method: 'PUT' }),
-  pushConfig: (keys: { polygon_api_key?: string; alpha_vantage_api_key?: string }) =>
+  pushConfig: (keys: { polygon_api_key?: string; alpha_vantage_api_key?: string; quiver_api_key?: string }) =>
     request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
+
+  // Broad stock scan (arbitrary tickers via yfinance)
+  quickScan: (symbols: string[], priceMin?: number, priceMax?: number) =>
+    request<QuickScanResult[]>(`/stocks/quick_scan`, {
+      method: 'POST',
+      body: JSON.stringify({ symbols, price_min: priceMin ?? null, price_max: priceMax ?? null }),
+    }),
+
+  // Congressional trading
+  congressTrades: (days = 90, politician?: string) => {
+    const params = new URLSearchParams({ days: String(days) });
+    if (politician) params.set('politician', politician);
+    return request<CongressTrade[]>(`/congress/trades?${params}`);
+  },
+
+  // Signal accuracy tracker
+  signalAccuracy: (lookbackDays = 90, symbol?: string) => {
+    const params = new URLSearchParams({ lookback_days: String(lookbackDays) });
+    if (symbol) params.set('symbol', symbol);
+    return request<SignalAccuracyReport>(`/signals/accuracy?${params}`);
+  },
 };
 
 export type Stock = {
@@ -154,6 +175,10 @@ export type NewsItem = { title: string; url: string; source: string; published_a
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };
 export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; created_at: string };
+export type CongressTrade = { Ticker: string; Date: string; Politician: string; Transaction: string; Min: number | null; Max: number | null; Party: string | null; State: string | null; Chamber: string | null; ReportDate: string | null };
+export type SignalAccuracyRow = { symbol: string; name: string; signal: 'BUY' | 'SELL'; confidence: number; bullish_probability: number | null; signal_date: string; entry_price: number; exit_price: number; pct_change: number; correct: boolean; days_held: number };
+export type SignalAccuracyReport = { lookback_days: number; total_signals: number; buy_count: number; sell_count: number; buy_accuracy: number | null; sell_accuracy: number | null; overall_accuracy: number | null; avg_buy_return_pct: number | null; avg_sell_return_pct: number | null; profit_factor: number | null; signals: SignalAccuracyRow[] };
+export type QuickScanResult = { symbol: string; price: number; change_pct: number | null; change_5d: number | null; rsi: number | null; sma20: number | null; sma50: number | null; above_sma20: boolean | null; above_sma50: boolean | null; vol_ratio: number | null; range_pos_20d: number | null };
 export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
 
 export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };

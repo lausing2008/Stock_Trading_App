@@ -1,3 +1,27 @@
+/**
+ * Opportunities page — strategy-filtered stock screener with AI outlook.
+ *
+ * AI provider: whichever is configured in Settings → AI Assistant
+ *              (Claude or DeepSeek). Uses temperature=0.2 (default).
+ *
+ * Static filtering (no AI)
+ * ────────────────────────
+ * Six strategy tabs filter the ranked stock universe by K-Score sub-components:
+ *   Top Picks   — highest composite K-Score
+ *   Swing       — BUY/HOLD signal + strong technical score
+ *   Short-Term  — high momentum + volume expansion
+ *   Long-Term   — undervalued fundamentals near fair value
+ *   Growth      — top growth + momentum sub-scores
+ *   AI Signal   — only active BUY signals, ranked by signal confidence
+ *
+ * AI Outlook (optional, triggered by "Generate AI Outlook" button)
+ * ────────────────────────────────────────────────────────────────
+ * Builds a user message with every visible stock's symbol, price, K-Score,
+ * AI signal, confidence, bullish probability, sector, and news headlines.
+ * System prompt: hedge fund quant analyst producing a 2–5 day directional
+ * outlook (BULLISH / BEARISH / NEUTRAL) per stock with catalysts and risk.
+ * Parsed as JSON OutlookItem[] array (max_tokens=8192).
+ */
 'use client';
 import { useState, useMemo, useEffect } from 'react';
 import useSWR from 'swr';

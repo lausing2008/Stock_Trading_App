@@ -25,6 +25,8 @@ class AiChatRequest(BaseModel):
     messages: list[AiMessage]
     system: str | None = None
     max_tokens: int = 2048
+    # 0 = deterministic, 1 = max creative. Keep low for structured JSON outputs.
+    temperature: float = 0.2
 
 
 class AiChatResponse(BaseModel):
@@ -53,6 +55,7 @@ async def _claude(req: AiChatRequest) -> AiChatResponse:
     body: dict = {
         "model": req.model,
         "max_tokens": req.max_tokens,
+        "temperature": req.temperature,
         "messages": [{"role": m.role, "content": m.content} for m in req.messages],
     }
     if req.system:
@@ -94,6 +97,7 @@ async def _deepseek(req: AiChatRequest) -> AiChatResponse:
     body = {
         "model": req.model,
         "max_tokens": req.max_tokens,
+        "temperature": req.temperature,
         "messages": messages,
     }
 

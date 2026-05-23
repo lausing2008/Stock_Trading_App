@@ -30,6 +30,7 @@ import yfinance as yf
 from common.config import get_settings
 from common.logging import get_logger
 from db import Price, Stock, TimeFrame, get_session
+from .auth import get_current_user
 
 log = get_logger("routes")
 router = APIRouter(prefix="/stocks", tags=["stocks"])
@@ -629,6 +630,98 @@ def get_fundamentals(symbol: str, refresh: bool = False):
 
     log.info("fundamentals.ok", symbol=symbol)
     return data
+
+
+class QuickScanRequest(BaseModel):
+    symbols: list[str]
+    price_min: float | None = None
+    price_max: float | None = None
+
+
+class QuickScanOut(BaseModel):
+    symbol: str
+    price: float
+    change_pct: float | None
+    change_5d: float | None
+    rsi: float | None
+    sma20: float | None
+    sma50: float | None
+    above_sma20: bool | None
+    above_sma50: bool | None
+    vol_ratio: float | None
+    range_pos_20d: float | None
+
+
+def _scan_one(sym: str, price_min: float | None, price_max: float | None) -> dict | None:
+    """Fetch 90d OHLCV for one symbol and compute basic swing indicators."""
+    try:
+        hist = yf.Ticker(sym).history(period="90d", interval="1d", auto_adjust=True)
+        if hist is None or hist.empty or len(hist) < 15:
+            return None
+        # Handle MultiIndex returned by some yfinance versions
+        if isinstance(hist.index, pd.MultiIndex):
+            hist.index = hist.index.droplevel(0)
+
+        close = hist["Close"].dropna()
+        vol   = hist["Volume"].dropna()
+        if len(close) < 15:
+            return None
+
+        current = float(close.iloc[-1])
+        if price_min is not None and current < price_min:
+            return None
+        if price_max is not None and current > price_max:
+            return None
+
+        prev        = float(close.iloc[-2]) if len(close) >= 2 else current
+        change_pct  = round((current - prev) / prev * 100, 2) if prev else None
+        change_5d   = round((current - float(close.iloc[-6])) / float(close.iloc[-6]) * 100, 2) if len(close) >= 6 else None
+
+        sma20 = float(close.rolling(20).mean().iloc[-1]) if len(close) >= 20 else None
+        sma50 = float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else None
+
+        delta  = close.diff()
+        gain   = delta.clip(lower=0).rolling(14).mean()
+        loss   = (-delta.clip(upper=0)).rolling(14).mean()
+        rs     = float(gain.iloc[-1]) / (float(loss.iloc[-1]) + 1e-9)
+        rsi    = round(100 - 100 / (1 + rs), 1)
+
+        avg20     = float(vol.iloc[-20:].mean()) if len(vol) >= 20 else None
+        avg5      = float(vol.iloc[-5:].mean())  if len(vol) >= 5  else None
+        vol_ratio = round(avg5 / avg20, 2) if (avg20 and avg20 > 0 and avg5 is not None) else None
+
+        high20    = float(close.iloc[-20:].max()) if len(close) >= 20 else None
+        low20     = float(close.iloc[-20:].min()) if len(close) >= 20 else None
+        range_pos = round((current - low20) / (high20 - low20), 2) if (high20 and low20 and high20 > low20) else None
+
+        return {
+            "symbol": sym, "price": round(current, 4),
+            "change_pct": change_pct, "change_5d": change_5d,
+            "rsi": rsi,
+            "sma20": round(sma20, 4) if sma20 else None,
+            "sma50": round(sma50, 4) if sma50 else None,
+            "above_sma20": bool(current > sma20) if sma20 else None,
+            "above_sma50": bool(current > sma50) if sma50 else None,
+            "vol_ratio": vol_ratio, "range_pos_20d": range_pos,
+        }
+    except Exception as exc:
+        log.debug("quick_scan.symbol_failed", symbol=sym, error=str(exc))
+        return None
+
+
+@router.post("/quick_scan", response_model=list[QuickScanOut])
+def quick_scan(req: QuickScanRequest, _user=Depends(get_current_user)):
+    symbols = list({s.upper().strip() for s in req.symbols[:80] if s.strip()})
+    if not symbols:
+        return []
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_scan_one, sym, req.price_min, req.price_max): sym for sym in symbols}
+        for fut in as_completed(futures):
+            r = fut.result()
+            if r:
+                results.append(r)
+    return results
 
 
 @router.get("/{symbol}", response_model=StockOut)

@@ -26,6 +26,9 @@ export type AppSettings = {
   newsSourceYfinance: boolean;
   newsSourceGoogleNews: boolean;
 
+  // Congressional & Insider Trading
+  quiverApiKey: string;
+
   // AI Assistant
   aiProvider: 'claude' | 'deepseek' | 'none';
   claudeApiKey: string;
@@ -50,6 +53,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   newsSourceYfinance: true,
   newsSourceGoogleNews: true,
+
+  quiverApiKey: '',
 
   aiProvider: 'none',
   claudeApiKey: '',

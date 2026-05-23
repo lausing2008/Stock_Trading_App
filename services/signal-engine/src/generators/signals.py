@@ -11,6 +11,13 @@ Accuracy improvements (v2):
   - MACD zero-line crossover: extra credit for trend-direction confirmation
   - Tighter RSI scoring: RSI 45-65 = full credit, flanks = partial
   - Death cross exposed in reasons for UI/email display
+
+Accuracy improvements (v3):
+  - Multi-timeframe confirmation: weekly TA alignment boosts/compresses signal
+  - Rolling 20-day VWAP: price above VWAP = institutional support
+  - Earnings proximity penalty: compresses signal when earnings < 10 days away
+  - Chart pattern fusion: bull_flag/cup_and_handle/double_bottom boost signal;
+    head_and_shoulders/double_top/bear_flag reduce it
 """
 from __future__ import annotations
 
@@ -45,6 +52,18 @@ def _fetch_prices(symbol: str) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _fetch_weekly_prices(symbol: str) -> pd.DataFrame:
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/prices?timeframe=1w&limit=100"
+        with httpx.Client(timeout=10) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                return pd.DataFrame(r.json())
+    except Exception as exc:
+        log.debug("weekly_prices.fetch_failed", symbol=symbol, error=str(exc))
+    return pd.DataFrame()
+
+
 def _fetch_ml_probability(symbol: str) -> float | None:
     try:
         with httpx.Client(timeout=10) as c:
@@ -69,6 +88,32 @@ def _fetch_market_regime() -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def _fetch_earnings_proximity(symbol: str) -> int | None:
+    """Return days_to_earnings, or None if unavailable."""
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/fundamentals"
+        with httpx.Client(timeout=8) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                return r.json().get("days_to_earnings")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_patterns_from_ta(symbol: str) -> list[dict]:
+    """Fetch recent chart patterns from the TA service."""
+    try:
+        url = f"{_settings.technical_analysis_url}/ta/{symbol}/patterns"
+        with httpx.Client(timeout=8) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                return r.json().get("patterns", [])
+    except Exception:
+        pass
+    return []
 
 
 def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
@@ -117,6 +162,70 @@ def _stoch_rsi(rsi: pd.Series, period: int = 14, smooth_k: int = 3, smooth_d: in
     return k_val, d_val
 
 
+def _weekly_ta_score(df: pd.DataFrame) -> float:
+    """Simplified weekly TA score for multi-timeframe confirmation. Returns 0-1."""
+    if df.empty or len(df) < 26:
+        return 0.5
+    close = df["close"].astype(float)
+
+    d = close.diff()
+    g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    l = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rsi = 100 - 100 / (1 + g / l.replace(0, np.nan))
+    rsi_val = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None
+
+    sma20 = close.rolling(20).mean()
+    above_sma20 = bool(close.iloc[-1] > sma20.iloc[-1]) if not pd.isna(sma20.iloc[-1]) else False
+
+    macd_line = close.ewm(span=12).mean() - close.ewm(span=26).mean()
+    hist = macd_line - macd_line.ewm(span=9).mean()
+    macd_positive = bool(hist.iloc[-1] > 0)
+    macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
+
+    score = 0.35
+    if rsi_val:
+        if 40 < rsi_val < 68:
+            score += 0.20
+        elif rsi_val <= 40:
+            score += 0.10
+    if above_sma20:
+        score += 0.25
+    if macd_positive and macd_rising:
+        score += 0.20
+    elif macd_positive:
+        score += 0.10
+
+    return float(np.clip(score, 0, 1))
+
+
+def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float, list[str]]:
+    """Returns (probability adjustment, list of active pattern names).
+
+    Adjustment is in range -0.15 to +0.15. Recency decays patterns older
+    than 20 bars to zero.
+    """
+    BULLISH = {"double_bottom", "ascending_triangle", "bull_flag", "cup_and_handle"}
+    BEARISH = {"head_and_shoulders", "double_top", "descending_triangle", "bear_flag"}
+
+    adj = 0.0
+    active: list[str] = []
+    for p in patterns:
+        end_idx = p.get("end_idx", 0)
+        confidence = float(p.get("confidence", 0.5))
+        recency = max(0.0, 1.0 - (df_len - 1 - end_idx) / 20.0)
+        if recency < 0.1:
+            continue
+        name = p.get("name", "")
+        if name in BULLISH:
+            adj += 0.08 * confidence * recency
+            active.append(name)
+        elif name in BEARISH:
+            adj -= 0.08 * confidence * recency
+            active.append(name)
+
+    return float(np.clip(adj, -0.15, 0.15)), active
+
+
 def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     close  = df["close"].astype(float)
     volume = df["volume"].astype(float)
@@ -155,18 +264,17 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     stoch_k, stoch_d = _stoch_rsi(rsi)
     stoch_oversold   = stoch_k < 0.20
     stoch_overbought = stoch_k > 0.80
-    # Fresh recovery: %K just crossed up through the oversold threshold
     stoch_cross_up = False
     k_series = rsi.rolling(14).apply(lambda x: (x.iloc[-1] - x.min()) / (x.max() - x.min()) if x.max() != x.min() else 0.5, raw=False)
     k_smooth = k_series.rolling(3).mean()
     if len(k_smooth.dropna()) >= 2:
         stoch_cross_up = bool(k_smooth.iloc[-1] > 0.20 and k_smooth.iloc[-2] <= 0.20)
 
-    reasons["stoch_rsi_k"]         = round(stoch_k, 3)
-    reasons["stoch_rsi_d"]         = round(stoch_d, 3)
-    reasons["stoch_rsi_oversold"]  = stoch_oversold
-    reasons["stoch_rsi_overbought"]= stoch_overbought
-    reasons["stoch_rsi_cross_up"]  = stoch_cross_up
+    reasons["stoch_rsi_k"]          = round(stoch_k, 3)
+    reasons["stoch_rsi_d"]          = round(stoch_d, 3)
+    reasons["stoch_rsi_oversold"]   = stoch_oversold
+    reasons["stoch_rsi_overbought"] = stoch_overbought
+    reasons["stoch_rsi_cross_up"]   = stoch_cross_up
 
     # ── RSI divergence (10-bar lookback) ─────────────────────────────────
     rsi_divergence = "none"
@@ -174,9 +282,9 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
         price_higher = bool(close.iloc[-1] > close.iloc[-11])
         rsi_higher   = bool(rsi.iloc[-1]   > rsi.iloc[-11])
         if price_higher and not rsi_higher:
-            rsi_divergence = "bearish"   # price up, momentum fading
+            rsi_divergence = "bearish"
         elif not price_higher and rsi_higher:
-            rsi_divergence = "bullish"   # price down, momentum recovering
+            rsi_divergence = "bullish"
     reasons["rsi_divergence"] = rsi_divergence
 
     # ── MACD histogram + zero-line crossover ──────────────────────────────
@@ -184,7 +292,6 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     hist = macd_line - macd_line.ewm(span=9).mean()
     macd_hist  = float(hist.iloc[-1])
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
-    # MACD line crossing above zero is a stronger trend-direction signal
     macd_zero_cross_up = False
     if len(macd_line.dropna()) >= 2:
         macd_zero_cross_up = bool(macd_line.iloc[-1] > 0 and macd_line.iloc[-2] <= 0)
@@ -200,6 +307,16 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     band_width = bb_upper.iloc[-1] - bb_lower.iloc[-1]
     bb_pct_b = float((close.iloc[-1] - bb_lower.iloc[-1]) / band_width) if band_width > 0 else 0.5
     reasons["bb_pct_b"] = round(bb_pct_b, 3)
+
+    # ── Rolling 20-day VWAP ───────────────────────────────────────────────
+    typical_price = (df["high"].astype(float) + df["low"].astype(float) + close) / 3
+    vwap_20 = (typical_price * volume).rolling(20).sum() / volume.rolling(20).sum()
+    vwap_val = vwap_20.iloc[-1]
+    price_above_vwap: bool | None = None
+    if not pd.isna(vwap_val) and vwap_val > 0:
+        price_above_vwap = bool(close.iloc[-1] > vwap_val)
+    reasons["price_above_vwap"] = price_above_vwap
+    reasons["vwap_20"] = float(vwap_val) if not pd.isna(vwap_val) else None
 
     # ── ADX — trend strength ──────────────────────────────────────────────
     adx_val, di_plus, di_minus = _adx(df)
@@ -222,37 +339,32 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     # ── Score ─────────────────────────────────────────────────────────────
     score = 0.0
 
-    # Trend (unchanged)
     if above_sma50:         score += 0.15
     if sma50_above_sma200:  score += 0.10
     if golden_cross_event:  score += 0.10
     if death_cross_event:   score -= 0.10
 
-    # RSI — tighter ideal range; partial credit for recovery / near-overbought
     if rsi_val is not None:
-        if 45 < rsi_val < 65:    score += 0.15   # ideal entry zone
-        elif 35 < rsi_val <= 45: score += 0.08   # oversold recovery
-        elif 65 <= rsi_val < 72: score += 0.06   # still ok but extended
-        # RSI > 72 or < 35: no credit (extreme zones unreliable for entry)
+        if 45 < rsi_val < 65:    score += 0.15
+        elif 35 < rsi_val <= 45: score += 0.08
+        elif 65 <= rsi_val < 72: score += 0.06
 
-    # Stochastic RSI
-    if stoch_oversold:      score += 0.10   # RSI itself is at a low extreme
-    elif stoch_overbought:  score -= 0.08   # RSI itself is stretched
-    if stoch_cross_up:      score += 0.05   # fresh oversold recovery signal
+    if stoch_oversold:      score += 0.10
+    elif stoch_overbought:  score -= 0.08
+    if stoch_cross_up:      score += 0.05
 
-    # RSI divergence
-    if rsi_divergence == "bearish":  score -= 0.10  # price up, momentum fading
-    elif rsi_divergence == "bullish": score += 0.08 # price down, RSI recovering
+    if rsi_divergence == "bearish":   score -= 0.10
+    elif rsi_divergence == "bullish": score += 0.08
 
-    # MACD
     if macd_hist > 0 and macd_rising:  score += 0.15
     elif macd_hist > 0:                score += 0.08
-    if macd_zero_cross_up:             score += 0.05  # MACD just turned positive
+    if macd_zero_cross_up:             score += 0.05
 
-    # Bollinger %B (not at extremes)
     if 0.2 < bb_pct_b < 0.8:   score += 0.10
 
-    # ADX / OBV / volume
+    if price_above_vwap is True:   score += 0.08
+    elif price_above_vwap is False: score -= 0.05
+
     if bullish_trend:                                       score += 0.10
     if obv_bullish:                                         score += 0.10
     if reasons["volume_z"] and reasons["volume_z"] > 0.5:  score += 0.05
@@ -263,12 +375,11 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 def _decide(fused_prob: float, market_regime: str) -> tuple[str, str]:
     """Map fused probability to a signal label.
 
-    In a bear market (S&P 500 below 200MA), individual stock signals are less
-    reliable because systemic risk dominates. Raise the BUY threshold to avoid
+    In a bear market (S&P 500 below 200MA), raise the BUY threshold to avoid
     false entries during broad market downtrends.
     """
     if market_regime == "bear":
-        buy_threshold  = 0.73   # require stronger conviction in bear markets
+        buy_threshold  = 0.73
         hold_threshold = 0.56
     else:
         buy_threshold  = 0.65
@@ -290,15 +401,53 @@ def generate_signal(symbol: str) -> AIConfidence:
     market_regime = _fetch_market_regime()
     reasons["market_regime"] = market_regime
 
-    # Fuse: 60% ML if available, else 100% TA
+    # Base fusion: 60% ML if available, else 100% TA
     if ml_prob is not None:
         fused = 0.6 * ml_prob + 0.4 * ta_prob
         reasons["ml_probability"] = ml_prob
     else:
         fused = ta_prob
         reasons["ml_probability"] = None
-
     reasons["ta_score"] = ta_prob
+
+    # ── Multi-timeframe confirmation (weekly) ─────────────────────────────
+    df_weekly = _fetch_weekly_prices(symbol)
+    weekly_score = _weekly_ta_score(df_weekly)
+    reasons["weekly_ta_score"] = round(weekly_score, 3)
+
+    daily_direction  = fused - 0.5
+    weekly_direction = weekly_score - 0.5
+    if daily_direction * weekly_direction > 0:
+        # Both timeframes agree → amplify signal by 12%
+        fused = 0.5 + daily_direction * 1.12
+    else:
+        # Timeframes conflict → compress signal toward neutral by 15%
+        fused = 0.5 + daily_direction * 0.85
+    fused = float(np.clip(fused, 0.0, 1.0))
+    reasons["weekly_alignment"] = (daily_direction * weekly_direction) > 0
+
+    # ── Chart pattern fusion ───────────────────────────────────────────────
+    patterns = _fetch_patterns_from_ta(symbol)
+    pattern_adj, active_patterns = _pattern_score_adjustment(patterns, len(df))
+    fused = float(np.clip(fused + pattern_adj, 0.0, 1.0))
+    reasons["active_patterns"] = active_patterns
+    reasons["pattern_adjustment"] = round(pattern_adj, 3)
+
+    # ── Earnings proximity penalty ─────────────────────────────────────────
+    days_to_earnings = _fetch_earnings_proximity(symbol)
+    reasons["days_to_earnings"] = days_to_earnings
+    if days_to_earnings is not None:
+        if 0 <= days_to_earnings <= 2:
+            # Earnings in 0-2 days: extreme uncertainty, compress hard toward 0.5
+            fused = 0.5 + (fused - 0.5) * 0.25
+            reasons["earnings_warning"] = "critical"
+        elif days_to_earnings <= 5:
+            fused = 0.5 + (fused - 0.5) * 0.55
+            reasons["earnings_warning"] = "caution"
+        elif days_to_earnings <= 10:
+            fused = 0.5 + (fused - 0.5) * 0.80
+            reasons["earnings_warning"] = "note"
+
     signal, horizon = _decide(fused, market_regime)
     confidence = round(abs(fused - 0.5) * 200, 2)
 

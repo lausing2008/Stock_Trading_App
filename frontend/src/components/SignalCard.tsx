@@ -29,12 +29,44 @@ type Reasons = {
   ml_probability?: number | null;
   market_regime?: string;
   ta_score?: number | null;
+  // v3 additions
+  price_above_vwap?: boolean | null;
+  vwap_20?: number | null;
+  weekly_ta_score?: number | null;
+  weekly_alignment?: boolean | null;
+  active_patterns?: string[];
+  pattern_adjustment?: number | null;
+  days_to_earnings?: number | null;
+  earnings_warning?: string;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
 
 function buildReasons(r: Reasons): Factor[] {
   const factors: Factor[] = [];
+
+  // Earnings proximity — shown first when present
+  if (r.earnings_warning === 'critical') {
+    factors.push({
+      label: 'Earnings in ≤2 Days',
+      bullish: false,
+      warning: true,
+      detail: `Earnings report due in ${r.days_to_earnings}d — signal compressed, avoid new entries`,
+    });
+  } else if (r.earnings_warning === 'caution') {
+    factors.push({
+      label: `Earnings in ${r.days_to_earnings}d`,
+      bullish: false,
+      warning: true,
+      detail: 'Approaching earnings — signal strength reduced, position sizing caution advised',
+    });
+  } else if (r.earnings_warning === 'note') {
+    factors.push({
+      label: `Earnings in ${r.days_to_earnings}d`,
+      bullish: false,
+      detail: 'Earnings within 10 days — slightly elevated uncertainty factored in',
+    });
+  }
 
   // Market regime — shown first if bear
   if (r.market_regime === 'bear') {
@@ -53,6 +85,40 @@ function buildReasons(r: Reasons): Factor[] {
       bullish: false,
       warning: true,
       detail: 'SMA50 just crossed below SMA200 — major bearish signal',
+    });
+  }
+
+  // Weekly timeframe alignment
+  if (r.weekly_alignment != null) {
+    factors.push({
+      label: r.weekly_alignment ? '✦ Weekly Aligned' : 'Weekly Conflict',
+      bullish: r.weekly_alignment,
+      detail: r.weekly_alignment
+        ? `Weekly trend agrees with daily — signal amplified (weekly score: ${r.weekly_ta_score != null ? (r.weekly_ta_score * 100).toFixed(0) : '?'})`
+        : `Weekly trend conflicts with daily — signal compressed (weekly score: ${r.weekly_ta_score != null ? (r.weekly_ta_score * 100).toFixed(0) : '?'})`,
+    });
+  }
+
+  // Active chart patterns
+  if (r.active_patterns && r.active_patterns.length > 0) {
+    const BULLISH_P = new Set(['double_bottom', 'ascending_triangle', 'bull_flag', 'cup_and_handle']);
+    const patternNames = r.active_patterns.map(p => p.replace(/_/g, ' ')).join(', ');
+    const isBullish = r.active_patterns.some(p => BULLISH_P.has(p));
+    factors.push({
+      label: 'Chart Pattern',
+      bullish: isBullish,
+      detail: `Active: ${patternNames}${r.pattern_adjustment != null ? ` (adj: ${r.pattern_adjustment > 0 ? '+' : ''}${(r.pattern_adjustment * 100).toFixed(1)}%)` : ''}`,
+    });
+  }
+
+  // VWAP
+  if (r.price_above_vwap != null) {
+    factors.push({
+      label: 'VWAP (20d)',
+      bullish: r.price_above_vwap,
+      detail: r.price_above_vwap
+        ? `Price above 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — institutional support zone`
+        : `Price below 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — below average transaction price`,
     });
   }
 
