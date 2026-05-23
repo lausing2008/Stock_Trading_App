@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, CandlestickData, IChartApi, LineData, Time, LineStyle, LogicalRange } from 'lightweight-charts';
 import type { Price, Overview, Levels } from '@/lib/api';
 
@@ -21,7 +21,7 @@ const CHART_THEME = {
   layout: { background: { color: '#0b1020' }, textColor: '#94a3b8' },
   grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
   rightPriceScale: { borderColor: '#1e293b' },
-  timeScale: { borderColor: '#1e293b', timeVisible: true, secondsVisible: false },
+  timeScale: { borderColor: '#1e293b', timeVisible: false, secondsVisible: false },
 };
 
 function toTime(ts: string) { return ts.slice(0, 10) as Time; }
@@ -46,23 +46,30 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
   const [showMACD, setShowMACD] = useState(false);
 
   const rangeConfig = RANGES.find(r => r.label === range)!;
-  const visiblePrices = rangeConfig.days == null
-    ? prices
-    : prices.slice(-rangeConfig.days);
 
-  const cutoffTs = visiblePrices.length > 0 ? visiblePrices[0].ts : null;
-  const visibleIndicators: typeof indicators = indicators && cutoffTs
-    ? (() => {
-        const startIdx = indicators.ts.findIndex(t => t >= cutoffTs);
-        if (startIdx < 0) return indicators;
-        return {
-          ts: indicators.ts.slice(startIdx),
-          values: Object.fromEntries(
-            Object.entries(indicators.values).map(([k, v]) => [k, v.slice(startIdx)])
-          ),
-        };
-      })()
-    : indicators;
+  // Memoize so the useEffect only re-runs when the actual data changes,
+  // not on every parent re-render triggered by SWR polls. Without useMemo,
+  // .slice() and the inline object literal produce new references every render,
+  // causing the chart to be destroyed/recreated on each SWR poll (26+ times),
+  // which clears the canvas before the browser can paint the candles.
+  const visiblePrices = useMemo(
+    () => rangeConfig.days == null ? prices : prices.slice(-rangeConfig.days),
+    [prices, rangeConfig.days],
+  );
+
+  const visibleIndicators = useMemo((): typeof indicators => {
+    if (!indicators) return indicators;
+    const cutoffTs = visiblePrices.length > 0 ? visiblePrices[0].ts : null;
+    if (!cutoffTs) return indicators;
+    const startIdx = indicators.ts.findIndex(t => t >= cutoffTs);
+    if (startIdx < 0) return indicators;
+    return {
+      ts: indicators.ts.slice(startIdx),
+      values: Object.fromEntries(
+        Object.entries(indicators.values).map(([k, v]) => [k, v.slice(startIdx)])
+      ),
+    };
+  }, [indicators, visiblePrices]);
 
   const [smaVals,  setSmaVals]  = useState<SmaVals>({ sma_20: null, sma_50: null, sma_200: null });
   const [rsiVal,   setRsiVal]   = useState<number|null>(null);
@@ -79,7 +86,7 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
     // ── Main chart ─────────────────────────────────────────────────────────
     const chart = createChart(mainRef.current, {
       ...CHART_THEME,
-      width: mainRef.current.clientWidth,
+      autoSize: true,
       height: 380,
     });
 
@@ -88,7 +95,8 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
       borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444',
     });
     candles.setData(visiblePrices.map<CandlestickData<Time>>(p => ({
-      time: toTime(p.ts), open: p.open, high: p.high, low: p.low, close: p.close,
+      time: toTime(p.ts),
+      open: +p.open, high: +p.high, low: +p.low, close: +p.close,
     })));
 
     if (showVol) {
@@ -141,7 +149,15 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
       });
     }
 
-    const srLevels = levels?.support_resistance?.slice(0, 8) ?? [];
+    // Re-classify S/R based on current price — backend kind is set at detection
+    // time from pivot highs/lows and doesn't update when price moves later.
+    const lastClose = visiblePrices.at(-1)?.close ?? null;
+    const srLevels = (levels?.support_resistance?.slice(0, 8) ?? []).map(lvl => ({
+      ...lvl,
+      kind: lastClose != null
+        ? (lvl.price > lastClose ? 'resistance' : 'support') as 'support' | 'resistance'
+        : lvl.kind,
+    }));
     for (const lvl of srLevels) {
       candles.createPriceLine({
         price: lvl.price,
@@ -166,15 +182,15 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
     updateSrLabels();
     chart.timeScale().subscribeVisibleTimeRangeChange(updateSrLabels);
 
-    // Fit all data into view — prevents the chart appearing truncated or
-    // zoomed to a sub-range when switching between range buttons.
+    // Fit all data into view. autoSize handles width; fitContent handles the
+    // time range so all bars are shown when the chart first mounts.
     chart.timeScale().fitContent();
 
     // ── RSI chart ──────────────────────────────────────────────────────────
     let rsiChart: IChartApi | null = null;
     if (showRSI && rsiRef.current && visibleIndicators) {
       rsiChart = createChart(rsiRef.current, {
-        ...CHART_THEME, width: rsiRef.current.clientWidth, height: 110,
+        ...CHART_THEME, autoSize: true, height: 110,
         timeScale: { ...CHART_THEME.timeScale, visible: false },
       });
       const rsiLine = rsiChart.addLineSeries({ color: '#f59e0b', lineWidth: 1 });
@@ -195,7 +211,7 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
     let macdChart: IChartApi | null = null;
     if (showMACD && macdRef.current && visibleIndicators) {
       macdChart = createChart(macdRef.current, {
-        ...CHART_THEME, width: macdRef.current.clientWidth, height: 110,
+        ...CHART_THEME, autoSize: true, height: 110,
         timeScale: { ...CHART_THEME.timeScale, visible: !showRSI },
       });
 
@@ -241,14 +257,12 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
       macdChart?.timeScale().setVisibleLogicalRange(range);
     });
 
-    const onResize = () => {
-      chart.applyOptions({ width: mainRef.current!.clientWidth });
-      rsiChart?.applyOptions({ width: rsiRef.current!.clientWidth });
-      macdChart?.applyOptions({ width: macdRef.current!.clientWidth });
-    };
-    window.addEventListener('resize', onResize);
+    // Keep S/R label positions in sync when the chart auto-resizes.
+    const ro = new ResizeObserver(() => updateSrLabels());
+    if (mainRef.current) ro.observe(mainRef.current);
+
     return () => {
-      window.removeEventListener('resize', onResize);
+      ro.disconnect();
       chart.remove();
       rsiChart?.remove();
       macdChart?.remove();

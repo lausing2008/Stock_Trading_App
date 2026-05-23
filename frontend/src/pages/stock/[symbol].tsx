@@ -1106,14 +1106,32 @@ Return ONLY valid JSON — no markdown, no prose:
             <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
               <h3 className="text-sm font-semibold text-slate-300 mb-2">Support &amp; Resistance</h3>
               <div className="space-y-1">
-                {srLevels.slice(0, 6).map((lvl, i) => (
-                  <div key={i} className="flex items-center justify-between text-xs">
-                    <span className={lvl.kind === 'support' ? 'text-green-400' : 'text-red-400'}>
-                      {lvl.kind === 'support' ? 'S' : 'R'} ${lvl.price.toFixed(2)}
-                    </span>
-                    <span className="text-slate-500">{lvl.strength} touches</span>
-                  </div>
-                ))}
+                {srLevels
+                  .slice()
+                  // Re-classify based on current price (backend kind is set at
+                  // detection time and doesn't update when price moves)
+                  .map(lvl => ({
+                    ...lvl,
+                    kind: curPrice != null
+                      ? (lvl.price > curPrice ? 'resistance' : 'support')
+                      : lvl.kind,
+                  }))
+                  // Sort price high → low so levels read like a chart
+                  .sort((a, b) => b.price - a.price)
+                  .slice(0, 8)
+                  .map((lvl, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs">
+                      <span className={lvl.kind === 'support' ? 'text-green-400' : 'text-red-400'}>
+                        {lvl.kind === 'support' ? 'S' : 'R'} ${lvl.price.toFixed(2)}
+                      </span>
+                      <span className="text-slate-500" title="Number of times price has bounced off this level">
+                        {lvl.strength} {lvl.strength === 1 ? 'touch' : 'touches'}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+              <div className="mt-2 pt-2 border-t border-slate-800 text-xs text-slate-600">
+                Touches = times price bounced off this level
               </div>
             </div>
           )}
