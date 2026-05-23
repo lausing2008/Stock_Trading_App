@@ -81,6 +81,7 @@ def send_signal_alert_email(
     to: str, symbol: str, prev_signal: str | None, new_signal: str, analyst: str,
     signal_data: dict | None = None,
     fundamentals: dict | None = None,
+    game_plan: dict | None = None,
 ) -> bool:
     direction_map = {
         ("SELL", "HOLD"): ("cautious",  "moving out of sell territory"),
@@ -205,6 +206,95 @@ def send_signal_alert_email(
     )
     rows_text = "\n".join(f"  {k}: {v}" for k, v in reason_rows)
 
+    # ── Game plan HTML (only for BUY transitions) ─────────────────────────
+    game_plan_html = ""
+    game_plan_text = ""
+    if game_plan and new_signal == "BUY":
+        cp = game_plan.get("current_price", 0)
+        e1, e2, bo = game_plan["entry1"], game_plan["entry2"], game_plan["breakout"]
+        sl, tp = game_plan["stop"], game_plan["take_profit"]
+        cats = game_plan.get("catalysts", [])
+        risk = game_plan.get("risk", "")
+
+        def _pct(target: float) -> str:
+            if cp <= 0: return ""
+            p = (target - cp) / cp * 100
+            return f" ({p:+.1f}%)"
+
+        cat_rows = "".join(
+            f'<tr><td style="padding:5px 10px;font-size:12px;color:#1e293b;border-bottom:1px solid #f1f5f9">› {c}</td></tr>'
+            for c in cats
+        )
+        game_plan_html = f"""
+    <div style="margin-top:24px">
+      <div style="font-size:11px;font-weight:700;color:#16a34a;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">📋 10-Day Game Plan for {symbol}</div>
+
+      <!-- Entry levels -->
+      <table style="width:100%;border-collapse:collapse;background:#f0fdf4;border-radius:8px;overflow:hidden;border:1px solid #bbf7d0;margin-bottom:10px">
+        <tr style="background:#dcfce7">
+          <td colspan="3" style="padding:6px 10px;font-size:11px;font-weight:700;color:#15803d;text-transform:uppercase;letter-spacing:.05em">Entry Strategy</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 10px;font-size:12px;color:#166534;font-weight:600">Limit buy — 50%</td>
+          <td style="padding:6px 10px;font-size:13px;font-weight:800;color:#16a34a;font-family:monospace">${e1:.2f}{_pct(e1)}</td>
+          <td style="padding:6px 10px;font-size:11px;color:#64748b">{game_plan["entry1_note"]}</td>
+        </tr>
+        <tr style="background:#f8fffe">
+          <td style="padding:6px 10px;font-size:12px;color:#166534;font-weight:600">Limit buy — 50%</td>
+          <td style="padding:6px 10px;font-size:13px;font-weight:800;color:#16a34a;font-family:monospace">${e2:.2f}{_pct(e2)}</td>
+          <td style="padding:6px 10px;font-size:11px;color:#64748b">{game_plan["entry2_note"]}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 10px;font-size:12px;color:#92400e;font-weight:600">Breakout — 50%</td>
+          <td style="padding:6px 10px;font-size:13px;font-weight:800;color:#d97706;font-family:monospace">${bo:.2f}{_pct(bo)}</td>
+          <td style="padding:6px 10px;font-size:11px;color:#64748b">{game_plan["breakout_note"]}</td>
+        </tr>
+      </table>
+
+      <!-- Stop & Target -->
+      <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+        <tr>
+          <td style="width:50%;padding-right:5px">
+            <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 12px">
+              <div style="font-size:10px;font-weight:700;color:#dc2626;text-transform:uppercase;letter-spacing:.05em">Stop Loss</div>
+              <div style="font-size:16px;font-weight:800;color:#ef4444;font-family:monospace;margin:3px 0">${sl:.2f}{_pct(sl)}</div>
+              <div style="font-size:10px;color:#64748b">{game_plan["stop_note"]}</div>
+            </div>
+          </td>
+          <td style="width:50%;padding-left:5px">
+            <div style="background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;padding:10px 12px">
+              <div style="font-size:10px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em">Take Profit</div>
+              <div style="font-size:16px;font-weight:800;color:#6366f1;font-family:monospace;margin:3px 0">${tp:.2f}{_pct(tp)}</div>
+              <div style="font-size:10px;color:#64748b">{game_plan["take_profit_note"]}</div>
+            </div>
+          </td>
+        </tr>
+      </table>
+
+      <!-- Catalysts -->
+      <div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Catalysts in the Window</div>
+      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0;margin-bottom:10px">
+        {cat_rows}
+      </table>
+
+      <!-- Risk -->
+      <div style="background:#fffbeb;border:1px solid #fbbf24;border-radius:8px;padding:10px 14px;font-size:12px;color:#92400e">
+        <strong>⚠ Key Risk:</strong> {risk}
+      </div>
+    </div>"""
+
+        game_plan_text = f"""
+--- 10-Day Game Plan for {symbol} ---
+Entry 1 (50%): ${e1:.2f}{_pct(e1)} — {game_plan["entry1_note"]}
+Entry 2 (50%): ${e2:.2f}{_pct(e2)} — {game_plan["entry2_note"]}
+Breakout (50%): ${bo:.2f}{_pct(bo)} — {game_plan["breakout_note"]}
+Stop Loss:  ${sl:.2f}{_pct(sl)} — {game_plan["stop_note"]}
+Take Profit: ${tp:.2f}{_pct(tp)} — {game_plan["take_profit_note"]}
+Catalysts:
+{chr(10).join(f"  › {c}" for c in cats)}
+Key Risk: {risk}
+"""
+
     is_exit_alert = mood == "bearish"
     subject_prefix = "⚠ SELL Alert" if is_exit_alert else "Signal Alert"
     subject = f"{subject_prefix}: {symbol} {prev_signal} → {new_signal} (Analyst: {analyst.upper()})"
@@ -220,6 +310,7 @@ def send_signal_alert_email(
         + (f"Bullish probability: {float(bullish_prob)*100:.1f}%  |  Confidence: {float(confidence):.1f}%\n" if bullish_prob is not None else "")
         + f"\nWhy the signal changed:\n{rows_text}\n\n"
         + (f"{earnings_warn}\n\n" if earnings_warn else "")
+        + game_plan_text
         + cta + "\n"
         f"Not personalised financial advice. Always do your own research.\n"
     )
@@ -260,6 +351,7 @@ def send_signal_alert_email(
 
     {cta_html}
     {f'<div style="background:#fef9c3;border:1px solid #fbbf24;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:13px;color:#92400e">{earnings_warn}</div>' if earnings_warn else ''}
+    {game_plan_html}
     <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:16px">
       Not personalised financial advice. Always do your own research before acting.
     </p>

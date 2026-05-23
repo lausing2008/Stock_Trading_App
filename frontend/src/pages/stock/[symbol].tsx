@@ -83,6 +83,21 @@ export default function StockDetail() {
   const [signalAlertSaving, setSignalAlertSaving] = useState(false);
   const [signalAlertError, setSignalAlertError] = useState('');
 
+  // Game plan state
+  type GamePlanEntry = { label: string; price: number; rationale: string };
+  type GamePlan = {
+    title: string;
+    entries: GamePlanEntry[];
+    stop_loss: { price: number; rationale: string };
+    take_profit: { price: number; rationale: string } | null;
+    catalysts: string[];
+    risk: string;
+  };
+  const [gamePlan, setGamePlan] = useState<GamePlan | null>(null);
+  const [gamePlanLoading, setGamePlanLoading] = useState(false);
+  const [gamePlanError, setGamePlanError] = useState('');
+  const [gamePlanOpen, setGamePlanOpen] = useState(true);
+
   const { data: allAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
     'alerts',
     () => api.listAlerts(),
@@ -215,6 +230,101 @@ export default function StockDetail() {
       setTimeout(() => setFullRefreshMsg(''), 4000);
     } finally {
       setFullRefreshing(false);
+    }
+  }
+
+  async function generateGamePlan() {
+    if (!data) return;
+    setGamePlanLoading(true);
+    setGamePlanError('');
+    setGamePlan(null);
+    setGamePlanOpen(true);
+
+    const lp = allPrices?.find(p => p.symbol === symbol);
+    const currentPrice = lp?.price ?? (data.prices?.at(-1)?.close ?? null);
+    const sig = data.signal;
+    const rank = data.ranking;
+    const fund = data.fundamentals;
+    const levels = data.levels;
+
+    // Sort supports/resistances by distance from current price
+    const supports = (levels?.support_resistance ?? [])
+      .filter(l => currentPrice == null || l.price < currentPrice)
+      .sort((a, b) => b.price - a.price)
+      .slice(0, 3);
+    const resistances = (levels?.support_resistance ?? [])
+      .filter(l => currentPrice == null || l.price > currentPrice)
+      .sort((a, b) => a.price - b.price)
+      .slice(0, 2);
+    const fib = levels?.fibonacci ?? {};
+
+    const reasons = (sig as unknown as { reasons?: Record<string, unknown> })?.reasons ?? {};
+
+    const context = `SYMBOL: ${symbol}
+CURRENT PRICE: ${currentPrice != null ? currentPrice.toFixed(2) : 'N/A'} ${lp ? `(${lp.change_pct != null ? (lp.change_pct >= 0 ? '+' : '') + lp.change_pct.toFixed(2) + '%' : ''} today)` : ''}
+CURRENCY: ${lp?.currency ?? 'USD'}
+
+AI SIGNAL: ${sig?.signal ?? 'N/A'} | CONFIDENCE: ${sig?.confidence?.toFixed(0) ?? '?'}% | BULLISH PROB: ${sig?.bullish_probability != null ? (sig.bullish_probability * 100).toFixed(0) : '?'}%
+K-SCORE: ${rank?.score?.toFixed(0) ?? '?'} | TECHNICAL: ${rank?.technical?.toFixed(0) ?? '?'} | MOMENTUM: ${rank?.momentum?.toFixed(0) ?? '?'} | VALUE: ${rank?.value?.toFixed(0) ?? '?'}
+FAIR VALUE: ${rank?.fair_price != null ? rank.fair_price.toFixed(2) : 'N/A'}
+ANALYST TARGET: ${fund?.target_price != null ? fund.target_price.toFixed(2) : 'N/A'} | RECOMMENDATION: ${fund?.recommendation?.toUpperCase() ?? 'N/A'} | # ANALYSTS: ${fund?.number_of_analysts ?? '?'}
+BETA: ${fund?.beta?.toFixed(2) ?? 'N/A'} | SECTOR: ${data.price?.sector ?? 'N/A'}
+NEXT EARNINGS: ${fund?.next_earnings_date ?? 'N/A'}${fund?.days_to_earnings != null ? ` (${fund.days_to_earnings}d away)` : ''}
+
+SUPPORT LEVELS (nearest first, below current price):
+${supports.length ? supports.map(s => `  $${s.price.toFixed(2)} (strength ${s.strength.toFixed(0)})`).join('\n') : '  None identified'}
+
+RESISTANCE LEVELS (nearest first, above current price):
+${resistances.length ? resistances.map(r => `  $${r.price.toFixed(2)} (strength ${r.strength.toFixed(0)})`).join('\n') : '  None identified'}
+
+FIBONACCI RETRACEMENTS:
+${Object.entries(fib).map(([k, v]) => `  ${k}%: $${(v as number).toFixed(2)}`).join('\n') || '  Not available'}
+
+TECHNICAL INDICATORS:
+  RSI(14): ${reasons.rsi != null ? Number(reasons.rsi).toFixed(1) : '?'}
+  MACD hist: ${reasons.macd_hist != null ? Number(reasons.macd_hist).toFixed(3) : '?'} (${reasons.macd_rising ? 'rising' : 'falling'})
+  Above SMA50: ${reasons.trend_above_sma50 ? 'Yes' : 'No'} | SMA50>SMA200: ${reasons.sma50_above_sma200 ? 'Yes' : 'No'}
+  ADX: ${reasons.adx != null ? Number(reasons.adx).toFixed(1) : '?'} | Stoch RSI %K: ${reasons.stoch_rsi_k != null ? (Number(reasons.stoch_rsi_k) * 100).toFixed(0) : '?'}%
+  Market regime: ${reasons.market_regime ?? 'unknown'}`;
+
+    const systemPrompt = `You are a professional swing trader generating a concrete 10-day trade plan for a stock that has just received a BUY AI signal.
+
+RULES:
+- Use the exact support/resistance/fibonacci levels provided — pick the most relevant ones for entry and stop placement
+- Entry 1 (50% position): at or just above the nearest strong support below current price
+- Entry 2 (50% position): at a deeper support or fibonacci level for averaging down
+- Breakout entry: above the nearest resistance level if the above limits don't fill — take 50% size
+- Stop loss: just below the lowest entry support — a close below this invalidates the setup
+- Take profit: analyst target price or next major resistance, whichever is closer and realistic
+- Catalysts: 3 bullets, each ≤12 words, specific (mention earnings date, sector, analyst coverage)
+- Risk: single sentence naming the biggest concrete threat (earnings, macro, overbought, etc.)
+- Use the same currency as the stock (check CURRENCY field)
+- If no support/resistance data is available, estimate levels at -2%/-4% below current for entries and -6% for stop
+
+Return ONLY valid JSON — no markdown, no prose:
+{
+  "title": "10-Day Game Plan for SYMBOL",
+  "entries": [
+    { "label": "Limit buy — 50%", "price": 0.00, "rationale": "..." },
+    { "label": "Limit buy — 50%", "price": 0.00, "rationale": "..." },
+    { "label": "Breakout entry — 50%", "price": 0.00, "rationale": "..." }
+  ],
+  "stop_loss": { "price": 0.00, "rationale": "..." },
+  "take_profit": { "price": 0.00, "rationale": "..." },
+  "catalysts": ["...", "...", "..."],
+  "risk": "..."
+}`;
+
+    try {
+      const raw = await askAI([{ role: 'user', content: context }], systemPrompt, 1024);
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error('AI response did not contain JSON.');
+      const parsed = JSON.parse(match[0]) as GamePlan;
+      setGamePlan(parsed);
+    } catch (e: unknown) {
+      setGamePlanError(e instanceof Error ? e.message : 'Failed to generate game plan.');
+    } finally {
+      setGamePlanLoading(false);
     }
   }
 
@@ -605,6 +715,136 @@ export default function StockDetail() {
               </div>
             );
           })()}
+
+          {/* Game Plan */}
+          {data.signal && (data.signal.signal === 'BUY' || data.signal.signal === 'HOLD') && isAiConfigured() && (
+            <div>
+              {/* Generate button */}
+              {!gamePlan && !gamePlanLoading && (
+                <button
+                  onClick={generateGamePlan}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
+                    padding: '9px 14px', borderRadius: '8px', cursor: 'pointer',
+                    border: '1px solid rgba(34,197,94,0.3)',
+                    background: 'rgba(34,197,94,0.06)',
+                    color: '#4ade80', fontSize: '12px', fontWeight: 600,
+                    transition: 'all 0.15s', textAlign: 'left',
+                  }}
+                >
+                  <span style={{ fontSize: '14px' }}>📋</span>
+                  <span style={{ flex: 1 }}>Generate 10-Day Game Plan</span>
+                  <span style={{ fontSize: '10px', color: '#22c55e', opacity: 0.7 }}>AI</span>
+                </button>
+              )}
+
+              {/* Loading */}
+              {gamePlanLoading && (
+                <div style={{ padding: '14px 16px', borderRadius: '8px', border: '1px solid rgba(34,197,94,0.2)', background: 'rgba(15,23,42,0.6)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '14px', display: 'inline-block', animation: 'spin 0.8s linear infinite' }}>↻</span>
+                  <span style={{ fontSize: '12px', color: '#64748b' }}>Generating game plan…</span>
+                </div>
+              )}
+
+              {/* Error */}
+              {gamePlanError && (
+                <div style={{ padding: '10px 14px', borderRadius: '8px', border: '1px solid rgba(248,113,113,0.3)', background: 'rgba(248,113,113,0.06)', fontSize: '11px', color: '#f87171' }}>
+                  {gamePlanError}
+                </div>
+              )}
+
+              {/* Game Plan Card */}
+              {gamePlan && (
+                <div style={{ borderRadius: '10px', border: '1px solid rgba(34,197,94,0.25)', background: 'rgba(15,23,42,0.85)', overflow: 'hidden' }}>
+                  {/* Header */}
+                  <div style={{ padding: '11px 14px', background: 'rgba(34,197,94,0.08)', borderBottom: '1px solid rgba(34,197,94,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                      <span style={{ fontSize: '13px' }}>📋</span>
+                      <span style={{ fontSize: '12px', fontWeight: 700, color: '#4ade80' }}>{gamePlan.title}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button onClick={() => setGamePlanOpen(o => !o)} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '12px', padding: '2px 4px' }}>
+                        {gamePlanOpen ? '▲' : '▼'}
+                      </button>
+                      <button onClick={() => { setGamePlan(null); setGamePlanError(''); }} style={{ background: 'none', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '14px', padding: '2px 4px' }} title="Clear">✕</button>
+                    </div>
+                  </div>
+
+                  {gamePlanOpen && (
+                    <div style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+                      {/* Entries */}
+                      <div>
+                        <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '7px' }}>Entry Strategy</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                          {gamePlan.entries.map((e, i) => {
+                            const isBreakout = e.label.toLowerCase().includes('breakout');
+                            return (
+                              <div key={i} style={{ padding: '8px 10px', borderRadius: '6px', border: `1px solid ${isBreakout ? 'rgba(251,191,36,0.25)' : 'rgba(34,197,94,0.2)'}`, background: isBreakout ? 'rgba(251,191,36,0.05)' : 'rgba(34,197,94,0.05)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2px' }}>
+                                  <span style={{ fontSize: '11px', fontWeight: 700, color: isBreakout ? '#fbbf24' : '#4ade80' }}>{e.label}</span>
+                                  <span style={{ fontSize: '13px', fontWeight: 800, color: isBreakout ? '#fbbf24' : '#4ade80', fontFamily: 'monospace' }}>${e.price.toFixed(2)}</span>
+                                </div>
+                                <div style={{ fontSize: '10px', color: '#64748b', lineHeight: 1.4 }}>{e.rationale}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Stop & Target */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                        <div style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid rgba(248,113,113,0.25)', background: 'rgba(248,113,113,0.05)' }}>
+                          <div style={{ fontSize: '10px', fontWeight: 700, color: '#f87171', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>Stop Loss</div>
+                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#f87171', fontFamily: 'monospace' }}>${gamePlan.stop_loss.price.toFixed(2)}</div>
+                          <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', lineHeight: 1.3 }}>{gamePlan.stop_loss.rationale}</div>
+                        </div>
+                        {gamePlan.take_profit && (
+                          <div style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid rgba(99,102,241,0.25)', background: 'rgba(99,102,241,0.05)' }}>
+                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#818cf8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>Take Profit</div>
+                            <div style={{ fontSize: '14px', fontWeight: 800, color: '#818cf8', fontFamily: 'monospace' }}>${gamePlan.take_profit.price.toFixed(2)}</div>
+                            <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', lineHeight: 1.3 }}>{gamePlan.take_profit.rationale}</div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Catalysts */}
+                      <div>
+                        <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '7px' }}>Catalysts in the Window</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          {gamePlan.catalysts.map((c, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', fontSize: '11px', color: '#94a3b8', lineHeight: 1.4 }}>
+                              <span style={{ color: '#4ade80', flexShrink: 0 }}>›</span>
+                              <span>{c}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Risk */}
+                      <div style={{ padding: '9px 12px', borderRadius: '6px', border: '1px solid rgba(251,191,36,0.2)', background: 'rgba(251,191,36,0.05)', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                        <span style={{ fontSize: '12px', flexShrink: 0, marginTop: '1px' }}>⚠</span>
+                        <div>
+                          <div style={{ fontSize: '10px', fontWeight: 700, color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Key Risk</div>
+                          <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: 1.4 }}>{gamePlan.risk}</div>
+                        </div>
+                      </div>
+
+                      {/* Regenerate */}
+                      <button
+                        onClick={generateGamePlan}
+                        disabled={gamePlanLoading}
+                        style={{ fontSize: '11px', color: '#475569', background: 'none', border: '1px solid #1e293b', borderRadius: '6px', padding: '5px 10px', cursor: 'pointer', width: '100%' }}
+                      >
+                        ↻ Regenerate
+                      </button>
+
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* K-Score */}
           {ranking && (

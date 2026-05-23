@@ -68,6 +68,11 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
   const [rsiVal,   setRsiVal]   = useState<number|null>(null);
   const [macdCross, setMacdCross] = useState<MacdVals>({ macd: null, signal: null, hist: null });
 
+  // S/R label overlay positions
+  type LabelPos = { price: number; y: number; kind: 'support' | 'resistance'; strength: number };
+  const [srLabels, setSrLabels] = useState<LabelPos[]>([]);
+  const chartRef = useRef<IChartApi | null>(null);
+
   useEffect(() => {
     if (!mainRef.current || visiblePrices.length === 0) return;
 
@@ -136,16 +141,30 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
       });
     }
 
-    if (levels?.support_resistance) {
-      for (const lvl of levels.support_resistance.slice(0, 8)) {
-        candles.createPriceLine({
-          price: lvl.price,
-          color: lvl.kind === 'support' ? '#22c55e99' : '#ef444499',
-          lineWidth: 1 as const, lineStyle: LineStyle.Dotted, axisLabelVisible: true,
-          title: `${lvl.kind === 'support' ? 'S' : 'R'}(${lvl.strength})`,
-        });
-      }
+    const srLevels = levels?.support_resistance?.slice(0, 8) ?? [];
+    for (const lvl of srLevels) {
+      candles.createPriceLine({
+        price: lvl.price,
+        color: lvl.kind === 'support' ? '#22c55e66' : '#ef444466',
+        lineWidth: 1 as const, lineStyle: LineStyle.Dotted, axisLabelVisible: false,
+        title: '',
+      });
     }
+    chartRef.current = chart;
+
+    function updateSrLabels() {
+      if (!mainRef.current) return;
+      const labels: LabelPos[] = [];
+      for (const lvl of srLevels) {
+        const y = candles.priceToCoordinate(lvl.price);
+        if (y != null && y > 0 && y < mainRef.current.clientHeight) {
+          labels.push({ price: lvl.price, y, kind: lvl.kind, strength: lvl.strength });
+        }
+      }
+      setSrLabels(labels);
+    }
+    updateSrLabels();
+    chart.timeScale().subscribeVisibleTimeRangeChange(updateSrLabels);
 
     // Fit all data into view — prevents the chart appearing truncated or
     // zoomed to a sub-range when switching between range buttons.
@@ -233,6 +252,8 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
       chart.remove();
       rsiChart?.remove();
       macdChart?.remove();
+      chartRef.current = null;
+      setSrLabels([]);
     };
   }, [visiblePrices, visibleIndicators, levels, showBB, showVol, showRSI, showMACD]);
 
@@ -315,7 +336,43 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
         </div>
       )}
 
-      <div ref={mainRef} className="w-full" />
+      <div style={{ position: 'relative' }}>
+        <div ref={mainRef} className="w-full" />
+        {/* S/R labels pinned to left edge */}
+        {srLabels.map((l, i) => {
+          const isSupport = l.kind === 'support';
+          return (
+            <div
+              key={i}
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: l.y - 9,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '3px',
+                pointerEvents: 'none',
+                zIndex: 10,
+              }}
+            >
+              <div style={{
+                fontSize: '10px',
+                fontWeight: 700,
+                fontFamily: 'monospace',
+                lineHeight: 1,
+                padding: '2px 5px',
+                borderRadius: '3px',
+                background: isSupport ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.18)',
+                border: `1px solid ${isSupport ? 'rgba(34,197,94,0.5)' : 'rgba(239,68,68,0.5)'}`,
+                color: isSupport ? '#4ade80' : '#f87171',
+                whiteSpace: 'nowrap',
+              }}>
+                {isSupport ? 'S' : 'R'}{l.strength > 1 ? `(${l.strength})` : ''} {l.price.toFixed(2)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
       {showRSI && (
         <div className="border-t border-slate-800">

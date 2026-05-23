@@ -88,6 +88,118 @@ _BEARISH_TRANSITIONS = {
 _BULLISH_ANALYST = {"buy", "strong_buy", "strongbuy", "outperform"}
 
 
+def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) -> dict | None:
+    """Build a rule-based game plan from technical data when signal transitions to BUY."""
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="60d")
+        if hist.empty:
+            return None
+        current_price = float(hist["Close"].iloc[-1])
+
+        reasons = signal_data.get("reasons", {})
+
+        # Derive entry levels from technical structure
+        above_sma50 = reasons.get("trend_above_sma50", False)
+        sma50_above_sma200 = reasons.get("sma50_above_sma200", False)
+        rsi = reasons.get("rsi")
+        bb_pct_b = reasons.get("bb_pct_b")
+
+        # Entry 1: 1.5–2% below current (near support), rounder number
+        raw_entry1 = current_price * 0.985
+        entry1 = round(raw_entry1 / _round_step(current_price)) * _round_step(current_price)
+
+        # Entry 2: deeper pullback (3.5–4%), ideally near a fibonacci/sma zone
+        raw_entry2 = current_price * 0.965
+        entry2 = round(raw_entry2 / _round_step(current_price)) * _round_step(current_price)
+
+        # Breakout: 2% above current
+        breakout = round(current_price * 1.02 / _round_step(current_price)) * _round_step(current_price)
+
+        # Stop: below entry2 by ~2% — close below = invalidated
+        stop = round(current_price * 0.945 / _round_step(current_price)) * _round_step(current_price)
+
+        # Take profit: analyst target or +12%
+        target_price = (fundamentals or {}).get("target_price")
+        if target_price and float(target_price) > current_price * 1.03:
+            take_profit = float(target_price)
+            tp_note = "analyst mean price target"
+        else:
+            take_profit = round(current_price * 1.12 / _round_step(current_price)) * _round_step(current_price)
+            tp_note = "+12% from current, near next resistance"
+
+        # Entry rationale hints from technicals
+        if rsi is not None and float(rsi) < 45:
+            e1_note = f"RSI {float(rsi):.0f} — oversold recovery zone"
+            e2_note = "oversold extension — scale in on deeper dip"
+        elif bb_pct_b is not None and float(bb_pct_b) < 0.4:
+            e1_note = "lower Bollinger band support region"
+            e2_note = "near lower band — strong mean-reversion level"
+        elif above_sma50:
+            e1_note = "pullback to SMA50 support zone"
+            e2_note = "deeper pullback — maintain SMA50 as key level"
+        else:
+            e1_note = "near-term support — scale in on weakness"
+            e2_note = "secondary support — averaging down level"
+
+        breakout_note = "breakout above resistance on volume — momentum confirmed"
+        if sma50_above_sma200:
+            stop_note = "daily close below signals golden-cross breakdown"
+        else:
+            stop_note = "daily close below invalidates bullish setup"
+
+        # Earnings catalyst / risk
+        next_earnings = (fundamentals or {}).get("next_earnings_date")
+        days_to_earnings = (fundamentals or {}).get("days_to_earnings")
+        earnings_line = ""
+        if next_earnings:
+            d = days_to_earnings or "?"
+            earnings_line = f"No earnings until {next_earnings} ({d}d) — clean runway" if (days_to_earnings or 99) > 10 else f"⚠ Earnings {next_earnings} ({d}d) — position size accordingly"
+
+        catalysts = [c for c in [
+            earnings_line or None,
+            "Analyst consensus bullish — upgrade potential if momentum holds" if (fundamentals or {}).get("recommendation", "").lower() in ("buy", "strong_buy") else None,
+            "SMA50 > SMA200 golden-cross structure intact" if sma50_above_sma200 else None,
+            f"RSI {float(rsi):.0f} — recovering from oversold territory" if rsi is not None and float(rsi) < 50 else None,
+            "MACD histogram rising — short-term momentum confirming" if reasons.get("macd_rising") else None,
+            "OBV bullish — volume confirming price direction" if reasons.get("obv_bullish") else None,
+        ] if c is not None][:3]
+        if not catalysts:
+            catalysts = ["AI signal + analyst consensus aligned", "Technical structure improving", "Volume trend supporting move"]
+
+        regime = reasons.get("market_regime", "unknown")
+        risk = (
+            "Broad market bear regime active — higher false-signal rate; reduce size"
+            if regime == "bear"
+            else f"Earnings in {days_to_earnings}d — binary event risk; consider waiting for print" if days_to_earnings and int(days_to_earnings) <= 10
+            else "Broader market sell-off would override stock-specific signal regardless of fundamentals"
+        )
+
+        return {
+            "entry1": entry1, "entry1_note": e1_note,
+            "entry2": entry2, "entry2_note": e2_note,
+            "breakout": breakout, "breakout_note": breakout_note,
+            "stop": stop, "stop_note": stop_note,
+            "take_profit": take_profit, "take_profit_note": tp_note,
+            "catalysts": catalysts,
+            "risk": risk,
+            "current_price": current_price,
+        }
+    except Exception as exc:
+        log.warning("game_plan.build_failed", symbol=symbol, error=str(exc))
+        return None
+
+
+def _round_step(price: float) -> float:
+    """Return a sensible rounding step for a given price."""
+    if price >= 1000: return 5.0
+    if price >= 100:  return 0.5
+    if price >= 10:   return 0.1
+    if price >= 1:    return 0.05
+    return 0.01
+
+
 def check_signal_alerts() -> None:
     """Fire signal-change notifications when AI Signal improves AND analyst is BUY/STRONG BUY."""
     try:
@@ -149,6 +261,15 @@ def check_signal_alerts() -> None:
                 if is_bullish and not analyst_ok:
                     continue
 
+                # Build game plan only for BUY transitions
+                game_plan = None
+                if current == "BUY":
+                    game_plan = _build_game_plan(
+                        alert.symbol,
+                        signal_details.get(alert.symbol, {}),
+                        fundamentals_cache.get(alert.symbol),
+                    )
+
                 email_ok = send_signal_alert_email(
                     to=alert.email or "",
                     symbol=alert.symbol,
@@ -157,6 +278,7 @@ def check_signal_alerts() -> None:
                     analyst=analyst_ratings.get(alert.symbol, "buy"),
                     signal_data=signal_details.get(alert.symbol, {}),
                     fundamentals=fundamentals_cache.get(alert.symbol),
+                    game_plan=game_plan,
                 )
                 if email_ok:
                     fired += 1
