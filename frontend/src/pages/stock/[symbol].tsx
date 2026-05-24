@@ -353,9 +353,17 @@ Return ONLY valid JSON — no markdown, no prose:
 
     try {
       const raw = await askAI([{ role: 'user', content: context }], systemPrompt, 1024);
-      const match = raw.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error('AI response did not contain JSON.');
-      const parsed = JSON.parse(match[0]) as GamePlan;
+      // Depth-counter extraction — avoids greedy regex over-extending into
+      // trailing Claude commentary that contains } characters.
+      const objStart = raw.indexOf('{');
+      if (objStart === -1) throw new Error('AI response did not contain JSON.');
+      let depth = 0, objEnd = -1;
+      for (let i = objStart; i < raw.length; i++) {
+        if (raw[i] === '{') depth++;
+        else if (raw[i] === '}') { depth--; if (depth === 0) { objEnd = i; break; } }
+      }
+      if (objEnd === -1) throw new Error('AI response contained malformed JSON.');
+      const parsed = JSON.parse(raw.slice(objStart, objEnd + 1)) as GamePlan;
       setGamePlan(parsed);
     } catch (e: unknown) {
       setGamePlanError(e instanceof Error ? e.message : 'Failed to generate game plan.');
