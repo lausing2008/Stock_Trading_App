@@ -266,6 +266,24 @@ def admin_reset_password(
     return {"status": "ok"}
 
 
+@router.post("/impersonate/{username}")
+def impersonate(
+    username: str,
+    admin: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+):
+    """Return a JWT scoped to another user — admin only.  No password required."""
+    user = session.execute(
+        select(User).where(User.username == username.lower())
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, f"User '{username}' not found")
+    if not user.is_active:
+        raise HTTPException(400, "Cannot impersonate a disabled user")
+    token = _make_token(user.username, user.role.value)
+    return {"token": token, "username": user.username, "role": user.role.value.lower()}
+
+
 @router.put("/users/{username}/toggle")
 def toggle_user(
     username: str,
