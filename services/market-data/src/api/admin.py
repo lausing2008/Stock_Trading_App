@@ -85,12 +85,7 @@ def run_seed():
 
 @router.post("/ingest")
 def run_ingest(req: IngestRequest, tasks: BackgroundTasks):
-    """Ingest price data.
-
-    Single-symbol requests run synchronously so the caller can immediately
-    query fresh data (e.g. Full Refresh on the stock detail page).
-    Multi-symbol requests are queued as a background task to avoid timeouts.
-    """
+    """Single-symbol: synchronous. Multi-symbol: background task to avoid timeouts."""
     if len(req.symbols) == 1:
         try:
             result = ingest_symbol(req.symbols[0], timeframe=req.timeframe, force=req.force)
