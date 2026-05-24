@@ -85,18 +85,25 @@ def run_seed():
 
 @router.post("/ingest")
 def run_ingest(req: IngestRequest, tasks: BackgroundTasks):
-    """Queue ingest in the background — returns immediately to avoid proxy timeouts."""
+    """Ingest price data.
+
+    Single-symbol requests run synchronously so the caller can immediately
+    query fresh data (e.g. Full Refresh on the stock detail page).
+    Multi-symbol requests are queued as a background task to avoid timeouts.
+    """
+    if len(req.symbols) == 1:
+        try:
+            result = ingest_symbol(req.symbols[0], timeframe=req.timeframe, force=req.force)
+            return {"status": "done", "symbols": 1, "result": result}
+        except Exception as exc:
+            log.error("ingest.symbol_failed", symbol=req.symbols[0], error=str(exc))
+            raise HTTPException(500, str(exc))
+
     def _run():
-        if len(req.symbols) == 1:
-            try:
-                ingest_symbol(req.symbols[0], timeframe=req.timeframe, force=req.force)
-            except Exception as exc:
-                log.error("ingest.symbol_failed", symbol=req.symbols[0], error=str(exc))
-        else:
-            try:
-                ingest_universe(req.symbols, req.timeframe, force=req.force)
-            except Exception as exc:
-                log.error("ingest.universe_failed", error=str(exc))
+        try:
+            ingest_universe(req.symbols, req.timeframe, force=req.force)
+        except Exception as exc:
+            log.error("ingest.universe_failed", error=str(exc))
 
     tasks.add_task(_run)
     return {"status": "queued", "symbols": len(req.symbols), "queued": req.symbols}
