@@ -39,7 +39,7 @@ const DEFAULT_FILTERS = {
   minBullish: '',
   minChange: '',
   maxChange: '',
-  watchlistOnly: false,
+  watchlistOnly: true,
   search: '',
 };
 
