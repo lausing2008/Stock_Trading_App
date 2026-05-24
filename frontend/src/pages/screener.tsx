@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import { api, type RankingRow, type SignalSummary, type LatestPrice, type WatchlistItem } from '@/lib/api';
+import { getSession } from '@/lib/auth';
 
 // ─── Merged row type ──────────────────────────────────────────────────────────
 
@@ -109,6 +110,7 @@ function NumInput({ label, value, onChange, placeholder }: {
 
 export default function Screener() {
   const router = useRouter();
+  const isAdmin = getSession()?.role === 'admin';
 
   const { data: rankData } = useSWR('rankings-all', () => api.rankings());
   const { data: signals }  = useSWR('all-signals',  () => api.allSignals());
@@ -168,7 +170,7 @@ export default function Screener() {
     return rows.filter(r => {
       if (filters.market !== 'All' && r.market !== filters.market) return false;
       if (filters.signals.size > 0 && (!r.signal || !filters.signals.has(r.signal))) return false;
-      if (filters.watchlistOnly && !r.inWatchlist) return false;
+      if ((!isAdmin || filters.watchlistOnly) && !r.inWatchlist) return false;
       if (search && !r.symbol.toLowerCase().includes(search) && !r.name.toLowerCase().includes(search)) return false;
       if (minScore   != null && (r.score   ?? 0) < minScore)  return false;
       if (minTech    != null && (r.technical ?? 0) < minTech)  return false;
@@ -333,21 +335,23 @@ export default function Screener() {
             </div>
           </div>
 
-          {/* Watchlist toggle */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-            <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Filter</span>
-            <button
-              onClick={() => setFilters(f => ({ ...f, watchlistOnly: !f.watchlistOnly }))}
-              style={{
-                padding: '4px 10px', borderRadius: '5px', fontSize: '11px', fontWeight: 600, cursor: 'pointer',
-                border: `1px solid ${filters.watchlistOnly ? '#6366f1' : '#1e293b'}`,
-                background: filters.watchlistOnly ? 'rgba(99,102,241,0.15)' : 'transparent',
-                color: filters.watchlistOnly ? '#a78bfa' : '#64748b',
-              }}
-            >
-              {filters.watchlistOnly ? '★ Watchlist' : '☆ My Watchlist'}
-            </button>
-          </div>
+          {/* Watchlist toggle — admin only */}
+          {isAdmin && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Filter</span>
+              <button
+                onClick={() => setFilters(f => ({ ...f, watchlistOnly: !f.watchlistOnly }))}
+                style={{
+                  padding: '4px 10px', borderRadius: '5px', fontSize: '11px', fontWeight: 600, cursor: 'pointer',
+                  border: `1px solid ${filters.watchlistOnly ? '#6366f1' : '#1e293b'}`,
+                  background: filters.watchlistOnly ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: filters.watchlistOnly ? '#a78bfa' : '#64748b',
+                }}
+              >
+                {filters.watchlistOnly ? '★ Watchlist' : '☆ All Stocks'}
+              </button>
+            </div>
+          )}
 
         </div>
       </div>

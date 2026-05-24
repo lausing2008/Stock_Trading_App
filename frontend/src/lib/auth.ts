@@ -1,4 +1,5 @@
-const JWT_KEY = 'stockai_jwt';
+const JWT_KEY       = 'stockai_jwt';
+const JWT_ADMIN_KEY = 'stockai_jwt_admin'; // saved admin token during impersonation
 
 export interface Session {
   username: string;
@@ -33,6 +34,30 @@ export async function login(username: string, password: string): Promise<boolean
 
 export function logout(): void {
   localStorage.removeItem(JWT_KEY);
+  localStorage.removeItem(JWT_ADMIN_KEY);
+}
+
+/** Swap in a user token while keeping the admin token for later restoration. */
+export function startImpersonation(userToken: string): void {
+  const adminToken = localStorage.getItem(JWT_KEY);
+  if (adminToken) localStorage.setItem(JWT_ADMIN_KEY, adminToken);
+  localStorage.setItem(JWT_KEY, userToken);
+}
+
+/** Restore the saved admin token and end the impersonation session. */
+export function exitImpersonation(): void {
+  const adminToken = localStorage.getItem(JWT_ADMIN_KEY);
+  if (adminToken) localStorage.setItem(JWT_KEY, adminToken);
+  localStorage.removeItem(JWT_ADMIN_KEY);
+}
+
+/** Returns the username being impersonated, or null if not impersonating. */
+export function getImpersonatedUser(): string | null {
+  if (typeof window === 'undefined') return null;
+  const adminToken = localStorage.getItem(JWT_ADMIN_KEY);
+  if (!adminToken) return null;
+  const session = getSession();
+  return session?.username ?? null;
 }
 
 export function getToken(): string | null {

@@ -83,6 +83,7 @@ export const api = {
 
   // User management (admin)
   listUsers: () => request<AppUser[]>(`/auth/users`),
+  impersonate: (username: string) => request<{ token: string; username: string; role: string }>(`/auth/impersonate/${username}`, { method: 'POST' }),
   createUser: (username: string, password: string, role: string) =>
     request<AppUser>(`/auth/users`, { method: 'POST', body: JSON.stringify({ username, password, role }) }),
   deleteUser: (username: string) => request(`/auth/users/${username}`, { method: 'DELETE' }),

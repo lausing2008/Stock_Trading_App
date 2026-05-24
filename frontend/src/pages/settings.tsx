@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
-import { getSession, changePassword } from '@/lib/auth';
+import { getSession, changePassword, startImpersonation } from '@/lib/auth';
 import { api, type AppUser } from '@/lib/api';
 import { storage } from '@/lib/storage';
 
@@ -941,6 +941,20 @@ export default function SettingsPage() {
                           fontSize: '11px', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer',
                           background: 'transparent', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171',
                         }}>Delete</button>
+                        {u.is_active && (
+                          <button onClick={async () => {
+                            try {
+                              const result = await api.impersonate(u.username);
+                              startImpersonation(result.token);
+                              window.location.href = '/';
+                            } catch {
+                              alert(`Failed to switch to ${u.username}`);
+                            }
+                          }} style={{
+                            fontSize: '11px', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer',
+                            background: 'rgba(124,58,237,0.15)', border: '1px solid rgba(124,58,237,0.4)', color: '#a78bfa',
+                          }}>Switch to</button>
+                        )}
                       </>
                     )}
                   </div>

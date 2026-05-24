@@ -3,7 +3,7 @@ import type { AppProps } from 'next/app';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import '@/styles/globals.css';
-import { getSession, logout } from '@/lib/auth';
+import { getSession, logout, getImpersonatedUser, exitImpersonation } from '@/lib/auth';
 import { checkAlerts, playNotificationSound } from '@/lib/alerts';
 import { loadSettings } from '@/lib/settings';
 import NotificationBell from '@/components/NotificationBell';
@@ -22,6 +22,7 @@ export default function App({ Component, pageProps }: AppProps) {
   const [username, setUsername] = useState<string | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
+  const [impersonating, setImpersonating] = useState<string | null>(null);
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -52,6 +53,7 @@ export default function App({ Component, pageProps }: AppProps) {
       if (session) {
         setUsername(session.username);
         setRole(session.role);
+        setImpersonating(getImpersonatedUser());
         const settings = loadSettings();
         if (settings.polygonApiKey || settings.alphaVantageApiKey) {
           api.pushConfig({
@@ -113,6 +115,11 @@ export default function App({ Component, pageProps }: AppProps) {
     window.location.href = '/login';
   }
 
+  function handleExitImpersonation() {
+    exitImpersonation();
+    window.location.href = '/settings';
+  }
+
   if (!checked) return null;
 
   if (PUBLIC_PATHS.includes(router.pathname)) {
@@ -123,7 +130,18 @@ export default function App({ Component, pageProps }: AppProps) {
 
   return (
     <div>
-      <header className="border border-slate-800 bg-slate-900" style={{ position: 'sticky', top: 0, zIndex: 500 }}>
+      {impersonating && (
+        <div style={{ position: 'sticky', top: 0, zIndex: 600, background: '#7c3aed', color: '#fff', fontSize: '12px', padding: '6px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>👁 Viewing as <strong>{impersonating}</strong> — all actions are performed as this user</span>
+          <button
+            onClick={handleExitImpersonation}
+            style={{ background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.4)', color: '#fff', borderRadius: '5px', padding: '2px 12px', fontSize: '11px', cursor: 'pointer', fontWeight: 700 }}
+          >
+            ← Return to Admin
+          </button>
+        </div>
+      )}
+      <header className="border border-slate-800 bg-slate-900" style={{ position: 'sticky', top: impersonating ? '33px' : 0, zIndex: 500 }}>
         <div className="container-xl" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Link href="/" className="text-lg font-bold">
             <span style={{ color: '#818cf8' }}>Stock</span>AI
