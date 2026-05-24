@@ -69,12 +69,29 @@ export default function SignalAccuracyPage() {
   const [signalFilter, setSignalFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
   const [showOnly, setShowOnly] = useState<'ALL' | 'CORRECT' | 'WRONG'>('ALL');
   const [sortBy, setSortBy] = useState<'date' | 'confidence' | 'pct_change'>('date');
+  const [resetting, setResetting] = useState(false);
+  const [resetMsg, setResetMsg] = useState('');
 
-  const { data, isLoading, error } = useSWR(
+  const { data, isLoading, error, mutate } = useSWR(
     ['signal-accuracy', lookback],
     () => api.signalAccuracy(lookback),
     { revalidateOnFocus: false },
   );
+
+  async function handleReset() {
+    if (!confirm('Wipe all persisted signals and re-persist fresh ones? This cannot be undone.')) return;
+    setResetting(true);
+    setResetMsg('Wiping signals…');
+    try {
+      const res = await api.resetSignals();
+      setResetMsg(`Deleted ${res.deleted} signals. Re-persisting ${res.repersisting} stocks in background…`);
+      setTimeout(() => { mutate(); setResetMsg(''); }, 5000);
+    } catch {
+      setResetMsg('Reset failed.');
+    } finally {
+      setResetting(false);
+    }
+  }
 
   const rows: SignalAccuracyRow[] = (data?.signals ?? []).filter(r => {
     if (filterSymbol && !r.symbol.includes(filterSymbol.toUpperCase())) return false;
@@ -102,11 +119,22 @@ export default function SignalAccuracyPage() {
 
   return (
     <div style={{ padding: '24px 0' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>Signal Accuracy Tracker</h1>
-        <p style={{ fontSize: 13, color: '#64748b' }}>
-          How often did past BUY/SELL signals predict the correct direction within ~5 trading days?
-        </p>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>Signal Accuracy Tracker</h1>
+          <p style={{ fontSize: 13, color: '#64748b' }}>
+            How often did past BUY/SELL signals predict the correct direction within ~5 trading days?
+          </p>
+          {resetMsg && <p style={{ fontSize: 12, color: '#f97316', marginTop: 4 }}>{resetMsg}</p>}
+        </div>
+        <button
+          onClick={handleReset}
+          disabled={resetting}
+          style={{ padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: resetting ? 'not-allowed' : 'pointer',
+            border: '1px solid #7f1d1d', background: 'rgba(127,29,29,0.2)', color: '#f87171',
+            opacity: resetting ? 0.5 : 1, whiteSpace: 'nowrap', marginTop: 4 }}>
+          {resetting ? 'Resetting…' : 'Reset Signals'}
+        </button>
       </div>
 
       {/* Controls */}
