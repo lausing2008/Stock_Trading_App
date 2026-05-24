@@ -1,26 +1,61 @@
 """Market-aware scheduler — refreshes prices, rankings, signals, and ML models
 around trading hours for US (NYSE/NASDAQ) and HK (HKEX) markets.
 
-Schedule (times are in the local market timezone, DST handled automatically):
+Schedule overview
+─────────────────
+Three phases per market day, plus a weekly deep-clean:
+
+  Open burst   — every 5 min for 20 min around the open.  Catches gap opens,
+                 early momentum, and first-bar signal updates.
+
+  Regular hrs  — every 30 min through the session.  Keeps rankings/signals
+                 current without hammering yfinance.
+
+  Close burst  — every 5 min for 45 min around the close.  Ensures the final
+                 bar is captured as it settles, and signals reflect end-of-day
+                 momentum.
+
+  Post-close   — one shot after the final bar is confirmed; also triggers the
+                 nightly ML retrain so tomorrow's signals use fresh weights.
+
+  Weekly full refresh (Sunday 16:00 PST) — force re-ingests 3 years of daily
+                 bars for all active stocks before the HK Monday open.  Clears
+                 any yfinance data drift that accumulates across the week.
+
+Detailed times (all times local to the market timezone; DST handled automatically)
+──────────────────────────────────────────────────────────────────────────────────
 
   US (America/New_York):
-    09:00  pre-open         ingest + rankings + signals
-    10:45  intra-day 1      ingest + rankings + signals
-    12:45  intra-day 2      ingest + rankings + signals
-    14:45  intra-day 3      ingest + rankings + signals
-    16:30  post-close       ingest + rankings + signals + ML retrain
+    09:25 09:30 09:35 09:40 09:45           open burst   (every 5 min)
+    10:00 10:30 11:00 11:30 12:00 12:30
+    13:00 13:30 14:00 14:30 15:00           regular hrs  (every 30 min)
+    15:30 15:35 15:40 15:45 15:50 15:55
+    16:00 16:05 16:10 16:15                 close burst  (every 5 min)
+    16:30                                   post-close   (+ ML retrain)
 
   HK (Asia/Hong_Kong, UTC+8, no DST):
-    09:00  pre-open         ingest + rankings + signals
-    10:30  intra-day 1      ingest + rankings + signals
-    14:15  intra-day 2      ingest + rankings + signals  (post-lunch)
-    15:30  intra-day 3      ingest + rankings + signals
-    16:30  post-close       ingest + rankings + signals + ML retrain
+    09:25 09:30 09:35 09:40 09:45           open burst   (every 5 min)
+    10:00 10:30 11:00 11:30 12:00 12:30
+    13:00 13:30 14:00 14:30 15:00           regular hrs  (every 30 min)
+    15:30 15:35 15:40 15:45 15:50 15:55
+    16:00 16:05 16:10 16:15                 close burst  (every 5 min)
+    16:30                                   post-close   (+ ML retrain)
+
+  Weekly (America/Los_Angeles):
+    Sunday 16:00                            full force re-ingest all stocks
+
+yfinance rate-limit notes
+─────────────────────────
+  • All ingests use yf.download(symbols_list) — one batch call regardless of
+    stock count, so the effective call rate stays well under 500/day.
+  • The weekly full refresh is the only job that passes force=True (deletes all
+    rows then re-fetches 3 years).  Daily jobs fetch only the latest bars.
 """
 from __future__ import annotations
 
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime, timezone
 
@@ -39,6 +74,7 @@ _scheduler: BackgroundScheduler | None = None
 
 
 def _symbols_for(market: str) -> list[str]:
+    """Return all active stock symbols for the given market ('US' or 'HK')."""
     with SessionLocal() as session:
         return list(
             session.execute(
@@ -48,6 +84,7 @@ def _symbols_for(market: str) -> list[str]:
 
 
 def _post(url: str, **kwargs) -> None:
+    """Fire-and-forget POST to an internal service.  Logs but never raises on failure."""
     try:
         with httpx.Client(timeout=15) as client:
             client.post(url, **kwargs)
@@ -56,6 +93,18 @@ def _post(url: str, **kwargs) -> None:
 
 
 def _refresh_market(market: str, *, post_close: bool = False) -> None:
+    """Run one full refresh cycle for the given market.
+
+    Steps (in order):
+      1. ingest_universe  — fetch latest daily OHLCV bars from yfinance → DB
+      2. /rankings/refresh — ranking-engine recalculates K-Scores for the market
+      3. /signals/refresh  — signal-engine regenerates buy/sell signals
+      4. /ml/train_all     — (post_close only) retrain ML models on the day's data
+      5. check_signal_alerts / check_technical_alerts — fire any triggered alerts
+
+    Called by every scheduled job (open burst, regular, close burst, post-close).
+    post_close=True is only set by the 16:30 job after the final bar has settled.
+    """
     symbols = _symbols_for(market)
     if not symbols:
         log.info("scheduler.skip", market=market, reason="no_symbols")
@@ -492,33 +541,68 @@ def check_technical_alerts() -> None:
         log.error("tech_alert.error", error=str(exc))
 
 
+def _weekly_full_refresh() -> None:
+    """Force re-ingest 3 years of daily bars for every active stock.
+
+    Runs Sunday 16:00 PST — roughly 17 hours before HK Monday open — so both
+    markets start the week with clean, gap-free price history.  Triggers a
+    full rankings + signals refresh once ingestion completes.
+    """
+    all_symbols = _symbols_for("US") + _symbols_for("HK")
+    if not all_symbols:
+        log.info("scheduler.weekly_refresh.skip", reason="no_symbols")
+        return
+    log.info("scheduler.weekly_refresh_start", count=len(all_symbols))
+    try:
+        ingest_universe(all_symbols, "1d", force=True)
+        _post(f"{_settings.ranking_engine_url}/rankings/refresh")
+        _post(f"{_settings.signal_engine_url}/signals/refresh")
+        log.info("scheduler.weekly_refresh_done", count=len(all_symbols))
+    except Exception as exc:
+        log.error("scheduler.weekly_refresh_failed", error=str(exc))
+
+
 def start_scheduler() -> None:
+    """Register all APScheduler jobs and start the background scheduler.
+
+    Idempotent — safe to call multiple times; only the first call has any effect.
+    All 10 jobs are registered with replace_existing=True so a hot-reload
+    (docker restart) won't create duplicate jobs.
+
+    Job count: 4 US + 4 HK + 1 weekly full refresh + 1 price alert checker = 10.
+    """
     global _scheduler
     if _scheduler is not None:
         return
     _scheduler = BackgroundScheduler(timezone="UTC")
 
     # ── US Market (America/New_York — DST handled automatically) ────────────
+
+    # Open burst: 9:25–9:45 every 5 min
     _scheduler.add_job(
         lambda: _refresh_market("US"),
-        CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
-        id="us_pre_open", replace_existing=True,
+        CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="America/New_York"),
+        id="us_open_burst", replace_existing=True,
     )
+    # Regular hours: every 30 min 10:00–15:00
     _scheduler.add_job(
         lambda: _refresh_market("US"),
-        CronTrigger(hour=10, minute=45, day_of_week="mon-fri", timezone="America/New_York"),
-        id="us_intra_1", replace_existing=True,
+        OrTrigger([
+            CronTrigger(hour="10,11,12,13,14", minute="0,30", day_of_week="mon-fri", timezone="America/New_York"),
+            CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+        ]),
+        id="us_intra", replace_existing=True,
     )
+    # Close burst: 15:30–16:15 every 5 min
     _scheduler.add_job(
         lambda: _refresh_market("US"),
-        CronTrigger(hour=12, minute=45, day_of_week="mon-fri", timezone="America/New_York"),
-        id="us_intra_2", replace_existing=True,
+        OrTrigger([
+            CronTrigger(hour=15, minute="30,35,40,45,50,55", day_of_week="mon-fri", timezone="America/New_York"),
+            CronTrigger(hour=16, minute="0,5,10,15", day_of_week="mon-fri", timezone="America/New_York"),
+        ]),
+        id="us_close_burst", replace_existing=True,
     )
-    _scheduler.add_job(
-        lambda: _refresh_market("US"),
-        CronTrigger(hour=14, minute=45, day_of_week="mon-fri", timezone="America/New_York"),
-        id="us_intra_3", replace_existing=True,
-    )
+    # Post-close: final bar confirmed + ML retrain
     _scheduler.add_job(
         lambda: _refresh_market("US", post_close=True),
         CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
@@ -526,30 +610,43 @@ def start_scheduler() -> None:
     )
 
     # ── HK Market (Asia/Hong_Kong — UTC+8, no DST) ──────────────────────────
+
+    # Open burst: 9:25–9:45 every 5 min
     _scheduler.add_job(
         lambda: _refresh_market("HK"),
-        CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="hk_pre_open", replace_existing=True,
+        CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="hk_open_burst", replace_existing=True,
     )
+    # Regular hours: every 30 min 10:00–15:00
     _scheduler.add_job(
         lambda: _refresh_market("HK"),
-        CronTrigger(hour=10, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="hk_intra_1", replace_existing=True,
+        OrTrigger([
+            CronTrigger(hour="10,11,12,13,14", minute="0,30", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+            CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        ]),
+        id="hk_intra", replace_existing=True,
     )
+    # Close burst: 15:30–16:15 every 5 min (HK market closes 16:00, bar settles by 16:15)
     _scheduler.add_job(
         lambda: _refresh_market("HK"),
-        CronTrigger(hour=14, minute=15, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="hk_intra_2", replace_existing=True,
+        OrTrigger([
+            CronTrigger(hour=15, minute="30,35,40,45,50,55", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+            CronTrigger(hour=16, minute="0,5,10,15", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        ]),
+        id="hk_close_burst", replace_existing=True,
     )
-    _scheduler.add_job(
-        lambda: _refresh_market("HK"),
-        CronTrigger(hour=15, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="hk_intra_3", replace_existing=True,
-    )
+    # Post-close: final bar confirmed + ML retrain
     _scheduler.add_job(
         lambda: _refresh_market("HK", post_close=True),
         CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         id="hk_post_close", replace_existing=True,
+    )
+
+    # ── Weekly full refresh — Sunday 16:00 PST, before HK Monday open ───────
+    _scheduler.add_job(
+        _weekly_full_refresh,
+        CronTrigger(day_of_week="sun", hour=16, minute=0, timezone="America/Los_Angeles"),
+        id="weekly_full_refresh", replace_existing=True,
     )
 
     # ── Price alert checker — every minute ──────────────────────────────────
@@ -562,4 +659,4 @@ def start_scheduler() -> None:
     )
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=11)
+    log.info("scheduler.started", jobs=10)
