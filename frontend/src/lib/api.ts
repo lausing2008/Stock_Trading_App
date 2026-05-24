@@ -112,6 +112,7 @@ export const api = {
     if (symbol) params.set('symbol', symbol);
     return request<SignalAccuracyReport>(`/signals/accuracy?${params}`);
   },
+  resetSignals: () => request<{ status: string; deleted: number; repersisting: number }>('/signals/reset', { method: 'POST' }),
 };
 
 export type Stock = {

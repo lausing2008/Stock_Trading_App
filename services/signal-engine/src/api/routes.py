@@ -57,6 +57,17 @@ def refresh_signals(
     return {"status": "scheduled", "count": len(symbols)}
 
 
+@router.post("/reset")
+def reset_signals(tasks: BackgroundTasks, session: Session = Depends(get_session)):
+    """Wipe all persisted signals then re-persist fresh ones for every active stock."""
+    deleted = session.query(Signal).delete()
+    session.commit()
+    symbols = list(session.execute(select(Stock.symbol).where(Stock.active.is_(True))).scalars())
+    tasks.add_task(_bulk_persist, symbols)
+    log.info("signals.reset", deleted=deleted, repersisting=len(symbols))
+    return {"status": "reset", "deleted": deleted, "repersisting": len(symbols)}
+
+
 def _bulk_persist(symbols: list[str]) -> None:
     from db import SessionLocal
     for symbol in symbols:
@@ -80,19 +91,19 @@ def _bulk_persist(symbols: list[str]) -> None:
 
 @router.get("/accuracy")
 def signal_accuracy(
-    lookback_days: int = Query(90, ge=7, le=365),
+    lookback_days: int = Query(90, ge=2, le=365),
     symbol: str | None = None,
     session: Session = Depends(get_session),
 ):
     """Historical accuracy of BUY/SELL signals vs actual price outcomes.
 
     For each persisted BUY or SELL signal within the lookback window, compares
-    the close price on the signal date to the close price ~5 trading days later.
+    the close price on the signal date to the most recent available close price.
     A BUY is 'correct' if price rose; a SELL is 'correct' if it fell.
-    Only signals old enough to have a 7-day outcome are included.
+    Signals need at least 1 day of price history after the signal date to be evaluated.
     """
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-    outcome_cutoff = datetime.utcnow() - timedelta(days=7)
+    outcome_cutoff = datetime.utcnow() - timedelta(days=1)
 
     q = (
         select(Signal, Stock.symbol, Stock.name)
@@ -109,21 +120,24 @@ def signal_accuracy(
     results = []
     for sig, sym, name in rows:
         signal_date = sig.ts.date()
-        horizon_date = signal_date + timedelta(days=7)
 
+        # Entry: the most recent close on or before the signal date (handles
+        # weekend/holiday signals where no bar exists on the signal day itself).
         entry_row = session.execute(
             select(Price.close)
             .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-            .where(Price.ts >= signal_date, Price.ts <= signal_date + timedelta(days=3))
-            .order_by(Price.ts)
+            .where(Price.ts <= signal_date + timedelta(days=1))
+            .order_by(Price.ts.desc())
             .limit(1)
         ).scalar_one_or_none()
 
+        # Exit: most recent close after the signal date — measures cumulative
+        # return from signal issuance to the latest available price.
         exit_row = session.execute(
             select(Price.close, Price.ts)
             .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-            .where(Price.ts >= horizon_date)
-            .order_by(Price.ts)
+            .where(Price.ts > signal_date)
+            .order_by(Price.ts.desc())
             .limit(1)
         ).first()
 
