@@ -1,3 +1,54 @@
+/**
+ * PriceChart — interactive candlestick chart powered by lightweight-charts v4.
+ *
+ * Props
+ * ─────
+ * prices      OHLCV array from the market-data service (up to 1 260 bars).
+ *             Bars arrive as YYYY-MM-DD strings; toTime() truncates any ISO
+ *             time component so they work as Business Day keys.
+ * indicators  Optional TA overlay values (SMA 20/50/200, BB, RSI, MACD) from
+ *             the technical-analysis service.  Timestamps use ISO-8601 format;
+ *             toLine() strips them to YYYY-MM-DD for series alignment.
+ * levels      Optional support/resistance levels from the TA service.  Backend
+ *             labels (kind = 'support'|'resistance') are set at detection time
+ *             from pivot lows/highs and go stale as price moves; the chart
+ *             re-classifies every level at render time based on the last close.
+ *
+ * Range selector
+ * ──────────────
+ * Slices prices[] to the last N bars (1D=1, 5D=5, 1M=21, 3M=63, 6M=126,
+ * 1Y=252, 5Y=1 260, All=full array).  Both visiblePrices and visibleIndicators
+ * are wrapped in useMemo — without it, .slice() and the inline indicator filter
+ * produce new object references on every parent re-render (SWR polls every
+ * 30–60 s), which caused the useEffect to destroy/recreate the chart 26+ times
+ * per page load, clearing the canvas before the browser could paint.
+ *
+ * Right-axis price labels (colored)
+ * ──────────────────────────────────
+ * lightweight-charts pins a colored label to the right price axis for each
+ * series at its current value:
+ *   • Last close     green  (#22c55e) — matches up-candle body color
+ *   • SMA 20         cyan   (#38bdf8)
+ *   • SMA 50         amber  (#f59e0b)
+ *   • SMA 200        violet (#a78bfa)
+ *   • Support lines  green  (dotted, no axis label)
+ *   • Resistance     red    (dotted, no axis label)
+ *
+ * S/R overlay badges
+ * ──────────────────
+ * Absolutely-positioned HTML <div> elements (not canvas) pinned to the left
+ * edge of the chart.  Positions are recomputed via candles.priceToCoordinate()
+ * on every visible range change and on container resize (ResizeObserver).
+ * Format: "R(2) 74.80" where the number in parentheses is the touch count.
+ *
+ * Sub-panels (RSI, MACD)
+ * ──────────────────────
+ * Separate lightweight-charts instances mounted in rsiRef / macdRef.  Their
+ * time scales are locked to the main chart via subscribeVisibleLogicalRangeChange
+ * so panning/zooming stays in sync.  All three charts use autoSize:true so
+ * the canvas fills the container even when the component mounts before the
+ * grid layout is finalized.
+ */
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, CandlestickData, IChartApi, LineData, Time, LineStyle, LogicalRange } from 'lightweight-charts';
