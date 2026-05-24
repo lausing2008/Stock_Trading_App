@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import useSWR from 'swr';
-import { api, type PortfolioWeights, type Stock } from '@/lib/api';
+import { api, type PortfolioWeights, type WatchlistItem, type WatchlistMeta, type LatestPrice } from '@/lib/api';
 
 type Method = 'mean_variance' | 'risk_parity' | 'hierarchical_risk_parity' | 'ai_allocation';
 
@@ -77,24 +77,43 @@ const STOCK_COLORS = [
 ];
 
 export default function PortfolioPage() {
-  const { data: stocks } = useSWR<Stock[]>('stocks', () => api.listStocks());
+  const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
+  const { data: prices }     = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices());
+
+  const [selectedListId, setSelectedListId] = useState<number | null>(null); // null = All
+
+  // Fetch items for the selected list (or all lists combined when null)
+  const { data: wlItems } = useSWR<WatchlistItem[]>(
+    ['watchlist-items', selectedListId],
+    () => api.listWatchlist(selectedListId ?? undefined),
+  );
+
+  const priceMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const p of prices ?? []) m[p.symbol] = p.price;
+    return m;
+  }, [prices]);
 
   const [symbolInput, setSymbolInput] = useState('AAPL,MSFT,NVDA,GOOGL,AMZN');
   const [method, setMethod] = useState<Method>('mean_variance');
   const [lookback, setLookback] = useState(365);
   const [minScore, setMinScore] = useState(60);
+  const [capital, setCapital] = useState('');
   const [result, setResult] = useState<PortfolioWeights | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
 
   const selectedMeta = METHODS.find(m => m.value === method)!;
   const accentColor = METHOD_COLORS[method] ?? '#818cf8';
+  const capitalNum = capital ? parseFloat(capital.replace(/,/g, '')) : null;
 
   async function run() {
     const syms = symbolInput.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
     if (syms.length < 2) { setError('Enter at least 2 symbols.'); return; }
     setLoading(true);
     setError(null);
+    setWarning(null);
     try {
       const r = await api.optimizePortfolio({
         symbols: syms,
@@ -102,13 +121,21 @@ export default function PortfolioPage() {
         lookback_days: lookback,
         min_score: minScore,
       });
+      if (r.dropped_symbols && r.dropped_symbols.length > 0) {
+        setWarning(`Skipped ${r.dropped_symbols.join(', ')} — insufficient price history for the selected lookback. Optimized with remaining symbols.`);
+      }
       setResult(r);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Optimization failed.';
-      setError(msg.includes('400') ? 'Insufficient price history for one or more symbols. Try a shorter lookback or different stocks.' : msg);
+      setError(msg);
     } finally {
       setLoading(false);
     }
+  }
+
+  function loadWatchlist() {
+    if (!wlItems || wlItems.length === 0) return;
+    setSymbolInput(wlItems.map(w => w.symbol).join(','));
   }
 
   const allEntries = result
@@ -165,7 +192,7 @@ export default function PortfolioPage() {
           </div>
 
           {/* Symbols + options row */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '12px', alignItems: 'end', marginBottom: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '12px', alignItems: 'end', marginBottom: '8px' }}>
             <div>
               <label style={lbl}>Symbols (comma-separated)</label>
               <input
@@ -194,11 +221,37 @@ export default function PortfolioPage() {
             )}
           </div>
 
-          {/* Stock quick-add from watchlist */}
-          {stocks && stocks.length > 0 && (
-            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '14px' }}>
-              <span style={{ fontSize: '11px', color: '#334155', alignSelf: 'center' }}>Quick add:</span>
-              {stocks.slice(0, 12).map(s => (
+          {/* Watchlist picker + load */}
+          <div style={{ marginBottom: '12px' }}>
+            <label style={lbl}>Load from Watchlist</label>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <select
+                value={selectedListId ?? 'all'}
+                onChange={e => setSelectedListId(e.target.value === 'all' ? null : Number(e.target.value))}
+                style={{ ...inp, width: 'auto', minWidth: '160px' }}
+              >
+                <option value="all">All Watchlists ({(watchlists ?? []).reduce((s, w) => s + w.item_count, 0)} stocks)</option>
+                {(watchlists ?? []).map(wl => (
+                  <option key={wl.id} value={wl.id}>{wl.name} ({wl.item_count})</option>
+                ))}
+              </select>
+              <button
+                onClick={loadWatchlist}
+                disabled={!wlItems || wlItems.length === 0}
+                style={{
+                  fontSize: '12px', padding: '8px 14px', borderRadius: '7px', cursor: wlItems && wlItems.length > 0 ? 'pointer' : 'not-allowed',
+                  fontWeight: 700, background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.4)',
+                  color: wlItems && wlItems.length > 0 ? '#818cf8' : '#334155',
+                }}
+              >
+                ★ Load Symbols
+              </button>
+              {wlItems && wlItems.length > 0 && (
+                <span style={{ fontSize: '11px', color: '#475569' }}>
+                  {wlItems.length} stock{wlItems.length !== 1 ? 's' : ''} — or add individually:
+                </span>
+              )}
+              {(wlItems ?? []).slice(0, 8).map(s => (
                 <button
                   key={s.symbol}
                   onClick={() => {
@@ -207,7 +260,7 @@ export default function PortfolioPage() {
                   }}
                   style={{
                     fontSize: '11px', padding: '2px 8px', borderRadius: '4px',
-                    background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)',
+                    background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)',
                     color: '#818cf8', cursor: 'pointer',
                   }}
                 >
@@ -215,11 +268,32 @@ export default function PortfolioPage() {
                 </button>
               ))}
             </div>
-          )}
+          </div>
+
+          {/* Capital input */}
+          <div style={{ marginBottom: '14px' }}>
+            <label style={lbl}>Total Capital (optional)</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ color: '#475569', fontSize: '14px', fontWeight: 600 }}>$</span>
+              <input
+                type="number"
+                value={capital}
+                onChange={e => setCapital(e.target.value)}
+                placeholder="e.g. 50000"
+                style={{ ...inp, width: '180px' }}
+              />
+              {capital && <span style={{ fontSize: '11px', color: '#475569' }}>Dollar amounts will appear in results</span>}
+            </div>
+          </div>
 
           {error && (
             <div style={{ marginBottom: '12px', padding: '10px 14px', borderRadius: '8px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', fontSize: '13px' }}>
               {error}
+            </div>
+          )}
+          {warning && (
+            <div style={{ marginBottom: '12px', padding: '10px 14px', borderRadius: '8px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', color: '#fbbf24', fontSize: '13px' }}>
+              ⚠ {warning}
             </div>
           )}
 
@@ -277,6 +351,9 @@ export default function PortfolioPage() {
                 const isCash = sym === 'Cash';
                 const color = isCash ? '#475569' : STOCK_COLORS[i % STOCK_COLORS.length];
                 const barWidth = maxWeight > 0 ? (w / maxWeight) * 100 : 0;
+                const dollarAmt = capitalNum ? capitalNum * w : null;
+                const sharePrice = priceMap[sym];
+                const shares = dollarAmt && sharePrice ? dollarAmt / sharePrice : null;
                 return (
                   <div key={sym} style={{ padding: '8px 20px', display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <span style={{
@@ -296,9 +373,26 @@ export default function PortfolioPage() {
                     <span style={{ minWidth: '52px', textAlign: 'right', fontSize: '14px', fontWeight: 700, color: isCash ? '#475569' : '#f1f5f9', fontFamily: 'monospace' }}>
                       {(w * 100).toFixed(1)}%
                     </span>
+                    {dollarAmt != null && (
+                      <span style={{ minWidth: '90px', textAlign: 'right', fontSize: '12px', color: '#64748b', fontFamily: 'monospace' }}>
+                        ${dollarAmt.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                        {shares != null && !isCash && (
+                          <span style={{ display: 'block', fontSize: '10px', color: '#334155' }}>
+                            ~{shares < 1 ? shares.toFixed(3) : shares.toFixed(1)} sh
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </div>
                 );
               })}
+              {capitalNum != null && (
+                <div style={{ padding: '8px 20px', borderTop: '1px solid #1e293b', marginTop: '4px', display: 'flex', justifyContent: 'flex-end' }}>
+                  <span style={{ fontSize: '12px', color: '#64748b', fontFamily: 'monospace' }}>
+                    Total: <strong style={{ color: '#e2e8f0' }}>${capitalNum.toLocaleString('en-US', { maximumFractionDigits: 0 })}</strong>
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Equal-weight comparison */}

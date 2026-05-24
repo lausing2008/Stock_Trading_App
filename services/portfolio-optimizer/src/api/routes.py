@@ -16,6 +16,7 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 _settings = get_settings()
 
 METHOD = Literal["mean_variance", "risk_parity", "hierarchical_risk_parity", "ai_allocation"]
+MIN_ROWS = 30  # minimum trading days required
 
 
 class OptimizeRequest(BaseModel):
@@ -25,7 +26,8 @@ class OptimizeRequest(BaseModel):
     min_score: float = 60.0
 
 
-def _fetch_closes(symbols: list[str], lookback_days: int) -> pd.DataFrame:
+def _fetch_closes(symbols: list[str], lookback_days: int) -> tuple[pd.DataFrame, list[str]]:
+    """Fetch closing prices. Returns (DataFrame, dropped_symbols)."""
     start = (date.today() - timedelta(days=lookback_days)).isoformat()
     series = {}
     with httpx.Client(timeout=30) as c:
@@ -39,9 +41,23 @@ def _fetch_closes(symbols: list[str], lookback_days: int) -> pd.DataFrame:
             df = pd.DataFrame(data)
             df["ts"] = pd.to_datetime(df["ts"])
             series[s] = df.set_index("ts")["close"]
+
     if not series:
-        return pd.DataFrame()
-    return pd.DataFrame(series).dropna(how="all").ffill().dropna()
+        return pd.DataFrame(), list(symbols)
+
+    merged = pd.DataFrame(series).sort_index()
+
+    # Drop symbols that have fewer than MIN_ROWS non-null values in the lookback window
+    counts = merged.notna().sum()
+    good = counts[counts >= MIN_ROWS].index.tolist()
+    dropped = [s for s in symbols if s not in good]
+
+    if not good:
+        return pd.DataFrame(), dropped
+
+    # Forward-fill gaps (weekends/holidays) then drop any remaining leading NaNs
+    result = merged[good].ffill().dropna()
+    return result, dropped
 
 
 def _fetch_scores(symbols: list[str]) -> dict[str, float]:
@@ -59,9 +75,17 @@ def _fetch_scores(symbols: list[str]) -> dict[str, float]:
 
 @router.post("/optimize")
 def optimize(req: OptimizeRequest):
-    closes = _fetch_closes(req.symbols, req.lookback_days)
-    if closes.empty or len(closes) < 30:
-        raise HTTPException(400, "Insufficient price history — need at least 30 trading days for all symbols")
+    closes, dropped = _fetch_closes(req.symbols, req.lookback_days)
+
+    if closes.empty or len(closes) < MIN_ROWS:
+        detail = "Insufficient price history — need at least 30 trading days."
+        if dropped:
+            detail += f" Symbols with no/insufficient data: {', '.join(dropped)}"
+        raise HTTPException(400, detail)
+
+    if len(closes.columns) < 2:
+        raise HTTPException(400, f"Need at least 2 symbols with sufficient history. Dropped: {', '.join(dropped)}")
+
     returns = closes.pct_change().dropna()
 
     if req.method == "mean_variance":
@@ -71,7 +95,10 @@ def optimize(req: OptimizeRequest):
     elif req.method == "hierarchical_risk_parity":
         out = hierarchical_risk_parity(returns)
     else:
-        scores = _fetch_scores(req.symbols)
+        scores = _fetch_scores(list(closes.columns))
         out = ai_allocation(returns, scores, min_score=req.min_score)
 
-    return asdict(out)
+    result = asdict(out)
+    if dropped:
+        result["dropped_symbols"] = dropped
+    return result
