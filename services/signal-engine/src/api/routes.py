@@ -147,7 +147,7 @@ def signal_accuracy(
             "exit_price": round(exit_close, 4),
             "pct_change": round(pct_change, 2),
             "correct": correct,
-            "days_held": (exit_row[1] - signal_date).days,
+            "days_held": (exit_row[1].date() - signal_date).days,
         })
 
     buy_r  = [r for r in results if r["signal"] == "BUY"]
