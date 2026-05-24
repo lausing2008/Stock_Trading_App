@@ -204,11 +204,24 @@ export default function ForecastPage() {
     setSteps(prev => prev.map((s, i) => i === prev.length - 1 ? { ...s, done: true } : s));
   }
 
-  async function parseJsonArray(raw: string): Promise<ForecastPick[]> {
+  function extractJsonArray(raw: string): string | null {
     const stripped = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
-    const match = stripped.match(/\[[\s\S]*\]/);
-    if (!match) throw new Error('AI did not return a JSON array. Try again.');
-    const parsed = JSON.parse(match[0]);
+    const start = stripped.indexOf('[');
+    if (start === -1) return null;
+    // Walk bracket depth to find the matching close — avoids greedy regex
+    // swallowing trailing text that contains ] characters (e.g. Claude footnotes).
+    let depth = 0;
+    for (let i = start; i < stripped.length; i++) {
+      if (stripped[i] === '[') depth++;
+      else if (stripped[i] === ']') { depth--; if (depth === 0) return stripped.slice(start, i + 1); }
+    }
+    return null;
+  }
+
+  async function parseJsonArray(raw: string): Promise<ForecastPick[]> {
+    const extracted = extractJsonArray(raw);
+    if (!extracted) throw new Error('AI did not return a JSON array. Try again.');
+    const parsed = JSON.parse(extracted);
     if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('AI returned empty results. Try again.');
     return parsed as ForecastPick[];
   }
@@ -220,10 +233,9 @@ export default function ForecastPage() {
       [{ role: 'user', content: buildTickerPrompt(priceRange.min, priceRange.max) }],
       SYSTEM_TICKERS, 800, 0,
     );
-    const tickerStripped = tickerRaw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
-    const tickerMatch = tickerStripped.match(/\[[\s\S]*\]/);
-    if (!tickerMatch) throw new Error('AI did not return a ticker list.');
-    const tickers: string[] = JSON.parse(tickerMatch[0]);
+    const tickerExtracted = extractJsonArray(tickerRaw);
+    if (!tickerExtracted) throw new Error('AI did not return a ticker list.');
+    const tickers: string[] = JSON.parse(tickerExtracted);
     if (!Array.isArray(tickers) || tickers.length === 0) throw new Error('AI returned no tickers.');
     completeLastStep();
 
