@@ -170,3 +170,30 @@ Fundamentals model extended with 5 new fields:
 - `shares_short` — absolute short shares
 - `held_percent_institutions` — % held by institutions
 - `held_percent_insiders` — % held by insiders
+
+---
+
+## Enhancements and Fixes (May 2026)
+
+### Grouped Dropdown Navigation
+
+Replaced 17 flat nav links with 4 grouped dropdown menus (Markets / Research / Portfolio / Tools). Opens on hover with a 120 ms close delay. Active group is underlined; active page shows a purple dot inside the dropdown.
+
+### Analyst Ratings — Action Short-Code Fix
+
+yfinance stores action codes as `"up"`, `"down"`, `"reit"`, `"main"`, `"init"` (not the full words). The frontend `actionKey()` function was updated to match short codes first, then fall back to substring matching. This fixed upgrade/downgrade counts showing 0.
+
+### Screener — Signal Column Header Fix
+
+The Signal column header was incorrectly using a sortable `<Th col="symbol">` component (duplicating the Symbol sort). Replaced with a plain non-sortable `<th>`, matching the Market column style.
+
+### Watchlist — Bulk Signal Alert Controls
+
+Added two ways to manage AI signal email alerts directly from the watchlist:
+
+1. **📡 per-card toggle** — purple when on, grey when off. Click to subscribe or unsubscribe that single stock without leaving the page.
+2. **Notify All / Mute All buttons** — in the watchlist tab bar. "Notify All (N)" subscribes all N unsubscribed stocks in one click. "Mute All" removes subscriptions for the whole list. Uses the email address from Settings → Profile.
+
+### Forecast — 504 Timeout Fix
+
+Added `location /api/ai/` block to nginx with 180 s `proxy_read_timeout`, taking precedence over the 30 s catch-all that was killing long-running Claude API calls. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#10-forecast--ai-endpoints-return-504) for details.

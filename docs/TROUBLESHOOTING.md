@@ -182,12 +182,50 @@ docker compose -f docker/docker-compose.yml up -d frontend
 
 ---
 
+## 10. Forecast / AI Endpoints Return 504
+
+**Symptom:** The `/forecast` page shows "AI request failed (504)". The call goes out but the browser receives a 504 before a response arrives.
+
+**Root cause:** Nginx's catch-all `location /` block has `proxy_read_timeout 30s`. Claude API calls for the two-pass forecast (ticker suggestion + ranking) regularly take 30–90 seconds. Nginx kills the request before Anthropic responds and returns 504 to the browser.
+
+**Fix:** Add a specific `location /api/ai/` block in nginx *before* the catch-all, with a 180-second timeout. Specific locations take precedence over `location /`.
+
+```nginx
+# /etc/nginx/conf.d/stockai.conf
+server {
+    ...
+
+    # AI endpoints — must appear before location /
+    location /api/ai/ {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_read_timeout 180s;
+        proxy_send_timeout 180s;
+    }
+
+    location / {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_read_timeout 30s;
+    }
+}
+```
+
+After editing:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**Note:** Next.js `proxyTimeout` in `next.config.js` is already set to 120 000 ms (2 minutes). The nginx timeout must be ≥ the Next.js timeout for the proxy chain to work correctly. 180 s nginx > 120 s Next.js ensures nginx never kills a request that Next.js is still processing.
+
+---
+
 ## Diagnostic Quick Reference
 
 | Observation | First thing to check |
 |---|---|
 | Prod score ≠ local score, data confirmed identical | Rebuild prod service image |
 | API call times out at exactly 30 s | Next.js `proxyTimeout` — add to `next.config.js` |
+| Forecast / AI endpoint returns 504 | Nginx `proxy_read_timeout` on `location /` — add `location /api/ai/` with 180 s |
 | Browser shows stale ranking after re-ingest | Hard-refresh; then hit ranking engine directly |
 | `docker cp` change has no effect | Delete `__pycache__` and restart container |
 | Different bar counts for same symbol | Force re-ingest with `"force": true` |

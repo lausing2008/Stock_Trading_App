@@ -31,10 +31,18 @@ Authentication is JWT-based. On login, the `market-data` service verifies creden
 - The default admin account (`lausing` / `120402`) is created automatically on first boot via `init_db()`
 
 ### Navigation
-- Logged-in username + **admin** badge (for admin accounts) displayed in the top-right nav bar
-- **🔔 Notification Bell** — shows unread alert count, dropdown with recent notifications
-- **⚙ Settings** icon — quick link to Settings page
-- **Logout** button clears the session and redirects to `/login`
+The top nav uses **grouped dropdown menus** — four groups that open on hover:
+
+| Group | Pages |
+|---|---|
+| Markets | Dashboard, Heatmap, Rankings, Forecast |
+| Research | Screener, Opportunities, Earnings, Analyst, Short Squeeze |
+| Portfolio | Watchlist, Positions, Portfolio, Journal |
+| Tools | Strategies, Alerts, Signal Accuracy, Insider / Congress |
+
+- Active group is underlined in indigo; active page shown with a purple dot in the dropdown
+- Each dropdown has a 120 ms close delay so moving the mouse to a child item doesn't flicker
+- Right-side controls: 🔔 Notification Bell, username + **ADMIN** badge, ⚙ Settings, Logout
 
 ---
 
@@ -686,18 +694,30 @@ Leaderboard of all active stocks sorted by K-Score. A quick, always-sorted view 
 Your curated list of stocks to monitor closely.
 
 ### Features
+- Multiple named lists — create / delete / switch via tabs; move stocks between lists
 - Signal stats bar (BUY / HOLD / WAIT / SELL counts with colour-coded tiles)
 - Signal filter tabs (ALL / BUY / HOLD / WAIT / SELL)
 - Sort by: Symbol, Signal, K-Score, Change%, Price
 - Auto-refreshing live prices every 60 s
+- **Compare view** — select up to 8 stocks for a base-100 relative performance SVG chart (30 / 60 / 90 / 180 / 365 day periods)
 
 ### Per-stock card
-- Price + day change, signal badge, K-Score bar, note preview, price alert banner
+- Price + day change, signal badge, K-Score bar, fair value, note preview, price alert banner
 - HK stocks show Chinese company name as a subtitle
-- **📝 Notes** — free-text, stored in namespaced localStorage per user
-- **🔔 Alerts** — target price + Above/Below trigger (stored in namespaced localStorage per user; separate from the full Alerts page)
+- **📝 Notes** — free-text per stock, stored in namespaced localStorage per user
+- **🔔 Price Alerts** — target price + Above/Below trigger; yellow highlight when triggered
+- **📡 Signal Alerts** — toggle AI signal email notifications for that stock; purple when active
 - **+ POS** — navigate to Positions with symbol pre-filled
+- **⇄ Move** — move to another watchlist (shown when >1 list exists)
 - **✕** — remove from watchlist
+
+### Bulk signal alert controls
+Shown in the watchlist tab row when stocks are present:
+
+- **📡 Notify All (N)** — subscribes all N unsubscribed stocks to AI signal alerts in one click. Shows "All notified (N)" and greys out when all are already subscribed.
+- **Mute All** — removes signal alert subscriptions for every stock in the current list. Only visible when at least one stock is subscribed.
+
+Both buttons use the email address from your account profile (Settings → Profile).
 
 ---
 
