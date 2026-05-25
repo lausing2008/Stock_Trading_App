@@ -19,21 +19,22 @@ const ACTION_BG: Record<string, string> = {
   maintain: 'rgba(100,116,139,0.1)',
 };
 
+// yfinance Action column uses short codes: "up", "down", "init", "reit", "main"
 function actionKey(action: string): string {
-  const a = action.toLowerCase();
-  if (a.includes('upgrade')) return 'upgrade';
-  if (a.includes('downgrade')) return 'downgrade';
-  if (a.includes('init') || a.includes('coverage') || a.includes('start')) return 'init';
-  if (a.includes('reiterate')) return 'reiterate';
+  const a = action.toLowerCase().trim();
+  if (a === 'up' || a.includes('upgrade')) return 'upgrade';
+  if (a === 'down' || a.includes('downgrade')) return 'downgrade';
+  if (a === 'init' || a.includes('init') || a.includes('coverage') || a.includes('start')) return 'init';
+  if (a === 'reit' || a.includes('reiterate')) return 'reiterate';
   return 'maintain';
 }
 
 function actionLabel(action: string): string {
-  const a = action.toLowerCase();
-  if (a.includes('upgrade')) return '▲ Upgrade';
-  if (a.includes('downgrade')) return '▼ Downgrade';
-  if (a.includes('init') || a.includes('coverage') || a.includes('start')) return '◆ Initiated';
-  if (a.includes('reiterate')) return '→ Reiterated';
+  const k = actionKey(action);
+  if (k === 'upgrade') return '▲ Upgrade';
+  if (k === 'downgrade') return '▼ Downgrade';
+  if (k === 'init') return '◆ Initiated';
+  if (k === 'reiterate') return '→ Reiterated';
   return '· ' + action;
 }
 
