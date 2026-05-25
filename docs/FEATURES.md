@@ -37,7 +37,7 @@ The top nav uses **grouped dropdown menus** — four groups that open on hover:
 |---|---|
 | Markets | Dashboard, Heatmap, Rankings, Forecast |
 | Research | Screener, Opportunities, Earnings, Analyst, Short Squeeze |
-| Portfolio | Watchlist, Positions, Portfolio, Journal |
+| Portfolio | Watchlist, Trade Board, Positions, Portfolio, Journal |
 | Tools | Strategies, Alerts, Signal Accuracy, Insider / Congress |
 
 - Active group is underlined in indigo; active page shown with a purple dot in the dropdown
@@ -718,6 +718,48 @@ Shown in the watchlist tab row when stocks are present:
 - **Mute All** — removes signal alert subscriptions for every stock in the current list. Only visible when at least one stock is subscribed.
 
 Both buttons use the email address from your account profile (Settings → Profile).
+
+---
+
+## Trade Board (`/board`)
+
+A persistent Kanban board for tracking trade ideas across four lifecycle stages. Every card is stored server-side per user, so it survives page refreshes and sessions.
+
+### Stages
+
+| Stage | Colour | Purpose |
+|---|---|---|
+| Watch | Grey | Tracking — no position yet |
+| Planning | Indigo | AI game plan generated; evaluating entry |
+| Active | Green | In trade — monitoring |
+| Closed | Dark grey | Trade completed |
+
+### Cards
+
+Each card shows:
+- **Symbol** (links to stock detail page) + source badge (📋 Game Plan / 🔮 Forecast / ✏️ Manual)
+- **Entry / Stop / Target prices** in colour-coded monospace
+- **R:R ratio** — auto-calculated as `(target − entry) / (entry − stop)` when all three prices are set
+- **Notes** — truncated to 120 chars; expand with ▼
+- **Full game plan details** — when expanded, shows title, entry zones with rationale, catalysts, and risk summary (only if saved from a game plan)
+- **Stage selector** — click any stage pill to move the card instantly
+- **Relative date** — "Today / Yesterday / Nd ago" based on last update
+
+### Adding cards
+
+Three ways to create a board card:
+
+1. **Stock detail page** — after the AI generates a game plan, click **📌 Save to Board** in the game plan card header. Saves with stage = Planning, entry/stop/target prices pre-filled.
+2. **Forecast page** — each AI pick has a **📌 Save to Board** button. Saves with stage = Watch, entry_low as entry price, notes from the pick's setup/catalyst/risk text.
+3. **Manual** — click **+ Add** in the Watch column header on the board itself. Enter a symbol and optional notes.
+
+### API endpoints
+```
+GET    /board              # list all trade plans for the current user (ordered by last update)
+POST   /board              # create a plan {symbol, stage, game_plan, entry_price, stop_loss, take_profit, notes, source}
+PUT    /board/{id}         # update stage, notes, prices, or game_plan
+DELETE /board/{id}         # delete a plan
+```
 
 ---
 
