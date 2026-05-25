@@ -409,8 +409,8 @@ export default function Positions() {
                 {/* Trade history drawer */}
                 {showTradesFor === r.id && r.trades && r.trades.length > 0 && (
                   <div style={{ marginTop: '2px', marginLeft: '14px', borderLeft: '2px solid #1e293b', paddingLeft: '14px', display: 'flex', flexDirection: 'column', gap: '3px', paddingBottom: '4px' }}>
-                    <div style={{ fontSize: '10px', color: '#334155', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', padding: '5px 0 2px' }}>Trade History</div>
-                    {r.trades.map((t) => (
+                    <div style={{ fontSize: '10px', color: '#334155', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', padding: '5px 0 2px' }}>Trade History {r.trades.length > 20 ? `(last 20 of ${r.trades.length})` : ''}</div>
+                    {r.trades.slice(0, 20).map((t) => (
                       <div key={t.id} style={{ display: 'flex', gap: '12px', fontSize: '11px', color: '#475569', padding: '4px 8px', borderRadius: '6px', background: 'rgba(255,255,255,0.02)' }}>
                         <span style={{ fontWeight: 700, color: t.type === 'BUY' ? '#818cf8' : '#f87171', width: '30px' }}>{t.type}</span>
                         <span>{fmt(t.shares, 2).replace(/\.?0+$/, '')} shares</span>

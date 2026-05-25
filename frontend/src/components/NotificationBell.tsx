@@ -31,12 +31,13 @@ export default function NotificationBell() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, [open]);
 
-  async function handleOpen() {
+  function handleOpen() {
     const wasOpen = open;
     setOpen(o => !o);
     if (!wasOpen && unread > 0) {
-      await markAllRead();
-      mutate(notifications.map(n => ({ ...n, read: true })), { revalidate: false });
+      // optimistic update immediately, then revalidate to confirm with server
+      mutate(notifications.map(n => ({ ...n, read: true })), { revalidate: true });
+      markAllRead().catch(() => mutate()); // re-fetch if call fails
     }
   }
 
@@ -106,7 +107,7 @@ export default function NotificationBell() {
                 No notifications yet.<br />Set up alerts to get notified.
               </div>
             ) : (
-              notifications.slice(0, 30).map(n => {
+              notifications.map(n => {
                 const ruleEnabled = loadAlerts().find(a => a.id === n.alert_id)?.enabled ?? false;
                 return (
                   <div key={n.id} style={{

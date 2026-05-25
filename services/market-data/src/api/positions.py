@@ -54,7 +54,7 @@ def _trade_out(t: PositionTrade) -> TradeOut:
 
 
 def _pos_out(p: UserPosition) -> PositionOut:
-    sorted_trades = sorted(p.trades, key=lambda t: t.date, reverse=True)
+    sorted_trades = sorted(p.trades, key=lambda t: t.date, reverse=True)[:50]
     return PositionOut(
         id=p.id,
         symbol=p.symbol,
