@@ -87,6 +87,9 @@ class User(Base):
     price_alerts: Mapped[list["PriceAlert"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     signal_alerts: Mapped[list["SignalAlert"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     trade_journal: Mapped[list["TradeJournal"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    positions: Mapped[list["UserPosition"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    cash_balances: Mapped[list["UserCash"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    app_notifications: Mapped[list["AppNotification"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Stock(Base):
@@ -312,6 +315,65 @@ class SignalAlert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="signal_alerts")
+
+
+class UserPosition(Base):
+    __tablename__ = "user_positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    shares: Mapped[float] = mapped_column(Float)
+    avg_cost: Mapped[float] = mapped_column(Float)
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="positions")
+    trades: Mapped[list["PositionTrade"]] = relationship(
+        back_populates="position", cascade="all, delete-orphan"
+    )
+
+
+class PositionTrade(Base):
+    __tablename__ = "position_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    position_id: Mapped[int] = mapped_column(ForeignKey("user_positions.id", ondelete="CASCADE"), index=True)
+    type: Mapped[str] = mapped_column(String(8))  # BUY | SELL
+    shares: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    date: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    position: Mapped["UserPosition"] = relationship(back_populates="trades")
+
+
+class UserCash(Base):
+    __tablename__ = "user_cash"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    currency: Mapped[str] = mapped_column(String(8))
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+
+    user: Mapped["User"] = relationship(back_populates="cash_balances")
+
+    __table_args__ = (UniqueConstraint("user_id", "currency", name="uq_cash_user_currency"),)
+
+
+class AppNotification(Base):
+    __tablename__ = "app_notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    alert_id: Mapped[str] = mapped_column(String(64))
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    message: Mapped[str] = mapped_column(String(512))
+    triggered_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    read: Mapped[bool] = mapped_column(Boolean, default=False)
+    current_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="app_notifications")
 
 
 class TradeJournal(Base):

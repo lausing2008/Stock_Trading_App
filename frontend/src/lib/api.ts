@@ -120,6 +120,48 @@ export const api = {
   createJournalTrade: (body: JournalTradeIn) => request<JournalTrade>('/journal', { method: 'POST', body: JSON.stringify(body) }),
   updateJournalTrade: (id: number, body: JournalTradeIn) => request<JournalTrade>(`/journal/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteJournalTrade: (id: number) => request(`/journal/${id}`, { method: 'DELETE' }),
+
+  // Positions
+  listPositions: () => request<UserPosition[]>('/positions'),
+  addPosition: (body: { symbol: string; shares: number; price: number; currency?: string }) =>
+    request<UserPosition>('/positions', { method: 'POST', body: JSON.stringify(body) }),
+  buyMorePosition: (id: number, body: { shares: number; price: number }) =>
+    request<UserPosition>(`/positions/${id}/buy`, { method: 'POST', body: JSON.stringify(body) }),
+  sellPosition: (id: number, body: { shares: number; price: number }) =>
+    request<UserPosition | undefined>(`/positions/${id}/sell`, { method: 'POST', body: JSON.stringify(body) }),
+  removePosition: (id: number) => request(`/positions/${id}`, { method: 'DELETE' }),
+  getCash: () => request<{ USD: number; HKD: number }>('/positions/cash'),
+  updateCash: (body: { USD: number; HKD: number }) =>
+    request<{ USD: number; HKD: number }>('/positions/cash', { method: 'PUT', body: JSON.stringify(body) }),
+
+  // App Notifications
+  listNotifications: () => request<AppNotification[]>('/app-notifications'),
+  createNotification: (body: { alert_id: string; symbol: string; message: string; triggered_at: string; current_value?: number }) =>
+    request<AppNotification>('/app-notifications', { method: 'POST', body: JSON.stringify(body) }),
+  markAllNotificationsRead: () => request('/app-notifications/read-all', { method: 'PUT' }),
+  clearNotifications: () => request('/app-notifications', { method: 'DELETE' }),
+
+  // Sector heatmap / performance
+  sectorPerformance: () => request<SectorGroup[]>('/stocks/sector_performance'),
+
+  // Earnings calendar
+  earningsCalendar: (daysAhead = 45) => request<EarningsItem[]>(`/stocks/earnings_calendar?days_ahead=${daysAhead}`),
+
+  // Analyst ratings feed
+  analystRatings: (days = 30) => request<AnalystRating[]>(`/stocks/analyst_ratings?days=${days}`),
+
+  // Short squeeze scanner
+  shortSqueeze: (minShortFloat = 10) => request<SqueezeCandidate[]>(`/stocks/short_squeeze?min_short_float=${minShortFloat}`),
+
+  // Relative performance (multi-symbol normalized)
+  relativePerformance: (symbols: string[], days = 90) =>
+    request<Record<string, RelPerfPoint[]>>(`/stocks/relative_performance?symbols=${symbols.join(',')}&days=${days}`),
+
+  // Dividends
+  getDividends: (symbol: string) => request<DividendData>(`/stocks/${symbol}/dividends`),
+
+  // Institutional holders
+  getInstitutional: (symbol: string) => request<InstitutionalData>(`/stocks/${symbol}/institutional`),
 };
 
 export type Stock = {
@@ -260,6 +302,13 @@ export type Fundamentals = {
   insider_net_pct: number | null;
   // Individual analyst firm actions (last 90 days)
   analyst_actions: { date: string; firm: string; from_grade: string; to_grade: string; action: string }[];
+  // Short interest
+  short_percent_of_float: number | null;
+  short_ratio: number | null;
+  shares_short: number | null;
+  // Ownership
+  held_percent_institutions: number | null;
+  held_percent_insiders: number | null;
 };
 
 export type Overview = {
@@ -271,6 +320,34 @@ export type Overview = {
   signal: Signal | null;
   ranking: { score: number; fair_price?: number; technical: number; momentum: number; value: number; growth: number; volatility: number } | null;
   fundamentals: Fundamentals | null;
+};
+
+export type PositionTrade = {
+  id: number;
+  type: 'BUY' | 'SELL';
+  shares: number;
+  price: number;
+  date: string;
+};
+
+export type UserPosition = {
+  id: number;
+  symbol: string;
+  shares: number;
+  avg_cost: number;
+  currency: string;
+  added_at: string;
+  trades: PositionTrade[];
+};
+
+export type AppNotification = {
+  id: number;
+  alert_id: string;
+  symbol: string;
+  message: string;
+  triggered_at: string;
+  read: boolean;
+  current_value?: number | null;
 };
 
 export type JournalTrade = {
@@ -291,3 +368,101 @@ export type JournalTrade = {
 };
 
 export type JournalTradeIn = Omit<JournalTrade, 'id' | 'created_at'>;
+
+export type SectorStock = {
+  symbol: string;
+  name: string;
+  market: string;
+  price: number | null;
+  change_pct: number | null;
+};
+
+export type SectorGroup = {
+  sector: string;
+  avg_change_pct: number | null;
+  stock_count: number;
+  stocks: SectorStock[];
+};
+
+export type EarningsItem = {
+  symbol: string;
+  name: string;
+  sector: string | null;
+  market: string;
+  next_earnings_date: string;
+  days_to_earnings: number;
+  eps_estimate: number | null;
+  trailing_eps: number | null;
+  revenue_growth: number | null;
+  earnings_growth: number | null;
+  market_cap: number | null;
+};
+
+export type AnalystRating = {
+  symbol: string;
+  name: string;
+  sector: string | null;
+  market: string;
+  date: string;
+  firm: string;
+  from_grade: string;
+  to_grade: string;
+  action: string;
+  target_price: number | null;
+  recommendation: string | null;
+};
+
+export type SqueezeCandidate = {
+  symbol: string;
+  name: string;
+  sector: string | null;
+  market: string;
+  short_percent_of_float: number;
+  short_ratio: number | null;
+  shares_short: number | null;
+  price: number | null;
+  change_pct: number | null;
+  momentum_score: number | null;
+  k_score: number | null;
+  volume: number | null;
+};
+
+export type RelPerfPoint = {
+  date: string;
+  value: number;
+  close: number;
+};
+
+export type DividendRecord = {
+  date: string;
+  amount: number;
+};
+
+export type DividendData = {
+  symbol: string;
+  dividends: DividendRecord[];
+  annual_div_rate: number | null;
+  dividend_yield: number | null;
+  ex_dividend_date: number | null;
+  payout_ratio: number | null;
+  error?: string;
+};
+
+export type InstitutionalHolder = {
+  holder: string;
+  shares: number | null;
+  date_reported: string | null;
+  pct_out: number | null;
+  value: number | null;
+};
+
+export type InstitutionalData = {
+  symbol: string;
+  held_pct_institutions: number | null;
+  held_pct_insiders: number | null;
+  float_shares: number | null;
+  shares_outstanding: number | null;
+  major_holders: Record<string, number | string>;
+  institutional_holders: InstitutionalHolder[];
+  error?: string;
+};

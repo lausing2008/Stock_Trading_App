@@ -1,22 +1,26 @@
 import { useState, useEffect, useRef } from 'react';
-import { loadNotifications, markAllRead, clearNotifications, getUnreadCount, toggleAlert, loadAlerts } from '@/lib/alerts';
+import useSWR from 'swr';
+import { markAllRead, clearNotifications, toggleAlert, loadAlerts } from '@/lib/alerts';
+import { api, type AppNotification } from '@/lib/api';
 
 export default function NotificationBell() {
   const [open, setOpen] = useState(false);
-  const [unread, setUnread] = useState(0);
-  const [notifications, setNotifications] = useState(() => loadNotifications().slice(0, 30));
   const panelRef = useRef<HTMLDivElement>(null);
 
-  function refresh() {
-    setUnread(getUnreadCount());
-    setNotifications(loadNotifications().slice(0, 30));
-  }
+  const { data: notifications = [], mutate } = useSWR<AppNotification[]>(
+    'app-notifications',
+    () => api.listNotifications(),
+    { refreshInterval: 0 }
+  );
 
+  const unread = notifications.filter(n => !n.read).length;
+
+  // Re-fetch when an alert fires (dispatched by checkAlerts in alerts.ts)
   useEffect(() => {
-    refresh();
-    window.addEventListener('stockai:notifications', refresh);
-    return () => window.removeEventListener('stockai:notifications', refresh);
-  }, []);
+    function onEvent() { mutate(); }
+    window.addEventListener('stockai:notifications', onEvent);
+    return () => window.removeEventListener('stockai:notifications', onEvent);
+  }, [mutate]);
 
   // Close panel on outside click
   useEffect(() => {
@@ -28,10 +32,12 @@ export default function NotificationBell() {
   }, [open]);
 
   function handleOpen() {
+    const wasOpen = open;
     setOpen(o => !o);
-    if (!open && unread > 0) {
-      markAllRead();
-      refresh();
+    if (!wasOpen && unread > 0) {
+      // optimistic update immediately, then revalidate to confirm with server
+      mutate(notifications.map(n => ({ ...n, read: true })), { revalidate: true });
+      markAllRead().catch(() => mutate()); // re-fetch if call fails
     }
   }
 
@@ -84,7 +90,10 @@ export default function NotificationBell() {
             <span style={{ fontWeight: 700, fontSize: '13px', color: '#e2e8f0' }}>Notifications</span>
             <div style={{ display: 'flex', gap: '8px' }}>
               {notifications.length > 0 && (
-                <button onClick={() => { clearNotifications(); refresh(); }} style={{ fontSize: '11px', color: '#475569', background: 'none', border: 'none', cursor: 'pointer' }}>
+                <button
+                  onClick={async () => { await clearNotifications(); mutate([], { revalidate: false }); }}
+                  style={{ fontSize: '11px', color: '#475569', background: 'none', border: 'none', cursor: 'pointer' }}
+                >
                   Clear all
                 </button>
               )}
@@ -99,7 +108,7 @@ export default function NotificationBell() {
               </div>
             ) : (
               notifications.map(n => {
-                const ruleEnabled = loadAlerts().find(a => a.id === n.alertId)?.enabled ?? false;
+                const ruleEnabled = loadAlerts().find(a => a.id === n.alert_id)?.enabled ?? false;
                 return (
                   <div key={n.id} style={{
                     padding: '11px 16px',
@@ -116,11 +125,11 @@ export default function NotificationBell() {
                         </span>
                         <span style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.4 }}>{n.message}</span>
                       </div>
-                      <span style={{ fontSize: '10px', color: '#334155', flexShrink: 0 }}>{relTime(n.triggeredAt)}</span>
+                      <span style={{ fontSize: '10px', color: '#334155', flexShrink: 0 }}>{relTime(n.triggered_at)}</span>
                     </div>
                     {ruleEnabled && (
                       <button
-                        onClick={() => { toggleAlert(n.alertId); refresh(); }}
+                        onClick={() => { toggleAlert(n.alert_id); mutate(); }}
                         style={{ marginTop: '6px', fontSize: '10px', color: '#f87171', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                       >
                         Stop this alert

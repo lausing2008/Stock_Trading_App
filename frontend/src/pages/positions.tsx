@@ -1,59 +1,23 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { api, type LatestPrice, type RankingRow, type SignalSummary, type WatchlistItem } from '@/lib/api';
-import { storage } from '@/lib/storage';
+import { useEffect } from 'react';
+import { api, type LatestPrice, type RankingRow, type SignalSummary, type WatchlistItem, type UserPosition } from '@/lib/api';
 
 const DonutChart = dynamic(() => import('@/components/DonutChart'), { ssr: false });
 
 /* ─── Types ─────────────────────────────────────────────── */
-type Position = { id: string; symbol: string; shares: number; avgCost: number; currency: string; addedAt: string };
-type Trade    = { type: 'BUY' | 'SELL'; shares: number; price: number; date: string };
 type SortKey  = 'symbol' | 'pnl' | 'pnlPct' | 'value' | 'change' | 'score';
 type CashByMarket = { USD: number; HKD: number };
 
-const STORAGE_KEY = 'positions';
-const TRADES_KEY  = 'trades';
-const CASH_KEY    = 'positions_cash';
-
 function isHK(symbol: string) { return symbol.endsWith('.HK'); }
-function loadPositions(): Position[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const val = storage.getItem(STORAGE_KEY);
-    if (val) return JSON.parse(val);
-    // Migrate from pre-multiuser key 'stockai_positions'
-    const legacy = localStorage.getItem('stockai_positions');
-    if (legacy) { const data = JSON.parse(legacy); savePositions(data); localStorage.removeItem('stockai_positions'); return data; }
-    return [];
-  } catch { return []; }
-}
-function savePositions(p: Position[]) { storage.setItem(STORAGE_KEY, JSON.stringify(p)); }
-function loadTrades(): Record<string, Trade[]> {
-  if (typeof window === 'undefined') return {};
-  try {
-    const val = storage.getItem(TRADES_KEY);
-    if (val) return JSON.parse(val);
-    // Migrate from pre-multiuser key 'stockai_trades'
-    const legacy = localStorage.getItem('stockai_trades');
-    if (legacy) { const data = JSON.parse(legacy); saveTrades(data); localStorage.removeItem('stockai_trades'); return data; }
-    return {};
-  } catch { return {}; }
-}
-function saveTrades(t: Record<string, Trade[]>) { storage.setItem(TRADES_KEY, JSON.stringify(t)); }
-function loadCash(): CashByMarket {
-  if (typeof window === 'undefined') return { USD: 0, HKD: 0 };
-  try { const v = storage.getItem(CASH_KEY); return v ? JSON.parse(v) : { USD: 0, HKD: 0 }; } catch { return { USD: 0, HKD: 0 }; }
-}
-function saveCash(c: CashByMarket) { storage.setItem(CASH_KEY, JSON.stringify(c)); }
 
 /* ─── Helpers ────────────────────────────────────────────── */
 function pnlColor(v: number) { return v > 0 ? '#4ade80' : v < 0 ? '#f87171' : '#94a3b8'; }
 function scoreColor(s: number) { return s >= 70 ? '#4ade80' : s >= 50 ? '#facc15' : '#f87171'; }
 function fmt(n: number, d = 2) { return n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }); }
-function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 function sigStyle(label: string) {
   if (label === 'BUY')  return { color: '#4ade80', bg: 'rgba(34,197,94,0.1)',  border: 'rgba(34,197,94,0.25)'  };
   if (label === 'SELL') return { color: '#f87171', bg: 'rgba(239,68,68,0.1)',  border: 'rgba(239,68,68,0.25)'  };
@@ -71,11 +35,11 @@ function exportCSV(rows: { symbol: string; shares: number; avgCost: number; curP
 }
 
 /* ─── Trade modal ─────────────────────────────────────────── */
-type ModalProps = { mode: 'add' | 'buy' | 'sell'; position?: Position; currentPrice?: number; onConfirm: (shares: number, price: number, symbol?: string, currency?: string) => void; onClose: () => void };
+type ModalProps = { mode: 'add' | 'buy' | 'sell'; position?: UserPosition; currentPrice?: number; onConfirm: (shares: number, price: number, symbol?: string, currency?: string) => void; onClose: () => void };
 function TradeModal({ mode, position, currentPrice, onConfirm, onClose }: ModalProps) {
   const [symbol, setSymbol] = useState(position?.symbol ?? '');
   const [shares, setShares] = useState('');
-  const [price,  setPrice]  = useState(currentPrice?.toFixed(2) ?? position?.avgCost?.toFixed(2) ?? '');
+  const [price,  setPrice]  = useState(currentPrice?.toFixed(2) ?? position?.avg_cost?.toFixed(2) ?? '');
   const [currency, setCurrency] = useState(position?.currency ?? 'USD');
   const title   = mode === 'add' ? 'Add Position' : mode === 'buy' ? `Buy more ${position?.symbol}` : `Sell ${position?.symbol}`;
   const btnColor = mode === 'sell' ? '#ef4444' : '#4f46e5';
@@ -124,18 +88,17 @@ function TradeModal({ mode, position, currentPrice, onConfirm, onClose }: ModalP
 /* ─── Main page ──────────────────────────────────────────── */
 export default function Positions() {
   const router  = useRouter();
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [trades, setTrades]       = useState<Record<string, Trade[]>>({});
-  const [cash, setCash]           = useState<CashByMarket>({ USD: 0, HKD: 0 });
   const [editingCash, setEditingCash] = useState<'USD' | 'HKD' | null>(null);
   const [cashInput, setCashInput]     = useState('');
   const [activeMarket, setActiveMarket] = useState<'US' | 'HK'>('US');
-  const [modal, setModal]         = useState<{ mode: 'add' | 'buy' | 'sell'; posId?: string } | null>(null);
-  const [showTradesFor, setShowTradesFor] = useState<string | null>(null);
+  const [modal, setModal]         = useState<{ mode: 'add' | 'buy' | 'sell'; posId?: number } | null>(null);
+  const [showTradesFor, setShowTradesFor] = useState<number | null>(null);
   const [refreshing, setRefreshing]       = useState(false);
   const [sortKey, setSortKey]             = useState<SortKey>('symbol');
   const [sortAsc, setSortAsc]             = useState(true);
 
+  const { data: positions = [], mutate: mutatePositions } = useSWR<UserPosition[]>('positions', () => api.listPositions());
+  const { data: cash = { USD: 0, HKD: 0 }, mutate: mutateCash } = useSWR<CashByMarket>('positions/cash', () => api.getCash());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: rankingsData }  = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: signalsData }   = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
@@ -146,8 +109,6 @@ export default function Positions() {
     const sym = router.query.add as string | undefined;
     if (sym) { setModal({ mode: 'add' }); router.replace('/positions', undefined, { shallow: true }); }
   }, [router.query.add]);
-
-  useEffect(() => { setPositions(loadPositions()); setTrades(loadTrades()); setCash(loadCash()); }, []);
 
   const priceMap   = useMemo(() => { const m: Record<string, LatestPrice> = {}; for (const p of pricesData ?? []) m[p.symbol] = p; return m; }, [pricesData]);
   const rankMap    = useMemo(() => { const m: Record<string, RankingRow> = {}; for (const r of rankingsData?.rankings ?? []) m[r.symbol] = r; return m; }, [rankingsData]);
@@ -165,43 +126,40 @@ export default function Positions() {
   }, [mutatePrices]);
 
   /* ── Actions ── */
-  function addPosition(shares: number, price: number, symbol?: string, currency?: string) {
-    const newPos: Position = { id: uid(), symbol: symbol!, shares, avgCost: price, currency: currency ?? 'USD', addedAt: new Date().toISOString() };
-    const next = [...positions, newPos]; setPositions(next); savePositions(next);
-    recordTrade(newPos.id, 'BUY', shares, price); setModal(null);
-  }
-  function buyMore(posId: string, extra: number, price: number) {
-    const next = positions.map(p => { if (p.id !== posId) return p; const total = p.shares + extra; return { ...p, shares: total, avgCost: (p.shares * p.avgCost + extra * price) / total }; });
-    setPositions(next); savePositions(next); recordTrade(posId, 'BUY', extra, price); setModal(null);
-  }
-  function sellShares(posId: string, sell: number, price: number) {
-    const next = positions.map(p => { if (p.id !== posId) return p; const rem = p.shares - sell; return rem <= 0 ? null : { ...p, shares: rem }; }).filter(Boolean) as Position[];
-    setPositions(next); savePositions(next); recordTrade(posId, 'SELL', sell, price); setModal(null);
-  }
-  function removePosition(id: string) { const next = positions.filter(p => p.id !== id); setPositions(next); savePositions(next); }
-  function recordTrade(posId: string, type: 'BUY' | 'SELL', shares: number, price: number) {
-    const next = { ...trades }; if (!next[posId]) next[posId] = [];
-    next[posId] = [{ type, shares, price, date: new Date().toISOString() }, ...next[posId]];
-    setTrades(next); saveTrades(next);
-  }
   function handleModalConfirm(shares: number, price: number, symbol?: string, currency?: string) {
     if (!modal) return;
-    if (modal.mode === 'add') { addPosition(shares, price, symbol, currency); return; }
+    setModal(null);
+    if (modal.mode === 'add') {
+      api.addPosition({ symbol: symbol!, shares, price, currency: currency ?? 'USD' })
+        .then(() => mutatePositions()).catch(console.error);
+      return;
+    }
     if (!modal.posId) return;
-    if (modal.mode === 'buy')  buyMore(modal.posId, shares, price);
-    if (modal.mode === 'sell') sellShares(modal.posId, shares, price);
+    if (modal.mode === 'buy') {
+      api.buyMorePosition(modal.posId, { shares, price })
+        .then(() => mutatePositions()).catch(console.error);
+    }
+    if (modal.mode === 'sell') {
+      api.sellPosition(modal.posId, { shares, price })
+        .then(() => mutatePositions()).catch(console.error);
+    }
+  }
+
+  function removePosition(id: number) {
+    api.removePosition(id).then(() => mutatePositions()).catch(console.error);
   }
 
   function updateCash(currency: 'USD' | 'HKD', value: number) {
     const next = { ...cash, [currency]: isNaN(value) ? 0 : Math.max(0, value) };
-    setCash(next); saveCash(next);
+    mutateCash(next, { revalidate: false });
+    api.updateCash(next).catch(console.error);
   }
 
   /* ── Enriched rows ── */
   const rows = useMemo(() => positions.map(p => {
     const lp  = priceMap[p.symbol];
     const cur = lp?.price ?? null;
-    const cost = p.shares * p.avgCost;
+    const cost = p.shares * p.avg_cost;
     const mktVal = cur != null ? p.shares * cur : null;
     const pnl = mktVal != null ? mktVal - cost : null;
     const pnlPct = pnl != null && cost > 0 ? (pnl / cost) * 100 : null;
@@ -269,7 +227,7 @@ export default function Positions() {
             <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span> Refresh
           </button>
           {rows.length > 0 && (
-            <button onClick={() => exportCSV(rows.map(r => ({ symbol: r.symbol, shares: r.shares, avgCost: r.avgCost, curPrice: r.cur, mktVal: r.mktVal, pnl: r.pnl, pnlPct: r.pnlPct, currency: r.currency })))}
+            <button onClick={() => exportCSV(rows.map(r => ({ symbol: r.symbol, shares: r.shares, avgCost: r.avg_cost, curPrice: r.cur, mktVal: r.mktVal, pnl: r.pnl, pnlPct: r.pnlPct, currency: r.currency })))}
               style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 13px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.12)', background: 'rgba(255,255,255,0.03)', color: '#64748b', cursor: 'pointer', fontSize: '13px' }}>
               ⬇ CSV
             </button>
@@ -432,7 +390,7 @@ export default function Positions() {
                   </div>
 
                   <div style={{ textAlign: 'right', fontSize: '12px', color: '#cbd5e1', fontWeight: 600 }}>{fmt(r.shares, 2).replace(/\.?0+$/, '')}</div>
-                  <div style={{ textAlign: 'right', fontSize: '12px', color: '#94a3b8' }}>{fmt(r.avgCost)}</div>
+                  <div style={{ textAlign: 'right', fontSize: '12px', color: '#94a3b8' }}>{fmt(r.avg_cost)}</div>
                   <div style={{ textAlign: 'right', fontSize: '12px', color: r.cur != null ? '#e2e8f0' : '#334155' }}>{r.cur != null ? fmt(r.cur) : '—'}</div>
                   <div style={{ textAlign: 'right', fontSize: '12px', fontWeight: 600, color: '#e2e8f0' }}>${fmt(r.mktVal ?? r.cost)}</div>
                   <div style={{ textAlign: 'right', fontSize: '12px', fontWeight: 700, color: r.pnl != null ? pnlColor(r.pnl) : '#334155' }}>{r.pnl != null ? `${r.pnl >= 0 ? '+' : ''}$${fmt(Math.abs(r.pnl))}` : '—'}</div>
@@ -449,11 +407,11 @@ export default function Positions() {
                 </div>
 
                 {/* Trade history drawer */}
-                {showTradesFor === r.id && trades[r.id] && trades[r.id].length > 0 && (
+                {showTradesFor === r.id && r.trades && r.trades.length > 0 && (
                   <div style={{ marginTop: '2px', marginLeft: '14px', borderLeft: '2px solid #1e293b', paddingLeft: '14px', display: 'flex', flexDirection: 'column', gap: '3px', paddingBottom: '4px' }}>
-                    <div style={{ fontSize: '10px', color: '#334155', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', padding: '5px 0 2px' }}>Trade History</div>
-                    {trades[r.id].map((t, i) => (
-                      <div key={i} style={{ display: 'flex', gap: '12px', fontSize: '11px', color: '#475569', padding: '4px 8px', borderRadius: '6px', background: 'rgba(255,255,255,0.02)' }}>
+                    <div style={{ fontSize: '10px', color: '#334155', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', padding: '5px 0 2px' }}>Trade History {r.trades.length > 20 ? `(last 20 of ${r.trades.length})` : ''}</div>
+                    {r.trades.slice(0, 20).map((t) => (
+                      <div key={t.id} style={{ display: 'flex', gap: '12px', fontSize: '11px', color: '#475569', padding: '4px 8px', borderRadius: '6px', background: 'rgba(255,255,255,0.02)' }}>
                         <span style={{ fontWeight: 700, color: t.type === 'BUY' ? '#818cf8' : '#f87171', width: '30px' }}>{t.type}</span>
                         <span>{fmt(t.shares, 2).replace(/\.?0+$/, '')} shares</span>
                         <span>@ ${fmt(t.price)}</span>
