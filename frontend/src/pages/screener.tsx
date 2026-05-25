@@ -422,7 +422,7 @@ export default function Screener() {
                 <tr>
                   <Th label="Symbol"     col="symbol"              sort={sort} onSort={toggleSort} />
                   <th style={{ padding: '8px 10px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#475569', borderBottom: '1px solid #1e293b', background: '#080f1e', whiteSpace: 'nowrap' }}>Market</th>
-                  <Th label="Signal"     col="symbol"              sort={sort} onSort={() => {}} />
+                  <th style={{ padding: '8px 10px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#475569', borderBottom: '1px solid #1e293b', background: '#080f1e', whiteSpace: 'nowrap' }}>Signal</th>
                   <Th label="K-Score"    col="score"               sort={sort} onSort={toggleSort} />
                   <Th label="Technical"  col="technical"           sort={sort} onSort={toggleSort} />
                   <Th label="Momentum"   col="momentum"            sort={sort} onSort={toggleSort} />
