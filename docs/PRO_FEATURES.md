@@ -197,3 +197,20 @@ Added two ways to manage AI signal email alerts directly from the watchlist:
 ### Forecast — 504 Timeout Fix
 
 Added `location /api/ai/` block to nginx with 180 s `proxy_read_timeout`, taking precedence over the 30 s catch-all that was killing long-running Claude API calls. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#10-forecast--ai-endpoints-return-504) for details.
+
+### Trade Board (`/board`)
+
+New persistent Kanban board for managing trade ideas across four stages: **Watch → Planning → Active → Closed**.
+
+**Backend:**
+- New `trade_plans` DB table (`TradePlan` SQLAlchemy model) with columns: symbol, stage, game_plan (JSON), entry_price, stop_loss, take_profit, notes, source, timestamps
+- New CRUD router at `/board` in `services/market-data/src/api/board.py` — list, create, update, delete; all endpoints require JWT auth
+- `StoredGamePlan` typed interface in `board.tsx` to safely render JSON game plan blobs in TypeScript strict mode
+
+**Frontend:**
+- Kanban layout with one column per stage; cards sorted by last-updated within each column
+- Per-card: R:R ratio auto-calculated, expandable full game plan, inline stage selector, delete with confirm
+- **📌 Save to Board** button on the stock detail game plan card (stage = Planning, prices pre-filled)
+- **📌 Save to Board** button on each Forecast pick card (stage = Watch, notes from setup/catalyst/risk)
+- Manual add form in the Watch column for any symbol
+- SWR `globalMutate` invalidates board cache when a card is saved from another page
