@@ -120,6 +120,26 @@ export const api = {
   createJournalTrade: (body: JournalTradeIn) => request<JournalTrade>('/journal', { method: 'POST', body: JSON.stringify(body) }),
   updateJournalTrade: (id: number, body: JournalTradeIn) => request<JournalTrade>(`/journal/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteJournalTrade: (id: number) => request(`/journal/${id}`, { method: 'DELETE' }),
+
+  // Positions
+  listPositions: () => request<UserPosition[]>('/positions'),
+  addPosition: (body: { symbol: string; shares: number; price: number; currency?: string }) =>
+    request<UserPosition>('/positions', { method: 'POST', body: JSON.stringify(body) }),
+  buyMorePosition: (id: number, body: { shares: number; price: number }) =>
+    request<UserPosition>(`/positions/${id}/buy`, { method: 'POST', body: JSON.stringify(body) }),
+  sellPosition: (id: number, body: { shares: number; price: number }) =>
+    request<UserPosition | undefined>(`/positions/${id}/sell`, { method: 'POST', body: JSON.stringify(body) }),
+  removePosition: (id: number) => request(`/positions/${id}`, { method: 'DELETE' }),
+  getCash: () => request<{ USD: number; HKD: number }>('/positions/cash'),
+  updateCash: (body: { USD: number; HKD: number }) =>
+    request<{ USD: number; HKD: number }>('/positions/cash', { method: 'PUT', body: JSON.stringify(body) }),
+
+  // App Notifications
+  listNotifications: () => request<AppNotification[]>('/app-notifications'),
+  createNotification: (body: { alert_id: string; symbol: string; message: string; triggered_at: string; current_value?: number }) =>
+    request<AppNotification>('/app-notifications', { method: 'POST', body: JSON.stringify(body) }),
+  markAllNotificationsRead: () => request('/app-notifications/read-all', { method: 'PUT' }),
+  clearNotifications: () => request('/app-notifications', { method: 'DELETE' }),
 };
 
 export type Stock = {
@@ -271,6 +291,34 @@ export type Overview = {
   signal: Signal | null;
   ranking: { score: number; fair_price?: number; technical: number; momentum: number; value: number; growth: number; volatility: number } | null;
   fundamentals: Fundamentals | null;
+};
+
+export type PositionTrade = {
+  id: number;
+  type: 'BUY' | 'SELL';
+  shares: number;
+  price: number;
+  date: string;
+};
+
+export type UserPosition = {
+  id: number;
+  symbol: string;
+  shares: number;
+  avg_cost: number;
+  currency: string;
+  added_at: string;
+  trades: PositionTrade[];
+};
+
+export type AppNotification = {
+  id: number;
+  alert_id: string;
+  symbol: string;
+  message: string;
+  triggered_at: string;
+  read: boolean;
+  current_value?: number | null;
 };
 
 export type JournalTrade = {

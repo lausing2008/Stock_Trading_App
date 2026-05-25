@@ -28,6 +28,7 @@
  *  score_above / score_below     — K-Score composite ranking vs a threshold
  */
 import { storage } from './storage';
+import { api } from './api';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -76,8 +77,7 @@ export type Notification = {
 
 // ─── Storage keys ────────────────────────────────────────────────────────────
 
-const ALERTS_KEY        = 'alert_rules';
-const NOTIFICATIONS_KEY = 'notifications';
+const ALERTS_KEY = 'alert_rules';
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
 // All reads/writes go through the `storage` wrapper which namespaces keys per
@@ -107,29 +107,14 @@ export function toggleAlert(id: string): void {
   saveAlerts(loadAlerts().map(a => a.id === id ? { ...a, enabled: !a.enabled } : a));
 }
 
-export function loadNotifications(): Notification[] {
-  if (typeof window === 'undefined') return [];
-  try { return JSON.parse(storage.getItem(NOTIFICATIONS_KEY) ?? '[]'); }
-  catch { return []; }
-}
-
-/** Persists notifications, capping the list at 100 to bound storage usage. */
-export function saveNotifications(ns: Notification[]): void {
-  storage.setItem(NOTIFICATIONS_KEY, JSON.stringify(ns.slice(0, 100)));
-}
-
-export function markAllRead(): void {
-  saveNotifications(loadNotifications().map(n => ({ ...n, read: true })));
+export async function markAllRead(): Promise<void> {
+  await api.markAllNotificationsRead().catch(() => {});
   window.dispatchEvent(new CustomEvent('stockai:notifications'));
 }
 
-export function clearNotifications(): void {
-  saveNotifications([]);
+export async function clearNotifications(): Promise<void> {
+  await api.clearNotifications().catch(() => {});
   window.dispatchEvent(new CustomEvent('stockai:notifications'));
-}
-
-export function getUnreadCount(): number {
-  return loadNotifications().filter(n => !n.read).length;
 }
 
 // ─── Condition label ──────────────────────────────────────────────────────────
@@ -258,9 +243,18 @@ export function checkAlerts(
 
   if (triggered.length > 0) {
     saveAlerts(updated);
-    const existing = loadNotifications();
-    saveNotifications([...triggered, ...existing]);
-    window.dispatchEvent(new CustomEvent('stockai:notifications'));
+    // Post each new notification to backend, then signal the bell to re-fetch
+    Promise.all(triggered.map(n =>
+      api.createNotification({
+        alert_id: n.alertId,
+        symbol: n.symbol,
+        message: n.message,
+        triggered_at: n.triggeredAt,
+        current_value: n.currentValue,
+      }).catch(() => {})
+    )).then(() => {
+      window.dispatchEvent(new CustomEvent('stockai:notifications'));
+    });
   }
 
   return triggered;
