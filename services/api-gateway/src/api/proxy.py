@@ -31,6 +31,7 @@ _ROUTES = {
     "journal": _settings.market_data_url,
     "positions": _settings.market_data_url,
     "app-notifications": _settings.market_data_url,
+    "board": _settings.market_data_url,
 }
 
 
