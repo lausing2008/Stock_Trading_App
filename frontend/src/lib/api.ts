@@ -114,6 +114,12 @@ export const api = {
     return request<SignalAccuracyReport>(`/signals/accuracy?${params}`);
   },
   resetSignals: () => request<{ status: string; deleted: number; repersisting: number }>('/signals/reset', { method: 'POST' }),
+
+  // Trade Journal
+  listJournal: () => request<JournalTrade[]>('/journal'),
+  createJournalTrade: (body: JournalTradeIn) => request<JournalTrade>('/journal', { method: 'POST', body: JSON.stringify(body) }),
+  updateJournalTrade: (id: number, body: JournalTradeIn) => request<JournalTrade>(`/journal/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteJournalTrade: (id: number) => request(`/journal/${id}`, { method: 'DELETE' }),
 };
 
 export type Stock = {
@@ -266,3 +272,22 @@ export type Overview = {
   ranking: { score: number; fair_price?: number; technical: number; momentum: number; value: number; growth: number; volatility: number } | null;
   fundamentals: Fundamentals | null;
 };
+
+export type JournalTrade = {
+  id: number;
+  symbol: string;
+  action: 'BUY' | 'SELL_SHORT';
+  shares: number;
+  entry_price: number;
+  exit_price: number | null;
+  entry_date: string;
+  exit_date: string | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  strategy: string | null;
+  signal_confidence: number | null;
+  notes: string | null;
+  created_at: string;
+};
+
+export type JournalTradeIn = Omit<JournalTrade, 'id' | 'created_at'>;

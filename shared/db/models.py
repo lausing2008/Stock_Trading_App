@@ -86,6 +86,7 @@ class User(Base):
     watchlists: Mapped[list["Watchlist"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     price_alerts: Mapped[list["PriceAlert"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     signal_alerts: Mapped[list["SignalAlert"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    trade_journal: Mapped[list["TradeJournal"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Stock(Base):
@@ -311,3 +312,25 @@ class SignalAlert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="signal_alerts")
+
+
+class TradeJournal(Base):
+    __tablename__ = "trade_journal"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    action: Mapped[str] = mapped_column(String(16))  # BUY | SELL_SHORT
+    shares: Mapped[float] = mapped_column(Float)
+    entry_price: Mapped[float] = mapped_column(Float)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entry_date: Mapped[date] = mapped_column(Date, index=True)
+    exit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    strategy: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    signal_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="trade_journal")
