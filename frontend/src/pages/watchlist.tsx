@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint } from '@/lib/api';
+import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem } from '@/lib/api';
 import { storage } from '@/lib/storage';
 
 /* ── helpers ────────────────────────────────────────────── */
@@ -465,11 +465,14 @@ export default function Watchlist() {
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
 
   const { data: alertsData, mutate: mutateAlerts } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { refreshInterval: 30_000 });
+  const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { refreshInterval: 60_000 });
   const { data: me } = useSWR<AppUser>('me', () => api.getMe());
   const hasEmail = me === undefined ? true : Boolean(me.email);
 
   const [showAddToList, setShowAddToList] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [bulkSubscribing, setBulkSubscribing] = useState(false);
+  const [togglingSignal, setTogglingSignal] = useState<string | null>(null);
   const [moveMenu, setMoveMenu] = useState<string | null>(null);
   const [moving, setMoving] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -501,6 +504,12 @@ export default function Watchlist() {
     }
     return m;
   }, [alertsData]);
+
+  const signalAlertMap = useMemo(() => {
+    const m: Record<string, SignalAlertItem> = {};
+    for (const a of signalAlerts ?? []) m[a.symbol] = a;
+    return m;
+  }, [signalAlerts]);
 
   const rankMap = useMemo(() => { const m: Record<string, RankingRow> = {}; for (const r of rankingsData?.rankings ?? []) m[r.symbol] = r; return m; }, [rankingsData]);
   const priceMap = useMemo(() => { const m: Record<string, LatestPrice> = {}; for (const p of pricesData ?? []) m[p.symbol] = p; return m; }, [pricesData]);
@@ -582,6 +591,57 @@ export default function Watchlist() {
       setAlertToast({ msg, ok: false });
       setTimeout(() => setAlertToast(null), 4000);
     }
+  }
+
+  async function handleToggleSignalAlert(symbol: string) {
+    setTogglingSignal(symbol);
+    try {
+      const existing = signalAlertMap[symbol];
+      if (existing) {
+        await api.deleteSignalAlert(existing.id);
+        setAlertToast({ msg: `Signal alerts off for ${symbol}`, ok: true });
+      } else {
+        const email = me?.email ?? (typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') ?? undefined : undefined);
+        await api.createSignalAlert(symbol, email);
+        setAlertToast({ msg: `Signal alerts on for ${symbol}`, ok: true });
+      }
+      await mutateSignalAlerts();
+    } catch {
+      setAlertToast({ msg: 'Failed to update signal alert', ok: false });
+    }
+    setTimeout(() => setAlertToast(null), 3000);
+    setTogglingSignal(null);
+  }
+
+  async function handleNotifyAll() {
+    const unsubscribed = (data ?? []).filter(item => !signalAlertMap[item.symbol]);
+    if (unsubscribed.length === 0) return;
+    setBulkSubscribing(true);
+    const email = me?.email ?? (typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') ?? undefined : undefined);
+    try {
+      await Promise.all(unsubscribed.map(item => api.createSignalAlert(item.symbol, email)));
+      await mutateSignalAlerts();
+      setAlertToast({ msg: `Signal alerts enabled for ${unsubscribed.length} stocks`, ok: true });
+    } catch {
+      setAlertToast({ msg: 'Some subscriptions failed', ok: false });
+    }
+    setTimeout(() => setAlertToast(null), 3000);
+    setBulkSubscribing(false);
+  }
+
+  async function handleMuteAll() {
+    const subscribed = (data ?? []).filter(item => signalAlertMap[item.symbol]);
+    if (subscribed.length === 0) return;
+    setBulkSubscribing(true);
+    try {
+      await Promise.all(subscribed.map(item => api.deleteSignalAlert(signalAlertMap[item.symbol].id)));
+      await mutateSignalAlerts();
+      setAlertToast({ msg: `Signal alerts removed for ${subscribed.length} stocks`, ok: true });
+    } catch {
+      setAlertToast({ msg: 'Some removals failed', ok: false });
+    }
+    setTimeout(() => setAlertToast(null), 3000);
+    setBulkSubscribing(false);
   }
 
   /* Signal for each item: real signal engine first, K-Score fallback */
@@ -683,6 +743,32 @@ export default function Watchlist() {
             + Add Stocks
           </button>
         )}
+        {data && data.length > 0 && (() => {
+          const subscribedCount = data.filter(item => signalAlertMap[item.symbol]).length;
+          const allOn = subscribedCount === data.length;
+          return (
+            <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto' }}>
+              <button
+                onClick={handleNotifyAll}
+                disabled={bulkSubscribing || allOn}
+                title={allOn ? 'All stocks already have signal alerts' : `Enable signal alerts for all ${data.length - subscribedCount} unsubscribed stocks`}
+                style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '8px', border: '1px solid rgba(129,140,248,0.35)', background: allOn ? 'rgba(129,140,248,0.05)' : 'rgba(129,140,248,0.1)', color: allOn ? '#334155' : '#818cf8', cursor: allOn || bulkSubscribing ? 'default' : 'pointer', fontSize: '12px', fontWeight: 600, opacity: bulkSubscribing ? 0.6 : 1 }}
+              >
+                📡 {bulkSubscribing ? 'Working…' : allOn ? `All notified (${subscribedCount})` : `Notify All (${data.length - subscribedCount})`}
+              </button>
+              {subscribedCount > 0 && (
+                <button
+                  onClick={handleMuteAll}
+                  disabled={bulkSubscribing}
+                  title={`Disable signal alerts for all ${subscribedCount} subscribed stocks`}
+                  style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '8px', border: '1px solid rgba(100,116,139,0.3)', background: 'transparent', color: '#475569', cursor: bulkSubscribing ? 'default' : 'pointer', fontSize: '12px', fontWeight: 600, opacity: bulkSubscribing ? 0.6 : 1 }}
+                >
+                  Mute All
+                </button>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {isLoading && <div style={{ color: '#475569', fontSize: '13px' }}>Loading…</div>}
@@ -757,6 +843,8 @@ export default function Watchlist() {
             const itemAlerts = alertMap[item.symbol] ?? [];
             const hasAlert = itemAlerts.length > 0;
             const triggeredAlerts = itemAlerts.filter(a => a.triggered || (lp && (a.condition === 'above' ? lp.price >= a.threshold : lp.price <= a.threshold)));
+            const hasSignalAlert = Boolean(signalAlertMap[item.symbol]);
+            const isTogglingThis = togglingSignal === item.symbol;
 
             return (
               <div key={item.symbol} style={{ position: 'relative', borderRadius: '10px', border: `1px solid ${triggeredAlerts.length > 0 ? 'rgba(250,204,21,0.4)' : '#1e293b'}`, background: '#0f172a', padding: '14px', transition: 'border-color 0.15s' }} className="watch-card">
@@ -823,6 +911,14 @@ export default function Watchlist() {
                     <button onClick={() => setNoteModal(item.symbol)} title="Add note" style={{ background: note ? 'rgba(99,102,241,0.1)' : 'transparent', border: `1px solid ${note ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '3px 7px', color: note ? '#818cf8' : '#475569', fontSize: '11px', cursor: 'pointer' }}>📝</button>
                     <button onClick={() => setAlertModal(item.symbol)} title="Set price alert" style={{ background: hasAlert ? 'rgba(250,204,21,0.1)' : 'transparent', border: `1px solid ${hasAlert ? 'rgba(250,204,21,0.3)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '3px 7px', color: hasAlert ? '#facc15' : '#475569', fontSize: '11px', cursor: 'pointer', position: 'relative' }}>
                       🔔{hasAlert && itemAlerts.length > 1 && <span style={{ position: 'absolute', top: '-4px', right: '-4px', background: '#facc15', color: '#000', fontSize: '9px', fontWeight: 800, borderRadius: '50%', width: '14px', height: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>{itemAlerts.length}</span>}
+                    </button>
+                    <button
+                      onClick={() => handleToggleSignalAlert(item.symbol)}
+                      disabled={isTogglingThis}
+                      title={hasSignalAlert ? 'Signal alerts ON — click to turn off' : 'Enable AI signal alerts for this stock'}
+                      style={{ background: hasSignalAlert ? 'rgba(129,140,248,0.15)' : 'transparent', border: `1px solid ${hasSignalAlert ? 'rgba(129,140,248,0.4)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '3px 7px', color: hasSignalAlert ? '#818cf8' : '#475569', fontSize: '11px', cursor: isTogglingThis ? 'default' : 'pointer', opacity: isTogglingThis ? 0.5 : 1 }}
+                    >
+                      {isTogglingThis ? '…' : '📡'}
                     </button>
                     <button onClick={() => router.push(`/positions?add=${item.symbol}`)} title="Add to positions" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '5px', padding: '3px 8px', color: '#818cf8', fontSize: '10px', fontWeight: 700, cursor: 'pointer' }}>+ POS</button>
                     {(lists ?? []).length > 1 && (
