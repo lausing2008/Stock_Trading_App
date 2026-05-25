@@ -17,6 +17,163 @@ function hasGateCookie() {
   return document.cookie.split(';').some(c => c.trim().startsWith(`${GATE_COOKIE}=`));
 }
 
+// ── Nav group definitions ─────────────────────────────────────────────────────
+
+type NavItem = { label: string; href: string; color?: string; tag?: string };
+type NavGroupDef = { label: string; items: NavItem[] };
+
+const NAV_GROUPS: NavGroupDef[] = [
+  {
+    label: 'Markets',
+    items: [
+      { label: 'Dashboard',    href: '/' },
+      { label: 'Heatmap',      href: '/heatmap',      color: '#38bdf8', tag: 'live' },
+      { label: 'Rankings',     href: '/rankings' },
+      { label: 'Forecast',     href: '/forecast',     color: '#4ade80' },
+    ],
+  },
+  {
+    label: 'Research',
+    items: [
+      { label: 'Screener',      href: '/screener' },
+      { label: 'Opportunities', href: '/opportunities', color: '#a78bfa' },
+      { label: 'Earnings',      href: '/earnings',      color: '#fb923c', tag: 'cal' },
+      { label: 'Analyst',       href: '/analyst',       color: '#818cf8' },
+      { label: 'Short Squeeze', href: '/short-squeeze', color: '#f87171' },
+    ],
+  },
+  {
+    label: 'Portfolio',
+    items: [
+      { label: 'Watchlist',  href: '/watchlist' },
+      { label: 'Positions',  href: '/positions' },
+      { label: 'Portfolio',  href: '/portfolio' },
+      { label: 'Journal',    href: '/journal',   color: '#34d399' },
+    ],
+  },
+  {
+    label: 'Tools',
+    items: [
+      { label: 'Strategies',      href: '/strategies' },
+      { label: 'Alerts',          href: '/alerts' },
+      { label: 'Signal Accuracy', href: '/signal-accuracy', color: '#a78bfa' },
+      { label: 'Insider / Congress', href: '/insider',      color: '#fb923c' },
+    ],
+  },
+];
+
+// ── NavGroup component ────────────────────────────────────────────────────────
+
+function NavGroup({ group, currentPath }: { group: NavGroupDef; currentPath: string }) {
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const isActive = group.items.some(item =>
+    item.href === '/' ? currentPath === '/' : currentPath.startsWith(item.href)
+  );
+
+  function enter() {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    setOpen(true);
+  }
+
+  function leave() {
+    closeTimer.current = setTimeout(() => setOpen(false), 120);
+  }
+
+  return (
+    <div
+      ref={ref}
+      onMouseEnter={enter}
+      onMouseLeave={leave}
+      style={{ position: 'relative' }}
+    >
+      {/* Group label */}
+      <button
+        onClick={() => setOpen((o: boolean) => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '4px',
+          background: 'none', border: 'none', cursor: 'pointer',
+          padding: '6px 2px',
+          fontSize: '13px',
+          fontWeight: isActive ? 700 : 500,
+          color: isActive ? '#e2e8f0' : '#94a3b8',
+          borderBottom: isActive ? '2px solid #6366f1' : '2px solid transparent',
+          transition: 'color 0.15s, border-color 0.15s',
+          lineHeight: 1,
+        }}
+      >
+        {group.label}
+        <span style={{
+          fontSize: '9px', color: isActive ? '#818cf8' : '#475569',
+          transform: open ? 'rotate(180deg)' : 'none',
+          transition: 'transform 0.15s',
+          display: 'inline-block',
+          marginTop: '1px',
+        }}>▾</span>
+      </button>
+
+      {/* Dropdown panel */}
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: '50%',
+          transform: 'translateX(-50%)',
+          minWidth: '180px',
+          background: '#0d1424',
+          border: '1px solid #1e293b',
+          borderRadius: '10px',
+          boxShadow: '0 16px 40px rgba(0,0,0,0.6)',
+          padding: '6px',
+          zIndex: 9999,
+          animation: 'dropIn 0.12s ease',
+        }}>
+          {group.items.map(item => {
+            const isCurrent = item.href === '/'
+              ? currentPath === '/'
+              : currentPath.startsWith(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={() => setOpen(false)}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  gap: '8px',
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  fontWeight: isCurrent ? 700 : 400,
+                  color: isCurrent ? '#e2e8f0' : (item.color ?? '#94a3b8'),
+                  background: isCurrent ? 'rgba(99,102,241,0.12)' : 'transparent',
+                  textDecoration: 'none',
+                  transition: 'background 0.1s',
+                  whiteSpace: 'nowrap',
+                }}
+                className={isCurrent ? '' : 'nav-dd-item'}
+              >
+                <span>{item.label}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  {item.tag && (
+                    <span style={{
+                      fontSize: '9px', fontWeight: 700, padding: '1px 5px',
+                      borderRadius: '3px', textTransform: 'uppercase', letterSpacing: '0.05em',
+                      background: 'rgba(99,102,241,0.15)', color: '#818cf8',
+                    }}>{item.tag}</span>
+                  )}
+                  {isCurrent && <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#6366f1', display: 'inline-block' }} />}
+                </span>
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+
 export default function App({ Component, pageProps }: AppProps) {
   const router = useRouter();
   const [username, setUsername] = useState<string | null>(null);
@@ -27,14 +184,11 @@ export default function App({ Component, pageProps }: AppProps) {
 
   useEffect(() => {
     if (PUBLIC_PATHS.includes(router.pathname)) {
-      // Gate page and login page — skip all checks
       setChecked(true);
       return;
     }
 
     async function doCheck() {
-      // Site-wide password gate — query the API (Node.js runtime) to see if a
-      // SITE_PASSWORD is configured, since that env var is only readable server-side.
       if (!hasGateCookie()) {
         try {
           const r = await fetch('/api/gate');
@@ -48,7 +202,6 @@ export default function App({ Component, pageProps }: AppProps) {
         }
       }
 
-      // JWT auth check
       const session = getSession();
       if (session) {
         setUsername(session.username);
@@ -98,7 +251,7 @@ export default function App({ Component, pageProps }: AppProps) {
           if (settings.notificationSound) playNotificationSound();
         }
       } catch {
-        // silently ignore — network might be unavailable
+        // silently ignore
       }
     }
 
@@ -141,67 +294,66 @@ export default function App({ Component, pageProps }: AppProps) {
           </button>
         </div>
       )}
-      <header className="border border-slate-800 bg-slate-900" style={{ position: 'sticky', top: impersonating ? '33px' : 0, zIndex: 500 }}>
-        <div className="container-xl" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Link href="/" className="text-lg font-bold">
-            <span style={{ color: '#818cf8' }}>Stock</span>AI
+
+      <header
+        className="border border-slate-800 bg-slate-900"
+        style={{ position: 'sticky', top: impersonating ? '33px' : 0, zIndex: 500 }}
+      >
+        <div
+          className="container-xl"
+          style={{ display: 'flex', alignItems: 'center', gap: '32px', height: '52px' }}
+        >
+          {/* Logo */}
+          <Link href="/" style={{ textDecoration: 'none', flexShrink: 0 }}>
+            <span style={{ fontSize: '17px', fontWeight: 800, color: '#818cf8', letterSpacing: '-0.02em' }}>Stock</span>
+            <span style={{ fontSize: '17px', fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.02em' }}>AI</span>
           </Link>
-          <nav className="flex gap-4 text-sm text-slate-300" style={{ flexWrap: 'wrap' }}>
-            <Link href="/">Dashboard</Link>
-            <Link href="/opportunities" style={{ color: '#a78bfa', fontWeight: 600 }}>Opportunities</Link>
-            <Link href="/forecast" style={{ color: '#4ade80', fontWeight: 700 }}>Forecast</Link>
-            <Link href="/screener">Screener</Link>
-            <Link href="/heatmap" style={{ color: '#38bdf8' }}>Heatmap</Link>
-            <Link href="/rankings">Rankings</Link>
-            <Link href="/earnings" style={{ color: '#fb923c', fontWeight: 600 }}>Earnings</Link>
-            <Link href="/analyst" style={{ color: '#a78bfa' }}>Analyst</Link>
-            <Link href="/short-squeeze" style={{ color: '#f87171', fontWeight: 600 }}>Short Squeeze</Link>
-            <Link href="/watchlist">Watchlist</Link>
-            <Link href="/positions">Positions</Link>
-            <Link href="/portfolio">Portfolio</Link>
-            <Link href="/strategies">Strategies</Link>
-            <Link href="/alerts">Alerts</Link>
-            <Link href="/journal" style={{ color: '#34d399', fontWeight: 600 }}>Journal</Link>
-            <Link href="/signal-accuracy" style={{ color: '#a78bfa' }}>Accuracy</Link>
-            <Link href="/insider" style={{ color: '#fb923c', fontWeight: 600 }}>Insider</Link>
+
+          {/* Group nav */}
+          <nav style={{ display: 'flex', alignItems: 'center', gap: '2px', flex: 1 }}>
+            {NAV_GROUPS.map(group => (
+              <NavGroup key={group.label} group={group} currentPath={router.pathname} />
+            ))}
           </nav>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+
+          {/* Right side controls */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
             <NotificationBell />
-            <span style={{ fontSize: '12px', color: '#475569' }}>
-              👤 <span style={{ color: '#94a3b8' }}>{username}</span>
+            <div style={{ width: '1px', height: '20px', background: '#1e293b' }} />
+            <span style={{ fontSize: '12px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span style={{ color: '#94a3b8' }}>{username}</span>
               {role === 'admin' && (
-                <span style={{ marginLeft: '5px', fontSize: '10px', color: '#fb7185', padding: '1px 5px', borderRadius: '3px', background: 'rgba(225,29,72,0.15)', border: '1px solid rgba(225,29,72,0.3)' }}>
-                  admin
+                <span style={{ fontSize: '9px', color: '#fb7185', padding: '1px 5px', borderRadius: '3px', background: 'rgba(225,29,72,0.15)', border: '1px solid rgba(225,29,72,0.3)', fontWeight: 700, letterSpacing: '0.04em' }}>
+                  ADMIN
                 </span>
               )}
             </span>
             <Link
               href="/settings"
-              style={{
-                background: 'transparent', border: '1px solid #1e293b',
-                color: '#64748b', padding: '4px 10px', borderRadius: '6px',
-                fontSize: '12px', cursor: 'pointer', textDecoration: 'none',
-              }}
               title="Settings"
-            >
-              ⚙
-            </Link>
+              style={{ background: 'transparent', border: '1px solid #1e293b', color: '#475569', padding: '4px 10px', borderRadius: '6px', fontSize: '13px', textDecoration: 'none', lineHeight: 1 }}
+            >⚙</Link>
             <button
               onClick={handleLogout}
-              style={{
-                background: 'transparent', border: '1px solid #1e293b',
-                color: '#64748b', padding: '4px 12px', borderRadius: '6px',
-                fontSize: '12px', cursor: 'pointer', transition: 'all 0.15s',
-              }}
+              style={{ background: 'transparent', border: '1px solid #1e293b', color: '#475569', padding: '4px 12px', borderRadius: '6px', fontSize: '12px', cursor: 'pointer' }}
             >
               Logout
             </button>
           </div>
         </div>
       </header>
+
       <main className="container-xl">
         <Component {...pageProps} />
       </main>
+
+      <style>{`
+        @keyframes dropIn {
+          from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+          to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+        .nav-dd-item:hover { background: rgba(255,255,255,0.05) !important; }
+      `}</style>
     </div>
   );
 }
