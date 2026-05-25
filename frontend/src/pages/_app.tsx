@@ -45,10 +45,11 @@ const NAV_GROUPS: NavGroupDef[] = [
   {
     label: 'Portfolio',
     items: [
-      { label: 'Watchlist',  href: '/watchlist' },
-      { label: 'Positions',  href: '/positions' },
-      { label: 'Portfolio',  href: '/portfolio' },
-      { label: 'Journal',    href: '/journal',   color: '#34d399' },
+      { label: 'Watchlist',    href: '/watchlist' },
+      { label: 'Positions',    href: '/positions' },
+      { label: 'Portfolio',    href: '/portfolio' },
+      { label: 'Trade Board',  href: '/board',    color: '#818cf8' },
+      { label: 'Journal',      href: '/journal',  color: '#34d399' },
     ],
   },
   {

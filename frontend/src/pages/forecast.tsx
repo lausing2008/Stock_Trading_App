@@ -36,6 +36,7 @@ import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
 import { api, type RankingRow, type LatestPrice, type SignalSummary, type QuickScanResult } from '@/lib/api';
+import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -171,6 +172,26 @@ export default function ForecastPage() {
   const [scanCount, setScanCount]     = useState(0);
 
   const [sortBy, setSortBy]           = useState<'rank' | 'gain' | 'confidence'>('rank');
+  const [savedToBoard, setSavedToBoard] = useState<Set<string>>(new Set());
+  const [savingToBoard, setSavingToBoard] = useState<string | null>(null);
+
+  async function savePickToBoard(pick: ForecastPick) {
+    setSavingToBoard(pick.symbol);
+    try {
+      await api.createBoardPlan({
+        symbol: pick.symbol,
+        stage: 'watch',
+        entry_price: pick.entry_low,
+        stop_loss: pick.stop_loss,
+        take_profit: pick.take_profit,
+        notes: `${pick.setup}. Catalyst: ${pick.catalyst}. Risk: ${pick.risk}`,
+        source: 'forecast',
+      });
+      setSavedToBoard(s => new Set(s).add(pick.symbol));
+      globalMutate('board');
+    } catch { /* silently ignore */ }
+    setSavingToBoard(null);
+  }
   const [filterConf, setFilterConf]   = useState<'all' | 'high' | 'medium'>('all');
 
   const sigMap   = useMemo(() => { const m: Record<string, SignalSummary> = {}; (signals ?? []).forEach(s => { m[s.symbol] = s; }); return m; }, [signals]);
@@ -520,10 +541,17 @@ export default function ForecastPage() {
                     <div style={{ fontSize: '11px', color: '#475569', lineHeight: 1.5, marginTop: '4px', paddingTop: '8px', borderTop: '1px solid #1e293b' }}>
                       {pick.rationale}
                     </div>
-                    <div style={{ marginTop: '6px' }}>
+                    <div style={{ marginTop: '6px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                       <Link href={`/stock/${pick.symbol}`} style={{ fontSize: '11px', color: '#6366f1', textDecoration: 'none', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)', padding: '4px 10px', borderRadius: '5px' }}>
                         View chart & AI chat →
                       </Link>
+                      <button
+                        onClick={() => savePickToBoard(pick)}
+                        disabled={savingToBoard === pick.symbol || savedToBoard.has(pick.symbol)}
+                        style={{ fontSize: '11px', cursor: savedToBoard.has(pick.symbol) ? 'default' : 'pointer', background: savedToBoard.has(pick.symbol) ? 'rgba(34,197,94,0.1)' : 'rgba(129,140,248,0.1)', border: `1px solid ${savedToBoard.has(pick.symbol) ? 'rgba(34,197,94,0.3)' : 'rgba(129,140,248,0.25)'}`, color: savedToBoard.has(pick.symbol) ? '#4ade80' : '#818cf8', padding: '4px 10px', borderRadius: '5px', opacity: savingToBoard === pick.symbol ? 0.5 : 1 }}
+                      >
+                        {savedToBoard.has(pick.symbol) ? '✓ Saved' : savingToBoard === pick.symbol ? '…' : '📌 Save to Board'}
+                      </button>
                     </div>
                   </div>
                 </div>

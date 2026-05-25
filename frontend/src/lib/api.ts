@@ -76,6 +76,17 @@ export const api = {
     request<SignalAlertItem>(`/signal-alerts`, { method: 'POST', body: JSON.stringify({ symbol, email }) }),
   deleteSignalAlert: (id: number) => request(`/signal-alerts/${id}`, { method: 'DELETE' }),
 
+  // Trade board (Kanban)
+  listBoard: () => request<TradePlan[]>(`/board`),
+  createBoardPlan: (body: {
+    symbol: string; stage?: string; game_plan?: object | null;
+    entry_price?: number | null; stop_loss?: number | null; take_profit?: number | null;
+    notes?: string | null; source?: string | null;
+  }) => request<TradePlan>(`/board`, { method: 'POST', body: JSON.stringify(body) }),
+  updateBoardPlan: (id: number, body: { stage?: string; notes?: string; entry_price?: number; stop_loss?: number; take_profit?: number }) =>
+    request<TradePlan>(`/board/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteBoardPlan: (id: number) => request(`/board/${id}`, { method: 'DELETE' }),
+
   // User profile
   getMe: () => request<AppUser>(`/auth/me`),
   updateProfile: (body: { email?: string }) =>
@@ -226,6 +237,7 @@ export type NewsItem = { title: string; url: string; source: string; published_a
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };
 export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; created_at: string };
+export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; created_at: string; updated_at: string };
 export type CongressTrade = { Ticker: string; Date: string; Politician: string; Transaction: string; Min: number | null; Max: number | null; Party: string | null; State: string | null; Chamber: string | null; ReportDate: string | null };
 export type SignalAccuracyRow = { symbol: string; name: string; signal: 'BUY' | 'SELL'; confidence: number; bullish_probability: number | null; signal_date: string; entry_price: number; exit_price: number; pct_change: number; correct: boolean; days_held: number };
 export type SignalAccuracyReport = { lookback_days: number; total_signals: number; buy_count: number; sell_count: number; buy_accuracy: number | null; sell_accuracy: number | null; overall_accuracy: number | null; avg_buy_return_pct: number | null; avg_sell_return_pct: number | null; profit_factor: number | null; signals: SignalAccuracyRow[] };

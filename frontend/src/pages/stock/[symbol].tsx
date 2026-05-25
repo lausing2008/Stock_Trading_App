@@ -37,6 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import NewsCard from '@/components/NewsCard';
 import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData } from '@/lib/api';
+import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 
@@ -129,6 +130,50 @@ export default function StockDetail() {
   const [gamePlanLoading, setGamePlanLoading] = useState(false);
   const [gamePlanError, setGamePlanError] = useState('');
   const [gamePlanOpen, setGamePlanOpen] = useState(true);
+  const [savedToBoard, setSavedToBoard] = useState(false);
+  const [savingToBoard, setSavingToBoard] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  async function saveGamePlanToBoard() {
+    if (!gamePlan || !symbol) return;
+    setSavingToBoard(true);
+    try {
+      await api.createBoardPlan({
+        symbol,
+        stage: 'planning',
+        game_plan: gamePlan as unknown as Record<string, unknown>,
+        entry_price: gamePlan.entries[0]?.price ?? null,
+        stop_loss: gamePlan.stop_loss.price,
+        take_profit: gamePlan.take_profit?.price ?? null,
+        source: 'gameplan',
+      });
+      setSavedToBoard(true);
+      globalMutate('board');
+    } catch { /* silently ignore */ }
+    setSavingToBoard(false);
+  }
+
+  function copyGamePlan() {
+    if (!gamePlan || !symbol) return;
+    const lines = [
+      `📋 ${symbol} — ${gamePlan.title}`,
+      '',
+      'ENTRY STRATEGY',
+      ...gamePlan.entries.map((e: GamePlanEntry) => `  ${e.label}: $${e.price.toFixed(2)} — ${e.rationale}`),
+      '',
+      `STOP LOSS: $${gamePlan.stop_loss.price.toFixed(2)} — ${gamePlan.stop_loss.rationale}`,
+      gamePlan.take_profit ? `TAKE PROFIT: $${gamePlan.take_profit.price.toFixed(2)} — ${gamePlan.take_profit.rationale}` : '',
+      '',
+      'CATALYSTS',
+      ...gamePlan.catalysts.map((c: string) => `  › ${c}`),
+      '',
+      `KEY RISK: ${gamePlan.risk}`,
+    ].filter(l => l !== undefined);
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
 
   const { data: allAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
     'alerts',
@@ -836,11 +881,26 @@ Return ONLY valid JSON — no markdown, no prose:
                       <span style={{ fontSize: '13px' }}>📋</span>
                       <span style={{ fontSize: '12px', fontWeight: 700, color: '#4ade80' }}>{gamePlan.title}</span>
                     </div>
-                    <div style={{ display: 'flex', gap: '6px' }}>
+                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                      <button
+                        onClick={copyGamePlan}
+                        title="Copy as text"
+                        style={{ background: copied ? 'rgba(34,197,94,0.1)' : 'transparent', border: `1px solid ${copied ? 'rgba(34,197,94,0.3)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '2px 7px', color: copied ? '#4ade80' : '#475569', cursor: 'pointer', fontSize: '11px' }}
+                      >
+                        {copied ? '✓' : '⎘'}
+                      </button>
+                      <button
+                        onClick={saveGamePlanToBoard}
+                        disabled={savingToBoard || savedToBoard}
+                        title={savedToBoard ? 'Saved to Trade Board' : 'Save to Trade Board'}
+                        style={{ background: savedToBoard ? 'rgba(129,140,248,0.15)' : 'transparent', border: `1px solid ${savedToBoard ? 'rgba(129,140,248,0.4)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '2px 7px', color: savedToBoard ? '#818cf8' : '#475569', cursor: savedToBoard ? 'default' : 'pointer', fontSize: '11px', opacity: savingToBoard ? 0.5 : 1 }}
+                      >
+                        {savingToBoard ? '…' : savedToBoard ? '📌' : '📌 Save'}
+                      </button>
                       <button onClick={() => setGamePlanOpen(o => !o)} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '12px', padding: '2px 4px' }}>
                         {gamePlanOpen ? '▲' : '▼'}
                       </button>
-                      <button onClick={() => { setGamePlan(null); setGamePlanError(''); }} style={{ background: 'none', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '14px', padding: '2px 4px' }} title="Clear">✕</button>
+                      <button onClick={() => { setGamePlan(null); setGamePlanError(''); setSavedToBoard(false); }} style={{ background: 'none', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '14px', padding: '2px 4px' }} title="Clear">✕</button>
                     </div>
                   </div>
 

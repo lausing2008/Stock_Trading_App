@@ -87,6 +87,7 @@ class User(Base):
     price_alerts: Mapped[list["PriceAlert"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     signal_alerts: Mapped[list["SignalAlert"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     trade_journal: Mapped[list["TradeJournal"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    trade_plans: Mapped[list["TradePlan"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     positions: Mapped[list["UserPosition"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     cash_balances: Mapped[list["UserCash"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     app_notifications: Mapped[list["AppNotification"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -396,3 +397,23 @@ class TradeJournal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="trade_journal")
+
+
+class TradePlan(Base):
+    """Kanban board card — persisted AI game plan or forecast pick."""
+    __tablename__ = "trade_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    stage: Mapped[str] = mapped_column(String(20), default="watch")  # watch|planning|active|closed
+    game_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)  # gameplan|forecast|manual
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="trade_plans")
