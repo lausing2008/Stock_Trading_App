@@ -322,11 +322,21 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-    # Increase timeout for AI outlook endpoint (can take up to 120s)
-    proxy_read_timeout 150s;
-    proxy_send_timeout 150s;
+    # AI endpoints can take up to 120s — must be listed before the catch-all
+    location /api/ai/ {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_read_timeout 180s;
+        proxy_send_timeout 180s;
+    }
 
-    # Frontend (Next.js)
+    # Ingest endpoint can take up to 120s
+    location /api/admin/ingest {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    # Frontend (Next.js) — keep default short; AI/ingest handled above
     location / {
         proxy_pass         http://127.0.0.1:3000;
         proxy_http_version 1.1;
@@ -334,6 +344,7 @@ server {
         proxy_set_header   Connection 'upgrade';
         proxy_set_header   Host $host;
         proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 30s;
     }
 
     # API gateway — direct browser API calls
