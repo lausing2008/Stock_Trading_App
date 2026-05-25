@@ -28,6 +28,7 @@ _ROUTES = {
     "auth": _settings.market_data_url,
     "alerts": _settings.market_data_url,
     "signal-alerts": _settings.market_data_url,
+    "journal": _settings.market_data_url,
 }
 
 
