@@ -36,7 +36,7 @@ import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem } from '@/lib/api';
+import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData } from '@/lib/api';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
 
@@ -136,6 +136,19 @@ export default function StockDetail() {
     { refreshInterval: 30_000 },
   );
   const alerts = (allAlerts ?? []).filter(a => a.symbol === symbol);
+
+  const [divOpen, setDivOpen] = useState(false);
+  const [instOpen, setInstOpen] = useState(false);
+  const { data: dividendData } = useSWR<DividendData>(
+    symbol && divOpen ? `dividends-${symbol}` : null,
+    () => api.getDividends(symbol),
+    { revalidateOnFocus: false },
+  );
+  const { data: instData } = useSWR<InstitutionalData>(
+    symbol && instOpen ? `institutional-${symbol}` : null,
+    () => api.getInstitutional(symbol),
+    { revalidateOnFocus: false },
+  );
 
   // Alert form state
   const [alertOpen, setAlertOpen] = useState<boolean>(false);
@@ -1975,6 +1988,131 @@ Return ONLY valid JSON — no markdown, no prose:
           </div>
         ) : (
           <div style={{ fontSize: '12px', color: '#475569' }}>No alerts set for {symbol}. Click "+ New Alert" to get notified by email when the price hits your target.</div>
+        )}
+      </div>
+
+      {/* Dividends */}
+      <div style={{ borderRadius: '12px', border: '1px solid #1e293b', overflow: 'hidden' }}>
+        <button
+          onClick={() => setDivOpen((o: boolean) => !o)}
+          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', background: 'rgba(255,255,255,0.02)', border: 'none', cursor: 'pointer' }}
+        >
+          <span style={{ fontSize: '14px', fontWeight: 700, color: '#cbd5e1' }}>Dividends</span>
+          <span style={{ color: '#475569', fontSize: '12px', transform: divOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
+        </button>
+        {divOpen && (
+          <div style={{ padding: '16px 18px', borderTop: '1px solid #1e293b' }}>
+            {!dividendData && <div style={{ fontSize: '12px', color: '#475569' }}>Loading dividend data…</div>}
+            {dividendData?.error && <div style={{ fontSize: '12px', color: '#f87171' }}>Error: {dividendData.error}</div>}
+            {dividendData && !dividendData.error && (
+              <>
+                <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                  {[
+                    { label: 'Annual Rate', value: dividendData.annual_div_rate != null ? `$${dividendData.annual_div_rate.toFixed(4)}` : '—' },
+                    { label: 'Div Yield', value: dividendData.dividend_yield != null ? `${(dividendData.dividend_yield * 100).toFixed(2)}%` : '—' },
+                    { label: 'Payout Ratio', value: dividendData.payout_ratio != null ? `${(dividendData.payout_ratio * 100).toFixed(1)}%` : '—' },
+                    { label: 'Ex-Div Date', value: dividendData.ex_dividend_date != null ? new Date(dividendData.ex_dividend_date * 1000).toLocaleDateString() : '—' },
+                  ].map(item => (
+                    <div key={item.label}>
+                      <div style={{ fontSize: '10px', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '3px' }}>{item.label}</div>
+                      <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0' }}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+                {dividendData.dividends.length === 0 ? (
+                  <div style={{ fontSize: '12px', color: '#475569' }}>No dividend history found.</div>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                      <thead>
+                        <tr style={{ background: '#080f1e' }}>
+                          {['Date', 'Amount'].map(h => (
+                            <th key={h} style={{ padding: '7px 12px', textAlign: h === 'Amount' ? 'right' : 'left', color: '#475569', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid #1e293b' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dividendData.dividends.map((d, i) => (
+                          <tr key={i} style={{ borderBottom: '1px solid rgba(30,41,59,0.4)' }}>
+                            <td style={{ padding: '7px 12px', color: '#64748b' }}>{d.date}</td>
+                            <td style={{ padding: '7px 12px', textAlign: 'right', color: '#e2e8f0', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>${d.amount.toFixed(4)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div style={{ fontSize: '10px', color: '#334155', marginTop: '10px' }}>Source: Yahoo Finance · last 40 payments shown</div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Institutional Holdings */}
+      <div style={{ borderRadius: '12px', border: '1px solid #1e293b', overflow: 'hidden' }}>
+        <button
+          onClick={() => setInstOpen(o => !o)}
+          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', background: 'rgba(255,255,255,0.02)', border: 'none', cursor: 'pointer' }}
+        >
+          <span style={{ fontSize: '14px', fontWeight: 700, color: '#cbd5e1' }}>Institutional Holdings</span>
+          <span style={{ color: '#475569', fontSize: '12px', transform: instOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▼</span>
+        </button>
+        {instOpen && (
+          <div style={{ padding: '16px 18px', borderTop: '1px solid #1e293b' }}>
+            {!instData && <div style={{ fontSize: '12px', color: '#475569' }}>Loading institutional data…</div>}
+            {instData?.error && <div style={{ fontSize: '12px', color: '#f87171' }}>Error: {instData.error}</div>}
+            {instData && !instData.error && (
+              <>
+                <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                  {[
+                    { label: 'Institutions Hold', value: instData.held_pct_institutions != null ? `${(instData.held_pct_institutions * 100).toFixed(1)}%` : '—' },
+                    { label: 'Insiders Hold', value: instData.held_pct_insiders != null ? `${(instData.held_pct_insiders * 100).toFixed(1)}%` : '—' },
+                    { label: 'Float Shares', value: instData.float_shares != null ? (instData.float_shares >= 1e9 ? `${(instData.float_shares / 1e9).toFixed(2)}B` : `${(instData.float_shares / 1e6).toFixed(1)}M`) : '—' },
+                    { label: 'Shares Outstanding', value: instData.shares_outstanding != null ? (instData.shares_outstanding >= 1e9 ? `${(instData.shares_outstanding / 1e9).toFixed(2)}B` : `${(instData.shares_outstanding / 1e6).toFixed(1)}M`) : '—' },
+                  ].map(item => (
+                    <div key={item.label}>
+                      <div style={{ fontSize: '10px', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '3px' }}>{item.label}</div>
+                      <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0' }}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+                {instData.institutional_holders.length === 0 ? (
+                  <div style={{ fontSize: '12px', color: '#475569' }}>No institutional holder data found.</div>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                      <thead>
+                        <tr style={{ background: '#080f1e' }}>
+                          {['Holder', 'Shares', '% Out', 'Value', 'Reported'].map(h => (
+                            <th key={h} style={{ padding: '7px 12px', textAlign: h === 'Holder' ? 'left' : 'right', color: '#475569', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid #1e293b', whiteSpace: 'nowrap' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {instData.institutional_holders.map((h, i) => (
+                          <tr key={i} style={{ borderBottom: '1px solid rgba(30,41,59,0.4)' }}>
+                            <td style={{ padding: '7px 12px', color: '#94a3b8' }}>{h.holder}</td>
+                            <td style={{ padding: '7px 12px', textAlign: 'right', color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>
+                              {h.shares != null ? (h.shares >= 1e6 ? `${(h.shares / 1e6).toFixed(2)}M` : h.shares.toLocaleString()) : '—'}
+                            </td>
+                            <td style={{ padding: '7px 12px', textAlign: 'right', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
+                              {h.pct_out != null ? `${(h.pct_out * 100).toFixed(2)}%` : '—'}
+                            </td>
+                            <td style={{ padding: '7px 12px', textAlign: 'right', color: '#64748b', fontVariantNumeric: 'tabular-nums' }}>
+                              {h.value != null ? (h.value >= 1e9 ? `$${(h.value / 1e9).toFixed(2)}B` : `$${(h.value / 1e6).toFixed(1)}M`) : '—'}
+                            </td>
+                            <td style={{ padding: '7px 12px', textAlign: 'right', color: '#475569' }}>{h.date_reported ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div style={{ fontSize: '10px', color: '#334155', marginTop: '10px' }}>Source: Yahoo Finance / SEC 13F filings · top 20 holders · 3-day cache</div>
+              </>
+            )}
+          </div>
         )}
       </div>
 

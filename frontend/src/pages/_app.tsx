@@ -146,12 +146,16 @@ export default function App({ Component, pageProps }: AppProps) {
           <Link href="/" className="text-lg font-bold">
             <span style={{ color: '#818cf8' }}>Stock</span>AI
           </Link>
-          <nav className="flex gap-4 text-sm text-slate-300">
+          <nav className="flex gap-4 text-sm text-slate-300" style={{ flexWrap: 'wrap' }}>
             <Link href="/">Dashboard</Link>
             <Link href="/opportunities" style={{ color: '#a78bfa', fontWeight: 600 }}>Opportunities</Link>
             <Link href="/forecast" style={{ color: '#4ade80', fontWeight: 700 }}>Forecast</Link>
             <Link href="/screener">Screener</Link>
+            <Link href="/heatmap" style={{ color: '#38bdf8' }}>Heatmap</Link>
             <Link href="/rankings">Rankings</Link>
+            <Link href="/earnings" style={{ color: '#fb923c', fontWeight: 600 }}>Earnings</Link>
+            <Link href="/analyst" style={{ color: '#a78bfa' }}>Analyst</Link>
+            <Link href="/short-squeeze" style={{ color: '#f87171', fontWeight: 600 }}>Short Squeeze</Link>
             <Link href="/watchlist">Watchlist</Link>
             <Link href="/positions">Positions</Link>
             <Link href="/portfolio">Portfolio</Link>

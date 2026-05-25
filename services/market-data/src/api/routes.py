@@ -429,6 +429,13 @@ class FundamentalsOut(BaseModel):
     insider_net_pct: float | None = None    # % net shares purchased
     # Individual analyst actions (last 90 days)
     analyst_actions: list[dict] = []
+    # Short interest (Finviz-style)
+    short_percent_of_float: float | None = None
+    short_ratio: float | None = None
+    shares_short: int | None = None
+    # Ownership breakdown
+    held_percent_institutions: float | None = None
+    held_percent_insiders: float | None = None
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
@@ -621,6 +628,11 @@ def get_fundamentals(symbol: str, refresh: bool = False):
         insider_buy_transactions_6m=insider_buy_transactions_6m,
         insider_net_pct=insider_net_pct,
         analyst_actions=analyst_actions,
+        short_percent_of_float=_safe(info, "shortPercentOfFloat"),
+        short_ratio=_safe(info, "shortRatio"),
+        shares_short=_safe(info, "sharesShort"),
+        held_percent_institutions=_safe(info, "heldPercentInstitutions"),
+        held_percent_insiders=_safe(info, "heldPercentInsiders"),
     )
 
     try:
@@ -722,6 +734,367 @@ def quick_scan(req: QuickScanRequest, _user=Depends(get_current_user)):
             if r:
                 results.append(r)
     return results
+
+
+# ── Sector Performance ────────────────────────────────────────────────────────
+
+@router.get("/sector_performance")
+def sector_performance(session: Session = Depends(get_session)):
+    """Group all tracked stocks by sector with aggregate day-change performance."""
+    stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
+    stock_map = {s.symbol: s for s in stocks}
+
+    # Pull live prices from Redis
+    prices: dict[str, dict] = {}
+    try:
+        cached = _get_redis().get(_LIVE_KEY)
+        if cached:
+            for item in json.loads(cached):
+                prices[item["symbol"]] = item
+    except Exception:
+        pass
+    # DB fallback for any missing symbols
+    if not prices:
+        for row in _latest_prices_from_db(session):
+            prices[row["symbol"] if isinstance(row, dict) else row.symbol] = (
+                row if isinstance(row, dict) else row.__dict__
+            )
+
+    from collections import defaultdict
+    sectors: dict[str, list] = defaultdict(list)
+    no_sector: list = []
+    for sym, stock in stock_map.items():
+        p = prices.get(sym)
+        entry = {
+            "symbol": sym,
+            "name": stock.name,
+            "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
+            "price": p.get("price") if p else None,
+            "change_pct": p.get("change_pct") if p else None,
+        }
+        if stock.sector:
+            sectors[stock.sector].append(entry)
+        else:
+            no_sector.append(entry)
+
+    result = []
+    for sector_name, items in sectors.items():
+        changes = [x["change_pct"] for x in items if x["change_pct"] is not None]
+        avg_change = round(sum(changes) / len(changes), 3) if changes else None
+        result.append({
+            "sector": sector_name,
+            "avg_change_pct": avg_change,
+            "stock_count": len(items),
+            "stocks": sorted(items, key=lambda x: (x["change_pct"] or 0), reverse=True),
+        })
+    if no_sector:
+        changes = [x["change_pct"] for x in no_sector if x["change_pct"] is not None]
+        result.append({
+            "sector": "Other",
+            "avg_change_pct": round(sum(changes) / len(changes), 3) if changes else None,
+            "stock_count": len(no_sector),
+            "stocks": no_sector,
+        })
+    result.sort(key=lambda x: x["avg_change_pct"] or -999, reverse=True)
+    return result
+
+
+# ── Earnings Calendar ─────────────────────────────────────────────────────────
+
+@router.get("/earnings_calendar")
+def earnings_calendar(days_ahead: int = Query(45, ge=1, le=180), session: Session = Depends(get_session)):
+    """Return stocks with earnings in the next N days (from cached fundamentals)."""
+    from datetime import date as _date
+    stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
+    r = _get_redis()
+    today = _date.today()
+    cutoff = today + timedelta(days=days_ahead)
+    results = []
+    for stock in stocks:
+        cache_key = f"stockai:fundamentals:v2:{stock.symbol}"
+        try:
+            cached = r.get(cache_key)
+            if not cached:
+                continue
+            data = json.loads(cached)
+            ned = data.get("next_earnings_date")
+            if not ned:
+                continue
+            ned_date = _date.fromisoformat(ned)
+            if today <= ned_date <= cutoff:
+                dte = (ned_date - today).days
+                results.append({
+                    "symbol": stock.symbol,
+                    "name": stock.name,
+                    "sector": stock.sector,
+                    "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
+                    "next_earnings_date": ned,
+                    "days_to_earnings": dte,
+                    "eps_estimate": data.get("forward_eps"),
+                    "trailing_eps": data.get("trailing_eps"),
+                    "revenue_growth": data.get("revenue_growth"),
+                    "earnings_growth": data.get("earnings_growth"),
+                    "market_cap": data.get("market_cap"),
+                })
+        except Exception:
+            continue
+    results.sort(key=lambda x: x["days_to_earnings"])
+    return results
+
+
+# ── Analyst Ratings Feed ──────────────────────────────────────────────────────
+
+@router.get("/analyst_ratings")
+def analyst_ratings(days: int = Query(30, ge=1, le=180), session: Session = Depends(get_session)):
+    """Return recent analyst upgrades/downgrades aggregated from cached fundamentals."""
+    from datetime import date as _adate
+    stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
+    stock_map = {s.symbol: s for s in stocks}
+    r = _get_redis()
+    cutoff = (_adate.today() - timedelta(days=days)).isoformat()
+    results = []
+    for symbol, stock in stock_map.items():
+        cache_key = f"stockai:fundamentals:v2:{symbol}"
+        try:
+            cached = r.get(cache_key)
+            if not cached:
+                continue
+            data = json.loads(cached)
+            for action in data.get("analyst_actions", []):
+                if action.get("date", "") >= cutoff and action.get("action"):
+                    results.append({
+                        "symbol": symbol,
+                        "name": stock.name,
+                        "sector": stock.sector,
+                        "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
+                        "date": action["date"],
+                        "firm": action.get("firm", ""),
+                        "from_grade": action.get("from_grade", ""),
+                        "to_grade": action.get("to_grade", ""),
+                        "action": action.get("action", ""),
+                        "target_price": data.get("target_price"),
+                        "recommendation": data.get("recommendation"),
+                    })
+        except Exception:
+            continue
+    results.sort(key=lambda x: x["date"], reverse=True)
+    return results
+
+
+# ── Short Squeeze Scanner ─────────────────────────────────────────────────────
+
+@router.get("/short_squeeze")
+def short_squeeze(
+    min_short_float: float = Query(10.0, description="Minimum short % of float"),
+    session: Session = Depends(get_session),
+):
+    """Return high-short-interest stocks with positive momentum (squeeze candidates)."""
+    from db import Ranking
+    from datetime import date as _sdate
+    stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
+    stock_map = {s.symbol: s for s in stocks}
+    r = _get_redis()
+
+    # Latest rankings for momentum scores
+    today = _sdate.today()
+    rank_rows = session.execute(
+        select(Ranking).where(Ranking.as_of >= today - timedelta(days=7))
+    ).scalars().all()
+    rank_map = {rk.stock_id: rk for rk in rank_rows}
+    stock_id_map = {s.symbol: s.id for s in stocks}
+
+    # Live prices
+    prices: dict[str, dict] = {}
+    try:
+        cached_prices = _get_redis().get(_LIVE_KEY)
+        if cached_prices:
+            for item in json.loads(cached_prices):
+                prices[item["symbol"]] = item
+    except Exception:
+        pass
+
+    results = []
+    for symbol, stock in stock_map.items():
+        cache_key = f"stockai:fundamentals:v2:{symbol}"
+        try:
+            cached = r.get(cache_key)
+            if not cached:
+                continue
+            data = json.loads(cached)
+            spf = data.get("short_percent_of_float")
+            if spf is None or spf * 100 < min_short_float:
+                continue
+            sid = stock_id_map.get(symbol)
+            rank = rank_map.get(sid)
+            p = prices.get(symbol)
+            results.append({
+                "symbol": symbol,
+                "name": stock.name,
+                "sector": stock.sector,
+                "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
+                "short_percent_of_float": round(spf * 100, 2),
+                "short_ratio": data.get("short_ratio"),
+                "shares_short": data.get("shares_short"),
+                "price": p.get("price") if p else None,
+                "change_pct": p.get("change_pct") if p else None,
+                "momentum_score": rank.momentum if rank else None,
+                "k_score": rank.score if rank else None,
+                "volume": p.get("volume") if p else None,
+            })
+        except Exception:
+            continue
+    results.sort(key=lambda x: x["short_percent_of_float"], reverse=True)
+    return results
+
+
+# ── Relative Performance (multi-symbol normalized price series) ───────────────
+
+@router.get("/relative_performance")
+def relative_performance(
+    symbols: str = Query(..., description="Comma-separated symbols (max 8)"),
+    days: int = Query(90, ge=7, le=730),
+    session: Session = Depends(get_session),
+):
+    """Return base-100 normalized daily close series for multiple symbols."""
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()][:8]
+    cutoff = datetime.utcnow() - timedelta(days=days + 5)  # +5 for alignment buffer
+    result: dict[str, list] = {}
+
+    for symbol in sym_list:
+        stock = session.execute(
+            select(Stock).where(Stock.symbol == symbol)
+        ).scalar_one_or_none()
+        if not stock:
+            continue
+        rows = session.execute(
+            select(Price)
+            .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1, Price.ts >= cutoff)
+            .order_by(Price.ts.asc())
+        ).scalars().all()
+        if len(rows) < 2:
+            continue
+        base = rows[0].close
+        if not base:
+            continue
+        result[symbol] = [
+            {
+                "date": _local_date(r.ts, stock.market.value if hasattr(stock.market, "value") else str(stock.market)),
+                "value": round((r.close / base) * 100, 3),
+                "close": r.close,
+            }
+            for r in rows
+        ]
+    return result
+
+
+# ── Per-symbol Dividends ──────────────────────────────────────────────────────
+
+@router.get("/{symbol}/dividends")
+def get_dividends(symbol: str):
+    """Return dividend history for a symbol from yfinance (3-day Redis cache)."""
+    sym = symbol.upper()
+    cache_key = f"stockai:dividends:{sym}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+    try:
+        ticker = yf.Ticker(sym)
+        divs = ticker.dividends
+        if divs is None or divs.empty:
+            data = {"symbol": sym, "dividends": [], "annual_div_rate": None, "dividend_yield": None}
+        else:
+            records = []
+            for dt, amt in divs.tail(40).items():
+                records.append({"date": dt.strftime("%Y-%m-%d"), "amount": round(float(amt), 4)})
+            records.reverse()
+            # Estimate annualized rate from last 12 months
+            from datetime import date as _ddate, timedelta as _dtd
+            cutoff_div = _ddate.today() - _dtd(days=365)
+            recent = [r for r in records if r["date"] >= cutoff_div.isoformat()]
+            annual_rate = round(sum(r["amount"] for r in recent), 4) if recent else None
+            info = ticker.info or {}
+            data = {
+                "symbol": sym,
+                "dividends": records,
+                "annual_div_rate": annual_rate,
+                "dividend_yield": _safe(info, "dividendYield"),
+                "ex_dividend_date": _safe(info, "exDividendDate"),
+                "payout_ratio": _safe(info, "payoutRatio"),
+            }
+        _get_redis().setex(cache_key, 60 * 60 * 72, json.dumps(data))
+        return data
+    except Exception as e:
+        return {"symbol": sym, "dividends": [], "error": str(e)}
+
+
+# ── Institutional Holdings ────────────────────────────────────────────────────
+
+@router.get("/{symbol}/institutional")
+def get_institutional(symbol: str):
+    """Return institutional and major holder breakdown (3-day Redis cache)."""
+    sym = symbol.upper()
+    cache_key = f"stockai:institutional:{sym}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+    try:
+        ticker = yf.Ticker(sym)
+        info = ticker.info or {}
+
+        major: dict = {}
+        try:
+            mh = ticker.major_holders
+            if mh is not None and not mh.empty:
+                for _, row in mh.iterrows():
+                    label = str(row.iloc[1]).strip() if len(row) > 1 else str(row.index)
+                    val = row.iloc[0]
+                    try:
+                        val = float(str(val).replace("%", "").strip()) / 100
+                    except Exception:
+                        pass
+                    major[label] = val
+        except Exception:
+            pass
+
+        inst_list = []
+        try:
+            ih = ticker.institutional_holders
+            if ih is not None and not ih.empty:
+                for _, row in ih.head(20).iterrows():
+                    pct = row.get("% Out") or row.get("pctHeld")
+                    val = row.get("Value")
+                    shrs = row.get("Shares")
+                    dr = row.get("Date Reported")
+                    inst_list.append({
+                        "holder": str(row.get("Holder", "")).strip(),
+                        "shares": int(float(shrs)) if shrs and str(shrs) not in ("nan", "None") else None,
+                        "date_reported": str(dr)[:10] if dr and str(dr) not in ("nan", "None", "NaT") else None,
+                        "pct_out": round(float(pct), 4) if pct and str(pct) not in ("nan", "None") else None,
+                        "value": int(float(val)) if val and str(val) not in ("nan", "None") else None,
+                    })
+        except Exception:
+            pass
+
+        data = {
+            "symbol": sym,
+            "held_pct_institutions": _safe(info, "heldPercentInstitutions"),
+            "held_pct_insiders": _safe(info, "heldPercentInsiders"),
+            "float_shares": _safe(info, "floatShares"),
+            "shares_outstanding": _safe(info, "sharesOutstanding"),
+            "major_holders": major,
+            "institutional_holders": inst_list,
+        }
+        _get_redis().setex(cache_key, 60 * 60 * 72, json.dumps(data))
+        return data
+    except Exception as e:
+        return {"symbol": sym, "held_pct_institutions": None, "held_pct_insiders": None,
+                "major_holders": {}, "institutional_holders": [], "error": str(e)}
 
 
 @router.get("/{symbol}", response_model=StockOut)

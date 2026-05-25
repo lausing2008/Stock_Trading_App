@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert } from '@/lib/api';
+import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint } from '@/lib/api';
 import { storage } from '@/lib/storage';
 
 /* ── helpers ────────────────────────────────────────────── */
@@ -277,6 +277,172 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
   );
 }
 
+/* ── Compare Panel ──────────────────────────────────────── */
+
+const LINE_COLORS = ['#818cf8', '#4ade80', '#fb923c', '#f87171', '#38bdf8', '#a78bfa', '#facc15', '#34d399'];
+
+function ComparePanel({ symbols, selected, onToggle, days, onDaysChange, data, loading }: {
+  symbols: string[];
+  selected: string[];
+  onToggle: (sym: string) => void;
+  days: number;
+  onDaysChange: (d: number) => void;
+  data: Record<string, RelPerfPoint[]> | null;
+  loading: boolean;
+}) {
+  const chartW = 700;
+  const chartH = 280;
+  const pad = { top: 16, right: 20, bottom: 32, left: 48 };
+
+  const lines = useMemo(() => {
+    if (!data) return [];
+    return selected.map((sym, i) => ({ sym, pts: data[sym] ?? [], color: LINE_COLORS[i % LINE_COLORS.length] }))
+      .filter(l => l.pts.length > 0);
+  }, [data, selected]);
+
+  const { minVal, maxVal, allDates } = useMemo(() => {
+    if (lines.length === 0) return { minVal: 90, maxVal: 110, allDates: [] };
+    const allPts = lines.flatMap(l => l.pts);
+    const allValues = allPts.map(p => p.value);
+    const allDates = [...new Set(allPts.map(p => p.date))].sort();
+    return {
+      minVal: Math.min(80, ...allValues) - 2,
+      maxVal: Math.max(120, ...allValues) + 2,
+      allDates,
+    };
+  }, [lines]);
+
+  function xOf(date: string): number {
+    const idx = allDates.indexOf(date);
+    if (idx < 0 || allDates.length < 2) return pad.left;
+    return pad.left + ((idx / (allDates.length - 1)) * (chartW - pad.left - pad.right));
+  }
+
+  function yOf(val: number): number {
+    return pad.top + ((maxVal - val) / (maxVal - minVal)) * (chartH - pad.top - pad.bottom);
+  }
+
+  function toPath(pts: RelPerfPoint[]): string {
+    return pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xOf(p.date).toFixed(1)},${yOf(p.value).toFixed(1)}`).join(' ');
+  }
+
+  const gridLines = useMemo(() => {
+    const step = (maxVal - minVal) / 5;
+    return Array.from({ length: 6 }, (_, i) => minVal + i * step);
+  }, [minVal, maxVal]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      {/* Symbol selector */}
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: '11px', color: '#475569', whiteSpace: 'nowrap' }}>Select up to 8:</span>
+        {symbols.map((sym, i) => {
+          const idx = selected.indexOf(sym);
+          const isSelected = idx >= 0;
+          const color = isSelected ? LINE_COLORS[idx % LINE_COLORS.length] : undefined;
+          return (
+            <button
+              key={sym}
+              onClick={() => onToggle(sym)}
+              style={{
+                padding: '3px 10px', borderRadius: '5px', fontSize: '12px', fontWeight: 700, cursor: 'pointer',
+                border: `1px solid ${isSelected ? color : '#1e293b'}`,
+                background: isSelected ? `${color}22` : 'transparent',
+                color: isSelected ? color : '#475569',
+              }}
+            >{sym}</button>
+          );
+        })}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px' }}>
+          {[30, 60, 90, 180, 365].map(d => (
+            <button key={d} onClick={() => onDaysChange(d)}
+              style={{ padding: '3px 8px', borderRadius: '4px', fontSize: '11px', cursor: 'pointer', border: '1px solid #1e293b', background: days === d ? '#334155' : 'transparent', color: days === d ? '#e2e8f0' : '#475569' }}
+            >{d}d</button>
+          ))}
+        </div>
+      </div>
+
+      {selected.length === 0 && (
+        <div style={{ padding: '40px 0', textAlign: 'center', fontSize: '12px', color: '#334155' }}>
+          Select symbols above to compare their relative performance (base 100 = start of period)
+        </div>
+      )}
+
+      {selected.length > 0 && loading && (
+        <div style={{ padding: '40px 0', textAlign: 'center', fontSize: '12px', color: '#475569' }}>Loading performance data…</div>
+      )}
+
+      {selected.length > 0 && !loading && (
+        <div style={{ background: '#080f1e', border: '1px solid #1e293b', borderRadius: '10px', padding: '16px', overflowX: 'auto' }}>
+          {lines.length === 0 ? (
+            <div style={{ padding: '32px 0', textAlign: 'center', fontSize: '12px', color: '#475569' }}>
+              No price history found for the selected symbols in this period.
+            </div>
+          ) : (
+            <>
+              <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: '100%', maxWidth: `${chartW}px`, height: `${chartH}px`, display: 'block' }}>
+                {/* Grid lines */}
+                {gridLines.map(v => (
+                  <g key={v}>
+                    <line x1={pad.left} x2={chartW - pad.right} y1={yOf(v)} y2={yOf(v)} stroke="#1e293b" strokeWidth="1" />
+                    <text x={pad.left - 4} y={yOf(v) + 4} textAnchor="end" fontSize="9" fill="#475569">{v.toFixed(0)}</text>
+                  </g>
+                ))}
+                {/* Base-100 reference line */}
+                <line x1={pad.left} x2={chartW - pad.right} y1={yOf(100)} y2={yOf(100)} stroke="#334155" strokeWidth="1" strokeDasharray="4,3" />
+                <text x={chartW - pad.right + 4} y={yOf(100) + 4} fontSize="9" fill="#475569">100</text>
+                {/* X axis labels (first and last date) */}
+                {allDates.length > 0 && (<>
+                  <text x={pad.left} y={chartH - 6} textAnchor="start" fontSize="9" fill="#334155">{allDates[0]?.slice(5)}</text>
+                  <text x={chartW - pad.right} y={chartH - 6} textAnchor="end" fontSize="9" fill="#334155">{allDates[allDates.length - 1]?.slice(5)}</text>
+                </>)}
+                {/* Lines */}
+                {lines.map(l => (
+                  <path key={l.sym} d={toPath(l.pts)} fill="none" stroke={l.color} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
+                ))}
+                {/* End-point labels */}
+                {lines.map(l => {
+                  const last = l.pts[l.pts.length - 1];
+                  if (!last) return null;
+                  const finalVal = last.value.toFixed(1);
+                  const isUp = last.value >= 100;
+                  return (
+                    <g key={`lbl-${l.sym}`}>
+                      <circle cx={xOf(last.date)} cy={yOf(last.value)} r="3" fill={l.color} />
+                      <text x={xOf(last.date) + 5} y={yOf(last.value) + 4} fontSize="10" fontWeight="700" fill={l.color}>
+                        {l.sym} {isUp ? '+' : ''}{(last.value - 100).toFixed(1)}%
+                      </text>
+                    </g>
+                  );
+                })}
+              </svg>
+              {/* Legend */}
+              <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', marginTop: '8px' }}>
+                {lines.map(l => {
+                  const last = l.pts[l.pts.length - 1];
+                  const ret = last ? last.value - 100 : null;
+                  return (
+                    <div key={l.sym} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <div style={{ width: '20px', height: '2px', borderRadius: '1px', background: l.color }} />
+                      <span style={{ fontSize: '12px', fontWeight: 700, color: l.color }}>{l.sym}</span>
+                      {ret != null && (
+                        <span style={{ fontSize: '11px', color: ret >= 0 ? '#4ade80' : '#f87171' }}>
+                          {ret >= 0 ? '+' : ''}{ret.toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: '10px', color: '#334155', marginTop: '6px' }}>Base 100 = first day of period · daily closes</div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Main ───────────────────────────────────────────────── */
 export default function Watchlist() {
   const router = useRouter();
@@ -313,6 +479,17 @@ export default function Watchlist() {
   const [noteModal, setNoteModal] = useState<string | null>(null);
   const [alertModal, setAlertModal] = useState<string | null>(null);
   const [alertToast, setAlertToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [viewMode, setViewMode] = useState<'list' | 'compare'>('list');
+  const [compareSymbols, setCompareSymbols] = useState<string[]>([]);
+  const [compareDays, setCompareDays] = useState(90);
+
+  const { data: relPerfData, isLoading: relPerfLoading } = useSWR<Record<string, RelPerfPoint[]>>(
+    viewMode === 'compare' && compareSymbols.length > 0
+      ? `rel-perf-${compareSymbols.join(',')}-${compareDays}`
+      : null,
+    () => api.relativePerformance(compareSymbols, compareDays),
+    { revalidateOnFocus: false },
+  );
 
   useEffect(() => { setNotes(loadNotes()); }, []);
 
@@ -536,12 +713,31 @@ export default function Watchlist() {
             ))}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: 'auto', fontSize: '12px', color: '#475569' }}>
-            Sort:
-            {([['symbol', 'Symbol'], ['signal', 'Signal'], ['score', 'K-Score'], ['change', 'Change%'], ['price', 'Price']] as [SortKey, string][]).map(([k, label]) => (
-              <button key={k} onClick={() => setSortKey(k)} style={{ padding: '4px 8px', borderRadius: '4px', border: 'none', cursor: 'pointer', background: sortKey === k ? '#334155' : 'transparent', color: sortKey === k ? '#e2e8f0' : '#475569', fontSize: '11px' }}>{label}</button>
-            ))}
+            {viewMode === 'list' && (<>
+              Sort:
+              {([['symbol', 'Symbol'], ['signal', 'Signal'], ['score', 'K-Score'], ['change', 'Change%'], ['price', 'Price']] as [SortKey, string][]).map(([k, label]) => (
+                <button key={k} onClick={() => setSortKey(k)} style={{ padding: '4px 8px', borderRadius: '4px', border: 'none', cursor: 'pointer', background: sortKey === k ? '#334155' : 'transparent', color: sortKey === k ? '#e2e8f0' : '#475569', fontSize: '11px' }}>{label}</button>
+              ))}
+            </>)}
+            <div style={{ display: 'flex', borderRadius: '6px', border: '1px solid #1e293b', overflow: 'hidden', marginLeft: '8px' }}>
+              <button onClick={() => setViewMode('list')} style={{ padding: '4px 10px', border: 'none', cursor: 'pointer', fontSize: '11px', fontWeight: 600, background: viewMode === 'list' ? '#334155' : 'transparent', color: viewMode === 'list' ? '#e2e8f0' : '#475569' }}>List</button>
+              <button onClick={() => setViewMode('compare')} style={{ padding: '4px 10px', border: 'none', cursor: 'pointer', fontSize: '11px', fontWeight: 600, background: viewMode === 'compare' ? '#4f46e5' : 'transparent', color: viewMode === 'compare' ? '#fff' : '#475569' }}>Compare</button>
+            </div>
           </div>
         </div>
+
+        {/* Compare view */}
+        {viewMode === 'compare' && (
+          <ComparePanel
+            symbols={data.map(i => i.symbol)}
+            selected={compareSymbols}
+            onToggle={sym => setCompareSymbols(s => s.includes(sym) ? s.filter(x => x !== sym) : s.length < 8 ? [...s, sym] : s)}
+            days={compareDays}
+            onDaysChange={setCompareDays}
+            data={relPerfData ?? null}
+            loading={relPerfLoading}
+          />
+        )}
 
         {visible.length === 0 && (
           <div style={{ textAlign: 'center', padding: '32px 0', color: '#475569', fontSize: '13px' }}>
@@ -549,8 +745,8 @@ export default function Watchlist() {
           </div>
         )}
 
-        {/* Cards grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))', gap: '12px' }}>
+        {/* Cards grid — hidden in compare mode */}
+        <div style={{ display: viewMode === 'compare' ? 'none' : 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))', gap: '12px' }}>
           {visible.map(item => {
             const rank    = rankMap[item.symbol];
             const lp      = priceMap[item.symbol];

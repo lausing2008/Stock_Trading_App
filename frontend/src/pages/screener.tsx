@@ -40,6 +40,10 @@ const DEFAULT_FILTERS = {
   minBullish: '',
   minChange: '',
   maxChange: '',
+  minPrice: '',
+  maxPrice: '',
+  sector: '',
+  minFairDiscount: '',   // min % stock trades BELOW fair value (positive = undervalued)
   watchlistOnly: true,
   search: '',
 };
@@ -155,6 +159,13 @@ export default function Screener() {
     });
   }, [rankData, signalMap, priceMap, wlSymbols]);
 
+  // Derive unique sectors from rows for the sector dropdown
+  const sectors = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of rows) if (r.sector) s.add(r.sector);
+    return ['', ...Array.from(s).sort()];
+  }, [rows]);
+
   // Apply filters
   const filtered = useMemo(() => {
     const search = filters.search.toLowerCase();
@@ -166,12 +177,16 @@ export default function Screener() {
     const minBullish  = filters.minBullish   ? +filters.minBullish / 100 : null;
     const minChg      = filters.minChange    ? +filters.minChange    : null;
     const maxChg      = filters.maxChange    ? +filters.maxChange    : null;
+    const minPrc      = filters.minPrice     ? +filters.minPrice     : null;
+    const maxPrc      = filters.maxPrice     ? +filters.maxPrice     : null;
+    const minDisc     = filters.minFairDiscount ? +filters.minFairDiscount / 100 : null;
 
     return rows.filter(r => {
       if (filters.market !== 'All' && r.market !== filters.market) return false;
       if (filters.signals.size > 0 && (!r.signal || !filters.signals.has(r.signal))) return false;
       if ((!isAdmin || filters.watchlistOnly) && !r.inWatchlist) return false;
       if (search && !r.symbol.toLowerCase().includes(search) && !r.name.toLowerCase().includes(search)) return false;
+      if (filters.sector && r.sector !== filters.sector) return false;
       if (minScore   != null && (r.score   ?? 0) < minScore)  return false;
       if (minTech    != null && (r.technical ?? 0) < minTech)  return false;
       if (minMom     != null && (r.momentum  ?? 0) < minMom)   return false;
@@ -180,6 +195,13 @@ export default function Screener() {
       if (minBullish != null && (r.bullish_probability ?? 0) < minBullish) return false;
       if (minChg     != null && (r.change_pct ?? 0) < minChg) return false;
       if (maxChg     != null && (r.change_pct ?? 0) > maxChg) return false;
+      if (minPrc     != null && (r.price ?? 0) < minPrc) return false;
+      if (maxPrc     != null && (r.price ?? 0) > maxPrc) return false;
+      if (minDisc != null) {
+        if (r.fair_price == null || r.price == null) return false;
+        const discount = (r.fair_price - r.price) / r.fair_price;
+        if (discount < minDisc) return false;
+      }
       return true;
     });
   }, [rows, filters]);
@@ -232,7 +254,8 @@ export default function Screener() {
   const isDefaultFilters = (
     filters.market === 'All' && filters.signals.size === 0 && !filters.minScore && !filters.minTechnical &&
     !filters.minMomentum && !filters.minValue && !filters.minGrowth && !filters.minBullish &&
-    !filters.minChange && !filters.maxChange && !filters.watchlistOnly && !filters.search
+    !filters.minChange && !filters.maxChange && !filters.minPrice && !filters.maxPrice &&
+    !filters.sector && !filters.minFairDiscount && !filters.watchlistOnly && !filters.search
   );
 
   const loading = !rankData || !signals || !prices;
@@ -334,6 +357,33 @@ export default function Screener() {
                 placeholder="Max" style={{ width: '52px', padding: '4px 6px', borderRadius: '5px', border: '1px solid #1e293b', background: '#0f172a', color: '#e2e8f0', fontSize: '12px', outline: 'none' }} />
             </div>
           </div>
+
+          {/* Price range */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Price</span>
+            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+              <input type="number" value={filters.minPrice} onChange={e => setFilters(f => ({ ...f, minPrice: e.target.value }))}
+                placeholder="Min" style={{ width: '56px', padding: '4px 6px', borderRadius: '5px', border: '1px solid #1e293b', background: '#0f172a', color: '#e2e8f0', fontSize: '12px', outline: 'none' }} />
+              <span style={{ color: '#334155', fontSize: '11px' }}>to</span>
+              <input type="number" value={filters.maxPrice} onChange={e => setFilters(f => ({ ...f, maxPrice: e.target.value }))}
+                placeholder="Max" style={{ width: '56px', padding: '4px 6px', borderRadius: '5px', border: '1px solid #1e293b', background: '#0f172a', color: '#e2e8f0', fontSize: '12px', outline: 'none' }} />
+            </div>
+          </div>
+
+          {/* Sector */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Sector</span>
+            <select
+              value={filters.sector}
+              onChange={e => setFilters(f => ({ ...f, sector: e.target.value }))}
+              style={{ padding: '4px 8px', borderRadius: '5px', border: '1px solid #1e293b', background: '#0f172a', color: filters.sector ? '#e2e8f0' : '#64748b', fontSize: '12px', outline: 'none', maxWidth: '140px' }}
+            >
+              {sectors.map(s => <option key={s} value={s}>{s || 'All Sectors'}</option>)}
+            </select>
+          </div>
+
+          {/* Fair-value discount */}
+          <NumInput label="Min Underval %" value={filters.minFairDiscount} onChange={v => setFilters(f => ({ ...f, minFairDiscount: v }))} placeholder="e.g. 10" />
 
           {/* Watchlist toggle — admin only */}
           {isAdmin && (
