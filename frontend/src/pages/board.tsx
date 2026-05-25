@@ -32,6 +32,13 @@ function relDate(iso: string) {
 }
 
 /* ── Card ─────────────────────────────────────────────── */
+type StoredGamePlan = {
+  title?: string;
+  entries?: { label: string; price: number; rationale: string }[];
+  catalysts?: string[];
+  risk?: string;
+};
+
 function PlanCard({ plan, onStageChange, onDelete }: {
   plan: TradePlan;
   onStageChange: (id: number, stage: Stage) => void;
@@ -40,7 +47,7 @@ function PlanCard({ plan, onStageChange, onDelete }: {
   const [expanded, setExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const meta = STAGE_META[plan.stage as Stage] ?? STAGE_META.watch;
-  const gp = plan.game_plan as Record<string, unknown> | null;
+  const gp = plan.game_plan as StoredGamePlan | null;
 
   return (
     <div style={{ borderRadius: '10px', border: `1px solid ${meta.border}`, background: '#0f172a', overflow: 'hidden', marginBottom: '8px' }}>
@@ -111,18 +118,18 @@ function PlanCard({ plan, onStageChange, onDelete }: {
         {/* Expanded: full game plan details */}
         {expanded && gp && (
           <div style={{ marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {gp.title && <div style={{ fontSize: '11px', fontWeight: 700, color: '#e2e8f0' }}>{String(gp.title)}</div>}
-            {Array.isArray(gp.entries) && gp.entries.map((e: Record<string, unknown>, i: number) => (
+            {gp.title && <div style={{ fontSize: '11px', fontWeight: 700, color: '#e2e8f0' }}>{gp.title}</div>}
+            {gp.entries && gp.entries.map((e, i) => (
               <div key={i} style={{ fontSize: '10px', color: '#64748b', paddingLeft: '8px', borderLeft: '2px solid #1e293b' }}>
-                <span style={{ color: '#818cf8', fontWeight: 700 }}>{String(e.label)}</span> ${Number(e.price).toFixed(2)} — {String(e.rationale)}
+                <span style={{ color: '#818cf8', fontWeight: 700 }}>{e.label}</span> ${e.price.toFixed(2)} — {e.rationale}
               </div>
             ))}
-            {Array.isArray(gp.catalysts) && (
+            {gp.catalysts && (
               <div style={{ fontSize: '10px', color: '#64748b' }}>
-                {(gp.catalysts as string[]).map((c: string, i: number) => <div key={i}>› {c}</div>)}
+                {gp.catalysts.map((c, i) => <div key={i}>› {c}</div>)}
               </div>
             )}
-            {gp.risk && <div style={{ fontSize: '10px', color: '#fbbf24' }}>⚠ {String(gp.risk)}</div>}
+            {gp.risk && <div style={{ fontSize: '10px', color: '#fbbf24' }}>⚠ {gp.risk}</div>}
           </div>
         )}
 
