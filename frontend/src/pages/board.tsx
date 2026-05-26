@@ -200,18 +200,27 @@ function AddCardForm({ onAdd }: { onAdd: (symbol: string, notes: string) => Prom
   );
 }
 
+type MarketFilter = 'US' | 'HK';
+const isHK = (symbol: string) => /\.(HK|hk)$/.test(symbol) || /^\d{4,5}$/.test(symbol);
+
 /* ── Main ─────────────────────────────────────────────── */
 export default function BoardPage() {
-  const { data, mutate, isLoading } = useSWR<TradePlan[]>('board', () => api.listBoard(), { revalidateOnFocus: false });
+  const { data, mutate, isLoading, error } = useSWR<TradePlan[]>('board', () => api.listBoard(), { revalidateOnFocus: false });
+  const [market, setMarket] = useState<MarketFilter>('US');
+
+  const filtered = useMemo(() =>
+    (data ?? []).filter(p => market === 'HK' ? isHK(p.symbol) : !isHK(p.symbol)),
+    [data, market]
+  );
 
   const byStage = useMemo(() => {
     const m: Record<Stage, TradePlan[]> = { watch: [], planning: [], active: [], closed: [] };
-    for (const p of data ?? []) {
+    for (const p of filtered) {
       const s = (p.stage as Stage) in m ? (p.stage as Stage) : 'watch';
       m[s].push(p);
     }
     return m;
-  }, [data]);
+  }, [filtered]);
 
   async function handleStageChange(id: number, stage: Stage) {
     await api.updateBoardPlan(id, { stage });
@@ -228,12 +237,14 @@ export default function BoardPage() {
     mutate();
   }
 
-  const total = (data ?? []).length;
+  const total = filtered.length;
+  const usCnt = (data ?? []).filter(p => !isHK(p.symbol)).length;
+  const hkCnt = (data ?? []).filter(p => isHK(p.symbol)).length;
 
   return (
     <div>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
         <div>
           <h1 style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '4px' }}>Trade Board</h1>
           <p style={{ fontSize: '12px', color: '#475569' }}>
@@ -249,7 +260,31 @@ export default function BoardPage() {
         </div>
       </div>
 
+      {/* Market tabs */}
+      <div style={{ display: 'flex', gap: '6px', marginBottom: '20px' }}>
+        {(['US', 'HK'] as MarketFilter[]).map(m => (
+          <button
+            key={m}
+            onClick={() => setMarket(m)}
+            style={{
+              padding: '6px 18px', borderRadius: '8px', fontSize: '12px', fontWeight: 700, cursor: 'pointer',
+              border: market === m ? '1px solid #818cf8' : '1px solid #1e293b',
+              background: market === m ? 'rgba(129,140,248,0.12)' : 'transparent',
+              color: market === m ? '#818cf8' : '#475569',
+            }}
+          >
+            {m} <span style={{ fontSize: '10px', fontWeight: 400, opacity: 0.7 }}>({m === 'US' ? usCnt : hkCnt})</span>
+          </button>
+        ))}
+      </div>
+
       {isLoading && <div style={{ color: '#475569', fontSize: '13px', padding: '40px 0', textAlign: 'center' }}>Loading board…</div>}
+
+      {error && (
+        <div style={{ padding: '12px 16px', borderRadius: '8px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', fontSize: '12px', marginBottom: '16px' }}>
+          Failed to load board: {String(error?.message ?? error)}. Try refreshing the page.
+        </div>
+      )}
 
       {!isLoading && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px', alignItems: 'start' }}>
@@ -287,7 +322,7 @@ export default function BoardPage() {
 
       {!isLoading && total === 0 && (
         <div style={{ marginTop: '24px', padding: '20px 24px', borderRadius: '10px', background: 'rgba(99,102,241,0.05)', border: '1px solid rgba(99,102,241,0.15)', fontSize: '12px', color: '#475569', lineHeight: 1.7 }}>
-          <strong style={{ color: '#818cf8' }}>How to populate your board:</strong>
+          <strong style={{ color: '#818cf8' }}>How to populate your {market} board:</strong>
           <ul style={{ margin: '8px 0 0 16px', padding: 0 }}>
             <li>On any stock detail page — generate a <strong>Game Plan</strong> then click <strong>📌 Save</strong></li>
             <li>On the <Link href="/forecast" style={{ color: '#818cf8' }}>Forecast</Link> page — click <strong>📌 Save to Board</strong> on any pick</li>
