@@ -333,6 +333,24 @@ Shows up to 20 individual analyst firm events from the last 90 days, sorted newe
 
 > **Source:** SEC Form 4 filings aggregated by Yahoo Finance. Data is refreshed as part of the 24-hour fundamentals cache.
 
+### AI Game Plan
+
+A one-click AI-generated 10-day swing trade plan for the stock. Available on every stock detail page when an AI provider is configured in Settings.
+
+Click **📋 Generate 10-Day Game Plan** to generate. The AI returns a structured plan including:
+- **Title** — one-line trade thesis
+- **Entry zones** — up to 3 labelled price levels with rationale (Aggressive / Base / Conservative)
+- **Stop Loss** — price + rationale
+- **Take Profit** — price + rationale
+- **Catalysts** — key upcoming events or technical setups
+- **Key Risk** — the main thing that could invalidate the trade
+
+Once generated:
+- **⎘ Copy** — copies the full plan as formatted plain text to your clipboard
+- **📌 Save to Board** — saves the plan to your Trade Board (`/board`) with stage = Planning and entry/stop/target prices pre-filled
+
+> Previously this button was only shown for BUY or HOLD signals. It now appears for all stocks regardless of signal, so you can plan shorts or research any name freely.
+
 ### AI Chat Panel
 Collapsible "Ask AI" panel below the financials section.
 
