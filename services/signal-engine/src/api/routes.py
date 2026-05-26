@@ -121,12 +121,12 @@ def signal_accuracy(
     for sig, sym, name in rows:
         signal_date = sig.ts.date()
 
-        # Entry: the most recent close on or before the signal date (handles
-        # weekend/holiday signals where no bar exists on the signal day itself).
+        # Entry: the most recent close on or before the signal date.
+        # Handles weekend/holiday signals where no bar exists on the signal day.
         entry_row = session.execute(
             select(Price.close)
             .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-            .where(Price.ts <= signal_date + timedelta(days=1))
+            .where(Price.ts <= signal_date)
             .order_by(Price.ts.desc())
             .limit(1)
         ).scalar_one_or_none()
