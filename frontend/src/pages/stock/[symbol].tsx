@@ -836,7 +836,7 @@ Return ONLY valid JSON — no markdown, no prose:
           })()}
 
           {/* Game Plan */}
-          {data.signal && (data.signal.signal === 'BUY' || data.signal.signal === 'HOLD') && isAiConfigured() && (
+          {isAiConfigured() && (
             <div>
               {/* Generate button */}
               {!gamePlan && !gamePlanLoading && (

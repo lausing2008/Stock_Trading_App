@@ -214,3 +214,7 @@ New persistent Kanban board for managing trade ideas across four stages: **Watch
 - **📌 Save to Board** button on each Forecast pick card (stage = Watch, notes from setup/catalyst/risk)
 - Manual add form in the Watch column for any symbol
 - SWR `globalMutate` invalidates board cache when a card is saved from another page
+
+### Stock Detail — Game Plan Signal Restriction Removed
+
+The **📋 Generate 10-Day Game Plan** button previously only appeared for stocks with a BUY or HOLD signal. Removed that condition so the button shows for all stocks regardless of signal — allows planning shorts, researching SELL-signal stocks, or generating a plan at any time.
