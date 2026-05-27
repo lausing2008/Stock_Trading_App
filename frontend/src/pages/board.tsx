@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type TradePlan, type PriceAlert, type SignalAlertItem } from '@/lib/api';
@@ -43,48 +44,31 @@ type StoredGamePlan = {
 
 type Suggestion = { label: string; price: number; condition: 'above' | 'below'; color: string; rationale?: string };
 
-function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onAlertsChange }: {
+/* ── Alert Modal ─────────────────────────────────────────── */
+function AlertModal({ plan, priceAlerts, signalAlert, suggestions, onClose, onAlertsChange }: {
   plan: TradePlan;
   priceAlerts: PriceAlert[];
   signalAlert: SignalAlertItem | null;
-  onStageChange: (id: number, stage: Stage) => void;
-  onDelete: (id: number) => void;
+  suggestions: Suggestion[];
+  onClose: () => void;
   onAlertsChange: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [alertOpen, setAlertOpen] = useState(false);
   const [threshold, setThreshold] = useState('');
   const [condition, setCondition] = useState<'above' | 'below'>('above');
   const [addingAlert, setAddingAlert] = useState(false);
   const [settingAll, setSettingAll] = useState(false);
   const [togglingSignal, setTogglingSignal] = useState(false);
-  const meta = STAGE_META[plan.stage as Stage] ?? STAGE_META.watch;
-  const gp = plan.game_plan as StoredGamePlan | null;
-
-  // Build suggested price levels — prefer TradePlan DB fields, fall back to game_plan JSON
-  const suggestions = useMemo<Suggestion[]>(() => {
-    const s: Suggestion[] = [];
-    if (gp?.entries?.length) {
-      gp.entries.forEach(e => s.push({ label: e.label, price: e.price, condition: 'below', color: '#818cf8', rationale: e.rationale }));
-    } else if (plan.entry_price != null) {
-      s.push({ label: 'Entry', price: plan.entry_price, condition: 'below', color: '#818cf8', rationale: undefined });
-    }
-    const stopPrice = plan.stop_loss ?? gp?.stop_loss?.price ?? null;
-    const stopRationale = gp?.stop_loss?.rationale;
-    if (stopPrice != null) s.push({ label: 'Stop Loss', price: stopPrice, condition: 'below', color: '#f87171', rationale: stopRationale });
-    const targetPrice = plan.take_profit ?? gp?.take_profit?.price ?? null;
-    const targetRationale = gp?.take_profit?.rationale;
-    if (targetPrice != null) s.push({ label: 'Take Profit', price: targetPrice, condition: 'above', color: '#4ade80', rationale: targetRationale });
-    return s;
-  }, [gp, plan.entry_price, plan.stop_loss, plan.take_profit]);
-
-  // Track which suggestions are selected (all by default)
   const [selected, setSelected] = useState<Set<number>>(() => new Set(suggestions.map((_, i) => i)));
-  // Reset selection when suggestions change
-  useMemo(() => setSelected(new Set(suggestions.map((_, i) => i))), [suggestions.length]);
 
   const existingThresholds = new Set(priceAlerts.map(a => `${a.condition}:${a.threshold}`));
+  const totalAlerts = priceAlerts.length + (signalAlert ? 1 : 0);
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
 
   async function handleAddPriceAlert() {
     const val = parseFloat(threshold);
@@ -107,9 +91,6 @@ function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onA
     } finally { setSettingAll(false); }
   }
 
-  // Close alert panel if card moves away from Active
-  useMemo(() => { if (plan.stage !== 'active') setAlertOpen(false); }, [plan.stage]);
-
   async function handleToggleSignal() {
     setTogglingSignal(true);
     try {
@@ -123,7 +104,181 @@ function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onA
     } finally { setTogglingSignal(false); }
   }
 
+  const pendingCount = [...selected].filter(i => suggestions[i] && !existingThresholds.has(`${suggestions[i].condition}:${suggestions[i].price}`)).length;
+
+  const modal = (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{ width: '460px', maxWidth: '100%', maxHeight: '90vh', overflowY: 'auto', borderRadius: '14px', border: '1px solid rgba(251,191,36,0.3)', background: '#0d1829', boxShadow: '0 25px 60px rgba(0,0,0,0.7)' }}
+      >
+        {/* Header */}
+        <div style={{ position: 'sticky', top: 0, padding: '16px 20px', background: '#0d1829', borderBottom: '1px solid rgba(251,191,36,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', zIndex: 1 }}>
+          <div>
+            <div style={{ fontSize: '16px', fontWeight: 800, color: '#fbbf24' }}>🔔 Alerts — {plan.symbol}</div>
+            {totalAlerts > 0 && <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>{totalAlerts} active alert{totalAlerts !== 1 ? 's' : ''}</div>}
+          </div>
+          <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid #1e293b', color: '#94a3b8', cursor: 'pointer', fontSize: '16px', width: '32px', height: '32px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>✕</button>
+        </div>
+
+        <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+          {/* Signal alert */}
+          <section>
+            <div style={{ fontSize: '11px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>AI Signal Alert</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderRadius: '10px', background: signalAlert ? 'rgba(129,140,248,0.08)' : 'rgba(255,255,255,0.02)', border: `1px solid ${signalAlert ? 'rgba(129,140,248,0.3)' : '#1e293b'}` }}>
+              <div>
+                <div style={{ fontSize: '14px', color: '#e2e8f0', fontWeight: 600 }}>📡 Signal change notification</div>
+                <div style={{ fontSize: '12px', color: '#475569', marginTop: '3px' }}>Email me when BUY / SELL / HOLD changes</div>
+              </div>
+              <button
+                onClick={handleToggleSignal}
+                disabled={togglingSignal}
+                style={{ flexShrink: 0, marginLeft: '16px', padding: '8px 18px', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '13px', border: `1px solid ${signalAlert ? 'rgba(129,140,248,0.5)' : '#334155'}`, background: signalAlert ? 'rgba(129,140,248,0.2)' : 'rgba(255,255,255,0.04)', color: signalAlert ? '#818cf8' : '#64748b' }}
+              >
+                {togglingSignal ? '…' : signalAlert ? '🔔 On' : '🔕 Off'}
+              </button>
+            </div>
+          </section>
+
+          {/* Price levels */}
+          {suggestions.length > 0 && (
+            <section>
+              <div style={{ fontSize: '11px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Price Levels from Game Plan</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+                {suggestions.map((s, i) => {
+                  const alreadySet = existingThresholds.has(`${s.condition}:${s.price}`);
+                  const isSel = selected.has(i);
+                  return (
+                    <div
+                      key={i}
+                      onClick={() => !alreadySet && setSelected(prev => { const n = new Set(prev); isSel ? n.delete(i) : n.add(i); return n; })}
+                      style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', borderRadius: '10px', cursor: alreadySet ? 'default' : 'pointer', border: `1px solid ${alreadySet ? 'rgba(74,222,128,0.35)' : isSel ? `${s.color}55` : '#1e293b'}`, background: alreadySet ? 'rgba(74,222,128,0.06)' : isSel ? `${s.color}10` : 'rgba(255,255,255,0.02)' }}
+                    >
+                      <div style={{ flexShrink: 0, width: '20px', height: '20px', borderRadius: '5px', border: `2px solid ${alreadySet ? '#4ade80' : isSel ? s.color : '#334155'}`, background: alreadySet ? 'rgba(74,222,128,0.25)' : isSel ? `${s.color}35` : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', color: alreadySet ? '#4ade80' : s.color }}>
+                        {(alreadySet || isSel) ? '✓' : ''}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '14px', color: s.color, fontWeight: 700 }}>{s.label}</span>
+                          <span style={{ fontSize: '11px', color: '#475569', background: 'rgba(255,255,255,0.05)', padding: '2px 7px', borderRadius: '4px' }}>{s.condition === 'above' ? '↑ rises above' : '↓ drops below'}</span>
+                        </div>
+                        {s.rationale && <div style={{ fontSize: '12px', color: '#475569', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.rationale}</div>}
+                      </div>
+                      <span style={{ flexShrink: 0, fontSize: '15px', fontFamily: 'ui-monospace, monospace', color: alreadySet ? '#4ade80' : '#e2e8f0', fontWeight: 700 }}>${s.price.toFixed(2)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                onClick={handleSetAll}
+                disabled={settingAll || pendingCount === 0}
+                style={{ width: '100%', padding: '10px', borderRadius: '10px', border: 'none', background: pendingCount > 0 ? 'linear-gradient(135deg,rgba(251,191,36,0.3),rgba(251,191,36,0.18))' : '#1e293b', color: pendingCount > 0 ? '#fbbf24' : '#334155', fontSize: '14px', fontWeight: 700, cursor: pendingCount > 0 ? 'pointer' : 'default' }}
+              >
+                {settingAll ? 'Setting alerts…' : pendingCount > 0 ? `Set ${pendingCount} Alert${pendingCount !== 1 ? 's' : ''}` : 'All price alerts set ✓'}
+              </button>
+            </section>
+          )}
+
+          {/* Custom alert */}
+          <section>
+            <div style={{ fontSize: '11px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Custom Price Alert</div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <select value={condition} onChange={e => setCondition(e.target.value as 'above' | 'below')} style={{ fontSize: '13px', background: '#0f172a', border: '1px solid #1e293b', color: '#94a3b8', borderRadius: '8px', padding: '9px 10px', cursor: 'pointer', flexShrink: 0 }}>
+                <option value="above">↑ Above</option>
+                <option value="below">↓ Below</option>
+              </select>
+              <input
+                type="number"
+                value={threshold}
+                onChange={e => setThreshold(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleAddPriceAlert(); }}
+                placeholder="Enter price…"
+                style={{ flex: 1, fontSize: '14px', background: 'rgba(255,255,255,0.04)', border: '1px solid #1e293b', borderRadius: '8px', padding: '9px 12px', color: '#f1f5f9', outline: 'none', minWidth: 0 }}
+              />
+              <button onClick={handleAddPriceAlert} disabled={!threshold || addingAlert} style={{ fontSize: '13px', padding: '9px 16px', borderRadius: '8px', border: 'none', background: threshold ? 'rgba(251,191,36,0.22)' : '#1e293b', color: threshold ? '#fbbf24' : '#334155', cursor: threshold ? 'pointer' : 'default', fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                {addingAlert ? '…' : '+ Add'}
+              </button>
+            </div>
+          </section>
+
+          {/* Active alerts — price + signal together so count matches badge */}
+          {totalAlerts > 0 && (
+            <section>
+              <div style={{ fontSize: '11px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Active Alerts ({totalAlerts})</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {signalAlert && (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: '9px', background: 'rgba(129,140,248,0.06)', border: '1px solid rgba(129,140,248,0.25)' }}>
+                    <div>
+                      <span style={{ fontSize: '13px', color: '#818cf8', fontWeight: 700 }}>📡 Signal alert</span>
+                      <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px' }}>· notifies on BUY/SELL/HOLD change</span>
+                    </div>
+                    <button onClick={async () => { await api.deleteSignalAlert(signalAlert.id); onAlertsChange(); }} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', cursor: 'pointer', fontSize: '12px', padding: '4px 10px', borderRadius: '6px', fontWeight: 600 }}>Remove</button>
+                  </div>
+                )}
+                {priceAlerts.map(a => (
+                  <div key={a.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: '9px', background: a.triggered ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${a.triggered ? 'rgba(74,222,128,0.25)' : '#1e293b'}` }}>
+                    <div>
+                      <span style={{ fontSize: '14px', fontFamily: 'ui-monospace, monospace', color: a.triggered ? '#4ade80' : '#e2e8f0', fontWeight: 700 }}>
+                        {a.condition === 'above' ? '↑' : '↓'} ${Number(a.threshold).toFixed(2)}
+                      </span>
+                      {a.note && <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px' }}>· {a.note}</span>}
+                      {a.triggered && <span style={{ fontSize: '12px', color: '#4ade80', marginLeft: '8px' }}>✓ Triggered</span>}
+                    </div>
+                    <button onClick={async () => { await api.deleteAlert(a.id); onAlertsChange(); }} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', cursor: 'pointer', fontSize: '12px', padding: '4px 10px', borderRadius: '6px', fontWeight: 600 }}>Remove</button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  if (typeof document === 'undefined') return null;
+  return createPortal(modal, document.body);
+}
+
+function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onAlertsChange }: {
+  plan: TradePlan;
+  priceAlerts: PriceAlert[];
+  signalAlert: SignalAlertItem | null;
+  onStageChange: (id: number, stage: Stage) => void;
+  onDelete: (id: number) => void;
+  onAlertsChange: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [alertOpen, setAlertOpen] = useState(false);
+  const meta = STAGE_META[plan.stage as Stage] ?? STAGE_META.watch;
+  const gp = plan.game_plan as StoredGamePlan | null;
+
+  // Build suggested price levels — prefer TradePlan DB fields, fall back to game_plan JSON
+  const suggestions = useMemo<Suggestion[]>(() => {
+    const s: Suggestion[] = [];
+    if (gp?.entries?.length) {
+      gp.entries.forEach(e => s.push({ label: e.label, price: e.price, condition: 'below', color: '#818cf8', rationale: e.rationale }));
+    } else if (plan.entry_price != null) {
+      s.push({ label: 'Entry', price: plan.entry_price, condition: 'below', color: '#818cf8', rationale: undefined });
+    }
+    const stopPrice = plan.stop_loss ?? gp?.stop_loss?.price ?? null;
+    const stopRationale = gp?.stop_loss?.rationale;
+    if (stopPrice != null) s.push({ label: 'Stop Loss', price: stopPrice, condition: 'below', color: '#f87171', rationale: stopRationale });
+    const targetPrice = plan.take_profit ?? gp?.take_profit?.price ?? null;
+    const targetRationale = gp?.take_profit?.rationale;
+    if (targetPrice != null) s.push({ label: 'Take Profit', price: targetPrice, condition: 'above', color: '#4ade80', rationale: targetRationale });
+    return s;
+  }, [gp, plan.entry_price, plan.stop_loss, plan.take_profit]);
+
+  // Close modal when card leaves Active
+  useMemo(() => { if (plan.stage !== 'active') setAlertOpen(false); }, [plan.stage]);
+
   const hasAlerts = priceAlerts.length > 0 || !!signalAlert;
+  const alertCount = priceAlerts.length + (signalAlert ? 1 : 0);
 
   return (
     <div style={{ borderRadius: '10px', border: `1px solid ${meta.border}`, background: '#0f172a', overflow: 'hidden', marginBottom: '8px' }}>
@@ -156,120 +311,16 @@ function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onA
           </div>
         </div>
 
-        {/* Alert panel */}
+        {/* Alert modal (portal) */}
         {alertOpen && (
-          <div style={{ marginBottom: '12px', borderRadius: '10px', border: '1px solid rgba(251,191,36,0.25)', background: '#0a1628', overflow: 'hidden' }}>
-            {/* Panel header */}
-            <div style={{ padding: '10px 14px', background: 'rgba(251,191,36,0.07)', borderBottom: '1px solid rgba(251,191,36,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24' }}>🔔 Alerts — {plan.symbol}</span>
-              <button onClick={() => setAlertOpen(false)} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '14px', lineHeight: 1, padding: '0 2px' }}>✕</button>
-            </div>
-
-            <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-
-              {/* Signal alert section */}
-              <div>
-                <div style={{ fontSize: '10px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>AI Signal Alert</div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: '8px', background: signalAlert ? 'rgba(129,140,248,0.08)' : 'rgba(255,255,255,0.02)', border: `1px solid ${signalAlert ? 'rgba(129,140,248,0.3)' : '#1e293b'}` }}>
-                  <div>
-                    <div style={{ fontSize: '13px', color: '#e2e8f0', fontWeight: 600 }}>📡 Notify when signal changes</div>
-                    <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>Email alert when BUY / SELL / HOLD changes</div>
-                  </div>
-                  <button
-                    onClick={handleToggleSignal}
-                    disabled={togglingSignal}
-                    style={{ flexShrink: 0, marginLeft: '12px', padding: '6px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '12px', border: `1px solid ${signalAlert ? 'rgba(129,140,248,0.5)' : '#334155'}`, background: signalAlert ? 'rgba(129,140,248,0.2)' : 'rgba(255,255,255,0.04)', color: signalAlert ? '#818cf8' : '#64748b', transition: 'all 0.15s' }}
-                  >
-                    {togglingSignal ? '…' : signalAlert ? '🔔 On' : '🔕 Off'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Price levels from game plan */}
-              {suggestions.length > 0 && (
-                <div>
-                  <div style={{ fontSize: '10px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>Price Levels — select to alert</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '10px' }}>
-                    {suggestions.map((s, i) => {
-                      const alreadySet = existingThresholds.has(`${s.condition}:${s.price}`);
-                      const isSel = selected.has(i);
-                      return (
-                        <div
-                          key={i}
-                          onClick={() => !alreadySet && setSelected(prev => { const n = new Set(prev); isSel ? n.delete(i) : n.add(i); return n; })}
-                          style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', borderRadius: '8px', cursor: alreadySet ? 'default' : 'pointer', border: `1px solid ${alreadySet ? 'rgba(74,222,128,0.3)' : isSel ? `${s.color}50` : '#1e293b'}`, background: alreadySet ? 'rgba(74,222,128,0.06)' : isSel ? `${s.color}0d` : 'rgba(255,255,255,0.02)', transition: 'all 0.12s' }}
-                        >
-                          {/* Checkbox */}
-                          <div style={{ flexShrink: 0, width: '18px', height: '18px', borderRadius: '4px', border: `2px solid ${alreadySet ? '#4ade80' : isSel ? s.color : '#334155'}`, background: alreadySet ? 'rgba(74,222,128,0.2)' : isSel ? `${s.color}30` : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px' }}>
-                            {alreadySet ? '✓' : isSel ? '✓' : ''}
-                          </div>
-                          {/* Label + rationale */}
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <span style={{ fontSize: '13px', color: s.color, fontWeight: 700 }}>{s.label}</span>
-                              <span style={{ fontSize: '11px', color: '#475569', background: 'rgba(255,255,255,0.04)', padding: '1px 6px', borderRadius: '4px' }}>{s.condition === 'above' ? '↑ rises above' : '↓ drops below'}</span>
-                            </div>
-                            {s.rationale && <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.rationale}</div>}
-                          </div>
-                          {/* Price */}
-                          <span style={{ flexShrink: 0, fontSize: '14px', fontFamily: 'ui-monospace, monospace', color: alreadySet ? '#4ade80' : '#e2e8f0', fontWeight: 700 }}>${s.price.toFixed(2)}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {/* Set All button */}
-                  {(() => {
-                    const pendingCount = [...selected].filter(i => suggestions[i] && !existingThresholds.has(`${suggestions[i].condition}:${suggestions[i].price}`)).length;
-                    return (
-                      <button
-                        onClick={handleSetAll}
-                        disabled={settingAll || pendingCount === 0}
-                        style={{ width: '100%', padding: '8px', borderRadius: '8px', border: 'none', background: pendingCount > 0 ? 'linear-gradient(135deg,rgba(251,191,36,0.25),rgba(251,191,36,0.15))' : '#1e293b', color: pendingCount > 0 ? '#fbbf24' : '#334155', fontSize: '13px', fontWeight: 700, cursor: pendingCount > 0 ? 'pointer' : 'default' }}
-                      >
-                        {settingAll ? 'Setting alerts…' : pendingCount > 0 ? `Set ${pendingCount} Alert${pendingCount !== 1 ? 's' : ''}` : 'All alerts already set ✓'}
-                      </button>
-                    );
-                  })()}
-                </div>
-              )}
-
-              {/* Custom price alert */}
-              <div>
-                <div style={{ fontSize: '10px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>Custom Alert</div>
-                <div style={{ display: 'flex', gap: '6px', alignItems: 'stretch' }}>
-                  <select value={condition} onChange={e => setCondition(e.target.value as 'above' | 'below')} style={{ fontSize: '12px', background: '#0f172a', border: '1px solid #1e293b', color: '#94a3b8', borderRadius: '7px', padding: '7px 8px', cursor: 'pointer', flexShrink: 0 }}>
-                    <option value="above">↑ Above</option>
-                    <option value="below">↓ Below</option>
-                  </select>
-                  <input type="number" value={threshold} onChange={e => setThreshold(e.target.value)} placeholder="Enter price…" style={{ flex: 1, fontSize: '13px', background: 'rgba(255,255,255,0.04)', border: '1px solid #1e293b', borderRadius: '7px', padding: '7px 10px', color: '#f1f5f9', outline: 'none', minWidth: 0 }} />
-                  <button onClick={handleAddPriceAlert} disabled={!threshold || addingAlert} style={{ fontSize: '12px', padding: '7px 14px', borderRadius: '7px', border: 'none', background: threshold ? 'rgba(251,191,36,0.2)' : '#1e293b', color: threshold ? '#fbbf24' : '#334155', cursor: threshold ? 'pointer' : 'default', fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                    {addingAlert ? '…' : '+ Add'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Active price alerts */}
-              {priceAlerts.length > 0 && (
-                <div>
-                  <div style={{ fontSize: '10px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>Active Price Alerts ({priceAlerts.length})</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    {priceAlerts.map(a => (
-                      <div key={a.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: '7px', background: a.triggered ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${a.triggered ? 'rgba(74,222,128,0.25)' : '#1e293b'}` }}>
-                        <div>
-                          <span style={{ fontSize: '13px', fontFamily: 'ui-monospace, monospace', color: a.triggered ? '#4ade80' : '#e2e8f0', fontWeight: 700 }}>
-                            {a.condition === 'above' ? '↑' : '↓'} ${Number(a.threshold).toFixed(2)}
-                          </span>
-                          {a.note && <span style={{ fontSize: '11px', color: '#475569', marginLeft: '8px' }}>· {a.note}</span>}
-                          {a.triggered && <span style={{ fontSize: '11px', color: '#4ade80', marginLeft: '6px' }}>✓ Triggered</span>}
-                        </div>
-                        <button onClick={async () => { await api.deleteAlert(a.id); onAlertsChange(); }} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', cursor: 'pointer', fontSize: '11px', padding: '3px 8px', borderRadius: '5px', fontWeight: 600 }}>Remove</button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          <AlertModal
+            plan={plan}
+            priceAlerts={priceAlerts}
+            signalAlert={signalAlert}
+            suggestions={suggestions}
+            onClose={() => setAlertOpen(false)}
+            onAlertsChange={onAlertsChange}
+          />
         )}
 
         {/* Prices */}
@@ -342,7 +393,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onA
                 onClick={() => setAlertOpen(o => !o)}
                 style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${hasAlerts ? 'rgba(251,191,36,0.4)' : '#1e293b'}`, background: hasAlerts ? 'rgba(251,191,36,0.1)' : 'transparent', color: hasAlerts ? '#fbbf24' : '#475569', marginLeft: '2px' }}
               >
-                🔔 {hasAlerts ? `Alerts (${priceAlerts.length + (signalAlert ? 1 : 0)})` : 'Set Alerts'}
+                🔔 {hasAlerts ? `Alerts (${alertCount})` : 'Set Alerts'}
               </button>
             )}
           </div>
