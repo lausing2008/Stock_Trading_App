@@ -107,6 +107,9 @@ function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onA
     } finally { setSettingAll(false); }
   }
 
+  // Close alert panel if card moves away from Active
+  useMemo(() => { if (plan.stage !== 'active') setAlertOpen(false); }, [plan.stage]);
+
   async function handleToggleSignal() {
     setTogglingSignal(true);
     try {
@@ -334,12 +337,14 @@ function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onA
                 {STAGE_META[s].label}
               </button>
             ))}
-            <button
-              onClick={() => setAlertOpen(o => !o)}
-              style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${hasAlerts ? 'rgba(251,191,36,0.4)' : '#1e293b'}`, background: hasAlerts ? 'rgba(251,191,36,0.1)' : 'transparent', color: hasAlerts ? '#fbbf24' : '#475569', marginLeft: '2px' }}
-            >
-              🔔 {hasAlerts ? `Alerts (${priceAlerts.length + (signalAlert ? 1 : 0)})` : 'Set Alerts'}
-            </button>
+            {plan.stage === 'active' && (
+              <button
+                onClick={() => setAlertOpen(o => !o)}
+                style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${hasAlerts ? 'rgba(251,191,36,0.4)' : '#1e293b'}`, background: hasAlerts ? 'rgba(251,191,36,0.1)' : 'transparent', color: hasAlerts ? '#fbbf24' : '#475569', marginLeft: '2px' }}
+              >
+                🔔 {hasAlerts ? `Alerts (${priceAlerts.length + (signalAlert ? 1 : 0)})` : 'Set Alerts'}
+              </button>
+            )}
           </div>
           <span style={{ fontSize: '10px', color: '#334155' }}>{relDate(plan.updated_at)}</span>
         </div>
