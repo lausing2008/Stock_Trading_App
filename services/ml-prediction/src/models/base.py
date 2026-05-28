@@ -12,7 +12,7 @@ class BaseModel(ABC):
     name: str
 
     @abstractmethod
-    def fit(self, X: np.ndarray, y: np.ndarray) -> None: ...
+    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs) -> None: ...
 
     @abstractmethod
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
