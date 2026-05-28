@@ -8,8 +8,9 @@ Three phases per market day, plus a weekly deep-clean:
   Open burst   — every 5 min for 20 min around the open.  Catches gap opens,
                  early momentum, and first-bar signal updates.
 
-  Regular hrs  — every 30 min through the session.  Keeps rankings/signals
-                 current without hammering yfinance.
+  Regular hrs  — every 10 min through the session.  Prices, rankings,
+                 momentum, and signals are all pure local math (TA + XGBoost,
+                 no external API cost), so 10-min cadence is safe and free.
 
   Close burst  — every 5 min for 45 min around the close.  Ensures the final
                  bar is captured as it settles, and signals reflect end-of-day
@@ -27,16 +28,24 @@ Detailed times (all times local to the market timezone; DST handled automaticall
 
   US (America/New_York):
     09:25 09:30 09:35 09:40 09:45           open burst   (every 5 min)
-    10:00 10:30 11:00 11:30 12:00 12:30
-    13:00 13:30 14:00 14:30 15:00           regular hrs  (every 30 min)
+    10:00 10:10 10:20 10:30 10:40 10:50
+    11:00 11:10 11:20 11:30 11:40 11:50
+    12:00 12:10 12:20 12:30 12:40 12:50
+    13:00 13:10 13:20 13:30 13:40 13:50
+    14:00 14:10 14:20 14:30 14:40 14:50
+    15:00                                   regular hrs  (every 10 min)
     15:30 15:35 15:40 15:45 15:50 15:55
     16:00 16:05 16:10 16:15                 close burst  (every 5 min)
     16:30                                   post-close   (+ ML retrain)
 
   HK (Asia/Hong_Kong, UTC+8, no DST):
     09:25 09:30 09:35 09:40 09:45           open burst   (every 5 min)
-    10:00 10:30 11:00 11:30 12:00 12:30
-    13:00 13:30 14:00 14:30 15:00           regular hrs  (every 30 min)
+    10:00 10:10 10:20 10:30 10:40 10:50
+    11:00 11:10 11:20 11:30 11:40 11:50
+    12:00 12:10 12:20 12:30 12:40 12:50
+    13:00 13:10 13:20 13:30 13:40 13:50
+    14:00 14:10 14:20 14:30 14:40 14:50
+    15:00                                   regular hrs  (every 10 min)
     15:30 15:35 15:40 15:45 15:50 15:55
     16:00 16:05 16:10 16:15                 close burst  (every 5 min)
     16:30                                   post-close   (+ ML retrain)
@@ -566,8 +575,20 @@ def start_scheduler() -> None:
     """Register all APScheduler jobs and start the background scheduler.
 
     Idempotent — safe to call multiple times; only the first call has any effect.
-    All 10 jobs are registered with replace_existing=True so a hot-reload
+    All jobs are registered with replace_existing=True so a hot-reload
     (docker restart) won't create duplicate jobs.
+
+    Schedule (per market):
+      - Open burst  (9:25–9:45):   every 5 min  — prices + rankings + signals
+      - Regular hrs (10:00–15:00): every 10 min — prices + rankings + signals
+      - Close burst (15:30–16:15): every 5 min  — prices + rankings + signals
+      - Post-close  (16:30):       once         — above + ML retrain
+      - Weekly full refresh (Sun 16:00 PST): force re-ingest 3 years
+
+    Signal and momentum are pure local math (TA + XGBoost), no external API
+    cost, so refreshing every 10 min during regular hours is safe and free.
+    ML retrain runs only post-close — retraining on intraday data has no value
+    since the model learns from daily bar outcomes.
 
     Job count: 4 US + 4 HK + 1 weekly full refresh + 1 price alert checker = 10.
     """
@@ -584,11 +605,11 @@ def start_scheduler() -> None:
         CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="America/New_York"),
         id="us_open_burst", replace_existing=True,
     )
-    # Regular hours: every 30 min 10:00–15:00
+    # Regular hours: every 10 min 10:00–15:00
     _scheduler.add_job(
         lambda: _refresh_market("US"),
         OrTrigger([
-            CronTrigger(hour="10,11,12,13,14", minute="0,30", day_of_week="mon-fri", timezone="America/New_York"),
+            CronTrigger(hour="10,11,12,13,14", minute="0,10,20,30,40,50", day_of_week="mon-fri", timezone="America/New_York"),
             CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
         ]),
         id="us_intra", replace_existing=True,
@@ -617,11 +638,11 @@ def start_scheduler() -> None:
         CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         id="hk_open_burst", replace_existing=True,
     )
-    # Regular hours: every 30 min 10:00–15:00
+    # Regular hours: every 10 min 10:00–15:00
     _scheduler.add_job(
         lambda: _refresh_market("HK"),
         OrTrigger([
-            CronTrigger(hour="10,11,12,13,14", minute="0,30", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+            CronTrigger(hour="10,11,12,13,14", minute="0,10,20,30,40,50", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
             CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         ]),
         id="hk_intra", replace_existing=True,

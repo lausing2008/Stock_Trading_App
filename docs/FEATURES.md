@@ -95,40 +95,40 @@ When the user's watchlist is empty the grid shows "Your watchlist is empty — c
 
 This section explains how often each piece of data is refreshed, what triggers each refresh, and which components are updated together.
 
-### Scheduled market refresh — 5× per trading day
+### Scheduled market refresh — up to ~60× per trading day
 
-The background scheduler (`scheduler.py` inside the `market-data` container) runs a full refresh cycle at these times. **All four steps happen in sequence on every run:**
+The background scheduler (`scheduler.py` inside the `market-data` container) runs a full refresh cycle across three phases per market. **All four steps happen in sequence on every run:**
 
-1. **Ingest prices** — fetches the latest daily OHLCV bar for every active stock from yfinance and writes it to the `prices` table
-2. **Refresh rankings** — recomputes K-Scores and sub-scores for every active stock using the new prices
-3. **Refresh signals** — reruns the TA + ML signal engine for every active stock; new signal is persisted in the `signals` table
+1. **Ingest prices** — fetches the latest daily OHLCV bar for every active stock via `yf.download()` (one batch call) and writes it to the `prices` table
+2. **Refresh rankings** — recomputes K-Scores, momentum, and sub-scores for every active stock using the new prices (pure local math — no external API)
+3. **Refresh signals** — reruns the TA + ML signal engine (TA indicators + XGBoost) for every active stock; new signal is persisted in the `signals` table (pure local math — no external API)
 4. **Check signal alerts** — checks every subscribed alert against the new signals; fires entry/exit emails where conditions are met
+
+Since signals and momentum are entirely local computation (no Claude API, no rate limits), refreshing every 10 minutes during regular hours is safe and free.
 
 **US market (America/New_York timezone, DST-adjusted):**
 
-| Run | Local time | Notes |
-|-----|-----------|-------|
-| Pre-open | 09:00 | Before the US session opens |
-| Intra-day 1 | 10:45 | Mid-morning |
-| Intra-day 2 | 12:45 | Early afternoon |
-| Intra-day 3 | 14:45 | Late session |
-| Post-close | 16:30 | Most complete — includes ML retrain |
+| Phase | Times | Frequency | Notes |
+|-------|-------|-----------|-------|
+| Open burst | 09:25 – 09:45 | Every 5 min | Gap opens, early momentum |
+| Regular hours | 10:00 – 15:00 | Every 10 min | Prices + rankings + signals |
+| Close burst | 15:30 – 16:15 | Every 5 min | Final bar capture |
+| Post-close | 16:30 | Once | + ML retrain on day's data |
 
 **HK market (Asia/Hong_Kong timezone, UTC+8, no DST):**
 
-| Run | Local time | Notes |
-|-----|-----------|-------|
-| Pre-open | 09:00 | Before HKEX opens |
-| Intra-day 1 | 10:30 | Mid-morning |
-| Intra-day 2 | 14:15 | Post-lunch |
-| Intra-day 3 | 15:30 | Late session |
-| Post-close | 16:30 | Includes ML retrain |
+| Phase | Times | Frequency | Notes |
+|-------|-------|-----------|-------|
+| Open burst | 09:25 – 09:45 | Every 5 min | Gap opens, early momentum |
+| Regular hours | 10:00 – 15:00 | Every 10 min | Prices + rankings + signals |
+| Close burst | 15:30 – 16:15 | Every 5 min | Final bar capture |
+| Post-close | 16:30 | Once | + ML retrain on day's data |
 
-> The 16:30 post-close run is the most reliable. The earlier intra-day runs use whatever the last daily bar is at that moment — on some data providers this is the previous day's close until the session ends. The signal computed at 16:30 reflects the full completed trading day.
+> The 16:30 post-close run is the most reliable. Intra-day runs use the latest available bar — on some symbols this is the previous day's close until the session ends. The signal computed at 16:30 reflects the full completed trading day.
 
 ### ML model retrain
 
-Runs **once per day**, at post-close (16:30) for both US and HK markets. Trains on the latest available price history. The intra-day runs (09:00–14:45) use the model trained from the previous close.
+Runs **once per day**, at post-close (16:30) for both US and HK markets. Trains on the latest available price history. More frequent retraining has no benefit — the XGBoost model learns from daily bar outcomes, and intraday data doesn't change the training labels.
 
 ### Price alerts — every 1 minute
 
