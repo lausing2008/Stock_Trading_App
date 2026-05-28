@@ -325,13 +325,20 @@ def fear_greed():
 
 
 @router.get("/latest_prices", response_model=list[LatestPriceOut])
-def latest_prices(session: Session = Depends(get_session)):
-    """Live prices from yfinance fast_info, Redis-cached for 60 s; DB fallback."""
+def latest_prices(
+    symbols: str | None = Query(None, description="Comma-separated symbols to filter"),
+    session: Session = Depends(get_session),
+):
+    """Live prices from yfinance fast_info, Redis-cached for 60 s; DB fallback.
+    Pass ?symbols=AAPL,TSM to get a subset (filtered from the cache)."""
+    symbol_set = {s.strip().upper() for s in symbols.split(",")} if symbols else None
+
     # 1. Try Redis cache
     try:
         cached = _get_redis().get(_LIVE_KEY)
         if cached:
-            return json.loads(cached)
+            rows = json.loads(cached)
+            return [r for r in rows if symbol_set is None or r["symbol"] in symbol_set]
     except Exception:
         pass
 
@@ -353,7 +360,8 @@ def latest_prices(session: Session = Depends(get_session)):
 
     if not results:
         log.warning("live_prices.all_failed", count=len(stocks))
-        return _latest_prices_from_db(session)
+        db_rows = _latest_prices_from_db(session)
+        return [r for r in db_rows if symbol_set is None or r.symbol in symbol_set]
 
     # 4. Cache in Redis
     try:
@@ -362,7 +370,7 @@ def latest_prices(session: Session = Depends(get_session)):
         pass
 
     log.info("live_prices.ok", count=len(results), source="yfinance")
-    return results
+    return [r for r in results if symbol_set is None or r["symbol"] in symbol_set]
 
 
 class FundamentalsOut(BaseModel):

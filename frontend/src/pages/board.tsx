@@ -243,10 +243,11 @@ function AlertModal({ plan, priceAlerts, signalAlert, suggestions, onClose, onAl
   return createPortal(modal, document.body);
 }
 
-function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onAlertsChange }: {
+function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, onDelete, onAlertsChange }: {
   plan: TradePlan;
   priceAlerts: PriceAlert[];
   signalAlert: SignalAlertItem | null;
+  livePrice: { price: number; change_pct: number | null } | null;
   onStageChange: (id: number, stage: Stage) => void;
   onDelete: (id: number) => void;
   onAlertsChange: () => void;
@@ -296,6 +297,19 @@ function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onA
               <span style={{ marginLeft: '8px', fontSize: '10px', color: '#475569' }}>{SOURCE_LABEL[plan.source] ?? plan.source}</span>
             )}
           </div>
+          {/* Live price + day change */}
+          {livePrice && (
+            <div style={{ textAlign: 'right', marginLeft: '8px' }}>
+              <div style={{ fontSize: '15px', fontWeight: 800, fontFamily: 'ui-monospace, monospace', color: '#f1f5f9' }}>
+                ${livePrice.price.toFixed(2)}
+              </div>
+              {livePrice.change_pct != null && (
+                <div style={{ fontSize: '11px', fontWeight: 600, color: livePrice.change_pct >= 0 ? '#4ade80' : '#f87171' }}>
+                  {livePrice.change_pct >= 0 ? '+' : ''}{livePrice.change_pct.toFixed(2)}%
+                </div>
+              )}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: '4px' }}>
             <button onClick={() => setExpanded(e => !e)} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '11px', padding: '2px 5px' }}>
               {expanded ? '▲' : '▼'}
@@ -350,6 +364,43 @@ function PlanCard({ plan, priceAlerts, signalAlert, onStageChange, onDelete, onA
             </div>
           )}
         </div>
+
+        {/* Active: distance from key levels */}
+        {plan.stage === 'active' && livePrice && (plan.entry_price != null || plan.stop_loss != null || plan.take_profit != null) && (() => {
+          const cur = livePrice.price;
+          const entry = plan.entry_price;
+          const stop = plan.stop_loss ?? (gp?.stop_loss?.price ?? null);
+          const target = plan.take_profit ?? (gp?.take_profit?.price ?? null);
+          const pct = (ref: number) => ((cur - ref) / ref * 100);
+          return (
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '8px', padding: '7px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}>
+              {entry != null && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>vs Entry </span>
+                  <span style={{ color: pct(entry) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>
+                    {pct(entry) >= 0 ? '+' : ''}{pct(entry).toFixed(1)}%
+                  </span>
+                </div>
+              )}
+              {stop != null && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>vs Stop </span>
+                  <span style={{ color: pct(stop) >= 0 ? '#4ade80' : '#f87171', fontWeight: 700 }}>
+                    {pct(stop) >= 0 ? '+' : ''}{pct(stop).toFixed(1)}%
+                  </span>
+                </div>
+              )}
+              {target != null && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>vs Target </span>
+                  <span style={{ color: '#94a3b8', fontWeight: 700 }}>
+                    {pct(target) >= 0 ? '+' : ''}{pct(target).toFixed(1)}%
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Notes */}
         {plan.notes && (
@@ -461,6 +512,19 @@ export default function BoardPage() {
   const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { revalidateOnFocus: false });
   const [market, setMarket] = useState<MarketFilter>('US');
 
+  // Fetch live prices for board symbols only, refresh every 60 s
+  const boardSymbols = useMemo(() => [...new Set((data ?? []).map(p => p.symbol))], [data]);
+  const { data: livePrices } = useSWR(
+    boardSymbols.length > 0 ? ['board-live-prices', boardSymbols.join(',')] : null,
+    () => api.latestPricesFor(boardSymbols),
+    { refreshInterval: 60_000, revalidateOnFocus: false },
+  );
+  const livePriceMap = useMemo(() => {
+    const m: Record<string, { price: number; change_pct: number | null }> = {};
+    for (const lp of livePrices ?? []) m[lp.symbol] = { price: lp.price, change_pct: lp.change_pct };
+    return m;
+  }, [livePrices]);
+
   function handleAlertsChange() { mutateAlerts(); mutateSignalAlerts(); }
 
   const filtered = useMemo(() =>
@@ -571,6 +635,7 @@ export default function BoardPage() {
                       plan={plan}
                       priceAlerts={(priceAlerts ?? []).filter(a => a.symbol === plan.symbol)}
                       signalAlert={(signalAlerts ?? []).find(a => a.symbol === plan.symbol) ?? null}
+                      livePrice={livePriceMap[plan.symbol] ?? null}
                       onStageChange={handleStageChange}
                       onDelete={handleDelete}
                       onAlertsChange={handleAlertsChange}
