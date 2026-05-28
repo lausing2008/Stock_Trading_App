@@ -152,9 +152,13 @@ Each retrain reports:
 - 5-fold TimeSeriesSplit CV mean AUC and std (no data leakage)
 - Top-5 most important features for that symbol (logged on each train)
 
-#### Hyperparameter tuning (weekend job)
+#### Hyperparameter tuning — automatic every Sunday 14:00 PST
 
-Run `POST /ml/tune_all` to kick off an **Optuna search** for every active symbol. Each symbol runs 60 Optuna trials, each scored by 5-fold TimeSeriesSplit AUC. Searches: `n_estimators`, `max_depth`, `learning_rate`, `subsample`, `colsample_bytree`, `min_child_weight`, `gamma`, `reg_alpha`, `reg_lambda`. Best params are saved per-symbol as JSON and automatically used on all future retrains. With ~60 symbols at 60 trials this takes 2–4 hours on EC2.
+Runs automatically as part of the **weekly full refresh** (Sunday 14:00 PST). After the force re-ingest and signals refresh complete (~10–15 min), the scheduler fires `POST /ml/tune_all`. The tune job runs entirely in the background inside the ml-prediction container and takes ~2–4 hours.
+
+Each symbol gets **60 Optuna trials**, each scored by 5-fold TimeSeriesSplit AUC. Parameters searched: `n_estimators`, `max_depth`, `learning_rate`, `subsample`, `colsample_bytree`, `min_child_weight`, `gamma`, `reg_alpha`, `reg_lambda`. Best params are saved as a per-symbol JSON file. All subsequent daily retrains (Mon–Fri post-close) automatically load those best params — one Sunday tuning run improves the whole week.
+
+To trigger manually: `POST /ml/tune_all` (or `POST /ml/tune {"symbol": "AAPL"}` for one symbol).
 
 ### Price alerts — every 1 minute
 
