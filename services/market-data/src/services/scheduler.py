@@ -22,6 +22,9 @@ Three phases per market day, plus a weekly deep-clean:
   Weekly full refresh (Sunday 16:00 PST) — force re-ingests 3 years of daily
                  bars for all active stocks before the HK Monday open.  Clears
                  any yfinance data drift that accumulates across the week.
+                 After ingestion + signals, triggers one Optuna tune_all run
+                 (60 trials per symbol, ~2–4 h) so Monday's signals use the
+                 best per-symbol hyperparams.
 
 Detailed times (all times local to the market timezone; DST handled automatically)
 ──────────────────────────────────────────────────────────────────────────────────
@@ -52,6 +55,7 @@ Detailed times (all times local to the market timezone; DST handled automaticall
 
   Weekly (America/Los_Angeles):
     Sunday 16:00                            full force re-ingest all stocks
+    Sunday ~16:10–16:20 (after ingest)      Optuna tune_all (~2–4 h, background)
 
 yfinance rate-limit notes
 ─────────────────────────
@@ -555,7 +559,9 @@ def _weekly_full_refresh() -> None:
 
     Runs Sunday 16:00 PST — roughly 17 hours before HK Monday open — so both
     markets start the week with clean, gap-free price history.  Triggers a
-    full rankings + signals refresh once ingestion completes.
+    full rankings + signals refresh once ingestion completes, then kicks off
+    the Optuna tune_all job so Monday's signals use freshly tuned hyperparams.
+    tune_all runs in the background inside the ml-prediction container (~2–4 h).
     """
     all_symbols = _symbols_for("US") + _symbols_for("HK")
     if not all_symbols:
@@ -569,6 +575,12 @@ def _weekly_full_refresh() -> None:
         log.info("scheduler.weekly_refresh_done", count=len(all_symbols))
     except Exception as exc:
         log.error("scheduler.weekly_refresh_failed", error=str(exc))
+
+    # Kick off Optuna hyperparameter tuning for all symbols.
+    # Runs as a background task in ml-prediction — returns immediately, tunes for ~2–4 h.
+    # Best params are saved per-symbol JSON and used by all subsequent daily retrains.
+    log.info("scheduler.tune_all_start")
+    _post(f"{_settings.ml_prediction_url}/ml/tune_all")
 
 
 def start_scheduler() -> None:
@@ -584,13 +596,16 @@ def start_scheduler() -> None:
       - Close burst (15:30–16:15): every 5 min  — prices + rankings + signals
       - Post-close  (16:30):       once         — above + ML retrain
       - Weekly full refresh (Sun 16:00 PST): force re-ingest 3 years
+        → then tune_all (Optuna, 60 trials/symbol, ~2–4 h, background)
 
     Signal and momentum are pure local math (TA + XGBoost), no external API
     cost, so refreshing every 10 min during regular hours is safe and free.
     ML retrain runs only post-close — retraining on intraday data has no value
     since the model learns from daily bar outcomes.
+    Hyperparameter tuning runs once on Sunday so each symbol's best params are
+    ready for the week ahead; subsequent daily retrains pick them up automatically.
 
-    Job count: 4 US + 4 HK + 1 weekly full refresh + 1 price alert checker = 10.
+    Job count: 4 US + 4 HK + 1 weekly full refresh + tune_all + 1 price alert checker = 10.
     """
     global _scheduler
     if _scheduler is not None:
