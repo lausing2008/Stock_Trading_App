@@ -330,19 +330,38 @@ def latest_prices(
     session: Session = Depends(get_session),
 ):
     """Live prices from yfinance fast_info, Redis-cached for 60 s; DB fallback.
-    Pass ?symbols=AAPL,TSM to get a subset (filtered from the cache)."""
+    Pass ?symbols=AAPL,TSM to get a small subset fetched directly (bypasses bulk cache)."""
     symbol_set = {s.strip().upper() for s in symbols.split(",")} if symbols else None
 
-    # 1. Try Redis cache
+    # Small filtered request — fetch only those symbols directly with per-symbol Redis keys
+    # so they never depend on the bulk cache that may be stale after a restart.
+    if symbol_set:
+        results: list[dict] = []
+        stocks_q = session.execute(
+            select(Stock.symbol, Stock.currency)
+            .where(Stock.active.is_(True), Stock.symbol.in_(symbol_set))
+        ).all()
+        with ThreadPoolExecutor(max_workers=min(len(stocks_q), 6)) as pool:
+            futures = {pool.submit(_fetch_live_one, s.symbol, s.currency): s.symbol for s in stocks_q}
+            for fut in as_completed(futures):
+                r = fut.result()
+                if r:
+                    results.append(r)
+        if results:
+            return results
+        # fallback to DB last-close prices
+        db_rows = _latest_prices_from_db(session)
+        return [r for r in db_rows if r.symbol in symbol_set]
+
+    # 1. Try bulk Redis cache (no filter — full list)
     try:
         cached = _get_redis().get(_LIVE_KEY)
         if cached:
-            rows = json.loads(cached)
-            return [r for r in rows if symbol_set is None or r["symbol"] in symbol_set]
+            return json.loads(cached)
     except Exception:
         pass
 
-    # 2. Get active symbols from DB
+    # 2. Get all active symbols from DB
     stocks = list(session.execute(
         select(Stock.symbol, Stock.currency).where(Stock.active.is_(True))
     ).all())
@@ -350,27 +369,26 @@ def latest_prices(
         return []
 
     # 3. Fetch live quotes in parallel (6 workers, I/O bound)
-    results: list[dict] = []
+    bulk_results: list[dict] = []
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(_fetch_live_one, s.symbol, s.currency): s.symbol for s in stocks}
         for fut in as_completed(futures):
             r = fut.result()
             if r:
-                results.append(r)
+                bulk_results.append(r)
 
-    if not results:
+    if not bulk_results:
         log.warning("live_prices.all_failed", count=len(stocks))
-        db_rows = _latest_prices_from_db(session)
-        return [r for r in db_rows if symbol_set is None or r.symbol in symbol_set]
+        return _latest_prices_from_db(session)
 
     # 4. Cache in Redis
     try:
-        _get_redis().setex(_LIVE_KEY, _LIVE_TTL, json.dumps(results))
+        _get_redis().setex(_LIVE_KEY, _LIVE_TTL, json.dumps(bulk_results))
     except Exception:
         pass
 
-    log.info("live_prices.ok", count=len(results), source="yfinance")
-    return [r for r in results if symbol_set is None or r["symbol"] in symbol_set]
+    log.info("live_prices.ok", count=len(bulk_results), source="yfinance")
+    return bulk_results
 
 
 class FundamentalsOut(BaseModel):
