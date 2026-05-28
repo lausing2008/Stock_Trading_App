@@ -296,7 +296,12 @@ Key Risk: {risk}
 """
 
     is_exit_alert = mood == "bearish"
-    subject_prefix = "⚠ SELL Alert" if is_exit_alert else "Signal Alert"
+    if new_signal == "SELL":
+        subject_prefix = "⚠ SELL Alert"
+    elif is_exit_alert:
+        subject_prefix = "⚠ Signal Weakening"
+    else:
+        subject_prefix = "Signal Alert"
     subject = f"{subject_prefix}: {symbol} {prev_signal} → {new_signal} (Analyst: {analyst.upper()})"
     cta = (
         "AI signal has reversed — consider reviewing your position.\n"
@@ -315,7 +320,12 @@ Key Risk: {risk}
         f"Not personalised financial advice. Always do your own research.\n"
     )
     header_icon = "&#128202;" if not is_exit_alert else "&#9888;"
-    header_label = "StockAI Signal Alert" if not is_exit_alert else "StockAI Exit Warning"
+    if new_signal == "SELL":
+        header_label = "StockAI SELL Alert"
+    elif is_exit_alert:
+        header_label = "StockAI Signal Weakening"
+    else:
+        header_label = "StockAI Signal Alert"
     cta_html = (
         f'<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:13px;color:#991b1b">'
         f'&#9888; {cta.strip()}</div>'
