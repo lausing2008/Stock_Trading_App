@@ -4,33 +4,23 @@
  * AI provider: whichever is configured in Settings → AI Assistant
  *              (Claude or DeepSeek). Uses temperature=0 for deterministic JSON.
  *
- * Two screening modes
- * ───────────────────
+ * Two screening modes × two markets
+ * ──────────────────────────────────
  * 1. My Stocks (my_stocks)
- *    Single AI call. Passes all tracked stocks that have a BUY/HOLD signal,
- *    along with their K-Score, RSI, MACD, SMA position, and latest price.
- *    AI returns the top 10 swing picks ranked by predicted gain.
+ *    Single AI call. Passes all tracked stocks in the selected market that have
+ *    a BUY/HOLD signal, along with their K-Score, RSI, MACD, SMA position, and
+ *    latest price. AI returns the top 10 swing picks ranked by predicted gain.
  *
  * 2. Broad Screen (broad_screen) — two-pass flow
  *    Pass 1 — SYSTEM_TICKERS prompt:
- *      Asks AI to suggest 65 small/mid-cap US tickers in a given price range.
- *      AI returns a raw JSON string[] array. temperature=0 so the universe is
- *      consistent across regenerations.
+ *      Asks AI to suggest 65 tickers (US) or 50 HKEX codes (HK) in a given
+ *      price range. AI returns a raw JSON string[] array.
  *    Pass 2 — api.quickScan():
  *      Fetches real OHLCV data for those tickers via yfinance
  *      (POST /stocks/quick_scan). Computes RSI-14, SMA20/50, vol_ratio, 5d
  *      change, and 20d range position server-side.
  *    Pass 3 — SYSTEM_PICKS prompt:
  *      Passes the real scan results back to AI to rank and generate game plans.
- *
- * Prompts
- * ───────
- * SYSTEM_PICKS   — instructs AI to act as a swing trader and output a strict
- *                  JSON array of ForecastPick objects with entry_low/high,
- *                  stop_loss, take_profit, horizon_days, setup, catalyst, risk.
- * SYSTEM_TICKERS — instructs AI to output ONLY a raw JSON string[] of tickers.
- * buildPicksPrompt(stocks) — formats the stock data rows for the picks call.
- * buildTickerPrompt(min,max) — asks AI for tickers within a price range.
  */
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
@@ -58,13 +48,22 @@ type ForecastPick = {
 };
 
 type Universe = 'my_stocks' | 'broad_screen';
+type Market   = 'US' | 'HK';
 
 type PriceRange = { label: string; min: number; max: number };
-const PRICE_RANGES: PriceRange[] = [
+
+const US_PRICE_RANGES: PriceRange[] = [
   { label: '$2 – $15',   min: 2,   max: 15  },
   { label: '$15 – $50',  min: 15,  max: 50  },
   { label: '$50 – $150', min: 50,  max: 150 },
   { label: 'Any price',  min: 0,   max: 9999 },
+];
+
+const HK_PRICE_RANGES: PriceRange[] = [
+  { label: 'HK$5 – $50',    min: 5,   max: 50   },
+  { label: 'HK$50 – $200',  min: 50,  max: 200  },
+  { label: 'HK$200 – $600', min: 200, max: 600  },
+  { label: 'Any price',     min: 0,   max: 9999 },
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -90,35 +89,41 @@ entry_low/high: tight buy zone around current price or nearest support
 stop_loss: 3-6% below entry
 take_profit: first major resistance or 8-15% above entry for small caps`;
 
-function buildPicksPrompt(stocks: QuickScanResult[] | ReturnType<typeof buildMyStocksData>): string {
+function buildPicksPrompt(
+  stocks: QuickScanResult[] | ReturnType<typeof buildMyStocksData>,
+  market: Market = 'US',
+): string {
+  const currency = market === 'HK' ? 'HKD' : 'USD';
   const isQuickScan = stocks.length > 0 && 'rsi' in stocks[0];
 
   if (isQuickScan) {
     const rows = (stocks as QuickScanResult[])
       .map(s => {
         const sma = s.above_sma20 == null ? '?' : s.above_sma20 ? 'YES' : 'NO';
-        return `${s.symbol} | $${s.price.toFixed(2)} ${s.change_pct != null ? `(${s.change_pct >= 0 ? '+' : ''}${s.change_pct.toFixed(1)}%)` : ''} | RSI:${s.rsi ?? '?'} | SMA20:${sma} | Vol:${s.vol_ratio != null ? s.vol_ratio.toFixed(1) + 'x' : '?'} | 5d:${s.change_5d != null ? (s.change_5d >= 0 ? '+' : '') + s.change_5d.toFixed(1) + '%' : '?'}`;
+        return `${s.symbol} | ${market === 'HK' ? 'HK$' : '$'}${s.price.toFixed(2)} ${s.change_pct != null ? `(${s.change_pct >= 0 ? '+' : ''}${s.change_pct.toFixed(1)}%)` : ''} | RSI:${s.rsi ?? '?'} | SMA20:${sma} | Vol:${s.vol_ratio != null ? s.vol_ratio.toFixed(1) + 'x' : '?'} | 5d:${s.change_5d != null ? (s.change_5d >= 0 ? '+' : '') + s.change_5d.toFixed(1) + '%' : '?'}`;
       })
       .join('\n');
-    return `Pick top 10 swing trades (10-day horizon) from these stocks. Prefer: RSI 42-65, above SMA20, vol_ratio >1.0, positive 5d momentum. SYMBOL | PRICE | RSI | ABOVE_SMA20 | VOL_RATIO | 5D_CHG\n${rows}\n\nReturn JSON array now.`;
+    return `Pick top 10 swing trades (10-day horizon) from these ${market} stocks. Prices are in ${currency}. Prefer: RSI 42-65, above SMA20, vol_ratio >1.0, positive 5d momentum. SYMBOL | PRICE | RSI | ABOVE_SMA20 | VOL_RATIO | 5D_CHG\n${rows}\n\nReturn JSON array now. Use ${currency} prices in entry_low, entry_high, stop_loss, take_profit fields.`;
   }
 
   const rows = (stocks as { symbol: string; price: string; signal: string; conf: string; bull: string; kscore: string; tech: string; mom: string; sector: string }[])
     .map(s => `${s.symbol} | ${s.price} | ${s.signal} | conf:${s.conf} | bull:${s.bull} | K:${s.kscore} | tech:${s.tech} | mom:${s.mom} | ${s.sector}`)
     .join('\n');
-  return `Pick top 10 swing trades from these tracked stocks (10-day horizon). SYMBOL | PRICE | SIGNAL | CONF | BULL_PROB | K-SCORE | TECH | MOM | SECTOR\n${rows}\n\nReturn JSON array now.`;
+  return `Pick top 10 swing trades from these tracked ${market} stocks (10-day horizon). Prices in ${currency}. SYMBOL | PRICE | SIGNAL | CONF | BULL_PROB | K-SCORE | TECH | MOM | SECTOR\n${rows}\n\nReturn JSON array now. Use ${currency} prices in entry_low, entry_high, stop_loss, take_profit fields.`;
 }
 
 function buildMyStocksData(
   rankings: RankingRow[],
   sigMap: Record<string, SignalSummary>,
   priceMap: Record<string, LatestPrice>,
+  market: Market,
 ) {
+  const currencyPrefix = market === 'HK' ? 'HK$' : '$';
   return rankings
-    .filter(r => r.market === 'US')
+    .filter(r => r.market === market)
     .map(r => ({
       symbol: r.symbol,
-      price: priceMap[r.symbol] ? `$${priceMap[r.symbol].price.toFixed(2)} (${(priceMap[r.symbol].change_pct ?? 0) >= 0 ? '+' : ''}${(priceMap[r.symbol].change_pct ?? 0).toFixed(1)}%)` : 'N/A',
+      price: priceMap[r.symbol] ? `${currencyPrefix}${priceMap[r.symbol].price.toFixed(2)} (${(priceMap[r.symbol].change_pct ?? 0) >= 0 ? '+' : ''}${(priceMap[r.symbol].change_pct ?? 0).toFixed(1)}%)` : 'N/A',
       signal: sigMap[r.symbol]?.signal ?? 'N/A',
       conf: sigMap[r.symbol]?.confidence != null ? `${sigMap[r.symbol].confidence.toFixed(0)}%` : '?',
       bull: sigMap[r.symbol]?.bullish_probability != null ? `${(sigMap[r.symbol].bullish_probability! * 100).toFixed(0)}%` : '?',
@@ -132,10 +137,25 @@ function buildMyStocksData(
     .slice(0, 35);
 }
 
-// Prompt Claude to suggest tickers for the broad screen
+// Prompt AI to suggest tickers for the broad screen
 const SYSTEM_TICKERS = `You output ONLY raw JSON arrays. No markdown, no explanation. Start with [ immediately.`;
 
-function buildTickerPrompt(priceMin: number, priceMax: number): string {
+function buildTickerPrompt(priceMin: number, priceMax: number, market: Market): string {
+  if (market === 'HK') {
+    const priceLabel = priceMax >= 9999 ? 'any price' : `HK$${priceMin}–$${priceMax}`;
+    return `List 50 Hong Kong (HKEX) stock ticker codes that are good swing trading candidates right now.
+
+Criteria:
+- Use exact HKEX format with .HK suffix: "0700.HK", "9988.HK", "3690.HK"
+- Share price roughly ${priceLabel} (in HKD)
+- Include sectors: Technology, Consumer, Finance, Healthcare, EV/Auto, Semiconductor, Property, Retail, AI/Cloud
+- Companies with recent catalysts: earnings, product launches, policy tailwinds, analyst upgrades
+- Liquid stocks with active trading — avoid thinly traded names
+- Mix of large-caps (Tencent, Alibaba, Meituan), mid-caps, and emerging leaders in their niche
+
+Return ONLY a JSON array of HKEX ticker strings: ["0700.HK","9988.HK","3690.HK","9999.HK","1810.HK","2318.HK"]`;
+  }
+
   return `List 65 US stock tickers that are good swing trading candidates right now.
 
 Criteria:
@@ -161,8 +181,9 @@ export default function ForecastPage() {
   const { data: rankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings(), { revalidateOnFocus: false });
   const { data: prices }   = useSWR<LatestPrice[]>('latest-prices',     () => api.latestPrices(), { revalidateOnFocus: false });
 
-  const [universe, setUniverse]   = useState<Universe>('broad_screen');
-  const [priceRange, setPriceRange] = useState<PriceRange>(PRICE_RANGES[0]);
+  const [universe, setUniverse]     = useState<Universe>('broad_screen');
+  const [market, setMarket]         = useState<Market>('US');
+  const [priceRange, setPriceRange] = useState<PriceRange>(US_PRICE_RANGES[0]);
 
   const [picks, setPicks]             = useState<ForecastPick[] | null>(null);
   const [loading, setLoading]         = useState(false);
@@ -174,6 +195,16 @@ export default function ForecastPage() {
   const [sortBy, setSortBy]           = useState<'rank' | 'gain' | 'confidence'>('rank');
   const [savedToBoard, setSavedToBoard] = useState<Set<string>>(new Set());
   const [savingToBoard, setSavingToBoard] = useState<string | null>(null);
+
+  const priceRanges = market === 'HK' ? HK_PRICE_RANGES : US_PRICE_RANGES;
+
+  function handleMarketChange(m: Market) {
+    setMarket(m);
+    setPriceRange(m === 'HK' ? HK_PRICE_RANGES[0] : US_PRICE_RANGES[0]);
+    setPicks(null);
+    setSteps([]);
+    setError('');
+  }
 
   async function savePickToBoard(pick: ForecastPick) {
     setSavingToBoard(pick.symbol);
@@ -227,10 +258,14 @@ export default function ForecastPage() {
   }
 
   async function runBroadScreen() {
-    // Step 1: ask Claude for tickers
-    addStep(`Asking ${getAiProviderLabel()} to suggest tickers in $${priceRange.min}–$${priceRange.max} range…`);
+    const rangeLabel = market === 'HK'
+      ? (priceRange.max >= 9999 ? 'any price' : `HK$${priceRange.min}–$${priceRange.max}`)
+      : `$${priceRange.min}–$${priceRange.max}`;
+
+    // Step 1: ask AI for tickers
+    addStep(`Asking ${getAiProviderLabel()} to suggest ${market} tickers in ${rangeLabel} range…`);
     const tickerRaw = await askAI(
-      [{ role: 'user', content: buildTickerPrompt(priceRange.min, priceRange.max) }],
+      [{ role: 'user', content: buildTickerPrompt(priceRange.min, priceRange.max, market) }],
       SYSTEM_TICKERS, 800, 0,
     );
     const tickerExtracted = extractJsonArray(tickerRaw);
@@ -246,10 +281,10 @@ export default function ForecastPage() {
     setScanCount(scanned.length);
     completeLastStep();
 
-    // Step 3: pass real data to Claude for picks
+    // Step 3: pass real data to AI for picks
     addStep(`Analysing ${scanned.length} stocks for top 10 swing setups…`);
     const picksRaw = await askAI(
-      [{ role: 'user', content: buildPicksPrompt(scanned) }],
+      [{ role: 'user', content: buildPicksPrompt(scanned, market) }],
       SYSTEM_PICKS, 4096, 0,
     );
     const result = await parseJsonArray(picksRaw);
@@ -258,14 +293,14 @@ export default function ForecastPage() {
   }
 
   async function runMyStocksScreen() {
-    addStep('Gathering BUY signals from your tracked stocks…');
-    const myData = buildMyStocksData(rankings?.rankings ?? [], sigMap, priceMap);
-    if (myData.length === 0) throw new Error('No BUY/HOLD signals found in your tracked stocks.');
+    addStep(`Gathering BUY signals from your tracked ${market} stocks…`);
+    const myData = buildMyStocksData(rankings?.rankings ?? [], sigMap, priceMap, market);
+    if (myData.length === 0) throw new Error(`No BUY/HOLD signals found in your tracked ${market} stocks.`);
     completeLastStep();
 
     addStep(`Sending ${myData.length} candidates to ${getAiProviderLabel()}…`);
     const picksRaw = await askAI(
-      [{ role: 'user', content: buildPicksPrompt(myData) }],
+      [{ role: 'user', content: buildPicksPrompt(myData, market) }],
       SYSTEM_PICKS, 4096, 0,
     );
     const result = await parseJsonArray(picksRaw);
@@ -302,6 +337,7 @@ export default function ForecastPage() {
   }, [picks, sortBy, filterConf]);
 
   const dataReady = !!(signals && rankings && prices);
+  const currencyPrefix = market === 'HK' ? 'HK$' : '$';
 
   return (
     <div className="space-y-4">
@@ -313,7 +349,7 @@ export default function ForecastPage() {
             AI Swing Forecast — 10 Days
           </h1>
           <div style={{ fontSize: '12px', color: '#475569', marginTop: '3px' }}>
-            Screen US stocks with real technical data · AI picks top swing setups with entry, stop and target
+            Screen US or HK stocks with real technical data · AI picks top swing setups with entry, stop and target
           </div>
         </div>
         {generatedAt && (
@@ -342,13 +378,38 @@ export default function ForecastPage() {
         <div style={{ borderRadius: '12px', padding: '20px', border: '1px solid rgba(99,102,241,0.25)', background: 'rgba(15,23,42,0.6)' }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', alignItems: 'flex-start' }}>
 
+            {/* Market picker */}
+            <div>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>Market</div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                {([
+                  { v: 'US' as Market, label: '🇺🇸 US',        desc: 'NYSE / NASDAQ' },
+                  { v: 'HK' as Market, label: '🇭🇰 Hong Kong', desc: 'HKEX · HKD' },
+                ]).map(({ v, label, desc }) => (
+                  <button
+                    key={v}
+                    onClick={() => handleMarketChange(v)}
+                    style={{
+                      padding: '8px 14px', borderRadius: '8px', cursor: 'pointer', textAlign: 'left',
+                      background: market === v ? 'rgba(99,102,241,0.2)' : 'rgba(15,23,42,0.6)',
+                      border: `1px solid ${market === v ? 'rgba(99,102,241,0.5)' : '#1e293b'}`,
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: market === v ? '#818cf8' : '#94a3b8' }}>{label}</div>
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '1px' }}>{desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Universe picker */}
             <div>
               <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>Screen Universe</div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 {([
-                  { v: 'broad_screen', label: '🌐 All US Stocks', desc: 'AI suggests tickers → real scan' },
-                  { v: 'my_stocks',    label: '📂 My Tracked Stocks', desc: 'From your BUY signals' },
+                  { v: 'broad_screen' as Universe, label: '🌐 Broad Screen', desc: 'AI suggests tickers → real scan' },
+                  { v: 'my_stocks'    as Universe, label: '📂 My Tracked Stocks', desc: 'From your BUY signals' },
                 ] as const).map(({ v, label, desc }) => (
                   <button
                     key={v}
@@ -372,7 +433,7 @@ export default function ForecastPage() {
               <div>
                 <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>Price Range</div>
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                  {PRICE_RANGES.map(r => (
+                  {priceRanges.map(r => (
                     <button
                       key={r.label}
                       onClick={() => setPriceRange(r)}
@@ -506,7 +567,7 @@ export default function ForecastPage() {
                           </div>
                         ) : (
                           <div style={{ fontSize: '12px', color: '#334155', marginTop: '2px' }}>
-                            ${pick.entry_low.toFixed(2)} – ${pick.entry_high.toFixed(2)} entry zone
+                            {currencyPrefix}{pick.entry_low.toFixed(2)} – {currencyPrefix}{pick.entry_high.toFixed(2)} entry zone
                           </div>
                         )}
                       </div>
@@ -529,9 +590,9 @@ export default function ForecastPage() {
                   {/* 3-column price levels */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '1px', margin: '0 16px 12px', borderRadius: '8px', overflow: 'hidden', border: '1px solid #1e293b' }}>
                     {[
-                      { label: 'Entry Zone', value: `${pick.entry_low.toFixed(2)}–${pick.entry_high.toFixed(2)}`, color: '#818cf8', bg: 'rgba(99,102,241,0.08)' },
-                      { label: 'Stop Loss',  value: pick.stop_loss.toFixed(2),   color: '#f87171', bg: 'rgba(239,68,68,0.07)'   },
-                      { label: 'Target',     value: pick.take_profit.toFixed(2), color: '#4ade80', bg: 'rgba(34,197,94,0.07)'   },
+                      { label: 'Entry Zone', value: `${currencyPrefix}${pick.entry_low.toFixed(2)}–${pick.entry_high.toFixed(2)}`, color: '#818cf8', bg: 'rgba(99,102,241,0.08)' },
+                      { label: 'Stop Loss',  value: `${currencyPrefix}${pick.stop_loss.toFixed(2)}`,   color: '#f87171', bg: 'rgba(239,68,68,0.07)'   },
+                      { label: 'Target',     value: `${currencyPrefix}${pick.take_profit.toFixed(2)}`, color: '#4ade80', bg: 'rgba(34,197,94,0.07)'   },
                     ].map(cell => (
                       <div key={cell.label} style={{ padding: '8px 10px', background: cell.bg, textAlign: 'center' }}>
                         <div style={{ fontSize: '10px', color: '#475569', textTransform: 'uppercase', marginBottom: '3px' }}>{cell.label}</div>
