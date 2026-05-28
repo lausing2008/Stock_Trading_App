@@ -130,6 +130,32 @@ Since signals and momentum are entirely local computation (no Claude API, no rat
 
 Runs **once per day**, at post-close (16:30) for both US and HK markets. Trains on the latest available price history. More frequent retraining has no benefit — the XGBoost model learns from daily bar outcomes, and intraday data doesn't change the training labels.
 
+#### Model & features
+
+The default model is **XGBoost** (gradient-boosted trees). Each symbol gets its own trained artifact saved to disk. The feature matrix has **22 inputs**:
+
+| Group | Features |
+|---|---|
+| Momentum | `ret_1`, `ret_5`, `ret_10`, `ret_20`, `ret_60` |
+| Volatility | `vol_20`, `vol_60`, `atr_14_pct` (ATR as % of price), `atr_ratio` (vol regime) |
+| Trend | `sma_20_gap`, `sma_50_gap`, `sma_100_gap` |
+| Oscillators | `rsi_14`, `macd`, `macd_signal`, `macd_hist`, `bb_pct`, `stoch_k` |
+| Volume / flow | `volume_z`, `obv_z`, `cmf_20` (Chaikin Money Flow) |
+| Range | `high_20_pct` (position in 20-day H-L channel) |
+
+Target: binary direction of the **5-day forward return** (up / down). Trained on 5 years of daily bars. Scaler + feature list are saved alongside each model so inference is always consistent with training.
+
+#### Evaluation metrics
+
+Each retrain reports:
+- Holdout accuracy, AUC, precision, recall, F1 (last 20% of data as test set)
+- 5-fold TimeSeriesSplit CV mean AUC and std (no data leakage)
+- Top-5 most important features for that symbol (logged on each train)
+
+#### Hyperparameter tuning (weekend job)
+
+Run `POST /ml/tune_all` to kick off an **Optuna search** for every active symbol. Each symbol runs 60 Optuna trials, each scored by 5-fold TimeSeriesSplit AUC. Searches: `n_estimators`, `max_depth`, `learning_rate`, `subsample`, `colsample_bytree`, `min_child_weight`, `gamma`, `reg_alpha`, `reg_lambda`. Best params are saved per-symbol as JSON and automatically used on all future retrains. With ~60 symbols at 60 trials this takes 2–4 hours on EC2.
+
 ### Price alerts — every 1 minute
 
 A separate job (`check_price_alerts`) runs independently every 60 seconds, 24/7. It fetches live prices via yfinance `fast_info` and fires an email the moment a price threshold (`above` / `below`) is crossed. Unlike signal alerts, price alerts are not tied to the market refresh cycle.
@@ -1076,10 +1102,12 @@ GET  /signals                        # latest persisted signal for all active st
 
 ### ML
 ```
-POST /ml/train      {symbol, model}  # train a single model (~30 s)
-POST /ml/predict    {symbol, model}  # get a prediction
-POST /ml/train_all                   # schedule training for all active stocks
-GET  /ml/models                      # list available models
+POST /ml/train      {symbol, model}        # train a single model (~30 s per symbol)
+POST /ml/train_all                         # retrain all active stocks (uses tuned params if available)
+POST /ml/tune       {symbol, n_trials=60}  # Optuna search for one symbol, then retrain (~5 min)
+POST /ml/tune_all   ?n_trials=60           # weekend batch: tune every active symbol (~2-4 h)
+POST /ml/predict    {symbol, model}        # get a prediction
+GET  /ml/models                            # list available model types
 ```
 
 ### Rankings
