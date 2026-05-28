@@ -19,6 +19,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   listStocks: (market?: string) => request<Stock[]>(`/stocks${market ? `?market=${market}` : ''}`),
   latestPrices: () => request<LatestPrice[]>(`/stocks/latest_prices`),
+  latestPricesFor: (symbols: string[]) => request<LatestPrice[]>(`/stocks/latest_prices?symbols=${symbols.join(',')}`),
   getStock: (symbol: string) => request<Stock>(`/stocks/${symbol}`),
   getPrices: (symbol: string, tf = '1d', limit = 400) =>
     request<Price[]>(`/stocks/${symbol}/prices?timeframe=${tf}&limit=${limit}`),

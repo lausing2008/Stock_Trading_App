@@ -93,7 +93,7 @@ class LatestPriceOut(BaseModel):
 
 
 def _fetch_live_one(symbol: str, currency: str) -> dict | None:
-    """Fetch live quote for one symbol via yfinance fast_info with fallback."""
+    """Fetch live quote for one symbol via yfinance fast_info (real-time, for small sets)."""
     try:
         ticker = yf.Ticker(symbol)
         price = None
@@ -125,6 +125,80 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
     except Exception as exc:
         log.warning("live_price.failed", symbol=symbol, error=str(exc))
         return None
+
+
+def _fetch_live_bulk(stocks: list) -> list[dict]:
+    """Fetch prices for all symbols in one yf.download() call — avoids per-symbol rate limits.
+
+    yf.download() uses Yahoo's batch chart endpoint which is far more lenient than
+    calling fast_info/Ticker 68 times in parallel. Falls back to _fetch_live_one
+    for any symbols missing from the download result.
+    """
+    if not stocks:
+        return []
+
+    currency_map = {s.symbol: s.currency for s in stocks}
+    symbols = [s.symbol for s in stocks]
+
+    try:
+        raw = yf.download(
+            symbols,
+            period="2d",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            group_by="ticker",
+        )
+    except Exception as exc:
+        log.warning("live_prices.bulk_download_failed", error=str(exc))
+        return []
+
+    if raw is None or raw.empty:
+        return []
+
+    results: list[dict] = []
+    fetched: set[str] = set()
+
+    for symbol in symbols:
+        try:
+            # Multi-ticker: columns are (symbol, price_type)
+            if len(symbols) > 1:
+                if symbol not in raw.columns.get_level_values(0):
+                    continue
+                closes = raw[symbol]["Close"].dropna()
+            else:
+                # Single ticker: flat columns
+                closes = raw["Close"].dropna()
+
+            if closes.empty:
+                continue
+
+            price = float(closes.iloc[-1])
+            prev_close = float(closes.iloc[-2]) if len(closes) > 1 else None
+            change_pct = ((price - prev_close) / prev_close * 100) if prev_close else None
+            results.append({
+                "symbol": symbol,
+                "price": round(price, 4),
+                "prev_close": round(prev_close, 4) if prev_close else None,
+                "change_pct": round(change_pct, 2) if change_pct is not None else None,
+                "currency": currency_map.get(symbol, "USD"),
+            })
+            fetched.add(symbol)
+        except Exception:
+            pass
+
+    # Fill in any symbols the bulk download missed using individual fetches
+    missed = [s for s in stocks if s.symbol not in fetched]
+    if missed:
+        log.info("live_prices.bulk_fallback", count=len(missed))
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futs = {pool.submit(_fetch_live_one, s.symbol, s.currency): s.symbol for s in missed}
+            for fut in as_completed(futs):
+                r = fut.result()
+                if r:
+                    results.append(r)
+
+    return results
 
 
 def _latest_prices_from_db(session: Session) -> list[LatestPriceOut]:
@@ -325,9 +399,35 @@ def fear_greed():
 
 
 @router.get("/latest_prices", response_model=list[LatestPriceOut])
-def latest_prices(session: Session = Depends(get_session)):
-    """Live prices from yfinance fast_info, Redis-cached for 60 s; DB fallback."""
-    # 1. Try Redis cache
+def latest_prices(
+    symbols: str | None = Query(None, description="Comma-separated symbols to filter"),
+    session: Session = Depends(get_session),
+):
+    """Live prices from yfinance fast_info, Redis-cached for 60 s; DB fallback.
+    Pass ?symbols=AAPL,TSM to get a small subset fetched directly (bypasses bulk cache)."""
+    symbol_set = {s.strip().upper() for s in symbols.split(",")} if symbols else None
+
+    # Small filtered request — fetch only those symbols directly with per-symbol Redis keys
+    # so they never depend on the bulk cache that may be stale after a restart.
+    if symbol_set:
+        results: list[dict] = []
+        stocks_q = session.execute(
+            select(Stock.symbol, Stock.currency)
+            .where(Stock.active.is_(True), Stock.symbol.in_(symbol_set))
+        ).all()
+        with ThreadPoolExecutor(max_workers=min(len(stocks_q), 6)) as pool:
+            futures = {pool.submit(_fetch_live_one, s.symbol, s.currency): s.symbol for s in stocks_q}
+            for fut in as_completed(futures):
+                r = fut.result()
+                if r:
+                    results.append(r)
+        if results:
+            return results
+        # fallback to DB last-close prices
+        db_rows = _latest_prices_from_db(session)
+        return [r for r in db_rows if r.symbol in symbol_set]
+
+    # 1. Try bulk Redis cache (no filter — full list)
     try:
         cached = _get_redis().get(_LIVE_KEY)
         if cached:
@@ -335,34 +435,28 @@ def latest_prices(session: Session = Depends(get_session)):
     except Exception:
         pass
 
-    # 2. Get active symbols from DB
+    # 2. Get all active symbols from DB
     stocks = list(session.execute(
         select(Stock.symbol, Stock.currency).where(Stock.active.is_(True))
     ).all())
     if not stocks:
         return []
 
-    # 3. Fetch live quotes in parallel (6 workers, I/O bound)
-    results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(_fetch_live_one, s.symbol, s.currency): s.symbol for s in stocks}
-        for fut in as_completed(futures):
-            r = fut.result()
-            if r:
-                results.append(r)
+    # 3. Single bulk download — one HTTP call instead of 68 parallel fast_info requests
+    bulk_results = _fetch_live_bulk(stocks)
 
-    if not results:
+    if not bulk_results:
         log.warning("live_prices.all_failed", count=len(stocks))
         return _latest_prices_from_db(session)
 
     # 4. Cache in Redis
     try:
-        _get_redis().setex(_LIVE_KEY, _LIVE_TTL, json.dumps(results))
+        _get_redis().setex(_LIVE_KEY, _LIVE_TTL, json.dumps(bulk_results))
     except Exception:
         pass
 
-    log.info("live_prices.ok", count=len(results), source="yfinance")
-    return results
+    log.info("live_prices.ok", count=len(bulk_results), source="yfinance_bulk")
+    return bulk_results
 
 
 class FundamentalsOut(BaseModel):

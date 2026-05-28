@@ -21,6 +21,7 @@ out/
 dist/
 build/
 *.log
+tsconfig.tsbuildinfo
 
 # Data
 data/
