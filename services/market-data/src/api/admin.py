@@ -127,7 +127,7 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks):
     with SessionLocal() as session:
         existing = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
         if existing:
-            tasks.add_task(ingest_symbol, symbol)
+            tasks.add_task(ingest_symbol, symbol, existing.market.value)
             return {"status": "exists", "symbol": symbol, "name": existing.name}
 
     # Fetch metadata from yfinance
@@ -158,5 +158,6 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks):
         session.commit()
 
     log.info("add_stock.done", symbol=symbol, name=name)
-    tasks.add_task(ingest_symbol, symbol)
+    market_val = "HK" if symbol.endswith(".HK") else "US"
+    tasks.add_task(ingest_symbol, symbol, market_val)
     return {"status": "added", "symbol": symbol, "name": name, "sector": sector}
