@@ -19,7 +19,7 @@ Three phases per market day, plus a weekly deep-clean:
   Post-close   — one shot after the final bar is confirmed; also triggers the
                  nightly ML retrain so tomorrow's signals use fresh weights.
 
-  Weekly full refresh (Sunday 16:00 PST) — force re-ingests 3 years of daily
+  Weekly full refresh (Sunday 14:00 PST) — force re-ingests 3 years of daily
                  bars for all active stocks before the HK Monday open.  Clears
                  any yfinance data drift that accumulates across the week.
                  After ingestion + signals, triggers one Optuna tune_all run
@@ -54,8 +54,8 @@ Detailed times (all times local to the market timezone; DST handled automaticall
     16:30                                   post-close   (+ ML retrain)
 
   Weekly (America/Los_Angeles):
-    Sunday 16:00                            full force re-ingest all stocks
-    Sunday ~16:10–16:20 (after ingest)      Optuna tune_all (~2–4 h, background)
+    Sunday 14:00                            full force re-ingest all stocks
+    Sunday ~14:10–14:20 (after ingest)      Optuna tune_all (~2–4 h, background)
 
 yfinance rate-limit notes
 ─────────────────────────
@@ -557,7 +557,7 @@ def check_technical_alerts() -> None:
 def _weekly_full_refresh() -> None:
     """Force re-ingest 3 years of daily bars for every active stock.
 
-    Runs Sunday 16:00 PST — roughly 17 hours before HK Monday open — so both
+    Runs Sunday 14:00 PST — roughly 19 hours before HK Monday open — so both
     markets start the week with clean, gap-free price history.  Triggers a
     full rankings + signals refresh once ingestion completes, then kicks off
     the Optuna tune_all job so Monday's signals use freshly tuned hyperparams.
@@ -681,7 +681,7 @@ def start_scheduler() -> None:
     # ── Weekly full refresh — Sunday 16:00 PST, before HK Monday open ───────
     _scheduler.add_job(
         _weekly_full_refresh,
-        CronTrigger(day_of_week="sun", hour=16, minute=0, timezone="America/Los_Angeles"),
+        CronTrigger(day_of_week="sun", hour=14, minute=0, timezone="America/Los_Angeles"),
         id="weekly_full_refresh", replace_existing=True,
     )
 
