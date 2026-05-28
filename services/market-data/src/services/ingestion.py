@@ -87,18 +87,21 @@ def ingest_symbol(
             return {"symbol": symbol, "inserted": 0, "skipped": "up_to_date"}
 
         last_err: Exception | None = None
-        ohlcv = None
+        df: pd.DataFrame | None = None
         for adapter in adapters:
             try:
                 ohlcv = adapter.fetch_ohlcv(symbol, start, end, timeframe)
-                break
+                candidate = validate_ohlcv(ohlcv.df, symbol)
+                if not candidate.empty:
+                    df = candidate
+                    break
+                log.warning("ingest.adapter_empty", adapter=adapter.name, symbol=symbol)
             except Exception as exc:
                 log.warning("ingest.adapter_failed", adapter=adapter.name, symbol=symbol, error=str(exc))
                 last_err = exc
-        if ohlcv is None:
-            raise IngestionError(f"All adapters failed for {symbol}: {last_err}")
-        df = validate_ohlcv(ohlcv.df, symbol)
-        if df.empty:
+        if df is None:
+            if last_err:
+                raise IngestionError(f"All adapters failed for {symbol}: {last_err}")
             return {"symbol": symbol, "inserted": 0, "skipped": "no_bars"}
 
         # Parquet write (partitioned by symbol)
