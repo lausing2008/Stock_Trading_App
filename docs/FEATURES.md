@@ -453,8 +453,8 @@ Fires whenever the signal weakens from BUY — **regardless of analyst consensus
 
 | Previous signal | New signal | Email subject prefix | Urgency |
 |-----------------|-----------|----------------------|---------|
-| BUY | HOLD | Signal Alert | Low — momentum fading, monitor the position |
-| BUY | WAIT | Signal Alert | Medium — signal deteriorating, consider reducing |
+| BUY | HOLD | ⚠ Signal Weakening | Low — momentum fading, monitor the position |
+| BUY | WAIT | ⚠ Signal Weakening | Medium — signal deteriorating, consider reducing |
 | BUY | SELL | ⚠ SELL Alert | High — full exit signal, review immediately |
 
 No analyst filter is applied. The email fires as soon as the transition is detected at any of the 5 daily check times.
@@ -476,16 +476,14 @@ The 16:30 post-close check is the most complete — it runs after the final pric
 
 ### What the email contains
 
-Both entry and exit emails share the same structure. Exit warnings (BUY → SELL) are visually differentiated:
+Both entry and exit emails share the same structure. Exit warnings are visually differentiated by the severity of the transition:
 
-| Element | Entry signal email | Exit warning email |
-|---------|-------------------|--------------------|
-| Subject prefix | `Signal Alert:` | `⚠ SELL Alert:` |
-| Header colour | Purple | Red |
-| Header icon | 📊 | ⚠ |
-| "From" signal badge | Red (previous signal) | Green (was BUY) |
-| "To" signal badge | Green (BUY) | Red (SELL/WAIT/HOLD) |
-| Call-to-action banner | "Both indicators are aligned — review before acting" | Red banner: "AI signal has reversed — consider reviewing your position" |
+| Element | Entry signal email | ⚠ Signal Weakening (BUY→HOLD/WAIT) | ⚠ SELL Alert (BUY→SELL) |
+|---------|-------------------|-------------------------------------|--------------------------|
+| Subject prefix | `Signal Alert:` | `⚠ Signal Weakening:` | `⚠ SELL Alert:` |
+| Header colour | Purple | Red | Red |
+| Header icon | 📊 | ⚠ | ⚠ |
+| Call-to-action banner | "Both indicators are aligned — review before acting" | Red banner: "AI signal has reversed — consider reviewing your position" | Red banner: "AI signal has reversed — consider reviewing your position" |
 
 All emails include:
 - **Signal transition** — the previous and new signal values in a styled badge (e.g. BUY → SELL)
