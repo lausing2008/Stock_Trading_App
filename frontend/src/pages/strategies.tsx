@@ -103,6 +103,19 @@ const PRESETS: Preset[] = [
   },
 ];
 
+function fromNode(node: any): Cond[] {
+  if (!node) return [];
+  if (node.op === 'and' && Array.isArray(node.nodes)) {
+    return node.nodes
+      .filter((n: any) => n.left && n.op)
+      .map((n: any) => ({ feature: String(n.left), op: n.op, right: String(n.right) }));
+  }
+  if (node.left && node.op) {
+    return [{ feature: String(node.left), op: node.op, right: String(node.right) }];
+  }
+  return [];
+}
+
 function toNode(conds: Cond[]): object {
   const nodes = conds.map((c) => ({
     op: c.op,
@@ -195,6 +208,7 @@ export default function StrategiesPage() {
   const [error, setError]       = useState('');
   const [showAll, setShowAll]   = useState(false);
   const [deleting, setDeleting] = useState<number | null>(null);
+  const [loading,  setLoading]  = useState<number | null>(null);
 
   // Load the current Opportunities strategy as default on mount
   useEffect(() => {
@@ -258,6 +272,23 @@ export default function StrategiesPage() {
     } finally {
       setRunning(false);
     }
+  }
+
+  async function handleLoad(id: number) {
+    setLoading(id);
+    try {
+      const s = await api.getStrategy(id);
+      const dsl = s.rule_dsl as { entry: any; exit?: any };
+      setEntry(fromNode(dsl.entry));
+      setExit(fromNode(dsl.exit ?? null));
+      setName(s.name.replace(/ — .+$/, ''));
+      setSelectedPreset('');
+      setResult(null);
+      setError('');
+      setTrades([]);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {}
+    finally { setLoading(null); }
   }
 
   async function handleDelete(id: number) {
@@ -553,6 +584,12 @@ export default function StrategiesPage() {
               <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 14px', borderRadius: '8px', border: '1px solid #1e293b', background: 'rgba(15,23,42,0.6)' }}>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: '#94a3b8', flex: 1 }}>{s.name}</span>
                 <span style={{ fontSize: '10px', color: '#1e293b', fontFamily: 'monospace' }}>#{s.id}</span>
+                <button
+                  onClick={() => handleLoad(s.id)}
+                  disabled={loading === s.id}
+                  style={{ background: 'none', border: '1px solid rgba(99,102,241,0.35)', color: '#818cf8', cursor: 'pointer', fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '5px', opacity: loading === s.id ? 0.4 : 1 }}
+                  title="Load into backtester"
+                >{loading === s.id ? '…' : 'Load'}</button>
                 <button
                   onClick={() => handleDelete(s.id)}
                   disabled={deleting === s.id}
