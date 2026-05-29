@@ -175,9 +175,11 @@ def build_features(
     ema26 = c.ewm(span=26, adjust=False).mean()
     macd_line = ema12 - ema26
     sig = macd_line.ewm(span=9, adjust=False).mean()
-    out["macd"] = macd_line
-    out["macd_signal"] = sig
-    out["macd_hist"] = macd_line - sig
+    # Normalise by price so MACD is comparable across different price levels and over time
+    price_norm = c.replace(0, np.nan)
+    out["macd"] = macd_line / price_norm
+    out["macd_signal"] = sig / price_norm
+    out["macd_hist"] = (macd_line - sig) / price_norm
 
     bb_mid = c.rolling(20).mean()
     bb_std = c.rolling(20).std()
@@ -191,8 +193,11 @@ def build_features(
     out["volume_z"] = (vol - vol.rolling(20).mean()) / vol.rolling(20).std().replace(0, np.nan)
 
     obv = (np.sign(c.diff()) * vol).fillna(0).cumsum()
-    obv_std = obv.rolling(20).std().replace(0, np.nan)
-    out["obv_z"] = (obv - obv.rolling(20).mean()) / obv_std
+    # Use 20-day OBV change (recent flow) rather than cumulative level z-score,
+    # which is dominated by the long-term trend and not sensitive to recent momentum shifts.
+    obv_change = obv.diff(20)
+    obv_change_std = obv_change.rolling(60).std().replace(0, np.nan)
+    out["obv_z"] = obv_change / obv_change_std
 
     mf_mult = ((c - lo) - (h - c)) / (h - lo).replace(0, np.nan)
     mf_vol = mf_mult * vol
@@ -227,7 +232,9 @@ def build_features(
 
     # --- Target ---
     fwd_ret = c.shift(-horizon) / c - 1
-    y_dir = (fwd_ret > label_threshold).astype(int)  # 1 = strong up, 0 = strong down
+    # After dead-zone filtering (below), only |fwd_ret| >= threshold rows remain,
+    # so using > 0 cleanly separates up from down moves for all surviving rows.
+    y_dir = (fwd_ret > 0).astype(int)  # 1 = up, 0 = down (dead-zone rows excluded by mask)
 
     X = out[FEATURE_COLUMNS].replace([np.inf, -np.inf], np.nan)
 

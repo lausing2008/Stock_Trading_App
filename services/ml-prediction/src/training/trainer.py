@@ -163,43 +163,49 @@ def train_model(
             cv_aucs.append(roc_auc_score(y_cv_val, preds))
         cv_accs.append(accuracy_score(y_cv_val, (preds > 0.5).astype(int)))
 
-    # --- Final holdout split (last 20%) ---
-    split = int(len(X) * 0.8)
-    X_train, X_test = X.iloc[:split], X.iloc[split:]
-    y_train, y_test = y_dir.iloc[:split], y_dir.iloc[split:]
+    # --- Three-way split: train / calibration / threshold evaluation ---
+    # Separating calibration and threshold sets prevents double-dipping:
+    # the calibrator is fit on X_cal (unseen by threshold search), and the
+    # buy_threshold is optimised on X_test (unseen by calibrator).
+    split_train = int(len(X) * 0.70)
+    split_cal   = int(len(X) * 0.85)
+    X_train = X.iloc[:split_train]
+    X_cal   = X.iloc[split_train:split_cal]
+    X_test  = X.iloc[split_cal:]
+    y_train = y_dir.iloc[:split_train]
+    y_cal   = y_dir.iloc[split_train:split_cal]
+    y_test  = y_dir.iloc[split_cal:]
 
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train.values)
-    X_test_s = scaler.transform(X_test.values)
+    X_cal_s   = scaler.transform(X_cal.values)
+    X_test_s  = scaler.transform(X_test.values)
 
     # Recency weights for final training
     train_weights = _recency_weights(len(X_train))
 
-    # XGBoost early stopping on holdout eval set
+    # XGBoost early stopping on calibration set (separate from threshold eval set)
     model = get_model(model_name, early_stopping_rounds=50, **(hyperparams or {}))
     if model_name == "xgboost":
         model.fit(
             X_train_s, y_train.values,
             sample_weight=train_weights,
-            eval_set=[(X_test_s, y_test.values)],
+            eval_set=[(X_cal_s, y_cal.values)],
             verbose=False,
         )
     else:
         model.fit(X_train_s, y_train.values, sample_weight=train_weights)
 
-    # --- Probability calibration (isotonic regression on holdout) ---
-    # XGBoost probabilities are often over-confident; calibration makes the
-    # 60/40 ML/TA fusion more meaningful and thresholds more accurate.
-    raw_probs = model.predict_proba(X_test_s)
+    # --- Probability calibration (isotonic regression on calibration set) ---
+    raw_cal_probs = model.predict_proba(X_cal_s)
     calibrator: IsotonicRegression | None = None
-    if len(np.unique(y_test)) > 1 and len(y_test) >= 30:
+    if len(np.unique(y_cal)) > 1 and len(y_cal) >= 20:
         calibrator = IsotonicRegression(out_of_bounds="clip")
-        calibrator.fit(raw_probs, y_test.values)
-        preds = calibrator.predict(raw_probs)
-    else:
-        preds = raw_probs
+        calibrator.fit(raw_cal_probs, y_cal.values)
 
-    # --- Precision-optimised BUY threshold ---
+    # --- Precision-optimised BUY threshold (on held-out test set) ---
+    raw_test_probs = model.predict_proba(X_test_s)
+    preds = calibrator.predict(raw_test_probs) if calibrator is not None else raw_test_probs
     buy_threshold = _precision_threshold(y_test.values, preds)
 
     y_pred = (preds > buy_threshold).astype(int)
@@ -226,6 +232,7 @@ def train_model(
         "cv_auc_std": float(np.std(cv_aucs)) if cv_aucs else None,
         "cv_acc_mean": float(np.mean(cv_accs)) if cv_accs else None,
         "n_train": int(len(X_train)),
+        "n_cal": int(len(X_cal)),
         "n_test": int(len(X_test)),
         "n_features": len(FEATURE_COLUMNS),
         "label_threshold": label_threshold,
@@ -330,7 +337,11 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
     w_xgb, w_rf = xgb_auc / total, rf_auc / total
 
     prob = float(w_xgb * xgb["bullish_probability"] + w_rf * rf["bullish_probability"])
-    buy_threshold = float((xgb.get("metrics") or {}).get("buy_threshold") or 0.5)
+    # Weight-average each model's precision-optimised threshold by the same AUC weights
+    # so the ensemble threshold reflects both models, not just XGBoost's.
+    xgb_thr = float((xgb.get("metrics") or {}).get("buy_threshold") or 0.5)
+    rf_thr  = float((rf.get("metrics") or {}).get("buy_threshold") or 0.5)
+    buy_threshold = float(w_xgb * xgb_thr + w_rf * rf_thr)
 
     return {
         "symbol": symbol,

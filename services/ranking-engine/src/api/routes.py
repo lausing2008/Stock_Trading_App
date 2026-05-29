@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -63,6 +63,62 @@ def leaderboard(
     limit: int = Query(500, le=500),
     session: Session = Depends(get_session),
 ):
+    """Return the pre-computed leaderboard from the Ranking table.
+
+    Rankings are refreshed by the scheduler (5×/day on market days). Reading
+    from the persisted table avoids recomputing scores for all stocks on every
+    page load, which would otherwise be O(N_stocks × price_history) per request.
+    Falls back to live computation only when no cached data exists (first run).
+    """
+    # Latest ranking date per stock
+    latest_subq = (
+        select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .group_by(Ranking.stock_id)
+        .subquery()
+    )
+    stmt = (
+        select(Stock, Ranking)
+        .join(Ranking, Stock.id == Ranking.stock_id)
+        .join(
+            latest_subq,
+            (Ranking.stock_id == latest_subq.c.stock_id)
+            & (Ranking.as_of == latest_subq.c.max_as_of),
+        )
+        .where(Stock.active.is_(True))
+    )
+    if market:
+        stmt = stmt.where(Stock.market == market.upper())
+
+    rows = list(session.execute(stmt).all())
+
+    if not rows:
+        # No persisted rankings yet — compute live on first run
+        return _leaderboard_live(market, limit, session)
+
+    results = [
+        {
+            "symbol":    stock.symbol,
+            "name":      stock.name,
+            "name_zh":   stock.name_zh,
+            "market":    stock.market.value,
+            "sector":    stock.sector,
+            "score":     _clean(ranking.score),
+            "technical": _clean(ranking.technical),
+            "momentum":  _clean(ranking.momentum),
+            "value":     _clean(ranking.value),
+            "growth":    _clean(ranking.growth),
+            "volatility":_clean(ranking.volatility),
+            "fair_price":_clean(ranking.fair_price),
+        }
+        for stock, ranking in rows
+    ]
+    results.sort(key=lambda r: r["score"] or 0, reverse=True)
+    as_of = str(max((row[1].as_of for row in rows), default=date.today()))
+    return {"as_of": as_of, "rankings": results[:limit]}
+
+
+def _leaderboard_live(market: str | None, limit: int, session: Session) -> dict:
+    """Fallback: compute rankings live when no persisted data exists."""
     stmt = select(Stock).where(Stock.active.is_(True))
     if market:
         stmt = stmt.where(Stock.market == market.upper())
@@ -76,18 +132,18 @@ def leaderboard(
         comp = compute_kscore(df)
         results.append(
             {
-                "symbol": s.symbol,
-                "name": s.name,
-                "name_zh": s.name_zh,
-                "market": s.market.value,
-                "sector": s.sector,
-                "score": _clean(comp.score),
+                "symbol":    s.symbol,
+                "name":      s.name,
+                "name_zh":   s.name_zh,
+                "market":    s.market.value,
+                "sector":    s.sector,
+                "score":     _clean(comp.score),
                 "technical": _clean(comp.technical),
-                "momentum": _clean(comp.momentum),
-                "value": _clean(comp.value),
-                "growth": _clean(comp.growth),
-                "volatility": _clean(comp.volatility),
-                "fair_price": _clean(comp.fair_price),
+                "momentum":  _clean(comp.momentum),
+                "value":     _clean(comp.value),
+                "growth":    _clean(comp.growth),
+                "volatility":_clean(comp.volatility),
+                "fair_price":_clean(comp.fair_price),
             }
         )
     results.sort(key=lambda r: r["score"] or 0, reverse=True)

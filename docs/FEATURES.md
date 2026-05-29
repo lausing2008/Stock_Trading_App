@@ -38,7 +38,7 @@ The top nav uses **grouped dropdown menus** — four groups that open on hover:
 | Markets | Dashboard, Heatmap, Rankings, Forecast |
 | Research | Screener, Opportunities, Earnings, Analyst, Short Squeeze |
 | Portfolio | Watchlist, Trade Board, Positions, Portfolio, Journal |
-| Tools | Strategies, Alerts, Signal Accuracy, Insider / Congress |
+| Tools | Strategies, Alerts, Signal Accuracy, Trade Performance, Insider / Congress |
 
 - Active group is underlined in indigo; active page shown with a purple dot in the dropdown
 - Each dropdown has a 120 ms close delay so moving the mouse to a child item doesn't flicker
@@ -146,28 +146,32 @@ The default model is **XGBoost** (gradient-boosted trees). Each symbol gets its 
 
 The macro features give the model **situational awareness** — a BUY setup during extreme market fear is very different from the same setup during a bull rally. SPY and VIX data is fetched from yfinance and joined by date before training and inference.
 
-**Label definition:** binary direction of the **5-day forward return**, but only on bars where the move is ≥ 1% (the dead zone). Rows where `|fwd_ret| < 1%` are excluded from training — these near-zero moves are essentially unclassifiable noise, and training on them degrades the model. This removes ~35–45% of rows but produces much cleaner labels.
+**Label definition:** binary direction of the **5-day forward return**, after excluding a **volatility-adjusted dead zone**. The threshold is `0.5 × median_daily_vol × √horizon`, clamped to [0.5%, 3%]. Rows where `|fwd_ret| < threshold` are excluded — these near-zero moves are unclassifiable noise. After filtering, `y=1` means the stock rose (fwd_ret > 0) and `y=0` means it fell. This removes ~35–45% of rows but produces much cleaner labels since each retained row represents a genuinely directional move.
 
 Scaler + feature list + calibrator + precision threshold are all saved alongside each model so inference is always consistent with training.
 
 #### Signal quality improvements
 
-Five techniques are applied on every retrain to improve prediction accuracy:
+Eight techniques are applied on every retrain to improve prediction accuracy:
 
 | Improvement | What it does |
 |---|---|
-| **1% dead-zone labels** | Drops bars where `|5-day return| < 1%` from training. Eliminates noise labels that are essentially coin flips. |
+| **Volatility-adjusted dead zone** | Per-symbol threshold (`0.5 × vol × √horizon`, clamped [0.5%, 3%]). High-vol stocks need larger moves to be classifiable; low-vol stocks use a narrower filter. Drops ~35–45% of rows but leaves only clean directional signals. |
 | **Macro features** | Adds SPY 1-day return, SPY 5-day return, VIX level, SPY 20-day vol to every bar. Model knows the market environment, not just stock-specific indicators. |
 | **Recency weighting** | Recent bars get 3× more weight than oldest bars via exponential decay. Keeps the model current with recent market regime instead of equally weighting 5-year-old data. |
-| **Probability calibration** | XGBoost raw probabilities are over-confident; isotonic regression calibration on the holdout set makes the 60/40 ML/TA fusion and BUY thresholds reflect actual win rates. |
+| **Probability calibration** | XGBoost raw probabilities are over-confident; isotonic regression calibration on a dedicated calibration set makes the ML/TA fusion and BUY thresholds reflect actual win rates. |
 | **Precision-optimised threshold** | Instead of a fixed 0.5 threshold, each symbol gets a per-symbol BUY threshold set where test-set precision ≥ 60%. Quality over quantity — fewer but more reliable BUY signals. |
+| **MACD price-normalised** | MACD, MACD signal, and MACD histogram are divided by the current price (`/ close`) so the feature is comparable across different price levels and stable over time as prices change. |
+| **OBV flow-based z-score** | OBV z-score now measures the **20-day change in OBV** (recent money flow) rather than the cumulative OBV level, which was dominated by long-term trend bias and insensitive to short-term momentum shifts. |
+| **Three-way train/calibration/test split** | Holdout is split 70% train / 15% calibration / 15% threshold evaluation. Calibrator is fit on the calibration set; BUY threshold is optimised on the separate test set. Eliminates the double-dipping that previously inflated reported precision metrics. |
 
 #### Evaluation metrics
 
 Each retrain reports:
-- Holdout accuracy, AUC, precision, recall, F1 (last 20% of data as test set, after calibration)
+- Holdout accuracy, AUC, precision, recall, F1 (last 15% of data as test set, evaluated on calibrated probs)
 - Per-symbol `buy_threshold` — the lowest probability where test-set precision ≥ 60% (falls back to 0.5 if none achievable)
 - 5-fold TimeSeriesSplit CV mean AUC and std (no data leakage, recency-weighted)
+- Train / calibration / test set sizes (`n_train`, `n_cal`, `n_test`)
 - Top-5 most important features for that symbol (logged on each train)
 - All metrics stored in the model artifact and returned by `POST /ml/predict`
 
@@ -770,6 +774,8 @@ Leaderboard of all active stocks sorted by K-Score. A quick, always-sorted view 
 
 > **Rankings vs Screener:** Rankings is a fast leaderboard — the default view is sorted by K-Score with no filters, so you immediately see the highest-quality stocks. The Screener is for deliberate filtering sessions when you have specific criteria in mind (e.g. BUY signal + Technical ≥ 60 + up >1% today). Both pages pull from the same underlying data.
 
+> **Performance note:** Rankings reads from pre-computed scores in the database (refreshed 5× per trading day by the scheduler). The leaderboard endpoint is O(1) regardless of how many stocks are tracked — no price history is recomputed on each page load.
+
 ---
 
 ## Watchlist (`/watchlist`)
@@ -1087,6 +1093,55 @@ The 🔔 bell icon appears in the top-right navigation bar when logged in.
 
 ---
 
+## Signal Accuracy (`/signal-accuracy`)
+
+Measures how often past BUY/SELL signals predicted the correct direction within ~5 trading days.
+
+- **Lookback** — 30 / 60 / 90 / 180 days
+- **Exit price** — first trading day at or after signal_date + 7 calendar days (≈ 5 trading days), within a 14-day window. All signals are evaluated over the same horizon so accuracy numbers are comparable across time.
+- **Signals need 7 days to settle** — signals issued within the last 7 days are excluded (no outcome yet)
+
+### Summary cards
+| Card | What it means |
+|------|--------------|
+| Overall Accuracy | % of BUY + SELL signals that pointed the right direction |
+| BUY Accuracy | % of BUY signals where price rose over the 5-day window |
+| SELL Accuracy | % of SELL signals where price fell over the 5-day window |
+| Avg BUY Return | Average % gain 5 days after a BUY signal |
+| Avg SELL Return | Average % decline 5 days after a SELL signal |
+| Profit Factor | `total gain from correct signals ÷ total loss from wrong signals`. Above 1.5 = good system. |
+
+---
+
+## Trade Performance (`/trade-performance`)
+
+Shows real P&L by pairing each BUY signal with its next SELL or WAIT exit signal for the same stock. This measures actual trading performance rather than direction accuracy alone.
+
+- **Entry** — BUY signal date → entry price is the close on that date
+- **Exit** — next SELL or WAIT signal for the same stock → exit price is the close on that date
+- **Open trades** — BUY signals with no exit yet use the latest available price
+- **Lookback** — 90 / 180 / 365 days
+
+### Summary cards
+| Card | Good threshold | What it means |
+|------|---------------|--------------|
+| Win Rate | > 50% | % of closed trades that made money |
+| Profit Factor | > 1.5 | Total profit from winners ÷ total loss from losers. The single most important metric — above 1.0 = system makes money over time |
+| Avg Return | > 1% | Average % gain or loss per closed trade |
+| Avg Win | — | Typical winning trade size |
+| Avg Loss | — | Typical losing trade size. You want Avg Win > Avg Loss |
+| Avg Hold | — | How long the system typically stays in a trade |
+
+### By-symbol breakdown
+Table showing win rate, average return, and average hold days per stock — tells you which symbols the signal engine works best on.
+
+### Trade list
+Every individual trade with: entry date / exit date / entry price / exit price / return % / hold days / exit signal (SELL, WAIT, or OPEN) / Win or Loss.
+
+Filters: All / Closed / Open · All / Win / Loss · Symbol search · Sort by Date / Return / Hold Days
+
+---
+
 ## API Reference
 
 ### Data
@@ -1137,15 +1192,25 @@ DELETE /signal-alerts/{id}             # unsubscribe
 GET  /signals/{symbol}               # compute signal (live)
 GET  /signals/{symbol}?persist=true  # compute + save to DB
 GET  /signals                        # latest persisted signal for all active stocks
+GET  /signals/accuracy?lookback_days=90&symbol=AAPL
+                                     # historical BUY/SELL accuracy vs fixed 5-day outcome
+                                     # (exit price = first trading day ≥ signal_date + 7 days)
+GET  /signals/trade_performance?lookback_days=180&symbol=AAPL
+                                     # BUY→SELL/WAIT trade-pair P&L stats
+                                     # returns: win_rate, profit_factor, avg_return, avg_hold_days
+                                     # per-symbol breakdown + individual trade list
 ```
 
 ### ML
 ```
 POST /ml/train      {symbol, model}        # train a single model (~30 s per symbol)
 POST /ml/train_all                         # retrain all active stocks (uses tuned params if available)
+POST /ml/train_all_ensemble                # train XGBoost + RandomForest for every active symbol
 POST /ml/tune       {symbol, n_trials=60}  # Optuna search for one symbol, then retrain (~5 min)
 POST /ml/tune_all   ?n_trials=60           # weekend batch: tune every active symbol (~2-4 h)
-POST /ml/predict    {symbol, model}        # get a prediction
+POST /ml/predict         {symbol, model}   # XGBoost prediction for one symbol
+POST /ml/predict_ensemble {symbol}         # XGBoost + RF ensemble (weighted by CV AUC);
+                                           # falls back to XGBoost-only if RF not yet trained
 GET  /ml/models                            # list available model types
 ```
 
