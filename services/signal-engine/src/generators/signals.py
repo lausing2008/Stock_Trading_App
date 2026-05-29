@@ -67,23 +67,26 @@ def _fetch_weekly_prices(symbol: str) -> pd.DataFrame:
 def _fetch_ml_data(symbol: str) -> tuple[float | None, float]:
     """Return (bullish_probability, cv_auc_mean).
 
+    Tries the XGBoost+RF ensemble first; falls back to XGBoost-only.
     cv_auc_mean drives the dynamic ML/TA fusion weight — a high-quality model
     (AUC 0.70) earns up to 75% weight; a near-random model (AUC 0.50) gets
     only 40% so the hand-tuned TA rules compensate.
     """
-    try:
-        with httpx.Client(timeout=10) as c:
-            r = c.post(
-                f"{_settings.ml_prediction_url}/ml/predict",
-                json={"symbol": symbol, "model": "xgboost"},
-            )
-            if r.status_code == 200:
-                data = r.json()
-                prob = float(data.get("bullish_probability", 0.5))
-                cv_auc = float((data.get("metrics") or {}).get("cv_auc_mean") or 0.55)
-                return prob, cv_auc
-    except Exception as exc:
-        log.warning("ml.fetch_failed", symbol=symbol, error=str(exc))
+    payload = {"symbol": symbol}
+    for endpoint in ("/ml/predict_ensemble", "/ml/predict"):
+        try:
+            with httpx.Client(timeout=10) as c:
+                r = c.post(
+                    f"{_settings.ml_prediction_url}{endpoint}",
+                    json=payload if endpoint == "/ml/predict_ensemble" else {**payload, "model": "xgboost"},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    prob = float(data.get("bullish_probability", 0.5))
+                    cv_auc = float((data.get("metrics") or {}).get("cv_auc_mean") or 0.55)
+                    return prob, cv_auc
+        except Exception as exc:
+            log.warning("ml.fetch_failed", symbol=symbol, endpoint=endpoint, error=str(exc))
     return None, 0.55
 
 

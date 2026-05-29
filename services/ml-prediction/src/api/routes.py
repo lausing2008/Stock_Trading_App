@@ -3,7 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from ..models import list_models
-from ..training import predict_latest, train_model, tune_symbol
+from ..training import predict_latest, predict_latest_ensemble, train_model, tune_symbol
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
@@ -103,3 +103,43 @@ def predict(req: PredictRequest):
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/predict_ensemble")
+def predict_ensemble(req: PredictRequest):
+    """XGBoost + RandomForest ensemble prediction, weighted by each model's CV AUC.
+
+    Falls back to XGBoost-only if RF model not yet trained for this symbol.
+    Train both models first with POST /ml/train_all_ensemble.
+    """
+    try:
+        return predict_latest_ensemble(req.symbol, req.horizon)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/train_all_ensemble")
+def train_all_ensemble(tasks: BackgroundTasks):
+    """Train XGBoost AND RandomForest for every active symbol.
+
+    Enables ensemble predictions via POST /ml/predict_ensemble.
+    Takes roughly 1.5× longer than train_all (RF trains faster than XGBoost).
+    """
+    from sqlalchemy import select
+    from db import Stock, SessionLocal
+
+    with SessionLocal() as session:
+        symbols = list(session.execute(
+            select(Stock.symbol).where(Stock.active.is_(True))
+        ).scalars())
+
+    for sym in symbols:
+        tasks.add_task(train_model, sym, "xgboost", 5)
+        tasks.add_task(train_model, sym, "random_forest", 5)
+
+    return {
+        "status": "scheduled",
+        "count": len(symbols),
+        "models": ["xgboost", "random_forest"],
+        "note": "After completion, use POST /ml/predict_ensemble for ensemble predictions.",
+    }

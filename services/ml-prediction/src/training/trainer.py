@@ -19,14 +19,13 @@ from common.config import get_settings
 from common.logging import get_logger
 from db import Price, SessionLocal, Stock, TimeFrame
 
-from ..features import build_features, fetch_macro_features, FEATURE_COLUMNS
+from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS
 from ..models import BaseModel, get_model
 
 log = get_logger("trainer")
 _settings = get_settings()
 
-_LABEL_THRESHOLD = 0.01   # 1% dead zone — only clear moves used as training labels
-_MIN_PRECISION   = 0.60   # minimum precision required for a BUY signal threshold
+_MIN_PRECISION = 0.60  # minimum precision required for a BUY signal threshold
 
 
 def _load_prices(symbol: str, lookback_days: int = 365 * 5) -> pd.DataFrame:
@@ -129,8 +128,11 @@ def train_model(
     except Exception:
         macro_df = None
 
+    # Per-symbol volatility-adjusted dead zone (0.5 × expected N-day move)
+    label_threshold = compute_label_threshold(df, horizon)
+
     X, y_dir, _ = build_features(
-        df, horizon=horizon, macro_df=macro_df, label_threshold=_LABEL_THRESHOLD
+        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold
     )
     if len(X) < 200:
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
@@ -202,9 +204,9 @@ def train_model(
 
     y_pred = (preds > buy_threshold).astype(int)
 
-    # --- Feature importance (XGBoost only) ---
+    # --- Feature importance (XGBoost and RandomForest both support it) ---
     feature_importance: dict[str, float] = {}
-    if model_name == "xgboost" and hasattr(model.clf, "feature_importances_"):
+    if hasattr(model.clf, "feature_importances_"):
         scores = model.clf.feature_importances_
         feature_importance = {
             col: round(float(scores[i]), 4)
@@ -226,7 +228,7 @@ def train_model(
         "n_train": int(len(X_train)),
         "n_test": int(len(X_test)),
         "n_features": len(FEATURE_COLUMNS),
-        "label_threshold": _LABEL_THRESHOLD,
+        "label_threshold": label_threshold,
     }
 
     path = _artifact_path(symbol, model_name)
@@ -237,7 +239,7 @@ def train_model(
         "scaler": scaler,
         "calibrator": calibrator,
         "buy_threshold": buy_threshold,
-        "label_threshold": _LABEL_THRESHOLD,
+        "label_threshold": label_threshold,
         "metrics": metrics,
         "feature_columns": list(FEATURE_COLUMNS),
         "feature_importance": feature_importance,
@@ -301,4 +303,46 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
         "confidence": round(abs(prob - 0.5) * 200, 2),
         "horizon_days": horizon,
         "metrics": bundle.get("metrics", {}),
+    }
+
+
+def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
+    """Average XGBoost + RandomForest predictions, weighted by each model's CV AUC.
+
+    Falls back to XGBoost-only if the RF model has not been trained for this symbol.
+    Using two structurally different models (gradient boosting vs. bagging) reduces
+    variance and smooths out individual model over-reactions to recent noise.
+    """
+    xgb = predict_latest(symbol, "xgboost", horizon)
+
+    rf_path = _artifact_path(symbol, "random_forest")
+    if not rf_path.exists():
+        return {**xgb, "ensemble": False, "model": "xgboost"}
+
+    try:
+        rf = predict_latest(symbol, "random_forest", horizon)
+    except Exception:
+        return {**xgb, "ensemble": False, "model": "xgboost"}
+
+    xgb_auc = float((xgb.get("metrics") or {}).get("cv_auc_mean") or 0.55)
+    rf_auc  = float((rf.get("metrics") or {}).get("cv_auc_mean") or 0.55)
+    total   = xgb_auc + rf_auc
+    w_xgb, w_rf = xgb_auc / total, rf_auc / total
+
+    prob = float(w_xgb * xgb["bullish_probability"] + w_rf * rf["bullish_probability"])
+    buy_threshold = float((xgb.get("metrics") or {}).get("buy_threshold") or 0.5)
+
+    return {
+        "symbol": symbol,
+        "model": "ensemble_xgb_rf",
+        "bullish_probability": prob,
+        "direction": "up" if prob > buy_threshold else "down",
+        "confidence": round(abs(prob - 0.5) * 200, 2),
+        "horizon_days": horizon,
+        "ensemble": True,
+        "weights": {"xgboost": round(w_xgb, 2), "random_forest": round(w_rf, 2)},
+        "metrics": {
+            "cv_auc_mean": round((xgb_auc + rf_auc) / 2, 4),
+            "buy_threshold": buy_threshold,
+        },
     }

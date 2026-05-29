@@ -22,8 +22,8 @@ from xgboost import XGBClassifier
 
 from common.logging import get_logger
 
-from ..features import build_features, fetch_macro_features
-from .trainer import _LABEL_THRESHOLD, _load_prices, _params_path, _recency_weights, train_model
+from ..features import build_features, compute_label_threshold, fetch_macro_features
+from .trainer import _load_prices, _params_path, _recency_weights, train_model
 
 log = get_logger("tuner")
 
@@ -77,8 +77,9 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5) -> dict:
     except Exception:
         pass
 
+    label_threshold = compute_label_threshold(df, horizon)
     X, y_dir, _ = build_features(
-        df, horizon=horizon, macro_df=macro_df, label_threshold=_LABEL_THRESHOLD
+        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold
     )
     if len(X) < 300:
         reason = f"only {len(X)} clean samples (need ≥300 for tuning)"
