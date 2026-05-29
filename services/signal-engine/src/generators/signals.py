@@ -156,12 +156,14 @@ def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
     )
 
 
-def _stoch_rsi(rsi: pd.Series, period: int = 14, smooth_k: int = 3, smooth_d: int = 3) -> tuple[float, float]:
+def _stoch_rsi(rsi: pd.Series, period: int = 14, smooth_k: int = 3, smooth_d: int = 3) -> tuple[float, float, pd.Series]:
     """Stochastic RSI — normalises RSI into 0-1 range, then smooths.
 
-    Returns (%K, %D) where:
+    Returns (%K scalar, %D scalar, k_series) where:
       < 0.20 = oversold  (potential buy zone)
       > 0.80 = overbought (potential sell zone)
+    k_series is returned so callers can reuse it (e.g. for cross-up detection)
+    without recomputing.
     """
     rsi_min = rsi.rolling(period).min()
     rsi_max = rsi.rolling(period).max()
@@ -171,7 +173,7 @@ def _stoch_rsi(rsi: pd.Series, period: int = 14, smooth_k: int = 3, smooth_d: in
     d = k.rolling(smooth_d).mean()
     k_val = float(k.iloc[-1]) if not pd.isna(k.iloc[-1]) else 0.5
     d_val = float(d.iloc[-1]) if not pd.isna(d.iloc[-1]) else 0.5
-    return k_val, d_val
+    return k_val, d_val, k
 
 
 def _weekly_ta_score(df: pd.DataFrame) -> float:
@@ -195,7 +197,7 @@ def _weekly_ta_score(df: pd.DataFrame) -> float:
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
 
     score = 0.35
-    if rsi_val:
+    if rsi_val is not None:
         if 40 < rsi_val < 68:
             score += 0.20
         elif rsi_val <= 40:
@@ -273,12 +275,10 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     reasons["rsi"] = rsi_val
 
     # ── Stochastic RSI (%K, %D) ───────────────────────────────────────────
-    stoch_k, stoch_d = _stoch_rsi(rsi)
+    stoch_k, stoch_d, k_smooth = _stoch_rsi(rsi)
     stoch_oversold   = stoch_k < 0.20
     stoch_overbought = stoch_k > 0.80
     stoch_cross_up = False
-    k_series = rsi.rolling(14).apply(lambda x: (x.iloc[-1] - x.min()) / (x.max() - x.min()) if x.max() != x.min() else 0.5, raw=False)
-    k_smooth = k_series.rolling(3).mean()
     if len(k_smooth.dropna()) >= 2:
         stoch_cross_up = bool(k_smooth.iloc[-1] > 0.20 and k_smooth.iloc[-2] <= 0.20)
 
@@ -381,7 +381,11 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     if obv_bullish:                                         score += 0.10
     if reasons["volume_z"] and reasons["volume_z"] > 0.5:  score += 0.05
 
-    return float(np.clip(score, 0, 1)), reasons
+    # Normalise by theoretical max (1.36) so the score is a true [0,1] probability.
+    # Without normalisation, stocks triggering all bullish conditions would saturate
+    # at 1.0 before clipping, losing the relative differentiation from ML fusion.
+    _TA_MAX_SCORE = 1.36
+    return float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0)), reasons
 
 
 def _decide(fused_prob: float, market_regime: str) -> tuple[str, str]:

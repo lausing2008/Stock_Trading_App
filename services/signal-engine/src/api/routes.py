@@ -103,7 +103,8 @@ def signal_accuracy(
     Signals need at least 1 day of price history after the signal date to be evaluated.
     """
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-    outcome_cutoff = datetime.utcnow() - timedelta(days=1)
+    # Signals need at least 7 calendar days (~5 trading days) to have a measurable outcome
+    outcome_cutoff = datetime.utcnow() - timedelta(days=7)
 
     q = (
         select(Signal, Stock.symbol, Stock.name)
@@ -131,13 +132,16 @@ def signal_accuracy(
             .limit(1)
         ).scalar_one_or_none()
 
-        # Exit: most recent close after the signal date — measures cumulative
-        # return from signal issuance to the latest available price.
+        # Exit: first trading day at or after signal_date + 7 calendar days (≈5 trading days),
+        # within a 14-day window. This matches the model's 5-day prediction horizon so all
+        # signals are evaluated over a comparable period rather than wildly different holding times.
+        horizon_date = signal_date + timedelta(days=7)
         exit_row = session.execute(
             select(Price.close, Price.ts)
             .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-            .where(Price.ts > signal_date)
-            .order_by(Price.ts.desc())
+            .where(Price.ts >= horizon_date)
+            .where(Price.ts <= signal_date + timedelta(days=14))
+            .order_by(Price.ts)
             .limit(1)
         ).first()
 
@@ -174,8 +178,10 @@ def signal_accuracy(
         return round(sum(i["pct_change"] for i in items) / len(items), 2) if items else None
 
     def _profit_factor(items: list) -> float | None:
-        wins  = sum(i["pct_change"] for i in items if i["correct"])
-        losses = abs(sum(i["pct_change"] for i in items if not i["correct"]))
+        # Use abs() so correct SELL signals (negative pct_change) count as gains,
+        # not as losses — profit factor measures magnitude of wins vs losses.
+        wins   = sum(abs(i["pct_change"]) for i in items if i["correct"])
+        losses = sum(abs(i["pct_change"]) for i in items if not i["correct"])
         return round(wins / losses, 2) if losses > 0 else None
 
     return {
