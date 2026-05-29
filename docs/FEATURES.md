@@ -132,7 +132,7 @@ Runs **once per day**, at post-close (16:30) for both US and HK markets. Trains 
 
 #### Model & features
 
-The default model is **XGBoost** (gradient-boosted trees). Each symbol gets its own trained artifact saved to disk. The feature matrix has **22 inputs**:
+The default model is **XGBoost** (gradient-boosted trees). Each symbol gets its own trained artifact saved to disk. The feature matrix has **26 inputs** — 22 stock-specific plus 4 macro market-context features:
 
 | Group | Features |
 |---|---|
@@ -142,14 +142,32 @@ The default model is **XGBoost** (gradient-boosted trees). Each symbol gets its 
 | Oscillators | `rsi_14`, `macd`, `macd_signal`, `macd_hist`, `bb_pct`, `stoch_k` |
 | Volume / flow | `volume_z`, `obv_z`, `cmf_20` (Chaikin Money Flow) |
 | Range | `high_20_pct` (position in 20-day H-L channel) |
+| **Macro** | `spy_ret_1`, `spy_ret_5` (S&P 500 direction), `vix_level` (fear gauge), `spy_vol_20` (market regime) |
 
-Target: binary direction of the **5-day forward return** (up / down). Trained on 5 years of daily bars. Scaler + feature list are saved alongside each model so inference is always consistent with training.
+The macro features give the model **situational awareness** — a BUY setup during extreme market fear is very different from the same setup during a bull rally. SPY and VIX data is fetched from yfinance and joined by date before training and inference.
+
+**Label definition:** binary direction of the **5-day forward return**, but only on bars where the move is ≥ 1% (the dead zone). Rows where `|fwd_ret| < 1%` are excluded from training — these near-zero moves are essentially unclassifiable noise, and training on them degrades the model. This removes ~35–45% of rows but produces much cleaner labels.
+
+Scaler + feature list + calibrator + precision threshold are all saved alongside each model so inference is always consistent with training.
+
+#### Signal quality improvements
+
+Five techniques are applied on every retrain to improve prediction accuracy:
+
+| Improvement | What it does |
+|---|---|
+| **1% dead-zone labels** | Drops bars where `|5-day return| < 1%` from training. Eliminates noise labels that are essentially coin flips. |
+| **Macro features** | Adds SPY 1-day return, SPY 5-day return, VIX level, SPY 20-day vol to every bar. Model knows the market environment, not just stock-specific indicators. |
+| **Recency weighting** | Recent bars get 3× more weight than oldest bars via exponential decay. Keeps the model current with recent market regime instead of equally weighting 5-year-old data. |
+| **Probability calibration** | XGBoost raw probabilities are over-confident; isotonic regression calibration on the holdout set makes the 60/40 ML/TA fusion and BUY thresholds reflect actual win rates. |
+| **Precision-optimised threshold** | Instead of a fixed 0.5 threshold, each symbol gets a per-symbol BUY threshold set where test-set precision ≥ 60%. Quality over quantity — fewer but more reliable BUY signals. |
 
 #### Evaluation metrics
 
 Each retrain reports:
-- Holdout accuracy, AUC, precision, recall, F1 (last 20% of data as test set)
-- 5-fold TimeSeriesSplit CV mean AUC and std (no data leakage)
+- Holdout accuracy, AUC, precision, recall, F1 (last 20% of data as test set, after calibration)
+- Per-symbol BUY threshold (precision ≥ 60% threshold from precision-recall curve)
+- 5-fold TimeSeriesSplit CV mean AUC and std (no data leakage, recency-weighted)
 - Top-5 most important features for that symbol (logged on each train)
 
 #### Hyperparameter tuning — automatic every Sunday 14:00 PST

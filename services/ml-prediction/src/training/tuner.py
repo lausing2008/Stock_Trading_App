@@ -22,8 +22,8 @@ from xgboost import XGBClassifier
 
 from common.logging import get_logger
 
-from ..features import build_features
-from .trainer import _load_prices, _params_path, train_model
+from ..features import build_features, fetch_macro_features
+from .trainer import _LABEL_THRESHOLD, _load_prices, _params_path, _recency_weights, train_model
 
 log = get_logger("tuner")
 
@@ -56,7 +56,11 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5) -> dict:
     """Run Optuna search for `symbol`, save best params, retrain final model.
 
     Returns a result dict with best_params, best_cv_auc, and final train metrics.
+    Uses the same label_threshold and macro features as train_model for consistency.
     """
+    from datetime import date, timedelta
+    import pandas as pd
+
     log.info("tune.start", symbol=symbol, n_trials=n_trials)
 
     try:
@@ -65,9 +69,19 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5) -> dict:
         log.warning("tune.skipped", symbol=symbol, reason=str(exc))
         return {"symbol": symbol, "skipped": True, "reason": str(exc)}
 
-    X, y_dir, _ = build_features(df, horizon=horizon)
+    # Fetch macro features (same as train_model for consistency)
+    macro_df = None
+    try:
+        start_date = pd.to_datetime(df["ts"]).min().date()
+        macro_df = fetch_macro_features(start_date, date.today() + timedelta(days=1))
+    except Exception:
+        pass
+
+    X, y_dir, _ = build_features(
+        df, horizon=horizon, macro_df=macro_df, label_threshold=_LABEL_THRESHOLD
+    )
     if len(X) < 300:
-        reason = f"only {len(X)} samples (need ≥300 for tuning)"
+        reason = f"only {len(X)} clean samples (need ≥300 for tuning)"
         log.warning("tune.skipped", symbol=symbol, reason=reason)
         return {"symbol": symbol, "skipped": True, "reason": reason}
 
@@ -89,7 +103,9 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5) -> dict:
             X_tr, X_val = X_arr[tr_idx], X_arr[val_idx]
             y_tr, y_val = y_arr[tr_idx], y_arr[val_idx]
             sc = StandardScaler()
-            clf.fit(sc.fit_transform(X_tr), y_tr, verbose=False)
+            # Recency-weighted training so Optuna optimises for recent market behaviour
+            w = _recency_weights(len(tr_idx))
+            clf.fit(sc.fit_transform(X_tr), y_tr, sample_weight=w, verbose=False)
             preds = clf.predict_proba(sc.transform(X_val))[:, 1]
             if len(np.unique(y_val)) > 1:
                 aucs.append(roc_auc_score(y_val, preds))
