@@ -70,21 +70,34 @@ def reset_signals(tasks: BackgroundTasks, session: Session = Depends(get_session
 
 def _bulk_persist(symbols: list[str]) -> None:
     from db import SessionLocal
+    from sqlalchemy import desc
     for symbol in symbols:
         try:
             ai = generate_signal(symbol)
             with SessionLocal() as s:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
-                if stock:
-                    s.add(Signal(
-                        stock_id=stock.id,
-                        signal=SignalType(ai.signal),
-                        horizon=SignalHorizon(ai.horizon),
-                        confidence=ai.confidence,
-                        bullish_probability=ai.bullish_probability,
-                        reasons=ai.reasons,
-                    ))
-                    s.commit()
+                if not stock:
+                    continue
+                # Only insert if the signal type changed since the last persisted signal.
+                # The scheduler refreshes every 10 min, so without this check every stock
+                # accumulates dozens of identical rows per day, polluting Trade Performance.
+                last = s.execute(
+                    select(Signal.signal)
+                    .where(Signal.stock_id == stock.id)
+                    .order_by(desc(Signal.ts))
+                    .limit(1)
+                ).scalar_one_or_none()
+                if last is not None and last == SignalType(ai.signal):
+                    continue  # signal unchanged — skip insert
+                s.add(Signal(
+                    stock_id=stock.id,
+                    signal=SignalType(ai.signal),
+                    horizon=SignalHorizon(ai.horizon),
+                    confidence=ai.confidence,
+                    bullish_probability=ai.bullish_probability,
+                    reasons=ai.reasons,
+                ))
+                s.commit()
         except Exception as exc:
             log.warning("signals.refresh.skip", symbol=symbol, error=str(exc))
 
@@ -325,9 +338,19 @@ def trade_performance(
             return None, None
         return ts_list[idx], _exit_val[sid][idx]
 
-    # 4. Pair each BUY with its exit — pure Python, no more per-signal queries
+    # 4. Pair each BUY with its exit — pure Python, no more per-signal queries.
+    # Track the last exit timestamp per stock so consecutive BUY signals (from
+    # multiple intraday refreshes) are collapsed into one trade — you can't
+    # re-enter a position you're already holding.
+    last_exit_ts: dict[int, object] = {}  # stock_id → ts of last closed exit
+
     trades = []
     for sig, sym, name in buy_rows:
+        # Skip this BUY if it arrives before the previous trade's exit signal —
+        # it's a duplicate refresh, not a new entry opportunity.
+        if sig.stock_id in last_exit_ts and sig.ts <= last_exit_ts[sig.stock_id]:
+            continue
+
         entry_date = sig.ts.date()
         entry_price = price_on_or_before(sig.stock_id, entry_date)
         if entry_price is None:
@@ -338,6 +361,7 @@ def trade_performance(
             exit_date  = exit_ts.date()
             exit_price = price_on_or_before(sig.stock_id, exit_date)
             status     = "closed"
+            last_exit_ts[sig.stock_id] = exit_ts  # block duplicate BUYs before this exit
         else:
             exit_price, exit_ts_raw = latest_price(sig.stock_id)
             if exit_price is None:
