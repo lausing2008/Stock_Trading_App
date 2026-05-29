@@ -1,24 +1,51 @@
 /**
  * Trade Performance page (/trade-performance)
  *
- * Shows real trade results by pairing each BUY signal with its next
- * SELL/WAIT exit signal for the same stock.
+ * WHAT IT SHOWS
+ * ─────────────
+ * Every time the system issued a BUY signal, this page tracks what happened
+ * next. A "trade" starts on the BUY signal date and ends when the system
+ * issues a SELL or WAIT signal for the same stock. If there's no exit signal
+ * yet, the trade is still "Open" and uses today's price as the exit.
  *
- * How to read the summary cards
- * ─────────────────────────────
- * Win Rate      — % of closed trades that made money. > 50% beats random.
- * Profit Factor — total profit from winners ÷ total loss from losers.
- *                 > 1.5 = good system; < 1.0 = losing money overall.
+ * HOW TO READ THE SUMMARY CARDS
+ * ──────────────────────────────
+ * Win Rate      — % of CLOSED trades that made money.
+ *                 > 50% means more winners than losers.
+ *                 50% alone doesn't mean profitable — see Profit Factor.
+ *
+ * Profit Factor — total profit from all winning trades
+ *                 ÷ total loss from all losing trades.
+ *                 > 1.0 = system makes money overall
+ *                 > 1.5 = good; > 2.0 = excellent
+ *                 This is the single most important number.
+ *
  * Avg Return    — average % gain or loss per closed trade.
- * Avg Win/Loss  — typical size of a winning vs losing trade.
- *                 You want avg win > avg loss (favourable risk/reward).
- * Avg Hold Days — how long the system typically stays in a trade.
+ *                 Positive = system is profitable on average.
  *
- * How to read the trades table
- * ────────────────────────────
- * Each row = one trade: entered on BUY signal, exited on SELL/WAIT signal.
- * Open trades have no exit signal yet — current price used as exit.
- * Return is coloured green (profit) or red (loss).
+ * Avg Win / Avg Loss — typical size of a winning vs losing trade.
+ *                 You want Avg Win > Avg Loss (good risk/reward ratio).
+ *                 A system with 40% win rate can still be profitable if
+ *                 winners average +5% and losers average -1%.
+ *
+ * Avg Hold Days — how long the system typically holds a trade.
+ *                 Short hold = the signals flip quickly.
+ *
+ * HOW TO READ THE TRADES TABLE
+ * ─────────────────────────────
+ * Each row = one complete trade:
+ *   Entry date  — when the BUY signal was issued
+ *   Exit date   — when the next SELL or WAIT signal was issued
+ *   Return      — (exit price - entry price) / entry price × 100
+ *   Hold days   — calendar days from entry to exit
+ *   Exit signal — SELL, WAIT, or OPEN (still holding)
+ *
+ * DIFFERENCE FROM SIGNAL ACCURACY
+ * ─────────────────────────────────
+ * Signal Accuracy measures whether a signal pointed the right direction
+ * vs today's price — it doesn't care about when you exited.
+ * Trade Performance measures actual trade P&L using realistic BUY→SELL pairs.
+ * Trade Performance is the harder, more honest number.
  */
 import { useState } from 'react';
 import useSWR from 'swr';
