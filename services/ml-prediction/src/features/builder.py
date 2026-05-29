@@ -225,10 +225,14 @@ def build_features(
     # Forward-fill macro gaps (weekends, holidays, early-day partial data)
     for col in MACRO_COLUMNS:
         out[col] = out[col].ffill()
-    # In inference mode, also backward-fill + zero-fill so latest row is never NaN
+    # Zero-fill any remaining NaN (e.g. yfinance download failure, leading rows)
+    # In inference mode also backward-fill so the latest bar is never NaN
     if inference_mode:
         for col in MACRO_COLUMNS:
             out[col] = out[col].bfill().fillna(0.0)
+    else:
+        for col in MACRO_COLUMNS:
+            out[col] = out[col].fillna(0.0)
 
     # --- Target ---
     fwd_ret = c.shift(-horizon) / c - 1
