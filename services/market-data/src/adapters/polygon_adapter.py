@@ -5,13 +5,17 @@ from datetime import date
 
 import httpx
 import pandas as pd
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from common.config import get_settings
 from common.logging import get_logger
 
 from .base import DataAdapter, OHLCV
 from .registry import get_runtime_key, register_adapter
+
+
+class RateLimitError(Exception):
+    """Polygon rate limit (429) — caller should fall back to next adapter immediately."""
 
 log = get_logger("polygon_adapter")
 
@@ -39,7 +43,12 @@ class PolygonAdapter(DataAdapter):
     def supports(self, market: str, timeframe: str) -> bool:
         return market == "US" and timeframe in _TF_MULT and bool(self._active_key())
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=20), reraise=True)
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=2, max=20),
+        reraise=True,
+        retry=retry_if_not_exception_type(RateLimitError),
+    )
     def fetch_ohlcv(self, symbol: str, start: date, end: date, timeframe: str = "1d") -> OHLCV:
         key = self._active_key()
         if not key:
@@ -53,6 +62,9 @@ class PolygonAdapter(DataAdapter):
         log.info("polygon.fetch", symbol=symbol, tf=timeframe)
         with httpx.Client(timeout=30) as client:
             r = client.get(url, params=params)
+            if r.status_code == 429:
+                log.warning("polygon.rate_limit", symbol=symbol)
+                raise RateLimitError("Polygon rate limit exceeded — falling back to yfinance")
             r.raise_for_status()
             data = r.json().get("results", []) or []
         if not data:

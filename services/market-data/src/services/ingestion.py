@@ -62,7 +62,6 @@ def ingest_symbol(
     If force=True, deletes all existing price rows for the symbol+timeframe first,
     then re-fetches the full lookback_days window from scratch.
     """
-    adapters = [get_adapter(provider, market)] if provider else get_adapters(market, timeframe)
     tf = TimeFrame(timeframe)
 
     with SessionLocal() as session:
@@ -85,6 +84,20 @@ def ingest_symbol(
 
         if start >= end:
             return {"symbol": symbol, "inserted": 0, "skipped": "up_to_date"}
+
+        # Adapter selection strategy:
+        #   - Explicit provider requested → use that provider
+        #   - HK stocks → always yfinance (Polygon doesn't support HK)
+        #   - Batch context (force or no existing bars) → yfinance (preserve Polygon quota for incremental)
+        #   - US incremental → Polygon first (Polygon 429 fast-fails → yfinance fallback)
+        if provider:
+            adapters = [get_adapter(provider, market)]
+        elif symbol.endswith(".HK") or market == "HK":
+            adapters = [get_adapter("yfinance")]
+        elif force or head is None:
+            adapters = [get_adapter("yfinance")]
+        else:
+            adapters = get_adapters(market, timeframe)
 
         last_err: Exception | None = None
         df: pd.DataFrame | None = None
