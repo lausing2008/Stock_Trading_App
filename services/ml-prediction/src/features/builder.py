@@ -93,6 +93,25 @@ def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
     return macro.dropna(how="all")
 
 
+def compute_label_threshold(df: pd.DataFrame, horizon: int = 5) -> float:
+    """Volatility-adjusted dead zone: 0.5 × expected horizon-day move magnitude.
+
+    Higher-volatility stocks get a wider dead zone (more noise to filter out).
+    Lower-volatility stocks use a narrower one (small moves are still signal).
+    Clamped to [0.5%, 3%] to avoid degenerate cases.
+
+    Examples (daily vol → threshold):
+      0.5% daily → 0.56% threshold  (stable dividend stock)
+      1.0% daily → 1.12% threshold  (average large-cap)
+      2.0% daily → 2.24% threshold  (high-beta / HK small-cap)
+    """
+    daily_ret = df["close"].astype(float).pct_change()
+    vol_series = daily_ret.rolling(20).std().dropna()
+    if not vol_series.empty:
+        return float(np.clip(0.5 * float(vol_series.median()) * np.sqrt(horizon), 0.005, 0.03))
+    return 0.01  # fallback for very short histories
+
+
 def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
     d = close.diff()
     g = d.clip(lower=0).ewm(alpha=1 / w, adjust=False).mean()
