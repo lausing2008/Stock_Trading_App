@@ -1,52 +1,96 @@
-"""Feature engineering — one canonical matrix used by every ML head.
+"""Feature engineering — 26 features (22 stock-specific + 4 macro).
 
-Keeping this single-source lets us swap models (RF/XGB/LSTM) without drift
-between training and inference features.
-
-22 features (14 original + 8 new):
-  Momentum : ret_1/5/10/20/60
+22 stock-specific:
+  Momentum  : ret_1/5/10/20/60
   Volatility: vol_20, vol_60, atr_14_pct, atr_ratio
   Trend     : sma_20_gap, sma_50_gap, sma_100_gap
   Oscillators: rsi_14, macd, macd_signal, macd_hist, bb_pct, stoch_k
   Volume    : volume_z, obv_z, cmf_20
   Range     : high_20_pct
+
+4 macro (market-wide context):
+  spy_ret_1, spy_ret_5  — S&P 500 short-term direction
+  vix_level             — VIX absolute level (fear gauge)
+  spy_vol_20            — S&P 500 realized volatility (regime proxy)
+
+Label: binary BUY / SELL only — rows where |fwd_ret| < label_threshold are
+excluded from training (dead zone). This removes noise-level moves that are
+essentially unclassifiable and degrade model quality.
 """
 from __future__ import annotations
+
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
 
 
+MACRO_COLUMNS = ["spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20"]
+
 FEATURE_COLUMNS = [
     # Momentum
-    "ret_1",
-    "ret_5",
-    "ret_10",
-    "ret_20",
-    "ret_60",
+    "ret_1", "ret_5", "ret_10", "ret_20", "ret_60",
     # Volatility
-    "vol_20",
-    "vol_60",
-    "atr_14_pct",
-    "atr_ratio",
+    "vol_20", "vol_60", "atr_14_pct", "atr_ratio",
     # Trend
-    "sma_20_gap",
-    "sma_50_gap",
-    "sma_100_gap",
+    "sma_20_gap", "sma_50_gap", "sma_100_gap",
     # Oscillators
-    "rsi_14",
-    "macd",
-    "macd_signal",
-    "macd_hist",
-    "bb_pct",
-    "stoch_k",
+    "rsi_14", "macd", "macd_signal", "macd_hist", "bb_pct", "stoch_k",
     # Volume / money flow
-    "volume_z",
-    "obv_z",
-    "cmf_20",
+    "volume_z", "obv_z", "cmf_20",
     # Range
     "high_20_pct",
+    # Macro
+    "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
 ]
+
+
+def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
+    """Download SPY + VIX macro features, indexed by date string ("YYYY-MM-DD").
+
+    Returns an empty DataFrame on any failure — build_features handles missing
+    macro gracefully by falling back to 0-filled values.
+    """
+    import yfinance as yf
+
+    buffer_start = start_date - timedelta(days=60)  # extra buffer for rolling calculations
+    try:
+        spy = yf.download(
+            "SPY",
+            start=buffer_start.isoformat(),
+            end=end_date.isoformat(),
+            progress=False,
+            auto_adjust=False,
+        )
+        vix = yf.download(
+            "^VIX",
+            start=buffer_start.isoformat(),
+            end=end_date.isoformat(),
+            progress=False,
+            auto_adjust=False,
+        )
+    except Exception:
+        return pd.DataFrame()
+
+    if spy.empty or vix.empty:
+        return pd.DataFrame()
+
+    # Flatten MultiIndex columns (yfinance ≥0.2)
+    if isinstance(spy.columns, pd.MultiIndex):
+        spy.columns = [c[0] for c in spy.columns]
+    if isinstance(vix.columns, pd.MultiIndex):
+        vix.columns = [c[0] for c in vix.columns]
+
+    spy_c = spy["Close"]
+    vix_c = vix["Close"].reindex(spy_c.index, method="ffill")
+
+    macro = pd.DataFrame(index=pd.to_datetime(spy_c.index).strftime("%Y-%m-%d"))
+    macro["spy_ret_1"] = spy_c.pct_change(1).values
+    macro["spy_ret_5"] = spy_c.pct_change(5).values
+    macro["vix_level"] = vix_c.values
+    macro["spy_vol_20"] = spy_c.pct_change().rolling(20).std().values
+
+    return macro.dropna(how="all")
 
 
 def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
@@ -57,11 +101,21 @@ def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
     return 100 - 100 / (1 + rs)
 
 
-def build_features(df: pd.DataFrame, horizon: int = 5) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+def build_features(
+    df: pd.DataFrame,
+    horizon: int = 5,
+    macro_df: pd.DataFrame | None = None,
+    label_threshold: float = 0.01,
+    inference_mode: bool = False,
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (X, y_direction, y_return).
 
-    y_direction = sign of forward `horizon`-bar return (binary classification).
-    y_return    = raw forward return (regression target for magnitude models).
+    y_direction = 1 if forward return > label_threshold, 0 if < -label_threshold.
+    Rows within ±label_threshold (the dead zone) are excluded from training —
+    only clear-signal bars are used.
+
+    inference_mode=True: skip label/dead-zone filtering so the latest bar (no
+    known future return) is included in X for real-time prediction.
     """
     out = pd.DataFrame(index=df.index)
     c = df["close"].astype(float)
@@ -131,10 +185,39 @@ def build_features(df: pd.DataFrame, horizon: int = 5) -> tuple[pd.DataFrame, pd
     low20 = lo.rolling(20).min()
     out["high_20_pct"] = (c - low20) / (high20 - low20).replace(0, np.nan)
 
+    # --- Macro features (market-wide context) ---
+    # Date keys are "YYYY-MM-DD" strings to avoid timezone issues
+    dates = pd.to_datetime(df["ts"]).dt.strftime("%Y-%m-%d")
+    if macro_df is not None and not macro_df.empty:
+        for col in MACRO_COLUMNS:
+            if col in macro_df.columns:
+                out[col] = dates.map(macro_df[col])
+            else:
+                out[col] = np.nan
+    else:
+        for col in MACRO_COLUMNS:
+            out[col] = np.nan
+
+    # Forward-fill macro gaps (weekends, holidays, early-day partial data)
+    for col in MACRO_COLUMNS:
+        out[col] = out[col].ffill()
+    # In inference mode, also backward-fill + zero-fill so latest row is never NaN
+    if inference_mode:
+        for col in MACRO_COLUMNS:
+            out[col] = out[col].bfill().fillna(0.0)
+
     # --- Target ---
     fwd_ret = c.shift(-horizon) / c - 1
-    y_dir = (fwd_ret > 0).astype(int)
+    y_dir = (fwd_ret > label_threshold).astype(int)  # 1 = strong up, 0 = strong down
 
     X = out[FEATURE_COLUMNS].replace([np.inf, -np.inf], np.nan)
-    mask = X.notna().all(axis=1) & fwd_ret.notna()
+
+    if inference_mode:
+        # Keep all rows with valid features; label/dead-zone filtering skipped
+        mask = X.notna().all(axis=1)
+    else:
+        # Training: exclude dead-zone rows (|fwd_ret| < threshold) — only clear signals
+        outside_deadzone = fwd_ret.abs() >= label_threshold
+        mask = X.notna().all(axis=1) & fwd_ret.notna() & outside_deadzone
+
     return X[mask], y_dir[mask], fwd_ret[mask]
