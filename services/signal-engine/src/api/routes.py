@@ -104,8 +104,8 @@ def signal_accuracy(
     import bisect
 
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-    # Signals need at least 5 calendar days to have a measurable outcome (~3-4 trading days)
-    outcome_cutoff = datetime.utcnow() - timedelta(days=5)
+    # Signals need at least 4 calendar days to have a measurable outcome (~3 trading days)
+    outcome_cutoff = datetime.utcnow() - timedelta(days=4)
 
     q = (
         select(Signal, Stock.symbol, Stock.name)
@@ -175,10 +175,10 @@ def signal_accuracy(
         if entry_close is None:
             continue
 
-        # Exit: first trading day in [signal_date+5, signal_date+10] (~3-5 trading days)
-        horizon_date = signal_date + timedelta(days=5)
+        # Exit: first trading day in [signal_date+4, signal_date+9] (~3-4 trading days)
+        horizon_date = signal_date + timedelta(days=4)
         exit_close, exit_date = price_in_window(
-            sig.stock_id, horizon_date, signal_date + timedelta(days=10)
+            sig.stock_id, horizon_date, signal_date + timedelta(days=9)
         )
         if exit_close is None:
             continue
