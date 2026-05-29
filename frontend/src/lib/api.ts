@@ -126,6 +126,11 @@ export const api = {
     return request<SignalAccuracyReport>(`/signals/accuracy?${params}`);
   },
   resetSignals: () => request<{ status: string; deleted: number; repersisting: number }>('/signals/reset', { method: 'POST' }),
+  tradePerformance: (lookbackDays = 180, symbol?: string) => {
+    const params = new URLSearchParams({ lookback_days: String(lookbackDays) });
+    if (symbol) params.set('symbol', symbol);
+    return request<TradePerformanceReport>(`/signals/trade_performance?${params}`);
+  },
 
   // Trade Journal
   listJournal: () => request<JournalTrade[]>('/journal'),
@@ -242,6 +247,8 @@ export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning
 export type CongressTrade = { Ticker: string; Date: string; Politician: string; Transaction: string; Min: number | null; Max: number | null; Party: string | null; State: string | null; Chamber: string | null; ReportDate: string | null };
 export type SignalAccuracyRow = { symbol: string; name: string; signal: 'BUY' | 'SELL'; confidence: number; bullish_probability: number | null; signal_date: string; entry_price: number; exit_price: number; pct_change: number; correct: boolean; days_held: number };
 export type SignalAccuracyReport = { lookback_days: number; total_signals: number; buy_count: number; sell_count: number; buy_accuracy: number | null; sell_accuracy: number | null; overall_accuracy: number | null; avg_buy_return_pct: number | null; avg_sell_return_pct: number | null; profit_factor: number | null; signals: SignalAccuracyRow[] };
+export type TradePair = { symbol: string; name: string; status: 'closed' | 'open'; entry_date: string; exit_date: string; entry_price: number; exit_price: number; pct_return: number; hold_days: number; win: boolean; exit_signal: string; entry_confidence: number };
+export type TradePerformanceReport = { lookback_days: number; closed_trades: number; open_trades: number; win_rate: number | null; avg_return_pct: number | null; avg_win_pct: number | null; avg_loss_pct: number | null; profit_factor: number | null; avg_hold_days: number | null; by_symbol: { symbol: string; trades: number; win_rate: number; avg_return: number; avg_hold_days: number }[]; trades: TradePair[] };
 export type QuickScanResult = { symbol: string; price: number; change_pct: number | null; change_5d: number | null; rsi: number | null; sma20: number | null; sma50: number | null; above_sma20: boolean | null; above_sma50: boolean | null; vol_ratio: number | null; range_pos_20d: number | null };
 export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
 
