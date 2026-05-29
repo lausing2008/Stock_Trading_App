@@ -180,11 +180,19 @@ def signal_accuracy(
         # Return the LAST element after after_date (most recent)
         return _pclose[sid][-1], ts_list[-1]
 
+    # Deduplicate: the scheduler runs every ~10 min and inserts repeated signals on
+    # the same day. One evaluation per (stock, signal_type, day) is the right unit —
+    # we want "was the model correct that day", not 10 identical copies of the same call.
+    seen_keys: set[tuple] = set()
+
     results = []
     for sig, sym, name in rows:
-        signal_date = sig.ts.date()
+        signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
+        dedup_key = (sig.stock_id, sig.signal, signal_date)
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
 
-        # Entry: most recent close on or before signal_date+1 (handles weekend/holiday signals)
         entry_close = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
         if entry_close is None:
             continue
