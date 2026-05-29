@@ -98,14 +98,15 @@ def signal_accuracy(
     """Historical accuracy of BUY/SELL signals vs actual price outcomes.
 
     For each persisted BUY or SELL signal within the lookback window, compares
-    the close price on the signal date to the close ~5 trading days later.
-    Uses 2 bulk price queries instead of 2 per-signal queries.
+    the close price on the signal date to the most recent available close price.
+    A BUY is 'correct' if price rose; a SELL is 'correct' if it fell.
+    Signals need at least 1 day of price history after the signal date to be evaluated.
+    Uses bulk price queries + bisect matching instead of per-signal queries.
     """
     import bisect
 
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-    # Signals need at least 4 calendar days to have a measurable outcome (~3 trading days)
-    outcome_cutoff = datetime.utcnow() - timedelta(days=4)
+    outcome_cutoff = datetime.utcnow() - timedelta(days=1)
 
     q = (
         select(Signal, Stock.symbol, Stock.name)
@@ -126,8 +127,7 @@ def signal_accuracy(
 
     stock_ids = list({sig.stock_id for sig, _, _ in rows})
 
-    # Bulk-fetch all D1 prices for relevant stocks covering the full evaluation window
-    # (lookback + 14-day exit window buffer)
+    # Bulk-fetch all D1 prices for relevant stocks across the full lookback window
     price_since = (cutoff - timedelta(days=5)).date()
     price_rows = session.execute(
         select(Price.stock_id, Price.ts, Price.close)
@@ -156,30 +156,28 @@ def signal_accuracy(
         idx = bisect.bisect_right(ts_list, d) - 1
         return _pclose[sid][idx] if idx >= 0 else None
 
-    def price_in_window(sid: int, lo, hi):
-        """First close with date in [lo, hi], returns (close, date) or (None, None)."""
+    def latest_price_after(sid: int, after_date):
+        """Most recent close strictly after after_date, returns (close, date) or (None, None)."""
         ts_list = _pts.get(sid)
         if not ts_list:
             return None, None
-        idx = bisect.bisect_left(ts_list, lo)
-        if idx < len(ts_list) and ts_list[idx] <= hi:
-            return _pclose[sid][idx], ts_list[idx]
-        return None, None
+        idx = bisect.bisect_right(ts_list, after_date)
+        if idx >= len(ts_list):
+            return None, None
+        # Return the LAST element after after_date (most recent)
+        return _pclose[sid][-1], ts_list[-1]
 
     results = []
     for sig, sym, name in rows:
         signal_date = sig.ts.date()
 
-        # Entry: most recent close on or before signal date
-        entry_close = price_on_or_before(sig.stock_id, signal_date)
+        # Entry: most recent close on or before signal_date+1 (handles weekend/holiday signals)
+        entry_close = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
         if entry_close is None:
             continue
 
-        # Exit: first trading day in [signal_date+4, signal_date+9] (~3-4 trading days)
-        horizon_date = signal_date + timedelta(days=4)
-        exit_close, exit_date = price_in_window(
-            sig.stock_id, horizon_date, signal_date + timedelta(days=9)
-        )
+        # Exit: most recent close after the signal date (running P&L to latest available price)
+        exit_close, exit_date = latest_price_after(sig.stock_id, signal_date)
         if exit_close is None:
             continue
 
