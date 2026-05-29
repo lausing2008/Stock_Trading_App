@@ -166,9 +166,28 @@ Five techniques are applied on every retrain to improve prediction accuracy:
 
 Each retrain reports:
 - Holdout accuracy, AUC, precision, recall, F1 (last 20% of data as test set, after calibration)
-- Per-symbol BUY threshold (precision ≥ 60% threshold from precision-recall curve)
+- Per-symbol `buy_threshold` — the lowest probability where test-set precision ≥ 60% (falls back to 0.5 if none achievable)
 - 5-fold TimeSeriesSplit CV mean AUC and std (no data leakage, recency-weighted)
 - Top-5 most important features for that symbol (logged on each train)
+- All metrics stored in the model artifact and returned by `POST /ml/predict`
+
+#### Inference fix (prediction uses today's bar)
+
+Previously, `predict_latest()` used features from 5 bars ago (the last bar with a known forward return) instead of today's actual bar. This is now fixed — inference uses `inference_mode=True` which skips the label mask, so predictions are based on today's technical conditions.
+
+#### Dynamic ML/TA fusion weighting
+
+The 60/40 ML/TA split is no longer hardcoded. The signal engine now reads each symbol's `cv_auc_mean` from the model artifact and adjusts the ML weight proportionally:
+
+| CV AUC | ML weight | TA weight | Interpretation |
+|--------|-----------|-----------|----------------|
+| 0.50 (random) | 40% | 60% | Model barely beats random — rely more on TA rules |
+| 0.55 | 51% | 49% | Modest predictive ability |
+| 0.60 | 61% | 39% | Good model — trust ML more than TA |
+| 0.65 | 71% | 29% | Strong model — ML drives the signal |
+| ≥ 0.70 | 75% (max) | 25% | Excellent model — TA is a minor check |
+
+This means symbols with well-trained models (high AUC) get more ML weight, while symbols where the model barely works fall back to the hand-tuned TA rules. The current ML weight used is reported in the signal's `reasons` dict as `ml_weight`.
 
 #### Hyperparameter tuning — automatic every Sunday 14:00 PST
 
