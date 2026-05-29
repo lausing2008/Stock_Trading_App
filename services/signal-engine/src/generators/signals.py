@@ -64,7 +64,13 @@ def _fetch_weekly_prices(symbol: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _fetch_ml_probability(symbol: str) -> float | None:
+def _fetch_ml_data(symbol: str) -> tuple[float | None, float]:
+    """Return (bullish_probability, cv_auc_mean).
+
+    cv_auc_mean drives the dynamic ML/TA fusion weight — a high-quality model
+    (AUC 0.70) earns up to 75% weight; a near-random model (AUC 0.50) gets
+    only 40% so the hand-tuned TA rules compensate.
+    """
     try:
         with httpx.Client(timeout=10) as c:
             r = c.post(
@@ -72,10 +78,13 @@ def _fetch_ml_probability(symbol: str) -> float | None:
                 json={"symbol": symbol, "model": "xgboost"},
             )
             if r.status_code == 200:
-                return float(r.json().get("bullish_probability", 0.5))
+                data = r.json()
+                prob = float(data.get("bullish_probability", 0.5))
+                cv_auc = float((data.get("metrics") or {}).get("cv_auc_mean") or 0.55)
+                return prob, cv_auc
     except Exception as exc:
         log.warning("ml.fetch_failed", symbol=symbol, error=str(exc))
-    return None
+    return None, 0.55
 
 
 def _fetch_market_regime() -> str:
@@ -397,17 +406,23 @@ def generate_signal(symbol: str) -> AIConfidence:
         raise ValueError(f"No price data for {symbol}")
 
     ta_prob, reasons = _ta_score(df)
-    ml_prob = _fetch_ml_probability(symbol)
+    ml_prob, ml_cv_auc = _fetch_ml_data(symbol)
     market_regime = _fetch_market_regime()
     reasons["market_regime"] = market_regime
 
-    # Base fusion: 60% ML if available, else 100% TA
+    # Dynamic fusion: ML weight scales with model quality (CV AUC).
+    # AUC 0.50 (random) → 40% ML; AUC 0.70+ (excellent) → 75% ML.
+    # This prevents a poorly-fit symbol model from overriding the TA rules.
     if ml_prob is not None:
-        fused = 0.6 * ml_prob + 0.4 * ta_prob
+        ml_weight = float(np.clip(0.40 + (ml_cv_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
+        ta_weight = 1.0 - ml_weight
+        fused = ml_weight * ml_prob + ta_weight * ta_prob
         reasons["ml_probability"] = ml_prob
+        reasons["ml_weight"] = round(ml_weight, 2)
     else:
         fused = ta_prob
         reasons["ml_probability"] = None
+        reasons["ml_weight"] = 0.0
     reasons["ta_score"] = ta_prob
 
     # ── Multi-timeframe confirmation (weekly) ─────────────────────────────
