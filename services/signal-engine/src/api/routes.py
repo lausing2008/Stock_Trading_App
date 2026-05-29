@@ -209,13 +209,15 @@ def trade_performance(
 
     For every BUY signal in the window, finds the next SELL or WAIT signal for
     the same stock to close the trade.  Open trades (no exit signal yet) use
-    the latest available price.  Computes win rate, profit factor, avg return,
-    and avg hold days so you can see whether signals translate to real profit.
+    the latest available price.  Uses 4 bulk queries + Python-side matching
+    instead of N×3 per-signal queries to keep response time under 1 second.
     """
+    import bisect
     from collections import defaultdict
 
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
 
+    # 1. All BUY signals in the window
     q = (
         select(Signal, Stock.symbol, Stock.name)
         .join(Stock, Signal.stock_id == Stock.id)
@@ -226,80 +228,109 @@ def trade_performance(
     )
     if symbol:
         q = q.where(Stock.symbol == symbol.upper())
-
     buy_rows = session.execute(q).all()
 
-    trades = []
+    if not buy_rows:
+        return {"lookback_days": lookback_days, "closed_trades": 0, "open_trades": 0,
+                "win_rate": None, "avg_return_pct": None, "avg_win_pct": None,
+                "avg_loss_pct": None, "profit_factor": None, "avg_hold_days": None,
+                "by_symbol": [], "trades": []}
 
+    stock_ids = list({sig.stock_id for sig, _, _ in buy_rows})
+
+    # 2. All SELL/WAIT signals for those stocks (no date filter — exits may be outside window)
+    exit_rows = session.execute(
+        select(Signal.stock_id, Signal.ts, Signal.signal)
+        .where(Signal.stock_id.in_(stock_ids))
+        .where(Signal.signal.in_([SignalType.SELL, SignalType.WAIT]))
+        .order_by(Signal.stock_id, Signal.ts)
+    ).all()
+
+    # stock_id → (sorted ts list, signal value list)
+    _exit_ts: dict[int, list] = defaultdict(list)
+    _exit_val: dict[int, list] = defaultdict(list)
+    for row in exit_rows:
+        _exit_ts[row.stock_id].append(row.ts)
+        _exit_val[row.stock_id].append(row.signal.value)
+
+    # 3. All D1 prices for those stocks from just before the lookback window to today
+    since_date = (cutoff - timedelta(days=7)).date()
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(Price.stock_id.in_(stock_ids))
+        .where(Price.timeframe == TimeFrame.D1)
+        .where(Price.ts >= since_date)
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    # stock_id → (sorted date list, close list)
+    _price_ts: dict[int, list] = defaultdict(list)
+    _price_close: dict[int, list] = defaultdict(list)
+    for row in price_rows:
+        _price_ts[row.stock_id].append(row.ts)
+        _price_close[row.stock_id].append(float(row.close))
+
+    def price_on_or_before(sid: int, d) -> float | None:
+        ts_list = _price_ts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, d) - 1
+        return _price_close[sid][idx] if idx >= 0 else None
+
+    def latest_price(sid: int):
+        ts_list = _price_ts.get(sid)
+        if not ts_list:
+            return None, None
+        return _price_close[sid][-1], ts_list[-1]
+
+    def next_exit(sid: int, after_ts):
+        ts_list = _exit_ts.get(sid)
+        if not ts_list:
+            return None, None
+        idx = bisect.bisect_right(ts_list, after_ts)
+        if idx >= len(ts_list):
+            return None, None
+        return ts_list[idx], _exit_val[sid][idx]
+
+    # 4. Pair each BUY with its exit — pure Python, no more per-signal queries
+    trades = []
     for sig, sym, name in buy_rows:
         entry_date = sig.ts.date()
-
-        entry_price = session.execute(
-            select(Price.close)
-            .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-            .where(Price.ts <= entry_date)
-            .order_by(Price.ts.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        entry_price = price_on_or_before(sig.stock_id, entry_date)
         if entry_price is None:
             continue
 
-        # Next SELL or WAIT after this BUY
-        exit_sig = session.execute(
-            select(Signal)
-            .where(Signal.stock_id == sig.stock_id)
-            .where(Signal.ts > sig.ts)
-            .where(Signal.signal.in_([SignalType.SELL, SignalType.WAIT]))
-            .order_by(Signal.ts)
-            .limit(1)
-        ).scalar_one_or_none()
-
-        if exit_sig is not None:
-            exit_date = exit_sig.ts.date()
-            exit_price = session.execute(
-                select(Price.close)
-                .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-                .where(Price.ts <= exit_date)
-                .order_by(Price.ts.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-            exit_signal = exit_sig.signal.value
-            status = "closed"
+        exit_ts, exit_signal_val = next_exit(sig.stock_id, sig.ts)
+        if exit_ts is not None:
+            exit_date  = exit_ts.date()
+            exit_price = price_on_or_before(sig.stock_id, exit_date)
+            status     = "closed"
         else:
-            # Open trade — use latest price
-            row = session.execute(
-                select(Price.close, Price.ts)
-                .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-                .order_by(Price.ts.desc())
-                .limit(1)
-            ).first()
-            if row is None:
+            exit_price, exit_ts_raw = latest_price(sig.stock_id)
+            if exit_price is None:
                 continue
-            exit_price, exit_ts = row
-            exit_date = exit_ts.date()
-            exit_signal = "OPEN"
-            status = "open"
+            exit_date      = exit_ts_raw if isinstance(exit_ts_raw, type(entry_date)) else exit_ts_raw.date() if hasattr(exit_ts_raw, 'date') else exit_ts_raw
+            exit_signal_val = "OPEN"
+            status          = "open"
 
         if exit_price is None:
             continue
 
-        entry_close = float(entry_price)
-        exit_close  = float(exit_price)
-        pct         = (exit_close - entry_close) / entry_close * 100
-        hold_days   = (exit_date - entry_date).days
+        pct       = (exit_price - entry_price) / entry_price * 100
+        hold_days = (exit_date - entry_date).days if hasattr(exit_date, 'days') else (exit_date - entry_date).days
 
         trades.append({
             "symbol":           sym,
             "name":             name,
             "status":           status,
             "entry_date":       entry_date.isoformat(),
-            "exit_date":        exit_date.isoformat(),
-            "entry_price":      round(entry_close, 4),
-            "exit_price":       round(exit_close, 4),
+            "exit_date":        exit_date.isoformat() if hasattr(exit_date, 'isoformat') else str(exit_date),
+            "entry_price":      round(entry_price, 4),
+            "exit_price":       round(exit_price, 4),
             "pct_return":       round(pct, 2),
             "hold_days":        hold_days,
             "win":              pct > 0,
-            "exit_signal":      exit_signal,
+            "exit_signal":      exit_signal_val,
             "entry_confidence": round(sig.confidence, 1),
         })
 
@@ -311,7 +342,6 @@ def trade_performance(
     gross_wins   = sum(t["pct_return"] for t in wins)
     gross_losses = abs(sum(t["pct_return"] for t in losses))
 
-    # Per-symbol summary
     by_sym: dict = defaultdict(lambda: {"trades": 0, "wins": 0, "total_return": 0.0, "hold_days": 0})
     for t in closed:
         s = t["symbol"]
