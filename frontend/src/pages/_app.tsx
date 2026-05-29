@@ -57,7 +57,8 @@ const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { label: 'Strategies',      href: '/strategies' },
       { label: 'Alerts',          href: '/alerts' },
-      { label: 'Signal Accuracy', href: '/signal-accuracy', color: '#a78bfa' },
+      { label: 'Signal Accuracy',    href: '/signal-accuracy',    color: '#a78bfa' },
+      { label: 'Trade Performance',  href: '/trade-performance',  color: '#34d399' },
       { label: 'Insider / Congress', href: '/insider',      color: '#fb923c' },
     ],
   },
