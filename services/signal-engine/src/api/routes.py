@@ -339,37 +339,42 @@ def trade_performance(
         return ts_list[idx], _exit_val[sid][idx]
 
     # 4. Pair each BUY with its exit — pure Python, no more per-signal queries.
-    # Track the last exit timestamp per stock so consecutive BUY signals (from
-    # multiple intraday refreshes) are collapsed into one trade — you can't
-    # re-enter a position you're already holding.
-    last_exit_ts: dict[int, object] = {}  # stock_id → ts of last closed exit
+    # Two dedup guards prevent duplicate trades from intraday scheduler refreshes:
+    #   last_exit_ts — blocks BUYs before the previous closed trade's exit timestamp.
+    #   in_open_trade — blocks new BUYs while an open (unclosed) position already exists.
+    last_exit_ts: dict[int, object] = {}  # stock_id → exit ts of last closed trade
+    in_open_trade: set[int] = set()       # stock_ids already represented by an open trade
 
     trades = []
     for sig, sym, name in buy_rows:
-        # Skip this BUY if it arrives before the previous trade's exit signal —
-        # it's a duplicate refresh, not a new entry opportunity.
-        if sig.stock_id in last_exit_ts and sig.ts <= last_exit_ts[sig.stock_id]:
+        sid = sig.stock_id
+        # Guard 1: BUY arrived before the last closed trade's exit — duplicate refresh.
+        if sid in last_exit_ts and sig.ts <= last_exit_ts[sid]:
+            continue
+        # Guard 2: We're already tracking an open position for this stock.
+        if sid in in_open_trade:
             continue
 
         entry_date = sig.ts.date()
-        entry_price = price_on_or_before(sig.stock_id, entry_date)
+        entry_price = price_on_or_before(sid, entry_date)
         if entry_price is None:
             continue
 
-        exit_ts, exit_signal_val = next_exit(sig.stock_id, sig.ts)
+        exit_ts, exit_signal_val = next_exit(sid, sig.ts)
         if exit_ts is not None:
             exit_date  = exit_ts.date()
-            exit_price = price_on_or_before(sig.stock_id, exit_date)
+            exit_price = price_on_or_before(sid, exit_date)
             status     = "closed"
-            last_exit_ts[sig.stock_id] = exit_ts  # block duplicate BUYs before this exit
+            last_exit_ts[sid] = exit_ts  # block duplicate BUYs that fall before this exit
         else:
-            exit_price, exit_ts_raw = latest_price(sig.stock_id)
+            exit_price, exit_ts_raw = latest_price(sid)
             if exit_price is None:
                 continue
             # Normalise to date — _price_ts stores date objects after the fix above
             exit_date       = exit_ts_raw.date() if isinstance(exit_ts_raw, datetime) else exit_ts_raw
             exit_signal_val = "OPEN"
             status          = "open"
+            in_open_trade.add(sid)  # block any later BUYs — position is already open
 
         if exit_price is None:
             continue
