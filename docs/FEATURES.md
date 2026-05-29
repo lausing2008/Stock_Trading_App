@@ -1103,7 +1103,7 @@ These two pages answer different questions about the same signals:
 | **Entry** | Price on signal date | Price on BUY signal date |
 | **Exit** | Today's price (always) | Price at next SELL or WAIT signal |
 | **Holding period** | Signal date → now (varies wildly) | BUY → SELL/WAIT (realistic) |
-| **What's excluded** | Nothing — all signals vs today | Signals with no exit yet shown as "Open" |
+| **Deduplication** | One entry per (stock, signal type, day) — scheduler noise filtered out | Consecutive BUY refreshes collapsed; only one open trade tracked per stock at a time |
 | **Bias** | Optimistic — recent signals look good even if they'd reverse tomorrow | Honest — you only get credit when the trade is closed |
 | **Best used for** | Checking model direction quality | Evaluating the system as an actual trading strategy |
 
@@ -1119,6 +1119,7 @@ Measures how often past BUY/SELL signals predicted the correct direction, evalua
 - **Entry price** — most recent close on or just after the signal date (handles weekend/holiday signals)
 - **Exit price** — most recent available close price (today's close or latest bar)
 - **Minimum age** — signals from the last 24 hours are excluded (need at least one price bar after the signal)
+- **Deduplication** — one entry per (stock, signal type, calendar day). The scheduler refreshes every few hours; duplicate intraday signals are collapsed so each unique day counts once.
 - **Note** — because exit is always "today", a BUY signal from 3 months ago and one from last week are both judged against today's price. Holding periods are not comparable across signals, so this metric measures directional accuracy, not trading P&L.
 
 ### Summary cards
@@ -1141,6 +1142,7 @@ Shows real P&L by pairing each BUY signal with its next SELL or WAIT exit signal
 - **Exit** — next SELL or WAIT signal for the same stock → exit price is the close on that date
 - **Open trades** — BUY signals with no exit yet use the latest available price (marked "OPEN")
 - **Lookback** — 90 / 180 / 365 days
+- **Deduplication** — consecutive BUY refreshes for the same stock are collapsed into one trade. Only one open position is tracked per stock at a time; a new entry is only recorded after the previous trade closes (SELL/WAIT signal received).
 
 ### Summary cards
 | Card | Good threshold | What it means |
