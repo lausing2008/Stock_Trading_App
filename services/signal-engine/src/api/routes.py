@@ -1,5 +1,5 @@
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -70,21 +70,34 @@ def reset_signals(tasks: BackgroundTasks, session: Session = Depends(get_session
 
 def _bulk_persist(symbols: list[str]) -> None:
     from db import SessionLocal
+    from sqlalchemy import desc
     for symbol in symbols:
         try:
             ai = generate_signal(symbol)
             with SessionLocal() as s:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
-                if stock:
-                    s.add(Signal(
-                        stock_id=stock.id,
-                        signal=SignalType(ai.signal),
-                        horizon=SignalHorizon(ai.horizon),
-                        confidence=ai.confidence,
-                        bullish_probability=ai.bullish_probability,
-                        reasons=ai.reasons,
-                    ))
-                    s.commit()
+                if not stock:
+                    continue
+                # Only insert if the signal type changed since the last persisted signal.
+                # The scheduler refreshes every 10 min, so without this check every stock
+                # accumulates dozens of identical rows per day, polluting Trade Performance.
+                last = s.execute(
+                    select(Signal.signal)
+                    .where(Signal.stock_id == stock.id)
+                    .order_by(desc(Signal.ts))
+                    .limit(1)
+                ).scalar_one_or_none()
+                if last is not None and last == SignalType(ai.signal):
+                    continue  # signal unchanged — skip insert
+                s.add(Signal(
+                    stock_id=stock.id,
+                    signal=SignalType(ai.signal),
+                    horizon=SignalHorizon(ai.horizon),
+                    confidence=ai.confidence,
+                    bullish_probability=ai.bullish_probability,
+                    reasons=ai.reasons,
+                ))
+                s.commit()
         except Exception as exc:
             log.warning("signals.refresh.skip", symbol=symbol, error=str(exc))
 
@@ -101,10 +114,12 @@ def signal_accuracy(
     the close price on the signal date to the most recent available close price.
     A BUY is 'correct' if price rose; a SELL is 'correct' if it fell.
     Signals need at least 1 day of price history after the signal date to be evaluated.
+    Uses bulk price queries + bisect matching instead of per-signal queries.
     """
+    import bisect
+
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-    # Signals need at least 7 calendar days (~5 trading days) to have a measurable outcome
-    outcome_cutoff = datetime.utcnow() - timedelta(days=7)
+    outcome_cutoff = datetime.utcnow() - timedelta(days=1)
 
     q = (
         select(Signal, Stock.symbol, Stock.name)
@@ -117,39 +132,76 @@ def signal_accuracy(
         q = q.where(Stock.symbol == symbol.upper())
 
     rows = session.execute(q).all()
+    if not rows:
+        return {"lookback_days": lookback_days, "total_signals": 0, "buy_count": 0,
+                "sell_count": 0, "buy_accuracy": None, "sell_accuracy": None,
+                "overall_accuracy": None, "avg_buy_return_pct": None,
+                "avg_sell_return_pct": None, "profit_factor": None, "signals": []}
+
+    stock_ids = list({sig.stock_id for sig, _, _ in rows})
+
+    # Bulk-fetch all D1 prices for relevant stocks across the full lookback window
+    price_since = (cutoff - timedelta(days=5)).date()
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(Price.stock_id.in_(stock_ids))
+        .where(Price.timeframe == TimeFrame.D1)
+        .where(Price.ts >= price_since)
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    # stock_id → (sorted date list, close list)
+    _pts: dict[int, list] = {}
+    _pclose: dict[int, list] = {}
+    for row in price_rows:
+        sid = row.stock_id
+        if sid not in _pts:
+            _pts[sid] = []
+            _pclose[sid] = []
+        d = row.ts.date() if isinstance(row.ts, datetime) else row.ts
+        _pts[sid].append(d)
+        _pclose[sid].append(float(row.close))
+
+    def price_on_or_before(sid: int, d) -> float | None:
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, d) - 1
+        return _pclose[sid][idx] if idx >= 0 else None
+
+    def latest_price_after(sid: int, after_date):
+        """Most recent close strictly after after_date, returns (close, date) or (None, None)."""
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None, None
+        idx = bisect.bisect_right(ts_list, after_date)
+        if idx >= len(ts_list):
+            return None, None
+        # Return the LAST element after after_date (most recent)
+        return _pclose[sid][-1], ts_list[-1]
+
+    # Deduplicate: the scheduler runs every ~10 min and inserts repeated signals on
+    # the same day. One evaluation per (stock, signal_type, day) is the right unit —
+    # we want "was the model correct that day", not 10 identical copies of the same call.
+    seen_keys: set[tuple] = set()
 
     results = []
     for sig, sym, name in rows:
-        signal_date = sig.ts.date()
+        signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
+        dedup_key = (sig.stock_id, sig.signal, signal_date)
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
 
-        # Entry: the most recent close on or before the signal date.
-        # Handles weekend/holiday signals where no bar exists on the signal day.
-        entry_row = session.execute(
-            select(Price.close)
-            .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-            .where(Price.ts <= signal_date)
-            .order_by(Price.ts.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-
-        # Exit: first trading day at or after signal_date + 7 calendar days (≈5 trading days),
-        # within a 14-day window. This matches the model's 5-day prediction horizon so all
-        # signals are evaluated over a comparable period rather than wildly different holding times.
-        horizon_date = signal_date + timedelta(days=7)
-        exit_row = session.execute(
-            select(Price.close, Price.ts)
-            .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-            .where(Price.ts >= horizon_date)
-            .where(Price.ts <= signal_date + timedelta(days=14))
-            .order_by(Price.ts)
-            .limit(1)
-        ).first()
-
-        if entry_row is None or exit_row is None:
+        entry_close = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
+        if entry_close is None:
             continue
 
-        entry_close = float(entry_row)
-        exit_close  = float(exit_row[0])
+        # Exit: most recent close after the signal date (running P&L to latest available price)
+        exit_close, exit_date = latest_price_after(sig.stock_id, signal_date)
+        if exit_close is None:
+            continue
+
         pct_change  = (exit_close - entry_close) / entry_close * 100
         signal_type = sig.signal.value
         correct     = (signal_type == "BUY" and pct_change > 0) or (signal_type == "SELL" and pct_change < 0)
@@ -165,7 +217,7 @@ def signal_accuracy(
             "exit_price": round(exit_close, 4),
             "pct_change": round(pct_change, 2),
             "correct": correct,
-            "days_held": (exit_row[1].date() - signal_date).days,
+            "days_held": (exit_date - signal_date).days,
         })
 
     buy_r  = [r for r in results if r["signal"] == "BUY"]
@@ -209,13 +261,15 @@ def trade_performance(
 
     For every BUY signal in the window, finds the next SELL or WAIT signal for
     the same stock to close the trade.  Open trades (no exit signal yet) use
-    the latest available price.  Computes win rate, profit factor, avg return,
-    and avg hold days so you can see whether signals translate to real profit.
+    the latest available price.  Uses 4 bulk queries + Python-side matching
+    instead of N×3 per-signal queries to keep response time under 1 second.
     """
+    import bisect
     from collections import defaultdict
 
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
 
+    # 1. All BUY signals in the window
     q = (
         select(Signal, Stock.symbol, Stock.name)
         .join(Stock, Signal.stock_id == Stock.id)
@@ -226,67 +280,115 @@ def trade_performance(
     )
     if symbol:
         q = q.where(Stock.symbol == symbol.upper())
-
     buy_rows = session.execute(q).all()
 
+    if not buy_rows:
+        return {"lookback_days": lookback_days, "closed_trades": 0, "open_trades": 0,
+                "win_rate": None, "avg_return_pct": None, "avg_win_pct": None,
+                "avg_loss_pct": None, "profit_factor": None, "avg_hold_days": None,
+                "by_symbol": [], "trades": []}
+
+    stock_ids = list({sig.stock_id for sig, _, _ in buy_rows})
+
+    # 2. All SELL/WAIT signals for those stocks (no date filter — exits may be outside window)
+    exit_rows = session.execute(
+        select(Signal.stock_id, Signal.ts, Signal.signal)
+        .where(Signal.stock_id.in_(stock_ids))
+        .where(Signal.signal.in_([SignalType.SELL, SignalType.WAIT]))
+        .order_by(Signal.stock_id, Signal.ts)
+    ).all()
+
+    # stock_id → (sorted ts list, signal value list)
+    _exit_ts: dict[int, list] = defaultdict(list)
+    _exit_val: dict[int, list] = defaultdict(list)
+    for row in exit_rows:
+        _exit_ts[row.stock_id].append(row.ts)
+        _exit_val[row.stock_id].append(row.signal.value)
+
+    # 3. All D1 prices for those stocks from just before the lookback window to today
+    since_date = (cutoff - timedelta(days=7)).date()
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(Price.stock_id.in_(stock_ids))
+        .where(Price.timeframe == TimeFrame.D1)
+        .where(Price.ts >= since_date)
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    # stock_id → (sorted date list, close list)
+    # Normalise Price.ts to date — driver may return datetime or date depending on schema
+    _price_ts: dict[int, list] = defaultdict(list)
+    _price_close: dict[int, list] = defaultdict(list)
+    for row in price_rows:
+        d = row.ts.date() if isinstance(row.ts, datetime) else row.ts
+        _price_ts[row.stock_id].append(d)
+        _price_close[row.stock_id].append(float(row.close))
+
+    def price_on_or_before(sid: int, d) -> float | None:
+        ts_list = _price_ts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, d) - 1
+        return _price_close[sid][idx] if idx >= 0 else None
+
+    def latest_price(sid: int):
+        ts_list = _price_ts.get(sid)
+        if not ts_list:
+            return None, None
+        return _price_close[sid][-1], ts_list[-1]
+
+    def next_exit(sid: int, after_ts):
+        ts_list = _exit_ts.get(sid)
+        if not ts_list:
+            return None, None
+        idx = bisect.bisect_right(ts_list, after_ts)
+        if idx >= len(ts_list):
+            return None, None
+        return ts_list[idx], _exit_val[sid][idx]
+
+    # 4. Pair each BUY with its exit — pure Python, no more per-signal queries.
+    # Two dedup guards prevent duplicate trades from intraday scheduler refreshes:
+    #   last_exit_ts — blocks BUYs before the previous closed trade's exit timestamp.
+    #   in_open_trade — blocks new BUYs while an open (unclosed) position already exists.
+    last_exit_ts: dict[int, object] = {}  # stock_id → exit ts of last closed trade
+    in_open_trade: set[int] = set()       # stock_ids already represented by an open trade
+
     trades = []
-
     for sig, sym, name in buy_rows:
-        entry_date = sig.ts.date()
+        sid = sig.stock_id
+        # Guard 1: BUY arrived before the last closed trade's exit — duplicate refresh.
+        if sid in last_exit_ts and sig.ts <= last_exit_ts[sid]:
+            continue
+        # Guard 2: We're already tracking an open position for this stock.
+        if sid in in_open_trade:
+            continue
 
-        entry_price = session.execute(
-            select(Price.close)
-            .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-            .where(Price.ts <= entry_date)
-            .order_by(Price.ts.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        entry_date = sig.ts.date()
+        entry_price = price_on_or_before(sid, entry_date)
         if entry_price is None:
             continue
 
-        # Next SELL or WAIT after this BUY
-        exit_sig = session.execute(
-            select(Signal)
-            .where(Signal.stock_id == sig.stock_id)
-            .where(Signal.ts > sig.ts)
-            .where(Signal.signal.in_([SignalType.SELL, SignalType.WAIT]))
-            .order_by(Signal.ts)
-            .limit(1)
-        ).scalar_one_or_none()
-
-        if exit_sig is not None:
-            exit_date = exit_sig.ts.date()
-            exit_price = session.execute(
-                select(Price.close)
-                .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-                .where(Price.ts <= exit_date)
-                .order_by(Price.ts.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-            exit_signal = exit_sig.signal.value
-            status = "closed"
+        exit_ts, exit_signal_val = next_exit(sid, sig.ts)
+        if exit_ts is not None:
+            exit_date  = exit_ts.date()
+            exit_price = price_on_or_before(sid, exit_date)
+            status     = "closed"
+            last_exit_ts[sid] = exit_ts  # block duplicate BUYs that fall before this exit
         else:
-            # Open trade — use latest price
-            row = session.execute(
-                select(Price.close, Price.ts)
-                .where(Price.stock_id == sig.stock_id, Price.timeframe == TimeFrame.D1)
-                .order_by(Price.ts.desc())
-                .limit(1)
-            ).first()
-            if row is None:
+            exit_price, exit_ts_raw = latest_price(sid)
+            if exit_price is None:
                 continue
-            exit_price, exit_ts = row
-            exit_date = exit_ts.date()
-            exit_signal = "OPEN"
-            status = "open"
+            # Normalise to date — _price_ts stores date objects after the fix above
+            exit_date       = exit_ts_raw.date() if isinstance(exit_ts_raw, datetime) else exit_ts_raw
+            exit_signal_val = "OPEN"
+            status          = "open"
+            in_open_trade.add(sid)  # block any later BUYs — position is already open
 
         if exit_price is None:
             continue
 
-        entry_close = float(entry_price)
-        exit_close  = float(exit_price)
-        pct         = (exit_close - entry_close) / entry_close * 100
-        hold_days   = (exit_date - entry_date).days
+        pct       = (exit_price - entry_price) / entry_price * 100
+        hold_days = (exit_date - entry_date).days
 
         trades.append({
             "symbol":           sym,
@@ -294,12 +396,12 @@ def trade_performance(
             "status":           status,
             "entry_date":       entry_date.isoformat(),
             "exit_date":        exit_date.isoformat(),
-            "entry_price":      round(entry_close, 4),
-            "exit_price":       round(exit_close, 4),
+            "entry_price":      round(entry_price, 4),
+            "exit_price":       round(exit_price, 4),
             "pct_return":       round(pct, 2),
             "hold_days":        hold_days,
             "win":              pct > 0,
-            "exit_signal":      exit_signal,
+            "exit_signal":      exit_signal_val,
             "entry_confidence": round(sig.confidence, 1),
         })
 
@@ -311,7 +413,6 @@ def trade_performance(
     gross_wins   = sum(t["pct_return"] for t in wins)
     gross_losses = abs(sum(t["pct_return"] for t in losses))
 
-    # Per-symbol summary
     by_sym: dict = defaultdict(lambda: {"trades": 0, "wins": 0, "total_return": 0.0, "hold_days": 0})
     for t in closed:
         s = t["symbol"]

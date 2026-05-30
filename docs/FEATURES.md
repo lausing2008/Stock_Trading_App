@@ -1093,40 +1093,62 @@ The 🔔 bell icon appears in the top-right navigation bar when logged in.
 
 ---
 
+## Signal Accuracy vs Trade Performance — Key Difference
+
+These two pages answer different questions about the same signals:
+
+| | Signal Accuracy | Trade Performance |
+|---|---|---|
+| **Question** | Is the model's direction right? | Does following the signals make money? |
+| **Entry** | Price on signal date | Price on BUY signal date |
+| **Exit** | Today's price (always) | Price at next SELL or WAIT signal |
+| **Holding period** | Signal date → now (varies wildly) | BUY → SELL/WAIT (realistic) |
+| **Deduplication** | One entry per (stock, signal type, day) — scheduler noise filtered out | Consecutive BUY refreshes collapsed; only one open trade tracked per stock at a time |
+| **Bias** | Optimistic — recent signals look good even if they'd reverse tomorrow | Honest — you only get credit when the trade is closed |
+| **Best used for** | Checking model direction quality | Evaluating the system as an actual trading strategy |
+
+**In short:** Signal Accuracy tells you if the AI is pointing in the right direction. Trade Performance tells you if you'd actually make money following it.
+
+---
+
 ## Signal Accuracy (`/signal-accuracy`)
 
-Measures how often past BUY/SELL signals predicted the correct direction within ~5 trading days.
+Measures how often past BUY/SELL signals predicted the correct direction, evaluated against the latest available price (running P&L from signal date to today).
 
 - **Lookback** — 30 / 60 / 90 / 180 days
-- **Exit price** — first trading day at or after signal_date + 7 calendar days (≈ 5 trading days), within a 14-day window. All signals are evaluated over the same horizon so accuracy numbers are comparable across time.
-- **Signals need 7 days to settle** — signals issued within the last 7 days are excluded (no outcome yet)
+- **Entry price** — most recent close on or just after the signal date (handles weekend/holiday signals)
+- **Exit price** — most recent available close price (today's close or latest bar)
+- **Minimum age** — signals from the last 24 hours are excluded (need at least one price bar after the signal)
+- **Deduplication** — one entry per (stock, signal type, calendar day). The scheduler refreshes every few hours; duplicate intraday signals are collapsed so each unique day counts once.
+- **Note** — because exit is always "today", a BUY signal from 3 months ago and one from last week are both judged against today's price. Holding periods are not comparable across signals, so this metric measures directional accuracy, not trading P&L.
 
 ### Summary cards
 | Card | What it means |
 |------|--------------|
-| Overall Accuracy | % of BUY + SELL signals that pointed the right direction |
-| BUY Accuracy | % of BUY signals where price rose over the 5-day window |
-| SELL Accuracy | % of SELL signals where price fell over the 5-day window |
-| Avg BUY Return | Average % gain 5 days after a BUY signal |
-| Avg SELL Return | Average % decline 5 days after a SELL signal |
-| Profit Factor | `total gain from correct signals ÷ total loss from wrong signals`. Above 1.5 = good system. |
+| Overall Accuracy | % of BUY + SELL signals that pointed the right direction vs today's price |
+| BUY Accuracy | % of BUY signals where price is higher today than on signal date |
+| SELL Accuracy | % of SELL signals where price is lower today than on signal date |
+| Avg BUY Return | Average % gain from BUY signal date to today |
+| Avg SELL Return | Average % decline from SELL signal date to today |
+| Profit Factor | Total gain from correct signals ÷ total loss from wrong signals. Above 1.5 = good system. |
 
 ---
 
 ## Trade Performance (`/trade-performance`)
 
-Shows real P&L by pairing each BUY signal with its next SELL or WAIT exit signal for the same stock. This measures actual trading performance rather than direction accuracy alone.
+Shows real P&L by pairing each BUY signal with its next SELL or WAIT exit signal for the same stock. This is the harder, more honest measure — you only get credit for a closed trade, and holding periods are realistic.
 
 - **Entry** — BUY signal date → entry price is the close on that date
 - **Exit** — next SELL or WAIT signal for the same stock → exit price is the close on that date
-- **Open trades** — BUY signals with no exit yet use the latest available price
+- **Open trades** — BUY signals with no exit yet use the latest available price (marked "OPEN")
 - **Lookback** — 90 / 180 / 365 days
+- **Deduplication** — consecutive BUY refreshes for the same stock are collapsed into one trade. Only one open position is tracked per stock at a time; a new entry is only recorded after the previous trade closes (SELL/WAIT signal received).
 
 ### Summary cards
 | Card | Good threshold | What it means |
 |------|---------------|--------------|
 | Win Rate | > 50% | % of closed trades that made money |
-| Profit Factor | > 1.5 | Total profit from winners ÷ total loss from losers. The single most important metric — above 1.0 = system makes money over time |
+| Profit Factor | > 1.5 | Total profit from winners ÷ total loss from losers. Above 1.0 = system makes money over time |
 | Avg Return | > 1% | Average % gain or loss per closed trade |
 | Avg Win | — | Typical winning trade size |
 | Avg Loss | — | Typical losing trade size. You want Avg Win > Avg Loss |
