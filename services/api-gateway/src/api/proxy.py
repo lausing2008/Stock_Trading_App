@@ -22,6 +22,7 @@ _ROUTES = {
     "signals": _settings.signal_engine_url,
     "strategies": _settings.strategy_engine_url,
     "backtest": _settings.strategy_engine_url,
+    "backtests": _settings.strategy_engine_url,
     "portfolio": _settings.portfolio_optimizer_url,
     "watchlist": _settings.market_data_url,
     "watchlists": _settings.market_data_url,

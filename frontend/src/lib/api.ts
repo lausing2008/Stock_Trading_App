@@ -46,6 +46,9 @@ export const api = {
   getStrategy: (sid: number) => request<{ id: number; name: string; rule_dsl: { entry: object; exit?: object }; description?: string }>(`/strategies/${sid}`),
   deleteStrategy: (sid: number) => request<{ status: string; id: number }>(`/strategies/${sid}`, { method: 'DELETE' }),
   backtest: (body: unknown) => request<Backtest>(`/backtest`, { method: 'POST', body: JSON.stringify(body) }),
+  listBacktests: () => request<BacktestRun[]>(`/backtests`),
+  getBacktest: (id: number) => request<BacktestDetail>(`/backtests/${id}`),
+  deleteBacktest: (id: number) => request<{ status: string; id: number }>(`/backtests/${id}`, { method: 'DELETE' }),
   optimizePortfolio: (body: unknown) => request<PortfolioWeights>(`/portfolio/optimize`, { method: 'POST', body: JSON.stringify(body) }),
   ingest: (symbols: string[], force = false) => request<{ status: string; symbols?: number }>(`/admin/ingest`, { method: 'POST', body: JSON.stringify({ symbols, force }) }),
   trainAll: () => request<{ status: string; count: number; symbols: string[] }>(`/ml/train_all`, { method: 'POST' }),
@@ -214,7 +217,7 @@ export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 
 export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null };
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {
-  backtest_id: number;
+  backtest_id: number | null;
   total_return: number;
   cagr: number;
   sharpe: number;
@@ -223,6 +226,27 @@ export type Backtest = {
   profit_factor: number;
   n_trades: number;
   equity_curve: { ts: string; equity: number }[];
+  trades: { entry_ts: string; entry: number; exit_ts?: string; exit?: number; ret?: number }[];
+};
+export type BacktestRun = {
+  id: number;
+  name: string;
+  symbol: string;
+  start: string;
+  end: string;
+  total_return: number;
+  cagr: number;
+  sharpe: number;
+  max_drawdown: number;
+  win_rate: number;
+  profit_factor: number;
+  n_trades: number;
+  created_at: string;
+};
+export type BacktestDetail = BacktestRun & {
+  rule_dsl: { entry: any; exit?: any };
+  equity_curve: { ts: string; equity: number }[];
+  trades: { entry_ts: string; entry: number; exit_ts?: string; exit?: number; ret?: number }[];
 };
 export type PortfolioWeights = {
   method: string;

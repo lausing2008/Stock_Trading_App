@@ -26,8 +26,9 @@ class StrategyIn(BaseModel):
 
 
 class BacktestIn(BaseModel):
-    strategy_id: int | None = None   # provide this OR rule_dsl, not both
-    rule_dsl: dict | None = None     # run ad-hoc without saving to DB
+    strategy_id: int | None = None   # load an existing saved strategy
+    rule_dsl: dict | None = None     # ad-hoc rules — auto-saved under `name`
+    name: str | None = None          # display name when rule_dsl is provided
     symbol: str
     start: date | None = None
     end: date | None = None
@@ -113,7 +114,7 @@ def backtest(
     username: str = Depends(get_current_username),
     session: Session = Depends(get_session),
 ):
-    # Resolve the rule DSL — from a saved strategy or supplied ad-hoc.
+    # Resolve rule DSL and strategy row.
     if body.strategy_id is not None:
         strat = session.get(Strategy, body.strategy_id)
         if not strat:
@@ -121,12 +122,17 @@ def backtest(
         if strat.owner != username:
             raise HTTPException(403, "Not your strategy")
         rule_dsl = strat.rule_dsl
-        strat_id = strat.id
     elif body.rule_dsl is not None:
         if "entry" not in body.rule_dsl:
             raise HTTPException(400, "rule_dsl must contain 'entry' rule")
         rule_dsl = body.rule_dsl
-        strat_id = None
+        strat = Strategy(
+            name=body.name or f"Run — {body.symbol}",
+            rule_dsl=rule_dsl,
+            owner=username,
+        )
+        session.add(strat)
+        session.flush()  # populate strat.id before using it below
     else:
         raise HTTPException(400, "Provide either strategy_id or rule_dsl")
 
@@ -139,26 +145,106 @@ def backtest(
     engine = BacktestEngine()
     result = engine.run(df, rule_dsl.get("entry"), rule_dsl.get("exit"))
 
-    # Only persist when running against a saved strategy.
-    if strat_id is not None:
-        bt = Backtest(
-            strategy_id=strat_id,
-            universe=[body.symbol],
-            start=start,
-            end=end,
-            timeframe=TimeFrame.D1,
-            sharpe=result.sharpe,
-            max_drawdown=result.max_drawdown,
-            win_rate=result.win_rate,
-            cagr=result.cagr,
-            profit_factor=result.profit_factor,
-            total_return=result.total_return,
-            equity_curve={"data": result.equity_curve[-500:]},
-            trades={"data": result.trades},
-        )
-        session.add(bt)
-        session.commit()
-        session.refresh(bt)
-        return {"backtest_id": bt.id, **asdict(result)}
+    bt = Backtest(
+        strategy_id=strat.id,
+        universe=[body.symbol],
+        start=start,
+        end=end,
+        timeframe=TimeFrame.D1,
+        sharpe=result.sharpe,
+        max_drawdown=result.max_drawdown,
+        win_rate=result.win_rate,
+        cagr=result.cagr,
+        profit_factor=result.profit_factor,
+        total_return=result.total_return,
+        equity_curve={"data": result.equity_curve[-500:]},
+        trades={"data": result.trades},
+    )
+    session.add(bt)
+    session.commit()
+    session.refresh(bt)
+    return {"backtest_id": bt.id, **asdict(result)}
 
-    return {"backtest_id": None, **asdict(result)}
+
+@router.get("/backtests")
+def list_backtests(
+    username: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    rows = session.execute(
+        select(Backtest, Strategy)
+        .join(Strategy, Backtest.strategy_id == Strategy.id)
+        .where(Strategy.owner == username)
+        .order_by(Backtest.created_at.desc())
+    ).all()
+    return [
+        {
+            "id": bt.id,
+            "name": strat.name,
+            "symbol": bt.universe[0] if bt.universe else "",
+            "start": bt.start.isoformat(),
+            "end": bt.end.isoformat(),
+            "total_return": bt.total_return,
+            "cagr": bt.cagr,
+            "sharpe": bt.sharpe,
+            "max_drawdown": bt.max_drawdown,
+            "win_rate": bt.win_rate,
+            "profit_factor": bt.profit_factor,
+            "n_trades": len(bt.trades.get("data", [])) if bt.trades else 0,
+            "created_at": bt.created_at.isoformat() if bt.created_at else None,
+        }
+        for bt, strat in rows
+    ]
+
+
+@router.get("/backtests/{bid}")
+def get_backtest(
+    bid: int,
+    username: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    bt = session.get(Backtest, bid)
+    if not bt:
+        raise HTTPException(404, "Not found")
+    strat = session.get(Strategy, bt.strategy_id)
+    if not strat or strat.owner != username:
+        raise HTTPException(403, "Not your backtest")
+    return {
+        "id": bt.id,
+        "name": strat.name,
+        "rule_dsl": strat.rule_dsl,
+        "symbol": bt.universe[0] if bt.universe else "",
+        "start": bt.start.isoformat(),
+        "end": bt.end.isoformat(),
+        "total_return": bt.total_return,
+        "cagr": bt.cagr,
+        "sharpe": bt.sharpe,
+        "max_drawdown": bt.max_drawdown,
+        "win_rate": bt.win_rate,
+        "profit_factor": bt.profit_factor,
+        "equity_curve": bt.equity_curve.get("data", []) if bt.equity_curve else [],
+        "trades": bt.trades.get("data", []) if bt.trades else [],
+        "n_trades": len(bt.trades.get("data", [])) if bt.trades else 0,
+        "created_at": bt.created_at.isoformat() if bt.created_at else None,
+    }
+
+
+@router.delete("/backtests/{bid}")
+def delete_backtest(
+    bid: int,
+    username: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    bt = session.get(Backtest, bid)
+    if not bt:
+        raise HTTPException(404, "Not found")
+    strat = session.get(Strategy, bt.strategy_id)
+    if not strat or strat.owner != username:
+        raise HTTPException(403, "Not your backtest")
+    session.delete(bt)
+    # Clean up orphaned strategy (no other backtests use it)
+    remaining = session.query(Backtest).filter(Backtest.strategy_id == strat.id).count()
+    if remaining == 0:
+        session.delete(strat)
+    session.commit()
+    return {"status": "deleted", "id": bid}
