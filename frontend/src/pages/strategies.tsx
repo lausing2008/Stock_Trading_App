@@ -289,21 +289,34 @@ export default function StrategiesPage() {
     finally { setSaving(false); }
   }
 
-  async function handleLoad(id: number) {
+  async function handleRetest(id: number) {
     setLoading(id);
+    setError('');
+    setResult(null);
+    setTrades([]);
+    setSavedOk(false);
     try {
       const s = await api.getStrategy(id);
       const dsl = s.rule_dsl as { entry: any; exit?: any };
+      // Populate the form so the user can see what ran
       setEntry(fromNode(dsl.entry));
       setExit(fromNode(dsl.exit ?? null));
       setName(s.name.replace(/ — .+$/, ''));
       setSelectedPreset('');
-      setResult(null);
-      setError('');
-      setTrades([]);
+      setRunSym(symbol);
+      setRunning(true);
+      // Run immediately with the fetched rule_dsl — avoids async state-update lag
+      const res = await api.backtest({ rule_dsl: dsl, symbol, start: startDate, end: endDate });
+      setResult(res);
+      const raw = res as unknown as { trades: TradeRecord[] };
+      setTrades(Array.isArray(raw.trades) ? raw.trades : []);
       window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch {}
-    finally { setLoading(null); }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Backtest failed — make sure this stock has enough price history.');
+    } finally {
+      setLoading(null);
+      setRunning(false);
+    }
   }
 
   async function handleDelete(id: number) {
@@ -616,11 +629,11 @@ export default function StrategiesPage() {
                 <span style={{ fontSize: '12px', fontWeight: 600, color: '#94a3b8', flex: 1 }}>{s.name}</span>
                 <span style={{ fontSize: '10px', color: '#1e293b', fontFamily: 'monospace' }}>#{s.id}</span>
                 <button
-                  onClick={() => handleLoad(s.id)}
-                  disabled={loading === s.id}
-                  style={{ background: 'none', border: '1px solid rgba(99,102,241,0.35)', color: '#818cf8', cursor: 'pointer', fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '5px', opacity: loading === s.id ? 0.4 : 1 }}
-                  title="Load into backtester"
-                >{loading === s.id ? '…' : 'Load'}</button>
+                  onClick={() => handleRetest(s.id)}
+                  disabled={loading === s.id || running}
+                  style={{ background: 'none', border: '1px solid rgba(99,102,241,0.35)', color: '#818cf8', cursor: 'pointer', fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '5px', opacity: (loading === s.id || running) ? 0.4 : 1 }}
+                  title="Run backtest with this strategy"
+                >{loading === s.id ? '⏳' : 'Retest'}</button>
                 <button
                   onClick={() => handleDelete(s.id)}
                   disabled={deleting === s.id}
