@@ -7,10 +7,26 @@ function authHeader(): Record<string, string> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: { 'content-type': 'application/json', ...authHeader(), ...(init?.headers ?? {}) },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  let r: Response;
+  try {
+    r = await fetch(`${BASE}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json', ...authHeader(), ...(init?.headers ?? {}) },
+    });
+  } catch (e: unknown) {
+    if (e instanceof Error && e.name === 'AbortError') throw new Error('Request timed out');
+    throw e;
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (r.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    localStorage.removeItem('stockai_jwt');
+    window.location.href = '/login';
+    throw new Error('Session expired');
+  }
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   if (r.status === 204 || r.headers.get('content-length') === '0') return undefined as T;
   return (await r.json()) as T;

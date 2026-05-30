@@ -112,6 +112,10 @@ function toNode(conds: Cond[]): object {
 
 function fmtPct(n: number, d = 1) { return `${n >= 0 ? '+' : ''}${(n * 100).toFixed(d)}%`; }
 function fmtDate(iso: string) { return iso.split('T')[0]; }
+function fmtSavedAt(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
 function threeYearsAgo() { const d = new Date(); d.setFullYear(d.getFullYear() - 3); return d.toISOString().split('T')[0]; }
 function today() { return new Date().toISOString().split('T')[0]; }
 function retColor(n: number) { return n >= 0 ? '#4ade80' : '#f87171'; }
@@ -224,7 +228,8 @@ export default function StrategiesPage() {
   const [error, setError]       = useState('');
   const [showAll, setShowAll]   = useState(false);
 
-  const [deleting,    setDeleting]    = useState<number | null>(null);
+  const [deleting,      setDeleting]      = useState<number | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [loadingRun,  setLoadingRun]  = useState<number | null>(null);
   const [compareIds,  setCompareIds]  = useState<number[]>([]);
   const [compareData, setCompareData] = useState<Map<number, BacktestDetail>>(new Map());
@@ -269,6 +274,10 @@ export default function StrategiesPage() {
 
   async function runBacktest() {
     if (!symbol || entry.length === 0) return;
+    if (startDate && endDate && endDate <= startDate) {
+      setError('End date must be after start date.');
+      return;
+    }
     setRunning(true); setError(''); setResult(null); setRunSym(symbol);
     try {
       const rule_dsl: { entry: object; exit?: object } = { entry: toNode(entry) };
@@ -309,12 +318,15 @@ export default function StrategiesPage() {
       setSelectedPreset('');
       setResult(detail);
       setRunSym(detail.symbol);
+      setError('');
       window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch {}
-    finally { setLoadingRun(null); }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to load backtest.');
+    } finally { setLoadingRun(null); }
   }
 
   async function handleDelete(id: number) {
+    setConfirmDelete(null);
     setDeleting(id);
     try {
       await api.deleteBacktest(id);
@@ -322,8 +334,9 @@ export default function StrategiesPage() {
       setCompareData(prev => { const m = new Map(prev); m.delete(id); return m; });
       if (result?.id === id) setResult(null);
       await mutateSaved();
-    } catch {}
-    finally { setDeleting(null); }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to delete backtest.');
+    } finally { setDeleting(null); }
   }
 
   async function toggleCompare(id: number) {
@@ -572,7 +585,10 @@ export default function StrategiesPage() {
                   {/* Info */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: '12px', fontWeight: 700, color: '#cbd5e1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{run.name}</div>
-                    <div style={{ fontSize: '10px', color: '#334155', marginTop: '2px' }}>{run.start} → {run.end} · {run.n_trades} trades</div>
+                    <div style={{ fontSize: '10px', color: '#334155', marginTop: '2px' }}>
+                      {run.start} → {run.end} · {run.n_trades} trades
+                      {run.created_at && <span style={{ color: '#1e3a5f', marginLeft: '6px' }}>· {fmtSavedAt(run.created_at)}</span>}
+                    </div>
                   </div>
 
                   {/* Metrics */}
@@ -591,15 +607,29 @@ export default function StrategiesPage() {
                   </div>
 
                   {/* Actions */}
-                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0, alignItems: 'center' }}>
                     <button onClick={() => handleLoad(run.id)} disabled={loadingRun === run.id}
                       style={{ background: 'none', border: '1px solid rgba(99,102,241,0.35)', color: '#818cf8', cursor: 'pointer', fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '5px', opacity: loadingRun === run.id ? 0.4 : 1 }}
                       title="Load result">
                       {loadingRun === run.id ? '…' : 'Load'}
                     </button>
-                    <button onClick={() => handleDelete(run.id)} disabled={deleting === run.id}
-                      style={{ background: 'none', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '13px', padding: '2px 4px', opacity: deleting === run.id ? 0.4 : 1 }}
-                      title="Delete">✕</button>
+                    {confirmDelete === run.id ? (
+                      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '10px', color: '#f87171', whiteSpace: 'nowrap' }}>Delete?</span>
+                        <button onClick={() => handleDelete(run.id)} disabled={deleting === run.id}
+                          style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', cursor: 'pointer', fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px' }}>
+                          Yes
+                        </button>
+                        <button onClick={() => setConfirmDelete(null)}
+                          style={{ background: 'none', border: '1px solid #1e293b', color: '#475569', cursor: 'pointer', fontSize: '10px', padding: '2px 7px', borderRadius: '4px' }}>
+                          No
+                        </button>
+                      </div>
+                    ) : (
+                      <button onClick={() => setConfirmDelete(run.id)} disabled={deleting === run.id}
+                        style={{ background: 'none', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '13px', padding: '2px 4px', opacity: deleting === run.id ? 0.4 : 1 }}
+                        title="Delete">✕</button>
+                    )}
                   </div>
                 </div>
               );
@@ -653,18 +683,17 @@ export default function StrategiesPage() {
                     { label: 'Total Return',  vals: compareRuns.map(r => r.total_return),   fmt: (v: number) => fmtPct(v),                       higherBetter: true  },
                     { label: 'CAGR',          vals: compareRuns.map(r => r.cagr),            fmt: (v: number) => fmtPct(v),                       higherBetter: true  },
                     { label: 'Sharpe Ratio',  vals: compareRuns.map(r => r.sharpe),          fmt: (v: number) => v.toFixed(2),                    higherBetter: true  },
-                    { label: 'Max Drawdown',  vals: compareRuns.map(r => r.max_drawdown),    fmt: (v: number) => fmtPct(v),                       higherBetter: false },
+                    { label: 'Max Drawdown',  vals: compareRuns.map(r => r.max_drawdown),    fmt: (v: number) => fmtPct(v),                       higherBetter: true  },
                     { label: 'Win Rate',      vals: compareRuns.map(r => r.win_rate),        fmt: (v: number) => `${(v * 100).toFixed(0)}%`,      higherBetter: true  },
                     { label: 'Profit Factor', vals: compareRuns.map(r => r.profit_factor),   fmt: (v: number) => v.toFixed(2),                    higherBetter: true  },
                     { label: 'Trades',        vals: compareRuns.map(r => r.n_trades),        fmt: (v: number) => String(v),                       higherBetter: null  },
                   ].map(({ label, vals, fmt, higherBetter }, ri) => {
-                    const best = higherBetter === true ? Math.max(...vals) : higherBetter === false ? Math.max(...vals) : null;
                     return (
                       <tr key={label} style={{ background: ri % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
                         <td style={{ padding: '9px 12px', color: '#475569', fontSize: '11px', fontWeight: 600, borderBottom: '1px solid #0a111f' }}>{label}</td>
                         {vals.map((v, i) => {
                           const isBest = higherBetter !== null && (
-                            higherBetter ? v === Math.max(...vals) : v === Math.max(...vals)
+                            higherBetter ? v === Math.max(...vals) : v === Math.min(...vals)
                           );
                           return (
                             <td key={i} style={{ textAlign: 'right', padding: '9px 12px', fontWeight: isBest ? 800 : 500, color: isBest ? COMPARE_COLORS[i] : '#64748b', fontSize: '12px', borderBottom: '1px solid #0a111f' }}>

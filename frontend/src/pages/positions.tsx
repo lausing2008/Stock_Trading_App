@@ -96,6 +96,8 @@ export default function Positions() {
   const [refreshing, setRefreshing]       = useState(false);
   const [sortKey, setSortKey]             = useState<SortKey>('symbol');
   const [sortAsc, setSortAsc]             = useState(true);
+  const [toast, setToast]                 = useState<string | null>(null);
+  const [confirmRemoveId, setConfirmRemoveId] = useState<number | null>(null);
 
   const { data: positions = [], mutate: mutatePositions } = useSWR<UserPosition[]>('positions', () => api.listPositions());
   const { data: cash = { USD: 0, HKD: 0 }, mutate: mutateCash } = useSWR<CashByMarket>('positions/cash', () => api.getCash());
@@ -126,27 +128,37 @@ export default function Positions() {
   }, [mutatePrices]);
 
   /* ── Actions ── */
+  function showToast(msg: string) {
+    setToast(msg);
+    setTimeout(() => setToast(null), 4000);
+  }
+
   function handleModalConfirm(shares: number, price: number, symbol?: string, currency?: string) {
     if (!modal) return;
     setModal(null);
     if (modal.mode === 'add') {
       api.addPosition({ symbol: symbol!, shares, price, currency: currency ?? 'USD' })
-        .then(() => mutatePositions()).catch(console.error);
+        .then(() => mutatePositions())
+        .catch(e => showToast(`Failed to add position: ${e instanceof Error ? e.message : 'Unknown error'}`));
       return;
     }
     if (!modal.posId) return;
     if (modal.mode === 'buy') {
       api.buyMorePosition(modal.posId, { shares, price })
-        .then(() => mutatePositions()).catch(console.error);
+        .then(() => mutatePositions())
+        .catch(e => showToast(`Failed to buy: ${e instanceof Error ? e.message : 'Unknown error'}`));
     }
     if (modal.mode === 'sell') {
       api.sellPosition(modal.posId, { shares, price })
-        .then(() => mutatePositions()).catch(console.error);
+        .then(() => mutatePositions())
+        .catch(e => showToast(`Failed to sell: ${e instanceof Error ? e.message : 'Unknown error'}`));
     }
   }
 
   function removePosition(id: number) {
-    api.removePosition(id).then(() => mutatePositions()).catch(console.error);
+    setConfirmRemoveId(null);
+    api.removePosition(id).then(() => mutatePositions())
+      .catch(e => showToast(`Failed to remove position: ${e instanceof Error ? e.message : 'Unknown error'}`));
   }
 
   function updateCash(currency: 'USD' | 'HKD', value: number) {
@@ -402,7 +414,15 @@ export default function Positions() {
                     <button onClick={() => setModal({ mode: 'sell', posId: r.id })} style={{ padding: '3px 7px', borderRadius: '4px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', fontSize: '9px', fontWeight: 800, cursor: 'pointer' }}>SELL</button>
                     <button onClick={() => toggleWatch(r.symbol)} title={watchedSet.has(r.symbol) ? 'Unwatch' : 'Watch'} style={{ padding: '3px 6px', borderRadius: '4px', background: watchedSet.has(r.symbol) ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)', border: `1px solid ${watchedSet.has(r.symbol) ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.08)'}`, color: watchedSet.has(r.symbol) ? '#818cf8' : '#475569', fontSize: '11px', cursor: 'pointer' }}>★</button>
                     <button onClick={() => setShowTradesFor(showTradesFor === r.id ? null : r.id)} style={{ padding: '3px 6px', borderRadius: '4px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#64748b', fontSize: '10px', cursor: 'pointer' }}>{showTradesFor === r.id ? '▲' : '▼'}</button>
-                    <button onClick={() => removePosition(r.id)} style={{ background: 'transparent', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '11px', padding: '3px 4px' }} className="del-btn">✕</button>
+                    {confirmRemoveId === r.id ? (
+                      <>
+                        <span style={{ fontSize: '10px', color: '#f87171' }}>Remove?</span>
+                        <button onClick={() => removePosition(r.id)} style={{ padding: '2px 6px', borderRadius: '4px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', fontSize: '9px', fontWeight: 800, cursor: 'pointer' }}>Yes</button>
+                        <button onClick={() => setConfirmRemoveId(null)} style={{ padding: '2px 6px', borderRadius: '4px', background: 'none', border: '1px solid #1e293b', color: '#475569', fontSize: '9px', cursor: 'pointer' }}>No</button>
+                      </>
+                    ) : (
+                      <button onClick={() => setConfirmRemoveId(r.id)} style={{ background: 'transparent', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '11px', padding: '3px 4px' }} className="del-btn">✕</button>
+                    )}
                   </div>
                 </div>
 
@@ -428,6 +448,11 @@ export default function Positions() {
         );
       })()}
 
+      {toast && (
+        <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', zIndex: 2000, background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', borderRadius: '8px', padding: '10px 20px', fontSize: '13px', fontWeight: 600, boxShadow: '0 8px 24px rgba(0,0,0,0.4)', maxWidth: '90vw', textAlign: 'center' }}>
+          {toast}
+        </div>
+      )}
       {modal && <TradeModal mode={modal.mode} position={modalPos} currentPrice={modalCurrentPrice} onConfirm={handleModalConfirm} onClose={() => setModal(null)} />}
 
       <style>{`
