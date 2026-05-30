@@ -1361,6 +1361,8 @@ Return ONLY valid JSON — no markdown, no prose:
                     {card('Dividend Yield', f.dividend_yield != null ? fmtPct(f.dividend_yield) : '—', f.dividend_rate != null ? `$${f.dividend_rate.toFixed(2)}/yr` : undefined)}
                     {card('Beta', fmtNum(f.beta), 'vs market')}
                     {card('Shares Out', fmtBig(f.shares_outstanding))}
+                    {card('Volume (Today)', fmtBig(liveQuote?.volume), undefined, '#94a3b8')}
+                    {card('Avg Vol (3M)', fmtBig(f.average_volume), liveQuote?.volume != null && f.average_volume != null && f.average_volume > 0 ? `${(liveQuote.volume / f.average_volume).toFixed(2)}× avg` : undefined, liveQuote?.volume != null && f.average_volume != null && f.average_volume > 0 ? (liveQuote.volume > f.average_volume * 1.5 ? '#4ade80' : liveQuote.volume < f.average_volume * 0.5 ? '#f87171' : '#94a3b8') : '#94a3b8')}
                   </div>
                 </div>
                 {hi != null && lo != null && (

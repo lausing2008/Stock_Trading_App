@@ -90,6 +90,8 @@ class LatestPriceOut(BaseModel):
     prev_close: float | None
     change_pct: float | None
     currency: str
+    volume: int | None = None
+    avg_volume: int | None = None
 
 
 def _fetch_live_one(symbol: str, currency: str) -> dict | None:
@@ -114,6 +116,14 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
         if price is None:
             return None
 
+        volume = None
+        avg_volume = None
+        try:
+            volume = int(getattr(fi, "last_volume", None) or 0) or None
+            avg_volume = int(getattr(fi, "three_month_average_volume", None) or 0) or None
+        except Exception:
+            pass
+
         change_pct = ((price - prev_close) / prev_close * 100) if prev_close else None
         return {
             "symbol": symbol,
@@ -121,6 +131,8 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
             "prev_close": round(float(prev_close), 4) if prev_close else None,
             "change_pct": round(change_pct, 2) if change_pct is not None else None,
             "currency": currency,
+            "volume": volume,
+            "avg_volume": avg_volume,
         }
     except Exception as exc:
         log.warning("live_price.failed", symbol=symbol, error=str(exc))
@@ -176,12 +188,24 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
             price = float(closes.iloc[-1])
             prev_close = float(closes.iloc[-2]) if len(closes) > 1 else None
             change_pct = ((price - prev_close) / prev_close * 100) if prev_close else None
+
+            try:
+                sym_data = raw[symbol] if len(symbols) > 1 else raw
+                vols = sym_data["Volume"].dropna() if "Volume" in sym_data.columns else pd.Series(dtype=float)
+                volume = int(float(vols.iloc[-1])) if not vols.empty else None
+                avg_volume = int(float(vols.mean())) if len(vols) >= 5 else None
+            except Exception:
+                volume = None
+                avg_volume = None
+
             results.append({
                 "symbol": symbol,
                 "price": round(price, 4),
                 "prev_close": round(prev_close, 4) if prev_close else None,
                 "change_pct": round(change_pct, 2) if change_pct is not None else None,
                 "currency": currency_map.get(symbol, "USD"),
+                "volume": volume,
+                "avg_volume": avg_volume,
             })
             fetched.add(symbol)
         except Exception:
@@ -216,19 +240,20 @@ def _latest_prices_from_db(session: Session) -> list[LatestPriceOut]:
     r1 = ranked.alias("r1")
     r2 = ranked.alias("r2")
     stmt = (
-        select(Stock.symbol, Stock.currency, r1.c.close.label("price"), r2.c.close.label("prev_close"))
+        select(Stock.symbol, Stock.currency, r1.c.close.label("price"), r2.c.close.label("prev_close"), r1.c.volume.label("volume"))
         .join(r1, Stock.id == r1.c.stock_id)
         .outerjoin(r2, (Stock.id == r2.c.stock_id) & (r2.c.rn == 2))
         .where(Stock.active.is_(True))
         .where(r1.c.rn == 1)
     )
     result = []
-    for symbol, currency, price, prev_close in session.execute(stmt).all():
+    for symbol, currency, price, prev_close, volume in session.execute(stmt).all():
         change_pct = ((price - prev_close) / prev_close * 100) if prev_close else None
         result.append(LatestPriceOut(
             symbol=symbol, price=price, prev_close=prev_close,
             change_pct=round(change_pct, 2) if change_pct is not None else None,
             currency=currency,
+            volume=int(volume) if volume is not None else None,
         ))
     return result
 
