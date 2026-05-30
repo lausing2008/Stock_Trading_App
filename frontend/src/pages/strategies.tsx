@@ -209,6 +209,8 @@ export default function StrategiesPage() {
   const [showAll, setShowAll]   = useState(false);
   const [deleting, setDeleting] = useState<number | null>(null);
   const [loading,  setLoading]  = useState<number | null>(null);
+  const [saving,   setSaving]   = useState(false);
+  const [savedOk,  setSavedOk]  = useState(false);
 
   // Load the current Opportunities strategy as default on mount
   useEffect(() => {
@@ -258,20 +260,33 @@ export default function StrategiesPage() {
     setResult(null);
     setTrades([]);
     setRunSym(symbol);
+    setSavedOk(false);
     try {
       const rule_dsl: { entry: object; exit?: object } = { entry: toNode(entry) };
       if (exitRules.length > 0) rule_dsl.exit = toNode(exitRules);
-      const { id } = await api.createStrategy({ name: `${name} — ${symbol}`, rule_dsl });
-      const res = await api.backtest({ strategy_id: id, symbol, start: startDate, end: endDate });
+      const res = await api.backtest({ rule_dsl, symbol, start: startDate, end: endDate });
       setResult(res);
       const raw = res as unknown as { trades: TradeRecord[] };
       setTrades(Array.isArray(raw.trades) ? raw.trades : []);
-      await mutateSaved();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Backtest failed — make sure this stock has enough price history.');
     } finally {
       setRunning(false);
     }
+  }
+
+  async function saveStrategy() {
+    if (!result || entry.length === 0) return;
+    setSaving(true);
+    setSavedOk(false);
+    try {
+      const rule_dsl: { entry: object; exit?: object } = { entry: toNode(entry) };
+      if (exitRules.length > 0) rule_dsl.exit = toNode(exitRules);
+      await api.createStrategy({ name, rule_dsl });
+      await mutateSaved();
+      setSavedOk(true);
+    } catch {}
+    finally { setSaving(false); }
   }
 
   async function handleLoad(id: number) {
@@ -481,8 +496,24 @@ export default function StrategiesPage() {
               <div style={{ fontSize: '15px', fontWeight: 800, color: '#f1f5f9' }}>{name} — {runSymbol}</div>
               <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>{startDate} → {endDate} · {result.n_trades} trades</div>
             </div>
-            <div style={{ fontSize: '28px', fontWeight: 900, color: retColor(result.total_return) }}>
-              {fmtPct(result.total_return)}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ fontSize: '28px', fontWeight: 900, color: retColor(result.total_return) }}>
+                {fmtPct(result.total_return)}
+              </div>
+              <button
+                onClick={saveStrategy}
+                disabled={saving || savedOk}
+                style={{
+                  background: savedOk ? 'rgba(74,222,128,0.12)' : 'rgba(99,102,241,0.15)',
+                  border: savedOk ? '1px solid rgba(74,222,128,0.4)' : '1px solid rgba(99,102,241,0.4)',
+                  color: savedOk ? '#4ade80' : '#818cf8',
+                  padding: '6px 16px', borderRadius: '6px',
+                  fontSize: '12px', fontWeight: 700, cursor: (saving || savedOk) ? 'default' : 'pointer',
+                  opacity: saving ? 0.6 : 1, whiteSpace: 'nowrap',
+                }}
+              >
+                {saving ? 'Saving…' : savedOk ? '✓ Saved' : '+ Save Strategy'}
+              </button>
             </div>
           </div>
 

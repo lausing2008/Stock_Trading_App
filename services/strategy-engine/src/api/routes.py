@@ -26,7 +26,8 @@ class StrategyIn(BaseModel):
 
 
 class BacktestIn(BaseModel):
-    strategy_id: int
+    strategy_id: int | None = None   # provide this OR rule_dsl, not both
+    rule_dsl: dict | None = None     # run ad-hoc without saving to DB
     symbol: str
     start: date | None = None
     end: date | None = None
@@ -109,11 +110,22 @@ def backtest(
     username: str = Depends(get_current_username),
     session: Session = Depends(get_session),
 ):
-    strat = session.get(Strategy, body.strategy_id)
-    if not strat:
-        raise HTTPException(404, "Strategy not found")
-    if strat.owner != username:
-        raise HTTPException(403, "Not your strategy")
+    # Resolve the rule DSL — from a saved strategy or supplied ad-hoc.
+    if body.strategy_id is not None:
+        strat = session.get(Strategy, body.strategy_id)
+        if not strat:
+            raise HTTPException(404, "Strategy not found")
+        if strat.owner != username:
+            raise HTTPException(403, "Not your strategy")
+        rule_dsl = strat.rule_dsl
+        strat_id = strat.id
+    elif body.rule_dsl is not None:
+        if "entry" not in body.rule_dsl:
+            raise HTTPException(400, "rule_dsl must contain 'entry' rule")
+        rule_dsl = body.rule_dsl
+        strat_id = None
+    else:
+        raise HTTPException(400, "Provide either strategy_id or rule_dsl")
 
     start = body.start or (date.today() - timedelta(days=365 * 3))
     end = body.end or date.today()
@@ -122,26 +134,28 @@ def backtest(
         raise HTTPException(404, f"No data for {body.symbol}")
 
     engine = BacktestEngine()
-    entry = strat.rule_dsl.get("entry")
-    exit_rule = strat.rule_dsl.get("exit")
-    result = engine.run(df, entry, exit_rule)
+    result = engine.run(df, rule_dsl.get("entry"), rule_dsl.get("exit"))
 
-    bt = Backtest(
-        strategy_id=strat.id,
-        universe=[body.symbol],
-        start=start,
-        end=end,
-        timeframe=TimeFrame.D1,
-        sharpe=result.sharpe,
-        max_drawdown=result.max_drawdown,
-        win_rate=result.win_rate,
-        cagr=result.cagr,
-        profit_factor=result.profit_factor,
-        total_return=result.total_return,
-        equity_curve={"data": result.equity_curve[-500:]},
-        trades={"data": result.trades},
-    )
-    session.add(bt)
-    session.commit()
-    session.refresh(bt)
-    return {"backtest_id": bt.id, **asdict(result)}
+    # Only persist when running against a saved strategy.
+    if strat_id is not None:
+        bt = Backtest(
+            strategy_id=strat_id,
+            universe=[body.symbol],
+            start=start,
+            end=end,
+            timeframe=TimeFrame.D1,
+            sharpe=result.sharpe,
+            max_drawdown=result.max_drawdown,
+            win_rate=result.win_rate,
+            cagr=result.cagr,
+            profit_factor=result.profit_factor,
+            total_return=result.total_return,
+            equity_curve={"data": result.equity_curve[-500:]},
+            trades={"data": result.trades},
+        )
+        session.add(bt)
+        session.commit()
+        session.refresh(bt)
+        return {"backtest_id": bt.id, **asdict(result)}
+
+    return {"backtest_id": None, **asdict(result)}
