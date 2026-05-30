@@ -96,9 +96,14 @@ const PRESETS: Preset[] = [
   },
   {
     key: 'ai_signal',
-    label: 'AI Signal', icon: '🤖', tagline: 'Approximation of BUY signal',
-    description: 'Mimics the AI engine\'s BUY signal: positive MACD histogram (momentum building), RSI not yet overbought, and price holding above SMA50 trend. Exit when momentum turns or RSI reaches overbought.',
-    entry: [{ feature: 'macd_hist', op: '>', right: '0' }, { feature: 'rsi_14', op: '<', right: '62' }, { feature: 'close', op: '>', right: 'sma_50' }],
+    label: 'AI Signal', icon: '🤖', tagline: 'Mirrors live BUY conditions',
+    description: 'Matches the live AI engine\'s BUY conditions: RSI in the 40–68 sweet spot (not oversold, not overbought), MACD histogram positive (momentum building), and price above SMA50. These are the exact TA thresholds the signal engine uses before applying ML. Exit when MACD histogram turns negative.',
+    entry: [
+      { feature: 'rsi_14', op: '>', right: '40' },
+      { feature: 'rsi_14', op: '<', right: '68' },
+      { feature: 'macd_hist', op: '>', right: '0' },
+      { feature: 'close', op: '>', right: 'sma_50' },
+    ],
     exit:  [{ feature: 'macd_hist', op: '<', right: '0' }],
   },
 ];
