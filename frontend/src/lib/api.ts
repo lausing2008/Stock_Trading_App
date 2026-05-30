@@ -275,7 +275,7 @@ export type PortfolioWeights = {
   diversification?: number | null;
   dropped_symbols?: string[];
 };
-export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string };
+export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string; volume: number | null; avg_volume: number | null };
 export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string };
 export type WatchlistMeta = { id: number; name: string; item_count: number; created_at: string };
