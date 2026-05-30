@@ -192,7 +192,7 @@ class Strategy(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    backtests: Mapped[list["Backtest"]] = relationship(back_populates="strategy")
+    backtests: Mapped[list["Backtest"]] = relationship(back_populates="strategy", cascade="all, delete-orphan")
 
 
 class Backtest(Base):

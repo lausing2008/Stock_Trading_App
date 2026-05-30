@@ -84,6 +84,9 @@ def delete_strategy(
         raise HTTPException(404, "Not found")
     if s.owner != username:
         raise HTTPException(403, "Not your strategy")
+    # Delete backtests first — the SQLAlchemy relationship lacks cascade="delete-orphan"
+    # so without this SQLAlchemy tries to NULL the FK, hitting the NOT NULL constraint.
+    session.query(Backtest).filter(Backtest.strategy_id == sid).delete()
     session.delete(s)
     session.commit()
     return {"status": "deleted", "id": sid}
