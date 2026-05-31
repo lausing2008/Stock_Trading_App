@@ -36,7 +36,8 @@ export type ConditionType =
   | 'price_above' | 'price_below'
   | 'change_pct_above' | 'change_pct_below'
   | 'signal_buy' | 'signal_sell'
-  | 'score_above' | 'score_below';
+  | 'score_above' | 'score_below'
+  | 'confluence_above';
 
 export type AlertCondition =
   | { type: 'price_above';       threshold: number }
@@ -46,7 +47,8 @@ export type AlertCondition =
   | { type: 'signal_buy' }
   | { type: 'signal_sell' }
   | { type: 'score_above';       threshold: number }
-  | { type: 'score_below';       threshold: number };
+  | { type: 'score_below';       threshold: number }
+  | { type: 'confluence_above';  threshold: number };
 
 /** A single alert rule owned by the user. */
 export type StockAlert = {
@@ -129,14 +131,16 @@ export function conditionLabel(c: AlertCondition): string {
     case 'signal_sell':      return `Signal becomes SELL`;
     case 'score_above':      return `K-Score above ${c.threshold}`;
     case 'score_below':      return `K-Score below ${c.threshold}`;
+    case 'confluence_above': return `Confluence score above ${c.threshold}`;
   }
 }
 
 // ─── Alert checker ───────────────────────────────────────────────────────────
 
-type PriceMap  = Record<string, { price: number; change_pct: number | null }>;
-type SignalMap = Record<string, { signal: string; confidence: number }>;
-type ScoreMap  = Record<string, { score: number }>;
+type PriceMap      = Record<string, { price: number; change_pct: number | null }>;
+type SignalMap     = Record<string, { signal: string; confidence: number }>;
+type ScoreMap      = Record<string, { score: number }>;
+type ConfluenceMap = Record<string, { score: number }>;
 
 /**
  * Evaluate all enabled alert rules against the current market snapshot.
@@ -159,6 +163,7 @@ export function checkAlerts(
   prices: PriceMap,
   signals: SignalMap,
   scores: ScoreMap,
+  confluences: ConfluenceMap = {},
 ): Notification[] {
   const now = Date.now();
   const triggered: Notification[] = [];
@@ -227,6 +232,14 @@ export function checkAlerts(
           value = r.score;
         }
         break;
+      case 'confluence_above': {
+        const cf = confluences[alert.symbol];
+        if (cf && cf.score > c.threshold) {
+          message = `${alert.symbol} confluence score ${cf.score} crossed above ${c.threshold}`;
+          value = cf.score;
+        }
+        break;
+      }
     }
 
     if (message) {

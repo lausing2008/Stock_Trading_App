@@ -27,9 +27,10 @@ import { useState, useMemo, useEffect } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type Overview } from '@/lib/api';
+import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 import { askAI, isAiConfigured } from '@/lib/ai';
 
-type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth' | 'aisignal';
+type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth' | 'aisignal' | 'confluence';
 type Market = 'all' | 'US' | 'HK';
 type OutlookDirection = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
 
@@ -49,7 +50,8 @@ const STRATEGIES: { key: Strategy; label: string; icon: string; tagline: string;
   { key: 'short',    label: 'Short-Term', icon: '⚡', tagline: '1–5 day move',               desc: 'High recent momentum and volume expansion. Best for capitalising on short breakouts or pullbacks.' },
   { key: 'longterm', label: 'Long-Term',  icon: '🏛️', tagline: '6–24 month horizon',         desc: 'Undervalued fundamentals with strong growth trajectory. Buy and hold at or below fair value.' },
   { key: 'growth',   label: 'Growth',     icon: '🚀', tagline: 'High growth momentum',       desc: 'Top growth + momentum scores. Companies growing revenue/earnings faster than the market.' },
-  { key: 'aisignal', label: 'AI Signal',  icon: '🤖', tagline: 'BUY-signal stocks only',     desc: 'Only stocks where the AI engine has issued an active BUY signal, ranked by signal confidence and bullish probability.' },
+  { key: 'aisignal',   label: 'AI Signal',   icon: '🤖', tagline: 'BUY-signal stocks only',        desc: 'Only stocks where the AI engine has issued an active BUY signal, ranked by signal confidence and bullish probability.' },
+  { key: 'confluence', label: 'Confluence',  icon: '🎯', tagline: 'All signals aligned',           desc: 'Stocks where AI Signal, K-Score, Technical, and Momentum all point in the same direction. Highest-conviction setups only.' },
 ];
 
 const SIG_COLOR: Record<string, { color: string; bg: string; border: string }> = {
@@ -97,8 +99,9 @@ function scoreFor(
     case 'short':    return mom  * 0.50 + tech * 0.25 + Math.abs(chg) * 3 + vlt * 0.10;
     case 'longterm': return val  * 0.40 + grow * 0.30 + Math.max(0, upside) * 0.6 + vlt * 0.15;
     case 'growth':   return grow * 0.50 + mom  * 0.30 + tech * 0.20;
-    case 'aisignal': return conf * 0.70 + (sig?.bullish_probability ?? 0) * 0.50 + tech * 0.15 + mom * 0.10;
-    default:         return r.score ?? 0;
+    case 'aisignal':   return conf * 0.70 + (sig?.bullish_probability ?? 0) * 0.50 + tech * 0.15 + mom * 0.10;
+    case 'confluence': return confluenceScore(r, sig);
+    default:           return r.score ?? 0;
   }
 }
 
@@ -160,6 +163,11 @@ function getKeyMetric(
       return sig
         ? { label: 'AI Confidence', value: `${sig.confidence.toFixed(0)}%`, color: scoreColor(sig.confidence) }
         : null;
+    case 'confluence': {
+      const cs = confluenceScore(r, sig);
+      const g = confluenceGrade(cs);
+      return { label: 'Confluence', value: `${cs} · ${g.label}`, color: g.color };
+    }
     default:
       return { label: 'K-Score', value: (r.score ?? 0).toFixed(0), color: scoreColor(r.score ?? 0) };
   }
@@ -368,12 +376,13 @@ function analyzeIndicators(
 }
 
 const STRATEGY_FILTER: Record<Strategy, (r: RankingRow, sig?: SignalSummary) => boolean> = {
-  all:      () => true,
-  swing:    (r, sig) => (sig?.signal === 'BUY' || sig?.signal === 'HOLD') && (r.technical ?? 0) >= 45,
-  short:    (r) => (r.momentum ?? 0) >= 40,
-  longterm: (r) => (r.value ?? 0) >= 40 || (r.growth ?? 0) >= 50,
-  growth:   (r) => (r.growth ?? 0) >= 50,
-  aisignal: (_r, sig) => sig?.signal === 'BUY',
+  all:        () => true,
+  swing:      (r, sig) => (sig?.signal === 'BUY' || sig?.signal === 'HOLD') && (r.technical ?? 0) >= 45,
+  short:      (r) => (r.momentum ?? 0) >= 40,
+  longterm:   (r) => (r.value ?? 0) >= 40 || (r.growth ?? 0) >= 50,
+  growth:     (r) => (r.growth ?? 0) >= 50,
+  aisignal:   (_r, sig) => sig?.signal === 'BUY',
+  confluence: (r, sig) => confluenceScore(r, sig) >= 65,
 };
 
 export default function Opportunities() {

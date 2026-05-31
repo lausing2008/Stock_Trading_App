@@ -5,6 +5,7 @@ import Link from 'next/link';
 import '@/styles/globals.css';
 import { getSession, logout, getImpersonatedUser, exitImpersonation } from '@/lib/auth';
 import { checkAlerts, playNotificationSound } from '@/lib/alerts';
+import { confluenceScore } from '@/lib/confluence';
 import { loadSettings } from '@/lib/settings';
 import NotificationBell from '@/components/NotificationBell';
 import { api } from '@/lib/api';
@@ -248,7 +249,13 @@ export default function App({ Component, pageProps }: AppProps) {
         const scores: Record<string, { score: number }> = {};
         for (const r of (rankData.rankings ?? [])) if (r.score != null) scores[r.symbol] = { score: r.score };
 
-        const triggered = checkAlerts(prices, signals, scores);
+        const confluences: Record<string, { score: number }> = {};
+        for (const r of (rankData.rankings ?? [])) {
+          const sig = signals[r.symbol];
+          confluences[r.symbol] = { score: confluenceScore(r, sig) };
+        }
+
+        const triggered = checkAlerts(prices, signals, scores, confluences);
         if (triggered.length > 0) {
           const settings = loadSettings();
           if (settings.notificationSound) playNotificationSound();

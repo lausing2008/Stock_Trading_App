@@ -37,6 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import NewsCard from '@/components/NewsCard';
 import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData } from '@/lib/api';
+import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
@@ -759,6 +760,89 @@ Return ONLY valid JSON — no markdown, no prose:
         <div className="space-y-3">
           {/* AI Signal */}
           {data.signal && <SignalCard signal={data.signal} />}
+
+          {/* Confluence Score + Trade Setup */}
+          {(() => {
+            const ranking = data.ranking;
+            if (!ranking) return null;
+            const sig = data.signal
+              ? { signal: data.signal.signal, confidence: data.signal.confidence }
+              : undefined;
+            const recMean = data.fundamentals?.recommendation_mean ?? null;
+            const cs = confluenceScoreFull(ranking, sig, recMean);
+            const grade = confluenceGrade(cs);
+            const lp2 = allPrices?.find(p => p.symbol === symbol);
+            const curPx = lp2?.price ?? data.prices?.at(-1)?.close;
+            const supports = (data.levels?.support_resistance ?? [])
+              .filter(l => l.kind === 'support' && (curPx == null || l.price < curPx))
+              .sort((a, b) => b.price - a.price);
+            const resistances = (data.levels?.support_resistance ?? [])
+              .filter(l => l.kind === 'resistance' && (curPx == null || l.price > curPx))
+              .sort((a, b) => a.price - b.price);
+            const entryZone = supports[0]?.price;
+            const exitMean = data.fundamentals?.target_price;
+            const exitHigh = data.fundamentals?.target_high;
+            const exitFair = ranking.fair_price;
+            return (
+              <div style={{ background: '#0f172a', border: `1px solid ${grade.color}30`, borderRadius: 8, padding: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>Confluence Score</span>
+                  <span style={{ fontSize: 10, color: '#475569' }}>AI · K-Score · Analyst · TA · Mom</span>
+                </div>
+                {/* Score bar */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: 32, fontWeight: 800, color: grade.color, lineHeight: 1 }}>{cs}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: grade.color }}>{grade.label}</span>
+                    <span style={{ fontSize: 11, color: '#475569', marginLeft: 'auto' }}>/100</span>
+                  </div>
+                  <div style={{ height: 6, borderRadius: 3, background: '#1e293b', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${cs}%`, background: grade.color, borderRadius: 3, transition: 'width 0.4s' }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 5 }}>{grade.description}</div>
+                </div>
+                {/* Position size recommendation */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.03)', border: '1px solid #1e293b', marginBottom: 10 }}>
+                  <span style={{ fontSize: 11, color: '#64748b' }}>Max position size</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: grade.color }}>{grade.maxPositionPct}</span>
+                </div>
+                {/* Entry / Exit targets */}
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Trade setup</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {entryZone && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>Entry zone (nearest support)</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#86efac' }}>${entryZone.toFixed(2)}</span>
+                    </div>
+                  )}
+                  {resistances[0] && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>Nearest resistance</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#f87171' }}>${resistances[0].price.toFixed(2)}</span>
+                    </div>
+                  )}
+                  {exitMean && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>Target 1 (analyst mean)</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#facc15' }}>${exitMean.toFixed(2)}</span>
+                    </div>
+                  )}
+                  {exitHigh && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>Target 2 (analyst high)</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#818cf8' }}>${exitHigh.toFixed(2)}</span>
+                    </div>
+                  )}
+                  {exitFair && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>K-Score fair value</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#38bdf8' }}>${exitFair.toFixed(2)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Position Sizer */}
           {(() => {
