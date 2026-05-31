@@ -301,7 +301,7 @@ const STATUS_STYLE: Record<Status, { bg: string; text: string; border: string; l
   'done':        { bg: 'rgba(74,222,128,0.1)',      text: '#4ade80', border: '#4ade80', label: 'Done'        },
 };
 
-const STORAGE_KEY = 'stockai:improvements';
+const STORAGE_KEY = 'stockai:improvements:v2';
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
