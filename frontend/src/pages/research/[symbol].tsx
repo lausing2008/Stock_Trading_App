@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { api, type ResearchReport, type ChecklistItem } from '@/lib/api';
@@ -146,9 +146,13 @@ export default function ResearchPage() {
 
   const effectiveKey = customApiKey || apiKey;
 
+  useEffect(() => {
+    if (!symbol) return;
+    api.getResearch(symbol).then(r => { setReport(r); setTab('Summary'); }).catch(() => {});
+  }, [symbol]);
+
   const generate = useCallback(async () => {
     if (!symbol) return;
-    if (!effectiveKey) { setError('No API key found. Configure your AI provider in Settings, or enter one below.'); return; }
     setLoading(true);
     setError(null);
     try {
@@ -248,12 +252,14 @@ export default function ResearchPage() {
           <div style={{ fontSize: '13px', color: '#334155', maxWidth: '480px', margin: '0 auto', lineHeight: 1.6 }}>
             Click <strong style={{ color: '#4ade80' }}>Generate Report</strong> to run a comprehensive AI-powered analysis covering technical, fundamental, company, industry, and economic dimensions.
           </div>
-          {!effectiveKey && (
-            <div style={{ marginTop: '20px', padding: '14px', borderRadius: '10px', border: '1px solid rgba(250,204,21,0.3)', background: 'rgba(250,204,21,0.05)', maxWidth: '400px', margin: '20px auto 0' }}>
-              <div style={{ fontSize: '12px', color: '#facc15', marginBottom: '8px' }}>No AI API key found — configure in Settings or enter below:</div>
-              <input value={customApiKey} onChange={e => setCustomApiKey(e.target.value)} type="password" placeholder="sk-ant-…" style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #334155', background: '#080f1e', color: '#f1f5f9', fontSize: '13px', boxSizing: 'border-box' }} />
+          <div style={{ marginTop: '20px', padding: '14px', borderRadius: '10px', border: '1px solid rgba(250,204,21,0.3)', background: 'rgba(250,204,21,0.05)', maxWidth: '400px', margin: '20px auto 0' }}>
+            <div style={{ fontSize: '12px', color: '#facc15', marginBottom: '4px' }}>
+              {effectiveKey ? 'API key configured — full AI analysis will run.' : 'No API key — computed scores will work, AI narrative will be skipped. Optionally add a key:'}
             </div>
-          )}
+            {!effectiveKey && (
+              <input value={customApiKey} onChange={e => setCustomApiKey(e.target.value)} type="password" placeholder="sk-ant-…" style={{ width: '100%', marginTop: '8px', padding: '8px 12px', borderRadius: '6px', border: '1px solid #334155', background: '#080f1e', color: '#f1f5f9', fontSize: '13px', boxSizing: 'border-box' }} />
+            )}
+          </div>
         </div>
       )}
 

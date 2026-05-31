@@ -6,9 +6,9 @@ function authHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let r: Response;
   try {
     r = await fetch(`${BASE}${path}`, {
@@ -201,7 +201,7 @@ export const api = {
 
   // Research Intelligence Engine
   generateResearch: (symbol: string, body: ResearchRequestBody) =>
-    request<ResearchReport>(`/research/${symbol}`, { method: 'POST', body: JSON.stringify(body) }),
+    request<ResearchReport>(`/research/${symbol}`, { method: 'POST', body: JSON.stringify(body) }, 90_000),
   getResearch: (symbol: string) => request<ResearchReport>(`/research/${symbol}`),
   clearResearch: (symbol: string) => request(`/research/${symbol}`, { method: 'DELETE' }),
 };
