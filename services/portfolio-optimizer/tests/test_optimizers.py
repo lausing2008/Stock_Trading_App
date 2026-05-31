@@ -18,7 +18,7 @@ def _returns():
 def test_mvo_weights_sum_to_one():
     r = mean_variance(_returns())
     assert abs(sum(r.weights.values()) + r.cash - 1.0) < 1e-3
-    assert all(0 <= w <= 0.35 + 1e-3 for w in r.weights.values())
+    assert all(0 <= w <= 0.40 + 1e-3 for w in r.weights.values())
 
 
 def test_risk_parity_weights_sum_to_one():

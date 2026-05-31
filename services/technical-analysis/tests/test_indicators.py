@@ -13,7 +13,8 @@ def _series(n=200, seed=0):
 
 def test_sma_window():
     s = _series()
-    assert sma(s, 20).iloc[-1] == s.tail(20).mean()
+    import pytest
+    assert sma(s, 20).iloc[-1] == pytest.approx(s.tail(20).mean(), rel=1e-9)
 
 
 def test_rsi_in_range():
