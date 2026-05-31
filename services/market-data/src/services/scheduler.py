@@ -180,29 +180,44 @@ def _confluence_score_full(
     )
 
 
-def _is_conviction_buy(signal_data: dict) -> tuple[bool, list[str], list[str]]:
-    """Check all 5 technical conviction layers for a BUY signal.
+def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[bool, list[str], list[str]]:
+    """Check all conviction layers for a BUY signal across all 4 framework layers.
 
     Returns (all_passed, passed_layers, failed_layers).
 
-    The 5 layers:
-      1. Uptrend structure  — SMA50 > SMA200 AND price > SMA50
-      2. Entry timing       — RSI 45-65 AND Stoch RSI recovering from oversold
-      3. MACD momentum      — histogram positive+rising OR zero-line crossover
-      4. Volume confirms    — OBV bullish
-      5. ML confirms TA     — bullish probability > 70%
+    Layer 1 — Fundamental filter   : Analyst bullish (checked separately before call)
+    Layer 2 — Conviction score     : K-Score ≥ 55
+    Layer 3 — Timing trigger       : AI Signal = BUY (checked separately)
+    Layer 4 — Technical confirmation:
+        4a. Uptrend structure       — SMA50 > SMA200 AND price > SMA50
+        4b. Entry timing            — RSI 45-65 AND Stoch RSI recovering from oversold
+        4c. MACD momentum           — histogram positive+rising OR zero-line crossover
+        4d. Volume confirms         — OBV bullish
+        4e. Trend has real strength — ADX > 25 (signals reliable only in trending market)
+    Layer 5 — ML confirms TA       : ML probability > 70%
+
+    Disqualifiers (false-BUY flags from FEATURES.md — block even if all layers pass):
+        • Bearish RSI divergence (price rising but momentum fading)
+        • Stoch RSI overbought (RSI itself overextended)
     """
     reasons = signal_data.get("reasons") or {}
     passed: list[str] = []
     failed: list[str] = []
 
-    # 1. Clean uptrend structure
+    # Layer 2 — K-Score conviction (≥ 55 = positive territory)
+    if kscore is not None:
+        if kscore >= 55:
+            passed.append(f"K-Score: {kscore:.0f} — conviction positive")
+        else:
+            failed.append(f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case")
+
+    # Layer 4a — Clean uptrend structure
     if reasons.get("sma50_above_sma200") and reasons.get("trend_above_sma50"):
         passed.append("Uptrend: SMA50 > SMA200, price > SMA50")
     else:
         failed.append("Uptrend structure not aligned (SMA50/SMA200/price)")
 
-    # 2. Entry timing — dip bought, not overextended
+    # Layer 4b — Entry timing: dip bought, not overextended
     rsi = reasons.get("rsi")
     stoch_k = float(reasons.get("stoch_rsi_k") or 50)
     stoch_cross_up = bool(reasons.get("stoch_rsi_cross_up"))
@@ -219,7 +234,7 @@ def _is_conviction_buy(signal_data: dict) -> tuple[bool, list[str], list[str]]:
             parts.append("Stoch RSI not recovering from oversold")
         failed.append("Entry timing: " + "; ".join(parts))
 
-    # 3. MACD momentum confirmed
+    # Layer 4c — MACD momentum confirmed
     macd_hist = float(reasons.get("macd_hist") or 0)
     macd_rising = bool(reasons.get("macd_rising"))
     macd_zero_cross = bool(reasons.get("macd_zero_cross_up"))
@@ -228,19 +243,33 @@ def _is_conviction_buy(signal_data: dict) -> tuple[bool, list[str], list[str]]:
     else:
         failed.append("MACD: momentum not confirmed (histogram negative or falling)")
 
-    # 4. Volume confirms direction
+    # Layer 4d — Volume confirms direction
     if reasons.get("obv_bullish"):
         passed.append("OBV: volume confirming price direction")
     else:
         failed.append("OBV: volume not confirming direction")
 
-    # 5. ML model agrees with TA
+    # Layer 4e — ADX: trend has real strength (signals unreliable in choppy market)
+    if reasons.get("adx_trending"):
+        adx = reasons.get("adx", 0)
+        passed.append(f"ADX {float(adx):.0f}: trend confirmed, signals reliable")
+    else:
+        adx = reasons.get("adx", 0)
+        failed.append(f"ADX {float(adx):.0f} < 25: market choppy, signals unreliable")
+
+    # Layer 5 — ML model agrees with TA
     ml_prob = reasons.get("ml_probability")
     if ml_prob is not None and float(ml_prob) > 0.70:
         passed.append(f"ML: {float(ml_prob) * 100:.0f}% bullish probability")
     else:
         prob_str = f"{float(ml_prob) * 100:.0f}%" if ml_prob is not None else "unavailable"
         failed.append(f"ML probability {prob_str} (need >70%)")
+
+    # Disqualifiers — false-BUY flags that block regardless of layer scores
+    if reasons.get("rsi_divergence") == "bearish":
+        failed.append("Bearish RSI divergence: price rising but momentum fading — high false-BUY risk")
+    if bool(reasons.get("stoch_rsi_overbought")):
+        failed.append("Stoch RSI overbought: RSI itself overextended — pullback risk elevated")
 
     return len(failed) == 0, passed, failed
 
@@ -403,6 +432,17 @@ def check_signal_alerts() -> None:
                 except Exception:
                     pass
 
+            # Fetch K-Scores in one bulk call for Layer 2 conviction check
+            kscores: dict[str, float] = {}
+            try:
+                r = httpx.get(f"{_settings.ranking_engine_url}/rankings", timeout=15)
+                if r.status_code == 200:
+                    for row in r.json().get("rankings", []):
+                        if row.get("score") is not None:
+                            kscores[row["symbol"]] = float(row["score"])
+            except Exception:
+                pass
+
             fired = 0
             for alert in alerts:
                 current = signals.get(alert.symbol)
@@ -427,8 +467,10 @@ def check_signal_alerts() -> None:
                     confidence = float(sig_data.get("confidence") or 0)
 
                     if current == "BUY":
-                        # Highest-conviction gate — all 5 technical layers must pass
-                        all_pass, passed, failed = _is_conviction_buy(sig_data)
+                        # Full 4-layer conviction gate
+                        all_pass, passed, failed = _is_conviction_buy(
+                            sig_data, kscore=kscores.get(alert.symbol)
+                        )
                         if not all_pass:
                             log.info(
                                 "signal_alert.skipped", symbol=alert.symbol,
