@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     signal_engine_url: str = "http://signal-engine:8005"
     strategy_engine_url: str = "http://strategy-engine:8006"
     portfolio_optimizer_url: str = "http://portfolio-optimizer:8007"
+    research_engine_url: str = "http://research-engine:8008"
 
     # Storage
     parquet_dir: str = "/data/parquet"

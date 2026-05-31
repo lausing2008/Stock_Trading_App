@@ -198,6 +198,12 @@ export const api = {
 
   // Institutional holders
   getInstitutional: (symbol: string) => request<InstitutionalData>(`/stocks/${symbol}/institutional`),
+
+  // Research Intelligence Engine
+  generateResearch: (symbol: string, body: ResearchRequestBody) =>
+    request<ResearchReport>(`/research/${symbol}`, { method: 'POST', body: JSON.stringify(body) }),
+  getResearch: (symbol: string) => request<ResearchReport>(`/research/${symbol}`),
+  clearResearch: (symbol: string) => request(`/research/${symbol}`, { method: 'DELETE' }),
 };
 
 export type Stock = {
@@ -525,4 +531,109 @@ export type InstitutionalData = {
   major_holders: Record<string, number | string>;
   institutional_holders: InstitutionalHolder[];
   error?: string;
+};
+
+export type ResearchRequestBody = {
+  provider: string;
+  model: string;
+  api_key: string;
+  portfolio_size?: number;
+  max_risk_pct?: number;
+};
+
+export type ChecklistItem = { item: string; status: 'pass' | 'warning' | 'fail'; note?: string };
+
+export type ResearchReport = {
+  symbol: string;
+  company_name: string;
+  generated_at: string;
+  current_price: number | null;
+  market_cap: number | null;
+  sector: string | null;
+  industry: string | null;
+  recommendation: 'STRONG BUY' | 'BUY' | 'WATCH' | 'AVOID' | 'SELL';
+  overall_score: number;
+  confidence: number;
+  scores: { technical: number; fundamental: number; company: number; industry: number; economic: number };
+  executive_summary: {
+    bullish_factors: string[];
+    bearish_factors: string[];
+    key_risks: string[];
+    key_opportunities: string[];
+  };
+  technical: {
+    score: number;
+    trend_verdict: string;
+    price_vs_50_ema: { value: string; ema: number | null; pct_diff: number | null; interpretation: string };
+    price_vs_200_ema: { value: string; ema: number | null; pct_diff: number | null; interpretation: string };
+    cross_status: string;
+    rsi: { value: number | null; status: string; interpretation: string };
+    macd: { line: number | null; signal: number | null; histogram: number | null; crossover: string; interpretation: string };
+    histogram_analysis: { value: number | null; status: string; interpretation: string };
+    volume: { current: number; avg_20d: number; rvol: number; status: string; interpretation: string };
+    support_resistance: { nearest_support: number | null; major_support: number | null; nearest_resistance: number | null; major_resistance: number | null };
+    atr: { value: number | null; pct: number | null; volatility_rating: string };
+    entry_planning: {
+      aggressive_entry: { zone: string; rationale: string };
+      conservative_entry: { zone: string; rationale: string };
+      stop_loss: { price: number | null; method: string; rationale: string };
+      take_profit: { target: number; price: number; gain_pct: number; rationale: string }[];
+      risk_reward: { expected_reward: number | null; expected_risk: number | null; ratio: number | null; assessment: string };
+    };
+  };
+  fundamental: {
+    score: number;
+    revenue: { yoy_growth: number | null; assessment: string };
+    eps: { yoy_growth: number | null; trailing_eps: number | null; forward_eps: number | null; assessment: string };
+    margins: { gross: number | null; operating: number | null; net: number | null; comparison: string };
+    balance_sheet: { cash: number; debt: number; de_ratio: number | null; assessment: string };
+    cash_flow: { operating_cf: number | null; fcf: number | null; fcf_margin: number | null; assessment: string };
+    valuation: { pe: number | null; forward_pe: number | null; peg: number | null; price_sales: number | null; ev_ebitda: number | null; assessment: string };
+    profitability: { roe: number | null; roa: number | null; grade: string };
+  };
+  company: {
+    business_model: string;
+    competitive_advantage: Record<string, string>;
+    moat: { rating: string; explanation: string };
+    insider_activity: { status: string; explanation: string };
+    institutional_ownership: { pct: number; trend: string; interpretation: string };
+    management: { rating: string; explanation: string };
+  };
+  industry_analysis: {
+    status: string;
+    evidence: string;
+    tam: { size: string; growth: string; expansion_potential: string; rating: string };
+    market_share: { position: string; trend: string; verdict: string };
+    competitors: { name: string; relative_position: string }[];
+    regulatory_risk: string;
+    verdict: string;
+    verdict_explanation: string;
+  };
+  economic: {
+    fed: { status: string; impact: string };
+    inflation: { cpi_trend: string; impact: string };
+    gdp: { status: string; significance: string };
+    employment: { status: string };
+    recession_risk: { yield_curve_inverted: boolean; gdp_negative: boolean; unemployment_rising: boolean; consumer_confidence_falling: boolean; rating: string };
+    market_environment: { favored_style: string; explanation: string };
+  };
+  checklist: {
+    layer1_company: ChecklistItem[];
+    layer2_industry: ChecklistItem[];
+    layer3_economy: ChecklistItem[];
+    layer4_technical: ChecklistItem[];
+  };
+  entry_planning: ResearchReport['technical']['entry_planning'];
+  position_sizing: { portfolio_size: number; max_risk_pct: number; dollar_risk: number | null; stop_distance: number | null; share_quantity: number | null; position_size: number | null; pct_of_portfolio: number | null };
+  trade_invalidation: string[];
+  ai_verdict: { can_buy_today: string; why: string; biggest_risks: string[]; must_improve: string[]; strong_buy_catalysts: string[]; confidence_pct: number; final_recommendation: string };
+  signal: { signal: string | null; confidence: number | null; horizon: string | null };
+  ranking: { score: number | null; rank: number | null; technical: number | null; momentum: number | null; value: number | null; growth: number | null };
+  analyst: { target_price: number | null; target_high: number | null; target_low: number | null; recommendation: string | null; num_analysts: number | null };
+  beta: number | null;
+  week_52_high: number | null;
+  week_52_low: number | null;
+  short_float_pct: number | null;
+  next_earnings: string | null;
+  days_to_earnings: number | null;
 };
