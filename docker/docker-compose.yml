@@ -83,6 +83,13 @@ services:
       dockerfile: services/portfolio-optimizer/Dockerfile
     #ports: ["8007:8007"]
 
+  research-engine:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/research-engine/Dockerfile
+    #ports: ["8008:8008"]
+
   api-gateway:
     <<: *py-common
     build:
@@ -97,6 +104,7 @@ services:
       - signal-engine
       - strategy-engine
       - portfolio-optimizer
+      - research-engine
 
   frontend:
     build:

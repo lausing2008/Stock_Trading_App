@@ -40,6 +40,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Earnings',      href: '/earnings',      color: '#fb923c', tag: 'cal' },
       { label: 'Analyst',       href: '/analyst',       color: '#818cf8' },
       { label: 'Short Squeeze', href: '/short-squeeze', color: '#f87171' },
+      { label: 'Research Engine', href: '/research', color: '#4ade80', tag: 'ai' },
     ],
   },
   {

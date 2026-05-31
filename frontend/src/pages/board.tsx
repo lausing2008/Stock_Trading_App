@@ -439,6 +439,14 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
                 {STAGE_META[s].label}
               </button>
             ))}
+            {plan.stage === 'planning' && (
+              <Link
+                href={`/research/${plan.symbol}`}
+                style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, cursor: 'pointer', border: '1px solid rgba(74,222,128,0.4)', background: 'rgba(74,222,128,0.1)', color: '#4ade80', marginLeft: '2px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+              >
+                Research
+              </Link>
+            )}
             {plan.stage === 'active' && (
               <button
                 onClick={() => setAlertOpen(o => !o)}
