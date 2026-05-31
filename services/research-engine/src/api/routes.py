@@ -1222,3 +1222,113 @@ async def generate_research(symbol: str, req: ResearchRequest):
     _cache[sym] = (report, datetime.utcnow())
     log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation)
     return report
+
+
+# ── Chat endpoint ─────────────────────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+    api_key: str = ""
+    model: str = "claude-sonnet-4-6"
+    provider: str = "claude"
+
+
+@router.post("/{symbol}/chat")
+async def chat_research(symbol: str, req: ChatRequest):
+    """Answer questions about the cached research report using AI."""
+    sym = symbol.upper()
+    entry = _cache.get(sym)
+    if not entry:
+        raise HTTPException(404, "No research report found. Generate a report first.")
+
+    if not req.api_key.strip():
+        raise HTTPException(400, "API key required for chat.")
+
+    report, _ = entry
+    sc = report.get("scores", {})
+    tech = report.get("technical", {})
+    fund = report.get("fundamental", {})
+    verdict = report.get("ai_verdict", {})
+    ep = report.get("entry_planning", {})
+
+    system_prompt = f"""You are an expert equity research analyst reviewing a freshly generated research report for {sym} ({report.get("company_name", sym)}).
+
+REPORT SNAPSHOT:
+  Price: ${report.get("current_price", 0):.2f} | Market Cap: {_fmt_cap(report.get("market_cap"))} | Sector: {report.get("sector", "Unknown")}
+  Overall Score: {report.get("overall_score")}/100 | Recommendation: {report.get("recommendation")} | Confidence: {report.get("confidence")}%
+
+SCORES (0-100):
+  Technical: {sc.get("technical")} | Fundamental: {sc.get("fundamental")} | Company: {sc.get("company")} | Industry: {sc.get("industry")} | Economic: {sc.get("economic")}
+
+TECHNICAL:
+  Trend: {tech.get("trend_verdict")} | Cross: {tech.get("cross_status")}
+  vs 50-SMA: {(tech.get("price_vs_50_ema") or {}).get("value")} at ${(tech.get("price_vs_50_ema") or {}).get("ema")}
+  vs 200-SMA: {(tech.get("price_vs_200_ema") or {}).get("value")} at ${(tech.get("price_vs_200_ema") or {}).get("ema")}
+  RSI: {(tech.get("rsi") or {}).get("value")} ({(tech.get("rsi") or {}).get("status")})
+  MACD crossover: {(tech.get("macd") or {}).get("crossover")}
+  Volume RVOL: {(tech.get("volume") or {}).get("rvol")}x ({(tech.get("volume") or {}).get("status")})
+  Nearest Support: ${(tech.get("support_resistance") or {}).get("nearest_support")} | Resistance: ${(tech.get("support_resistance") or {}).get("nearest_resistance")}
+  ATR: ${(tech.get("atr") or {}).get("value")} ({(tech.get("atr") or {}).get("volatility_rating")})
+
+ENTRY PLAN:
+  Aggressive entry: {(ep.get("aggressive_entry") or {}).get("zone")}
+  Conservative entry: {(ep.get("conservative_entry") or {}).get("zone")}
+  Stop loss: ${(ep.get("stop_loss") or {}).get("price")}
+  Targets: {[(t.get("price"), t.get("gain_pct")) for t in (ep.get("take_profit") or [])]}
+  Risk/Reward: {(ep.get("risk_reward") or {}).get("ratio")}:1 ({(ep.get("risk_reward") or {}).get("assessment")})
+
+FUNDAMENTAL:
+  Revenue growth: {(fund.get("revenue") or {}).get("yoy_growth")}%
+  EPS growth: {(fund.get("eps") or {}).get("yoy_growth")}%
+  Gross margin: {(fund.get("margins") or {}).get("gross")}%
+  Free cash flow: {_fmt_cap((fund.get("cash_flow") or {}).get("fcf"))}
+  P/E: {(fund.get("valuation") or {}).get("pe")} | Forward P/E: {(fund.get("valuation") or {}).get("forward_pe")}
+  Valuation: {(fund.get("valuation") or {}).get("assessment")}
+  D/E ratio: {(fund.get("balance_sheet") or {}).get("de_ratio")}
+
+AI VERDICT:
+  Can buy today: {verdict.get("can_buy_today")} | Final rec: {verdict.get("final_recommendation")} | Confidence: {verdict.get("confidence_pct")}%
+  Why: {verdict.get("why")}
+  Key risks: {verdict.get("biggest_risks")}
+  Catalysts: {verdict.get("strong_buy_catalysts")}
+
+Answer questions concisely and directly. Use the data above. Be honest about uncertainties. Keep answers under 200 words unless a detailed explanation is requested."""
+
+    messages = [{"role": m.role, "content": m.content} for m in req.messages]
+
+    if req.provider == "deepseek":
+        url = "https://api.deepseek.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {req.api_key}", "content-type": "application/json"}
+        body = {"model": req.model, "max_tokens": 1024, "temperature": 0.3,
+                "messages": [{"role": "system", "content": system_prompt}] + messages}
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(url, headers=headers, json=body)
+            if r.status_code != 200:
+                raise HTTPException(500, f"AI chat failed: {r.status_code}")
+            text = r.json()["choices"][0]["message"]["content"]
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, f"Chat error: {exc}")
+    else:
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {"x-api-key": req.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        body = {"model": req.model, "max_tokens": 1024, "temperature": 0.3,
+                "system": system_prompt, "messages": messages}
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(url, headers=headers, json=body)
+            if r.status_code != 200:
+                raise HTTPException(500, f"AI chat failed: {r.status_code}")
+            text = r.json()["content"][0]["text"]
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, f"Chat error: {exc}")
+
+    return {"role": "assistant", "content": text}
