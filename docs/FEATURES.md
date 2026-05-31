@@ -127,6 +127,15 @@ Since signals and momentum are entirely local computation (no Claude API, no rat
 
 > The 16:30 post-close run is the most reliable. Intra-day runs use the latest available bar — on some symbols this is the previous day's close until the session ends. The signal computed at 16:30 reflects the full completed trading day.
 
+### 5-minute intraday ingest — every 5 min during market hours
+
+Two additional cron jobs run continuously during each market session to keep 5-minute candle data current for the stock detail chart:
+
+**US market (America/New_York):** every 5 minutes from 09:30–16:00 Mon–Fri  
+**HK market (Asia/Hong_Kong):** every 5 minutes from 09:30–16:00 Mon–Fri
+
+Each run calls `ingest_universe(symbols, "5m")`. The ingest is **incremental** — it reads the last stored `ts` per symbol from the DB and passes `start=last_ts` to yfinance, fetching only new bars since then. This keeps each run lightweight (typically 1–3 bars per symbol). A `ThreadPoolExecutor` with 6 workers parallelises yfinance calls across all symbols; `tenacity` retries handle transient 429 responses. At ~780 requests per session for 100 symbols, well within Yahoo Finance's unofficial rate limit of ~2000/hr.
+
 ### ML model retrain
 
 Runs **once per day**, at post-close (16:30) for both US and HK markets. Trains on the latest available price history. More frequent retraining has no benefit — the XGBoost model learns from daily bar outcomes, and intraday data doesn't change the training labels.
@@ -304,25 +313,34 @@ Displayed as `—` when data is unavailable for the specific stock.
 
 ### Chart
 
-**Time range selector** — row of buttons above the chart to zoom into a specific window of history. All data is loaded once on page open; switching ranges is instant (no extra API call).
+**Time range selector** — row of buttons above the chart to switch between intraday and historical windows.
 
-| Button | Trading bars shown |
-|--------|--------------------|
-| 5D | 5 bars — last week |
-| 1M | 21 bars — last month |
-| 3M | 63 bars — last quarter (default) |
-| 6M | 126 bars — last 6 months |
-| 1Y | 252 bars — last year |
-| All | Full history in DB (up to ~5 years) |
+| Button | Mode | Data source | Bars shown |
+|--------|------|-------------|------------|
+| 5m | Intraday | Separate API fetch on click | Up to 100 most-recent 5-minute candles |
+| 1D | Daily | Loaded on page open | 1 bar — yesterday's close |
+| 5D | Daily | Loaded on page open | 5 bars — last week |
+| 1M | Daily | Loaded on page open | 21 bars — last month |
+| 3M | Daily | Loaded on page open | 63 bars — last quarter (default) |
+| 6M | Daily | Loaded on page open | 126 bars — last 6 months |
+| 1Y | Daily | Loaded on page open | 252 bars — last year |
+| All | Daily | Loaded on page open | Full history in DB (up to ~5 years) |
 
-A small bar count is displayed next to the buttons so you can see exactly how much data is visible. SMA, Bollinger Band, RSI, and MACD overlays are cropped to the selected window automatically.
+For daily ranges (1D–All), all data is loaded once on page open; switching between them is instant (no extra API call). A small bar count is displayed next to the buttons. SMA, Bollinger Band, RSI, and MACD overlays are cropped to the selected window automatically.
+
+**Intraday mode (5m):**
+- Triggered by clicking the `5m` button; fires a separate `GET /prices?timeframe=5m&limit=100` request.
+- Timestamps are stored in UTC and rendered using `UTCTimestamp` (Unix seconds) so lightweight-charts plots the correct intraday positions. The bar count label shows `N bars · UTC` to make the timezone explicit.
+- SMA, Bollinger Bands, RSI, and MACD overlays are **not available** in intraday mode (they require a longer history window). S/R levels are also hidden. A toolbar note explains this.
+- A "Loading 5m bars…" overlay is shown while the fetch is in progress.
+- 5-minute candles are refreshed automatically by the scheduler every 5 minutes during market hours (see [Scheduler](#scheduler) below). Each run is incremental — only bars since the last stored timestamp are fetched, keeping API calls minimal.
 
 **History depth:** The overview endpoint fetches up to `1260` daily bars (~5 years of trading days). Actual depth depends on how far back yfinance has data for the stock — typically 5+ years for major US and HK equities. Run **Full Refresh** on the stock detail page to re-fetch the maximum available history.
 
 **Chart features:**
 - Candlestick chart (lightweight-charts)
-- SMA20, SMA50, SMA200, Bollinger Bands overlaid
-- Volume histogram, Support/Resistance levels, Fibonacci retracement
+- SMA20, SMA50, SMA200, Bollinger Bands overlaid (daily mode only)
+- Volume histogram, Support/Resistance levels, Fibonacci retracement (daily mode only)
 
 ### Sidebar
 - **AI Signal** — BUY/SELL/HOLD, confidence, bullish probability bar
