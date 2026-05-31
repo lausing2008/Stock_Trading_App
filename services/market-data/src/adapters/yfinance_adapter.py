@@ -46,11 +46,15 @@ class YFinanceAdapter(DataAdapter):
         interval = _TIMEFRAME_MAP.get(timeframe, "1d")
         log.info("yfinance.fetch", symbol=symbol, start=str(start), end=str(end), tf=timeframe)
         ticker = yf.Ticker(symbol)
+
+        # Daily bars: auto_adjust=True so Close is already split+dividend-adjusted.
+        # Intraday bars: auto_adjust=False (yfinance does not reliably adjust intraday).
+        use_adjusted = (timeframe == "1d")
         df = ticker.history(
             start=start.isoformat(),
             end=end.isoformat(),
             interval=interval,
-            auto_adjust=False,
+            auto_adjust=use_adjusted,
         )
         if df is None or df.empty:
             return OHLCV(symbol, timeframe, pd.DataFrame(columns=["ts"]))

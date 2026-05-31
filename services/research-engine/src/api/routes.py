@@ -82,18 +82,28 @@ def _second_last(arr: list, default=None):
 
 
 def _atr(prices: list[dict], period: int = 14) -> float | None:
-    """Average True Range."""
+    """Wilder's ATR — seeded with SMA of first `period` bars, then EWM (alpha=1/period).
+
+    Matches every standard charting platform (TradingView, Bloomberg, ThinkOrSwim).
+    SMA-based ATR underestimates in volatile regimes; Wilder's smoothing tracks
+    volatility expansion faster without over-reacting to individual spikes.
+    """
     if len(prices) < period + 1:
         return None
     trs = []
     for i in range(1, len(prices)):
-        h = prices[i].get("high", 0) or 0
-        l = prices[i].get("low", 0) or 0
+        h  = prices[i].get("high", 0) or 0
+        l  = prices[i].get("low", 0) or 0
         pc = prices[i - 1].get("close", 0) or 0
         trs.append(max(h - l, abs(h - pc), abs(l - pc)))
     if len(trs) < period:
         return None
-    return sum(trs[-period:]) / period
+    # Seed with SMA of first period bars, then apply Wilder's EWM
+    atr = sum(trs[:period]) / period
+    alpha = 1.0 / period
+    for tr in trs[period:]:
+        atr = atr * (1.0 - alpha) + tr * alpha
+    return atr
 
 
 def _fmt_cap(cap: float | None) -> str:

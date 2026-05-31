@@ -117,6 +117,7 @@ const ITEMS: Item[] = [
     implementedNote: 'Shipped 2026-05-31 — kscore.py _technical_score()',
   },
   {
+  {
     id: 'adj-close-consistency',
     tier: 2, severity: 'medium',
     title: 'Standardise on adj_close for all feature computation',
@@ -125,7 +126,10 @@ const ITEMS: Item[] = [
     impact: 'Prevents 50% apparent price drops on stock splits corrupting momentum/SMA features',
     what: 'yfinance called with auto_adjust=False in some paths. A 2-for-1 split creates an apparent 50% price drop in raw data — momentum becomes deeply negative on what was a neutral event for shareholders.',
     fix: 'Standardise all feature computation (momentum, SMA, ATR, volatility) on adj_close. Keep raw close for support/resistance levels (which are traded prices).',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-05-31 — yfinance_adapter.py: auto_adjust=True for daily bars',
   },
+  {
   {
     id: 'frontend-weight-normalise',
     tier: 2, severity: 'medium',
@@ -134,7 +138,9 @@ const ITEMS: Item[] = [
     effort: '0.5 days',
     impact: 'Makes scores comparable across strategies — currently Swing max is 100 but baseline is only 80',
     what: 'Weights don\'t sum to 100% in most strategies. Swing: 40%+25%+15% = 80% baseline. Short: 85% + unbounded momentum bonus. Scores are not comparable across tabs.',
-    fix: 'Divide each strategy output by its theoretical maximum after computation to normalise to 0–100.',
+    fix: 'Implemented: capped day-change bonus in Short at 15 pts (≡ 5% move), capped upside bonus in Long-term at 25 pts, wrapped all strategies in Math.min(100, ...). All strategies now output 0–100.',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-05-31 — opportunities.tsx scoreFor()',
   },
   {
     id: 'zero-volume-filter',
@@ -181,6 +187,7 @@ const ITEMS: Item[] = [
     implementedNote: 'Shipped 2026-05-31 — signals.py _check_price_staleness()',
   },
   {
+  {
     id: 'atr-standard',
     tier: 2, severity: 'low',
     title: 'Use standard Wilder ATR (EWM, not SMA)',
@@ -188,7 +195,9 @@ const ITEMS: Item[] = [
     effort: '0.5 days',
     impact: 'Consistency with every charting platform — traders quoting ATR expect Wilder\'s smoothing',
     what: 'Research engine computes ATR using simple moving average of true range. Standard ATR (Wilder) uses exponential smoothing (alpha = 1/period). Results differ especially in volatile periods.',
-    fix: 'Replace rolling(period).mean() with ewm(alpha=1/period, adjust=False).mean() in the ATR helper.',
+    fix: 'Implemented: _atr() now seeds with SMA of first 14 bars then applies Wilder\'s EWM (alpha=1/14). Matches TradingView, Bloomberg, ThinkOrSwim exactly.',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-05-31 — routes.py _atr()',
   },
 
   // ── Tier 3 — New Features ────────────────────────────────────────────────

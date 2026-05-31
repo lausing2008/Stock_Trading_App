@@ -94,12 +94,18 @@ function scoreFor(
   const upside = r.fair_price && lp?.price ? ((r.fair_price - lp.price) / lp.price) * 100 : 0;
 
   switch (strategy) {
+    // all: K-Score already 0-100; signal bonus capped so max ≈ 108 → display as-is
     case 'all':      return (r.score ?? 0) + (sig?.signal === 'BUY' ? 8 : sig?.signal === 'HOLD' ? 3 : 0);
-    case 'swing':    return tech * 0.40 + mom * 0.25 + sigB + conf * 0.15;
-    case 'short':    return mom  * 0.50 + tech * 0.25 + Math.abs(chg) * 3 + vlt * 0.10;
-    case 'longterm': return val  * 0.40 + grow * 0.30 + Math.max(0, upside) * 0.6 + vlt * 0.15;
-    case 'growth':   return grow * 0.50 + mom  * 0.30 + tech * 0.20;
-    case 'aisignal':   return conf * 0.70 + (sig?.bullish_probability ?? 0) * 0.50 + tech * 0.15 + mom * 0.10;
+    // swing max: 40+25+20+15 = 100 (sigB max 20, conf max 100)
+    case 'swing':    return Math.min(100, Math.round(tech * 0.40 + mom * 0.25 + sigB + conf * 0.15));
+    // short: cap day-change bonus at 15 (≡ 5% move) so max = 50+25+15+10 = 100
+    case 'short':    return Math.min(100, Math.round(mom * 0.50 + tech * 0.25 + Math.min(Math.abs(chg) * 3, 15) + vlt * 0.10));
+    // longterm: cap upside bonus at 25 pts so max ≈ 40+30+25+15 = 110 → clamped to 100
+    case 'longterm': return Math.min(100, Math.round(val * 0.40 + grow * 0.30 + Math.min(Math.max(0, upside), 25) + vlt * 0.15));
+    // growth max: 50+30+20 = 100
+    case 'growth':   return Math.min(100, Math.round(grow * 0.50 + mom * 0.30 + tech * 0.20));
+    // aisignal: conf 0-100 × 0.70 = 70 max; bullish_probability 0-1 × 50 = 50 → clamp to 100
+    case 'aisignal':   return Math.min(100, Math.round(conf * 0.70 + (sig?.bullish_probability ?? 0) * 50 + tech * 0.15 + mom * 0.10));
     case 'confluence': return confluenceScore(r, sig);
     default:           return r.score ?? 0;
   }
