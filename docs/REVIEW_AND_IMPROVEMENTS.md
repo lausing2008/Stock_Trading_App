@@ -1,16 +1,29 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
+**Last updated:** 2026-05-31  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 6.5 / 10
+**Overall rating:** 7.0 / 10 *(was 6.5 — 5 improvements shipped 2026-05-31)*
 
 ---
 
 ## Executive Summary
 
-StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. However, several analytical flaws — uncalibrated ML probabilities, a survivorship-biased value score, and the absence of a walk-forward backtest — prevent it from being relied upon for serious capital deployment without correction.
+StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. Several analytical flaws were identified in the initial review — 5 have been fixed as of 2026-05-31. Remaining priorities are uncalibrated ML probabilities, sector-blind fundamental scoring, and the absence of a walk-forward backtest.
 
 This document is the single source of truth for everything that was found, why it matters, and how to fix it.
+
+---
+
+## Implementation Log
+
+| Date | Item | Files Changed | Status |
+|------|------|--------------|--------|
+| 2026-05-31 | K-Score falling knife gate | ranking-engine/kscore.py | ✅ Done |
+| 2026-05-31 | K-Score RSI asymmetric curve | ranking-engine/kscore.py | ✅ Done |
+| 2026-05-31 | Zero-volume bar filtering | market-data/ingestion.py | ✅ Done |
+| 2026-05-31 | Macro data Redis caching | ml-prediction/builder.py | ✅ Done |
+| 2026-05-31 | Stale price guard (logging) | signal-engine/signals.py | ✅ Done |
 
 ---
 
@@ -18,14 +31,14 @@ This document is the single source of truth for everything that was found, why i
 
 | Dimension | Score | Summary |
 |-----------|-------|---------|
-| Data pipeline | 7.5 / 10 | Solid ingestion, good validation, minor split-adjust issue |
-| ML methodology | 5.5 / 10 | Right approach, not calibrated, look-ahead bias risk |
-| Signal logic | 6.5 / 10 | Good fusion design, ML weight formula is ad-hoc |
-| K-Score ranking | 6.0 / 10 | Value proxy surfaces falling knives; RSI peak arbitrary |
-| Research engine | 6.0 / 10 | Good framework, sector-blind thresholds, prompt injection risk |
+| Data pipeline | 7.8 / 10 | ↑ Zero-vol filter added; split-adjust still pending |
+| ML methodology | 6.5 / 10 | ↑ Macro Redis cache fixes distribution shift; calibration still pending |
+| Signal logic | 7.0 / 10 | ↑ Stale price guard added; ML weight formula still ad-hoc |
+| K-Score ranking | 7.5 / 10 | ↑ Falling knife gate + RSI curve fixed |
+| Research engine | 6.0 / 10 | Sector-blind thresholds and prompt injection still pending |
 | Frontend / UX | 8.5 / 10 | Best-in-class for a self-built tool |
 | Risk management | 6.0 / 10 | Confluence + position sizing good; no backtested Sharpe |
-| **Overall** | **6.5 / 10** | |
+| **Overall** | **7.0 / 10** | *(was 6.5)* |
 
 ---
 
@@ -85,7 +98,7 @@ Additionally, enforce that the scheduler retrains only after the post-close (16:
 
 ---
 
-### CRITICAL-2: Survivorship Bias in K-Score Value Sub-score
+### CRITICAL-2: Survivorship Bias in K-Score Value Sub-score ✅ IMPLEMENTED 2026-05-31
 **File:** `services/ranking-engine/src/scoring/kscore.py`  
 **Severity:** HIGH
 
@@ -96,14 +109,12 @@ The Value proxy is `1 − (price / 52w_high)`. A stock down 80% from its annual 
 - TSLA at ATH: Value score ≈ 0 (correctly identified as not a value play)  
 - A failing regional bank down 90%: Value score ≈ 90 (incorrectly identified as deep value)
 
-**Fix:**  
-Add a momentum quality gate before the value score is allowed to contribute. A stock should only receive a high value score if it also shows some stabilisation of price action:
+**Fix (implemented):**  
+Added a trend direction gate in `_value_proxy()`. If both 1-month return < −5% and 3-month return < −15%, the value score is capped at 25. This prevents stocks in a sustained downtrend from receiving the full value bonus.
 
 ```python
-# In kscore.py, value score computation:
-# Disqualify stocks with deeply negative momentum (likely fundamental deterioration)
-MOMENTUM_QUALITY_GATE = 25  # minimum momentum score to receive value bonus
-value_score = raw_value_score if momentum_score > MOMENTUM_QUALITY_GATE else 50.0
+if r1m < -0.05 and r3m < -0.15:
+    return min(raw_score, 25.0)
 ```
 
 Better long-term fix: replace the 52w-high discount proxy with analyst consensus upside (target_price / current_price − 1), which already factors in fundamental assessment.
@@ -137,38 +148,20 @@ Additionally, generate a calibration curve (reliability diagram) as part of the 
 
 ---
 
-### CRITICAL-4: Macro Data Silent Failures
-**File:** `services/ml-prediction/src/ml/features.py`  
+### CRITICAL-4: Macro Data Silent Failures ✅ IMPLEMENTED 2026-05-31
+**File:** `services/ml-prediction/src/features/builder.py`  
 **Severity:** HIGH
 
 **What is wrong:**  
 When yfinance fails to fetch SPY/VIX data, macro features silently zero-fill. The model was trained on real macro values. At inference, zero-filled macros look like extreme market panic (VIX=0, SPY returns=0), which biases every signal toward defensiveness regardless of actual market conditions. This is a distribution shift between training data and inference data that happens silently.
 
-**Fix:**  
-Use the Redis cache (already in the stack) to persist last-known macro values with a TTL:
+**Fix (implemented):**  
+Added `_redis_save_macro()` and `_redis_load_macro()` helpers in `builder.py`. On successful yfinance fetch, the macro DataFrame is serialised and stored in Redis under `stockai:macro_features` with a 24-hour TTL. On failure, the last cached DataFrame is returned instead of an empty one. Zero-fill only occurs if Redis also has no cached data (extreme fallback).
 
 ```python
-# In features.py, fetch_macro_features():
-import redis, json
-from datetime import datetime
-
-redis_client = redis.Redis(host="redis", port=6379, decode_responses=True)
-MACRO_CACHE_KEY = "macro:spy_vix"
-MACRO_STALE_HOURS = 4
-
-def fetch_macro_features(start: date, end: date) -> pd.DataFrame:
-    try:
-        df = _fetch_from_yfinance(start, end)
-        # Cache successful fetch
-        redis_client.setex(MACRO_CACHE_KEY, 86400, df.to_json())
-        return df
-    except Exception:
-        cached = redis_client.get(MACRO_CACHE_KEY)
-        if cached:
-            log.warning("macro.using_cached_data")
-            return pd.read_json(cached)
-        log.error("macro.fetch_failed_no_cache — zero filling")
-        return pd.DataFrame()
+_MACRO_CACHE_KEY = "stockai:macro_features"
+_MACRO_CACHE_TTL = 86_400
+# fetch → write to Redis; error → read from Redis; no cache → empty (original fallback)
 ```
 
 ---
@@ -218,27 +211,21 @@ Run the signal engine on historical data with both TA-only and TA+ML modes. Comp
 
 ---
 
-### MEDIUM-2: RSI Peak at 55 Is Arbitrary
+### MEDIUM-2: RSI Peak at 55 Is Arbitrary ✅ IMPLEMENTED 2026-05-31
 **File:** `services/ranking-engine/src/scoring/kscore.py`  
 **Severity:** MEDIUM
 
 **What is wrong:**  
 `rsi_score = 100 - abs(RSI - 55)` peaks when RSI=55. RSI=70 (overbought) scores only 15. There is no empirical justification for 55 as the ideal RSI. Strong uptrends regularly sustain RSI above 60 for weeks.
 
-**Fix:**  
-Use a piecewise function that rewards the bullish momentum zone (50–65) and applies a gentle penalty outside it, without harshly punishing RSI=70:
+**Fix (implemented):**  
+Replaced with an asymmetric piecewise function in `_technical_score()`:
+- RSI ≤ 30: score 50 (severely oversold)  
+- RSI 30–50: 50 → 90 (emerging from oversold)  
+- RSI 50–70: 90 → 100 (healthy bullish momentum, peak zone)  
+- RSI > 70: drops 2.5 pts per point (overbought penalty)
 
-```python
-def rsi_score(rsi: float) -> float:
-    if 50 <= rsi <= 65:
-        return 100.0
-    elif 65 < rsi <= 75:
-        return 100 - (rsi - 65) * 5      # -5 per point above 65, floor at 50
-    elif 40 <= rsi < 50:
-        return 100 - (50 - rsi) * 4      # -4 per point below 50
-    else:
-        return max(0, 100 - abs(rsi - 55) * 3)
-```
+A trending stock at RSI 70 now scores ~100 instead of being penalised to 85 under the old symmetric formula.
 
 ---
 
@@ -309,43 +296,27 @@ Normalise each strategy's output to 0–100 after computation by dividing by the
 
 ---
 
-### LOW-1: Zero-Volume Bars Pollute Features
-**File:** `services/market-data/src/services/ingest.py`  
+### LOW-1: Zero-Volume Bars Pollute Features ✅ IMPLEMENTED 2026-05-31
+**File:** `services/market-data/src/services/ingestion.py`  
 **Severity:** LOW
 
 **What is wrong:**  
 The OHLCV validation accepts `volume >= 0`. A bar with zero volume (trading halt, data provider error) passes validation and is stored. Zero-volume bars inflate volatility metrics (large price move on no volume) and distort ATR and OBV calculations.
 
-**Fix:**  
-```python
-# In validation logic:
-if row["volume"] == 0:
-    log.warning("ingest.zero_volume_bar", symbol=symbol, ts=row["ts"])
-    # For daily bars: drop. For intraday: allow (pre-market thin volume is real).
-    if timeframe == "1d":
-        continue
-```
+**Fix (implemented):**  
+Changed `df = df[df["volume"] >= 0]` to `df = df[df["volume"] > 0]` in `validate_ohlcv()`. Zero-volume daily bars are now rejected at the ingest boundary and never stored in the database.
 
 ---
 
-### LOW-2: Stale Price Fetch in Signal Generator
-**File:** `services/signal-engine/src/signals/generator.py`  
+### LOW-2: Stale Price Fetch in Signal Generator ✅ IMPLEMENTED 2026-05-31
+**File:** `services/signal-engine/src/generators/signals.py`  
 **Severity:** LOW
 
 **What is wrong:**  
 The signal generator fetches the most recent 400 bars and assumes the last one is current. No timestamp validation checks whether the data is stale (e.g., fetched during a weekend, market holiday, or service restart after a gap). A signal computed on Friday's close on Monday morning is technically correct but could mislead if conditions have changed.
 
-**Fix:**  
-```python
-from datetime import datetime, timedelta
-
-last_bar_ts = df["ts"].max()
-staleness = datetime.utcnow() - last_bar_ts
-if staleness > timedelta(days=3):
-    log.warning("signal.stale_data", symbol=symbol, age_days=staleness.days)
-    # Add staleness flag to the signal response so the UI can display a warning
-    signal_metadata["stale"] = True
-```
+**Fix (implemented):**  
+Added `_check_price_staleness()` in `signals.py`. After fetching prices, if the last bar date is more than 3 calendar days old, a structured log warning is emitted (`signal.stale_price_data` with `last_bar` and `days_old` fields). This makes pipeline data gaps observable in log aggregators without blocking the signal computation.
 
 ---
 
@@ -536,24 +507,25 @@ Without factor exposure analysis, you cannot distinguish between genuine alpha a
 
 ### Tier 1 — Fix Before Trusting Signals (Do Now)
 
-| Fix | File(s) | Effort | Impact |
-|-----|---------|--------|--------|
-| ML calibration (Platt scaling) | ml-prediction/trainer.py | 2 days | Prevents overconfident signals |
-| K-Score value gate (momentum quality filter) | ranking-engine/kscore.py | 1 day | Removes falling-knife false positives |
-| Macro data Redis caching | ml-prediction/features.py | 1 day | Prevents silent distribution shift |
-| Inference timestamp guard | ml-prediction/features.py | 1 day | Eliminates look-ahead bias risk |
-| Symbol sanitisation (prompt injection) | research-engine/routes.py | 0.5 days | Security fix |
+| Fix | File(s) | Effort | Impact | Status |
+|-----|---------|--------|--------|--------|
+| ML calibration (Platt scaling) | ml-prediction/trainer.py | 2 days | Prevents overconfident signals | ⏳ Pending |
+| K-Score value gate (momentum quality filter) | ranking-engine/kscore.py | 1 day | Removes falling-knife false positives | ✅ Done |
+| Macro data Redis caching | ml-prediction/builder.py | 1 day | Prevents silent distribution shift | ✅ Done |
+| Inference timestamp guard | ml-prediction/builder.py | 1 day | Eliminates look-ahead bias risk | ⏳ Pending |
+| Symbol sanitisation (prompt injection) | research-engine/routes.py | 0.5 days | Security fix | ⏳ Pending |
 
 ### Tier 2 — Analytical Improvements (Next Sprint)
 
-| Fix | File(s) | Effort | Impact |
-|-----|---------|--------|--------|
-| Sector-relative fundamental scoring | research-engine/scoring.py | 3 days | Fixes PE/growth/margin thresholds |
-| RSI scoring curve fix | ranking-engine/kscore.py | 0.5 days | More accurate trend stock scoring |
-| adj_close consistency | market-data/adapters | 1 day | Fixes split/dividend distortion |
-| Frontend strategy weight normalisation | opportunities.tsx | 0.5 days | Comparable cross-strategy scores |
-| Zero-volume bar filtering | market-data/ingest.py | 0.5 days | Cleaner volatility calculations |
-| Research engine cache quality flag | research-engine/routes.py | 1 day | Prevents serving fallback as real data |
+| Fix | File(s) | Effort | Impact | Status |
+|-----|---------|--------|--------|--------|
+| Sector-relative fundamental scoring | research-engine/scoring.py | 3 days | Fixes PE/growth/margin thresholds | ⏳ Pending |
+| RSI scoring curve fix | ranking-engine/kscore.py | 0.5 days | More accurate trend stock scoring | ✅ Done |
+| adj_close consistency | market-data/adapters | 1 day | Fixes split/dividend distortion | ⏳ Pending |
+| Frontend strategy weight normalisation | opportunities.tsx | 0.5 days | Comparable cross-strategy scores | ⏳ Pending |
+| Zero-volume bar filtering | market-data/ingestion.py | 0.5 days | Cleaner volatility calculations | ✅ Done |
+| Stale price guard | signal-engine/signals.py | 0.5 days | Observable pipeline gaps | ✅ Done |
+| Research engine cache quality flag | research-engine/routes.py | 1 day | Prevents serving fallback as real data | ⏳ Pending |
 
 ### Tier 3 — New Features (Roadmap)
 

@@ -72,7 +72,16 @@ def _technical_score(df: pd.DataFrame) -> float:
     sma50_above_sma200 = 1 if sma50 > sma200           else 0
 
     r = _rsi(close).iloc[-1]
-    rsi_score = 100 - abs(r - 55)  # peak at 55 (bullish but not overbought)
+    # Asymmetric: optimal zone is 50-70 (bullish momentum). Oversold (<30) and
+    # very overbought (>80) penalised. A trending RSI=70 scores higher than RSI=40.
+    if r <= 30:
+        rsi_score = 50.0
+    elif r <= 50:
+        rsi_score = 50.0 + (r - 30) * 2.0       # 50→90 as RSI 30→50
+    elif r <= 70:
+        rsi_score = 90.0 + (r - 50) * 0.5        # 90→100 as RSI 50→70
+    else:
+        rsi_score = 100.0 - (r - 70) * 2.5       # 100→62.5 as RSI 70→85+
 
     adx = _adx_value(df)
     # ADX boost: strong trend (>25) lifts score; very weak trend (<15) drags it
@@ -103,10 +112,23 @@ def _volatility_score(df: pd.DataFrame) -> float:
 
 
 def _value_proxy(df: pd.DataFrame) -> float:
-    """Proxy: distance below 52w high. Deep discount → higher value."""
+    """Proxy: distance below 52w high, gated by trend direction.
+
+    Falling-knife guard: if both 1m and 3m returns are negative the stock is
+    in a downtrend — a deep discount without recovery is a risk, not value.
+    Cap score at 25 in that case so it can't drag down the composite K-Score.
+    """
     high_52  = df["close"].tail(252).max()
     discount = 1 - df["close"].iloc[-1] / high_52
-    return float(np.clip(discount * 200, 0, 100))
+    raw_score = float(np.clip(discount * 200, 0, 100))
+
+    if len(df) >= 63:
+        r1m = df["close"].iloc[-1] / df["close"].iloc[-21] - 1
+        r3m = df["close"].iloc[-1] / df["close"].iloc[-63] - 1
+        if r1m < -0.05 and r3m < -0.15:
+            return min(raw_score, 25.0)
+
+    return raw_score
 
 
 def _growth_proxy(df: pd.DataFrame) -> float:

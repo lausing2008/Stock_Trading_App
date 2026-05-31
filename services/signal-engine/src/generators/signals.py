@@ -407,10 +407,34 @@ def _decide(fused_prob: float, market_regime: str) -> tuple[str, str]:
     return "SELL", "SWING"
 
 
+def _check_price_staleness(df: pd.DataFrame, symbol: str) -> None:
+    """Log a warning if the most recent price bar is older than 3 calendar days.
+
+    Stale data causes the signal to reflect an outdated market picture. The
+    ingest scheduler should keep data fresh, so staleness indicates a pipeline
+    gap rather than normal operation.
+    """
+    from datetime import date as _date, timedelta
+    try:
+        last_ts = pd.to_datetime(df["ts"]).max()
+        days_old = (_date.today() - last_ts.date()).days
+        if days_old > 3:
+            log.warning(
+                "signal.stale_price_data",
+                symbol=symbol,
+                last_bar=last_ts.strftime("%Y-%m-%d"),
+                days_old=days_old,
+            )
+    except Exception:
+        pass
+
+
 def generate_signal(symbol: str) -> AIConfidence:
     df = _fetch_prices(symbol)
     if df.empty:
         raise ValueError(f"No price data for {symbol}")
+
+    _check_price_staleness(df, symbol)
 
     ta_prob, reasons = _ta_score(df)
     ml_prob, ml_cv_auc = _fetch_ml_data(symbol)

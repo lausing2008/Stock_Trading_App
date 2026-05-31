@@ -32,7 +32,7 @@ def validate_ohlcv(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df = df[(df["high"] >= df["low"]) & (df["high"] >= df["open"]) & (df["high"] >= df["close"])]
     df = df[(df["low"] <= df["open"]) & (df["low"] <= df["close"])]
     df = df[(df[["open", "high", "low", "close"]] > 0).all(axis=1)]
-    df = df[df["volume"] >= 0]
+    df = df[df["volume"] > 0]
     dropped = before - len(df)
     if dropped:
         log.warning("ohlcv.drop_invalid", symbol=symbol, dropped=dropped)
