@@ -231,6 +231,26 @@ export default function ResearchPage() {
         )}
       </div>
 
+      {/* ── Quality warning banner ──────────────────────────────────────────── */}
+      {report?.report_quality === 'fallback' && (
+        <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '10px', padding: '10px 16px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '16px' }}>⚠</span>
+          <div>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: '#f87171' }}>AI analysis unavailable — </span>
+            <span style={{ fontSize: '12px', color: '#94a3b8' }}>Claude timed out or returned an error. Qualitative scores (company / industry / economic) are placeholder defaults, not real analysis. Click Regenerate when the AI provider is available.</span>
+          </div>
+        </div>
+      )}
+      {report?.report_quality === 'partial' && (
+        <div style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: '10px', padding: '10px 16px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '16px' }}>⚠</span>
+          <div>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: '#fbbf24' }}>Partial data — </span>
+            <span style={{ fontSize: '12px', color: '#94a3b8' }}>Some upstream services were unavailable when this report was generated. One or more score components may be estimated. Regenerate for a complete report.</span>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div style={{ padding: '12px 16px', borderRadius: '8px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', fontSize: '13px', marginBottom: '16px', lineHeight: 1.5 }}>
           {error}

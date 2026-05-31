@@ -947,6 +947,7 @@ Use your knowledge of {symbol} to fill in qualitative sections accurately. Base 
 
 def _fallback_ai() -> dict:
     return {
+        "_is_fallback": True,
         "company": {
             "business_model": "Analysis unavailable — AI provider returned an error.",
             "competitive_advantage": {"brand_strength": "Unknown"},
@@ -1158,6 +1159,15 @@ async def generate_research(symbol: str, req: ResearchRequest):
     # Call Claude for qualitative analysis
     ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price)
 
+    # Determine report quality
+    missing_services = sum([not fund_t, not signal_t, not rank_t, not ind_t])
+    if ai.get("_is_fallback"):
+        report_quality = "fallback"
+    elif missing_services >= 2:
+        report_quality = "partial"
+    else:
+        report_quality = "full"
+
     # Overall weighted score
     scores = {
         "technical": tech["score"],
@@ -1197,6 +1207,7 @@ async def generate_research(symbol: str, req: ResearchRequest):
         "symbol": sym,
         "company_name": stock.get("name", sym),
         "generated_at": datetime.utcnow().isoformat() + "Z",
+        "report_quality": report_quality,
         "current_price": price,
         "market_cap": fund.get("market_cap"),
         "sector": stock.get("sector"),

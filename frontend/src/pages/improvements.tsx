@@ -160,7 +160,9 @@ const ITEMS: Item[] = [
     effort: '1 day',
     impact: 'Prevents serving AI fallback defaults (50/50/50 scores) as if they were real analysis',
     what: 'If Claude times out, the engine returns hardcoded defaults (company_score: 50, industry_score: 50). This is cached for 24h and served to all users with no indication it is synthetic.',
-    fix: 'Store a quality field alongside each cached report: "full" | "partial" | "fallback". Display a yellow warning banner in the UI for non-full reports.',
+    fix: 'Implemented: _fallback_ai() sets _is_fallback=True. generate_research() sets report_quality: "full" | "partial" | "fallback" based on Claude result and upstream service availability. Research page shows a red banner for fallback and yellow for partial, with a Regenerate prompt.',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-05-31 — routes.py report_quality field + research/[symbol].tsx warning banner',
   },
   {
     id: 'ml-weight-formula',

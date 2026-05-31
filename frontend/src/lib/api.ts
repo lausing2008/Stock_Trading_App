@@ -549,6 +549,7 @@ export type ResearchReport = {
   symbol: string;
   company_name: string;
   generated_at: string;
+  report_quality: 'full' | 'partial' | 'fallback';
   current_price: number | null;
   market_cap: number | null;
   sector: string | null;
