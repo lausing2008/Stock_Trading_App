@@ -82,6 +82,7 @@ def send_signal_alert_email(
     signal_data: dict | None = None,
     fundamentals: dict | None = None,
     game_plan: dict | None = None,
+    conviction_layers: list[str] | None = None,
 ) -> bool:
     direction_map = {
         ("SELL", "HOLD"): ("cautious",  "moving out of sell territory"),
@@ -206,6 +207,24 @@ def send_signal_alert_email(
     )
     rows_text = "\n".join(f"  {k}: {v}" for k, v in reason_rows)
 
+    # ── Conviction layer summary (only for BUY transitions) ───────────────
+    conviction_html = ""
+    conviction_text = ""
+    if conviction_layers and new_signal == "BUY":
+        layer_rows = "".join(
+            f'<tr><td style="padding:5px 12px;font-size:13px;color:#166534;border-bottom:1px solid #bbf7d0">'
+            f'<span style="color:#16a34a;font-weight:700;margin-right:8px">✓</span>{layer}</td></tr>'
+            for layer in conviction_layers
+        )
+        conviction_html = f"""
+    <div style="margin-top:20px">
+      <div style="font-size:11px;font-weight:700;color:#16a34a;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">✅ 5-Layer Conviction Gate — All Passed</div>
+      <table style="width:100%;border-collapse:collapse;background:#f0fdf4;border-radius:8px;overflow:hidden;border:1px solid #bbf7d0">
+        {layer_rows}
+      </table>
+    </div>"""
+        conviction_text = "\n✅ 5-Layer Conviction Gate — All Passed:\n" + "\n".join(f"  ✓ {l}" for l in conviction_layers) + "\n"
+
     # ── Game plan HTML (only for BUY transitions) ─────────────────────────
     game_plan_html = ""
     game_plan_text = ""
@@ -314,6 +333,7 @@ Key Risk: {risk}
         f"Analyst consensus: {analyst.upper()}\n"
         + (f"Bullish probability: {float(bullish_prob)*100:.1f}%  |  Confidence: {float(confidence):.1f}%\n" if bullish_prob is not None else "")
         + f"\nWhy the signal changed:\n{rows_text}\n\n"
+        + conviction_text
         + (f"{earnings_warn}\n\n" if earnings_warn else "")
         + game_plan_text
         + cta + "\n"
@@ -361,6 +381,7 @@ Key Risk: {risk}
 
     {cta_html}
     {f'<div style="background:#fef9c3;border:1px solid #fbbf24;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:13px;color:#92400e">{earnings_warn}</div>' if earnings_warn else ''}
+    {conviction_html}
     {game_plan_html}
     <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:16px">
       Not personalised financial advice. Always do your own research before acting.

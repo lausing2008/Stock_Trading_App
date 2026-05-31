@@ -189,6 +189,24 @@ Each retrain reports:
 
 Previously, `predict_latest()` used features from 5 bars ago (the last bar with a known forward return) instead of today's actual bar. This is now fixed — inference uses `inference_mode=True` which skips the label mask, so predictions are based on today's technical conditions.
 
+#### Signal engine v3 — additional accuracy layers
+
+Four techniques were added on top of v2 to improve timing accuracy:
+
+| Improvement | What it does |
+|---|---|
+| **Multi-timeframe confirmation** | Weekly TA score (SMA, RSI, MACD on weekly bars) is computed separately and cross-checked with the daily signal. If daily and weekly direction agree, the fused probability is amplified by 12%. If they disagree, it is compressed by 15%. A daily BUY signal that contradicts the weekly trend is less reliable — this adjustment encodes that. |
+| **Rolling 20-day VWAP** | Price above VWAP = institutional buyers active. Adds a small positive weight to the TA score when price is above VWAP; a small negative weight when below. |
+| **Earnings proximity penalty** | If earnings are within 10 days, the fused probability is compressed toward 0.50. Earnings create binary outcome risk that overrides any technical signal — the model should not project a directional conviction when a coin-flip event is imminent. |
+| **Chart pattern fusion** | Detects 5 classic patterns on the last 60 bars. Bullish patterns (bull flag, cup-and-handle, double bottom) apply a +0.04 to +0.06 boost; bearish patterns (head-and-shoulders, double top, bear flag) apply a −0.03 to −0.05 compression. Pattern bonuses are bounded so they can tilt but not override the combined ML+TA signal. |
+
+**Market regime adaptive thresholds:**
+
+| Regime | BUY threshold | HOLD threshold | Rationale |
+|--------|--------------|----------------|-----------|
+| Bull (S&P 500 above 200MA) | 0.65 | 0.50 | Normal — most signals are valid in trending markets |
+| Bear (S&P 500 below 200MA) | 0.73 | 0.56 | Raised — broad market headwind means individual stock BUY signals have a higher false-positive rate; require stronger conviction to fire |
+
 #### Dynamic ML/TA fusion weighting
 
 The 60/40 ML/TA split is no longer hardcoded. The signal engine now reads each symbol's `cv_auc_mean` from the model artifact and adjusts the ML weight proportionally:
@@ -507,6 +525,26 @@ Fires when the signal improves **and** analyst consensus is bullish. Designed fo
 
 Both conditions must be true simultaneously. If the analyst rating is neutral or bearish, no email is sent even if the AI signal improved.
 
+**For BUY transitions specifically — 5-layer conviction gate:**
+
+When the new signal is BUY (the highest-priority entry), a stricter gate is applied on top of the analyst filter. All five layers must pass or the email is suppressed:
+
+| Layer | What is checked | Threshold |
+|-------|----------------|-----------|
+| 1 — Trend | SMA50 above SMA200 AND price above SMA50 | Both must be true |
+| 2 — K-Score | Composite ranking conviction score | ≥ 55 |
+| 3a — RSI | RSI in healthy bullish zone | 45–65 |
+| 3b — Stoch RSI | Recovering from oversold (cross-up or still oversold, not overbought) | %K < 80 AND (cross-up OR %K < 25) |
+| 3c — MACD | Histogram positive and rising, or zero-line crossover | Any one of the three |
+| 4 — OBV | On-Balance Volume confirming price direction | `obv_bullish` = true |
+| 5 — ML | XGBoost bullish probability | > 70% |
+
+**Disqualifiers** — even if all layers pass, the BUY email is suppressed if:
+- Bearish RSI divergence is detected (price rising but momentum fading)
+- Stoch RSI is overbought (> 80) without a recent cross-up
+
+This gate exists because raw BUY signals have a 20–30% false-positive rate without further filtering. Requiring all layers to align reduces noise and ensures you only receive an email when the setup is genuinely high-conviction.
+
 ---
 
 #### Type 2 — Exit Warning (AI Signal deteriorating from BUY)
@@ -575,6 +613,20 @@ All emails include:
 | Insider activity (6M) | Shares bought / sold + net, % of float |
 
 - **Earnings warning** — if earnings are within 7 days, a yellow warning banner appears reminding you that results may override the signal. If within 21 days, a plain note is included.
+
+**BUY transition emails additionally include:**
+
+- **5-Layer Conviction Gate summary** — a green checklist showing exactly which layers passed and why. Each item is a plain-English description (e.g. "K-Score: 72 — conviction positive", "ML probability 78% > 70% threshold"). This confirms at a glance why the conviction gate opened.
+
+- **10-Day Game Plan** — a structured trade setup derived from the technical data at the time the alert fires:
+
+| Section | Contents |
+|---------|---------|
+| Entry Strategy | Three entry levels: Limit buy 50% (1.5–2% below current), Limit buy 50% (deeper pullback 3.5–4%), Breakout 50% (2% above current). Each has a note explaining the technical rationale (e.g. "pullback to SMA50 support zone"). |
+| Stop Loss | Absolute price level ~5.5% below current. Note describes what a close below this level means (e.g. "golden-cross breakdown" if SMA50 > SMA200). |
+| Take Profit | Analyst mean price target if available and > 3% above current; otherwise +12% from current. |
+| Catalysts | Up to 3 bullet points: earnings runway, analyst upgrade potential, SMA structure, RSI zone, MACD confirmation, OBV trend. |
+| Key Risk | One sentence — bear market regime warning, upcoming earnings binary risk, or generic market override note. |
 
 ### What the email does NOT do
 
@@ -662,6 +714,22 @@ Strategy-filtered stock screener. Surfaces the best candidates from the **curren
 | **Growth** | 🚀 | Medium | Growth (50%) + Momentum (30%) + Technical (20%) | Growth ≥ 50 |
 
 **Top Picks scoring note:** The raw K-Score is blended with a signal bonus so that two stocks with equal composite scores are ranked with the BUY-signal stock higher. Non-BUY stocks are not excluded — they remain visible if their K-Score is high enough.
+
+### Score normalisation
+
+All strategy scores are capped at **100** via `Math.min(100, score)` before display and sorting. Without this cap, stocks with extreme sub-scores (e.g. very high momentum combined with a strong BUY signal) could produce scores above 100, making the ranking uninterpretable and the progress bar visualisation overflow. The cap also ensures the Confluence grade thresholds (80+, 65–79, 50–64, <50) apply consistently across all strategies.
+
+**Per-strategy score formulas (all capped at 100):**
+
+| Strategy | Formula |
+|----------|---------|
+| Swing | `tech × 0.40 + mom × 0.25 + signal_bonus + conf × 0.15` |
+| Short-term | `mom × 0.50 + tech × 0.25 + min(|1d_chg| × 3, 15) + vlt × 0.10` |
+| Long-term | `val × 0.40 + grow × 0.30 + min(max(upside, 0), 25) + vlt × 0.15` |
+| Growth | `grow × 0.50 + mom × 0.30 + tech × 0.20` |
+| AI Signal | `conf × 0.70 + bullish_prob × 50 + tech × 0.15 + mom × 0.10` |
+
+Where: `tech` = technical sub-score (0–100), `mom` = momentum sub-score, `val` = value sub-score, `grow` = growth sub-score, `conf` = AI signal confidence, `vlt` = volatility (inverse), `signal_bonus` = 8 for BUY, 3 for HOLD, 0 otherwise.
 
 ### Filters
 - **Market filter** — All / US / HK
@@ -1564,6 +1632,28 @@ POST /ai/chat
 }
 → { "content": "...", "model": "...", "provider": "..." }
 ```
+
+---
+
+## Price data quality
+
+### Adjusted close prices
+
+All daily bar fetches from yfinance use `auto_adjust=True`. This means the `Close` column returned is already **split- and dividend-adjusted** — the price series is restated retroactively whenever a stock split or dividend occurs, so the chart and all indicators (SMA, RSI, MACD, ATR, OBV) compute on a consistent continuous series.
+
+Intraday bars (1m, 5m, 15m, 1h) do **not** use auto-adjust — yfinance does not reliably adjust intraday data and applying corporate-action adjustments to sub-daily bars can introduce artefacts. Intraday data is used only for live price display, not for signal computation.
+
+### ATR calculation — Wilder's method
+
+Average True Range (ATR) in the Research Engine uses **Wilder's exponential smoothing** rather than a plain SMA:
+
+1. Compute True Range for each bar: `TR = max(high − low, |high − prev_close|, |low − prev_close|)`
+2. Seed the first ATR with a simple average of the first `period` TR values (standard is 14 bars)
+3. For each subsequent bar: `ATR = ATR_prev × (1 − α) + TR × α` where `α = 1 / period`
+
+Wilder's ATR converges more slowly than a simple rolling window, meaning it is less jumpy on single-day volatility spikes and gives a smoother, more representative estimate of "normal" trading range. This is the same method used by the original ATR definition (J. Welles Wilder, 1978) and by most professional charting platforms.
+
+ATR is used in the Research Engine for: stop loss calculation (`entry − ATR`), profit target spacing, and volatility classification (low / normal / high relative to its own 20-day average).
 
 ---
 

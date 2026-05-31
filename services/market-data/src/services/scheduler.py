@@ -462,6 +462,7 @@ def check_signal_alerts() -> None:
                 if not is_bullish and not is_bearish:
                     continue
 
+                conviction_passed: list[str] | None = None
                 if is_bullish:
                     sig_data = signal_details.get(alert.symbol) or {}
                     confidence = float(sig_data.get("confidence") or 0)
@@ -477,6 +478,7 @@ def check_signal_alerts() -> None:
                                 reason="conviction_layers_failed", failed=failed,
                             )
                             continue
+                        conviction_passed = passed
                         log.info(
                             "signal_alert.conviction_met", symbol=alert.symbol,
                             passed=passed,
@@ -512,6 +514,7 @@ def check_signal_alerts() -> None:
                     signal_data=signal_details.get(alert.symbol, {}),
                     fundamentals=fundamentals_cache.get(alert.symbol),
                     game_plan=game_plan,
+                    conviction_layers=conviction_passed,
                 )
                 if email_ok:
                     fired += 1
