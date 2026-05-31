@@ -130,7 +130,8 @@ export default function ResearchPage() {
   const router = useRouter();
   const symbol = (router.query.symbol as string | undefined)?.toUpperCase() ?? '';
 
-  const settings = typeof window !== 'undefined' ? loadSettings() : null;
+  const [settings, setSettings] = useState<ReturnType<typeof loadSettings> | null>(null);
+  useEffect(() => { setSettings(loadSettings()); }, []);
   const provider = settings?.aiProvider === 'deepseek' ? 'deepseek' : 'claude';
   const apiKey = provider === 'deepseek' ? (settings?.deepseekApiKey ?? '') : (settings?.claudeApiKey ?? '');
   const model = provider === 'deepseek' ? (settings?.deepseekModel ?? 'deepseek-chat') : (settings?.claudeModel ?? 'claude-sonnet-4-6');
