@@ -117,7 +117,6 @@ const ITEMS: Item[] = [
     implementedNote: 'Shipped 2026-05-31 — kscore.py _technical_score()',
   },
   {
-  {
     id: 'adj-close-consistency',
     tier: 2, severity: 'medium',
     title: 'Standardise on adj_close for all feature computation',
@@ -129,7 +128,6 @@ const ITEMS: Item[] = [
     defaultStatus: 'done',
     implementedNote: 'Shipped 2026-05-31 — yfinance_adapter.py: auto_adjust=True for daily bars',
   },
-  {
   {
     id: 'frontend-weight-normalise',
     tier: 2, severity: 'medium',
@@ -186,7 +184,6 @@ const ITEMS: Item[] = [
     defaultStatus: 'done',
     implementedNote: 'Shipped 2026-05-31 — signals.py _check_price_staleness()',
   },
-  {
   {
     id: 'atr-standard',
     tier: 2, severity: 'low',
