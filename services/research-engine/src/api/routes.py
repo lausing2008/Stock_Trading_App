@@ -12,6 +12,8 @@ import math
 from datetime import datetime
 
 import httpx
+import pandas as pd
+import yfinance as yf
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -983,6 +985,75 @@ def _fallback_ai() -> dict:
     }
 
 
+# ── yfinance fallback (for symbols not in the DB) ────────────────────────────
+
+def _compute_yf_indicators(hist: pd.DataFrame) -> dict:
+    closes = hist["Close"]
+    sma50 = closes.rolling(50).mean()
+    sma200 = closes.rolling(200).mean()
+    delta = closes.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rs = gain / loss.replace(0, float("nan"))
+    rsi = 100 - (100 / (1 + rs))
+    ema12 = closes.ewm(span=12, adjust=False).mean()
+    ema26 = closes.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    macd_hist = macd_line - signal_line
+
+    def to_list(s):
+        return [None if pd.isna(v) else round(float(v), 4) for v in s]
+
+    return {"values": {
+        "sma_50": to_list(sma50),
+        "sma_200": to_list(sma200),
+        "rsi_14": to_list(rsi),
+        "macd_line": to_list(macd_line),
+        "signal_line": to_list(signal_line),
+        "macd_histogram": to_list(macd_hist),
+    }}
+
+
+def _yf_sync_fetch(sym: str):
+    """Fetch stock info, price history, and TA indicators from yfinance."""
+    try:
+        ticker = yf.Ticker(sym)
+        info = ticker.info or {}
+        name = info.get("longName") or info.get("shortName") or sym
+        sector = info.get("sector") or "Unknown"
+
+        hist = ticker.history(period="1y", interval="1d")
+        prices = []
+        indicators = {"values": {}}
+        if not hist.empty:
+            for idx, row in hist.iterrows():
+                prices.append({
+                    "ts": str(idx.date()),
+                    "open": float(row.get("Open") or 0),
+                    "high": float(row.get("High") or 0),
+                    "low": float(row.get("Low") or 0),
+                    "close": float(row.get("Close") or 0),
+                    "volume": int(row.get("Volume") or 0),
+                })
+            indicators = _compute_yf_indicators(hist)
+
+        live_price = 0.0
+        try:
+            fi = ticker.fast_info
+            live_price = float(getattr(fi, "last_price", 0) or 0)
+        except Exception:
+            live_price = prices[-1]["close"] if prices else 0.0
+
+        if name == sym and not prices:
+            return {}, [], {"values": {}}, 0.0
+
+        return {"name": name, "sector": sector}, prices, indicators, live_price
+    except Exception as exc:
+        log.warning("yf.fallback.failed", symbol=sym, error=str(exc))
+        return {}, [], {"values": {}}, 0.0
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/{symbol}")
@@ -1033,7 +1104,20 @@ async def generate_research(symbol: str, req: ResearchRequest):
     live = (live_t or [{}])[0] if isinstance(live_t, list) else {}
 
     if not stock:
-        raise HTTPException(404, f"Symbol {sym} not found")
+        # Symbol not in DB — fetch directly from yfinance
+        loop = asyncio.get_event_loop()
+        yf_stock, yf_prices, yf_indicators, yf_price = await loop.run_in_executor(
+            None, _yf_sync_fetch, sym
+        )
+        if not yf_stock:
+            raise HTTPException(404, f"Symbol {sym} not found")
+        stock = yf_stock
+        if not prices:
+            prices = yf_prices
+        if not indicators.get("values"):
+            indicators = yf_indicators
+        if not live:
+            live = {"price": yf_price}
 
     price = live.get("price") or stock.get("price") or stock.get("last_price") or 0.0
 
