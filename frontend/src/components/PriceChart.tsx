@@ -94,7 +94,7 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
   const [showBB,   setShowBB]   = useState(false);
   const [showVol,  setShowVol]  = useState(true);
   const [showRSI,  setShowRSI]  = useState(false);
-  const [showMACD, setShowMACD] = useState(false);
+  const [showMACD, setShowMACD] = useState(true);
 
   const rangeConfig = RANGES.find(r => r.label === range)!;
 
