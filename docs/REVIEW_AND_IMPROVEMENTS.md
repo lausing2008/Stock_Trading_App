@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. Several analytical flaws were identified in the initial review — 5 have been fixed as of 2026-05-31. Remaining priorities are uncalibrated ML probabilities, sector-blind fundamental scoring, and the absence of a walk-forward backtest.
+StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are now shipped (9 improvements total — 2026-05-31). Remaining priorities are sector-relative fundamental scoring, adj_close consistency, and the walk-forward backtest engine.
 
 This document is the single source of truth for everything that was found, why it matters, and how to fix it.
 
@@ -39,10 +39,10 @@ This document is the single source of truth for everything that was found, why i
 | ML methodology | 7.5 / 10 | ↑ Calibration already in place; look-ahead guard + macro cache added |
 | Signal logic | 7.0 / 10 | ↑ Stale price guard added; ML weight formula still ad-hoc |
 | K-Score ranking | 7.5 / 10 | ↑ Falling knife gate + RSI curve fixed |
-| Research engine | 6.0 / 10 | Sector-blind thresholds and prompt injection still pending |
+| Research engine | 6.5 / 10 | ↑ Prompt injection fixed; sector-blind thresholds still pending |
 | Frontend / UX | 8.5 / 10 | Best-in-class for a self-built tool |
 | Risk management | 6.0 / 10 | Confluence + position sizing good; no backtested Sharpe |
-| **Overall** | **7.0 / 10** | *(was 6.5)* |
+| **Overall** | **7.5 / 10** | *(was 6.5 — all Tier 1 done)* |
 
 ---
 
