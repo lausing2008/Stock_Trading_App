@@ -228,7 +228,9 @@ const ITEMS: Item[] = [
     effort: '4 days',
     impact: 'Consistent EPS beaters are systematically undervalued by analysts — high predictive value',
     what: 'A stock\'s history of beating analyst EPS estimates is one of the most predictive signals for post-earnings moves. Not currently tracked or used.',
-    fix: 'Fetch last 8 quarters from yfinance earnings_history. Compute beat rate, average surprise %, trend. Display in Fundamentals. Add +5 to research score for consistent beaters (beat rate > 75%).',
+    fix: 'Implemented: eps_beat_rate, eps_avg_surprise_pct, eps_surprise_trend, eps_history (last 8 quarters) added to fundamentals endpoint. Research engine adds +5 pts for beat_rate ≥ 75%, +2 pts for ≥ 50%. Stock detail page shows per-quarter beat/miss grid with colour coding.',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-05-31 — market-data routes.py + research-engine routes.py + stock/[symbol].tsx',
   },
   {
     id: 'relative-strength',
@@ -249,6 +251,8 @@ const ITEMS: Item[] = [
     impact: 'Suppresses BUY signals ahead of negative catalysts — regulatory action, leadership departure, product recall',
     what: 'News headlines are fetched and displayed but never incorporated into any signal. Systematically negative news often precedes price moves that technicals don\'t predict.',
     fix: 'Score each headline with Claude (already in stack): POSITIVE/NEGATIVE/NEUTRAL + magnitude 0–100. Aggregate 7-day sentiment score per symbol. If sentiment < 30, compress AI signal by 20–30%.',
+    defaultStatus: 'done',
+    implementedNote: 'Fetches last 10 yfinance news articles (VADER sentiment, -1→+1) and maps to 0–100. score <25 → compress fused signal 30%; score <35 → compress 20%. Wired into generate_signal() after earnings penalty. Sentiment shown in stock detail trade plan.',
   },
   {
     id: 'regime-detection',

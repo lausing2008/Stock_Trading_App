@@ -380,6 +380,7 @@ TECHNICAL INDICATORS:
   Weekly alignment: ${reasons.weekly_alignment === true ? 'CONFIRMED (daily+weekly agree)' : reasons.weekly_alignment === false ? 'CONFLICT (timeframes diverge)' : 'N/A'} | Weekly TA score: ${reasons.weekly_ta_score != null ? (Number(reasons.weekly_ta_score) * 100).toFixed(0) : '?'}
   Active chart patterns: ${(reasons.active_patterns as string[] | undefined)?.length ? (reasons.active_patterns as string[]).join(', ') : 'none'}
   Earnings warning: ${reasons.earnings_warning ?? 'none'}${reasons.days_to_earnings != null ? ` (${reasons.days_to_earnings}d to earnings)` : ''}
+  News sentiment (7d): ${reasons.news_sentiment != null ? `${Number(reasons.news_sentiment).toFixed(0)}/100` : 'N/A'}${reasons.news_sentiment_flag ? ` — ${String(reasons.news_sentiment_flag).replace(/_/g, ' ')}` : ''}
   Market regime: ${reasons.market_regime ?? 'unknown'}`;
 
     const systemPrompt = `You are a professional swing trader generating a concrete 10-day trade plan for a stock that has just received a BUY AI signal.

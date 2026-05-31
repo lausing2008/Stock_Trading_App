@@ -115,6 +115,33 @@ def _fetch_earnings_proximity(symbol: str) -> int | None:
     return None
 
 
+def _fetch_news_sentiment(symbol: str) -> float | None:
+    """Return a 7-day news sentiment score (0–100, 50 = neutral).
+
+    Uses the sentiment field already computed by the market-data news endpoint
+    (yfinance VADER scores, range −1 to +1). Maps to 0–100 and averages the
+    last 10 articles (yfinance typically returns 7–10 recent items).
+    Returns None if no news available or endpoint unreachable.
+    """
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/news?sources=yfinance&limit=10"
+        with httpx.Client(timeout=8) as c:
+            r = c.get(url)
+            if r.status_code != 200:
+                return None
+        articles = r.json()
+        if not articles:
+            return None
+        scores = [
+            float(a["sentiment"]) * 50 + 50  # map −1..+1 → 0..100
+            for a in articles
+            if isinstance(a.get("sentiment"), (int, float))
+        ]
+        return round(sum(scores) / len(scores), 1) if scores else None
+    except Exception:
+        return None
+
+
 def _fetch_patterns_from_ta(symbol: str) -> list[dict]:
     """Fetch recent chart patterns from the TA service."""
     try:
@@ -493,6 +520,23 @@ def generate_signal(symbol: str) -> AIConfidence:
         elif days_to_earnings <= 10:
             fused = 0.5 + (fused - 0.5) * 0.80
             reasons["earnings_warning"] = "note"
+
+    # ── News sentiment filter ──────────────────────────────────────────────
+    # Persistently negative news (score < 30) compresses the signal toward
+    # neutral. This suppresses BUY signals ahead of regulatory action,
+    # leadership crises, or product recalls that technicals won't catch yet.
+    news_sentiment = _fetch_news_sentiment(symbol)
+    reasons["news_sentiment"] = news_sentiment
+    if news_sentiment is not None:
+        if news_sentiment < 25:
+            fused = 0.5 + (fused - 0.5) * 0.70  # strongly negative — compress 30%
+            reasons["news_sentiment_flag"] = "strongly_negative"
+        elif news_sentiment < 35:
+            fused = 0.5 + (fused - 0.5) * 0.80  # moderately negative — compress 20%
+            reasons["news_sentiment_flag"] = "negative"
+        else:
+            reasons["news_sentiment_flag"] = "neutral_or_positive"
+    fused = float(np.clip(fused, 0.0, 1.0))
 
     signal, horizon = _decide(fused, market_regime)
     confidence = round(abs(fused - 0.5) * 200, 2)
