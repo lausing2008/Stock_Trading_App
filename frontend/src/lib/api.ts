@@ -377,6 +377,11 @@ export type Fundamentals = {
   // Ownership
   held_percent_institutions: number | null;
   held_percent_insiders: number | null;
+  // Earnings surprise history
+  eps_beat_rate: number | null;        // 0.0–1.0
+  eps_avg_surprise_pct: number | null; // average % beat (positive = beating)
+  eps_surprise_trend: string | null;   // "improving" | "declining" | "stable"
+  eps_history: { quarter: string; actual: number | null; estimate: number | null; surprise_pct: number | null }[];
 };
 
 export type Overview = {

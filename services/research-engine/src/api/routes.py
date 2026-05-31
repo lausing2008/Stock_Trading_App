@@ -554,6 +554,15 @@ def _score_fundamental(fund: dict) -> dict:
         else:
             prof_grade = "Poor"; score -= 4
 
+    # Earnings surprise bonus — consistent beaters are systematically undervalued
+    beat_rate = fund.get("eps_beat_rate")
+    eps_surprise_bonus = 0
+    if beat_rate is not None:
+        if beat_rate >= 0.75:
+            eps_surprise_bonus = 5; score += 5
+        elif beat_rate >= 0.50:
+            eps_surprise_bonus = 2; score += 2
+
     score = max(0, min(100, score))
 
     return {
@@ -567,6 +576,10 @@ def _score_fundamental(fund: dict) -> dict:
             "trailing_eps": fund.get("trailing_eps"),
             "forward_eps": fund.get("forward_eps"),
             "assessment": eps_assess,
+            "beat_rate": round(beat_rate * 100) if beat_rate is not None else None,
+            "avg_surprise_pct": fund.get("eps_avg_surprise_pct"),
+            "trend": fund.get("eps_surprise_trend"),
+            "surprise_bonus": eps_surprise_bonus,
         },
         "margins": {
             "gross": pct(gross_m),

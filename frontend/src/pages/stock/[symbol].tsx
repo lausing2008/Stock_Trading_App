@@ -1467,7 +1467,46 @@ Return ONLY valid JSON — no markdown, no prose:
                 )}
               </div>
 
-              {/* Row 5 — Analyst Ratings & Price Targets */}
+              {/* Row 5 — EPS Surprise History */}
+              {f.eps_history && f.eps_history.length > 0 && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>EPS Surprise History</div>
+                    {f.eps_beat_rate != null && (
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: f.eps_beat_rate >= 0.75 ? '#4ade80' : f.eps_beat_rate >= 0.5 ? '#fbbf24' : '#f87171', background: 'rgba(255,255,255,0.04)', border: `1px solid ${f.eps_beat_rate >= 0.75 ? '#4ade8044' : f.eps_beat_rate >= 0.5 ? '#fbbf2444' : '#f8717144'}`, borderRadius: '6px', padding: '2px 8px' }}>
+                        {Math.round(f.eps_beat_rate * 100)}% beat rate
+                      </span>
+                    )}
+                    {f.eps_avg_surprise_pct != null && (
+                      <span style={{ fontSize: '11px', color: f.eps_avg_surprise_pct >= 0 ? '#4ade80' : '#f87171' }}>avg {f.eps_avg_surprise_pct >= 0 ? '+' : ''}{f.eps_avg_surprise_pct.toFixed(1)}% surprise</span>
+                    )}
+                    {f.eps_surprise_trend && (
+                      <span style={{ fontSize: '11px', color: f.eps_surprise_trend === 'improving' ? '#4ade80' : f.eps_surprise_trend === 'declining' ? '#f87171' : '#94a3b8', marginLeft: 'auto' }}>
+                        {f.eps_surprise_trend === 'improving' ? '↑ Improving' : f.eps_surprise_trend === 'declining' ? '↓ Declining' : '→ Stable'}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${f.eps_history.length}, 1fr)`, gap: '4px' }}>
+                    {f.eps_history.map((q: { quarter: string; actual: number | null; estimate: number | null; surprise_pct: number | null }) => {
+                      const beat = q.actual != null && q.estimate != null && q.actual > q.estimate;
+                      const miss = q.actual != null && q.estimate != null && q.actual < q.estimate;
+                      const qColor = beat ? '#4ade80' : miss ? '#f87171' : '#94a3b8';
+                      return (
+                        <div key={q.quarter} style={{ background: 'rgba(255,255,255,0.02)', border: `1px solid ${qColor}33`, borderRadius: '6px', padding: '6px 4px', textAlign: 'center' as const }}>
+                          <div style={{ fontSize: '9px', color: '#475569', marginBottom: '2px' }}>{q.quarter.slice(0, 7)}</div>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: qColor }}>{q.actual != null ? `$${q.actual.toFixed(2)}` : '—'}</div>
+                          <div style={{ fontSize: '9px', color: '#475569' }}>est ${q.estimate != null ? q.estimate.toFixed(2) : '—'}</div>
+                          {q.surprise_pct != null && (
+                            <div style={{ fontSize: '9px', color: qColor, marginTop: '2px' }}>{q.surprise_pct >= 0 ? '+' : ''}{q.surprise_pct.toFixed(1)}%</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Row 6 — Analyst Ratings & Price Targets */}
               {(() => {
                 const hasRatings = f.recommendation != null || f.target_price != null;
                 const hasCounts = (f.analyst_strong_buy ?? 0) + (f.analyst_buy ?? 0) + (f.analyst_hold ?? 0) + (f.analyst_underperform ?? 0) + (f.analyst_sell ?? 0) > 0;

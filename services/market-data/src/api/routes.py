@@ -567,6 +567,11 @@ class FundamentalsOut(BaseModel):
     # Ownership breakdown
     held_percent_institutions: float | None = None
     held_percent_insiders: float | None = None
+    # Earnings surprise history (last 8 quarters)
+    eps_beat_rate: float | None = None          # 0.0–1.0 fraction of quarters where actual > estimate
+    eps_avg_surprise_pct: float | None = None   # mean surprise % across available quarters
+    eps_surprise_trend: str | None = None       # "improving" | "declining" | "stable"
+    eps_history: list[dict] = []                # [{quarter, actual, estimate, surprise_pct}]
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
@@ -765,6 +770,34 @@ def get_fundamentals(symbol: str, refresh: bool = False):
         held_percent_institutions=_safe(info, "heldPercentInstitutions"),
         held_percent_insiders=_safe(info, "heldPercentInsiders"),
     )
+
+    # Fetch earnings surprise history (last 8 quarters)
+    try:
+        eh = ticker.earnings_history
+        if eh is not None and not eh.empty:
+            eh = eh.tail(8)
+            beats = int((eh["epsActual"] > eh["epsEstimate"]).sum())
+            total = len(eh)
+            data.eps_beat_rate = round(beats / total, 3) if total else None
+            surprise_vals = eh["surprisePercent"].dropna().tolist()
+            data.eps_avg_surprise_pct = round(float(sum(surprise_vals) / len(surprise_vals)) * 100, 2) if surprise_vals else None
+            # Trend: compare avg surprise of first half vs second half
+            if len(surprise_vals) >= 4:
+                half = len(surprise_vals) // 2
+                early = sum(surprise_vals[:half]) / half
+                recent = sum(surprise_vals[half:]) / (len(surprise_vals) - half)
+                data.eps_surprise_trend = "improving" if recent > early + 0.005 else "declining" if recent < early - 0.005 else "stable"
+            data.eps_history = [
+                {
+                    "quarter": str(idx.date()) if hasattr(idx, "date") else str(idx),
+                    "actual": round(float(row["epsActual"]), 4) if row["epsActual"] is not None else None,
+                    "estimate": round(float(row["epsEstimate"]), 4) if row["epsEstimate"] is not None else None,
+                    "surprise_pct": round(float(row["surprisePercent"]) * 100, 2) if row["surprisePercent"] is not None else None,
+                }
+                for idx, row in eh.iterrows()
+            ]
+    except Exception:
+        pass
 
     try:
         _get_redis().setex(cache_key, _FUND_TTL, data.model_dump_json())
