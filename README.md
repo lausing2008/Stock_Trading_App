@@ -135,6 +135,7 @@ Admins can create additional user accounts, reset passwords, and toggle users in
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — AWS ECS Fargate deployment
 - [`docs/FEATURES.md`](docs/FEATURES.md) — full feature reference for every page and service
 - [`docs/RESEARCH_ENGINE.md`](docs/RESEARCH_ENGINE.md) — Planning Stage Research Intelligence Engine deep-dive
+- [`docs/TESTING.md`](docs/TESTING.md) — unit test coverage, how to run, how to add tests
 
 ## License
 
