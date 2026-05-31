@@ -314,18 +314,17 @@ export default function ImprovementsPage() {
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
-      // Pre-seed items that have a defaultStatus but haven't been manually set yet
+      // Force-seed items with defaultStatus: 'done' unless user has explicitly set
+      // them to 'in-progress'. Overwrites stale 'todo' values from prior sessions.
       const seeded: Record<string, Status> = {};
       for (const item of ITEMS) {
-        if (item.defaultStatus && !(item.id in saved)) {
-          seeded[item.id] = item.defaultStatus;
+        if (item.defaultStatus === 'done' && saved[item.id] !== 'in-progress') {
+          seeded[item.id] = 'done';
         }
       }
-      const merged = { ...seeded, ...saved };
+      const merged = { ...saved, ...seeded }; // seeded wins over stale saved values
       setStatuses(merged);
-      if (Object.keys(seeded).length > 0) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
-      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
     } catch { /* ignore */ }
   }, []);
 
