@@ -4,6 +4,8 @@
 All 9 services run on one EC2 instance behind Nginx + Let's Encrypt.
 Estimated cost: **~$30–40/month** (t3.medium on-demand).
 
+> **CI:** Every push to `main` or `dev` automatically runs all 80 unit tests via GitHub Actions (`.github/workflows/test.yml`). Never deploy a commit that hasn't passed CI.
+
 ---
 
 ## 1. Launch EC2 instance
@@ -434,7 +436,89 @@ sudo systemctl status stockai
 
 ---
 
-## 13. Useful maintenance commands
+## 13. Add swap space (prevent OOM on builds)
+
+The t3.medium has 4 GB RAM. Docker image builds and Next.js compilation can push past that limit, causing the instance to freeze or become unreachable. A 2 GB swap file acts as a safety valve.
+
+```bash
+bash ~/stockai/scripts/setup_swap.sh
+```
+
+The script is idempotent — run it once after provisioning and it will persist across reboots. It also sets `vm.swappiness=10` so the kernel only uses swap under real memory pressure, not as a first resort.
+
+Verify swap is active:
+
+```bash
+free -h
+# Swap: 2.0Gi should show up
+```
+
+---
+
+## 14. Automated database backups
+
+The script at `scripts/backup_db.sh` dumps the PostgreSQL database from the running Docker container, compresses it with gzip, uploads to S3, and automatically prunes copies older than 30 days.
+
+### One-time setup
+
+**1. Create an S3 bucket for backups** (in the AWS console or CLI):
+```bash
+aws s3 mb s3://your-stockai-backups --region ap-east-1
+```
+
+**2. Attach an IAM role to the EC2 instance** with this policy (replace `your-stockai-backups`):
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:ListBucket"],
+    "Resource": [
+      "arn:aws:s3:::your-stockai-backups",
+      "arn:aws:s3:::your-stockai-backups/*"
+    ]
+  }]
+}
+```
+
+Using an IAM role means no credentials file on disk — the instance automatically gets temporary tokens.
+
+**3. Install AWS CLI on the instance:**
+```bash
+sudo dnf install -y awscli
+```
+
+**4. Set your bucket name in the script:**
+```bash
+sed -i 's/your-s3-backup-bucket/your-stockai-backups/' ~/stockai/scripts/backup_db.sh
+```
+
+**5. Test it manually:**
+```bash
+bash ~/stockai/scripts/backup_db.sh
+# Should print: Backup complete.
+```
+
+**6. Schedule nightly at 02:00 UTC:**
+```bash
+echo "0 2 * * * ec2-user /home/ec2-user/stockai/scripts/backup_db.sh >> /var/log/stockai-backup.log 2>&1" \
+  | sudo tee /etc/cron.d/stockai-backup
+```
+
+### Restoring from a backup
+
+```bash
+# Download a backup
+aws s3 cp s3://your-stockai-backups/backups/stockai_db_20260531_020000.sql.gz /tmp/restore.sql.gz
+
+# Decompress and restore into the running postgres container
+gunzip -c /tmp/restore.sql.gz \
+  | docker exec -i stockai-postgres-1 psql -U stockai stockai
+```
+
+---
+
+## 15. Useful maintenance commands
 
 ```bash
 # View all service logs

@@ -1,5 +1,7 @@
 # StockAI — AI Stock Intelligence Platform
 
+![Tests](https://github.com/<your-org>/Stock_Trading_App/actions/workflows/test.yml/badge.svg)
+
 A production-ready, multi-market stock intelligence platform built on a clean
 microservices architecture with a Python/FastAPI backend, PyTorch + XGBoost ML
 pipeline, Next.js frontend, and integrated AI chat (Claude / DeepSeek).
@@ -136,6 +138,7 @@ Admins can create additional user accounts, reset passwords, and toggle users in
 - [`docs/FEATURES.md`](docs/FEATURES.md) — full feature reference for every page and service
 - [`docs/RESEARCH_ENGINE.md`](docs/RESEARCH_ENGINE.md) — Planning Stage Research Intelligence Engine deep-dive
 - [`docs/TESTING.md`](docs/TESTING.md) — unit test coverage, how to run, how to add tests
+- [`.github/workflows/test.yml`](.github/workflows/test.yml) — GitHub Actions CI (runs on every push to main/dev)
 
 ## License
 
