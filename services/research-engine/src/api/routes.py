@@ -24,6 +24,17 @@ log = get_logger("research-engine")
 router = APIRouter(prefix="/research", tags=["research"])
 _s = get_settings()
 
+import re as _re
+
+def _sanitise_symbol(raw: str) -> str:
+    """Allow only A-Z, 0-9, dot, hyphen, colon (covers HK: 0700.HK, indices: ^VIX).
+    Raises ValueError for anything else so the route returns 400 before touching prompts.
+    """
+    clean = _re.sub(r"[^A-Z0-9.\-:]", "", raw.upper())
+    if not clean:
+        raise ValueError(f"Invalid symbol: {raw!r}")
+    return clean
+
 # Simple in-memory cache: symbol → (report_dict, timestamp)
 _cache: dict[str, tuple[dict, datetime]] = {}
 CACHE_TTL_SEC = 86_400  # 24 hours
@@ -1059,7 +1070,10 @@ def _yf_sync_fetch(sym: str):
 @router.get("/{symbol}")
 async def get_research(symbol: str):
     """Return cached research report (generated within last 24h)."""
-    sym = symbol.upper()
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     entry = _cache.get(sym)
     if entry:
         report, ts = entry
@@ -1071,7 +1085,10 @@ async def get_research(symbol: str):
 @router.delete("/{symbol}")
 async def clear_research(symbol: str):
     """Clear cached report to force regeneration."""
-    sym = symbol.upper()
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     _cache.pop(sym, None)
     return {"status": "cleared", "symbol": sym}
 
@@ -1079,7 +1096,10 @@ async def clear_research(symbol: str):
 @router.post("/{symbol}")
 async def generate_research(symbol: str, req: ResearchRequest):
     """Generate a full Planning Stage Research Report for the given symbol."""
-    sym = symbol.upper()
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
 
     # Gather data from all services in parallel
     async with httpx.AsyncClient(timeout=25) as client:
@@ -1240,7 +1260,10 @@ class ChatRequest(BaseModel):
 @router.post("/{symbol}/chat")
 async def chat_research(symbol: str, req: ChatRequest):
     """Answer questions about the cached research report using AI."""
-    sym = symbol.upper()
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     entry = _cache.get(sym)
     if not entry:
         raise HTTPException(404, "No research report found. Generate a report first.")

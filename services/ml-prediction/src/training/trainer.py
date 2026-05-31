@@ -120,6 +120,14 @@ def train_model(
         log.warning("train.skipped", symbol=symbol, reason=str(exc))
         return {"symbol": symbol, "skipped": True, "reason": str(exc)}
 
+    # Exclude any bar timestamped today — partially-observed intraday bars skew
+    # rolling features (SMA, ATR, z-scores) even though their label is dropped.
+    today = date.today()
+    df = df[pd.to_datetime(df["ts"]).dt.date < today].copy()
+    if df.empty:
+        log.warning("train.skipped", symbol=symbol, reason="all bars are today (post-open ingest)")
+        return {"symbol": symbol, "skipped": True, "reason": "no closed bars available"}
+
     # --- Macro features (SPY + VIX) give market-wide context to every symbol ---
     try:
         start_date = pd.to_datetime(df["ts"]).min().date()

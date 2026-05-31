@@ -20,7 +20,7 @@ function hasGateCookie() {
 
 // ── Nav group definitions ─────────────────────────────────────────────────────
 
-type NavItem = { label: string; href: string; color?: string; tag?: string };
+type NavItem = { label: string; href: string; color?: string; tag?: string; adminOnly?: boolean };
 type NavGroupDef = { label: string; items: NavItem[] };
 
 const NAV_GROUPS: NavGroupDef[] = [
@@ -62,19 +62,20 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Signal Accuracy',    href: '/signal-accuracy',    color: '#a78bfa' },
       { label: 'Trade Performance',  href: '/trade-performance',  color: '#34d399' },
       { label: 'Insider / Congress', href: '/insider',      color: '#fb923c' },
-      { label: 'Improvements',       href: '/improvements', color: '#f59e0b', tag: 'new' },
+      { label: 'Improvements',       href: '/improvements', color: '#f59e0b', tag: 'new', adminOnly: true },
     ],
   },
 ];
 
 // ── NavGroup component ────────────────────────────────────────────────────────
 
-function NavGroup({ group, currentPath }: { group: NavGroupDef; currentPath: string }) {
+function NavGroup({ group, currentPath, userRole }: { group: NavGroupDef; currentPath: string; userRole: string | null }) {
+  const items = group.items.filter(item => !item.adminOnly || userRole === 'admin');
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
-  const isActive = group.items.some(item =>
+  const isActive = items.some(item =>
     item.href === '/' ? currentPath === '/' : currentPath.startsWith(item.href)
   );
 
@@ -133,7 +134,7 @@ function NavGroup({ group, currentPath }: { group: NavGroupDef; currentPath: str
           zIndex: 9999,
           animation: 'dropIn 0.12s ease',
         }}>
-          {group.items.map(item => {
+          {items.map(item => {
             const isCurrent = item.href === '/'
               ? currentPath === '/'
               : currentPath.startsWith(item.href);
@@ -323,7 +324,7 @@ export default function App({ Component, pageProps }: AppProps) {
           {/* Group nav */}
           <nav style={{ display: 'flex', alignItems: 'center', gap: '2px', flex: 1 }}>
             {NAV_GROUPS.map(group => (
-              <NavGroup key={group.label} group={group} currentPath={router.pathname} />
+              <NavGroup key={group.label} group={group} currentPath={router.pathname} userRole={role} />
             ))}
           </nav>
 
