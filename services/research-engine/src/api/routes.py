@@ -32,7 +32,7 @@ CACHE_TTL_SEC = 86_400  # 24 hours
 class ResearchRequest(BaseModel):
     provider: str = "claude"
     model: str = "claude-sonnet-4-6"
-    api_key: str
+    api_key: str = ""
     portfolio_size: float = 100_000.0
     max_risk_pct: float = 2.0
 
@@ -97,8 +97,8 @@ def _fmt_cap(cap: float | None) -> str:
 
 # ── Technical scoring ─────────────────────────────────────────────────────────
 
-def _score_technical(stock: dict, prices: list, indicators: dict, levels: dict) -> dict:
-    price = stock.get("price") or stock.get("last_price") or 0.0
+def _score_technical(stock: dict, prices: list, indicators: dict, levels: dict, live_price: float = 0.0) -> dict:
+    price = live_price or stock.get("price") or stock.get("last_price") or 0.0
     iv = (indicators or {}).get("values", {})
 
     sma50 = _last(iv.get("sma_50", []))
@@ -700,8 +700,10 @@ def _position_size(tech: dict, portfolio_size: float, max_risk_pct: float, price
 # ── Claude integration ────────────────────────────────────────────────────────
 
 async def _call_claude(req: ResearchRequest, symbol: str, stock: dict, fund: dict,
-                       tech: dict, fund_scores: dict) -> dict:
-    price = stock.get("price") or stock.get("last_price") or "N/A"
+                       tech: dict, fund_scores: dict, live_price: float = 0.0) -> dict:
+    if not req.api_key.strip():
+        return _fallback_ai()
+    price = live_price or stock.get("price") or stock.get("last_price") or "N/A"
     name = stock.get("name", symbol)
     sector = stock.get("sector", "Unknown")
     market_cap = _fmt_cap(fund.get("market_cap"))
@@ -1008,12 +1010,9 @@ async def generate_research(symbol: str, req: ResearchRequest):
     """Generate a full Planning Stage Research Report for the given symbol."""
     sym = symbol.upper()
 
-    if not req.api_key.strip():
-        raise HTTPException(400, "api_key is required")
-
     # Gather data from all services in parallel
     async with httpx.AsyncClient(timeout=25) as client:
-        stock_t, fund_t, prices_t, ind_t, levels_t, signal_t, rank_t = await asyncio.gather(
+        stock_t, fund_t, prices_t, ind_t, levels_t, signal_t, rank_t, live_t = await asyncio.gather(
             _get(client, f"{_s.market_data_url}/stocks/{sym}"),
             _get(client, f"{_s.market_data_url}/stocks/{sym}/fundamentals"),
             _get(client, f"{_s.market_data_url}/stocks/{sym}/prices?timeframe=1d&limit=260"),
@@ -1021,6 +1020,7 @@ async def generate_research(symbol: str, req: ResearchRequest):
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/levels"),
             _get(client, f"{_s.signal_engine_url}/signals/{sym}"),
             _get(client, f"{_s.ranking_engine_url}/rankings/{sym}"),
+            _get(client, f"{_s.market_data_url}/stocks/latest_prices?symbols={sym}"),
         )
 
     stock = stock_t or {}
@@ -1030,18 +1030,19 @@ async def generate_research(symbol: str, req: ResearchRequest):
     levels = levels_t or {}
     signal = signal_t or {}
     ranking = rank_t or {}
+    live = (live_t or [{}])[0] if isinstance(live_t, list) else {}
 
     if not stock:
         raise HTTPException(404, f"Symbol {sym} not found")
 
-    price = stock.get("price") or stock.get("last_price") or 0.0
+    price = live.get("price") or stock.get("price") or stock.get("last_price") or 0.0
 
     # Compute scores
-    tech = _score_technical(stock, prices, indicators, levels)
+    tech = _score_technical(stock, prices, indicators, levels, live_price=price)
     fund_scores = _score_fundamental(fund)
 
     # Call Claude for qualitative analysis
-    ai = await _call_claude(req, sym, stock, fund, tech, fund_scores)
+    ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price)
 
     # Overall weighted score
     scores = {
