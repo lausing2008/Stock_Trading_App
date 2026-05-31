@@ -62,6 +62,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Signal Accuracy',    href: '/signal-accuracy',    color: '#a78bfa' },
       { label: 'Trade Performance',  href: '/trade-performance',  color: '#34d399' },
       { label: 'Insider / Congress', href: '/insider',      color: '#fb923c' },
+      { label: 'Improvements',       href: '/improvements', color: '#f59e0b', tag: 'new' },
     ],
   },
 ];
