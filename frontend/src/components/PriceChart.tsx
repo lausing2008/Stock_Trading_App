@@ -269,7 +269,7 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let histSeries: any = null, macdLine: any = null, signalLine: any = null;
 
-      const histVals = visibleIndicators.values['macd_hist'];
+      const histVals = visibleIndicators.values['hist'];
       if (histVals) {
         histSeries = macdChart.addHistogramSeries({ priceScaleId: 'right' });
         histSeries.setData(
@@ -283,7 +283,7 @@ export default function PriceChart({ prices, indicators, levels }: Props) {
         macdLine = macdChart.addLineSeries({ color: '#38bdf8', lineWidth: 1 });
         macdLine.setData(toLine(visibleIndicators.ts, macdValsData));
       }
-      const sigVals = visibleIndicators.values['macd_signal'];
+      const sigVals = visibleIndicators.values['signal'];
       if (sigVals) {
         signalLine = macdChart.addLineSeries({ color: '#f59e0b', lineWidth: 1 });
         signalLine.setData(toLine(visibleIndicators.ts, sigVals));
