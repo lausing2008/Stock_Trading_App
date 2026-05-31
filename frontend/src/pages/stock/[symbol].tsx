@@ -747,7 +747,7 @@ Return ONLY valid JSON — no markdown, no prose:
         {/* Chart */}
         <div>
           {data.prices && data.prices.length > 0 ? (
-            <PriceChart prices={data.prices} indicators={data.indicators} levels={data.levels} />
+            <PriceChart symbol={symbol as string} prices={data.prices} indicators={data.indicators} levels={data.levels} />
           ) : (
             <div className="rounded-md border border-slate-800 bg-slate-900 p-4 text-slate-400">
               No price data — run: POST /admin/ingest &#123;"symbols":["{symbol}"]&#125;

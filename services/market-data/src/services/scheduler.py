@@ -583,6 +583,25 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.ml_prediction_url}/ml/tune_all")
 
 
+def _refresh_5m(market: str) -> None:
+    """Ingest the latest 5-minute bars for all active stocks in the given market.
+
+    Runs every 5 minutes during regular market hours so the intraday chart on
+    the stock detail page always shows up-to-date candles.  Only fetches bars
+    since the last stored bar — incremental, not a full re-download.
+    Rankings and signals are NOT updated (they use daily bars only).
+    """
+    symbols = _symbols_for(market)
+    if not symbols:
+        return
+    log.info("scheduler.5m_ingest_start", market=market, count=len(symbols))
+    try:
+        ingest_universe(symbols, "5m")
+        log.info("scheduler.5m_ingest_done", market=market, count=len(symbols))
+    except Exception as exc:
+        log.error("scheduler.5m_ingest_failed", market=market, error=str(exc))
+
+
 def start_scheduler() -> None:
     """Register all APScheduler jobs and start the background scheduler.
 
@@ -595,6 +614,7 @@ def start_scheduler() -> None:
       - Regular hrs (10:00–15:00): every 10 min — prices + rankings + signals
       - Close burst (15:30–16:15): every 5 min  — prices + rankings + signals
       - Post-close  (16:30):       once         — above + ML retrain
+      - 5m ingest   (9:30–16:00): every 5 min  — intraday bars only (US + HK)
       - Weekly full refresh (Sun 16:00 PST): force re-ingest 3 years
         → then tune_all (Optuna, 60 trials/symbol, ~2–4 h, background)
 
@@ -605,7 +625,8 @@ def start_scheduler() -> None:
     Hyperparameter tuning runs once on Sunday so each symbol's best params are
     ready for the week ahead; subsequent daily retrains pick them up automatically.
 
-    Job count: 4 US + 4 HK + 1 weekly full refresh + tune_all + 1 price alert checker = 10.
+    Job count: 4 US + 4 HK + 2 5m intraday + 1 weekly full refresh + tune_all
+               + 1 price alert checker = 12.
     """
     global _scheduler
     if _scheduler is not None:
@@ -685,6 +706,30 @@ def start_scheduler() -> None:
         id="weekly_full_refresh", replace_existing=True,
     )
 
+    # ── 5-minute intraday bars — US market hours ────────────────────────────
+    _scheduler.add_job(
+        lambda: _refresh_5m("US"),
+        CronTrigger(
+            hour="9,10,11,12,13,14,15",
+            minute="30,35,40,45,50,55,0,5,10,15,20,25",
+            day_of_week="mon-fri",
+            timezone="America/New_York",
+        ),
+        id="us_5m_intraday", replace_existing=True,
+    )
+
+    # ── 5-minute intraday bars — HK market hours ────────────────────────────
+    _scheduler.add_job(
+        lambda: _refresh_5m("HK"),
+        CronTrigger(
+            hour="9,10,11,12,13,14,15",
+            minute="30,35,40,45,50,55,0,5,10,15,20,25",
+            day_of_week="mon-fri",
+            timezone="Asia/Hong_Kong",
+        ),
+        id="hk_5m_intraday", replace_existing=True,
+    )
+
     # ── Price alert checker — every minute ──────────────────────────────────
     _scheduler.add_job(
         check_price_alerts,
@@ -695,4 +740,4 @@ def start_scheduler() -> None:
     )
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=10)
+    log.info("scheduler.started", jobs=12)

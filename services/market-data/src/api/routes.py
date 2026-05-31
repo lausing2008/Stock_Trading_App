@@ -18,6 +18,18 @@ def _local_date(ts: datetime, market: str) -> str:
     if offset and ts.hour >= (24 - offset):
         return (ts + timedelta(hours=offset)).strftime("%Y-%m-%d")
     return ts.strftime("%Y-%m-%d")
+
+
+def _format_ts(ts: datetime, market: str, timeframe: str) -> str:
+    """Return the timestamp string for the API response.
+
+    Intraday bars (5m, 15m, etc.) are stored in UTC and returned as a full
+    ISO-8601 datetime so the frontend can render time labels on the chart.
+    Daily bars return YYYY-MM-DD as before.
+    """
+    if timeframe in ("1m", "5m", "15m", "1h"):
+        return ts.strftime("%Y-%m-%dT%H:%M:%S")
+    return _local_date(ts, market)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -1253,7 +1265,7 @@ def get_prices(
     rows = list(session.execute(stmt).scalars())
     return [
         PriceOut(
-            ts=_local_date(r.ts, stock.market),
+            ts=_format_ts(r.ts, stock.market, timeframe),
             open=r.open,
             high=r.high,
             low=r.low,
