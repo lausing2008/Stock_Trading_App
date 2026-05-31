@@ -204,6 +204,8 @@ export const api = {
     request<ResearchReport>(`/research/${symbol}`, { method: 'POST', body: JSON.stringify(body) }, 90_000),
   getResearch: (symbol: string) => request<ResearchReport>(`/research/${symbol}`),
   clearResearch: (symbol: string) => request(`/research/${symbol}`, { method: 'DELETE' }),
+  chatResearch: (symbol: string, messages: {role: string; content: string}[], api_key: string, model: string, provider: string) =>
+    request<{role: string; content: string}>(`/research/${symbol}/chat`, { method: 'POST', body: JSON.stringify({ messages, api_key, model, provider }) }, 60_000),
 };
 
 export type Stock = {

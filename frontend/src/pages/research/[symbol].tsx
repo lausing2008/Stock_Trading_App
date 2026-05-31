@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { api, type ResearchReport, type ChecklistItem } from '@/lib/api';
@@ -144,6 +144,10 @@ export default function ResearchPage() {
   const [maxRisk, setMaxRisk] = useState(2.0);
   const [showConfig, setShowConfig] = useState(false);
   const [customApiKey, setCustomApiKey] = useState('');
+  const [chatMessages, setChatMessages] = useState<{role: string; content: string}[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   const effectiveKey = customApiKey || apiKey;
 
@@ -850,11 +854,100 @@ export default function ResearchPage() {
           {/* Regenerate button at bottom */}
           <div style={{ textAlign: 'center', marginTop: '24px' }}>
             <button
-              onClick={() => { setReport(null); api.clearResearch(symbol).catch(() => {}); }}
+              onClick={() => { setReport(null); setChatMessages([]); api.clearResearch(symbol).catch(() => {}); }}
               style={{ fontSize: '12px', color: '#475569', background: 'none', border: '1px solid #1e293b', borderRadius: '8px', padding: '8px 20px', cursor: 'pointer' }}
             >
               Clear &amp; Regenerate Report
             </button>
+          </div>
+
+          {/* ── AI Chatbot ────────────────────────────────────────────────── */}
+          <div style={{ marginTop: '32px', background: '#0d1829', border: '1px solid #1e293b', borderRadius: '14px', overflow: 'hidden' }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span style={{ fontSize: '16px' }}>💬</span>
+              <span style={{ fontSize: '13px', fontWeight: 700, color: '#94a3b8' }}>Ask the Analyst</span>
+              <span style={{ fontSize: '11px', color: '#334155' }}>— ask anything about this {symbol} report</span>
+            </div>
+
+            {/* Messages */}
+            <div style={{ minHeight: '80px', maxHeight: '420px', overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {chatMessages.length === 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                  {['What is the entry strategy?', 'Is the valuation attractive?', 'What are the biggest risks?', 'Should I buy today?'].map(q => (
+                    <button key={q} onClick={() => setChatInput(q)}
+                      style={{ fontSize: '11px', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e293b', background: 'rgba(129,140,248,0.08)', color: '#818cf8', cursor: 'pointer' }}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {chatMessages.map((msg, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                  <div style={{
+                    maxWidth: '78%', padding: '10px 14px', borderRadius: msg.role === 'user' ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
+                    background: msg.role === 'user' ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)',
+                    border: msg.role === 'user' ? '1px solid rgba(99,102,241,0.3)' : '1px solid rgba(255,255,255,0.06)',
+                    fontSize: '13px', color: '#e2e8f0', lineHeight: 1.6, whiteSpace: 'pre-wrap',
+                  }}>
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+              {chatLoading && (
+                <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+                  <div style={{ padding: '10px 14px', borderRadius: '12px 12px 12px 4px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', fontSize: '13px', color: '#475569' }}>
+                    Thinking…
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Input */}
+            <div style={{ padding: '12px 16px', borderTop: '1px solid #1e293b', display: 'flex', gap: '8px' }}>
+              <input
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!chatInput.trim() || chatLoading) return;
+                    const userMsg = { role: 'user', content: chatInput.trim() };
+                    const newMsgs = [...chatMessages, userMsg];
+                    setChatMessages(newMsgs);
+                    setChatInput('');
+                    setChatLoading(true);
+                    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                    api.chatResearch(symbol, newMsgs, effectiveKey, model, provider)
+                      .then(res => { setChatMessages(m => [...m, res]); })
+                      .catch(err => { setChatMessages(m => [...m, { role: 'assistant', content: `Error: ${err.message}` }]); })
+                      .finally(() => { setChatLoading(false); setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50); });
+                  }
+                }}
+                placeholder={effectiveKey ? `Ask about ${symbol}…` : 'Configure an API key in Settings to chat'}
+                disabled={!effectiveKey || chatLoading}
+                style={{ flex: 1, padding: '10px 14px', borderRadius: '8px', border: '1px solid #1e293b', background: effectiveKey ? 'rgba(255,255,255,0.04)' : '#080f1e', color: '#f1f5f9', fontSize: '13px', outline: 'none', fontFamily: 'inherit' }}
+              />
+              <button
+                disabled={!chatInput.trim() || !effectiveKey || chatLoading}
+                onClick={() => {
+                  if (!chatInput.trim() || chatLoading) return;
+                  const userMsg = { role: 'user', content: chatInput.trim() };
+                  const newMsgs = [...chatMessages, userMsg];
+                  setChatMessages(newMsgs);
+                  setChatInput('');
+                  setChatLoading(true);
+                  chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                  api.chatResearch(symbol, newMsgs, effectiveKey, model, provider)
+                    .then(res => { setChatMessages(m => [...m, res]); })
+                    .catch(err => { setChatMessages(m => [...m, { role: 'assistant', content: `Error: ${err.message}` }]); })
+                    .finally(() => { setChatLoading(false); setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50); });
+                }}
+                style={{ padding: '10px 20px', borderRadius: '8px', border: 'none', background: chatInput.trim() && effectiveKey && !chatLoading ? 'linear-gradient(135deg,#4ade80,#22c55e)' : '#1e293b', color: chatInput.trim() && effectiveKey && !chatLoading ? '#000' : '#475569', fontSize: '13px', fontWeight: 700, cursor: chatInput.trim() && effectiveKey && !chatLoading ? 'pointer' : 'default' }}
+              >
+                Send
+              </button>
+            </div>
           </div>
         </>
       )}
