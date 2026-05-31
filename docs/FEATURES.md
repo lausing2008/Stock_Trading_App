@@ -5,6 +5,7 @@ and how it works under the hood.
 
 > For K-Score and Fair Value calculation details, see [SCORING.md](SCORING.md).
 > For a full breakdown of how the AI Signal is computed and how to interpret it, see [AI_SIGNAL.md](AI_SIGNAL.md).
+> For the full Research Engine technical reference (scoring formulas, Claude prompt, architecture), see [RESEARCH_ENGINE.md](RESEARCH_ENGINE.md).
 
 ---
 
@@ -36,7 +37,7 @@ The top nav uses **grouped dropdown menus** — four groups that open on hover:
 | Group | Pages |
 |---|---|
 | Markets | Dashboard, Heatmap, Rankings, Forecast |
-| Research | Screener, Opportunities, Earnings, Analyst, Short Squeeze |
+| Research | Screener, Opportunities, Earnings, Analyst, Short Squeeze, **Research Engine** |
 | Portfolio | Watchlist, Trade Board, Positions, Portfolio, Journal |
 | Tools | Strategies, Alerts, Signal Accuracy, Trade Performance, Insider / Congress |
 
@@ -346,6 +347,10 @@ Fetched from yfinance `.info`, Redis-cached 24 h.
 **Three-column grid** — Balance Sheet (cash vs debt) · Margins (gross/operating/profit) · Returns & Growth (ROE, ROA, earnings growth)
 
 **Per Share & Risk** — EPS, Forward EPS, Book Value, Dividend Yield, Beta, Shares Outstanding
+
+**Volume** — two additional cards in the Per Share & Risk grid:
+- **Volume (Today)** — live share volume for the current session (from yfinance `last_volume`)
+- **Avg Vol (3M)** — 3-month average daily volume (from yfinance `three_month_average_volume`), with a colour-coded RVOL ratio badge (green > 1.5×, red < 0.5×)
 
 **52-Week Range** — gradient bar showing current live price position between 52W low/high, with percentage-of-range label
 
@@ -769,6 +774,8 @@ Leaderboard of all active stocks sorted by K-Score. A quick, always-sorted view 
 - **Signal filter tabs** — ALL / BUY / HOLD / WAIT / SELL
 - **Sortable columns** — K-Score, Technical, Momentum, Value, Growth, Volatility, Price, Change%
 - **Fair price column** — compare current price to the K-Score estimated fair value
+- **Volume column** — today's share volume, formatted as B/M/K (e.g. 42.3M)
+- **vs Avg column** — today's volume vs 3-month average volume (RVOL), colour-coded: green ≥ 2×, light green ≥ 1.5×, red < 0.5×
 - HK stocks show Chinese name as a subtitle in the Name column
 - Click any row to go to stock detail
 
@@ -852,6 +859,224 @@ DELETE /board/{id}         # delete a plan
 
 ---
 
+---
+
+## Research Engine (`/research`, `/research/[symbol]`)
+
+A full Planning Stage Research Intelligence Engine. When a stock enters the **Planning** stage on the Trade Board, a green **Research** button links directly to its report. The report can also be reached from `/research` by entering any symbol.
+
+> For the scoring formula and weighted model, see [Scoring Engine](#scoring-engine) below.
+
+### What it generates
+
+One click triggers a comprehensive AI-powered analysis across ten dimensions — comparable to a professional equity research report:
+
+| Dimension | What is covered |
+|---|---|
+| **Executive Summary** | Overall score, confidence, recommendation, top 5 bullish/bearish factors, key risks, key opportunities |
+| **Technical Analysis** | Price vs 50/200-day SMA, Golden/Death Cross detection, RSI, MACD + histogram, volume (RVOL), support/resistance levels, ATR + volatility rating |
+| **Fundamental Analysis** | Revenue growth, EPS growth, margins (gross/operating/net), balance sheet (cash, debt, D/E), cash flow + FCF margin, valuation (P/E, Forward P/E, PEG, EV/EBITDA), profitability (ROE, ROA) |
+| **Company Research** | Business model summary, competitive advantage matrix, moat rating (Very Strong → None), insider activity, institutional ownership trend, management quality |
+| **Industry Research** | Industry status (Growing/Mature/Declining/Disrupted), TAM size + growth, market share position, competitor comparison, regulatory risk, industry verdict |
+| **Economic Research** | Federal Reserve policy (Hiking/Holding/Cutting) and impact, inflation trend (CPI), GDP status, employment, recession risk checklist (yield curve, GDP, unemployment, consumer confidence), favored market style |
+| **Master Checklist** | 27 binary PASS/WARNING/FAIL checks across four layers — Company, Industry, Economy, Technical |
+| **Trading Plan** | Aggressive and conservative entry zones, stop loss (support + ATR method), three profit targets, risk/reward ratio and assessment |
+| **Position Sizing** | Dollar risk, share quantity, and position size based on configurable portfolio size and max risk % per trade |
+| **AI Verdict** | Can I buy today? (YES/NO/WAIT), detailed reasoning, biggest risks, conditions that must improve, catalysts for a Strong Buy upgrade, final recommendation with confidence % |
+
+### Scoring Engine
+
+All five dimension scores (0–100) are weighted to produce the overall score:
+
+| Dimension | Weight | Computed by |
+|---|---|---|
+| Technical | 25% | Python (EMAs, RSI, MACD, volume, support proximity) |
+| Fundamental | 30% | Python (revenue growth, margins, FCF, valuation, ROE) |
+| Company | 15% | Claude AI |
+| Industry | 15% | Claude AI |
+| Economic | 15% | Claude AI |
+
+**Recommendation thresholds:**
+
+| Overall Score | Recommendation |
+|---|---|
+| 90–100 | STRONG BUY |
+| 80–89 | BUY |
+| 65–79 | WATCH |
+| 50–64 | AVOID |
+| 0–49 | SELL |
+
+### Any symbol works
+
+The Research Engine works for **any valid stock ticker** — it does not require the symbol to be in your watchlist or tracked in the database. For untracked symbols, the engine fetches data directly from yfinance (1-year daily price history, fundamentals, live price) and computes all TA indicators locally. For tracked symbols, it uses the pre-computed data from the database services plus a live price call to get the real-time price.
+
+### Generating a report
+
+1. Navigate to any stock detail page and save a Game Plan → board card enters **Planning** stage automatically
+2. On the Trade Board, click the green **Research** button on any Planning card
+3. — or — navigate directly to `/research` and enter any symbol
+4. Click **Generate Report** (first generation takes 20–60 s; subsequent loads from 24-hour cache are instant)
+5. If a cached report exists it loads automatically when the page opens — no need to click Generate
+6. Click **Clear & Regenerate Report** to force a fresh analysis
+
+### AI key is optional
+
+The report generates even without an AI (Claude/DeepSeek) key configured. Without a key, all **computed scores** (Technical, Fundamental, entry zones, stop loss, targets, checklist) are fully populated. Only the **AI narrative sections** (Company, Industry, Economic analysis and AI Verdict) will show placeholder text. Configure a key in **Settings → AI Assistant** for the full report.
+
+### Configuration
+
+The generate dialog has optional config fields (click ⚙ Config):
+
+| Field | Default | What it controls |
+|---|---|---|
+| API Key | From Settings → AI Assistant | Override the AI key for this session only |
+| Portfolio Size ($) | $100,000 | Used to calculate dollar risk and share quantity |
+| Max Risk Per Trade (%) | 2% | Used to calculate dollar risk and share quantity |
+
+The AI provider and model are inherited from **Settings → AI Assistant** (Claude or DeepSeek). The report uses whichever is configured.
+
+### Report tabs
+
+The report is organized into nine tabs:
+
+| Tab | Contents |
+|---|---|
+| **Summary** | 2×2 grid: bullish factors, bearish factors, key risks, key opportunities |
+| **Technical** | Trend analysis, RSI + MACD cards, volume, support/resistance, ATR, histogram status |
+| **Fundamental** | Revenue + EPS, margins, balance sheet, cash flow, valuation, profitability |
+| **Company** | Business model, competitive moat, advantage matrix, management, insider activity, institutional ownership |
+| **Industry** | Status, TAM, market share position, competitor table, regulatory risk, verdict |
+| **Economic** | Fed policy, CPI trend, GDP, employment, recession risk checklist, market environment |
+| **Checklist** | Four layers of PASS/WARNING/FAIL badges with individual item notes |
+| **Trading Plan** | Entry zones, stop loss, profit targets (T1/T2/T3), risk/reward assessment, position sizing grid, trade invalidation conditions |
+| **AI Verdict** | YES/NO/WAIT hero banner, biggest risks, must-improve conditions, Strong Buy catalysts |
+
+### Checklist layers
+
+**Layer 1 — Company (8 items)**
+Can explain business · Revenue growing · EPS growing · FCF positive · D/E < 2 · Competitive moat · Insiders buying or holding · Institutions > 50%
+
+**Layer 2 — Industry (5 items)**
+Industry growing · Large TAM · Market share stable or gaining · Low regulatory risk · Industry tailwind
+
+**Layer 3 — Economy (5 items)**
+Fed supportive · Inflation improving · GDP expanding · No major recession signals · Favorable market style
+
+**Layer 4 — Technical (7 items)**
+Price above 200 SMA · Price above 50 SMA · Golden Cross · RSI healthy · MACD bullish/neutral · Volume confirming · Support level identified
+
+### Trade Board integration
+
+On the Trade Board (`/board`), Planning-stage cards show a green **Research** button in the footer action strip. Clicking it navigates directly to `/research/{symbol}` for that card's stock, carrying the full report context.
+
+The report does **not** automatically update the board card's entry/stop/target prices — you can review the Trading Plan tab and manually update the card prices if you wish to use the AI-generated levels.
+
+### AI Analyst Chatbot
+
+A conversational AI panel appears below every generated report. It has full context of the report (scores, trend verdict, SMAs, RSI, MACD, entry zones, stop loss, targets, fundamental metrics, AI verdict, key risks).
+
+**How to use:**
+- Four suggested starter questions appear before the first message: *What is the entry strategy? / Is the valuation attractive? / What are the biggest risks? / Should I buy today?* — click any to pre-fill it
+- Type any question and press **Enter** or click **Send**
+- Conversation history is shown (your messages on the right, AI answers on the left)
+- Requires an AI key configured in **Settings → AI Assistant**
+
+The chatbot uses the same provider and model configured in Settings. Each chat message sends the full conversation history so follow-up questions work correctly.
+
+### API endpoints
+
+All endpoints are under `/research` (proxied via the API Gateway → research-engine service on port 8008).
+
+```
+POST /research/{symbol}
+  Body: {
+    "provider":       "claude" | "deepseek",   # optional, default "claude"
+    "model":          "claude-sonnet-4-6",      # optional
+    "api_key":        "sk-ant-...",             # optional; computed scores work without it
+    "portfolio_size": 100000,                   # optional, default 100000
+    "max_risk_pct":   2.0                       # optional, default 2.0
+  }
+  → Full ResearchReport JSON
+  → Cached server-side for 24 hours
+
+GET /research/{symbol}
+  → Cached report if available (within 24 h); 404 otherwise
+
+DELETE /research/{symbol}
+  → Clears cached report, forces regeneration on next POST
+
+POST /research/{symbol}/chat
+  Body: {
+    "messages": [{"role": "user", "content": "What is the stop loss?"}],
+    "api_key":  "sk-ant-...",
+    "model":    "claude-sonnet-4-6",    # optional
+    "provider": "claude"                # optional
+  }
+  → {"role": "assistant", "content": "The stop loss is set at ..."}
+  → Requires a cached report to exist (POST first to generate)
+```
+
+### How the technical score is computed
+
+The Python scoring algorithm starts at 50 and adjusts based on:
+
+| Signal | Effect |
+|---|---|
+| Price above 200 SMA | +15 |
+| Price below 200 SMA | −10 |
+| Price above 50 SMA | +10 |
+| Price below 50 SMA | −7 |
+| Golden Cross detected | +10 |
+| Death Cross detected | −10 |
+| Above golden cross (no recent event) | +5 |
+| RSI 40–60 (Healthy) | +5 |
+| RSI 60–70 (Strong) | +8 |
+| RSI 30–40 (Weak) | −5 |
+| RSI > 70 (Overbought) | −8 |
+| MACD bullish crossover | +10 |
+| MACD bearish crossover | −10 |
+| MACD line > signal (no crossover) | +3 |
+| MACD line < signal (no crossover) | −3 |
+| Histogram green and growing | +2 |
+| Histogram red and growing | −2 |
+| RVOL ≥ 1.5x | +5 |
+| RVOL 1.0–1.5x | +2 |
+| RVOL < 1.0x | −3 |
+| Price within 3% above nearest support | +3 |
+| Price 3–8% above nearest support | +1 |
+
+Final score is clamped to [0, 100]. Trend verdict: ≥ 80 = Strong Bullish · ≥ 65 = Bullish · ≥ 50 = Neutral · ≥ 35 = Bearish · < 35 = Strong Bearish.
+
+### How the fundamental score is computed
+
+Starts at 50 and adjusts based on:
+
+| Metric | Effect |
+|---|---|
+| Revenue growth ≥ 20% | +10 |
+| Revenue growth 10–20% | +5 |
+| Revenue growth < 0% | −5 |
+| EPS growth ≥ 25% | +10 |
+| EPS growth 10–25% | +5 |
+| EPS growth < 0% | −7 |
+| Gross margin > 40% | +5 |
+| Gross margin < 20% | −3 |
+| Operating margin > 20% | +5 |
+| Operating margin < 5% | −3 |
+| D/E ratio < 0.5 | +5 |
+| D/E ratio > 2.0 | −5 |
+| FCF positive with margin ≥ 20% | +10 |
+| FCF positive | +5 |
+| FCF negative | −5 |
+| P/E < 15 | +8 (Undervalued) |
+| P/E 15–25 | +3 (Fairly Valued) |
+| P/E > 40 | −5 (Overvalued) |
+| ROE ≥ 20% | +8 (Excellent) |
+| ROE 12–20% | +4 (Good) |
+| ROE < 6% | −4 (Poor) |
+
+---
+
 ## Positions (`/positions`)
 
 Portfolio tracker for your actual or simulated stock holdings.
@@ -867,6 +1092,12 @@ Symbol + shares + avg cost · Current price + day change · Market value · P&L 
 
 ### Trade logging
 BUY updates cost-basis average; SELL reduces share count (removes when fully sold).
+
+### Two-step remove confirmation
+Clicking the remove button first shows an inline "Remove? Yes / No" prompt. Confirming removes the position; No cancels without any change. This prevents accidental deletion.
+
+### Toast notifications
+Errors (e.g. failed trade log or remove) show as a red toast banner at the bottom of the screen for 4 seconds, replacing the previous silent failures.
 
 ### CSV export
 Downloads `positions.csv` with all position fields.
@@ -1012,6 +1243,14 @@ Available fields: `rsi_14`, `macd_hist`, `close`, `sma_20`, `sma_50`, `ema_20`, 
 
 ### Backtest results
 Total return %, Sharpe ratio, Max drawdown %, CAGR, Win rate %, Profit factor, Equity curve chart
+
+### Saved runs
+- Each saved backtest run shows a **date stamp** ("May 29, 14:30") alongside the symbol and date range so you can identify when it was run
+- Date range validation — end date must be after start date; an error is shown inline if not
+- **Two-step delete** — clicking ✕ on a saved run first shows inline "Delete? Yes / No" confirmation before removing, preventing accidental deletes
+
+### Compare table
+- When two or more runs are loaded for comparison, the best value in each row is **highlighted in green** based on whether higher or lower is better for that metric (e.g. higher return is better; lower max drawdown magnitude is better)
 
 ---
 
@@ -1283,6 +1522,17 @@ POST   /backtest   {strategy_id, symbol}   # run backtest
 POST   /portfolio/optimize                 # run portfolio optimization
 ```
 
+### Research Engine
+```
+POST /research/{symbol}           # generate + cache a full research report
+  {provider, model, api_key, portfolio_size?, max_risk_pct?}
+  → ResearchReport JSON (cached 24 h server-side)
+
+GET  /research/{symbol}           # return cached report (404 if none / expired)
+
+DELETE /research/{symbol}         # clear cache → forces regeneration on next POST
+```
+
 ### AI Chat
 ```
 POST /ai/chat
@@ -1316,6 +1566,7 @@ POST /ai/chat
 | K-Score / Fair price | DB `rankings` table | Refreshed 5× per trading day (09:00, 10:45/10:30, 12:45/14:15, 14:45/15:30, 16:30) — see [Refresh & Schedule](#refresh--schedule) |
 | AI Signal | DB `signals` table (TA + ML) | Refreshed 5× per trading day, immediately after K-Scores — same schedule |
 | ML prediction | Trained model inference | Retrained once per day at post-close (16:30); intra-day runs use the previous close model |
+| **Research report** | research-engine (Claude AI + all services) | Cached in-memory 24 h per symbol; POST to generate, GET to retrieve, DELETE to force refresh |
 | **Fear & Greed Index** | Computed from yfinance ^GSPC + ^VIX | Redis 1 h TTL; SWR 1 h refresh on stock detail page |
 | **Market Regime (S&P vs 200MA)** | Computed alongside Fear & Greed | Redis 1 h TTL (same cache entry) |
 
