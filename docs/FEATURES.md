@@ -1678,3 +1678,105 @@ Raw Mean-Variance Optimization is notorious for "error maximization" — tiny er
 ```
 
 HRP never inverts the covariance matrix, making it numerically stable for any number of assets and robust to near-singular correlation structures.
+
+---
+
+## Confluence Score & Trade Decision System
+
+The Confluence Score is a 0–100 composite that measures how strongly all four signal layers agree on a stock. It is the primary tool for deciding **when to buy, how much to buy, and when to sell**.
+
+### Signal layers and what each one answers
+
+| Layer | Signal | Timeframe | Question |
+|-------|--------|-----------|----------|
+| Fundamental filter | Analyst Rating | Months | Is this worth owning at all? |
+| Conviction score | K-Score + Research | Weeks–months | How strong is the overall case? |
+| Timing trigger | AI Signal | Days–weeks | Is now a good time to enter or exit? |
+| Technical confirmation | Support/Resistance, RSI, MACD | Intraday–days | Where exactly to enter and exit? |
+
+### Confluence Score formula
+
+**On the Rankings and Opportunities pages** (no analyst data in bulk fetch):
+```
+AI component   = signal_direction × confidence / 100    weight 35%
+K-Score        = composite ranking score (0–100)        weight 30%
+Technical      = TA sub-score (0–100)                   weight 20%
+Momentum       = momentum sub-score (0–100)             weight 15%
+```
+where `signal_direction` = BUY → 100, HOLD → 50, WAIT → 25, SELL → 0.
+
+**On the Stock Detail page** (full data including analyst consensus):
+```
+AI component   = signal_direction × confidence / 100    weight 30%
+K-Score        = composite ranking score (0–100)        weight 25%
+Analyst        = (5 − recommendation_mean) / 4 × 100   weight 20%
+Technical      = TA sub-score (0–100)                   weight 15%
+Momentum       = momentum sub-score (0–100)             weight 10%
+```
+`recommendation_mean` is the yfinance value: 1.0 = Strong Buy → 5.0 = Sell, mapped linearly to 0–100.
+
+### Grade thresholds and position sizing
+
+| Score | Grade | Max position | Meaning |
+|-------|-------|--------------|---------|
+| 80–100 | Strong | 8–10% | All signals align — highest-conviction entry |
+| 65–79 | Good | 5–7% | Most signals agree — size normally |
+| 50–64 | Moderate | 2–4% | Mixed signals — reduce size, wait for confirmation |
+| < 50 | Weak | Avoid | Signals conflict — no entry recommended |
+
+Position sizes are as a percentage of total portfolio. Adjust down in a Bear Market (S&P 500 below 200-day MA).
+
+### Where the score appears
+
+- **Rankings page** — Confluence column beside K-Score; hover for grade and max position hint
+- **Opportunities page** — new **Confluence** tab (🎯) filters stocks with score ≥ 65; key metric card shows score and grade
+- **Stock Detail sidebar** — full Confluence Panel showing score bar, grade, max position size, entry zone, and exit targets
+
+### Entry Playbook
+
+**Step 1 — Screen (Opportunities → Confluence tab)**
+Only stocks with score ≥ 65 appear. This is your filtered shortlist where the majority of signals agree.
+
+**Step 2 — Confirm conviction (Stock Detail page)**
+- Confluence Panel score ≥ 65 (ideally ≥ 80 for a full position)
+- K-Score fair value: current price below fair value
+- Market Regime: green dot (Bull Market). In Bear Market, require score ≥ 75 and reduce position size by half.
+- Fear & Greed gauge: avoid entering when Extreme Greed (> 80) — wait for a pullback
+
+**Step 3 — Time the entry (Chart)**
+- Price is at or near a Support level shown in the Trade Setup panel
+- 52-week position: below 60% of range is preferable
+- RSI below 65 (not overbought)
+
+**Step 4 — Size the position**
+Use the grade's max position % as your ceiling. Apply it to the Position Sizer below to calculate exact share count based on your stop loss distance.
+
+**Step 5 — Set alerts**
+- Price alert at the support level below entry — your stop reference
+- Signal alert on — get emailed if AI Signal deteriorates
+- (Optional) In-browser confluence alert via the local alert system
+
+### Exit Playbook
+
+| Trigger | Action |
+|---------|--------|
+| AI Signal drops to SELL, Analyst still Buy | Trim 50% — momentum gone but fundamental intact; wait for re-entry signal |
+| AI Signal = SELL + Analyst = Hold/Underperform | Full exit |
+| Price reaches Analyst **mean price target** | Trim to 50% of position; raise stop to breakeven |
+| Price reaches Analyst **high price target** | Full exit — full upside captured |
+| K-Score fair value hit | Reassess — stock may be fully valued; tighten stop |
+| Confluence score drops below 50 | Review position; prepare to exit if no improvement next session |
+
+### Highest-conviction setup (all four aligned)
+
+The rarest and highest-quality entries occur when:
+- Analyst: **Strong Buy** (recommendation_mean ≤ 1.5)
+- AI Signal: **BUY** with confidence > 70%
+- K-Score: above 65
+- Chart: price sitting at a Support level, not extended
+
+At this combination, confluence score will typically be 80+. This is the signal to use your maximum position allocation.
+
+### In-browser Confluence Alert
+
+A `confluence_above` alert condition is available in the local alert system. When the confluence score for a watched symbol crosses a threshold (e.g. 70), an in-browser notification fires and the notification bell updates. Set via the alert checker that runs every 60 seconds in `_app.tsx`.
