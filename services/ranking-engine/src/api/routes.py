@@ -35,19 +35,38 @@ _HK_BENCHMARK = "^HSI"   # Hang Seng Index for HK stocks
 _US_FALLBACK  = "SPY"
 
 
-def _etf_20d_return(ticker: str, _cache: dict = {}) -> float | None:
+_ETF_CACHE: dict[str, float | None] = {}
+
+
+def _etf_20d_return(ticker: str) -> float | None:
     """Return 20-day price return for an ETF/index. Results cached for the process lifetime."""
-    if ticker in _cache:
-        return _cache[ticker]
-    try:
-        hist = yf.Ticker(ticker).history(period="2mo")
-        if hist.empty or len(hist) < 21:
-            return None
-        ret = float(hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1)
-        _cache[ticker] = ret
-        return ret
-    except Exception:
-        return None
+    if ticker in _ETF_CACHE:
+        return _ETF_CACHE[ticker]
+    import time
+    for attempt in range(3):
+        try:
+            hist = yf.Ticker(ticker).history(period="2mo")
+            if hist.empty or len(hist) < 21:
+                _ETF_CACHE[ticker] = None
+                return None
+            ret = float(hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1)
+            _ETF_CACHE[ticker] = ret
+            return ret
+        except Exception:
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # 1s, 2s backoff
+    _ETF_CACHE[ticker] = None
+    return None
+
+
+def _prewarm_etf_cache() -> None:
+    """Fetch all sector ETF returns once before a bulk refresh, with rate-limit spacing."""
+    import time
+    tickers = list(set(_SECTOR_ETF.values())) + [_HK_BENCHMARK, _US_FALLBACK]
+    for t in tickers:
+        if t not in _ETF_CACHE:
+            _etf_20d_return(t)
+            time.sleep(0.5)  # stay well under yfinance rate limits
 
 
 def _rs_score(stock_ret: float, etf_ret: float | None) -> tuple[float, float]:
@@ -234,6 +253,7 @@ def refresh(
 def _persist_rankings(stock_ids: list[int]) -> None:
     from db import SessionLocal, Stock as StockModel
 
+    _prewarm_etf_cache()  # fetch all sector ETFs once before the loop
     today = date.today()
     with SessionLocal() as session:
         rows = []
