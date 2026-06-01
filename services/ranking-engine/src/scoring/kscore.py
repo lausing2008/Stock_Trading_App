@@ -21,14 +21,16 @@ class KScoreComponents:
     volatility: float
     score: float
     fair_price: float | None = None
+    relative_strength: float | None = None
 
 
 _WEIGHTS = {
-    "technical": 0.25,
-    "momentum": 0.25,
-    "value": 0.15,
-    "growth": 0.15,
-    "volatility": 0.20,
+    "technical": 0.22,
+    "momentum": 0.23,
+    "value": 0.13,
+    "growth": 0.14,
+    "volatility": 0.18,
+    "relative_strength": 0.10,
 }
 
 
@@ -139,20 +141,33 @@ def _growth_proxy(df: pd.DataFrame) -> float:
     return float(np.clip(50 + cagr * 120, 0, 100))
 
 
-def compute_kscore(df: pd.DataFrame) -> KScoreComponents:
+def compute_kscore(df: pd.DataFrame, rs_score: float | None = None) -> KScoreComponents:
     tech = _technical_score(df)
     mom  = _momentum_score(df)
     val  = _value_proxy(df)
     gro  = _growth_proxy(df)
     vol  = _volatility_score(df)
 
-    score = (
-        _WEIGHTS["technical"]  * tech
-        + _WEIGHTS["momentum"] * mom
-        + _WEIGHTS["value"]    * val
-        + _WEIGHTS["growth"]   * gro
-        + _WEIGHTS["volatility"] * vol
-    )
+    if rs_score is not None:
+        score = (
+            _WEIGHTS["technical"]        * tech
+            + _WEIGHTS["momentum"]       * mom
+            + _WEIGHTS["value"]          * val
+            + _WEIGHTS["growth"]         * gro
+            + _WEIGHTS["volatility"]     * vol
+            + _WEIGHTS["relative_strength"] * rs_score
+        )
+    else:
+        # No RS data: redistribute RS weight proportionally among other factors
+        w_sum = 1.0 - _WEIGHTS["relative_strength"]
+        score = (
+            (_WEIGHTS["technical"]    / w_sum) * tech
+            + (_WEIGHTS["momentum"]   / w_sum) * mom
+            + (_WEIGHTS["value"]      / w_sum) * val
+            + (_WEIGHTS["growth"]     / w_sum) * gro
+            + (_WEIGHTS["volatility"] / w_sum) * vol
+        )
+
     sma200 = df["close"].rolling(200).mean().iloc[-1]
     fair   = float(sma200) if not pd.isna(sma200) else None
 
@@ -164,4 +179,5 @@ def compute_kscore(df: pd.DataFrame) -> KScoreComponents:
         volatility=round(vol, 2),
         score=round(score, 2),
         fair_price=round(fair, 2) if fair else None,
+        relative_strength=round(rs_score, 2) if rs_score is not None else None,
     )

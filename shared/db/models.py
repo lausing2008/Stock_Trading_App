@@ -178,6 +178,7 @@ class Ranking(Base):
     growth: Mapped[float] = mapped_column(Float)
     volatility: Mapped[float] = mapped_column(Float)
     fair_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rs_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __table_args__ = (UniqueConstraint("stock_id", "as_of", name="uq_rank_stock_date"),)
 

@@ -34,6 +34,7 @@ export default function RankingsTable({
             <th className="px-3 py-2 text-right">Volume</th>
             <th className="px-3 py-2 text-right">vs Avg</th>
             <th className="px-3 py-2 text-right">K-Score</th>
+            <th className="px-3 py-2 text-right" title="Relative Strength vs sector ETF (0-100). >60 = leading sector, <40 = lagging">RS</th>
             <th className="px-3 py-2 text-right">Confluence</th>
             <th className="px-3 py-2 text-right">Fair Price</th>
           </tr>
@@ -78,6 +79,14 @@ export default function RankingsTable({
                 </td>
                 <td className="px-3 py-2 text-right font-semibold">
                   {pending ? <span className="text-xs text-slate-600">Pending data</span> : r.score != null ? r.score.toFixed(1) : '—'}
+                </td>
+                <td className="px-3 py-2 text-right text-xs font-semibold" style={{
+                  color: r.relative_strength == null ? '#475569'
+                    : r.relative_strength >= 60 ? '#4ade80'
+                    : r.relative_strength >= 45 ? '#94a3b8'
+                    : '#f87171',
+                }}>
+                  {r.relative_strength != null ? r.relative_strength.toFixed(0) : '—'}
                 </td>
                 <td className="px-3 py-2 text-right">
                   {grade && cs != null ? (

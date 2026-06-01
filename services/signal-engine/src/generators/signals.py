@@ -115,6 +115,51 @@ def _fetch_earnings_proximity(symbol: str) -> int | None:
     return None
 
 
+def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
+    """Return (rs_score 0-100, rs_rank) vs the stock's sector ETF.
+
+    Fetches the stock's sector from market-data, maps to the matching SPDR ETF
+    (or ^HSI for HK stocks), then computes the 20-day return ratio.
+    Returns (None, None) on any failure.
+    """
+    _SECTOR_ETF = {
+        "Technology": "XLK", "Health Care": "XLV", "Healthcare": "XLV",
+        "Financials": "XLF", "Financial Services": "XLF",
+        "Consumer Discretionary": "XLY", "Consumer Staples": "XLP",
+        "Energy": "XLE", "Utilities": "XLU", "Materials": "XLB",
+        "Industrials": "XLI", "Real Estate": "XLRE",
+        "Communication Services": "XLC", "Telecommunications": "XLC",
+    }
+    try:
+        import yfinance as yf
+
+        url = f"{_settings.market_data_url}/stocks/{symbol}"
+        with httpx.Client(timeout=8) as c:
+            r = c.get(url)
+            if r.status_code != 200:
+                return None, None
+        info = r.json()
+        market = info.get("market", "US")
+        sector = info.get("sector") or ""
+        etf_ticker = "^HSI" if str(market).upper() == "HK" else _SECTOR_ETF.get(sector, "SPY")
+
+        stock_hist = yf.Ticker(symbol).history(period="2mo")
+        etf_hist   = yf.Ticker(etf_ticker).history(period="2mo")
+        if stock_hist.empty or len(stock_hist) < 21:
+            return None, None
+        if etf_hist.empty or len(etf_hist) < 21:
+            return None, None
+
+        stock_ret = float(stock_hist["Close"].iloc[-1] / stock_hist["Close"].iloc[-21] - 1)
+        etf_ret   = float(etf_hist["Close"].iloc[-1] / etf_hist["Close"].iloc[-21] - 1)
+        denom = 1 + etf_ret if abs(etf_ret + 1) > 1e-6 else 1e-6
+        rs_rank = (1 + stock_ret) / denom
+        rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
+        return round(rs_score, 1), round(rs_rank, 4)
+    except Exception:
+        return None, None
+
+
 def _fetch_news_sentiment(symbol: str) -> float | None:
     """Return a 7-day news sentiment score (0–100, 50 = neutral).
 
@@ -536,6 +581,18 @@ def generate_signal(symbol: str) -> AIConfidence:
             reasons["news_sentiment_flag"] = "negative"
         else:
             reasons["news_sentiment_flag"] = "neutral_or_positive"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Relative strength vs sector ETF ───────────────────────────────────
+    rs_score, rs_rank = _fetch_relative_strength(symbol)
+    reasons["rs_score"] = rs_score
+    reasons["rs_rank"] = rs_rank
+    if rs_rank is not None and rs_rank < 0.8:
+        # Stock lagging its sector by >20% over 20 days — reduce BUY confidence
+        fused = 0.5 + (fused - 0.5) * 0.85
+        reasons["rs_flag"] = "lagging_sector"
+    elif rs_rank is not None:
+        reasons["rs_flag"] = "in_line_or_leading"
     fused = float(np.clip(fused, 0.0, 1.0))
 
     signal, horizon = _decide(fused, market_regime)

@@ -51,6 +51,7 @@ export default function RankingsPage() {
         growth: null,
         volatility: null,
         fair_price: null,
+        relative_strength: null,
       }));
 
     return [...ranked, ...unranked];

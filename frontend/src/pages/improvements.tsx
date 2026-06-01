@@ -241,6 +241,8 @@ const ITEMS: Item[] = [
     impact: 'A BUY on a sector-leading stock is a much stronger signal than a BUY on a sector laggard',
     what: 'Currently all stocks compared on absolute terms. A stock outperforming its sector by 5% is much higher quality than one moving in line with a rising sector.',
     fix: 'Compute rs_rank = stock_20d_return / sector_ETF_20d_return. Add as K-Score sub-score (10% weight). Add RS column to rankings table. Reduce BUY confidence by 15% if rs_rank < 0.8.',
+    defaultStatus: 'done',
+    implementedNote: 'rs_rank = (1+stock_20d)/(1+etf_20d). Mapped to RS score 0-100 (50=in-line). Added as 10% K-Score weight (sector ETFs XLK/XLV/XLF/etc for US, ^HSI for HK). RS column in rankings (green ≥60, red <40). Signal engine: rs_rank <0.8 compresses fused signal 15%.',
   },
   {
     id: 'news-sentiment',
