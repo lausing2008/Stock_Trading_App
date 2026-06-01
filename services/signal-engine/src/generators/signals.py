@@ -272,6 +272,32 @@ def _stoch_rsi(rsi: pd.Series, period: int = 14, smooth_k: int = 3, smooth_d: in
     return k_val, d_val, k
 
 
+def _resample_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
+    """Resample a daily OHLCV DataFrame to weekly bars (Monday-anchored).
+
+    Uses the 'ts' column as the date index. Returns empty DataFrame if
+    fewer than 10 weekly bars can be formed (not enough history).
+    """
+    if df.empty or len(df) < 10:
+        return pd.DataFrame()
+    try:
+        d = df.copy()
+        d["ts"] = pd.to_datetime(d["ts"])
+        d = d.set_index("ts").sort_index()
+        weekly = d.resample("W-MON", label="left", closed="left").agg({
+            "open":   "first",
+            "high":   "max",
+            "low":    "min",
+            "close":  "last",
+            "volume": "sum",
+        }).dropna(subset=["close"])
+        weekly = weekly.reset_index()
+        weekly.rename(columns={"ts": "ts"}, inplace=True)
+        return weekly if len(weekly) >= 10 else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
 def _weekly_ta_score(df: pd.DataFrame) -> float:
     """Simplified weekly TA score for multi-timeframe confirmation. Returns 0-1."""
     if df.empty or len(df) < 26:
@@ -576,7 +602,10 @@ def generate_signal(symbol: str) -> AIConfidence:
     reasons["ta_score"] = ta_prob
 
     # ── Multi-timeframe confirmation (weekly) ─────────────────────────────
-    df_weekly = _fetch_weekly_prices(symbol)
+    # Resample daily bars to weekly rather than fetching from DB — weekly bars
+    # are not stored in the prices table (only D1 and M5 exist). Resampling
+    # here is free since we already hold the daily DataFrame in memory.
+    df_weekly = _resample_to_weekly(df)
     weekly_score = _weekly_ta_score(df_weekly)
     reasons["weekly_ta_score"] = round(weekly_score, 3)
 
