@@ -1764,6 +1764,32 @@ Clearing `stockai_jwt` from `localStorage` logs the user out. Clearing all stora
 
 > **Rankings page RS column:** The RS score (0–100) appears as a column in the rankings table. Green (≥ 60) = stock is leading its sector. Red (< 40) = stock is lagging. Grey = no data.
 
+### How to use relative strength
+
+RS is a **quality filter on top of the AI signal**, not a standalone buy/sell trigger.
+
+**Daily workflow — Rankings page**
+
+Scan the RS column after sorting by K-Score. Prioritise stocks that are green on both.
+
+| RS | AI Signal | Interpretation | Action |
+|----|-----------|---------------|--------|
+| ≥ 60 (green) | BUY | Highest-conviction setup — stock leading sector with technical entry | Act on signal |
+| 45–59 (grey) | BUY | Standard setup — in-line with sector | Act normally |
+| < 40 (red) | BUY | Weakened signal — stock lagging sector despite technical BUY. Signal engine has already reduced confidence 15%. | Investigate why before entering |
+| < 40 (red) | HOLD/SELL | Capital leaving this stock specifically | Avoid new positions |
+| ≥ 60 (green) | HOLD | Sector strength without a timing trigger yet | Watch for signal upgrade |
+
+**Sector rotation signal**
+
+If multiple stocks in the same sector simultaneously drop to red RS while their sector ETF is rising, capital is rotating *within* the sector away from those names. Cross-reference with the Sector Performance panel on the dashboard.
+
+**What RS does not tell you**
+
+- RS = 100 does not mean buy — a stock up 30% in 20 days may be extended and due for a pullback. Wait for a pullback entry or use the Confluence Score to assess timing.
+- RS resets every 20 trading days. It reflects recent momentum, not long-term trend quality.
+- RS is computed vs the stock's assigned sector ETF. If a stock's sector is unassigned (shown as "Other"), SPY is used as the fallback benchmark.
+
 ---
 
 ## Portfolio Optimizer — algorithm details
