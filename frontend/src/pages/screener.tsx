@@ -16,7 +16,7 @@ type Row = RankingRow & {
 };
 
 type SortKey = 'symbol' | 'score' | 'technical' | 'momentum' | 'value' | 'growth'
-             | 'bullish_probability' | 'change_pct' | 'price' | 'confidence';
+             | 'bullish_probability' | 'change_pct' | 'price' | 'confidence' | 'relative_strength';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -220,6 +220,7 @@ export default function Screener() {
       else if (sort.key === 'change_pct')         { av = a.change_pct ?? -999;        bv = b.change_pct ?? -999; }
       else if (sort.key === 'price')              { av = a.price ?? -1;               bv = b.price ?? -1; }
       else if (sort.key === 'confidence')         { av = a.confidence ?? -1;          bv = b.confidence ?? -1; }
+      else if (sort.key === 'relative_strength')  { av = a.relative_strength ?? -1;   bv = b.relative_strength ?? -1; }
 
       if (typeof av === 'string') return sort.dir === 'asc' ? av.localeCompare(bv as string) : (bv as string).localeCompare(av);
       return sort.dir === 'asc' ? av - (bv as number) : (bv as number) - av;
@@ -428,6 +429,7 @@ export default function Screener() {
                   <Th label="Momentum"   col="momentum"            sort={sort} onSort={toggleSort} />
                   <Th label="Value"      col="value"               sort={sort} onSort={toggleSort} />
                   <Th label="Growth"     col="growth"              sort={sort} onSort={toggleSort} />
+                  <Th label="RS"         col="relative_strength"   sort={sort} onSort={toggleSort} />
                   <Th label="Bullish %"  col="bullish_probability" sort={sort} onSort={toggleSort} />
                   <Th label="Confidence" col="confidence"          sort={sort} onSort={toggleSort} />
                   <Th label="Day Chg"    col="change_pct"          sort={sort} onSort={toggleSort} />
@@ -497,6 +499,11 @@ export default function Screener() {
 
                       {/* Growth */}
                       <td style={{ padding: '8px 10px' }}><ScoreBar value={row.growth} color="#34d399" /></td>
+
+                      {/* Relative Strength */}
+                      <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontSize: '12px', color: row.relative_strength == null ? '#334155' : row.relative_strength >= 60 ? '#4ade80' : row.relative_strength >= 45 ? '#64748b' : '#f87171' }}>
+                        {row.relative_strength != null ? row.relative_strength.toFixed(0) : '—'}
+                      </td>
 
                       {/* Bullish % */}
                       <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums' }}>

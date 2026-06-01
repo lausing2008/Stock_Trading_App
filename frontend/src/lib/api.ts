@@ -391,7 +391,7 @@ export type Overview = {
   patterns: { patterns: { name: string; confidence: number; start_idx: number; end_idx: number }[] } | null;
   levels: Levels;
   signal: Signal | null;
-  ranking: { score: number; fair_price?: number; technical: number; momentum: number; value: number; growth: number; volatility: number } | null;
+  ranking: { score: number; fair_price?: number; technical: number; momentum: number; value: number; growth: number; volatility: number; relative_strength?: number | null; rs_rank?: number | null } | null;
   fundamentals: Fundamentals | null;
 };
 

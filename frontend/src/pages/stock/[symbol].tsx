@@ -1083,6 +1083,19 @@ Return ONLY valid JSON — no markdown, no prose:
                 ].map(([k, v]) => (
                   <div key={k as string}><span className="text-slate-600">{k}:</span> {typeof v === 'number' ? v.toFixed(0) : v}</div>
                 ))}
+                {ranking.relative_strength != null && (() => {
+                  const rs = ranking.relative_strength as number;
+                  const rsColor = rs >= 60 ? '#4ade80' : rs >= 45 ? '#94a3b8' : '#f87171';
+                  const rsLabel = rs >= 60 ? 'leading' : rs >= 45 ? 'in-line' : 'lagging';
+                  return (
+                    <div className="col-span-2 mt-1 pt-1 border-t border-slate-800">
+                      <span className="text-slate-600">Rel. Strength vs sector:</span>{' '}
+                      <span style={{ color: rsColor, fontWeight: 600 }}>{rs.toFixed(0)}</span>
+                      <span className="text-slate-600"> — {rsLabel}</span>
+                      {ranking.rs_rank != null && <span className="text-slate-700 ml-1">(rank {(ranking.rs_rank as number).toFixed(2)}×)</span>}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}
