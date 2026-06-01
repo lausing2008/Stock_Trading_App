@@ -209,6 +209,25 @@ Four techniques were added on top of v2 to improve timing accuracy:
 | Bull (S&P 500 above 200MA) | 0.65 | 0.50 | Normal — most signals are valid in trending markets |
 | Bear (S&P 500 below 200MA) | 0.73 | 0.56 | Raised — broad market headwind means individual stock BUY signals have a higher false-positive rate; require stronger conviction to fire |
 
+#### Signal engine v4 — signal quality & regime improvements
+
+Four additional layers were added to prevent the ML model from overriding clear TA evidence and to handle market regimes where signals are inherently less reliable:
+
+| Improvement | What it does |
+|---|---|
+| **ML probability soft-cap** | Raw XGBoost output is clipped to [0.05, 0.95] before fusion. XGBoost frequently outputs 0.0 or 1.0 when a small set of features pattern-match strongly — these extremes misrepresent certainty. The cap preserves signal direction while keeping TA meaningful. Without this, a 100% ML prediction with a 68% ML weight would contribute 0.68 to the fused score regardless of what every TA indicator says. |
+| **ML-TA disagreement dampening** | When the absolute gap between the ML probability and the TA score exceeds 0.35, the ML weight is scaled down by up to 25%. Gap 0.35 → no dampening; gap ≥ 0.65 → full −25% reduction. This prevents a stock where TA is strongly bearish (score 20%) but ML is strongly bullish (95%) from being called a BUY purely on ML conviction — the result becomes a low-confidence HOLD instead. The conflict is flagged as `ml_ta_conflict: true` in the signal reasons and shown on the signal card. |
+| **ADX choppy market compression** | When ADX falls below 20, the market is directionless — there is no confirmed trend for a BUY or SELL to follow. The fused probability is compressed 10% toward 0.50 in these conditions, reducing false BUY/SELL signals in range-bound stocks. ADX ≥ 20 is no compression. The flag `adx_compression: true` appears in signal reasons and the card shows "ADX N: Choppy" as a warning. |
+| **4-state market regime** | The binary bull/bear regime is extended to four states using the Fear & Greed index score alongside the S&P 500 vs 200MA signal. A `high_vol` regime fires when the S&P 500 is in bull territory (above 200MA) but Fear & Greed drops below 30 — this captures market stress events (fast drawdowns, VIX spikes) where price has not yet broken the 200MA but conditions are unstable. In `high_vol`, the BUY threshold is raised to 0.70 and all signals are additionally compressed 15% toward neutral. |
+
+**Updated market regime adaptive thresholds (v4):**
+
+| Regime | BUY threshold | HOLD threshold | Signal compression | Trigger |
+|--------|--------------|----------------|-------------------|---------|
+| Bull | 0.65 | 0.50 | None | S&P 500 above 200MA, Fear & Greed ≥ 30 |
+| High-Vol | 0.70 | 0.54 | −15% toward neutral | S&P 500 above 200MA, Fear & Greed < 30 |
+| Bear | 0.73 | 0.56 | None | S&P 500 below 200MA |
+
 #### Dynamic ML/TA fusion weighting
 
 The 60/40 ML/TA split is no longer hardcoded. The signal engine now reads each symbol's `cv_auc_mean` from the model artifact and adjusts the ML weight proportionally:
