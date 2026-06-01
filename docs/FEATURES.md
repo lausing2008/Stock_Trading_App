@@ -199,6 +199,8 @@ Four techniques were added on top of v2 to improve timing accuracy:
 | **Rolling 20-day VWAP** | Price above VWAP = institutional buyers active. Adds a small positive weight to the TA score when price is above VWAP; a small negative weight when below. |
 | **Earnings proximity penalty** | If earnings are within 10 days, the fused probability is compressed toward 0.50. Earnings create binary outcome risk that overrides any technical signal — the model should not project a directional conviction when a coin-flip event is imminent. |
 | **Chart pattern fusion** | Detects 5 classic patterns on the last 60 bars. Bullish patterns (bull flag, cup-and-handle, double bottom) apply a +0.04 to +0.06 boost; bearish patterns (head-and-shoulders, double top, bear flag) apply a −0.03 to −0.05 compression. Pattern bonuses are bounded so they can tilt but not override the combined ML+TA signal. |
+| **News sentiment filter** | Last 10 news articles are scored with VADER sentiment (via yfinance, range −1 to +1), mapped to a 0–100 scale and averaged. Score < 25 (strongly negative) compresses the fused signal 30%; score 25–35 (moderately negative) compresses 20%. Neutral or positive news has no effect. This suppresses BUY signals ahead of regulatory action, leadership crises, or product recalls that technicals cannot yet detect. Sentiment score and flag are included in the signal `reasons` dict and shown in the trade plan on the stock detail page. |
+| **Relative strength vs sector ETF** | The stock's 20-day return is compared to its sector benchmark ETF (US stocks: SPDR sector ETFs XLK/XLV/XLF/XLY/XLP/XLE/XLU/XLB/XLI/XLRE/XLC; HK stocks: ^HSI; no-sector fallback: SPY). `rs_rank = (1 + stock_20d_ret) / (1 + etf_20d_ret)`. If rs_rank < 0.8 (stock lagging sector by > 20% over 20 days) the fused signal is compressed 15%. A BUY on a sector-lagging stock is a significantly weaker setup than a BUY on a sector leader. The rs_rank and mapped 0–100 RS score are included in the signal `reasons` dict. |
 
 **Market regime adaptive thresholds:**
 
@@ -389,6 +391,23 @@ Fetched from yfinance `.info`, Redis-cached 24 h.
 - **Avg Vol (3M)** — 3-month average daily volume (from yfinance `three_month_average_volume`), with a colour-coded RVOL ratio badge (green > 1.5×, red < 0.5×)
 
 **52-Week Range** — gradient bar showing current live price position between 52W low/high, with percentage-of-range label
+
+**EPS Surprise History** — last 8 reported quarters of earnings vs. analyst consensus (sourced from yfinance `earnings_history`):
+
+| Column | What it contains |
+|--------|-----------------|
+| Quarter | Reporting period (e.g. Q1 2025) |
+| Actual EPS | Reported earnings per share (green = beat, red = miss) |
+| Estimate EPS | Analyst consensus estimate at time of report |
+| Surprise % | (Actual − Estimate) / |Estimate| × 100, colour-coded |
+
+- **Beat rate badge** — fraction of the last 8 quarters where actual > estimate (e.g. "Beat 6/8"). Green if ≥ 75%, yellow if ≥ 50%, red otherwise.
+- **Avg surprise** — mean absolute surprise % across reported quarters
+- **Trend arrow** — compares second-half vs first-half average surprise; ↑ improving, ↓ declining
+
+The EPS surprise trend feeds into the Research Engine's fundamental score: a ≥ 75% beat rate adds +5 to the 0–100 fundamental component; ≥ 50% beat rate adds +2. This is also exposed as `eps_beat_rate`, `eps_avg_surprise_pct`, and `eps_surprise_trend` in the `/stocks/{symbol}/fundamentals` API response.
+
+> **Availability:** EPS history requires at least 2 quarters of data in yfinance. Newly listed companies or very small stocks may show "No EPS history available."
 
 **Analyst Ratings & Price Targets** — full analyst consensus section powered by Yahoo Finance (Wall Street aggregate):
 - **Rating distribution bar** — stacked colored bar (Strong Buy / Buy / Hold / Underperform / Sell) with individual counts and color-coded labels
@@ -1733,14 +1752,17 @@ Clearing `stockai_jwt` from `localStorage` logs the user out. Clearing all stora
 
 ## K-Score sub-scores
 
-| Sub-score | Range | What drives it |
-|-----------|-------|---------------|
-| Technical | 0–100 | SMA(50/200) trend alignment, RSI(14), ADX(14) trend-strength bonus |
-| Momentum | 0–100 | 1-week, 1-month, 3-month price rate-of-change |
-| Value | 0–100 | Discount from 52-week high (price proxy; fundamentals not yet integrated) |
-| Growth | 0–100 | 12-month price CAGR (price proxy; earnings/revenue growth not yet integrated) |
-| Volatility | 0–100 | Inverse of 30-day realized volatility |
-| **K-Score** | 0–100 | Weighted composite — above 70 is strong, below 40 is weak |
+| Sub-score | Weight | Range | What drives it |
+|-----------|--------|-------|---------------|
+| Technical | 22% | 0–100 | SMA(50/200) trend alignment, RSI(14), ADX(14) trend-strength bonus |
+| Momentum | 23% | 0–100 | 1-week, 1-month, 3-month price rate-of-change |
+| Value | 13% | 0–100 | Discount from 52-week high (price proxy; fundamentals not yet integrated) |
+| Growth | 14% | 0–100 | 12-month price CAGR (price proxy; earnings/revenue growth not yet integrated) |
+| Volatility | 18% | 0–100 | Inverse of 30-day realized volatility |
+| Relative Strength | 10% | 0–100 | 20-day return vs sector ETF benchmark — 50 = in-line with sector, > 60 = leading, < 40 = lagging. Uses SPDR sector ETFs for US stocks (XLK, XLV, etc.) and ^HSI for HK stocks. ETF price history is stored in the DB; no live API calls during refresh. |
+| **K-Score** | — | 0–100 | Weighted composite — above 70 is strong, below 40 is weak. If RS data is unavailable the 10% RS weight is redistributed proportionally among the other five factors. |
+
+> **Rankings page RS column:** The RS score (0–100) appears as a column in the rankings table. Green (≥ 60) = stock is leading its sector. Red (< 40) = stock is lagging. Grey = no data.
 
 ---
 
