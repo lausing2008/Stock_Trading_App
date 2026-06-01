@@ -18,6 +18,16 @@ Accuracy improvements (v3):
   - Earnings proximity penalty: compresses signal when earnings < 10 days away
   - Chart pattern fusion: bull_flag/cup_and_handle/double_bottom boost signal;
     head_and_shoulders/double_top/bear_flag reduce it
+
+Accuracy improvements (v4):
+  - ML probability soft-cap [0.05, 0.95]: prevents XGBoost overconfidence (e.g. 100%)
+    from dominating the fused signal when TA tells a different story
+  - ML-TA disagreement dampening: when |ml_prob - ta_prob| > 0.35, ML weight is
+    scaled back so strong TA evidence isn't simply overridden
+  - ADX choppy market compression: ADX < 20 (directionless market) compresses
+    the signal 10% toward neutral, reducing false BUY/SELL in range-bound stocks
+  - 4-state regime detection: bull / high_vol (fear&greed < 30) / bear / unknown;
+    high_vol raises the BUY threshold to 0.70 and compresses all signals 15%
 """
 from __future__ import annotations
 
@@ -90,16 +100,30 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float]:
     return None, 0.55
 
 
-def _fetch_market_regime() -> str:
-    """Returns 'bull', 'bear', or 'unknown'. Uses Redis-cached fear_greed endpoint."""
+def _fetch_market_regime() -> tuple[str, float | None]:
+    """Returns (regime, fear_greed_score).
+
+    Regime is one of: 'bull', 'high_vol', 'bear', 'unknown'.
+    - 'bear'     : S&P 500 below its 200-day MA
+    - 'high_vol' : S&P 500 in bull territory but Fear & Greed score < 30
+                   (market stress despite price holding — elevated crash risk)
+    - 'bull'     : S&P 500 above 200-day MA, fear & greed >= 30
+    """
     try:
         with httpx.Client(timeout=5) as c:
             r = c.get(f"{_settings.market_data_url}/stocks/fear_greed")
             if r.status_code == 200:
-                return r.json().get("sp500_regime", "unknown")
+                data = r.json()
+                sp500_regime = data.get("sp500_regime", "unknown")
+                fg_score = data.get("score")
+                if sp500_regime == "bear":
+                    return "bear", fg_score
+                if fg_score is not None and fg_score < 30:
+                    return "high_vol", fg_score
+                return "bull", fg_score
     except Exception:
         pass
-    return "unknown"
+    return "unknown", None
 
 
 def _fetch_earnings_proximity(symbol: str) -> int | None:
@@ -463,12 +487,15 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 def _decide(fused_prob: float, market_regime: str) -> tuple[str, str]:
     """Map fused probability to a signal label.
 
-    In a bear market (S&P 500 below 200MA), raise the BUY threshold to avoid
-    false entries during broad market downtrends.
+    Thresholds are tightened in bear and high-volatility regimes to reduce
+    false entries when the broad market is under stress.
     """
     if market_regime == "bear":
         buy_threshold  = 0.73
         hold_threshold = 0.56
+    elif market_regime == "high_vol":
+        buy_threshold  = 0.70
+        hold_threshold = 0.54
     else:
         buy_threshold  = 0.65
         hold_threshold = 0.50
@@ -510,14 +537,33 @@ def generate_signal(symbol: str) -> AIConfidence:
 
     ta_prob, reasons = _ta_score(df)
     ml_prob, ml_cv_auc = _fetch_ml_data(symbol)
-    market_regime = _fetch_market_regime()
+    market_regime, fg_score = _fetch_market_regime()
     reasons["market_regime"] = market_regime
+    reasons["fear_greed_score"] = fg_score
 
     # Dynamic fusion: ML weight scales with model quality (CV AUC).
     # AUC 0.50 (random) → 40% ML; AUC 0.70+ (excellent) → 75% ML.
     # This prevents a poorly-fit symbol model from overriding the TA rules.
     if ml_prob is not None:
+        # v4: soft-cap ML probability to [0.05, 0.95] — XGBoost frequently
+        # outputs 0.0 or 1.0 when a few features pattern-match strongly, but
+        # these extremes overstate certainty. The cap preserves the signal
+        # direction while allowing TA to have meaningful influence.
+        ml_prob = float(np.clip(ml_prob, 0.05, 0.95))
+
         ml_weight = float(np.clip(0.40 + (ml_cv_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
+
+        # v4: disagreement dampening — when ML and TA strongly disagree,
+        # reduce the ML weight so clear TA signals aren't simply overridden.
+        # |gap| > 0.35 → scale ML weight down by up to 25%.
+        ml_ta_gap = abs(ml_prob - ta_prob)
+        if ml_ta_gap > 0.35:
+            dampen = 1.0 - 0.25 * min((ml_ta_gap - 0.35) / 0.30, 1.0)
+            ml_weight = ml_weight * dampen
+            reasons["ml_ta_conflict"] = True
+        else:
+            reasons["ml_ta_conflict"] = False
+
         ta_weight = 1.0 - ml_weight
         fused = ml_weight * ml_prob + ta_weight * ta_prob
         reasons["ml_probability"] = ml_prob
@@ -526,6 +572,7 @@ def generate_signal(symbol: str) -> AIConfidence:
         fused = ta_prob
         reasons["ml_probability"] = None
         reasons["ml_weight"] = 0.0
+        reasons["ml_ta_conflict"] = False
     reasons["ta_score"] = ta_prob
 
     # ── Multi-timeframe confirmation (weekly) ─────────────────────────────
@@ -543,6 +590,26 @@ def generate_signal(symbol: str) -> AIConfidence:
         fused = 0.5 + daily_direction * 0.85
     fused = float(np.clip(fused, 0.0, 1.0))
     reasons["weekly_alignment"] = (daily_direction * weekly_direction) > 0
+
+    # ── ADX choppy market compression ─────────────────────────────────────
+    # When ADX < 20 the market is directionless — both BUY and SELL signals
+    # are less reliable because there is no confirmed trend to follow.
+    adx_val = reasons.get("adx") or 0.0
+    if adx_val < 20:
+        fused = 0.5 + (fused - 0.5) * 0.90
+        reasons["adx_compression"] = True
+    else:
+        reasons["adx_compression"] = False
+
+    # ── High-volatility regime compression ────────────────────────────────
+    # In high-vol regimes (bull price but fear & greed < 30) the market is
+    # unstable — compress all signals 15% to avoid entries into whipsaws.
+    if market_regime == "high_vol":
+        fused = 0.5 + (fused - 0.5) * 0.85
+        reasons["high_vol_compression"] = True
+    else:
+        reasons["high_vol_compression"] = False
+    fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── Chart pattern fusion ───────────────────────────────────────────────
     patterns = _fetch_patterns_from_ta(symbol)

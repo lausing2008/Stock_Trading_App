@@ -82,6 +82,11 @@ type Reasons = {
   pattern_adjustment?: number | null;
   days_to_earnings?: number | null;
   earnings_warning?: string;
+  // v4 additions
+  ml_ta_conflict?: boolean;
+  adx_compression?: boolean;
+  high_vol_compression?: boolean;
+  fear_greed_score?: number | null;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
@@ -112,13 +117,38 @@ function buildReasons(r: Reasons): Factor[] {
     });
   }
 
-  // Market regime — shown first if bear
+  // Market regime — shown first if bear or high_vol
   if (r.market_regime === 'bear') {
     factors.push({
       label: 'Market Regime',
       bullish: false,
       warning: true,
       detail: 'S&P 500 below 200MA — bear market, higher BUY threshold applied',
+    });
+  } else if (r.market_regime === 'high_vol') {
+    factors.push({
+      label: 'High Volatility',
+      bullish: false,
+      warning: true,
+      detail: `Fear & Greed ${r.fear_greed_score != null ? r.fear_greed_score.toFixed(0) : '—'}/100 — market stress, BUY threshold raised and signal compressed`,
+    });
+  }
+
+  // ML-TA conflict warning
+  if (r.ml_ta_conflict) {
+    factors.push({
+      label: 'ML-TA Conflict',
+      bullish: false,
+      detail: `ML model and TA indicators strongly disagree — ML weight reduced, signal less reliable`,
+    });
+  }
+
+  // ADX choppy compression
+  if (r.adx_compression) {
+    factors.push({
+      label: `ADX ${r.adx != null ? r.adx.toFixed(0) : '—'}: Choppy`,
+      bullish: false,
+      detail: 'ADX below 20 — no clear trend, signal compressed toward neutral',
     });
   }
 
