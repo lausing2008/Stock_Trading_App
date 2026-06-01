@@ -1,31 +1,63 @@
 """AI proxy — routes chat requests to Claude (Anthropic) or DeepSeek.
 
-The caller supplies their own API key in the request body; the gateway
-forwards it to the upstream AI provider and returns the assistant reply.
-No keys are stored server-side.
+The caller may supply their own API key in the request body. If omitted,
+the gateway falls back to the admin-configured shared key stored in Redis
+(set via POST /admin/config in market-data with claude_api_key / deepseek_api_key).
+
+This means regular users get full AI features without needing their own API keys.
 """
 from __future__ import annotations
 
 import httpx
+import redis as redis_lib
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from common.config import get_settings
+
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+_settings = get_settings()
+_REDIS_CLAUDE_KEY     = "stockai:admin:claude_api_key"
+_REDIS_DEEPSEEK_KEY   = "stockai:admin:deepseek_api_key"
+_REDIS_CLAUDE_MODEL   = "stockai:admin:claude_model"
+_REDIS_DEEPSEEK_MODEL = "stockai:admin:deepseek_model"
+
+
+def _get_redis():
+    return redis_lib.from_url(_settings.redis_url, decode_responses=True)
+
+
+def _admin_key(provider: str) -> str:
+    """Return the admin-stored fallback API key for provider, or ''."""
+    rkey = _REDIS_CLAUDE_KEY if provider == "claude" else _REDIS_DEEPSEEK_KEY
+    try:
+        return _get_redis().get(rkey) or ""
+    except Exception:
+        return ""
+
+
+def _admin_model(provider: str) -> str:
+    rkey = _REDIS_CLAUDE_MODEL if provider == "claude" else _REDIS_DEEPSEEK_MODEL
+    default = "claude-sonnet-4-6" if provider == "claude" else "deepseek-chat"
+    try:
+        return _get_redis().get(rkey) or default
+    except Exception:
+        return default
 
 
 class AiMessage(BaseModel):
-    role: str   # "user" | "assistant"
+    role: str
     content: str
 
 
 class AiChatRequest(BaseModel):
-    provider: str           # "claude" | "deepseek"
-    model: str
-    api_key: str
+    provider: str
+    model: str = ""
+    api_key: str = ""   # optional — falls back to admin shared key in Redis
     messages: list[AiMessage]
     system: str | None = None
     max_tokens: int = 2048
-    # 0 = deterministic, 1 = max creative. Keep low for structured JSON outputs.
     temperature: float = 0.2
 
 
@@ -37,23 +69,31 @@ class AiChatResponse(BaseModel):
 
 @router.post("/chat", response_model=AiChatResponse)
 async def ai_chat(req: AiChatRequest) -> AiChatResponse:
-    if not req.api_key.strip():
-        raise HTTPException(400, "API key is required")
+    api_key = req.api_key.strip() or _admin_key(req.provider)
+    if not api_key:
+        raise HTTPException(
+            400,
+            "No AI API key configured. "
+            "Ask the admin to set a shared key in Settings → AI Assistant, "
+            "or add your own key in Settings.",
+        )
+    model = req.model.strip() or _admin_model(req.provider)
+
     if req.provider == "claude":
-        return await _claude(req)
+        return await _claude(req, api_key, model)
     if req.provider == "deepseek":
-        return await _deepseek(req)
-    raise HTTPException(400, f"Unknown provider: {req.provider!r}. Use 'claude' or 'deepseek'.")
+        return await _deepseek(req, api_key, model)
+    raise HTTPException(400, f"Unknown provider: {req.provider!r}")
 
 
-async def _claude(req: AiChatRequest) -> AiChatResponse:
+async def _claude(req: AiChatRequest, api_key: str, model: str) -> AiChatResponse:
     headers = {
-        "x-api-key": req.api_key,
+        "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
     body: dict = {
-        "model": req.model,
+        "model": model,
         "max_tokens": req.max_tokens,
         "temperature": req.temperature,
         "messages": [{"role": m.role, "content": m.content} for m in req.messages],
@@ -82,20 +122,20 @@ async def _claude(req: AiChatRequest) -> AiChatResponse:
     except Exception as exc:
         raise HTTPException(502, f"Failed to parse Claude response: {exc}")
 
-    return AiChatResponse(content=content, model=data.get("model", req.model), provider="claude")
+    return AiChatResponse(content=content, model=data.get("model", model), provider="claude")
 
 
-async def _deepseek(req: AiChatRequest) -> AiChatResponse:
+async def _deepseek(req: AiChatRequest, api_key: str, model: str) -> AiChatResponse:
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
     if req.system:
         messages = [{"role": "system", "content": req.system}] + messages
 
     headers = {
-        "Authorization": f"Bearer {req.api_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": req.model,
+        "model": model,
         "max_tokens": req.max_tokens,
         "temperature": req.temperature,
         "messages": messages,
@@ -122,4 +162,4 @@ async def _deepseek(req: AiChatRequest) -> AiChatResponse:
     except Exception as exc:
         raise HTTPException(502, f"Failed to parse DeepSeek response: {exc}")
 
-    return AiChatResponse(content=content, model=data.get("model", req.model), provider="deepseek")
+    return AiChatResponse(content=content, model=data.get("model", model), provider="deepseek")
