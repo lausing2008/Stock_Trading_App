@@ -38,35 +38,43 @@ _US_FALLBACK  = "SPY"
 _ETF_CACHE: dict[str, float | None] = {}
 
 
-def _etf_20d_return(ticker: str) -> float | None:
-    """Return 20-day price return for an ETF/index. Results cached for the process lifetime."""
+def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | None:
+    """Return 20-day price return for an ETF/index. Reads from DB when session provided."""
     if ticker in _ETF_CACHE:
         return _ETF_CACHE[ticker]
-    import time
-    for attempt in range(3):
-        try:
-            hist = yf.Ticker(ticker).history(period="2mo")
-            if hist.empty or len(hist) < 21:
-                _ETF_CACHE[ticker] = None
-                return None
-            ret = float(hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1)
-            _ETF_CACHE[ticker] = ret
-            return ret
-        except Exception:
-            if attempt < 2:
-                time.sleep(2 ** attempt)  # 1s, 2s backoff
-    _ETF_CACHE[ticker] = None
-    return None
+    # DB path — ETFs are seeded as inactive stocks with full price history
+    if session is not None and not ticker.startswith("^"):
+        from sqlalchemy import select as sa_select
+        stock = session.execute(
+            sa_select(Stock).where(Stock.symbol == ticker)
+        ).scalars().first()
+        if stock:
+            df = _load_prices(session, stock.id, lookback=60)
+            if not df.empty and len(df) >= 21:
+                ret = float(df["close"].iloc[-1] / df["close"].iloc[-21] - 1)
+                _ETF_CACHE[ticker] = ret
+                return ret
+    # Fallback: yfinance (for ^HSI index and any ETF not yet in DB)
+    try:
+        hist = yf.Ticker(ticker).history(period="2mo")
+        if hist.empty or len(hist) < 21:
+            _ETF_CACHE[ticker] = None
+            return None
+        ret = float(hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1)
+        _ETF_CACHE[ticker] = ret
+        return ret
+    except Exception:
+        _ETF_CACHE[ticker] = None
+        return None
 
 
-def _prewarm_etf_cache() -> None:
-    """Fetch all sector ETF returns once before a bulk refresh, with rate-limit spacing."""
-    import time
-    tickers = list(set(_SECTOR_ETF.values())) + [_HK_BENCHMARK, _US_FALLBACK]
+def _prewarm_etf_cache(session: "Session") -> None:
+    """Pre-load all sector ETF returns from DB before a bulk refresh."""
+    tickers = list(set(_SECTOR_ETF.values())) + [_US_FALLBACK]
     for t in tickers:
-        if t not in _ETF_CACHE:
-            _etf_20d_return(t)
-            time.sleep(0.5)  # stay well under yfinance rate limits
+        _etf_20d_return(t, session=session)
+    # ^HSI via yfinance (not in DB)
+    _etf_20d_return(_HK_BENCHMARK)
 
 
 def _rs_score(stock_ret: float, etf_ret: float | None) -> tuple[float, float]:
@@ -110,7 +118,7 @@ def _load_prices(session: Session, stock_id: int, lookback: int = 300) -> pd.Dat
     )
 
 
-def _stock_rs(stock: "Stock", df: pd.DataFrame) -> tuple[float | None, float | None]:
+def _stock_rs(stock: "Stock", df: pd.DataFrame, session: "Session | None" = None) -> tuple[float | None, float | None]:
     """Compute (rs_score, rs_rank) for a stock given its sector and price history."""
     if len(df) < 21:
         return None, None
@@ -119,7 +127,7 @@ def _stock_rs(stock: "Stock", df: pd.DataFrame) -> tuple[float | None, float | N
         etf_ticker = _HK_BENCHMARK
     else:
         etf_ticker = _SECTOR_ETF.get(stock.sector or "", _US_FALLBACK)
-    etf_ret = _etf_20d_return(etf_ticker)
+    etf_ret = _etf_20d_return(etf_ticker, session=session)
     score, rs_rank = _rs_score(stock_ret, etf_ret)
     return score, rs_rank
 
@@ -132,7 +140,7 @@ def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     df = _load_prices(session, stock.id)
     if df.empty:
         raise HTTPException(404, f"No price data for {symbol}")
-    rs_score_val, rs_rank = _stock_rs(stock, df)
+    rs_score_val, rs_rank = _stock_rs(stock, df, session=session)
     comp = compute_kscore(df, rs_score=rs_score_val)
     d = {k: _clean(v) for k, v in asdict(comp).items()}
     return {"symbol": symbol, "rs_rank": _clean(rs_rank), **d}
@@ -211,7 +219,7 @@ def _leaderboard_live(market: str | None, limit: int, session: Session) -> dict:
         df = _load_prices(session, s.id)
         if df.empty or len(df) < 60:
             continue
-        rs_score_val, _ = _stock_rs(s, df)
+        rs_score_val, _ = _stock_rs(s, df, session=session)
         comp = compute_kscore(df, rs_score=rs_score_val)
         results.append(
             {
@@ -253,9 +261,9 @@ def refresh(
 def _persist_rankings(stock_ids: list[int]) -> None:
     from db import SessionLocal, Stock as StockModel
 
-    _prewarm_etf_cache()  # fetch all sector ETFs once before the loop
     today = date.today()
     with SessionLocal() as session:
+        _prewarm_etf_cache(session)  # load all sector ETF returns from DB once
         rows = []
         for sid in stock_ids:
             stock = session.get(StockModel, sid)
@@ -264,7 +272,7 @@ def _persist_rankings(stock_ids: list[int]) -> None:
             df = _load_prices(session, sid)
             if df.empty or len(df) < 60:
                 continue
-            rs_score_val, _ = _stock_rs(stock, df)
+            rs_score_val, _ = _stock_rs(stock, df, session=session)
             c = compute_kscore(df, rs_score=rs_score_val)
             rows.append(
                 {
