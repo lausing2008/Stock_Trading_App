@@ -587,6 +587,37 @@ def _safe(info: dict, key: str):
         return None
 
 
+@router.get("/fundamentals_bulk")
+def fundamentals_bulk(session: Session = Depends(get_session)):
+    """Return fundamental valuation + growth data for all active stocks from Redis cache.
+
+    Only symbols with a warm cache entry are included — symbols not yet fetched
+    (or with expired 24 h TTL) are silently omitted. Used by the ranking engine
+    for sector-relative scoring without triggering per-symbol yfinance calls.
+    """
+    active_symbols = [
+        row[0] for row in session.execute(select(Stock.symbol).where(Stock.active.is_(True)))
+    ]
+    redis_client = _get_redis()
+    result: dict[str, dict] = {}
+    _FIELDS = (
+        "trailing_pe", "forward_pe", "price_to_book",
+        "ev_to_ebitda", "ev_to_revenue",
+        "profit_margin", "operating_margin",
+        "return_on_equity", "return_on_assets",
+        "revenue_growth", "earnings_growth",
+    )
+    for symbol in active_symbols:
+        try:
+            cached = redis_client.get(f"stockai:fundamentals:v2:{symbol.upper()}")
+            if cached:
+                data = json.loads(cached)
+                result[symbol] = {k: data.get(k) for k in _FIELDS}
+        except Exception:
+            pass
+    return result
+
+
 @router.get("/{symbol}/fundamentals", response_model=FundamentalsOut)
 def get_fundamentals(symbol: str, refresh: bool = False):
     """Live company fundamentals from yfinance, Redis-cached for 24 h.
@@ -1292,10 +1323,10 @@ def get_prices(
             *(Price.ts >= start,) if start else (),
             Price.ts <= end,
         )
-        .order_by(Price.ts)
+        .order_by(Price.ts.desc())
         .limit(limit)
     )
-    rows = list(session.execute(stmt).scalars())
+    rows = list(reversed(list(session.execute(stmt).scalars())))
     return [
         PriceOut(
             ts=_format_ts(r.ts, stock.market, timeframe),

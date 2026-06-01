@@ -141,11 +141,23 @@ def _growth_proxy(df: pd.DataFrame) -> float:
     return float(np.clip(50 + cagr * 120, 0, 100))
 
 
-def compute_kscore(df: pd.DataFrame, rs_score: float | None = None) -> KScoreComponents:
+def compute_kscore(
+    df: pd.DataFrame,
+    rs_score: float | None = None,
+    value_score: float | None = None,
+    growth_score: float | None = None,
+) -> KScoreComponents:
+    """Compute K-Score composite.
+
+    value_score / growth_score (0-100): when provided, these replace the
+    price-based proxies with sector-relative percentile ranks derived from
+    real fundamental data (PE, PB, EV/EBITDA, revenue growth, ROE, etc.).
+    Fall back to the price proxy when fundamentals are unavailable.
+    """
     tech = _technical_score(df)
     mom  = _momentum_score(df)
-    val  = _value_proxy(df)
-    gro  = _growth_proxy(df)
+    val  = value_score  if value_score  is not None else _value_proxy(df)
+    gro  = growth_score if growth_score is not None else _growth_proxy(df)
     vol  = _volatility_score(df)
 
     if rs_score is not None:

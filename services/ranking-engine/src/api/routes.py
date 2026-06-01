@@ -1,7 +1,9 @@
 """Ranking API — per-symbol + market-wide leaderboard."""
+from collections import defaultdict
 from dataclasses import asdict
 from datetime import date, timedelta
 
+import httpx
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -13,6 +15,9 @@ from sqlalchemy.orm import Session
 from db import Price, Ranking, Stock, TimeFrame, get_session
 
 from ..scoring import compute_kscore
+
+import os
+_MARKET_DATA_URL = os.environ.get("MARKET_DATA_URL", "http://market-data:8001")
 
 # ── Sector → ETF mapping ──────────────────────────────────────────────────────
 _SECTOR_ETF: dict[str, str] = {
@@ -88,6 +93,117 @@ def _rs_score(stock_ret: float, etf_ret: float | None) -> tuple[float, float]:
 
 router = APIRouter(prefix="/rankings", tags=["rankings"])
 
+# ── Sector-relative fundamental scoring ──────────────────────────────────────
+
+def _fetch_fundamentals_bulk() -> dict[str, dict]:
+    """Fetch all cached fundamentals from market-data in one HTTP call.
+
+    Returns {symbol: {trailing_pe, price_to_book, ev_to_ebitda, ...}} for every
+    symbol that has a warm Redis cache entry. Symbols with no cache are omitted
+    — they will fall back to the price-based K-Score proxies.
+    """
+    try:
+        with httpx.Client(timeout=10) as c:
+            r = c.get(f"{_MARKET_DATA_URL}/stocks/fundamentals_bulk")
+            if r.status_code == 200:
+                return r.json()
+    except Exception:
+        pass
+    return {}
+
+
+def _percentile_rank(value: float, peer_values: list[float]) -> float:
+    """Return percentile rank (0-100) of value among peer_values (higher = better rank)."""
+    if not peer_values:
+        return 50.0
+    return sum(1 for v in peer_values if v < value) / len(peer_values) * 100
+
+
+def _sector_relative_scores(
+    fundamentals: dict[str, dict],
+    stock_sectors: dict[str, str],
+) -> dict[str, dict[str, float]]:
+    """Compute sector-percentile-ranked value and growth scores for all stocks.
+
+    For valuation metrics (PE, PB, EV/EBITDA) a lower value = cheaper = higher
+    score, so we invert the percentile rank. For growth/quality metrics (revenue
+    growth, earnings growth, ROE) a higher value = better = higher score.
+
+    Returns {symbol: {"value": 0-100, "growth": 0-100}}.
+    Stocks with fewer than 3 sector peers with valid data fall back to None
+    (price proxy will be used instead).
+    """
+    # Group symbols by sector
+    by_sector: dict[str, list[str]] = defaultdict(list)
+    for symbol, sector in stock_sectors.items():
+        if symbol in fundamentals:
+            by_sector[sector or "Unknown"].append(symbol)
+
+    result: dict[str, dict[str, float]] = {}
+
+    for sector, symbols in by_sector.items():
+        funds = {s: fundamentals[s] for s in symbols}
+
+        # ── Valuation metrics: lower = cheaper = higher score ──────────────
+        def _pos(key: str, cap: float = 1e6) -> dict[str, float]:
+            return {
+                s: f[key] for s, f in funds.items()
+                if f.get(key) is not None and 0 < f[key] < cap
+            }
+
+        pe_map   = _pos("trailing_pe", 500)
+        pb_map   = _pos("price_to_book", 100)
+        ev_map   = _pos("ev_to_ebitda", 200)
+
+        # ── Growth / quality metrics: higher = better = higher score ───────
+        def _any(key: str) -> dict[str, float]:
+            return {s: f[key] for s, f in funds.items() if f.get(key) is not None}
+
+        rev_g_map  = _any("revenue_growth")
+        earn_g_map = _any("earnings_growth")
+        roe_map    = _any("return_on_equity")
+
+        for symbol in symbols:
+            val_parts: list[float] = []
+            grow_parts: list[float] = []
+
+            # Value: invert percentile (lower ratio → higher score)
+            if symbol in pe_map and len(pe_map) >= 3:
+                peers = list(pe_map.values())
+                rank  = _percentile_rank(pe_map[symbol], peers)
+                val_parts.append(100 - rank)  # invert
+
+            if symbol in pb_map and len(pb_map) >= 3:
+                peers = list(pb_map.values())
+                rank  = _percentile_rank(pb_map[symbol], peers)
+                val_parts.append(100 - rank)
+
+            if symbol in ev_map and len(ev_map) >= 3:
+                peers = list(ev_map.values())
+                rank  = _percentile_rank(ev_map[symbol], peers)
+                val_parts.append(100 - rank)
+
+            # Growth: direct percentile (higher growth → higher score)
+            if symbol in earn_g_map and len(earn_g_map) >= 3:
+                grow_parts.append(_percentile_rank(earn_g_map[symbol], list(earn_g_map.values())))
+
+            if symbol in rev_g_map and len(rev_g_map) >= 3:
+                grow_parts.append(_percentile_rank(rev_g_map[symbol], list(rev_g_map.values())))
+
+            if symbol in roe_map and len(roe_map) >= 3:
+                grow_parts.append(_percentile_rank(roe_map[symbol], list(roe_map.values())))
+
+            entry: dict[str, float] = {}
+            if val_parts:
+                entry["value"]  = round(sum(val_parts)  / len(val_parts),  2)
+            if grow_parts:
+                entry["growth"] = round(sum(grow_parts) / len(grow_parts), 2)
+
+            if entry:
+                result[symbol] = entry
+
+    return result
+
 
 def _clean(v):
     """Return None for NaN/Inf so the response stays JSON-safe."""
@@ -141,7 +257,16 @@ def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     if df.empty:
         raise HTTPException(404, f"No price data for {symbol}")
     rs_score_val, rs_rank = _stock_rs(stock, df, session=session)
-    comp = compute_kscore(df, rs_score=rs_score_val)
+    # Sector-relative scores for single-symbol live endpoint
+    fundamentals = _fetch_fundamentals_bulk()
+    stock_sectors = {symbol: (stock.sector or "Unknown")}
+    sc = _sector_relative_scores(fundamentals, stock_sectors).get(symbol, {})
+    comp = compute_kscore(
+        df,
+        rs_score=rs_score_val,
+        value_score=sc.get("value"),
+        growth_score=sc.get("growth"),
+    )
     d = {k: _clean(v) for k, v in asdict(comp).items()}
     return {"symbol": symbol, "rs_rank": _clean(rs_rank), **d}
 
@@ -214,13 +339,23 @@ def _leaderboard_live(market: str | None, limit: int, session: Session) -> dict:
         stmt = stmt.where(Stock.market == market.upper())
     stocks = list(session.execute(stmt).scalars())
 
+    fundamentals  = _fetch_fundamentals_bulk()
+    stock_sectors = {s.symbol: (s.sector or "Unknown") for s in stocks}
+    sector_scores = _sector_relative_scores(fundamentals, stock_sectors)
+
     results = []
     for s in stocks:
         df = _load_prices(session, s.id)
         if df.empty or len(df) < 60:
             continue
         rs_score_val, _ = _stock_rs(s, df, session=session)
-        comp = compute_kscore(df, rs_score=rs_score_val)
+        sc   = sector_scores.get(s.symbol, {})
+        comp = compute_kscore(
+            df,
+            rs_score=rs_score_val,
+            value_score=sc.get("value"),
+            growth_score=sc.get("growth"),
+        )
         results.append(
             {
                 "symbol":            s.symbol,
@@ -264,16 +399,33 @@ def _persist_rankings(stock_ids: list[int]) -> None:
     today = date.today()
     with SessionLocal() as session:
         _prewarm_etf_cache(session)  # load all sector ETF returns from DB once
+
+        # Fetch fundamentals + build sector map for all stocks in this batch
+        all_stocks = {
+            s.id: s for s in session.execute(
+                select(StockModel).where(StockModel.id.in_(stock_ids))
+            ).scalars()
+        }
+        fundamentals = _fetch_fundamentals_bulk()
+        stock_sectors = {s.symbol: (s.sector or "Unknown") for s in all_stocks.values()}
+        sector_scores = _sector_relative_scores(fundamentals, stock_sectors)
+
         rows = []
         for sid in stock_ids:
-            stock = session.get(StockModel, sid)
+            stock = all_stocks.get(sid)
             if not stock:
                 continue
             df = _load_prices(session, sid)
             if df.empty or len(df) < 60:
                 continue
             rs_score_val, _ = _stock_rs(stock, df, session=session)
-            c = compute_kscore(df, rs_score=rs_score_val)
+            sc = sector_scores.get(stock.symbol, {})
+            c = compute_kscore(
+                df,
+                rs_score=rs_score_val,
+                value_score=sc.get("value"),
+                growth_score=sc.get("growth"),
+            )
             rows.append(
                 {
                     "stock_id": sid,
