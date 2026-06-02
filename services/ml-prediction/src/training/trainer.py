@@ -305,10 +305,14 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
 
     X_aligned = X.reindex(columns=saved_cols, fill_value=0.0).fillna(0.0)
     Xs = scaler.transform(X_aligned.values)
-    raw_prob = float(model.predict_proba(Xs)[-1])
+    raw_proba_row = model.predict_proba(Xs)[-1]  # shape (2,): [P(class_0), P(class_1)]
 
     # Apply calibration if the model was trained with it
-    prob = float(calibrator.predict([raw_prob])[0]) if calibrator is not None else raw_prob
+    # Calibrator was fit on full probability rows (shape (n, 2)), so pass the row as-is.
+    if calibrator is not None:
+        prob = float(calibrator.predict([raw_proba_row])[0])
+    else:
+        prob = float(raw_proba_row[1])  # positive-class probability
 
     return {
         "symbol": symbol,

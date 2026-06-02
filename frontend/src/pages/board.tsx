@@ -406,7 +406,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
                   <div>Exit <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>${plan.exit_price!.toFixed(2)}</span></div>
                   {plan.entry_price != null && <div>Entry <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>${plan.entry_price.toFixed(2)}</span></div>}
                 </div>
-                {plan.take_profit != null && plan.entry_price != null && plan.entry_price > 0 && (
+                {plan.take_profit != null && plan.entry_price != null && plan.entry_price > 0 && plan.take_profit !== plan.entry_price && (
                   <div style={{ marginLeft: 'auto', fontSize: '10px', color: '#475569' }}>
                     {((plan.exit_price! - plan.entry_price) / (plan.take_profit - plan.entry_price) * 100).toFixed(0)}% of target
                   </div>

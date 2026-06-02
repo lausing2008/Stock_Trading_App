@@ -268,7 +268,7 @@ function analyzeIndicators(
     }
 
     // ── Bollinger Bands ───────────────────────────────────────
-    if (bbUp && bbLo && bbMid) {
+    if (bbUp && bbLo && bbMid && bbUp > bbLo) {
       const pos = (price - bbLo) / (bbUp - bbLo);
       if (pos >= 0.90) {
         out.push({
