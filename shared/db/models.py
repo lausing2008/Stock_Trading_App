@@ -157,6 +157,7 @@ class Signal(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
     ts: Mapped[datetime] = mapped_column(DateTime, index=True, default=func.now())
+    __table_args__ = (Index("ix_signals_stock_ts", "stock_id", "ts"),)
     signal: Mapped[SignalType] = mapped_column(SAEnum(SignalType))
     horizon: Mapped[SignalHorizon] = mapped_column(SAEnum(SignalHorizon))
     confidence: Mapped[float] = mapped_column(Float)  # 0-100

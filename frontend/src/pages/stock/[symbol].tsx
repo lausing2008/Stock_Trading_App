@@ -1135,7 +1135,7 @@ Return ONLY valid JSON — no markdown, no prose:
                   ['Volatility', ranking.volatility],
                   ['Fair Price', ranking.fair_price != null ? `$${ranking.fair_price.toFixed(2)}` : '—'],
                 ].map(([k, v]) => (
-                  <div key={k as string}><span className="text-slate-600">{k}:</span> {typeof v === 'number' ? v.toFixed(0) : v}</div>
+                  <div key={k as string}><span className="text-slate-600">{k}:</span> {typeof v === 'number' ? v.toFixed(0) : (v ?? '—')}</div>
                 ))}
                 {ranking.relative_strength != null && (() => {
                   const rs = ranking.relative_strength as number;

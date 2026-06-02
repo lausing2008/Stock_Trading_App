@@ -166,10 +166,10 @@ def train_model(
         cv_model = get_model(model_name, **(hyperparams or {}))
         cv_model.fit(X_cv_tr_s, y_cv_tr, sample_weight=cv_weights)
 
-        preds = cv_model.predict_proba(X_cv_val_s)
+        preds_proba = cv_model.predict_proba(X_cv_val_s)[:, 1]  # positive-class only, shape (n,)
         if len(np.unique(y_cv_val)) > 1:
-            cv_aucs.append(roc_auc_score(y_cv_val, preds))
-        cv_accs.append(accuracy_score(y_cv_val, (preds > 0.5).astype(int)))
+            cv_aucs.append(roc_auc_score(y_cv_val, preds_proba))
+        cv_accs.append(accuracy_score(y_cv_val, (preds_proba > 0.5).astype(int)))
 
     # --- Three-way split: train / calibration / threshold evaluation ---
     # Separating calibration and threshold sets prevents double-dipping:
@@ -205,14 +205,15 @@ def train_model(
         model.fit(X_train_s, y_train.values, sample_weight=train_weights)
 
     # --- Probability calibration (isotonic regression on calibration set) ---
-    raw_cal_probs = model.predict_proba(X_cal_s)
+    # Use positive-class probabilities only (shape (n,)) — IsotonicRegression expects 1D input.
+    raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
     calibrator: IsotonicRegression | None = None
     if len(np.unique(y_cal)) > 1 and len(y_cal) >= 20:
         calibrator = IsotonicRegression(out_of_bounds="clip")
         calibrator.fit(raw_cal_probs, y_cal.values)
 
     # --- Precision-optimised BUY threshold (on held-out test set) ---
-    raw_test_probs = model.predict_proba(X_test_s)
+    raw_test_probs = model.predict_proba(X_test_s)[:, 1]  # shape (n,)
     preds = calibrator.predict(raw_test_probs) if calibrator is not None else raw_test_probs
     buy_threshold = _precision_threshold(y_test.values, preds)
 
@@ -305,14 +306,11 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
 
     X_aligned = X.reindex(columns=saved_cols, fill_value=0.0).fillna(0.0)
     Xs = scaler.transform(X_aligned.values)
-    raw_proba_row = model.predict_proba(Xs)[-1]  # shape (2,): [P(class_0), P(class_1)]
+    # Positive-class probability for the latest bar (calibrator expects 1D input).
+    raw_prob = float(model.predict_proba(Xs)[-1, 1])
 
     # Apply calibration if the model was trained with it
-    # Calibrator was fit on full probability rows (shape (n, 2)), so pass the row as-is.
-    if calibrator is not None:
-        prob = float(calibrator.predict([raw_proba_row])[0])
-    else:
-        prob = float(raw_proba_row[1])  # positive-class probability
+    prob = float(calibrator.predict([raw_prob])[0]) if calibrator is not None else raw_prob
 
     return {
         "symbol": symbol,
