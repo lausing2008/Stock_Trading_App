@@ -974,8 +974,8 @@ Return ONLY valid JSON — no markdown, no prose:
             );
           })()}
 
-          {/* Game Plan */}
-          {isAiConfigured() && (
+          {/* Game Plan — only for bullish/neutral signals where a buy plan makes sense */}
+          {isAiConfigured() && data.signal?.signal !== 'SELL' && (
             <div>
               {/* Generate button */}
               {!gamePlan && !gamePlanLoading && (

@@ -511,7 +511,8 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     reasons["obv_bullish"] = obv_bullish
 
     # ── Volume expansion ──────────────────────────────────────────────────
-    vol_z = (volume.iloc[-1] - volume.rolling(20).mean().iloc[-1]) / volume.rolling(20).std().iloc[-1]
+    vol_std = volume.rolling(20).std().iloc[-1]
+    vol_z = (volume.iloc[-1] - volume.rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0
     reasons["volume_z"] = float(vol_z) if not pd.isna(vol_z) else None
 
     # ── Score ─────────────────────────────────────────────────────────────

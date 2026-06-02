@@ -199,7 +199,7 @@ export default function Screener() {
       if (maxPrc     != null && (r.price ?? 0) > maxPrc) return false;
       if (minDisc != null) {
         if (r.fair_price == null || r.price == null) return false;
-        const discount = (r.fair_price - r.price) / r.fair_price;
+        const discount = (r.fair_price - r.price) / r.price;
         if (discount < minDisc) return false;
       }
       return true;

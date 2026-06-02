@@ -110,7 +110,7 @@ def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
         vix.columns = [c[0] for c in vix.columns]
 
     spy_c = spy["Close"]
-    vix_c = vix["Close"].reindex(spy_c.index, method="ffill")
+    vix_c = vix["Close"].reindex(spy_c.index).ffill()
 
     macro = pd.DataFrame(index=pd.to_datetime(spy_c.index).strftime("%Y-%m-%d"))
     macro["spy_ret_1"] = spy_c.pct_change(1).values
