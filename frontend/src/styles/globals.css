@@ -4,7 +4,7 @@ html, body { margin: 0; padding: 0; background: #060814; color: #e6edf3; font-fa
 a { color: inherit; text-decoration: none; }
 
 /* Layout */
-.container-xl { max-width: 1400px; padding: 0; }
+.container-xl { max-width: 1200px; margin: 0 auto; padding: 16px; }
 .fixed { position: fixed; }
 .absolute { position: absolute; }
 .relative { position: relative; }
@@ -87,9 +87,6 @@ a { color: inherit; text-decoration: none; }
 .mr-2 { margin-right: 8px; } .mt-0\.5 { margin-top: 2px; }
 
 /* Space between */
-.space-y-1 > * + * { margin-top: 4px; }
-.space-y-2 > * + * { margin-top: 8px; }
-.space-y-3 > * + * { margin-top: 12px; }
 .space-y-4 > * + * { margin-top: 16px; }
 .space-y-5 > * + * { margin-top: 20px; }
 .space-y-6 > * + * { margin-top: 24px; }
