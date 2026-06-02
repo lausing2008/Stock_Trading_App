@@ -623,7 +623,7 @@ def trade_performance(
         if sid in in_open_trade:
             continue
 
-        entry_date = sig.ts.date()
+        entry_date = sig.ts.date() + timedelta(days=1)  # execute next day, consistent with /accuracy
         entry_price = price_on_or_before(sid, entry_date)
         if entry_price is None:
             continue
