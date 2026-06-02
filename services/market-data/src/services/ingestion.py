@@ -80,6 +80,9 @@ def ingest_symbol(
 
         head = None if force else _last_bar_ts(session, stock.id, tf)
         start = (head.date() + timedelta(days=1)) if head else (date.today() - timedelta(days=lookback_days))
+        # yfinance only serves intraday bars within the last 60 days
+        if timeframe in ("1m", "5m", "15m", "1h"):
+            start = max(start, date.today() - timedelta(days=59))
         end = date.today() + timedelta(days=1)
 
         if start >= end:

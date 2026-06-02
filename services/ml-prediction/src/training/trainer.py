@@ -339,8 +339,9 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
     except Exception:
         return {**xgb, "ensemble": False, "model": "xgboost"}
 
-    xgb_auc = float((xgb.get("metrics") or {}).get("cv_auc_mean") or 0.55)
-    rf_auc  = float((rf.get("metrics") or {}).get("cv_auc_mean") or 0.55)
+    # Prefer held-out test AUC (unbiased) over CV AUC for internal weighting.
+    xgb_auc = float((xgb.get("metrics") or {}).get("auc") or (xgb.get("metrics") or {}).get("cv_auc_mean") or 0.55)
+    rf_auc  = float((rf.get("metrics") or {}).get("auc") or (rf.get("metrics") or {}).get("cv_auc_mean") or 0.55)
     total   = xgb_auc + rf_auc
     w_xgb, w_rf = xgb_auc / total, rf_auc / total
 
@@ -361,7 +362,11 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
         "ensemble": True,
         "weights": {"xgboost": round(w_xgb, 2), "random_forest": round(w_rf, 2)},
         "metrics": {
-            "cv_auc_mean": round((xgb_auc + rf_auc) / 2, 4),
+            "test_auc_mean": round((xgb_auc + rf_auc) / 2, 4),
+            "cv_auc_mean": round(
+                ((xgb.get("metrics") or {}).get("cv_auc_mean") or xgb_auc +
+                 (rf.get("metrics") or {}).get("cv_auc_mean") or rf_auc) / 2, 4
+            ),
             "buy_threshold": buy_threshold,
         },
     }

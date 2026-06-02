@@ -50,7 +50,7 @@
 import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type TradePair } from '@/lib/api';
+import { api, type TradePair, type EquityPoint } from '@/lib/api';
 
 const LOOKBACK_OPTIONS = [
   { label: '90d',  value: 90 },
@@ -78,6 +78,84 @@ function Badge({ text, color, bg }: { text: string; color: string; bg: string })
     <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700, color, background: bg }}>
       {text}
     </span>
+  );
+}
+
+function EquityCurve({ points, spyReturn }: { points: EquityPoint[]; spyReturn: number | null }) {
+  if (points.length < 2) return null;
+  const W = 760, H = 160, PAD = { t: 12, r: 12, b: 28, l: 52 };
+  const iW = W - PAD.l - PAD.r;
+  const iH = H - PAD.t - PAD.b;
+
+  const equities = points.map(p => p.equity);
+  const minE = Math.min(...equities, 1.0) * 0.995;
+  const maxE = Math.max(...equities, 1.0) * 1.005;
+
+  // SPY overlay line
+  const spyPoints: {x:number;y:number}[] = [];
+  if (spyReturn != null && points.length >= 2) {
+    const x0 = 0;
+    const x1 = iW;
+    const spyEnd = 1 + spyReturn / 100;
+    const yS0 = iH - ((1.0 - minE) / (maxE - minE)) * iH;
+    const yS1 = iH - ((spyEnd - minE) / (maxE - minE)) * iH;
+    spyPoints.push({ x: x0, y: yS0 }, { x: x1, y: yS1 });
+  }
+
+  const toX = (i: number) => (i / (points.length - 1)) * iW;
+  const toY = (e: number) => iH - ((e - minE) / (maxE - minE)) * iH;
+
+  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(p.equity).toFixed(1)}`).join(' ');
+  const areaPath = linePath + ` L${toX(points.length-1).toFixed(1)},${iH} L0,${iH} Z`;
+
+  // Baseline at equity = 1.0
+  const baseY = toY(1.0);
+
+  // Y-axis labels
+  const yTicks = [minE, (minE + maxE) / 2, maxE].map(v => ({ y: toY(v), label: ((v - 1) * 100).toFixed(1) + '%' }));
+
+  // X-axis: first and last date
+  const firstDate = points[0].date.slice(5);  // MM-DD
+  const lastDate  = points[points.length - 1].date.slice(5);
+  const midDate   = points[Math.floor(points.length / 2)].date.slice(5);
+
+  const finalEquity = equities[equities.length - 1];
+  const lineColor = finalEquity >= 1.0 ? '#4ade80' : '#f87171';
+  const areaColor = finalEquity >= 1.0 ? 'rgba(74,222,128,0.08)' : 'rgba(248,113,113,0.08)';
+
+  return (
+    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 16px', marginBottom: 24 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 10 }}>Equity Curve</div>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ overflow: 'visible' }}>
+        <g transform={`translate(${PAD.l},${PAD.t})`}>
+          {/* Y-axis labels */}
+          {yTicks.map((t, i) => (
+            <text key={i} x={-6} y={t.y + 4} textAnchor="end" fill="#475569" fontSize={9}>{t.label}</text>
+          ))}
+          {/* Baseline at 0% */}
+          <line x1={0} y1={baseY} x2={iW} y2={baseY} stroke="#1e293b" strokeWidth={1} strokeDasharray="4 3" />
+
+          {/* SPY overlay */}
+          {spyPoints.length === 2 && (
+            <line x1={spyPoints[0].x} y1={spyPoints[0].y} x2={spyPoints[1].x} y2={spyPoints[1].y}
+              stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="5 3" opacity={0.7} />
+          )}
+          {spyPoints.length === 2 && (
+            <text x={iW + 4} y={spyPoints[1].y + 4} fill="#f59e0b" fontSize={8} opacity={0.8}>SPY</text>
+          )}
+
+          {/* Area fill */}
+          <path d={areaPath} fill={areaColor} />
+          {/* Line */}
+          <path d={linePath} fill="none" stroke={lineColor} strokeWidth={1.8} />
+
+          {/* X-axis labels */}
+          <text x={0} y={iH + 16} textAnchor="middle" fill="#475569" fontSize={9}>{firstDate}</text>
+          <text x={iW / 2} y={iH + 16} textAnchor="middle" fill="#475569" fontSize={9}>{midDate}</text>
+          <text x={iW} y={iH + 16} textAnchor="middle" fill="#475569" fontSize={9}>{lastDate}</text>
+        </g>
+      </svg>
+    </div>
   );
 }
 
@@ -166,23 +244,55 @@ export default function TradePerformancePage() {
 
       {/* Summary cards */}
       {data && (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
-          <StatCard label="Win Rate"      value={data.win_rate != null ? `${data.win_rate.toFixed(1)}%` : '—'}
-            sub={`${data.closed_trades} closed trades`} color={wrColor} />
-          <StatCard label="Profit Factor" value={data.profit_factor != null ? data.profit_factor.toFixed(2) : '—'}
-            sub="winners ÷ losers" color={pfColor} />
-          <StatCard label="Avg Return"    value={pct(data.avg_return_pct)}
-            sub="per closed trade"
-            color={data.avg_return_pct != null && data.avg_return_pct > 0 ? '#4ade80' : '#f87171'} />
-          <StatCard label="Avg Win"       value={pct(data.avg_win_pct)}
-            sub="typical winning trade" color="#4ade80" />
-          <StatCard label="Avg Loss"      value={pct(data.avg_loss_pct)}
-            sub="typical losing trade" color="#f87171" />
-          <StatCard label="Avg Hold"      value={data.avg_hold_days != null ? `${data.avg_hold_days.toFixed(0)}d` : '—'}
-            sub="days per trade" />
-          <StatCard label="Open Trades"   value={String(data.open_trades)}
-            sub="awaiting exit signal" color="#818cf8" />
-        </div>
+        <>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+            <StatCard label="Win Rate"      value={data.win_rate != null ? `${data.win_rate.toFixed(1)}%` : '—'}
+              sub={`${data.closed_trades} closed trades`} color={wrColor} />
+            <StatCard label="Profit Factor" value={data.profit_factor != null ? data.profit_factor.toFixed(2) : '—'}
+              sub="winners ÷ losers" color={pfColor} />
+            <StatCard label="Total Return"  value={pct(data.total_return)}
+              sub="compounded equity"
+              color={data.total_return != null && data.total_return >= 0 ? '#4ade80' : '#f87171'} />
+            <StatCard label="vs SPY"
+              value={data.total_return != null && data.spy_return != null
+                ? pct(data.total_return - data.spy_return)
+                : '—'}
+              sub={data.spy_return != null ? `SPY: ${pct(data.spy_return)}` : 'no SPY data'}
+              color={data.total_return != null && data.spy_return != null
+                ? data.total_return >= data.spy_return ? '#4ade80' : '#f87171'
+                : undefined} />
+            <StatCard label="Sharpe"
+              value={data.sharpe != null ? data.sharpe.toFixed(2) : '—'}
+              sub="annualised"
+              color={data.sharpe != null ? data.sharpe >= 1.0 ? '#4ade80' : data.sharpe >= 0 ? '#facc15' : '#f87171' : undefined} />
+            <StatCard label="Max Drawdown"
+              value={data.max_drawdown != null ? `${data.max_drawdown.toFixed(1)}%` : '—'}
+              sub="peak-to-trough"
+              color={data.max_drawdown != null ? data.max_drawdown > -10 ? '#4ade80' : data.max_drawdown > -20 ? '#facc15' : '#f87171' : undefined} />
+            <StatCard label="Calmar"
+              value={data.calmar != null ? data.calmar.toFixed(2) : '—'}
+              sub="ann. return ÷ drawdown"
+              color={data.calmar != null ? data.calmar >= 1.0 ? '#4ade80' : data.calmar >= 0 ? '#facc15' : '#f87171' : undefined} />
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
+            <StatCard label="Avg Return"    value={pct(data.avg_return_pct)}
+              sub="per closed trade"
+              color={data.avg_return_pct != null && data.avg_return_pct > 0 ? '#4ade80' : '#f87171'} />
+            <StatCard label="Avg Win"       value={pct(data.avg_win_pct)}
+              sub="typical winning trade" color="#4ade80" />
+            <StatCard label="Avg Loss"      value={pct(data.avg_loss_pct)}
+              sub="typical losing trade" color="#f87171" />
+            <StatCard label="Avg Hold"      value={data.avg_hold_days != null ? `${data.avg_hold_days.toFixed(0)}d` : '—'}
+              sub="days per trade" />
+            <StatCard label="Open Trades"   value={String(data.open_trades)}
+              sub="awaiting exit signal" color="#818cf8" />
+          </div>
+
+          {/* Equity curve */}
+          {data.equity_curve && data.equity_curve.length >= 2 && (
+            <EquityCurve points={data.equity_curve} spyReturn={data.spy_return} />
+          )}
+        </>
       )}
 
       {/* Profit factor interpretation */}

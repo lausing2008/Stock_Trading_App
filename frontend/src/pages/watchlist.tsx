@@ -801,8 +801,10 @@ export default function Watchlist() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: 'auto', fontSize: '12px', color: '#475569' }}>
             {viewMode === 'list' && (<>
               Sort:
-              {([['symbol', 'Symbol'], ['signal', 'Signal'], ['score', 'K-Score'], ['change', 'Change%'], ['price', 'Price']] as [SortKey, string][]).map(([k, label]) => (
-                <button key={k} onClick={() => setSortKey(k)} style={{ padding: '4px 8px', borderRadius: '4px', border: 'none', cursor: 'pointer', background: sortKey === k ? '#334155' : 'transparent', color: sortKey === k ? '#e2e8f0' : '#475569', fontSize: '11px' }}>{label}</button>
+              {([['symbol', 'Symbol', '↑'], ['signal', 'Signal', '↓'], ['score', 'K-Score', '↓'], ['change', 'Change%', '↓'], ['price', 'Price', '↓']] as [SortKey, string, string][]).map(([k, label, arrow]) => (
+                <button key={k} onClick={() => setSortKey(k)} style={{ padding: '4px 8px', borderRadius: '4px', border: 'none', cursor: 'pointer', background: sortKey === k ? '#334155' : 'transparent', color: sortKey === k ? '#e2e8f0' : '#475569', fontSize: '11px' }}>
+                  {label}{sortKey === k ? <span style={{ marginLeft: 2, opacity: 0.7 }}>{arrow}</span> : ''}
+                </button>
               ))}
             </>)}
             <div style={{ display: 'flex', borderRadius: '6px', border: '1px solid #1e293b', overflow: 'hidden', marginLeft: '8px' }}>

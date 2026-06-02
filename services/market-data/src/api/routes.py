@@ -435,6 +435,95 @@ def fear_greed():
     return result
 
 
+_MARKET_BREADTH_KEY = "stockai:market_breadth"
+_MARKET_BREADTH_TTL = 60 * 60 * 4  # 4 hours
+
+
+@router.get("/market_breadth")
+def market_breadth(session: Session = Depends(get_session)):
+    """% of active US stocks trading above their 200-day SMA (from latest ranking fair_price).
+    Redis-cached 4 h. Used as a regime signal: > 60% = healthy bull, < 40% = broad weakness."""
+    from db import Ranking, Market as _Market
+    from datetime import date as _date
+
+    try:
+        cached = _get_redis().get(_MARKET_BREADTH_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    today = _date.today()
+    cutoff = today - timedelta(days=10)
+
+    # Latest ranking per active US stock that has a fair_price (SMA-200)
+    latest_subq = (
+        select(Ranking.stock_id, func.max(Ranking.as_of).label("max_date"))
+        .where(Ranking.as_of >= cutoff)
+        .group_by(Ranking.stock_id)
+        .subquery()
+    )
+    rows = session.execute(
+        select(Stock.symbol, Ranking.fair_price)
+        .join(latest_subq, Stock.id == latest_subq.c.stock_id)
+        .join(Ranking, (Ranking.stock_id == latest_subq.c.stock_id) & (Ranking.as_of == latest_subq.c.max_date))
+        .where(Stock.active.is_(True), Stock.market == _Market.US, Ranking.fair_price.is_not(None))
+    ).all()
+
+    if not rows:
+        raise HTTPException(503, "Market breadth data not yet available — run a ranking refresh first.")
+
+    # Compare latest live price to SMA-200; fall back to cached live prices
+    live: dict[str, float] = {}
+    try:
+        cached_prices = _get_redis().get(_LIVE_KEY)
+        if cached_prices:
+            for item in json.loads(cached_prices):
+                if item.get("price") is not None:
+                    live[item["symbol"]] = float(item["price"])
+    except Exception:
+        pass
+
+    above = below = no_price = 0
+    for row in rows:
+        price = live.get(row.symbol)
+        if price is None:
+            no_price += 1
+            continue
+        if price > row.fair_price:
+            above += 1
+        else:
+            below += 1
+
+    total = above + below
+    breadth_pct = round(above / total * 100, 1) if total > 0 else None
+
+    if breadth_pct is not None and breadth_pct >= 60:
+        breadth_label = "Healthy"
+        breadth_color = "#4ade80"
+    elif breadth_pct is not None and breadth_pct >= 40:
+        breadth_label = "Mixed"
+        breadth_color = "#fbbf24"
+    else:
+        breadth_label = "Weak"
+        breadth_color = "#f87171"
+
+    result = {
+        "breadth_pct": breadth_pct,
+        "above_200ma": above,
+        "below_200ma": below,
+        "total": total,
+        "label": breadth_label,
+        "color": breadth_color,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        _get_redis().setex(_MARKET_BREADTH_KEY, _MARKET_BREADTH_TTL, json.dumps(result))
+    except Exception:
+        pass
+    return result
+
+
 @router.get("/latest_prices", response_model=list[LatestPriceOut])
 def latest_prices(
     symbols: str | None = Query(None, description="Comma-separated symbols to filter"),
@@ -1180,6 +1269,117 @@ def relative_performance(
             for r in rows
         ]
     return result
+
+
+# ── Options Flow ─────────────────────────────────────────────────────────────
+
+_OPTIONS_TTL = 900  # 15-min cache — options volume refreshes intraday
+
+@router.get("/{symbol}/options-flow")
+def get_options_flow(symbol: str):
+    """Unusual options activity for a symbol, derived from yfinance options chain.
+
+    Fetches the two nearest expiration dates, aggregates call and put volume,
+    flags contracts with volume > 30% of open interest (high activity), and
+    computes a call/put ratio and a simple sentiment label.
+
+    Returns null fields for HK stocks and others without listed options.
+    """
+    sym = symbol.upper()
+    cache_key = f"options_flow:{sym}"
+    try:
+        rdb = _get_redis()
+        cached = rdb.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        import yfinance as yf
+        import pandas as pd
+
+        t = yf.Ticker(sym)
+        expiries = t.options
+        if not expiries:
+            result = {"symbol": sym, "available": False, "reason": "no_options_listed"}
+            return result
+
+        total_call_vol = 0
+        total_put_vol = 0
+        unusual: list[dict] = []
+
+        for exp in expiries[:2]:  # nearest two expiries
+            try:
+                chain = t.option_chain(exp)
+            except Exception:
+                continue
+
+            calls = chain.calls.fillna(0)
+            puts  = chain.puts.fillna(0)
+
+            c_vol = int(calls["volume"].sum())
+            p_vol = int(puts["volume"].sum())
+            total_call_vol += c_vol
+            total_put_vol  += p_vol
+
+            # Flag contracts where today's volume exceeds 30% of open interest
+            for df, side in [(calls, "call"), (puts, "put")]:
+                mask = (df["openInterest"] > 50) & (df["volume"] > df["openInterest"] * 0.30)
+                for _, row in df[mask].sort_values("volume", ascending=False).head(3).iterrows():
+                    unusual.append({
+                        "expiry":   exp,
+                        "side":     side,
+                        "strike":   float(row["strike"]),
+                        "volume":   int(row["volume"]),
+                        "oi":       int(row["openInterest"]),
+                        "vol_oi":   round(float(row["volume"]) / max(float(row["openInterest"]), 1), 2),
+                        "iv":       round(float(row["impliedVolatility"]) * 100, 1),
+                        "itm":      bool(row["inTheMoney"]),
+                    })
+
+        if total_call_vol == 0 and total_put_vol == 0:
+            result = {"symbol": sym, "available": False, "reason": "no_volume"}
+            return result
+
+        cp_ratio = round(total_call_vol / max(total_put_vol, 1), 2)
+
+        if cp_ratio >= 2.0:
+            sentiment = "strongly_bullish"
+        elif cp_ratio >= 1.3:
+            sentiment = "bullish"
+        elif cp_ratio <= 0.5:
+            sentiment = "bearish"
+        elif cp_ratio <= 0.8:
+            sentiment = "slightly_bearish"
+        else:
+            sentiment = "neutral"
+
+        # Sort unusual by volume desc, keep top 8
+        unusual.sort(key=lambda x: x["volume"], reverse=True)
+
+        result = {
+            "symbol":          sym,
+            "available":       True,
+            "call_volume":     total_call_vol,
+            "put_volume":      total_put_vol,
+            "cp_ratio":        cp_ratio,
+            "sentiment":       sentiment,
+            "unusual_count":   len(unusual),
+            "unusual":         unusual[:8],
+            "expiries_used":   list(expiries[:2]),
+        }
+
+        try:
+            rdb.setex(cache_key, _OPTIONS_TTL, json.dumps(result))
+        except Exception:
+            pass
+
+        return result
+
+    except Exception as exc:
+        log.warning("options_flow.error", symbol=sym, error=str(exc))
+        return {"symbol": sym, "available": False, "reason": "fetch_error"}
 
 
 # ── Per-symbol Dividends ──────────────────────────────────────────────────────

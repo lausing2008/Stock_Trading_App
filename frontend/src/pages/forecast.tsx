@@ -28,6 +28,7 @@ import useSWR from 'swr';
 import { api, type RankingRow, type LatestPrice, type SignalSummary, type QuickScanResult } from '@/lib/api';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel } from '@/lib/ai';
+import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -614,7 +615,7 @@ export default function ForecastPage() {
                     <div style={{ fontSize: '11px', color: '#475569', lineHeight: 1.5, marginTop: '4px', paddingTop: '8px', borderTop: '1px solid #1e293b' }}>
                       {pick.rationale}
                     </div>
-                    <div style={{ marginTop: '6px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    <div style={{ marginTop: '6px', display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
                       <Link href={`/stock/${pick.symbol}`} style={{ fontSize: '11px', color: '#6366f1', textDecoration: 'none', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)', padding: '4px 10px', borderRadius: '5px' }}>
                         View chart & AI chat →
                       </Link>
@@ -625,6 +626,7 @@ export default function ForecastPage() {
                       >
                         {savedToBoard.has(pick.symbol) ? '✓ Saved' : savingToBoard === pick.symbol ? '…' : '📌 Save to Board'}
                       </button>
+                      <WatchlistPickerButton symbol={pick.symbol} size="sm" />
                     </div>
                   </div>
                 </div>

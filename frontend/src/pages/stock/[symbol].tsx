@@ -185,6 +185,11 @@ export default function StockDetail() {
 
   const [divOpen, setDivOpen] = useState(false);
   const [instOpen, setInstOpen] = useState(false);
+  const { data: optionsFlow } = useSWR(
+    symbol ? `options-flow-${symbol}` : null,
+    () => api.getOptionsFlow(symbol),
+    { revalidateOnFocus: false },
+  );
   const { data: dividendData } = useSWR<DividendData>(
     symbol && divOpen ? `dividends-${symbol}` : null,
     () => api.getDividends(symbol),
@@ -357,7 +362,7 @@ CURRENCY: ${lp?.currency ?? 'USD'}
 
 AI SIGNAL: ${sig?.signal ?? 'N/A'} | CONFIDENCE: ${sig?.confidence?.toFixed(0) ?? '?'}% | BULLISH PROB: ${sig?.bullish_probability != null ? (sig.bullish_probability * 100).toFixed(0) : '?'}%
 K-SCORE: ${rank?.score?.toFixed(0) ?? '?'} | TECHNICAL: ${rank?.technical?.toFixed(0) ?? '?'} | MOMENTUM: ${rank?.momentum?.toFixed(0) ?? '?'} | VALUE: ${rank?.value?.toFixed(0) ?? '?'}
-FAIR VALUE: ${rank?.fair_price != null ? rank.fair_price.toFixed(2) : 'N/A'}
+FAIR VALUE (K-Score intrinsic estimate): ${rank?.fair_price != null ? `$${rank.fair_price.toFixed(2)}${currentPrice != null ? ` — ${rank.fair_price > currentPrice ? `+${(((rank.fair_price - currentPrice) / currentPrice) * 100).toFixed(1)}% above current (valid take-profit candidate)` : `${(((rank.fair_price - currentPrice) / currentPrice) * 100).toFixed(1)}% below current (stock overvalued; do NOT use as take-profit)`}` : ''}` : 'N/A'}
 ANALYST TARGET: ${fund?.target_price != null ? fund.target_price.toFixed(2) : 'N/A'} | RECOMMENDATION: ${fund?.recommendation?.toUpperCase() ?? 'N/A'} | # ANALYSTS: ${fund?.number_of_analysts ?? '?'}
 BETA: ${fund?.beta?.toFixed(2) ?? 'N/A'} | SECTOR: ${data.price?.sector ?? 'N/A'}
 NEXT EARNINGS: ${fund?.next_earnings_date ?? 'N/A'}${fund?.days_to_earnings != null ? ` (${fund.days_to_earnings}d away)` : ''}
@@ -391,11 +396,12 @@ RULES:
 - Entry 2 (50% position): at a deeper support or fibonacci level for averaging down
 - Breakout entry: above the nearest resistance level if the above limits don't fill — take 50% size
 - Stop loss: just below the lowest entry support — a close below this invalidates the setup
-- Take profit: analyst target price or next major resistance, whichever is closer and realistic
+- Take profit: use analyst target if above current price; otherwise use the nearest resistance above current price; if fair value is marked as a "valid take-profit candidate" it may be used
 - Catalysts: 3 bullets, each ≤12 words, specific (mention earnings date, sector, analyst coverage)
 - Risk: single sentence naming the biggest concrete threat (earnings, macro, overbought, etc.)
 - Use the same currency as the stock (check CURRENCY field)
 - If no support/resistance data is available, estimate levels at -2%/-4% below current for entries and -6% for stop
+- CRITICAL PRICE CONSTRAINTS: entry prices MUST be below current price; stop loss MUST be below all entry prices; take profit MUST be above current price — violating any of these makes the plan unusable
 
 Return ONLY valid JSON — no markdown, no prose:
 {
@@ -521,6 +527,9 @@ Return ONLY valid JSON — no markdown, no prose:
   const prevClose: number | null = liveQuote?.prev_close ?? null;
 
   const ranking = data.ranking;
+  const fairUpside = (ranking?.fair_price != null && curPrice != null)
+    ? ((ranking.fair_price - curPrice) / curPrice) * 100
+    : null;
 
   const levels = data.levels;
   const srLevels = levels?.support_resistance ?? [];
@@ -581,9 +590,21 @@ Return ONLY valid JSON — no markdown, no prose:
           </div>
 
           {ranking?.fair_price != null && (
-            <div className="rounded-md border border-indigo-800 bg-indigo-950/40 px-4 py-2 text-center">
+            <div className="rounded-md border border-indigo-800 bg-indigo-950/40 px-4 py-2 text-center" style={{ minWidth: 120 }}>
               <div className="text-xs text-indigo-400 font-medium mb-0.5">Fair Value</div>
-              <div className="text-xl font-bold text-indigo-300">${ranking.fair_price.toFixed(2)}</div>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 6 }}>
+                <span className="text-xl font-bold text-indigo-300">${ranking.fair_price.toFixed(2)}</span>
+                {fairUpside != null && (
+                  <span style={{ fontSize: 13, fontWeight: 800, color: fairUpside > 0 ? '#4ade80' : '#f87171' }}>
+                    {fairUpside >= 0 ? '+' : ''}{fairUpside.toFixed(1)}%
+                  </span>
+                )}
+              </div>
+              {fairUpside != null && (
+                <div style={{ fontSize: 11, fontWeight: 600, color: fairUpside > 0 ? '#4ade80' : '#f87171', marginTop: 1 }}>
+                  {fairUpside > 0 ? 'upside' : 'overvalued'}
+                </div>
+              )}
               {ranking?.score != null && (
                 <div className="text-xs text-slate-500 mt-0.5">K-Score {ranking.score.toFixed(0)}</div>
               )}
@@ -752,7 +773,7 @@ Return ONLY valid JSON — no markdown, no prose:
             <PriceChart symbol={symbol as string} prices={data.prices} indicators={data.indicators} levels={data.levels} />
           ) : (
             <div className="rounded-md border border-slate-800 bg-slate-900 p-4 text-slate-400">
-              No price data — run: POST /admin/ingest &#123;"symbols":["{symbol}"]&#125;
+              No price data available for {symbol}. Try clicking Full Refresh above to ingest history.
             </div>
           )}
         </div>
@@ -761,6 +782,32 @@ Return ONLY valid JSON — no markdown, no prose:
         <div className="space-y-3">
           {/* AI Signal */}
           {data.signal && <SignalCard signal={data.signal} />}
+
+          {/* Fair Value */}
+          {ranking?.fair_price != null && (() => {
+            const lp2 = allPrices?.find(p => p.symbol === symbol);
+            const curPx = lp2?.price ?? data.prices?.at(-1)?.close ?? null;
+            const fv = ranking.fair_price;
+            const pct = curPx != null ? ((fv - curPx) / curPx) * 100 : null;
+            const isUpside = pct != null && pct > 0;
+            return (
+              <div style={{ background: '#0f172a', border: '1px solid #312e81', borderRadius: 8, padding: '14px 16px', textAlign: 'center' }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#818cf8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Fair Value (K-Score)</div>
+                <div style={{ fontSize: 28, fontWeight: 800, color: '#a5b4fc', lineHeight: 1 }}>${fv.toFixed(2)}</div>
+                {pct != null && (
+                  <div style={{ fontSize: 14, fontWeight: 700, marginTop: 5, color: isUpside ? '#4ade80' : '#f87171' }}>
+                    {pct >= 0 ? '+' : ''}{pct.toFixed(1)}% {isUpside ? 'upside' : 'overvalued'}
+                  </div>
+                )}
+                {curPx != null && (
+                  <div style={{ fontSize: 11, color: '#475569', marginTop: 3 }}>vs current ${curPx.toFixed(2)}</div>
+                )}
+                {ranking.score != null && (
+                  <div style={{ fontSize: 11, color: '#4f46e5', marginTop: 4, fontWeight: 600 }}>K-Score {ranking.score.toFixed(0)}/100</div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Confluence Score + Trade Setup */}
           {(() => {
@@ -837,7 +884,14 @@ Return ONLY valid JSON — no markdown, no prose:
                   {exitFair && (
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                       <span style={{ fontSize: 11, color: '#64748b' }}>K-Score fair value</span>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: '#38bdf8' }}>${exitFair.toFixed(2)}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#38bdf8' }}>
+                        ${exitFair.toFixed(2)}
+                        {curPrice != null && (
+                          <span style={{ marginLeft: 6, fontSize: 11, color: exitFair > curPrice ? '#4ade80' : '#f87171' }}>
+                            {exitFair > curPrice ? '+' : ''}{(((exitFair - curPrice) / curPrice) * 100).toFixed(1)}%
+                          </span>
+                        )}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -2314,6 +2368,82 @@ Return ONLY valid JSON — no markdown, no prose:
           </div>
         )}
       </div>
+
+      {/* Options Flow */}
+      {optionsFlow && optionsFlow.available && (
+        <div style={{ marginBottom: 24 }}>
+          <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', marginBottom: '12px' }}>
+            Options Flow
+          </h2>
+          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            {/* C/P ratio bar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#64748b', marginBottom: 3 }}>
+                  <span>Calls {optionsFlow.call_volume?.toLocaleString()}</span>
+                  <span>C/P {optionsFlow.cp_ratio?.toFixed(2)}</span>
+                  <span>Puts {optionsFlow.put_volume?.toLocaleString()}</span>
+                </div>
+                <div style={{ height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden', display: 'flex' }}>
+                  {(() => {
+                    const total = (optionsFlow.call_volume ?? 0) + (optionsFlow.put_volume ?? 0);
+                    const callPct = total > 0 ? (optionsFlow.call_volume ?? 0) / total * 100 : 50;
+                    return <>
+                      <div style={{ width: `${callPct}%`, background: '#22c55e', borderRadius: '4px 0 0 4px' }} />
+                      <div style={{ flex: 1, background: '#ef4444', borderRadius: '0 4px 4px 0' }} />
+                    </>;
+                  })()}
+                </div>
+              </div>
+              <div style={{
+                padding: '3px 10px', borderRadius: 5, fontSize: 11, fontWeight: 700, flexShrink: 0,
+                background: optionsFlow.sentiment?.includes('bullish') ? 'rgba(34,197,94,0.15)' : optionsFlow.sentiment?.includes('bearish') ? 'rgba(239,68,68,0.15)' : 'rgba(100,116,139,0.15)',
+                color: optionsFlow.sentiment?.includes('bullish') ? '#4ade80' : optionsFlow.sentiment?.includes('bearish') ? '#f87171' : '#94a3b8',
+              }}>
+                {(optionsFlow.sentiment ?? 'neutral').replace(/_/g, ' ')}
+              </div>
+            </div>
+
+            {/* Unusual contracts table */}
+            {optionsFlow.unusual && optionsFlow.unusual.length > 0 && (
+              <>
+                <div style={{ fontSize: 10, color: '#475569', fontWeight: 700, letterSpacing: '0.06em', marginBottom: 6 }}>
+                  UNUSUAL ACTIVITY — {optionsFlow.expiries_used?.join(', ')}
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                        {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM'].map(h => (
+                          <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: '#475569', fontWeight: 500 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {optionsFlow.unusual.map((c, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid #0f172a' }}>
+                          <td style={{ padding: '5px 8px' }}>
+                            <span style={{ fontWeight: 700, color: c.side === 'call' ? '#4ade80' : '#f87171' }}>
+                              {c.side.toUpperCase()}
+                            </span>
+                          </td>
+                          <td style={{ padding: '5px 8px', color: '#e2e8f0' }}>${c.strike}</td>
+                          <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.expiry}</td>
+                          <td style={{ padding: '5px 8px', color: '#e2e8f0', fontWeight: 600 }}>{c.volume.toLocaleString()}</td>
+                          <td style={{ padding: '5px 8px', color: '#64748b' }}>{c.oi.toLocaleString()}</td>
+                          <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>
+                          <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{c.iv.toFixed(0)}%</td>
+                          <td style={{ padding: '5px 8px', color: c.itm ? '#4ade80' : '#475569' }}>{c.itm ? 'ITM' : 'OTM'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* News feed — full width below chart */}
       <div>

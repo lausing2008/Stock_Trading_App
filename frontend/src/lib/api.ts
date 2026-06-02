@@ -72,6 +72,7 @@ export const api = {
   deleteStock: (symbol: string) => request<{ status: string; symbol: string }>(`/admin/stocks/${symbol}`, { method: 'DELETE' }),
   marketOverview: () => request<MarketIndex[]>(`/stocks/market_overview`),
   fearGreed: () => request<FearGreed>(`/stocks/fear_greed`),
+  marketBreadth: () => request<MarketBreadth>(`/stocks/market_breadth`),
   listWatchlists: () => request<WatchlistMeta[]>(`/watchlists`),
   createWatchlist: (name: string) => request<WatchlistMeta>(`/watchlists`, { method: 'POST', body: JSON.stringify({ name }) }),
   renameWatchlist: (id: number, name: string) => request<WatchlistMeta>(`/watchlists/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
@@ -103,7 +104,7 @@ export const api = {
     entry_price?: number | null; stop_loss?: number | null; take_profit?: number | null;
     notes?: string | null; source?: string | null;
   }) => request<TradePlan>(`/board`, { method: 'POST', body: JSON.stringify(body) }),
-  updateBoardPlan: (id: number, body: { stage?: string; notes?: string; entry_price?: number; stop_loss?: number; take_profit?: number }) =>
+  updateBoardPlan: (id: number, body: { stage?: string; notes?: string; entry_price?: number; stop_loss?: number; take_profit?: number; exit_price?: number }) =>
     request<TradePlan>(`/board/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteBoardPlan: (id: number) => request(`/board/${id}`, { method: 'DELETE' }),
 
@@ -121,8 +122,11 @@ export const api = {
   adminResetPassword: (username: string, newPassword: string) =>
     request(`/auth/users/${username}/reset-password`, { method: 'PUT', body: JSON.stringify({ new_password: newPassword }) }),
   toggleUser: (username: string) => request<{ is_active: boolean }>(`/auth/users/${username}/toggle`, { method: 'PUT' }),
-  pushConfig: (keys: { polygon_api_key?: string; alpha_vantage_api_key?: string; quiver_api_key?: string }) =>
-    request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
+  pushConfig: (keys: {
+    polygon_api_key?: string; alpha_vantage_api_key?: string; quiver_api_key?: string;
+    claude_api_key?: string; deepseek_api_key?: string;
+    claude_model?: string; deepseek_model?: string;
+  }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
 
   // Broad stock scan (arbitrary tickers via yfinance)
   quickScan: (symbols: string[], priceMin?: number, priceMax?: number) =>
@@ -145,6 +149,10 @@ export const api = {
     return request<SignalAccuracyReport>(`/signals/accuracy?${params}`);
   },
   resetSignals: () => request<{ status: string; deleted: number; repersisting: number }>('/signals/reset', { method: 'POST' }),
+  factorExposure: (lookbackDays = 90) =>
+    request<FactorExposureReport>(`/signals/factor-exposure?lookback_days=${lookbackDays}`),
+  mlWeightValidation: (lookbackDays = 180) =>
+    request<MLWeightValidation>(`/signals/ml-weight-validation?lookback_days=${lookbackDays}`),
   tradePerformance: (lookbackDays = 180, symbol?: string) => {
     const params = new URLSearchParams({ lookback_days: String(lookbackDays) });
     if (symbol) params.set('symbol', symbol);
@@ -194,6 +202,7 @@ export const api = {
     request<Record<string, RelPerfPoint[]>>(`/stocks/relative_performance?symbols=${symbols.join(',')}&days=${days}`),
 
   // Dividends
+  getOptionsFlow: (symbol: string) => request<OptionsFlow>(`/stocks/${symbol}/options-flow`),
   getDividends: (symbol: string) => request<DividendData>(`/stocks/${symbol}/dividends`),
 
   // Institutional holders
@@ -291,14 +300,22 @@ export type NewsItem = { title: string; url: string; source: string; published_a
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };
 export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; created_at: string };
-export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; created_at: string; updated_at: string };
+export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; exit_price: number | null; closed_at: string | null; created_at: string; updated_at: string };
 export type CongressTrade = { Ticker: string; Date: string; Politician: string; Transaction: string; Min: number | null; Max: number | null; Party: string | null; State: string | null; Chamber: string | null; ReportDate: string | null };
 export type SignalAccuracyRow = { symbol: string; name: string; signal: 'BUY' | 'SELL'; confidence: number; bullish_probability: number | null; signal_date: string; entry_price: number; exit_price: number; pct_change: number; correct: boolean; days_held: number };
 export type SignalAccuracyReport = { lookback_days: number; total_signals: number; buy_count: number; sell_count: number; buy_accuracy: number | null; sell_accuracy: number | null; overall_accuracy: number | null; avg_buy_return_pct: number | null; avg_sell_return_pct: number | null; profit_factor: number | null; signals: SignalAccuracyRow[] };
 export type TradePair = { symbol: string; name: string; status: 'closed' | 'open'; entry_date: string; exit_date: string; entry_price: number; exit_price: number; pct_return: number; hold_days: number; win: boolean; exit_signal: string; entry_confidence: number };
-export type TradePerformanceReport = { lookback_days: number; closed_trades: number; open_trades: number; win_rate: number | null; avg_return_pct: number | null; avg_win_pct: number | null; avg_loss_pct: number | null; profit_factor: number | null; avg_hold_days: number | null; by_symbol: { symbol: string; trades: number; win_rate: number; avg_return: number; avg_hold_days: number }[]; trades: TradePair[] };
+export type EquityPoint = { date: string; equity: number };
+export type TradePerformanceReport = { lookback_days: number; closed_trades: number; open_trades: number; win_rate: number | null; avg_return_pct: number | null; avg_win_pct: number | null; avg_loss_pct: number | null; profit_factor: number | null; avg_hold_days: number | null; total_return: number | null; sharpe: number | null; max_drawdown: number | null; calmar: number | null; spy_return: number | null; equity_curve: EquityPoint[]; by_symbol: { symbol: string; trades: number; win_rate: number; avg_return: number; avg_hold_days: number }[]; trades: TradePair[] };
+export type FactorRow = { key: string; label: string; baseline: number; scale: number; correct_avg: number | null; wrong_avg: number | null; correct_dev_pct: number | null; wrong_dev_pct: number | null; correct_count: number; wrong_count: number };
+export type FactorExposureReport = { lookback_days: number; signal_count: number; factors: FactorRow[] };
+export type MLWeightCurvePoint = { weight: number; accuracy: number | null; avg_return_pct: number | null };
+export type MLWeightValidation = { lookback_days: number; signal_count: number; optimal_weight: number | null; optimal_accuracy: number | null; current_formula_range: [number, number]; curve: MLWeightCurvePoint[] };
+export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean };
+export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number; sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[] };
 export type QuickScanResult = { symbol: string; price: number; change_pct: number | null; change_5d: number | null; rsi: number | null; sma20: number | null; sma50: number | null; above_sma20: boolean | null; above_sma50: boolean | null; vol_ratio: number | null; range_pos_20d: number | null };
 export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
+export type MarketBreadth = { breadth_pct: number | null; above_200ma: number; below_200ma: number; total: number; label: string; color: string; updated_at: string };
 
 export type SRLevel = { price: number; strength: number; kind: 'support' | 'resistance' };
 export type Levels = {

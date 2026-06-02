@@ -31,6 +31,7 @@ class PlanUpdate(BaseModel):
     entry_price: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
+    exit_price: float | None = None
 
 
 class PlanOut(BaseModel):
@@ -43,6 +44,8 @@ class PlanOut(BaseModel):
     take_profit: float | None
     notes: str | None
     source: str | None
+    exit_price: float | None
+    closed_at: str | None
     created_at: str
     updated_at: str
 
@@ -61,6 +64,8 @@ def _out(p: TradePlan) -> PlanOut:
         take_profit=p.take_profit,
         notes=p.notes,
         source=p.source,
+        exit_price=p.exit_price,
+        closed_at=p.closed_at.isoformat() if p.closed_at else None,
         created_at=p.created_at.isoformat(),
         updated_at=p.updated_at.isoformat(),
     )
@@ -120,6 +125,8 @@ def update_plan(
         if body.stage not in VALID_STAGES:
             raise HTTPException(400, f"stage must be one of {sorted(VALID_STAGES)}")
         plan.stage = body.stage
+        if body.stage == "closed" and plan.closed_at is None:
+            plan.closed_at = datetime.utcnow()
     if body.notes is not None:
         plan.notes = body.notes
     if body.entry_price is not None:
@@ -128,6 +135,8 @@ def update_plan(
         plan.stop_loss = body.stop_loss
     if body.take_profit is not None:
         plan.take_profit = body.take_profit
+    if body.exit_price is not None:
+        plan.exit_price = body.exit_price
     plan.updated_at = datetime.utcnow()
     session.commit()
     session.refresh(plan)

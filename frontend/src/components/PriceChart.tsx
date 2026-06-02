@@ -72,7 +72,7 @@ function toLine(ts: string[], vals: (number | null)[]): LineData<Time>[] {
     .filter((d): d is LineData<Time> => d.value != null);
 }
 
-type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null };
+type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null };
 type MacdVals = { macd: number|null; signal: number|null; hist: number|null };
 
 export default function PriceChart({ symbol, prices, indicators, levels }: Props) {
@@ -81,10 +81,15 @@ export default function PriceChart({ symbol, prices, indicators, levels }: Props
   const macdRef = useRef<HTMLDivElement>(null);
 
   const [range, setRange] = useState<RangeLabel>('3M');
-  const [showBB,   setShowBB]   = useState(false);
-  const [showVol,  setShowVol]  = useState(true);
-  const [showRSI,  setShowRSI]  = useState(false);
-  const [showMACD, setShowMACD] = useState(true);
+  const [showSMA20,  setShowSMA20]  = useState(true);
+  const [showSMA50,  setShowSMA50]  = useState(true);
+  const [showSMA200, setShowSMA200] = useState(true);
+  const [showEMA20,  setShowEMA20]  = useState(false);
+  const [showEMA50,  setShowEMA50]  = useState(false);
+  const [showBB,     setShowBB]     = useState(false);
+  const [showVol,    setShowVol]    = useState(true);
+  const [showRSI,    setShowRSI]    = useState(false);
+  const [showMACD,   setShowMACD]   = useState(true);
 
   // ── Intraday 5m state ─────────────────────────────────────────────────────
   const [intradayPrices, setIntradayPrices] = useState<Price[] | null>(null);
@@ -121,7 +126,7 @@ export default function PriceChart({ symbol, prices, indicators, levels }: Props
     };
   }, [indicators, visiblePrices]);
 
-  const [smaVals,  setSmaVals]  = useState<SmaVals>({ sma_20: null, sma_50: null, sma_200: null });
+  const [smaVals,  setSmaVals]  = useState<SmaVals>({ sma_20: null, sma_50: null, sma_200: null, ema_20: null, ema_50: null });
   const [rsiVal,   setRsiVal]   = useState<number|null>(null);
   const [macdCross, setMacdCross] = useState<MacdVals>({ macd: null, signal: null, hist: null });
 
@@ -173,21 +178,24 @@ export default function PriceChart({ symbol, prices, indicators, levels }: Props
       })));
     }
 
-    // SMA / BB overlays only make sense with daily data
+    // Line overlays (SMA / EMA / BB) — daily only
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const smaSeries: Record<string, any> = {};
+    const lineSeries: Record<string, any> = {};
     if (!isIntraday && visibleIndicators) {
-      const smaStyle = {
-        sma_20:  { color: '#38bdf8', lineWidth: 1 as const },
-        sma_50:  { color: '#f59e0b', lineWidth: 1 as const },
-        sma_200: { color: '#a78bfa', lineWidth: 1 as const },
-      };
-      for (const [key, style] of Object.entries(smaStyle)) {
+      const lineConfig: { key: string; color: string; show: boolean }[] = [
+        { key: 'sma_20',  color: '#38bdf8', show: showSMA20  },
+        { key: 'sma_50',  color: '#f59e0b', show: showSMA50  },
+        { key: 'sma_200', color: '#a78bfa', show: showSMA200 },
+        { key: 'ema_20',  color: '#34d399', show: showEMA20  },
+        { key: 'ema_50',  color: '#f472b6', show: showEMA50  },
+      ];
+      for (const { key, color, show } of lineConfig) {
+        if (!show) continue;
         const vals = visibleIndicators.values[key];
         if (!vals) continue;
-        const s = chart.addLineSeries(style);
+        const s = chart.addLineSeries({ color, lineWidth: 1 as const });
         s.setData(toLine(visibleIndicators.ts, vals));
-        smaSeries[key] = s;
+        lineSeries[key] = s;
       }
 
       if (showBB) {
@@ -202,15 +210,10 @@ export default function PriceChart({ symbol, prices, indicators, levels }: Props
       }
 
       chart.subscribeCrosshairMove((param) => {
-        if (!param.time) { setSmaVals({ sma_20: null, sma_50: null, sma_200: null }); return; }
-        setSmaVals({
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          sma_20:  smaSeries['sma_20']  ? (param.seriesData.get(smaSeries['sma_20'])  as any)?.value ?? null : null,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          sma_50:  smaSeries['sma_50']  ? (param.seriesData.get(smaSeries['sma_50'])  as any)?.value ?? null : null,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          sma_200: smaSeries['sma_200'] ? (param.seriesData.get(smaSeries['sma_200']) as any)?.value ?? null : null,
-        });
+        if (!param.time) { setSmaVals({ sma_20: null, sma_50: null, sma_200: null, ema_20: null, ema_50: null }); return; }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const v = (key: string) => lineSeries[key] ? (param.seriesData.get(lineSeries[key]) as any)?.value ?? null : null;
+        setSmaVals({ sma_20: v('sma_20'), sma_50: v('sma_50'), sma_200: v('sma_200'), ema_20: v('ema_20'), ema_50: v('ema_50') });
       });
     }
 
@@ -331,7 +334,7 @@ export default function PriceChart({ symbol, prices, indicators, levels }: Props
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, showBB, showVol, showRSI, showMACD, isIntraday]);
+  }, [activePrices, visibleIndicators, levels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showBB, showVol, showRSI, showMACD, isIntraday]);
 
   const btn = (active: boolean, label: string, onClick: () => void, color?: string) => (
     <button
@@ -384,52 +387,66 @@ export default function PriceChart({ symbol, prices, indicators, levels }: Props
       </div>
 
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 border-b border-slate-800">
-        {!isIntraday && <>
-          <span className="text-xs text-slate-500">Overlays:</span>
-          {btn(showBB,   'BB',     () => setShowBB((v: boolean)   => !v), '#6366f1')}
-        </>}
-        {btn(showVol, 'Volume', () => setShowVol((v: boolean) => !v), '#22c55e')}
-        {!isIntraday && <>
-          <span className="text-xs text-slate-500 ml-2">Panels:</span>
-          {btn(showRSI,  'RSI',   () => setShowRSI((v: boolean)  => !v), '#f59e0b')}
-          {btn(showMACD, 'MACD',  () => setShowMACD((v: boolean) => !v), '#38bdf8')}
-        </>}
-        {isIntraday && (
-          <span className="text-xs text-slate-500 ml-1">5-min candles · SMAs/MACD unavailable on intraday</span>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 border-b border-slate-800 text-xs">
+        {!isIntraday ? (
+          <>
+            {/* SMA group */}
+            <div className="flex items-center gap-1">
+              <span className="text-slate-500 mr-0.5">SMA</span>
+              {btn(showSMA20,  '20',  () => setShowSMA20((v: boolean)  => !v), '#38bdf8')}
+              {btn(showSMA50,  '50',  () => setShowSMA50((v: boolean)  => !v), '#f59e0b')}
+              {btn(showSMA200, '200', () => setShowSMA200((v: boolean) => !v), '#a78bfa')}
+            </div>
+            {/* EMA group */}
+            <div className="flex items-center gap-1">
+              <span className="text-slate-500 mr-0.5">EMA</span>
+              {btn(showEMA20, '20', () => setShowEMA20((v: boolean) => !v), '#34d399')}
+              {btn(showEMA50, '50', () => setShowEMA50((v: boolean) => !v), '#f472b6')}
+            </div>
+            {/* Other overlays */}
+            <div className="flex items-center gap-1">
+              {btn(showBB,  'BB',     () => setShowBB((v: boolean)  => !v), '#6366f1')}
+              {btn(showVol, 'Vol',    () => setShowVol((v: boolean) => !v), '#22c55e')}
+            </div>
+            {/* Panels */}
+            <div className="flex items-center gap-1">
+              <span className="text-slate-500 mr-0.5">Panel</span>
+              {btn(showRSI,  'RSI',  () => setShowRSI((v: boolean)  => !v), '#f59e0b')}
+              {btn(showMACD, 'MACD', () => setShowMACD((v: boolean) => !v), '#38bdf8')}
+            </div>
+          </>
+        ) : (
+          <>
+            {btn(showVol, 'Vol', () => setShowVol((v: boolean) => !v), '#22c55e')}
+            <span className="text-slate-600 ml-1">5-min · SMA/EMA/MACD on daily only</span>
+          </>
         )}
 
-        {/* Static legend */}
-        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+        {/* Legend */}
+        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-400">
           <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-green-500 opacity-80" />Up</span>
           <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-500 opacity-80" />Down</span>
-          {!isIntraday && visibleIndicators && <>
-            <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-sky-400" />SMA 20</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-amber-400" />SMA 50</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-violet-400" />SMA 200</span>
-          </>}
-          {!isIntraday && showBB && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-indigo-400 opacity-70" />BB</span>}
+          {!isIntraday && showSMA20  && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-sky-400" />SMA 20</span>}
+          {!isIntraday && showSMA50  && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-amber-400" />SMA 50</span>}
+          {!isIntraday && showSMA200 && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-violet-400" />SMA 200</span>}
+          {!isIntraday && showEMA20  && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-emerald-400" />EMA 20</span>}
+          {!isIntraday && showEMA50  && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-pink-400" />EMA 50</span>}
+          {!isIntraday && showBB     && <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-indigo-400 opacity-70" />BB</span>}
           {!isIntraday && levels?.support_resistance?.length ? <>
             <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-dashed border-green-500 opacity-70" />Support</span>
             <span className="flex items-center gap-1"><span className="inline-block w-4 border-t border-dashed border-red-500 opacity-70" />Resist.</span>
           </> : null}
-          {!isIntraday && showMACD && <>
-            <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-sky-400" />MACD</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-amber-400" />Signal</span>
-          </>}
-          {!isIntraday && showRSI && <>
-            <span className="flex items-center gap-1"><span className="inline-block w-3 border-t border-dashed border-red-400 opacity-70" />70</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-3 border-t border-dashed border-green-400 opacity-70" />30</span>
-          </>}
         </div>
       </div>
 
-      {/* SMA crosshair readout (daily only) */}
+      {/* Crosshair readout — line values at cursor (daily only) */}
       {!isIntraday && visibleIndicators && (
-        <div className="flex items-center gap-4 px-3 py-1 text-xs font-mono bg-[#0b1020] border-b border-slate-800/50 min-h-[22px]">
-          {smaVals.sma_20  != null && <span style={{ color: '#38bdf8' }}>─ SMA 20 = {f2(smaVals.sma_20)}</span>}
-          {smaVals.sma_50  != null && <span style={{ color: '#f59e0b' }}>─ SMA 50 = {f2(smaVals.sma_50)}</span>}
-          {smaVals.sma_200 != null && <span style={{ color: '#a78bfa' }}>─ SMA 200 = {f2(smaVals.sma_200)}</span>}
+        <div className="flex flex-wrap items-center gap-4 px-3 py-1 text-xs font-mono bg-[#0b1020] border-b border-slate-800/50 min-h-[22px]">
+          {smaVals.sma_20  != null && showSMA20  && <span style={{ color: '#38bdf8' }}>SMA 20 = {f2(smaVals.sma_20)}</span>}
+          {smaVals.sma_50  != null && showSMA50  && <span style={{ color: '#f59e0b' }}>SMA 50 = {f2(smaVals.sma_50)}</span>}
+          {smaVals.sma_200 != null && showSMA200 && <span style={{ color: '#a78bfa' }}>SMA 200 = {f2(smaVals.sma_200)}</span>}
+          {smaVals.ema_20  != null && showEMA20  && <span style={{ color: '#34d399' }}>EMA 20 = {f2(smaVals.ema_20)}</span>}
+          {smaVals.ema_50  != null && showEMA50  && <span style={{ color: '#f472b6' }}>EMA 50 = {f2(smaVals.ema_50)}</span>}
         </div>
       )}
 

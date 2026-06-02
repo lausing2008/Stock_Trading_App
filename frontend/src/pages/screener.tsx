@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import { api, type RankingRow, type SignalSummary, type LatestPrice, type WatchlistItem } from '@/lib/api';
+import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 import { getSession } from '@/lib/auth';
 
 // ─── Merged row type ──────────────────────────────────────────────────────────
@@ -123,7 +124,6 @@ export default function Screener() {
 
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'score', dir: 'desc' });
-  const [addingWl, setAddingWl] = useState<string | null>(null);
 
   const wlSymbols = useMemo(
     () => new Set((wlItems ?? []).map(w => w.symbol)),
@@ -241,15 +241,6 @@ export default function Screener() {
 
   function resetFilters() {
     setFilters({ ...DEFAULT_FILTERS, signals: new Set() });
-  }
-
-  async function handleAddWatchlist(symbol: string) {
-    setAddingWl(symbol);
-    try {
-      await api.addToWatchlist(symbol);
-    } finally {
-      setAddingWl(null);
-    }
   }
 
   const isDefaultFilters = (
@@ -531,24 +522,7 @@ export default function Screener() {
 
                       {/* Actions */}
                       <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
-                        {!row.inWatchlist && (
-                          <button
-                            onClick={() => handleAddWatchlist(row.symbol)}
-                            disabled={addingWl === row.symbol}
-                            title="Add to watchlist"
-                            style={{
-                              padding: '3px 8px', borderRadius: '5px', fontSize: '10px', fontWeight: 600,
-                              border: '1px solid #1e293b', background: 'transparent',
-                              color: addingWl === row.symbol ? '#6366f1' : '#475569',
-                              cursor: addingWl === row.symbol ? 'not-allowed' : 'pointer',
-                            }}
-                          >
-                            {addingWl === row.symbol ? '…' : '+ Watch'}
-                          </button>
-                        )}
-                        {row.inWatchlist && (
-                          <span style={{ fontSize: '10px', color: '#6366f1' }}>★ Watching</span>
-                        )}
+                        <WatchlistPickerButton symbol={row.symbol} size="xs" />
                       </td>
                     </tr>
                   );
