@@ -5,6 +5,7 @@ and how it works under the hood.
 
 > For K-Score and Fair Value calculation details, see [SCORING.md](SCORING.md).
 > For a full breakdown of how the AI Signal is computed and how to interpret it, see [AI_SIGNAL.md](AI_SIGNAL.md).
+> For the full Research Engine technical reference (scoring formulas, Claude prompt, architecture), see [RESEARCH_ENGINE.md](RESEARCH_ENGINE.md).
 
 ---
 
@@ -36,7 +37,7 @@ The top nav uses **grouped dropdown menus** — four groups that open on hover:
 | Group | Pages |
 |---|---|
 | Markets | Dashboard, Heatmap, Rankings, Forecast |
-| Research | Screener, Opportunities, Earnings, Analyst, Short Squeeze |
+| Research | Screener, Opportunities, Earnings, Analyst, Short Squeeze, **Research Engine** |
 | Portfolio | Watchlist, Trade Board, Positions, Portfolio, Journal |
 | Tools | Strategies, Alerts, Signal Accuracy, Trade Performance, Insider / Congress |
 
@@ -126,6 +127,15 @@ Since signals and momentum are entirely local computation (no Claude API, no rat
 
 > The 16:30 post-close run is the most reliable. Intra-day runs use the latest available bar — on some symbols this is the previous day's close until the session ends. The signal computed at 16:30 reflects the full completed trading day.
 
+### 5-minute intraday ingest — every 5 min during market hours
+
+Two additional cron jobs run continuously during each market session to keep 5-minute candle data current for the stock detail chart:
+
+**US market (America/New_York):** every 5 minutes from 09:30–16:00 Mon–Fri  
+**HK market (Asia/Hong_Kong):** every 5 minutes from 09:30–16:00 Mon–Fri
+
+Each run calls `ingest_universe(symbols, "5m")`. The ingest is **incremental** — it reads the last stored `ts` per symbol from the DB and passes `start=last_ts` to yfinance, fetching only new bars since then. This keeps each run lightweight (typically 1–3 bars per symbol). A `ThreadPoolExecutor` with 6 workers parallelises yfinance calls across all symbols; `tenacity` retries handle transient 429 responses. At ~780 requests per session for 100 symbols, well within Yahoo Finance's unofficial rate limit of ~2000/hr.
+
 ### ML model retrain
 
 Runs **once per day**, at post-close (16:30) for both US and HK markets. Trains on the latest available price history. More frequent retraining has no benefit — the XGBoost model learns from daily bar outcomes, and intraday data doesn't change the training labels.
@@ -178,6 +188,45 @@ Each retrain reports:
 #### Inference fix (prediction uses today's bar)
 
 Previously, `predict_latest()` used features from 5 bars ago (the last bar with a known forward return) instead of today's actual bar. This is now fixed — inference uses `inference_mode=True` which skips the label mask, so predictions are based on today's technical conditions.
+
+#### Signal engine v3 — additional accuracy layers
+
+Four techniques were added on top of v2 to improve timing accuracy:
+
+| Improvement | What it does |
+|---|---|
+| **Multi-timeframe confirmation** | Weekly TA score (SMA, RSI, MACD on weekly bars) is computed separately and cross-checked with the daily signal. If daily and weekly direction agree, the fused probability is amplified by 12%. If they disagree, it is compressed by 15%. A daily BUY signal that contradicts the weekly trend is less reliable — this adjustment encodes that. |
+| **Rolling 20-day VWAP** | Price above VWAP = institutional buyers active. Adds a small positive weight to the TA score when price is above VWAP; a small negative weight when below. |
+| **Earnings proximity penalty** | If earnings are within 10 days, the fused probability is compressed toward 0.50. Earnings create binary outcome risk that overrides any technical signal — the model should not project a directional conviction when a coin-flip event is imminent. |
+| **Chart pattern fusion** | Detects 5 classic patterns on the last 60 bars. Bullish patterns (bull flag, cup-and-handle, double bottom) apply a +0.04 to +0.06 boost; bearish patterns (head-and-shoulders, double top, bear flag) apply a −0.03 to −0.05 compression. Pattern bonuses are bounded so they can tilt but not override the combined ML+TA signal. |
+| **News sentiment filter** | Last 10 news articles are scored with VADER sentiment (via yfinance, range −1 to +1), mapped to a 0–100 scale and averaged. Score < 25 (strongly negative) compresses the fused signal 30%; score 25–35 (moderately negative) compresses 20%. Neutral or positive news has no effect. This suppresses BUY signals ahead of regulatory action, leadership crises, or product recalls that technicals cannot yet detect. Sentiment score and flag are included in the signal `reasons` dict and shown in the trade plan on the stock detail page. |
+| **Relative strength vs sector ETF** | The stock's 20-day return is compared to its sector benchmark ETF (US stocks: SPDR sector ETFs XLK/XLV/XLF/XLY/XLP/XLE/XLU/XLB/XLI/XLRE/XLC; HK stocks: ^HSI; no-sector fallback: SPY). `rs_rank = (1 + stock_20d_ret) / (1 + etf_20d_ret)`. If rs_rank < 0.8 (stock lagging sector by > 20% over 20 days) the fused signal is compressed 15%. A BUY on a sector-lagging stock is a significantly weaker setup than a BUY on a sector leader. The rs_rank and mapped 0–100 RS score are included in the signal `reasons` dict. |
+
+**Market regime adaptive thresholds:**
+
+| Regime | BUY threshold | HOLD threshold | Rationale |
+|--------|--------------|----------------|-----------|
+| Bull (S&P 500 above 200MA) | 0.65 | 0.50 | Normal — most signals are valid in trending markets |
+| Bear (S&P 500 below 200MA) | 0.73 | 0.56 | Raised — broad market headwind means individual stock BUY signals have a higher false-positive rate; require stronger conviction to fire |
+
+#### Signal engine v4 — signal quality & regime improvements
+
+Four additional layers were added to prevent the ML model from overriding clear TA evidence and to handle market regimes where signals are inherently less reliable:
+
+| Improvement | What it does |
+|---|---|
+| **ML probability soft-cap** | Raw XGBoost output is clipped to [0.05, 0.95] before fusion. XGBoost frequently outputs 0.0 or 1.0 when a small set of features pattern-match strongly — these extremes misrepresent certainty. The cap preserves signal direction while keeping TA meaningful. Without this, a 100% ML prediction with a 68% ML weight would contribute 0.68 to the fused score regardless of what every TA indicator says. |
+| **ML-TA disagreement dampening** | When the absolute gap between the ML probability and the TA score exceeds 0.35, the ML weight is scaled down by up to 25%. Gap 0.35 → no dampening; gap ≥ 0.65 → full −25% reduction. This prevents a stock where TA is strongly bearish (score 20%) but ML is strongly bullish (95%) from being called a BUY purely on ML conviction — the result becomes a low-confidence HOLD instead. The conflict is flagged as `ml_ta_conflict: true` in the signal reasons and shown on the signal card. |
+| **ADX choppy market compression** | When ADX falls below 20, the market is directionless — there is no confirmed trend for a BUY or SELL to follow. The fused probability is compressed 10% toward 0.50 in these conditions, reducing false BUY/SELL signals in range-bound stocks. ADX ≥ 20 is no compression. The flag `adx_compression: true` appears in signal reasons and the card shows "ADX N: Choppy" as a warning. |
+| **4-state market regime** | The binary bull/bear regime is extended to four states using the Fear & Greed index score alongside the S&P 500 vs 200MA signal. A `high_vol` regime fires when the S&P 500 is in bull territory (above 200MA) but Fear & Greed drops below 30 — this captures market stress events (fast drawdowns, VIX spikes) where price has not yet broken the 200MA but conditions are unstable. In `high_vol`, the BUY threshold is raised to 0.70 and all signals are additionally compressed 15% toward neutral. |
+
+**Updated market regime adaptive thresholds (v4):**
+
+| Regime | BUY threshold | HOLD threshold | Signal compression | Trigger |
+|--------|--------------|----------------|-------------------|---------|
+| Bull | 0.65 | 0.50 | None | S&P 500 above 200MA, Fear & Greed ≥ 30 |
+| High-Vol | 0.70 | 0.54 | −15% toward neutral | S&P 500 above 200MA, Fear & Greed < 30 |
+| Bear | 0.73 | 0.56 | None | S&P 500 below 200MA |
 
 #### Dynamic ML/TA fusion weighting
 
@@ -303,25 +352,46 @@ Displayed as `—` when data is unavailable for the specific stock.
 
 ### Chart
 
-**Time range selector** — row of buttons above the chart to zoom into a specific window of history. All data is loaded once on page open; switching ranges is instant (no extra API call).
+**Time range selector** — row of buttons above the chart to switch between intraday and historical windows.
 
-| Button | Trading bars shown |
-|--------|--------------------|
-| 5D | 5 bars — last week |
-| 1M | 21 bars — last month |
-| 3M | 63 bars — last quarter (default) |
-| 6M | 126 bars — last 6 months |
-| 1Y | 252 bars — last year |
-| All | Full history in DB (up to ~5 years) |
+| Button | Mode | Data source | Bars shown |
+|--------|------|-------------|------------|
+| 5m | Intraday | Separate API fetch on click | Up to 100 most-recent 5-minute candles |
+| 1D | Daily | Loaded on page open | 1 bar — yesterday's close |
+| 5D | Daily | Loaded on page open | 5 bars — last week |
+| 1M | Daily | Loaded on page open | 21 bars — last month |
+| 3M | Daily | Loaded on page open | 63 bars — last quarter (default) |
+| 6M | Daily | Loaded on page open | 126 bars — last 6 months |
+| 1Y | Daily | Loaded on page open | 252 bars — last year |
+| All | Daily | Loaded on page open | Full history in DB (up to ~5 years) |
 
-A small bar count is displayed next to the buttons so you can see exactly how much data is visible. SMA, Bollinger Band, RSI, and MACD overlays are cropped to the selected window automatically.
+For daily ranges (1D–All), all data is loaded once on page open; switching between them is instant (no extra API call). A small bar count is displayed next to the buttons. SMA, Bollinger Band, RSI, and MACD overlays are cropped to the selected window automatically.
+
+**Intraday mode (5m):**
+- Triggered by clicking the `5m` button; fires a separate `GET /prices?timeframe=5m&limit=100` request.
+- Timestamps are stored in UTC and rendered using `UTCTimestamp` (Unix seconds) so lightweight-charts plots the correct intraday positions. The bar count label shows `N bars · UTC` to make the timezone explicit.
+- SMA, Bollinger Bands, RSI, and MACD overlays are **not available** in intraday mode (they require a longer history window). S/R levels are also hidden. A toolbar note explains this.
+- A "Loading 5m bars…" overlay is shown while the fetch is in progress.
+- 5-minute candles are refreshed automatically by the scheduler every 5 minutes during market hours (see [Scheduler](#scheduler) below). Each run is incremental — only bars since the last stored timestamp are fetched, keeping API calls minimal.
+- **60-day cap** — yfinance only serves intraday bars from the last 60 days regardless of when the stock was added. The ingestion layer automatically caps the start date at `today − 59 days` for all intraday timeframes (1m, 5m, 15m, 1h) so force-refresh requests don't silently return empty results.
 
 **History depth:** The overview endpoint fetches up to `1260` daily bars (~5 years of trading days). Actual depth depends on how far back yfinance has data for the stock — typically 5+ years for major US and HK equities. Run **Full Refresh** on the stock detail page to re-fetch the maximum available history.
 
 **Chart features:**
 - Candlestick chart (lightweight-charts)
-- SMA20, SMA50, SMA200, Bollinger Bands overlaid
-- Volume histogram, Support/Resistance levels, Fibonacci retracement
+- **SMA 20, SMA 50, SMA 200** and **EMA 20, EMA 50** overlaid (daily mode only)
+- **Individual line toggles** — each line has its own on/off button in the toolbar: `SMA [20] [50] [200]  EMA [20] [50]  [BB] [Vol]  Panel [RSI] [MACD]`
+- Volume histogram, Support/Resistance levels, Fibonacci retracement (daily mode only)
+
+**Indicator colors:**
+| Indicator | Color |
+|---|---|
+| SMA 20 | Sky blue `#38bdf8` |
+| SMA 50 | Amber `#f59e0b` |
+| SMA 200 | Purple `#a78bfa` |
+| EMA 20 | Green `#34d399` |
+| EMA 50 | Pink `#f472b6` |
+| Bollinger Bands | Faint blue fill |
 
 ### Sidebar
 - **AI Signal** — BUY/SELL/HOLD, confidence, bullish probability bar
@@ -347,7 +417,28 @@ Fetched from yfinance `.info`, Redis-cached 24 h.
 
 **Per Share & Risk** — EPS, Forward EPS, Book Value, Dividend Yield, Beta, Shares Outstanding
 
+**Volume** — two additional cards in the Per Share & Risk grid:
+- **Volume (Today)** — live share volume for the current session (from yfinance `last_volume`)
+- **Avg Vol (3M)** — 3-month average daily volume (from yfinance `three_month_average_volume`), with a colour-coded RVOL ratio badge (green > 1.5×, red < 0.5×)
+
 **52-Week Range** — gradient bar showing current live price position between 52W low/high, with percentage-of-range label
+
+**EPS Surprise History** — last 8 reported quarters of earnings vs. analyst consensus (sourced from yfinance `earnings_history`):
+
+| Column | What it contains |
+|--------|-----------------|
+| Quarter | Reporting period (e.g. Q1 2025) |
+| Actual EPS | Reported earnings per share (green = beat, red = miss) |
+| Estimate EPS | Analyst consensus estimate at time of report |
+| Surprise % | (Actual − Estimate) / |Estimate| × 100, colour-coded |
+
+- **Beat rate badge** — fraction of the last 8 quarters where actual > estimate (e.g. "Beat 6/8"). Green if ≥ 75%, yellow if ≥ 50%, red otherwise.
+- **Avg surprise** — mean absolute surprise % across reported quarters
+- **Trend arrow** — compares second-half vs first-half average surprise; ↑ improving, ↓ declining
+
+The EPS surprise trend feeds into the Research Engine's fundamental score: a ≥ 75% beat rate adds +5 to the 0–100 fundamental component; ≥ 50% beat rate adds +2. This is also exposed as `eps_beat_rate`, `eps_avg_surprise_pct`, and `eps_surprise_trend` in the `/stocks/{symbol}/fundamentals` API response.
+
+> **Availability:** EPS history requires at least 2 quarters of data in yfinance. Newly listed companies or very small stocks may show "No EPS history available."
 
 **Analyst Ratings & Price Targets** — full analyst consensus section powered by Yahoo Finance (Wall Street aggregate):
 - **Rating distribution bar** — stacked colored bar (Strong Buy / Buy / Hold / Underperform / Sell) with individual counts and color-coded labels
@@ -484,6 +575,26 @@ Fires when the signal improves **and** analyst consensus is bullish. Designed fo
 
 Both conditions must be true simultaneously. If the analyst rating is neutral or bearish, no email is sent even if the AI signal improved.
 
+**For BUY transitions specifically — 5-layer conviction gate:**
+
+When the new signal is BUY (the highest-priority entry), a stricter gate is applied on top of the analyst filter. All five layers must pass or the email is suppressed:
+
+| Layer | What is checked | Threshold |
+|-------|----------------|-----------|
+| 1 — Trend | SMA50 above SMA200 AND price above SMA50 | Both must be true |
+| 2 — K-Score | Composite ranking conviction score | ≥ 55 |
+| 3a — RSI | RSI in healthy bullish zone | 45–65 |
+| 3b — Stoch RSI | Recovering from oversold (cross-up or still oversold, not overbought) | %K < 80 AND (cross-up OR %K < 25) |
+| 3c — MACD | Histogram positive and rising, or zero-line crossover | Any one of the three |
+| 4 — OBV | On-Balance Volume confirming price direction | `obv_bullish` = true |
+| 5 — ML | XGBoost bullish probability | > 70% |
+
+**Disqualifiers** — even if all layers pass, the BUY email is suppressed if:
+- Bearish RSI divergence is detected (price rising but momentum fading)
+- Stoch RSI is overbought (> 80) without a recent cross-up
+
+This gate exists because raw BUY signals have a 20–30% false-positive rate without further filtering. Requiring all layers to align reduces noise and ensures you only receive an email when the setup is genuinely high-conviction.
+
 ---
 
 #### Type 2 — Exit Warning (AI Signal deteriorating from BUY)
@@ -552,6 +663,20 @@ All emails include:
 | Insider activity (6M) | Shares bought / sold + net, % of float |
 
 - **Earnings warning** — if earnings are within 7 days, a yellow warning banner appears reminding you that results may override the signal. If within 21 days, a plain note is included.
+
+**BUY transition emails additionally include:**
+
+- **5-Layer Conviction Gate summary** — a green checklist showing exactly which layers passed and why. Each item is a plain-English description (e.g. "K-Score: 72 — conviction positive", "ML probability 78% > 70% threshold"). This confirms at a glance why the conviction gate opened.
+
+- **10-Day Game Plan** — a structured trade setup derived from the technical data at the time the alert fires:
+
+| Section | Contents |
+|---------|---------|
+| Entry Strategy | Three entry levels: Limit buy 50% (1.5–2% below current), Limit buy 50% (deeper pullback 3.5–4%), Breakout 50% (2% above current). Each has a note explaining the technical rationale (e.g. "pullback to SMA50 support zone"). |
+| Stop Loss | Absolute price level ~5.5% below current. Note describes what a close below this level means (e.g. "golden-cross breakdown" if SMA50 > SMA200). |
+| Take Profit | Analyst mean price target if available and > 3% above current; otherwise +12% from current. |
+| Catalysts | Up to 3 bullet points: earnings runway, analyst upgrade potential, SMA structure, RSI zone, MACD confirmation, OBV trend. |
+| Key Risk | One sentence — bear market regime warning, upcoming earnings binary risk, or generic market override note. |
 
 ### What the email does NOT do
 
@@ -639,6 +764,22 @@ Strategy-filtered stock screener. Surfaces the best candidates from the **curren
 | **Growth** | 🚀 | Medium | Growth (50%) + Momentum (30%) + Technical (20%) | Growth ≥ 50 |
 
 **Top Picks scoring note:** The raw K-Score is blended with a signal bonus so that two stocks with equal composite scores are ranked with the BUY-signal stock higher. Non-BUY stocks are not excluded — they remain visible if their K-Score is high enough.
+
+### Score normalisation
+
+All strategy scores are capped at **100** via `Math.min(100, score)` before display and sorting. Without this cap, stocks with extreme sub-scores (e.g. very high momentum combined with a strong BUY signal) could produce scores above 100, making the ranking uninterpretable and the progress bar visualisation overflow. The cap also ensures the Confluence grade thresholds (80+, 65–79, 50–64, <50) apply consistently across all strategies.
+
+**Per-strategy score formulas (all capped at 100):**
+
+| Strategy | Formula |
+|----------|---------|
+| Swing | `tech × 0.40 + mom × 0.25 + signal_bonus + conf × 0.15` |
+| Short-term | `mom × 0.50 + tech × 0.25 + min(|1d_chg| × 3, 15) + vlt × 0.10` |
+| Long-term | `val × 0.40 + grow × 0.30 + min(max(upside, 0), 25) + vlt × 0.15` |
+| Growth | `grow × 0.50 + mom × 0.30 + tech × 0.20` |
+| AI Signal | `conf × 0.70 + bullish_prob × 50 + tech × 0.15 + mom × 0.10` |
+
+Where: `tech` = technical sub-score (0–100), `mom` = momentum sub-score, `val` = value sub-score, `grow` = growth sub-score, `conf` = AI signal confidence, `vlt` = volatility (inverse), `signal_bonus` = 8 for BUY, 3 for HOLD, 0 otherwise.
 
 ### Filters
 - **Market filter** — All / US / HK
@@ -769,6 +910,8 @@ Leaderboard of all active stocks sorted by K-Score. A quick, always-sorted view 
 - **Signal filter tabs** — ALL / BUY / HOLD / WAIT / SELL
 - **Sortable columns** — K-Score, Technical, Momentum, Value, Growth, Volatility, Price, Change%
 - **Fair price column** — compare current price to the K-Score estimated fair value
+- **Volume column** — today's share volume, formatted as B/M/K (e.g. 42.3M)
+- **vs Avg column** — today's volume vs 3-month average volume (RVOL), colour-coded: green ≥ 2×, light green ≥ 1.5×, red < 0.5×
 - HK stocks show Chinese name as a subtitle in the Name column
 - Click any row to go to stock detail
 
@@ -818,10 +961,12 @@ A persistent Kanban board for tracking trade ideas across four lifecycle stages.
 
 | Stage | Colour | Purpose |
 |---|---|---|
-| Watch | Grey | Tracking — no position yet |
+| Radar | Grey | On radar — shortlisted from screener or forecast |
 | Planning | Indigo | AI game plan generated; evaluating entry |
 | Active | Green | In trade — monitoring |
-| Closed | Dark grey | Trade completed |
+| Closed | Dark grey | Trade completed — P&L recorded |
+
+> The stage is stored as `"watch"` in the database; the display label is **Radar**.
 
 ### Cards
 
@@ -834,21 +979,257 @@ Each card shows:
 - **Stage selector** — click any stage pill to move the card instantly
 - **Relative date** — "Today / Yesterday / Nd ago" based on last update
 
+### Closed trade P&L tracking
+
+When a card is moved to **Closed**:
+- An **exit price input** appears on the card — type the price you closed at and press Enter to save it.
+- **P&L %** is calculated as `(exit_price − entry_price) / entry_price × 100` and displayed in green (profit) or red (loss).
+- `closed_at` timestamp is set automatically the first time a card enters the Closed stage.
+
+A **Performance Summary bar** appears above the board columns showing aggregate stats across all closed cards:
+| Stat | Description |
+|---|---|
+| Win Rate | % of closed cards with positive P&L |
+| Avg Return | Average P&L % across all closed cards |
+| Best | Highest individual P&L % |
+| Worst | Lowest individual P&L % |
+
 ### Adding cards
 
-Three ways to create a board card:
+Four ways to create a board card:
 
 1. **Stock detail page** — after the AI generates a game plan, click **📌 Save to Board** in the game plan card header. Saves with stage = Planning, entry/stop/target prices pre-filled.
-2. **Forecast page** — each AI pick has a **📌 Save to Board** button. Saves with stage = Watch, entry_low as entry price, notes from the pick's setup/catalyst/risk text.
-3. **Manual** — click **+ Add** in the Watch column header on the board itself. Enter a symbol and optional notes.
+2. **Forecast page** — each AI pick has a **📌 Save to Board** button. Saves with stage = Radar, notes from the pick's setup/catalyst/risk text.
+3. **Manual** — click **+ Add** in the Radar column header on the board itself. Enter a symbol and optional notes.
+4. **Unified + Add ▾ button** — appears on Screener results and Forecast cards. Opens a dropdown with two sections: **Watchlists** (add to any named watchlist with item count shown) and **Trade Board** (add to Radar). A checkmark appears once added — prevents duplicates within the same session.
 
 ### API endpoints
 ```
 GET    /board              # list all trade plans for the current user (ordered by last update)
 POST   /board              # create a plan {symbol, stage, game_plan, entry_price, stop_loss, take_profit, notes, source}
-PUT    /board/{id}         # update stage, notes, prices, or game_plan
+PUT    /board/{id}         # update stage, notes, entry_price, stop_loss, take_profit, exit_price
 DELETE /board/{id}         # delete a plan
 ```
+
+`exit_price` and `closed_at` are stored on the `trade_plans` table. `closed_at` is set automatically server-side the first time `stage = "closed"` is submitted.
+
+---
+
+---
+
+## Research Engine (`/research`, `/research/[symbol]`)
+
+A full Planning Stage Research Intelligence Engine. When a stock enters the **Planning** stage on the Trade Board, a green **Research** button links directly to its report. The report can also be reached from `/research` by entering any symbol.
+
+> For the scoring formula and weighted model, see [Scoring Engine](#scoring-engine) below.
+
+### What it generates
+
+One click triggers a comprehensive AI-powered analysis across ten dimensions — comparable to a professional equity research report:
+
+| Dimension | What is covered |
+|---|---|
+| **Executive Summary** | Overall score, confidence, recommendation, top 5 bullish/bearish factors, key risks, key opportunities |
+| **Technical Analysis** | Price vs 50/200-day SMA, Golden/Death Cross detection, RSI, MACD + histogram, volume (RVOL), support/resistance levels, ATR + volatility rating |
+| **Fundamental Analysis** | Revenue growth, EPS growth, margins (gross/operating/net), balance sheet (cash, debt, D/E), cash flow + FCF margin, valuation (P/E, Forward P/E, PEG, EV/EBITDA), profitability (ROE, ROA) |
+| **Company Research** | Business model summary, competitive advantage matrix, moat rating (Very Strong → None), insider activity, institutional ownership trend, management quality |
+| **Industry Research** | Industry status (Growing/Mature/Declining/Disrupted), TAM size + growth, market share position, competitor comparison, regulatory risk, industry verdict |
+| **Economic Research** | Federal Reserve policy (Hiking/Holding/Cutting) and impact, inflation trend (CPI), GDP status, employment, recession risk checklist (yield curve, GDP, unemployment, consumer confidence), favored market style |
+| **Master Checklist** | 27 binary PASS/WARNING/FAIL checks across four layers — Company, Industry, Economy, Technical |
+| **Trading Plan** | Aggressive and conservative entry zones, stop loss (support + ATR method), three profit targets, risk/reward ratio and assessment |
+| **Position Sizing** | Dollar risk, share quantity, and position size based on configurable portfolio size and max risk % per trade |
+| **AI Verdict** | Can I buy today? (YES/NO/WAIT), detailed reasoning, biggest risks, conditions that must improve, catalysts for a Strong Buy upgrade, final recommendation with confidence % |
+
+### Scoring Engine
+
+All five dimension scores (0–100) are weighted to produce the overall score:
+
+| Dimension | Weight | Computed by |
+|---|---|---|
+| Technical | 25% | Python (EMAs, RSI, MACD, volume, support proximity) |
+| Fundamental | 30% | Python (revenue growth, margins, FCF, valuation, ROE) |
+| Company | 15% | Claude AI |
+| Industry | 15% | Claude AI |
+| Economic | 15% | Claude AI |
+
+**Recommendation thresholds:**
+
+| Overall Score | Recommendation |
+|---|---|
+| 90–100 | STRONG BUY |
+| 80–89 | BUY |
+| 65–79 | WATCH |
+| 50–64 | AVOID |
+| 0–49 | SELL |
+
+### Any symbol works
+
+The Research Engine works for **any valid stock ticker** — it does not require the symbol to be in your watchlist or tracked in the database. For untracked symbols, the engine fetches data directly from yfinance (1-year daily price history, fundamentals, live price) and computes all TA indicators locally. For tracked symbols, it uses the pre-computed data from the database services plus a live price call to get the real-time price.
+
+### Generating a report
+
+1. Navigate to any stock detail page and save a Game Plan → board card enters **Planning** stage automatically
+2. On the Trade Board, click the green **Research** button on any Planning card
+3. — or — navigate directly to `/research` and enter any symbol
+4. Click **Generate Report** (first generation takes 20–60 s; subsequent loads from 24-hour cache are instant)
+5. If a cached report exists it loads automatically when the page opens — no need to click Generate
+6. Click **Clear & Regenerate Report** to force a fresh analysis
+
+### AI key is optional
+
+The report generates even without an AI (Claude/DeepSeek) key configured. Without a key, all **computed scores** (Technical, Fundamental, entry zones, stop loss, targets, checklist) are fully populated. Only the **AI narrative sections** (Company, Industry, Economic analysis and AI Verdict) will show placeholder text. Configure a key in **Settings → AI Assistant** for the full report.
+
+### Configuration
+
+The generate dialog has optional config fields (click ⚙ Config):
+
+| Field | Default | What it controls |
+|---|---|---|
+| API Key | From Settings → AI Assistant | Override the AI key for this session only |
+| Portfolio Size ($) | $100,000 | Used to calculate dollar risk and share quantity |
+| Max Risk Per Trade (%) | 2% | Used to calculate dollar risk and share quantity |
+
+The AI provider and model are inherited from **Settings → AI Assistant** (Claude or DeepSeek). The report uses whichever is configured.
+
+### Report tabs
+
+The report is organized into nine tabs:
+
+| Tab | Contents |
+|---|---|
+| **Summary** | 2×2 grid: bullish factors, bearish factors, key risks, key opportunities |
+| **Technical** | Trend analysis, RSI + MACD cards, volume, support/resistance, ATR, histogram status |
+| **Fundamental** | Revenue + EPS, margins, balance sheet, cash flow, valuation, profitability |
+| **Company** | Business model, competitive moat, advantage matrix, management, insider activity, institutional ownership |
+| **Industry** | Status, TAM, market share position, competitor table, regulatory risk, verdict |
+| **Economic** | Fed policy, CPI trend, GDP, employment, recession risk checklist, market environment |
+| **Checklist** | Four layers of PASS/WARNING/FAIL badges with individual item notes |
+| **Trading Plan** | Entry zones, stop loss, profit targets (T1/T2/T3), risk/reward assessment, position sizing grid, trade invalidation conditions |
+| **AI Verdict** | YES/NO/WAIT hero banner, biggest risks, must-improve conditions, Strong Buy catalysts |
+
+### Checklist layers
+
+**Layer 1 — Company (8 items)**
+Can explain business · Revenue growing · EPS growing · FCF positive · D/E < 2 · Competitive moat · Insiders buying or holding · Institutions > 50%
+
+**Layer 2 — Industry (5 items)**
+Industry growing · Large TAM · Market share stable or gaining · Low regulatory risk · Industry tailwind
+
+**Layer 3 — Economy (5 items)**
+Fed supportive · Inflation improving · GDP expanding · No major recession signals · Favorable market style
+
+**Layer 4 — Technical (7 items)**
+Price above 200 SMA · Price above 50 SMA · Golden Cross · RSI healthy · MACD bullish/neutral · Volume confirming · Support level identified
+
+### Trade Board integration
+
+On the Trade Board (`/board`), Planning-stage cards show a green **Research** button in the footer action strip. Clicking it navigates directly to `/research/{symbol}` for that card's stock, carrying the full report context.
+
+The report does **not** automatically update the board card's entry/stop/target prices — you can review the Trading Plan tab and manually update the card prices if you wish to use the AI-generated levels.
+
+### AI Analyst Chatbot
+
+A conversational AI panel appears below every generated report. It has full context of the report (scores, trend verdict, SMAs, RSI, MACD, entry zones, stop loss, targets, fundamental metrics, AI verdict, key risks).
+
+**How to use:**
+- Four suggested starter questions appear before the first message: *What is the entry strategy? / Is the valuation attractive? / What are the biggest risks? / Should I buy today?* — click any to pre-fill it
+- Type any question and press **Enter** or click **Send**
+- Conversation history is shown (your messages on the right, AI answers on the left)
+- Requires an AI key configured in **Settings → AI Assistant**
+
+The chatbot uses the same provider and model configured in Settings. Each chat message sends the full conversation history so follow-up questions work correctly.
+
+### API endpoints
+
+All endpoints are under `/research` (proxied via the API Gateway → research-engine service on port 8008).
+
+```
+POST /research/{symbol}
+  Body: {
+    "provider":       "claude" | "deepseek",   # optional, default "claude"
+    "model":          "claude-sonnet-4-6",      # optional
+    "api_key":        "sk-ant-...",             # optional; computed scores work without it
+    "portfolio_size": 100000,                   # optional, default 100000
+    "max_risk_pct":   2.0                       # optional, default 2.0
+  }
+  → Full ResearchReport JSON
+  → Cached server-side for 24 hours
+
+GET /research/{symbol}
+  → Cached report if available (within 24 h); 404 otherwise
+
+DELETE /research/{symbol}
+  → Clears cached report, forces regeneration on next POST
+
+POST /research/{symbol}/chat
+  Body: {
+    "messages": [{"role": "user", "content": "What is the stop loss?"}],
+    "api_key":  "sk-ant-...",
+    "model":    "claude-sonnet-4-6",    # optional
+    "provider": "claude"                # optional
+  }
+  → {"role": "assistant", "content": "The stop loss is set at ..."}
+  → Requires a cached report to exist (POST first to generate)
+```
+
+### How the technical score is computed
+
+The Python scoring algorithm starts at 50 and adjusts based on:
+
+| Signal | Effect |
+|---|---|
+| Price above 200 SMA | +15 |
+| Price below 200 SMA | −10 |
+| Price above 50 SMA | +10 |
+| Price below 50 SMA | −7 |
+| Golden Cross detected | +10 |
+| Death Cross detected | −10 |
+| Above golden cross (no recent event) | +5 |
+| RSI 40–60 (Healthy) | +5 |
+| RSI 60–70 (Strong) | +8 |
+| RSI 30–40 (Weak) | −5 |
+| RSI > 70 (Overbought) | −8 |
+| MACD bullish crossover | +10 |
+| MACD bearish crossover | −10 |
+| MACD line > signal (no crossover) | +3 |
+| MACD line < signal (no crossover) | −3 |
+| Histogram green and growing | +2 |
+| Histogram red and growing | −2 |
+| RVOL ≥ 1.5x | +5 |
+| RVOL 1.0–1.5x | +2 |
+| RVOL < 1.0x | −3 |
+| Price within 3% above nearest support | +3 |
+| Price 3–8% above nearest support | +1 |
+
+Final score is clamped to [0, 100]. Trend verdict: ≥ 80 = Strong Bullish · ≥ 65 = Bullish · ≥ 50 = Neutral · ≥ 35 = Bearish · < 35 = Strong Bearish.
+
+### How the fundamental score is computed
+
+Starts at 50 and adjusts based on:
+
+| Metric | Effect |
+|---|---|
+| Revenue growth ≥ 20% | +10 |
+| Revenue growth 10–20% | +5 |
+| Revenue growth < 0% | −5 |
+| EPS growth ≥ 25% | +10 |
+| EPS growth 10–25% | +5 |
+| EPS growth < 0% | −7 |
+| Gross margin > 40% | +5 |
+| Gross margin < 20% | −3 |
+| Operating margin > 20% | +5 |
+| Operating margin < 5% | −3 |
+| D/E ratio < 0.5 | +5 |
+| D/E ratio > 2.0 | −5 |
+| FCF positive with margin ≥ 20% | +10 |
+| FCF positive | +5 |
+| FCF negative | −5 |
+| P/E < 15 | +8 (Undervalued) |
+| P/E 15–25 | +3 (Fairly Valued) |
+| P/E > 40 | −5 (Overvalued) |
+| ROE ≥ 20% | +8 (Excellent) |
+| ROE 12–20% | +4 (Good) |
+| ROE < 6% | −4 (Poor) |
 
 ---
 
@@ -867,6 +1248,12 @@ Symbol + shares + avg cost · Current price + day change · Market value · P&L 
 
 ### Trade logging
 BUY updates cost-basis average; SELL reduces share count (removes when fully sold).
+
+### Two-step remove confirmation
+Clicking the remove button first shows an inline "Remove? Yes / No" prompt. Confirming removes the position; No cancels without any change. This prevents accidental deletion.
+
+### Toast notifications
+Errors (e.g. failed trade log or remove) show as a red toast banner at the bottom of the screen for 4 seconds, replacing the previous silent failures.
 
 ### CSV export
 Downloads `positions.csv` with all position fields.
@@ -1013,6 +1400,14 @@ Available fields: `rsi_14`, `macd_hist`, `close`, `sma_20`, `sma_50`, `ema_20`, 
 ### Backtest results
 Total return %, Sharpe ratio, Max drawdown %, CAGR, Win rate %, Profit factor, Equity curve chart
 
+### Saved runs
+- Each saved backtest run shows a **date stamp** ("May 29, 14:30") alongside the symbol and date range so you can identify when it was run
+- Date range validation — end date must be after start date; an error is shown inline if not
+- **Two-step delete** — clicking ✕ on a saved run first shows inline "Delete? Yes / No" confirmation before removing, preventing accidental deletes
+
+### Compare table
+- When two or more runs are loaded for comparison, the best value in each row is **highlighted in green** based on whether higher or lower is better for that metric (e.g. higher return is better; lower max drawdown magnitude is better)
+
 ---
 
 ## Settings (`/settings`)
@@ -1132,27 +1527,108 @@ Measures how often past BUY/SELL signals predicted the correct direction, evalua
 | Avg SELL Return | Average % decline from SELL signal date to today |
 | Profit Factor | Total gain from correct signals ÷ total loss from wrong signals. Above 1.5 = good system. |
 
+### Factor Exposure chart
+
+Below the summary cards, a **Factor Exposure** bar chart shows which signal factors drive correct vs wrong BUY signals. Each row is a factor; bars show deviation from the neutral baseline — green = correct signals, red = wrong signals.
+
+| Factor | Neutral baseline | What a rightward green bar means |
+|---|---|---|
+| RSI | 50 | Correct signals tend to fire on higher-momentum stocks |
+| ADX | 20 | Correct signals are in stronger trends |
+| Volume Z-score | 0 | Correct signals have above-average volume |
+| ML Probability | 50% | Correct signals have higher ML confidence |
+| News Sentiment | 50 | Correct signals have more positive recent news |
+| TA Score | 0.5 | Correct signals have stronger technical setups |
+
+If the green bar for a factor sits further right than the red bar, that factor is a positive predictor of success. If they're both at the same position, the factor doesn't differentiate. Powered by `GET /signals/factor-exposure?lookback_days=N`.
+
 ---
 
 ## Trade Performance (`/trade-performance`)
 
 Shows real P&L by pairing each BUY signal with its next SELL or WAIT exit signal for the same stock. This is the harder, more honest measure — you only get credit for a closed trade, and holding periods are realistic.
 
+### How it works — no look-ahead bias
+
+The engine replays signals the system already generated in real time. It does **not** re-compute signals on historical data after the fact. Because every BUY and SELL signal was generated at market time using only data available at that moment (live RSI, ADX, ML probability, news sentiment, etc.), the backtest inherits no look-ahead bias.
+
+**Trade construction:**
+1. Every BUY signal in the lookback window becomes a trade entry
+2. Entry price = closing price on the BUY signal date
+3. Scan forward for the next SELL or WAIT signal for the same stock → that becomes the exit
+4. Exit price = closing price on that exit signal date
+5. No SELL/WAIT yet → trade is **Open**, using the latest available price
+
+**Deduplication guards** prevent the scheduler's repeated refreshes from inflating the trade count:
+- `last_exit_ts guard` — a new BUY is ignored if it arrives *before* the previous closed trade's exit timestamp (same-day refresh duplicate)
+- `in_open_trade guard` — while an open position already exists for a stock, any further BUYs for that stock are skipped until it closes
+
 - **Entry** — BUY signal date → entry price is the close on that date
 - **Exit** — next SELL or WAIT signal for the same stock → exit price is the close on that date
 - **Open trades** — BUY signals with no exit yet use the latest available price (marked "OPEN")
 - **Lookback** — 90 / 180 / 365 days
-- **Deduplication** — consecutive BUY refreshes for the same stock are collapsed into one trade. Only one open position is tracked per stock at a time; a new entry is only recorded after the previous trade closes (SELL/WAIT signal received).
 
-### Summary cards
+### How the backtest metrics are calculated
+
+All metrics are derived from closed trades only (open trades use an estimated exit price and are excluded from compounding).
+
+**Equity curve** — closed trades sorted chronologically, each compounded in sequence:
+```
+equity = 1.0
+for each trade (by entry date):
+    equity = equity × (1 + pct_return / 100)
+```
+Represents the growth of $1 if you followed every signal in order, fully reinvesting after each trade.
+
+**Total Return** = `(final_equity − 1) × 100%`
+
+**Sharpe ratio** (annualised):
+```
+Sharpe = mean(returns) / stdev(returns) × √(252 / avg_hold_days)
+```
+Treats each trade's return as one period of length `avg_hold_days`, then scales to annual. Risk-free rate assumed 0.
+
+**Max Drawdown** — worst peak-to-trough decline along the equity curve:
+```
+for each equity point:
+    running_peak = max(equity seen so far)
+    drawdown = (equity − running_peak) / running_peak × 100
+max_drawdown = min(all drawdown values)   # most negative, e.g. −12.3%
+```
+
+**Calmar ratio** = `annualised_return / |max_drawdown|`  
+Where `annualised_return = total_return / total_calendar_days × 252`.  
+*Only meaningful over 6+ months of history — with fewer trades the annualisation magnifies noise.*
+
+**vs SPY** — SPY's total return over the same date range (first trade entry → last trade exit). Shows `—` if SPY is not tracked in the database.
+
+### Summary cards — Row 1: Backtest metrics
 | Card | Good threshold | What it means |
 |------|---------------|--------------|
 | Win Rate | > 50% | % of closed trades that made money |
 | Profit Factor | > 1.5 | Total profit from winners ÷ total loss from losers. Above 1.0 = system makes money over time |
+| Total Return | > 0% | Compounded equity growth if you followed every signal |
+| vs SPY | > 0% | System return minus SPY buy-and-hold return over the same period |
+| Sharpe | > 1.0 | Annualised risk-adjusted return. > 1 = good, > 2 = excellent |
+| Max Drawdown | > -20% | Worst peak-to-trough equity decline |
+| Calmar | > 1.0 | Annualised return ÷ max drawdown. Only meaningful over 6+ months |
+
+### Summary cards — Row 2: Trade statistics
+| Card | Good threshold | What it means |
+|------|---------------|--------------|
 | Avg Return | > 1% | Average % gain or loss per closed trade |
 | Avg Win | — | Typical winning trade size |
 | Avg Loss | — | Typical losing trade size. You want Avg Win > Avg Loss |
 | Avg Hold | — | How long the system typically stays in a trade |
+| Open Trades | — | Positions currently awaiting a SELL or WAIT exit signal |
+
+### Equity curve
+SVG line chart showing the growth of a hypothetical $1 deployed sequentially across all closed signal trades, compounded in chronological order. A dashed gold overlay shows SPY's return over the same period for comparison (when SPY data is available).
+
+- Y-axis labelled as % return relative to starting equity
+- Dashed baseline at 0% (break-even)
+- Green line = net positive; red line = net negative
+- X-axis: first trade entry date → last trade exit date
 
 ### By-symbol breakdown
 Table showing win rate, average return, and average hold days per stock — tells you which symbols the signal engine works best on.
@@ -1161,6 +1637,17 @@ Table showing win rate, average return, and average hold days per stock — tell
 Every individual trade with: entry date / exit date / entry price / exit price / return % / hold days / exit signal (SELL, WAIT, or OPEN) / Win or Loss.
 
 Filters: All / Closed / Open · All / Win / Loss · Symbol search · Sort by Date / Return / Hold Days
+
+### API
+```
+GET /signals/trade_performance?lookback_days=180   # full report
+  → win_rate, profit_factor, avg_return_pct, avg_win_pct, avg_loss_pct
+     total_return, sharpe, max_drawdown, calmar, spy_return
+     equity_curve: [{date, equity}, ...]   # compounded equity over time
+     by_symbol: [{symbol, trades, win_rate, avg_return, avg_hold_days}]
+     trades: [{symbol, entry_date, exit_date, entry_price, exit_price,
+               pct_return, hold_days, win, exit_signal, entry_confidence}]
+```
 
 ---
 
@@ -1283,6 +1770,17 @@ POST   /backtest   {strategy_id, symbol}   # run backtest
 POST   /portfolio/optimize                 # run portfolio optimization
 ```
 
+### Research Engine
+```
+POST /research/{symbol}           # generate + cache a full research report
+  {provider, model, api_key, portfolio_size?, max_risk_pct?}
+  → ResearchReport JSON (cached 24 h server-side)
+
+GET  /research/{symbol}           # return cached report (404 if none / expired)
+
+DELETE /research/{symbol}         # clear cache → forces regeneration on next POST
+```
+
 ### AI Chat
 ```
 POST /ai/chat
@@ -1296,6 +1794,28 @@ POST /ai/chat
 }
 → { "content": "...", "model": "...", "provider": "..." }
 ```
+
+---
+
+## Price data quality
+
+### Adjusted close prices
+
+All daily bar fetches from yfinance use `auto_adjust=True`. This means the `Close` column returned is already **split- and dividend-adjusted** — the price series is restated retroactively whenever a stock split or dividend occurs, so the chart and all indicators (SMA, RSI, MACD, ATR, OBV) compute on a consistent continuous series.
+
+Intraday bars (1m, 5m, 15m, 1h) do **not** use auto-adjust — yfinance does not reliably adjust intraday data and applying corporate-action adjustments to sub-daily bars can introduce artefacts. Intraday data is used only for live price display, not for signal computation.
+
+### ATR calculation — Wilder's method
+
+Average True Range (ATR) in the Research Engine uses **Wilder's exponential smoothing** rather than a plain SMA:
+
+1. Compute True Range for each bar: `TR = max(high − low, |high − prev_close|, |low − prev_close|)`
+2. Seed the first ATR with a simple average of the first `period` TR values (standard is 14 bars)
+3. For each subsequent bar: `ATR = ATR_prev × (1 − α) + TR × α` where `α = 1 / period`
+
+Wilder's ATR converges more slowly than a simple rolling window, meaning it is less jumpy on single-day volatility spikes and gives a smoother, more representative estimate of "normal" trading range. This is the same method used by the original ATR definition (J. Welles Wilder, 1978) and by most professional charting platforms.
+
+ATR is used in the Research Engine for: stop loss calculation (`entry − ATR`), profit target spacing, and volatility classification (low / normal / high relative to its own 20-day average).
 
 ---
 
@@ -1316,6 +1836,7 @@ POST /ai/chat
 | K-Score / Fair price | DB `rankings` table | Refreshed 5× per trading day (09:00, 10:45/10:30, 12:45/14:15, 14:45/15:30, 16:30) — see [Refresh & Schedule](#refresh--schedule) |
 | AI Signal | DB `signals` table (TA + ML) | Refreshed 5× per trading day, immediately after K-Scores — same schedule |
 | ML prediction | Trained model inference | Retrained once per day at post-close (16:30); intra-day runs use the previous close model |
+| **Research report** | research-engine (Claude AI + all services) | Cached in-memory 24 h per symbol; POST to generate, GET to retrieve, DELETE to force refresh |
 | **Fear & Greed Index** | Computed from yfinance ^GSPC + ^VIX | Redis 1 h TTL; SWR 1 h refresh on stock detail page |
 | **Market Regime (S&P vs 200MA)** | Computed alongside Fear & Greed | Redis 1 h TTL (same cache entry) |
 
@@ -1374,14 +1895,43 @@ Clearing `stockai_jwt` from `localStorage` logs the user out. Clearing all stora
 
 ## K-Score sub-scores
 
-| Sub-score | Range | What drives it |
-|-----------|-------|---------------|
-| Technical | 0–100 | SMA(50/200) trend alignment, RSI(14), ADX(14) trend-strength bonus |
-| Momentum | 0–100 | 1-week, 1-month, 3-month price rate-of-change |
-| Value | 0–100 | Discount from 52-week high (price proxy; fundamentals not yet integrated) |
-| Growth | 0–100 | 12-month price CAGR (price proxy; earnings/revenue growth not yet integrated) |
-| Volatility | 0–100 | Inverse of 30-day realized volatility |
-| **K-Score** | 0–100 | Weighted composite — above 70 is strong, below 40 is weak |
+| Sub-score | Weight | Range | What drives it |
+|-----------|--------|-------|---------------|
+| Technical | 22% | 0–100 | SMA(50/200) trend alignment, RSI(14), ADX(14) trend-strength bonus |
+| Momentum | 23% | 0–100 | 1-week, 1-month, 3-month price rate-of-change |
+| Value | 13% | 0–100 | Discount from 52-week high (price proxy; fundamentals not yet integrated) |
+| Growth | 14% | 0–100 | 12-month price CAGR (price proxy; earnings/revenue growth not yet integrated) |
+| Volatility | 18% | 0–100 | Inverse of 30-day realized volatility |
+| Relative Strength | 10% | 0–100 | 20-day return vs sector ETF benchmark — 50 = in-line with sector, > 60 = leading, < 40 = lagging. Uses SPDR sector ETFs for US stocks (XLK, XLV, etc.) and ^HSI for HK stocks. ETF price history is stored in the DB; no live API calls during refresh. |
+| **K-Score** | — | 0–100 | Weighted composite — above 70 is strong, below 40 is weak. If RS data is unavailable the 10% RS weight is redistributed proportionally among the other five factors. |
+
+> **Rankings page RS column:** The RS score (0–100) appears as a column in the rankings table. Green (≥ 60) = stock is leading its sector. Red (< 40) = stock is lagging. Grey = no data.
+
+### How to use relative strength
+
+RS is a **quality filter on top of the AI signal**, not a standalone buy/sell trigger.
+
+**Daily workflow — Rankings page**
+
+Scan the RS column after sorting by K-Score. Prioritise stocks that are green on both.
+
+| RS | AI Signal | Interpretation | Action |
+|----|-----------|---------------|--------|
+| ≥ 60 (green) | BUY | Highest-conviction setup — stock leading sector with technical entry | Act on signal |
+| 45–59 (grey) | BUY | Standard setup — in-line with sector | Act normally |
+| < 40 (red) | BUY | Weakened signal — stock lagging sector despite technical BUY. Signal engine has already reduced confidence 15%. | Investigate why before entering |
+| < 40 (red) | HOLD/SELL | Capital leaving this stock specifically | Avoid new positions |
+| ≥ 60 (green) | HOLD | Sector strength without a timing trigger yet | Watch for signal upgrade |
+
+**Sector rotation signal**
+
+If multiple stocks in the same sector simultaneously drop to red RS while their sector ETF is rising, capital is rotating *within* the sector away from those names. Cross-reference with the Sector Performance panel on the dashboard.
+
+**What RS does not tell you**
+
+- RS = 100 does not mean buy — a stock up 30% in 20 days may be extended and due for a pullback. Wait for a pullback entry or use the Confluence Score to assess timing.
+- RS resets every 20 trading days. It reflects recent momentum, not long-term trend quality.
+- RS is computed vs the stock's assigned sector ETF. If a stock's sector is unassigned (shown as "Other"), SPY is used as the fallback benchmark.
 
 ---
 
@@ -1409,3 +1959,576 @@ Raw Mean-Variance Optimization is notorious for "error maximization" — tiny er
 ```
 
 HRP never inverts the covariance matrix, making it numerically stable for any number of assets and robust to near-singular correlation structures.
+
+---
+
+## Confluence Score & Trade Decision System
+
+The Confluence Score is a 0–100 composite that measures how strongly all four signal layers agree on a stock. It is the primary tool for deciding **when to buy, how much to buy, and when to sell**.
+
+### Signal layers and what each one answers
+
+| Layer | Signal | Timeframe | Question |
+|-------|--------|-----------|----------|
+| Fundamental filter | Analyst Rating | Months | Is this worth owning at all? |
+| Conviction score | K-Score + Research | Weeks–months | How strong is the overall case? |
+| Timing trigger | AI Signal | Days–weeks | Is now a good time to enter or exit? |
+| Technical confirmation | Support/Resistance, RSI, MACD | Intraday–days | Where exactly to enter and exit? |
+
+### Confluence Score formula
+
+**On the Rankings and Opportunities pages** (no analyst data in bulk fetch):
+```
+AI component   = signal_direction × confidence / 100    weight 35%
+K-Score        = composite ranking score (0–100)        weight 30%
+Technical      = TA sub-score (0–100)                   weight 20%
+Momentum       = momentum sub-score (0–100)             weight 15%
+```
+where `signal_direction` = BUY → 100, HOLD → 50, WAIT → 25, SELL → 0.
+
+**On the Stock Detail page** (full data including analyst consensus):
+```
+AI component   = signal_direction × confidence / 100    weight 30%
+K-Score        = composite ranking score (0–100)        weight 25%
+Analyst        = (5 − recommendation_mean) / 4 × 100   weight 20%
+Technical      = TA sub-score (0–100)                   weight 15%
+Momentum       = momentum sub-score (0–100)             weight 10%
+```
+`recommendation_mean` is the yfinance value: 1.0 = Strong Buy → 5.0 = Sell, mapped linearly to 0–100.
+
+### Grade thresholds and position sizing
+
+| Score | Grade | Max position | Meaning |
+|-------|-------|--------------|---------|
+| 80–100 | Strong | 8–10% | All signals align — highest-conviction entry |
+| 65–79 | Good | 5–7% | Most signals agree — size normally |
+| 50–64 | Moderate | 2–4% | Mixed signals — reduce size, wait for confirmation |
+| < 50 | Weak | Avoid | Signals conflict — no entry recommended |
+
+Position sizes are as a percentage of total portfolio. Adjust down in a Bear Market (S&P 500 below 200-day MA).
+
+### Where the score appears
+
+- **Rankings page** — Confluence column beside K-Score; hover for grade and max position hint
+- **Opportunities page** — new **Confluence** tab (🎯) filters stocks with score ≥ 65; key metric card shows score and grade
+- **Stock Detail sidebar** — full Confluence Panel showing score bar, grade, max position size, entry zone, and exit targets
+
+### Entry Playbook
+
+**Step 1 — Screen (Opportunities → Confluence tab)**
+Only stocks with score ≥ 65 appear. This is your filtered shortlist where the majority of signals agree.
+
+**Step 2 — Confirm conviction (Stock Detail page)**
+- Confluence Panel score ≥ 65 (ideally ≥ 80 for a full position)
+- K-Score fair value: current price below fair value
+- Market Regime: green dot (Bull Market). In Bear Market, require score ≥ 75 and reduce position size by half.
+- Fear & Greed gauge: avoid entering when Extreme Greed (> 80) — wait for a pullback
+
+**Step 3 — Time the entry (Chart)**
+- Price is at or near a Support level shown in the Trade Setup panel
+- 52-week position: below 60% of range is preferable
+- RSI below 65 (not overbought)
+
+**Step 4 — Size the position**
+Use the grade's max position % as your ceiling. Apply it to the Position Sizer below to calculate exact share count based on your stop loss distance.
+
+**Step 5 — Set alerts**
+- Price alert at the support level below entry — your stop reference
+- Signal alert on — get emailed if AI Signal deteriorates
+- (Optional) In-browser confluence alert via the local alert system
+
+### Exit Playbook
+
+| Trigger | Action |
+|---------|--------|
+| AI Signal drops to SELL, Analyst still Buy | Trim 50% — momentum gone but fundamental intact; wait for re-entry signal |
+| AI Signal = SELL + Analyst = Hold/Underperform | Full exit |
+| Price reaches Analyst **mean price target** | Trim to 50% of position; raise stop to breakeven |
+| Price reaches Analyst **high price target** | Full exit — full upside captured |
+| K-Score fair value hit | Reassess — stock may be fully valued; tighten stop |
+| Confluence score drops below 50 | Review position; prepare to exit if no improvement next session |
+
+### Highest-conviction setup (all four aligned)
+
+The rarest and highest-quality entries occur when:
+- Analyst: **Strong Buy** (recommendation_mean ≤ 1.5)
+- AI Signal: **BUY** with confidence > 70%
+- K-Score: above 65
+- Chart: price sitting at a Support level, not extended
+
+At this combination, confluence score will typically be 80+. This is the signal to use your maximum position allocation.
+
+### In-browser Confluence Alert
+
+A `confluence_above` alert condition is available in the local alert system. When the confluence score for a watched symbol crosses a threshold (e.g. 70), an in-browser notification fires and the notification bell updates. Set via the alert checker that runs every 60 seconds in `_app.tsx`.
+
+---
+
+## K-Score — sector-relative value and growth scoring
+
+### Background
+
+The original K-Score used price-only proxies for the Value and Growth sub-scores:
+
+| Sub-score | Proxy |
+|-----------|-------|
+| Value | Distance below 52-week high (discount = potential value) |
+| Growth | 12-month CAGR of the closing price |
+
+These proxies are noisy — a stock can be far below its 52w high simply because it collapsed, and price CAGR conflates capital gains with fundamental earnings growth.
+
+### Sector-relative percentile ranking
+
+When real fundamentals are available (cached in Redis from `GET /stocks/{symbol}/fundamentals`), the ranking engine replaces both proxies with sector-relative percentile ranks. Each metric is ranked within the stock's sector peer group across all active symbols.
+
+**Value score inputs (lower = better value, so ranks are inverted):**
+
+| Metric | Direction |
+|--------|-----------|
+| Trailing P/E | Lower is cheaper |
+| Forward P/E | Lower is cheaper |
+| Price-to-Book | Lower is cheaper |
+| EV/EBITDA | Lower is cheaper |
+
+**Growth score inputs (higher = better growth, ranks are direct):**
+
+| Metric | Direction |
+|--------|-----------|
+| Earnings growth (YoY) | Higher is better |
+| Revenue growth (YoY) | Higher is better |
+| Return on Equity (ROE) | Higher is better |
+
+Each group of metrics is averaged into a 0–100 score where 100 = best in sector. If fewer than 3 peers have data for a metric, it is excluded to avoid ranking noise from a single outlier.
+
+### Fallback
+
+If a symbol has no fundamentals cached in Redis, or fewer than 2 peers exist in the sector, the original price-based proxies (`_value_proxy`, `_growth_proxy`) are used unchanged. This ensures the ranking engine never crashes due to missing data.
+
+### Implementation
+
+- **`services/market-data/src/api/routes.py`** — `GET /stocks/fundamentals_bulk` reads all active symbols' Redis-cached fundamentals in one request and returns a flat dict, avoiding per-symbol yfinance calls at ranking time.
+- **`services/ranking-engine/src/api/routes.py`** — `_fetch_fundamentals_bulk()` calls the above endpoint once per ranking run; `_sector_relative_scores(symbol, sector, all_fundamentals)` computes the percentile ranks and returns `(value_score, growth_score)` or `(None, None)` on fallback.
+- **`services/ranking-engine/src/scoring/kscore.py`** — `compute_kscore()` accepts optional `value_score` and `growth_score` parameters; when provided they replace the price proxies.
+
+---
+
+## Signal engine — weekly TA score fix
+
+### Problem
+
+The weekly TA sub-score (`weekly_ta_score`) was always 0.50 (neutral), causing a permanent weekly conflict compression (×0.85) on every signal regardless of the actual weekly trend. This was suppressing many legitimate BUY signals — the compression was firing universally rather than selectively.
+
+**Root cause:** The DB only stores D1 (daily) and M5 (5-minute intraday) price bars. The `_fetch_weekly_prices(symbol)` function queried for `timeframe = '1w'` rows, which don't exist, so it always returned an empty DataFrame.
+
+### Fix
+
+Weekly bars are now synthesised in memory by resampling the daily bars that are already fetched for signal generation. The `_resample_to_weekly(df)` function groups daily OHLCV bars into weekly candles using `pandas.DataFrame.resample("W-MON")`:
+
+```
+open  = first bar of week
+high  = max high of week
+low   = min low of week
+close = last bar of week
+volume = sum of week
+```
+
+The resulting weekly DataFrame is passed to `_weekly_ta_score()` exactly as before — no other code changed. The minimum 10-week requirement for a valid weekly score is enforced; if fewer than 10 weeks of data exist the score falls back to 0.50.
+
+**Effect:** The weekly conflict compression now only fires when the weekly trend genuinely disagrees with the daily trend, instead of on every stock.
+
+---
+
+## Admin shared AI key
+
+### Problem
+
+Non-admin users (e.g. `lauwing2`) had provider set to "none" by default and no API key in their localStorage namespace. The client-side `isAiConfigured()` check blocked all AI calls before they reached the backend, so features like Game Plan, Trade Board alert suggestions, and AI Chat were completely unavailable.
+
+### Backend fix — Redis fallback in `ai_proxy.py`
+
+`POST /ai/chat` in the API gateway now accepts an empty `api_key` field. When the key is empty, the endpoint looks up a shared admin-configured key from Redis:
+
+| Redis key | Purpose |
+|-----------|---------|
+| `stockai:admin:claude_api_key` | Shared Claude key for all users |
+| `stockai:admin:deepseek_api_key` | Shared DeepSeek key for all users |
+| `stockai:admin:claude_model` | Default Claude model when no personal key |
+| `stockai:admin:deepseek_model` | Default DeepSeek model when no personal key |
+
+If neither the user's key nor the Redis admin key exists, a clear error is returned asking the user to configure a key or ask the admin.
+
+### Frontend fix — `isAiConfigured()` no longer requires a local key
+
+`frontend/src/lib/ai.ts` — `isAiConfigured()` previously returned `false` for any user without a local API key, blocking the UI before any network call was made. It now returns `true` whenever a provider is selected (not "none"), trusting the backend to either find the user's key or fall back to the shared Redis key. The client sends an empty `api_key` string; the backend resolves it.
+
+### Admin UI — "Share my key with all users"
+
+**Settings → AI Assistant** now shows a **"Share my key with all users"** button for admin accounts. Clicking it pushes the currently configured key and model to Redis via `POST /admin/config` on the market-data service. This is the zero-friction way to set the shared key — no API calls or Redis CLI needed.
+
+**`/admin/config` new fields:**
+
+| Field | Description |
+|-------|-------------|
+| `claude_api_key` | Stores to `stockai:admin:claude_api_key` in Redis |
+| `deepseek_api_key` | Stores to `stockai:admin:deepseek_api_key` in Redis |
+| `claude_model` | Stores to `stockai:admin:claude_model` in Redis |
+| `deepseek_model` | Stores to `stockai:admin:deepseek_model` in Redis |
+
+### How to enable AI for all users
+
+1. Log in as admin → **Settings → AI Assistant**
+2. Select your provider (Claude or DeepSeek) and enter your API key
+3. Click **"Share my key with all users"** — confirmation message appears
+4. Non-admin users now need only to select a provider in their own Settings (not "Disabled") — no key required
+
+---
+
+## Signal engine v5 — market breadth regime filter
+
+### Background
+
+The v4 regime detection was two-dimensional: S&P 500 vs 200-day MA (bull/bear) and Fear & Greed score (high_vol). A limitation of using only the index price is that the S&P 500 can remain above its 200-day MA while the majority of individual stocks have already broken down — a condition known as "narrow breadth" or "internal deterioration." BUY signals during narrow breadth have a higher false-positive rate because the broad market backdrop is weakening even though headline indices have not yet confirmed it.
+
+### Market breadth metric
+
+**Market breadth** is the percentage of active US stocks in the tracked universe that are currently trading above their 200-day simple moving average. The SMA-200 is already computed and stored as `fair_price` in the `rankings` database table during each ranking refresh, so no additional price computation is required.
+
+**Endpoint:** `GET /stocks/market_breadth`
+
+| Field | Description |
+|-------|-------------|
+| `breadth_pct` | % of active US stocks above their 200-day SMA |
+| `above_200ma` | Count trading above SMA-200 |
+| `below_200ma` | Count trading below SMA-200 |
+| `label` | "Healthy" (≥60%) / "Mixed" (40–60%) / "Weak" (<40%) |
+| `color` | Green / Yellow / Red |
+
+Cached in Redis for 4 hours. The endpoint compares each stock's latest live price (from the live-prices Redis cache) against its stored `fair_price`. If live price is unavailable for a stock it is excluded from the count.
+
+### Signal engine integration
+
+`_fetch_market_breadth()` is called once per `generate_signal()` invocation alongside `_fetch_market_regime()`. The result is stored in `reasons["breadth_pct"]`.
+
+**Compression rule:** when `breadth_pct < 40%` in a `bull`, `high_vol`, or `unknown` regime, the fused signal is compressed 10% toward neutral:
+
+```
+fused = 0.5 + (fused - 0.5) × 0.90
+reasons["breadth_compression"] = True
+```
+
+The compression is not applied in `bear` regime because the bear thresholds (0.73 BUY, 0.56 HOLD) already account for broad market weakness.
+
+### Interaction with other v4/v5 compressions
+
+| Layer | Condition | Effect |
+|-------|-----------|--------|
+| ADX compression | ADX < 20 | ×0.90 toward neutral |
+| High-vol compression | Regime = high_vol | ×0.85 toward neutral |
+| **Breadth compression** | **Breadth < 40% + bull/high_vol** | **×0.90 toward neutral** |
+
+Compressions stack multiplicatively. A stock in a high-vol regime with breadth < 40% and ADX < 20 receives all three, reducing a 90% bullish signal to roughly 80% — still a BUY in bull conditions but less extreme.
+
+### Dashboard — Market Breadth panel
+
+The **Dashboard** now shows a Market Breadth tile alongside the Portfolio Pulse panel:
+
+- Horizontal progress bar filled to `breadth_pct`%
+- Large percentage figure in colour (green / yellow / red)
+- "Healthy / Mixed / Weak" label
+- Stock counts: ↑ N above · ↓ N below
+
+Data refreshes every 4 hours (matching the Redis TTL).
+
+### Implementation files
+
+| File | Change |
+|------|--------|
+| `services/market-data/src/api/routes.py` | Added `GET /stocks/market_breadth` endpoint + `_MARKET_BREADTH_KEY` Redis constant |
+| `services/signal-engine/src/generators/signals.py` | Added `_fetch_market_breadth()`, wired into `generate_signal()` with compression logic; updated docstring to v5 |
+| `frontend/src/lib/api.ts` | Added `MarketBreadth` type + `api.marketBreadth()` |
+| `frontend/src/pages/index.tsx` | Fetches breadth via SWR, passes to `MarketOverview`; added breadth tile to dashboard |
+
+---
+
+## S/R detection — three-tier logic with Fibonacci fallback
+
+**Problem:** The Confluence Score entry zone for SMTC showed $63.40 when the stock was trading at $151. Root cause: `detect_support_resistance` ranked all pivot levels by touch count across 400 bars of history. SMTC spent 370 of those bars in the $54–$81 range, so those pivots had the highest strength scores. It only crossed $100 on 2026-04-16 (~30 bars), leaving no established S/R in the $100–$155 range.
+
+### Three-tier detection strategy
+
+`detect_support_resistance()` in `services/technical-analysis/src/indicators/trendlines.py` now uses a cascading approach:
+
+**Tier 1 — Local structure (last 90 bars, within 25% of current price)**
+Run pivot detection on only the most recent 90 bars. If 2+ levels fall within 25% of the current price, use those. This captures fresh S/R that has formed since a breakout.
+
+**Tier 2 — Full history within 35%**
+Run pivot detection on the full 400-bar history. Filter to levels within 35% of current price. Use if 2+ found. This catches established S/R that is still within a reasonable trading range.
+
+**Tier 3 — Fibonacci retracement fallback**
+When no meaningful S/R exists nearby (stock at all-time high with no prior pivot structure in range), synthesise Fibonacci retracement levels from the 90-bar high/low swing:
+
+| Ratio | Role |
+|-------|------|
+| 23.6% | Resistance |
+| 38.2% | Support |
+| 50.0% | Support |
+| 61.8% | Support |
+| 78.6% | Support |
+
+For SMTC, the 90-bar range spans roughly $63 (pre-breakout low) to $151 (recent high), producing Fib levels at approximately $91, $108, $113, $121, $133, $148 — all realistic entry/support zones for a stock at $151.
+
+**Why not a 60% proximity band?** The previous version tried bands of 35% → 60% → unlimited before falling back to Fibonacci. With a 60% band, SMTC's old $63–$81 pivots qualified (60% below $151 = $60.40), so Fibonacci was never reached. The 60% fallback was removed; Tier 2 caps at 35%, then immediately falls through to Fibonacci.
+
+### Implementation file
+
+| File | Change |
+|------|--------|
+| `services/technical-analysis/src/indicators/trendlines.py` | Refactored `detect_support_resistance()` into 3-tier logic; added `_cluster_pivots()` helper; added `_fib_levels_from_range()` Fibonacci synthesiser |
+
+---
+
+## Signal & ML Quality Improvements (batch — 2026-05-31 to 2026-06-01)
+
+A set of correctness and quality fixes applied across the signal engine, ML pipeline, and data layer.
+
+### ML model calibration
+The model's raw probabilities were over-confident (spiky histogram, not well-calibrated). An **IsotonicRegression calibrator** is now fitted on a held-out 15% calibration set, saved alongside the model in the joblib bundle, and applied at inference time via `predict_latest()`. Three-way split (70/15/15) prevents the calibrator from fitting on training data.
+
+### K-Score — falling knife gate
+The value sub-score previously rewarded stocks at low absolute P/E regardless of whether earnings were deteriorating. A **falling knife gate** was added to `_value_proxy()` in `kscore.py`: if TTM revenue growth or earnings growth is deeply negative (below a threshold), the value score is capped even if valuation metrics appear cheap.
+
+### Macro features — Redis cache fallback
+`fetch_macro_features()` in `builder.py` now caches VIX, S&P 500, and Fed Funds data in Redis. On yfinance failure the feature builder reads the cached values rather than zero-filling, which previously caused the ML model to receive corrupted inputs at inference time.
+
+### Look-ahead bias guard
+`train_model()` in `trainer.py` filters today's bars from the training set before fitting. Without this, the model could see partial intraday bars as complete bars, introducing subtle look-ahead bias in feature computation.
+
+### Prompt injection sanitisation
+All four Research Engine route handlers (`GET`, `DELETE`, `POST`, `POST/chat`) call `_sanitise_symbol()` before using the ticker in any Claude prompt. The function strips all characters outside `[A-Z0-9.\-:]`, covering US tickers, HK codes (e.g. `0700.HK`), and indices (`^VIX`). Invalid symbols return HTTP 400 before a prompt is constructed.
+
+### RSI scoring curve — asymmetric piecewise
+The RSI component in `_technical_score()` was symmetric around 50. Replaced with an asymmetric piecewise curve: oversold (RSI < 30) scores highest, momentum zone (50–65) scores well, overbought (RSI > 75) penalised. This avoids rewarding late-stage breakouts with the same RSI score as early-entry setups.
+
+### Adjusted close consistency
+`yfinance_adapter.py` now sets `auto_adjust=True` for all daily bar fetches, ensuring that all feature computation (SMA, RSI, MACD, returns) uses split- and dividend-adjusted closes. Previously, raw closes could cause SMA crossover signals on ex-dividend days.
+
+### Strategy weight normalisation
+`scoreFor()` in `opportunities.tsx` normalises strategy weights to sum to 1 before blending sub-scores. Previously, strategies whose weights didn't add to 100 would produce scores that were not on the 0–100 scale and were not comparable across strategy presets.
+
+### Zero-volume bar filter
+`validate_ohlcv()` in `ingestion.py` drops bars where volume = 0. Zero-volume bars are data artefacts (market closures, data vendor errors) that cause flat RSI readings and incorrect VWAP calculations. Affected primarily certain HK small-caps during holidays.
+
+### Research engine cache quality flag
+The report object now carries a `report_quality` field (`fresh` | `cached` | `stale`). The Research page displays a yellow warning banner when the report is from cache and more than 24 h old, so the user knows when to regenerate.
+
+### Stale price data warning
+`_check_price_staleness()` in `signals.py` logs a structured `signal.stale_price_data` warning with `last_bar` and `days_old` fields if the most recent price bar is more than 3 days old. Signal computation is not blocked, but the gap is observable in logs.
+
+### Earnings surprise model
+Three new fields added to the fundamentals endpoint and surfaced in the Research Engine:
+- `eps_beat_rate` — fraction of the last 8 quarters where EPS beat consensus estimate
+- `eps_avg_surprise_pct` — mean EPS surprise percentage
+- `eps_surprise_trend` — direction of recent surprises (improving/declining)
+
+Research Engine scoring: +5 pts if `beat_rate ≥ 75%`; +2 pts if `≥ 50%`. The stock detail page shows a per-quarter beat/miss grid with colour coding.
+
+### Relative strength vs sector
+`rs_rank = (1 + stock_20d_return) / (1 + sector_ETF_20d_return)`, mapped to RS score 0–100 (50 = in-line with sector). Added as a 10% weight in the K-Score. US stocks are compared against the appropriate SPDR sector ETF (XLK, XLV, XLF, etc.); HK stocks against ^HSI. Signal engine: `rs_rank < 0.8` compresses the fused signal 15% toward neutral regardless of regime. The Rankings table shows a colour-coded RS column (green ≥ 60, red < 40).
+
+### News sentiment compression
+The last 10 news headlines per stock are scored with VADER sentiment (mapped to 0–100). Results are stored in the signal `reasons` dict and shown in the stock detail page. If the 7-day aggregated sentiment score is below 25, the fused signal is compressed 30% toward neutral; below 35, it is compressed 20%. This suppresses BUY signals ahead of coverage of material negative events (regulatory action, leadership departure, etc.) that technicals do not detect.
+
+### Implementation file summary
+
+| Improvement | File |
+|---|---|
+| ML calibration | `services/ml-prediction/src/ml/trainer.py` |
+| Falling knife gate | `services/ranking-engine/src/kscore.py` |
+| Macro Redis cache | `services/ml-prediction/src/ml/builder.py` |
+| Look-ahead guard | `services/ml-prediction/src/ml/trainer.py` |
+| Prompt injection | `services/research-engine/src/api/routes.py` |
+| RSI curve | `services/ranking-engine/src/kscore.py` |
+| Adj close | `services/market-data/src/adapters/yfinance_adapter.py` |
+| Weight normalisation | `frontend/src/pages/opportunities.tsx` |
+| Zero-volume filter | `services/market-data/src/services/ingestion.py` |
+| Cache quality flag | `services/research-engine/src/api/routes.py` + `frontend/src/pages/research/[symbol].tsx` |
+| Stale price check | `services/signal-engine/src/generators/signals.py` |
+| Earnings surprise | `services/market-data/src/api/routes.py` + `services/research-engine/src/api/routes.py` + `frontend/src/pages/stock/[symbol].tsx` |
+| Relative strength | `services/ranking-engine/src/` + `frontend/src/pages/rankings.tsx` |
+| News sentiment | `services/signal-engine/src/generators/signals.py` |
+
+---
+
+## Unified + Add ▾ workflow (Screener & Forecast)
+
+A **WatchlistPickerButton** component (`frontend/src/components/WatchlistPickerButton.tsx`) provides a unified `+ Add ▾` dropdown on Screener result rows and Forecast picks. This replaces the previous per-page "Add to Watchlist" buttons with a single workflow that covers both Watchlists and the Trade Board.
+
+### Dropdown sections
+
+**WATCHLISTS** — Lists all of the current user's named watchlists, each showing its item count. Clicking a list adds the symbol immediately and replaces the count with a green `✓ Added` checkmark. Multiple lists can be added to in one session without closing the dropdown.
+
+**TRADE BOARD** — A single row "Add to Radar". Clicking adds the stock to the Trade Board at the Radar (watch) stage. Shows `✓ Added` after the first click.
+
+### Positioning
+The dropdown opens leftward (`right: 0` CSS) so it doesn't overflow the right edge of the screen regardless of where the button appears in the table.
+
+### Implementation
+| File | Role |
+|---|---|
+| `frontend/src/components/WatchlistPickerButton.tsx` | Dropdown component — `size="xs"` for Screener, `size="sm"` for Forecast |
+| `frontend/src/pages/screener.tsx` | Replaced `+ Watch` column with `<WatchlistPickerButton />` |
+| `frontend/src/pages/forecast.tsx` | Added `<WatchlistPickerButton />` next to existing card footer buttons |
+
+---
+
+## ML fusion weight — empirical validation (2026-06-02)
+
+### Background
+
+The signal engine blends the ML model's bullish probability with the hand-tuned TA score using a dynamic weight:
+
+```
+ml_weight = clip(0.40 + (auc − 0.50) / 0.20 × 0.35,  min=0.40, max=0.75)
+```
+
+This maps AUC 0.50 (random) → 40% ML and AUC 0.70 (excellent) → 75% ML. Two problems existed before this fix:
+
+1. **Wrong AUC input** — the formula was fed the cross-validation (CV) AUC, which is computed on training folds and is upward-biased. The held-out test AUC is the honest, unbiased measure.
+2. **No empirical backing** — the 40–75% range was hand-designed with no validation against actual signal history.
+
+### Fix 1 — Switch to held-out test AUC
+
+`predict_ensemble` in `trainer.py` now reads each model bundle's `"auc"` field (computed on the 15% held-out test set) instead of `"cv_auc_mean"` when weighting XGBoost vs Random Forest internally. It exposes `test_auc_mean` in its response metrics. The signal engine (`signals.py`) reads `test_auc_mean` with fallback to `auc` then `cv_auc_mean` for model bundles trained before this fix.
+
+### Fix 2 — Empirical weight sweep
+
+A new endpoint `GET /signals/ml-weight-validation?lookback_days=N` sweeps the ML fusion weight from 0.00 to 1.00 in 0.05 steps and, for each value, computes:
+
+- **Accuracy** — % of BUY signals (that would have fired at that weight) where price rose after the signal
+- **Avg return %** — average price change for those signals
+
+The sweep uses real historical signal data from the `signals` table: `ml_probability` and `ta_score` from the `reasons` JSON are re-blended at each test weight, and actual price outcomes are matched via the prices table.
+
+### Empirical result
+
+Over 180 days of signal history (170 signals):
+
+| ML Weight | Accuracy |
+|---|---|
+| 0% (TA only) | 39.3% |
+| **40% (formula min)** | **41.2% — empirical optimum** |
+| 50% | ~40% |
+| 75% (formula max) | ~39% |
+| 100% (ML only) | ~38% |
+
+The accuracy curve is relatively flat across all weights (±2%), confirming that TA and ML mostly agree on signal direction. The formula's lower bound of **0.40 is validated** as the empirical optimum — the ML model adds directional value most reliably when TA is still given 60% weight.
+
+### Weight validation chart
+
+The Signal Accuracy page (`/signal-accuracy`) shows a bar chart visualising the full accuracy curve. Bars are coloured:
+- **Green** — empirical optimum weight
+- **Purple** — weights inside the current formula range (40–75%)
+- **Dark grey** — weights outside the formula
+
+### Implementation files
+
+| File | Change |
+|---|---|
+| `services/ml-prediction/src/training/trainer.py` | `predict_ensemble` uses test AUC for internal model weighting; exposes `test_auc_mean` in response |
+| `services/signal-engine/src/generators/signals.py` | `_fetch_ml_data` reads `test_auc_mean` with fallback to `auc` / `cv_auc_mean` |
+| `services/signal-engine/src/api/routes.py` | New `GET /signals/ml-weight-validation` endpoint |
+| `frontend/src/lib/api.ts` | `mlWeightValidation()` call + `MLWeightValidation` / `MLWeightCurvePoint` types |
+| `frontend/src/pages/signal-accuracy.tsx` | `MLWeightChart` component + `useSWR` fetch |
+
+---
+
+## Options Flow (2026-06-02)
+
+### What it is
+
+Options flow is real-time tracking of unusual activity in the options market. When large institutions expect a stock to move, they often buy options *before* buying the underlying stock — it's cheaper to build a large directional position through options. This shows up as a spike in call volume ahead of a price move up, or put volume ahead of a drop.
+
+The signal is captured through the **call/put ratio (C/P)**: total call volume divided by total put volume across the nearest two expiry dates. A C/P of 2.0+ means calls are being bought at twice the rate of puts — institutions are positioning for upside.
+
+### The unusual contract flag
+
+A contract is flagged as unusual when `volume > 30% of open interest` for that strike. This means today's trading created a significant fraction of the total outstanding positions — it's a fresh, large directional bet, not routine hedging.
+
+**Most significant pattern:** `Vol/OI > 1.0×` (highlighted in amber in the UI) means volume *exceeded* open interest — the position was built from scratch today. Short-dated OTM calls with Vol/OI > 1 are the classic institutional front-running pattern.
+
+### Signal engine integration
+
+Options flow is fetched by the signal engine as part of `generate_signal()` and applied after the relative strength adjustment:
+
+| Sentiment | C/P range | Signal effect |
+|---|---|---|
+| Strongly bullish | ≥ 2.0 | +7% boost to fused signal |
+| Bullish | ≥ 1.3 | +3% nudge |
+| Neutral | 0.8 – 1.3 | No change |
+| Slightly bearish | ≤ 0.8 | 8% compress toward neutral |
+| Bearish | ≤ 0.5 | 15% compress toward neutral |
+
+The result is stored in `reasons` as `options_sentiment` and `options_cp_ratio` so it is visible in the signal detail. Only applies to US stocks — HK stocks and symbols without listed options return `available: false` and are skipped silently.
+
+### Stock detail page
+
+The **Options Flow** section appears on `/stock/[symbol]` below Institutional Holdings for any US stock with listed options. It shows:
+
+- **C/P ratio bar** — green (calls) vs red (puts) proportional bar with call/put volume counts and the ratio
+- **Sentiment badge** — colour-coded: green for bullish variants, red for bearish
+- **Unusual contracts table** — contracts where volume exceeded 30% of open interest, sorted by volume descending
+
+| Column | Description |
+|---|---|
+| Side | CALL or PUT |
+| Strike | Contract strike price |
+| Expiry | Expiration date |
+| Volume | Contracts traded today |
+| OI | Open interest (existing positions) |
+| Vol/OI | Volume ÷ OI — values > 1.0× (amber) are the most unusual |
+| IV | Implied volatility — high IV on OTM options = expensive, aggressive bet |
+| ITM | Whether the contract is currently in the money |
+
+### How to use it as a confirmation tool
+
+1. A stock surfaces from the Screener or Forecast with a BUY signal
+2. Open the stock detail page and check Options Flow
+3. **High C/P + OTM calls + Vol/OI > 1×** → institutional positioning aligns with the signal — higher conviction
+4. **Puts dominating despite a BUY signal** → treat the signal with caution; someone large is hedging against upside
+
+### Data source and caching
+
+Options chain data is fetched from yfinance (same library used for price data — no additional API key required). The response is cached in Redis for **15 minutes**. Only the two nearest expiration dates are fetched to keep response time fast. HK stocks and symbols without listed options return `{"available": false}` immediately without an external call.
+
+### API
+
+```
+GET /stocks/{symbol}/options-flow
+```
+
+Response (when available):
+```json
+{
+  "symbol": "AAPL",
+  "available": true,
+  "call_volume": 186847,
+  "put_volume": 83431,
+  "cp_ratio": 2.24,
+  "sentiment": "strongly_bullish",
+  "unusual_count": 12,
+  "unusual": [
+    { "expiry": "2026-06-03", "side": "call", "strike": 310.0,
+      "volume": 23086, "oi": 1120, "vol_oi": 20.61, "iv": 27.2, "itm": false }
+  ],
+  "expiries_used": ["2026-06-03", "2026-06-05"]
+}
+```
+
+### Implementation files
+
+| File | Change |
+|---|---|
+| `services/market-data/src/api/routes.py` | New `GET /stocks/{symbol}/options-flow` endpoint with Redis cache |
+| `services/signal-engine/src/generators/signals.py` | `_fetch_options_flow()` helper; options boost/compress applied after RS filter |
+| `frontend/src/lib/api.ts` | `getOptionsFlow()` call + `OptionsFlow` / `OptionsFlowContract` types |
+| `frontend/src/pages/stock/[symbol].tsx` | Options Flow section with C/P bar, sentiment badge, unusual contracts table |

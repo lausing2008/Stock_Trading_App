@@ -2,7 +2,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
-import { api, type Stock, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex } from '@/lib/api';
+import { api, type Stock, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex, type MarketBreadth } from '@/lib/api';
 import AddStockModal from '@/components/AddStockModal';
 
 const SECTOR_COLOR: Record<string, { text: string; bg: string }> = {
@@ -75,7 +75,7 @@ function StatusBadge({ open, pre, lunch }: { open: boolean; pre?: boolean; lunch
   );
 }
 
-function MarketOverview({ indices, signals }: { indices: MarketIndex[]; signals: SignalSummary[] }) {
+function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[]; signals: SignalSummary[]; breadth?: MarketBreadth }) {
   const { usOpen, usPreMkt, hkOpen, hkLunch } = getMarketStatus();
   const us = indices.filter(i => i.market === 'US');
   const hk = indices.filter(i => i.market === 'HK');
@@ -130,40 +130,61 @@ function MarketOverview({ indices, signals }: { indices: MarketIndex[]; signals:
         </div>
       </div>
 
-      {/* Portfolio pulse */}
-      {total > 0 && (
-        <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0b1120', padding: '12px 16px', minWidth: '160px' }}>
-          <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', marginBottom: '10px' }}>Portfolio Pulse</div>
-          {/* Stacked bar */}
-          <div style={{ display: 'flex', height: '6px', borderRadius: '3px', overflow: 'hidden', marginBottom: '8px' }}>
-            {[
-              { key: 'BUY',  color: '#22c55e' },
-              { key: 'HOLD', color: '#facc15' },
-              { key: 'WAIT', color: '#fb923c' },
-              { key: 'SELL', color: '#ef4444' },
-            ].map(({ key, color }) => {
-              const count = sigCounts[key as keyof typeof sigCounts];
-              return count > 0 ? (
-                <div key={key} style={{ flex: count, background: color }} title={`${key}: ${count}`} />
-              ) : null;
-            })}
+      {/* Portfolio pulse + Market Breadth */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '160px' }}>
+        {total > 0 && (
+          <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0b1120', padding: '12px 16px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', marginBottom: '10px' }}>Portfolio Pulse</div>
+            <div style={{ display: 'flex', height: '6px', borderRadius: '3px', overflow: 'hidden', marginBottom: '8px' }}>
+              {[
+                { key: 'BUY',  color: '#22c55e' },
+                { key: 'HOLD', color: '#facc15' },
+                { key: 'WAIT', color: '#fb923c' },
+                { key: 'SELL', color: '#ef4444' },
+              ].map(({ key, color }) => {
+                const count = sigCounts[key as keyof typeof sigCounts];
+                return count > 0 ? (
+                  <div key={key} style={{ flex: count, background: color }} title={`${key}: ${count}`} />
+                ) : null;
+              })}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+              {[
+                { key: 'BUY',  color: '#4ade80', label: 'Buy'  },
+                { key: 'HOLD', color: '#facc15', label: 'Hold' },
+                { key: 'WAIT', color: '#fb923c', label: 'Wait' },
+                { key: 'SELL', color: '#f87171', label: 'Sell' },
+              ].map(({ key, color, label }) => (
+                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: color, flexShrink: 0, display: 'inline-block' }} />
+                  <span style={{ fontSize: '10px', color: '#475569' }}>{label}</span>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color }}>{sigCounts[key as keyof typeof sigCounts]}</span>
+                </div>
+              ))}
+            </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
-            {[
-              { key: 'BUY',  color: '#4ade80', label: 'Buy'  },
-              { key: 'HOLD', color: '#facc15', label: 'Hold' },
-              { key: 'WAIT', color: '#fb923c', label: 'Wait' },
-              { key: 'SELL', color: '#f87171', label: 'Sell' },
-            ].map(({ key, color, label }) => (
-              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: color, flexShrink: 0, display: 'inline-block' }} />
-                <span style={{ fontSize: '10px', color: '#475569' }}>{label}</span>
-                <span style={{ fontSize: '11px', fontWeight: 700, color }}>{sigCounts[key as keyof typeof sigCounts]}</span>
-              </div>
-            ))}
+        )}
+
+        {breadth && breadth.breadth_pct != null && (
+          <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0b1120', padding: '12px 16px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', marginBottom: '8px' }}>Market Breadth</div>
+            {/* Progress bar */}
+            <div style={{ background: '#1e293b', borderRadius: '3px', height: '6px', marginBottom: '6px', overflow: 'hidden' }}>
+              <div style={{ width: `${breadth.breadth_pct}%`, height: '100%', background: breadth.color, borderRadius: '3px', transition: 'width 0.4s' }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <span style={{ fontSize: '18px', fontWeight: 800, color: breadth.color }}>{breadth.breadth_pct.toFixed(0)}%</span>
+              <span style={{ fontSize: '10px', fontWeight: 700, color: breadth.color }}>{breadth.label}</span>
+            </div>
+            <div style={{ fontSize: '10px', color: '#334155', marginTop: '3px' }}>
+              stocks above 200-day MA
+            </div>
+            <div style={{ fontSize: '10px', color: '#475569', marginTop: '4px' }}>
+              ↑ {breadth.above_200ma} &nbsp;·&nbsp; ↓ {breadth.below_200ma}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -176,6 +197,7 @@ export default function Home() {
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
   const { data: marketData } = useSWR<MarketIndex[]>('market-overview', () => api.marketOverview(), { refreshInterval: 60_000 });
+  const { data: breadthData } = useSWR<MarketBreadth>('market-breadth', () => api.marketBreadth(), { refreshInterval: 4 * 60 * 60 * 1000 });
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -477,6 +499,7 @@ export default function Home() {
         <MarketOverview
           indices={marketData}
           signals={(signalsData ?? []).filter(s => watchedSet.has(s.symbol))}
+          breadth={breadthData}
         />
       )}
 

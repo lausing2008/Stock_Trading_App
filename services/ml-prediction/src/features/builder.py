@@ -45,11 +45,39 @@ FEATURE_COLUMNS = [
 ]
 
 
+_MACRO_CACHE_KEY = "stockai:macro_features"
+_MACRO_CACHE_TTL = 86_400  # 24 hours — macro data is daily, one fresh fetch per trading day is enough
+
+
+def _redis_save_macro(macro: pd.DataFrame) -> None:
+    try:
+        import json, redis as redis_lib
+        from common.config import get_settings
+        r = redis_lib.Redis.from_url(get_settings().redis_url, decode_responses=True)
+        r.setex(_MACRO_CACHE_KEY, _MACRO_CACHE_TTL, macro.to_json(orient="split"))
+    except Exception:
+        pass
+
+
+def _redis_load_macro() -> pd.DataFrame:
+    try:
+        import json, redis as redis_lib
+        from common.config import get_settings
+        r = redis_lib.Redis.from_url(get_settings().redis_url, decode_responses=True)
+        raw = r.get(_MACRO_CACHE_KEY)
+        if raw:
+            return pd.read_json(raw, orient="split")
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
 def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
     """Download SPY + VIX macro features, indexed by date string ("YYYY-MM-DD").
 
-    Returns an empty DataFrame on any failure — build_features handles missing
-    macro gracefully by falling back to 0-filled values.
+    On yfinance failure, returns the last successful fetch from Redis rather than
+    an empty DataFrame — zero-filling all macro features causes distribution shift
+    between training and inference since zero VIX/SPY returns never occur naturally.
     """
     import yfinance as yf
 
@@ -70,10 +98,10 @@ def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
             auto_adjust=False,
         )
     except Exception:
-        return pd.DataFrame()
+        return _redis_load_macro()
 
     if spy.empty or vix.empty:
-        return pd.DataFrame()
+        return _redis_load_macro()
 
     # Flatten MultiIndex columns (yfinance ≥0.2)
     if isinstance(spy.columns, pd.MultiIndex):
@@ -90,7 +118,9 @@ def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
     macro["vix_level"] = vix_c.values
     macro["spy_vol_20"] = spy_c.pct_change().rolling(20).std().values
 
-    return macro.dropna(how="all")
+    result = macro.dropna(how="all")
+    _redis_save_macro(result)
+    return result
 
 
 def compute_label_threshold(df: pd.DataFrame, horizon: int = 5) -> float:

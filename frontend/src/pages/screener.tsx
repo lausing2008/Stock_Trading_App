@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import { api, type RankingRow, type SignalSummary, type LatestPrice, type WatchlistItem } from '@/lib/api';
+import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 import { getSession } from '@/lib/auth';
 
 // ─── Merged row type ──────────────────────────────────────────────────────────
@@ -16,7 +17,7 @@ type Row = RankingRow & {
 };
 
 type SortKey = 'symbol' | 'score' | 'technical' | 'momentum' | 'value' | 'growth'
-             | 'bullish_probability' | 'change_pct' | 'price' | 'confidence';
+             | 'bullish_probability' | 'change_pct' | 'price' | 'confidence' | 'relative_strength';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -123,7 +124,6 @@ export default function Screener() {
 
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'score', dir: 'desc' });
-  const [addingWl, setAddingWl] = useState<string | null>(null);
 
   const wlSymbols = useMemo(
     () => new Set((wlItems ?? []).map(w => w.symbol)),
@@ -220,6 +220,7 @@ export default function Screener() {
       else if (sort.key === 'change_pct')         { av = a.change_pct ?? -999;        bv = b.change_pct ?? -999; }
       else if (sort.key === 'price')              { av = a.price ?? -1;               bv = b.price ?? -1; }
       else if (sort.key === 'confidence')         { av = a.confidence ?? -1;          bv = b.confidence ?? -1; }
+      else if (sort.key === 'relative_strength')  { av = a.relative_strength ?? -1;   bv = b.relative_strength ?? -1; }
 
       if (typeof av === 'string') return sort.dir === 'asc' ? av.localeCompare(bv as string) : (bv as string).localeCompare(av);
       return sort.dir === 'asc' ? av - (bv as number) : (bv as number) - av;
@@ -240,15 +241,6 @@ export default function Screener() {
 
   function resetFilters() {
     setFilters({ ...DEFAULT_FILTERS, signals: new Set() });
-  }
-
-  async function handleAddWatchlist(symbol: string) {
-    setAddingWl(symbol);
-    try {
-      await api.addToWatchlist(symbol);
-    } finally {
-      setAddingWl(null);
-    }
   }
 
   const isDefaultFilters = (
@@ -428,6 +420,7 @@ export default function Screener() {
                   <Th label="Momentum"   col="momentum"            sort={sort} onSort={toggleSort} />
                   <Th label="Value"      col="value"               sort={sort} onSort={toggleSort} />
                   <Th label="Growth"     col="growth"              sort={sort} onSort={toggleSort} />
+                  <Th label="RS"         col="relative_strength"   sort={sort} onSort={toggleSort} />
                   <Th label="Bullish %"  col="bullish_probability" sort={sort} onSort={toggleSort} />
                   <Th label="Confidence" col="confidence"          sort={sort} onSort={toggleSort} />
                   <Th label="Day Chg"    col="change_pct"          sort={sort} onSort={toggleSort} />
@@ -498,6 +491,11 @@ export default function Screener() {
                       {/* Growth */}
                       <td style={{ padding: '8px 10px' }}><ScoreBar value={row.growth} color="#34d399" /></td>
 
+                      {/* Relative Strength */}
+                      <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontSize: '12px', color: row.relative_strength == null ? '#334155' : row.relative_strength >= 60 ? '#4ade80' : row.relative_strength >= 45 ? '#64748b' : '#f87171' }}>
+                        {row.relative_strength != null ? row.relative_strength.toFixed(0) : '—'}
+                      </td>
+
                       {/* Bullish % */}
                       <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums' }}>
                         {row.bullish_probability != null
@@ -524,24 +522,7 @@ export default function Screener() {
 
                       {/* Actions */}
                       <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
-                        {!row.inWatchlist && (
-                          <button
-                            onClick={() => handleAddWatchlist(row.symbol)}
-                            disabled={addingWl === row.symbol}
-                            title="Add to watchlist"
-                            style={{
-                              padding: '3px 8px', borderRadius: '5px', fontSize: '10px', fontWeight: 600,
-                              border: '1px solid #1e293b', background: 'transparent',
-                              color: addingWl === row.symbol ? '#6366f1' : '#475569',
-                              cursor: addingWl === row.symbol ? 'not-allowed' : 'pointer',
-                            }}
-                          >
-                            {addingWl === row.symbol ? '…' : '+ Watch'}
-                          </button>
-                        )}
-                        {row.inWatchlist && (
-                          <span style={{ fontSize: '10px', color: '#6366f1' }}>★ Watching</span>
-                        )}
+                        <WatchlistPickerButton symbol={row.symbol} size="xs" />
                       </td>
                     </tr>
                   );

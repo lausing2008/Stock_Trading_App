@@ -32,7 +32,7 @@ def validate_ohlcv(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df = df[(df["high"] >= df["low"]) & (df["high"] >= df["open"]) & (df["high"] >= df["close"])]
     df = df[(df["low"] <= df["open"]) & (df["low"] <= df["close"])]
     df = df[(df[["open", "high", "low", "close"]] > 0).all(axis=1)]
-    df = df[df["volume"] >= 0]
+    df = df[df["volume"] > 0]
     dropped = before - len(df)
     if dropped:
         log.warning("ohlcv.drop_invalid", symbol=symbol, dropped=dropped)
@@ -80,6 +80,9 @@ def ingest_symbol(
 
         head = None if force else _last_bar_ts(session, stock.id, tf)
         start = (head.date() + timedelta(days=1)) if head else (date.today() - timedelta(days=lookback_days))
+        # yfinance only serves intraday bars within the last 60 days
+        if timeframe in ("1m", "5m", "15m", "1h"):
+            start = max(start, date.today() - timedelta(days=59))
         end = date.today() + timedelta(days=1)
 
         if start >= end:

@@ -46,7 +46,7 @@
 import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SignalAccuracyRow } from '@/lib/api';
+import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint } from '@/lib/api';
 
 const LOOKBACK_OPTIONS = [
   { label: '30d', value: 30 },
@@ -63,6 +63,123 @@ function acc(n: number | null) {
   return n == null ? '—' : `${n.toFixed(1)}%`;
 }
 
+function FactorBar({ value, color, maxPct = 50 }: { value: number | null; color: string; maxPct?: number }) {
+  if (value == null) return <div style={{ height: 10, background: '#1e293b', borderRadius: 3, flex: 1 }} />;
+  const clamped = Math.max(-maxPct, Math.min(maxPct, value));
+  const pct = Math.abs(clamped) / maxPct * 50; // 50% of bar width each side
+  return (
+    <div style={{ flex: 1, height: 10, background: '#1e293b', borderRadius: 3, position: 'relative', overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1, background: '#334155', zIndex: 1 }} />
+      {clamped >= 0
+        ? <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: `${pct}%`, background: color, borderRadius: '0 3px 3px 0' }} />
+        : <div style={{ position: 'absolute', right: '50%', top: 0, bottom: 0, width: `${pct}%`, background: color, borderRadius: '3px 0 0 3px' }} />
+      }
+    </div>
+  );
+}
+
+function MLWeightChart({ curve, optimalWeight, formulaRange, signalCount }: {
+  curve: MLWeightCurvePoint[];
+  optimalWeight: number | null;
+  formulaRange: [number, number];
+  signalCount: number;
+}) {
+  if (!curve.length) return null;
+  const accs = curve.map(p => p.accuracy ?? 0);
+  const minAcc = Math.min(...accs);
+  const maxAcc = Math.max(...accs);
+  const range = maxAcc - minAcc || 1;
+
+  return (
+    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 11, color: '#64748b' }}>
+            Empirical sweep across {signalCount} BUY signals (180d). Each bar = accuracy if that blend weight had been used.
+          </div>
+        </div>
+        <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 16 }}>
+          {optimalWeight != null && (
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#4ade80' }}>
+              Optimal: {Math.round(optimalWeight * 100)}% ML
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+            Current formula: {Math.round(formulaRange[0] * 100)}–{Math.round(formulaRange[1] * 100)}% ML
+          </div>
+        </div>
+      </div>
+
+      {/* Bar chart */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 60 }}>
+        {curve.map(p => {
+          const acc = p.accuracy ?? 0;
+          const heightPct = range > 0 ? ((acc - minAcc) / range) * 80 + 20 : 50;
+          const isOptimal = p.weight === optimalWeight;
+          const inFormula = p.weight >= formulaRange[0] && p.weight <= formulaRange[1];
+          const color = isOptimal ? '#4ade80' : inFormula ? '#818cf8' : '#334155';
+          return (
+            <div key={p.weight} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <div title={`w=${p.weight} → ${acc.toFixed(1)}% acc`} style={{
+                width: '100%', height: `${heightPct}%`, background: color, borderRadius: '2px 2px 0 0',
+                transition: 'background 0.15s',
+              }} />
+            </div>
+          );
+        })}
+      </div>
+
+      {/* X-axis labels */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+        <span style={{ fontSize: 9, color: '#475569' }}>0% ML (TA only)</span>
+        <span style={{ fontSize: 9, color: '#475569' }}>50%</span>
+        <span style={{ fontSize: 9, color: '#475569' }}>100% ML</span>
+      </div>
+
+      <div style={{ marginTop: 8, display: 'flex', gap: 14, fontSize: 10, color: '#475569' }}>
+        <span><span style={{ color: '#4ade80' }}>■</span> Empirical optimum</span>
+        <span><span style={{ color: '#818cf8' }}>■</span> Current formula range (40–75%)</span>
+        <span><span style={{ color: '#334155' }}>■</span> Outside formula</span>
+      </div>
+    </div>
+  );
+}
+
+function FactorChart({ factors }: { factors: FactorRow[] }) {
+  return (
+    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr 60px 1fr 60px', gap: '6px 10px', alignItems: 'center' }}>
+        {/* header */}
+        <div style={{ fontSize: 10, color: '#475569' }} />
+        <div style={{ fontSize: 10, color: '#4ade80', textAlign: 'center' }}>✓ Correct ({factors[0]?.correct_count ?? 0})</div>
+        <div style={{ fontSize: 10, color: '#64748b', textAlign: 'center' }}>avg</div>
+        <div style={{ fontSize: 10, color: '#f87171', textAlign: 'center' }}>✗ Wrong ({factors[0]?.wrong_count ?? 0})</div>
+        <div style={{ fontSize: 10, color: '#64748b', textAlign: 'center' }}>avg</div>
+
+        {factors.map(f => {
+          const fmt = (v: number | null) => {
+            if (v == null) return '—';
+            if (f.key === 'ml_probability') return `${(v * 100).toFixed(0)}%`;
+            if (f.key === 'ta_score') return v.toFixed(2);
+            if (f.key === 'volume_z') return v.toFixed(2);
+            return v.toFixed(1);
+          };
+          return [
+            <div key={f.key + '-label'} style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>{f.label}</div>,
+            <FactorBar key={f.key + '-cb'} value={f.correct_dev_pct} color="#22c55e" />,
+            <div key={f.key + '-ca'} style={{ fontSize: 11, color: '#4ade80', textAlign: 'right', fontWeight: 600 }}>{fmt(f.correct_avg)}</div>,
+            <FactorBar key={f.key + '-wb'} value={f.wrong_dev_pct} color="#ef4444" />,
+            <div key={f.key + '-wa'} style={{ fontSize: 11, color: '#f87171', textAlign: 'right', fontWeight: 600 }}>{fmt(f.wrong_avg)}</div>,
+          ];
+        })}
+      </div>
+      <div style={{ marginTop: 10, fontSize: 10, color: '#334155' }}>
+        Bars show deviation from neutral baseline (RSI 50, ADX 20, Vol Z 0, ML 50%, Sentiment 50, TA 0.5). Green bar right = factor above neutral for correct signals.
+      </div>
+    </div>
+  );
+}
+
 export default function SignalAccuracyPage() {
   const [lookback, setLookback] = useState(90);
   const [filterSymbol, setFilterSymbol] = useState('');
@@ -75,6 +192,18 @@ export default function SignalAccuracyPage() {
   const { data, isLoading, error, mutate } = useSWR(
     ['signal-accuracy', lookback],
     () => api.signalAccuracy(lookback),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: factorData } = useSWR(
+    ['factor-exposure', lookback],
+    () => api.factorExposure(lookback),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: mlWeight } = useSWR(
+    'ml-weight-validation',
+    () => api.mlWeightValidation(180),
     { revalidateOnFocus: false },
   );
 
@@ -206,7 +335,32 @@ export default function SignalAccuracyPage() {
         </div>
       )}
 
-      {isLoading && <div style={{ color: '#64748b', textAlign: 'center', padding: 40 }}>Loading signal history…</div>}
+      {/* ML Weight Validation */}
+  {mlWeight && mlWeight.curve.length > 0 && (
+    <div style={{ marginBottom: 28 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 2 }}>ML/TA Fusion Weight — Empirical Validation</div>
+      <MLWeightChart
+        curve={mlWeight.curve}
+        optimalWeight={mlWeight.optimal_weight}
+        formulaRange={mlWeight.current_formula_range}
+        signalCount={mlWeight.signal_count}
+      />
+    </div>
+  )}
+
+  {/* Factor Exposure */}
+  {factorData && factorData.factors.length > 0 && (
+    <div style={{ marginBottom: 28 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 2 }}>Factor Exposure</div>
+      <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+        Average factor value for correct vs wrong BUY signals. Bars show deviation from neutral baseline.
+        If correct signals score higher on a factor, that factor is driving the wins.
+      </div>
+      <FactorChart factors={factorData.factors} />
+    </div>
+  )}
+
+  {isLoading && <div style={{ color: '#64748b', textAlign: 'center', padding: 40 }}>Loading signal history…</div>}
       {error && <div style={{ color: '#f87171', padding: 16 }}>Failed to load accuracy data.</div>}
 
       {/* Signal table */}

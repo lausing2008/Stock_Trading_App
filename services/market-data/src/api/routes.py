@@ -18,6 +18,18 @@ def _local_date(ts: datetime, market: str) -> str:
     if offset and ts.hour >= (24 - offset):
         return (ts + timedelta(hours=offset)).strftime("%Y-%m-%d")
     return ts.strftime("%Y-%m-%d")
+
+
+def _format_ts(ts: datetime, market: str, timeframe: str) -> str:
+    """Return the timestamp string for the API response.
+
+    Intraday bars (5m, 15m, etc.) are stored in UTC and returned as a full
+    ISO-8601 datetime so the frontend can render time labels on the chart.
+    Daily bars return YYYY-MM-DD as before.
+    """
+    if timeframe in ("1m", "5m", "15m", "1h"):
+        return ts.strftime("%Y-%m-%dT%H:%M:%S")
+    return _local_date(ts, market)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -423,6 +435,95 @@ def fear_greed():
     return result
 
 
+_MARKET_BREADTH_KEY = "stockai:market_breadth"
+_MARKET_BREADTH_TTL = 60 * 60 * 4  # 4 hours
+
+
+@router.get("/market_breadth")
+def market_breadth(session: Session = Depends(get_session)):
+    """% of active US stocks trading above their 200-day SMA (from latest ranking fair_price).
+    Redis-cached 4 h. Used as a regime signal: > 60% = healthy bull, < 40% = broad weakness."""
+    from db import Ranking, Market as _Market
+    from datetime import date as _date
+
+    try:
+        cached = _get_redis().get(_MARKET_BREADTH_KEY)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    today = _date.today()
+    cutoff = today - timedelta(days=10)
+
+    # Latest ranking per active US stock that has a fair_price (SMA-200)
+    latest_subq = (
+        select(Ranking.stock_id, func.max(Ranking.as_of).label("max_date"))
+        .where(Ranking.as_of >= cutoff)
+        .group_by(Ranking.stock_id)
+        .subquery()
+    )
+    rows = session.execute(
+        select(Stock.symbol, Ranking.fair_price)
+        .join(latest_subq, Stock.id == latest_subq.c.stock_id)
+        .join(Ranking, (Ranking.stock_id == latest_subq.c.stock_id) & (Ranking.as_of == latest_subq.c.max_date))
+        .where(Stock.active.is_(True), Stock.market == _Market.US, Ranking.fair_price.is_not(None))
+    ).all()
+
+    if not rows:
+        raise HTTPException(503, "Market breadth data not yet available — run a ranking refresh first.")
+
+    # Compare latest live price to SMA-200; fall back to cached live prices
+    live: dict[str, float] = {}
+    try:
+        cached_prices = _get_redis().get(_LIVE_KEY)
+        if cached_prices:
+            for item in json.loads(cached_prices):
+                if item.get("price") is not None:
+                    live[item["symbol"]] = float(item["price"])
+    except Exception:
+        pass
+
+    above = below = no_price = 0
+    for row in rows:
+        price = live.get(row.symbol)
+        if price is None:
+            no_price += 1
+            continue
+        if price > row.fair_price:
+            above += 1
+        else:
+            below += 1
+
+    total = above + below
+    breadth_pct = round(above / total * 100, 1) if total > 0 else None
+
+    if breadth_pct is not None and breadth_pct >= 60:
+        breadth_label = "Healthy"
+        breadth_color = "#4ade80"
+    elif breadth_pct is not None and breadth_pct >= 40:
+        breadth_label = "Mixed"
+        breadth_color = "#fbbf24"
+    else:
+        breadth_label = "Weak"
+        breadth_color = "#f87171"
+
+    result = {
+        "breadth_pct": breadth_pct,
+        "above_200ma": above,
+        "below_200ma": below,
+        "total": total,
+        "label": breadth_label,
+        "color": breadth_color,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        _get_redis().setex(_MARKET_BREADTH_KEY, _MARKET_BREADTH_TTL, json.dumps(result))
+    except Exception:
+        pass
+    return result
+
+
 @router.get("/latest_prices", response_model=list[LatestPriceOut])
 def latest_prices(
     symbols: str | None = Query(None, description="Comma-separated symbols to filter"),
@@ -555,6 +656,11 @@ class FundamentalsOut(BaseModel):
     # Ownership breakdown
     held_percent_institutions: float | None = None
     held_percent_insiders: float | None = None
+    # Earnings surprise history (last 8 quarters)
+    eps_beat_rate: float | None = None          # 0.0–1.0 fraction of quarters where actual > estimate
+    eps_avg_surprise_pct: float | None = None   # mean surprise % across available quarters
+    eps_surprise_trend: str | None = None       # "improving" | "declining" | "stable"
+    eps_history: list[dict] = []                # [{quarter, actual, estimate, surprise_pct}]
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
@@ -568,6 +674,37 @@ def _safe(info: dict, key: str):
         return v
     except Exception:
         return None
+
+
+@router.get("/fundamentals_bulk")
+def fundamentals_bulk(session: Session = Depends(get_session)):
+    """Return fundamental valuation + growth data for all active stocks from Redis cache.
+
+    Only symbols with a warm cache entry are included — symbols not yet fetched
+    (or with expired 24 h TTL) are silently omitted. Used by the ranking engine
+    for sector-relative scoring without triggering per-symbol yfinance calls.
+    """
+    active_symbols = [
+        row[0] for row in session.execute(select(Stock.symbol).where(Stock.active.is_(True)))
+    ]
+    redis_client = _get_redis()
+    result: dict[str, dict] = {}
+    _FIELDS = (
+        "trailing_pe", "forward_pe", "price_to_book",
+        "ev_to_ebitda", "ev_to_revenue",
+        "profit_margin", "operating_margin",
+        "return_on_equity", "return_on_assets",
+        "revenue_growth", "earnings_growth",
+    )
+    for symbol in active_symbols:
+        try:
+            cached = redis_client.get(f"stockai:fundamentals:v2:{symbol.upper()}")
+            if cached:
+                data = json.loads(cached)
+                result[symbol] = {k: data.get(k) for k in _FIELDS}
+        except Exception:
+            pass
+    return result
 
 
 @router.get("/{symbol}/fundamentals", response_model=FundamentalsOut)
@@ -753,6 +890,34 @@ def get_fundamentals(symbol: str, refresh: bool = False):
         held_percent_institutions=_safe(info, "heldPercentInstitutions"),
         held_percent_insiders=_safe(info, "heldPercentInsiders"),
     )
+
+    # Fetch earnings surprise history (last 8 quarters)
+    try:
+        eh = ticker.earnings_history
+        if eh is not None and not eh.empty:
+            eh = eh.tail(8)
+            beats = int((eh["epsActual"] > eh["epsEstimate"]).sum())
+            total = len(eh)
+            data.eps_beat_rate = round(beats / total, 3) if total else None
+            surprise_vals = eh["surprisePercent"].dropna().tolist()
+            data.eps_avg_surprise_pct = round(float(sum(surprise_vals) / len(surprise_vals)) * 100, 2) if surprise_vals else None
+            # Trend: compare avg surprise of first half vs second half
+            if len(surprise_vals) >= 4:
+                half = len(surprise_vals) // 2
+                early = sum(surprise_vals[:half]) / half
+                recent = sum(surprise_vals[half:]) / (len(surprise_vals) - half)
+                data.eps_surprise_trend = "improving" if recent > early + 0.005 else "declining" if recent < early - 0.005 else "stable"
+            data.eps_history = [
+                {
+                    "quarter": str(idx.date()) if hasattr(idx, "date") else str(idx),
+                    "actual": round(float(row["epsActual"]), 4) if row["epsActual"] is not None else None,
+                    "estimate": round(float(row["epsEstimate"]), 4) if row["epsEstimate"] is not None else None,
+                    "surprise_pct": round(float(row["surprisePercent"]) * 100, 2) if row["surprisePercent"] is not None else None,
+                }
+                for idx, row in eh.iterrows()
+            ]
+    except Exception:
+        pass
 
     try:
         _get_redis().setex(cache_key, _FUND_TTL, data.model_dump_json())
@@ -1106,6 +1271,117 @@ def relative_performance(
     return result
 
 
+# ── Options Flow ─────────────────────────────────────────────────────────────
+
+_OPTIONS_TTL = 900  # 15-min cache — options volume refreshes intraday
+
+@router.get("/{symbol}/options-flow")
+def get_options_flow(symbol: str):
+    """Unusual options activity for a symbol, derived from yfinance options chain.
+
+    Fetches the two nearest expiration dates, aggregates call and put volume,
+    flags contracts with volume > 30% of open interest (high activity), and
+    computes a call/put ratio and a simple sentiment label.
+
+    Returns null fields for HK stocks and others without listed options.
+    """
+    sym = symbol.upper()
+    cache_key = f"options_flow:{sym}"
+    try:
+        rdb = _get_redis()
+        cached = rdb.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        import yfinance as yf
+        import pandas as pd
+
+        t = yf.Ticker(sym)
+        expiries = t.options
+        if not expiries:
+            result = {"symbol": sym, "available": False, "reason": "no_options_listed"}
+            return result
+
+        total_call_vol = 0
+        total_put_vol = 0
+        unusual: list[dict] = []
+
+        for exp in expiries[:2]:  # nearest two expiries
+            try:
+                chain = t.option_chain(exp)
+            except Exception:
+                continue
+
+            calls = chain.calls.fillna(0)
+            puts  = chain.puts.fillna(0)
+
+            c_vol = int(calls["volume"].sum())
+            p_vol = int(puts["volume"].sum())
+            total_call_vol += c_vol
+            total_put_vol  += p_vol
+
+            # Flag contracts where today's volume exceeds 30% of open interest
+            for df, side in [(calls, "call"), (puts, "put")]:
+                mask = (df["openInterest"] > 50) & (df["volume"] > df["openInterest"] * 0.30)
+                for _, row in df[mask].sort_values("volume", ascending=False).head(3).iterrows():
+                    unusual.append({
+                        "expiry":   exp,
+                        "side":     side,
+                        "strike":   float(row["strike"]),
+                        "volume":   int(row["volume"]),
+                        "oi":       int(row["openInterest"]),
+                        "vol_oi":   round(float(row["volume"]) / max(float(row["openInterest"]), 1), 2),
+                        "iv":       round(float(row["impliedVolatility"]) * 100, 1),
+                        "itm":      bool(row["inTheMoney"]),
+                    })
+
+        if total_call_vol == 0 and total_put_vol == 0:
+            result = {"symbol": sym, "available": False, "reason": "no_volume"}
+            return result
+
+        cp_ratio = round(total_call_vol / max(total_put_vol, 1), 2)
+
+        if cp_ratio >= 2.0:
+            sentiment = "strongly_bullish"
+        elif cp_ratio >= 1.3:
+            sentiment = "bullish"
+        elif cp_ratio <= 0.5:
+            sentiment = "bearish"
+        elif cp_ratio <= 0.8:
+            sentiment = "slightly_bearish"
+        else:
+            sentiment = "neutral"
+
+        # Sort unusual by volume desc, keep top 8
+        unusual.sort(key=lambda x: x["volume"], reverse=True)
+
+        result = {
+            "symbol":          sym,
+            "available":       True,
+            "call_volume":     total_call_vol,
+            "put_volume":      total_put_vol,
+            "cp_ratio":        cp_ratio,
+            "sentiment":       sentiment,
+            "unusual_count":   len(unusual),
+            "unusual":         unusual[:8],
+            "expiries_used":   list(expiries[:2]),
+        }
+
+        try:
+            rdb.setex(cache_key, _OPTIONS_TTL, json.dumps(result))
+        except Exception:
+            pass
+
+        return result
+
+    except Exception as exc:
+        log.warning("options_flow.error", symbol=sym, error=str(exc))
+        return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
 # ── Per-symbol Dividends ──────────────────────────────────────────────────────
 
 @router.get("/{symbol}/dividends")
@@ -1247,13 +1523,13 @@ def get_prices(
             *(Price.ts >= start,) if start else (),
             Price.ts <= end,
         )
-        .order_by(Price.ts)
+        .order_by(Price.ts.desc())
         .limit(limit)
     )
-    rows = list(session.execute(stmt).scalars())
+    rows = list(reversed(list(session.execute(stmt).scalars())))
     return [
         PriceOut(
-            ts=_local_date(r.ts, stock.market),
+            ts=_format_ts(r.ts, stock.market, timeframe),
             open=r.open,
             high=r.high,
             low=r.low,

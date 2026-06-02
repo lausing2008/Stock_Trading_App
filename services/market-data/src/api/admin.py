@@ -3,7 +3,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 import yfinance as yf
+import redis as redis_lib
 
+from common.config import get_settings
 from common.logging import get_logger
 from db import Exchange, Market, SessionLocal, Stock, init_db
 
@@ -14,6 +16,15 @@ from .auth import User, get_admin_user
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 log = get_logger("admin")
+_settings = get_settings()
+
+_REDIS_CLAUDE_KEY     = "stockai:admin:claude_api_key"
+_REDIS_DEEPSEEK_KEY   = "stockai:admin:deepseek_api_key"
+_REDIS_CLAUDE_MODEL   = "stockai:admin:claude_model"
+_REDIS_DEEPSEEK_MODEL = "stockai:admin:deepseek_model"
+
+def _get_redis():
+    return redis_lib.from_url(_settings.redis_url, decode_responses=True)
 
 _EXCHANGE_MAP: dict[str, Exchange] = {
     "NMS": Exchange.NASDAQ, "NGM": Exchange.NASDAQ, "NCM": Exchange.NASDAQ,
@@ -52,6 +63,10 @@ class ConfigRequest(BaseModel):
     polygon_api_key: str | None = None
     alpha_vantage_api_key: str | None = None
     quiver_api_key: str | None = None
+    claude_api_key: str | None = None
+    deepseek_api_key: str | None = None
+    claude_model: str | None = None
+    deepseek_model: str | None = None
 
 
 @router.post("/config")
@@ -63,6 +78,18 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
     if req.quiver_api_key is not None:
         from .congress import set_quiver_key
         set_quiver_key(req.quiver_api_key)
+    r = None
+    if req.claude_api_key is not None or req.deepseek_api_key is not None or \
+       req.claude_model is not None or req.deepseek_model is not None:
+        r = _get_redis()
+    if req.claude_api_key is not None:
+        r.set(_REDIS_CLAUDE_KEY, req.claude_api_key)
+    if req.deepseek_api_key is not None:
+        r.set(_REDIS_DEEPSEEK_KEY, req.deepseek_api_key)
+    if req.claude_model is not None:
+        r.set(_REDIS_CLAUDE_MODEL, req.claude_model)
+    if req.deepseek_model is not None:
+        r.set(_REDIS_DEEPSEEK_MODEL, req.deepseek_model)
     log.info("admin.config_updated")
     return {"status": "ok"}
 

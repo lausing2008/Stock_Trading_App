@@ -24,6 +24,17 @@ log = get_logger("research-engine")
 router = APIRouter(prefix="/research", tags=["research"])
 _s = get_settings()
 
+import re as _re
+
+def _sanitise_symbol(raw: str) -> str:
+    """Allow only A-Z, 0-9, dot, hyphen, colon (covers HK: 0700.HK, indices: ^VIX).
+    Raises ValueError for anything else so the route returns 400 before touching prompts.
+    """
+    clean = _re.sub(r"[^A-Z0-9.\-:]", "", raw.upper())
+    if not clean:
+        raise ValueError(f"Invalid symbol: {raw!r}")
+    return clean
+
 # Simple in-memory cache: symbol → (report_dict, timestamp)
 _cache: dict[str, tuple[dict, datetime]] = {}
 CACHE_TTL_SEC = 86_400  # 24 hours
@@ -71,18 +82,28 @@ def _second_last(arr: list, default=None):
 
 
 def _atr(prices: list[dict], period: int = 14) -> float | None:
-    """Average True Range."""
+    """Wilder's ATR — seeded with SMA of first `period` bars, then EWM (alpha=1/period).
+
+    Matches every standard charting platform (TradingView, Bloomberg, ThinkOrSwim).
+    SMA-based ATR underestimates in volatile regimes; Wilder's smoothing tracks
+    volatility expansion faster without over-reacting to individual spikes.
+    """
     if len(prices) < period + 1:
         return None
     trs = []
     for i in range(1, len(prices)):
-        h = prices[i].get("high", 0) or 0
-        l = prices[i].get("low", 0) or 0
+        h  = prices[i].get("high", 0) or 0
+        l  = prices[i].get("low", 0) or 0
         pc = prices[i - 1].get("close", 0) or 0
         trs.append(max(h - l, abs(h - pc), abs(l - pc)))
     if len(trs) < period:
         return None
-    return sum(trs[-period:]) / period
+    # Seed with SMA of first period bars, then apply Wilder's EWM
+    atr = sum(trs[:period]) / period
+    alpha = 1.0 / period
+    for tr in trs[period:]:
+        atr = atr * (1.0 - alpha) + tr * alpha
+    return atr
 
 
 def _fmt_cap(cap: float | None) -> str:
@@ -533,6 +554,15 @@ def _score_fundamental(fund: dict) -> dict:
         else:
             prof_grade = "Poor"; score -= 4
 
+    # Earnings surprise bonus — consistent beaters are systematically undervalued
+    beat_rate = fund.get("eps_beat_rate")
+    eps_surprise_bonus = 0
+    if beat_rate is not None:
+        if beat_rate >= 0.75:
+            eps_surprise_bonus = 5; score += 5
+        elif beat_rate >= 0.50:
+            eps_surprise_bonus = 2; score += 2
+
     score = max(0, min(100, score))
 
     return {
@@ -546,6 +576,10 @@ def _score_fundamental(fund: dict) -> dict:
             "trailing_eps": fund.get("trailing_eps"),
             "forward_eps": fund.get("forward_eps"),
             "assessment": eps_assess,
+            "beat_rate": round(beat_rate * 100) if beat_rate is not None else None,
+            "avg_surprise_pct": fund.get("eps_avg_surprise_pct"),
+            "trend": fund.get("eps_surprise_trend"),
+            "surprise_bonus": eps_surprise_bonus,
         },
         "margins": {
             "gross": pct(gross_m),
@@ -926,6 +960,7 @@ Use your knowledge of {symbol} to fill in qualitative sections accurately. Base 
 
 def _fallback_ai() -> dict:
     return {
+        "_is_fallback": True,
         "company": {
             "business_model": "Analysis unavailable — AI provider returned an error.",
             "competitive_advantage": {"brand_strength": "Unknown"},
@@ -1059,7 +1094,10 @@ def _yf_sync_fetch(sym: str):
 @router.get("/{symbol}")
 async def get_research(symbol: str):
     """Return cached research report (generated within last 24h)."""
-    sym = symbol.upper()
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     entry = _cache.get(sym)
     if entry:
         report, ts = entry
@@ -1071,7 +1109,10 @@ async def get_research(symbol: str):
 @router.delete("/{symbol}")
 async def clear_research(symbol: str):
     """Clear cached report to force regeneration."""
-    sym = symbol.upper()
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     _cache.pop(sym, None)
     return {"status": "cleared", "symbol": sym}
 
@@ -1079,7 +1120,10 @@ async def clear_research(symbol: str):
 @router.post("/{symbol}")
 async def generate_research(symbol: str, req: ResearchRequest):
     """Generate a full Planning Stage Research Report for the given symbol."""
-    sym = symbol.upper()
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
 
     # Gather data from all services in parallel
     async with httpx.AsyncClient(timeout=25) as client:
@@ -1128,6 +1172,15 @@ async def generate_research(symbol: str, req: ResearchRequest):
     # Call Claude for qualitative analysis
     ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price)
 
+    # Determine report quality
+    missing_services = sum([not fund_t, not signal_t, not rank_t, not ind_t])
+    if ai.get("_is_fallback"):
+        report_quality = "fallback"
+    elif missing_services >= 2:
+        report_quality = "partial"
+    else:
+        report_quality = "full"
+
     # Overall weighted score
     scores = {
         "technical": tech["score"],
@@ -1167,6 +1220,7 @@ async def generate_research(symbol: str, req: ResearchRequest):
         "symbol": sym,
         "company_name": stock.get("name", sym),
         "generated_at": datetime.utcnow().isoformat() + "Z",
+        "report_quality": report_quality,
         "current_price": price,
         "market_cap": fund.get("market_cap"),
         "sector": stock.get("sector"),
@@ -1240,7 +1294,10 @@ class ChatRequest(BaseModel):
 @router.post("/{symbol}/chat")
 async def chat_research(symbol: str, req: ChatRequest):
     """Answer questions about the cached research report using AI."""
-    sym = symbol.upper()
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     entry = _cache.get(sym)
     if not entry:
         raise HTTPException(404, "No research report found. Generate a report first.")

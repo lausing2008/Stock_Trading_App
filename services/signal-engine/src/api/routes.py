@@ -251,6 +251,266 @@ def signal_accuracy(
     }
 
 
+@router.get("/ml-weight-validation")
+def ml_weight_validation(
+    lookback_days: int = Query(180, ge=30, le=730),
+    session: Session = Depends(get_session),
+):
+    """Empirically sweep ML fusion weights 0→1 to find which blend best predicted price direction.
+
+    For each BUY signal in the lookback window, reads ml_probability and ta_score from the
+    reasons JSON, pairs with the actual price outcome, then tries 21 weight values (0.00 to 1.00
+    in 0.05 steps). Returns accuracy and avg_return_pct at each weight so the caller can see
+    the empirical optimum vs the current formula range (0.40–0.75).
+    """
+    import bisect
+
+    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+    outcome_cutoff = datetime.utcnow() - timedelta(days=1)
+
+    rows = session.execute(
+        select(Signal, Stock.symbol)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .where(Signal.ts >= cutoff, Signal.ts <= outcome_cutoff)
+        .where(Signal.signal == SignalType.BUY)
+    ).all()
+
+    if not rows:
+        return {"lookback_days": lookback_days, "signal_count": 0, "curve": [], "optimal_weight": None}
+
+    stock_ids = list({sig.stock_id for sig, _ in rows})
+    price_since = (cutoff - timedelta(days=5)).date()
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(Price.stock_id.in_(stock_ids))
+        .where(Price.timeframe == TimeFrame.D1)
+        .where(Price.ts >= price_since)
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    _pts: dict[int, list] = {}
+    _pclose: dict[int, list] = {}
+    for row in price_rows:
+        sid = row.stock_id
+        if sid not in _pts:
+            _pts[sid] = []
+            _pclose[sid] = []
+        d = row.ts.date() if isinstance(row.ts, datetime) else row.ts
+        _pts[sid].append(d)
+        _pclose[sid].append(float(row.close))
+
+    def price_on_or_before(sid, d):
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, d) - 1
+        return _pclose[sid][idx] if idx >= 0 else None
+
+    def latest_price_after(sid, after_date):
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, after_date)
+        return _pclose[sid][-1] if idx < len(ts_list) else None
+
+    # Build list of (ml_prob, ta_score, pct_change) for signals with complete data
+    observations: list[tuple[float, float, float]] = []
+    seen: set[tuple] = set()
+
+    for sig, _ in rows:
+        signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
+        key = (sig.stock_id, signal_date)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        reasons = sig.reasons or {}
+        ml_prob = reasons.get("ml_probability")
+        ta_score = reasons.get("ta_score")
+        if ml_prob is None or ta_score is None:
+            continue
+
+        entry = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
+        exit_p = latest_price_after(sig.stock_id, signal_date)
+        if entry is None or exit_p is None:
+            continue
+
+        pct = (exit_p - entry) / entry * 100
+        observations.append((float(ml_prob), float(ta_score), pct))
+
+    if not observations:
+        return {"lookback_days": lookback_days, "signal_count": 0, "curve": [], "optimal_weight": None}
+
+    # Sweep weight from 0.0 to 1.0 in 0.05 steps
+    weights = [round(w / 20, 2) for w in range(21)]  # 0.00, 0.05, ..., 1.00
+    curve = []
+    best_acc = -1.0
+    optimal_weight = 0.5
+
+    for w in weights:
+        correct = 0
+        returns = []
+        fired = 0
+        for ml_p, ta_s, pct in observations:
+            fused = w * ml_p + (1 - w) * ta_s
+            if fused > 0.5:
+                fired += 1
+                if pct > 0:
+                    correct += 1
+                returns.append(pct)
+
+        acc = round(correct / fired * 100, 1) if fired else None
+        avg_ret = round(sum(returns) / len(returns), 2) if returns else None
+
+        curve.append({"weight": w, "accuracy": acc, "avg_return_pct": avg_ret})
+
+        if acc is not None and acc > best_acc:
+            best_acc = acc
+            optimal_weight = w
+
+    return {
+        "lookback_days": lookback_days,
+        "signal_count": len(observations),
+        "optimal_weight": optimal_weight,
+        "optimal_accuracy": round(best_acc, 1),
+        "current_formula_range": [0.40, 0.75],
+        "curve": curve,
+    }
+
+
+@router.get("/factor-exposure")
+def factor_exposure(
+    lookback_days: int = Query(90, ge=7, le=365),
+    session: Session = Depends(get_session),
+):
+    """Factor tilt analysis of BUY signals — compares factor values for correct vs wrong calls.
+
+    Extracts numeric factors from the reasons JSON of each BUY signal, pairs with
+    price outcome (did price rise after signal?), then returns per-factor averages
+    split by correct / wrong so the caller can see which factor dimensions correlate
+    with successful signals.
+    """
+    import bisect
+
+    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+    outcome_cutoff = datetime.utcnow() - timedelta(days=1)
+
+    rows = session.execute(
+        select(Signal, Stock.symbol)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .where(Signal.ts >= cutoff, Signal.ts <= outcome_cutoff)
+        .where(Signal.signal == SignalType.BUY)
+    ).all()
+
+    if not rows:
+        return {"lookback_days": lookback_days, "signal_count": 0, "factors": []}
+
+    stock_ids = list({sig.stock_id for sig, _ in rows})
+    price_since = (cutoff - timedelta(days=5)).date()
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(Price.stock_id.in_(stock_ids))
+        .where(Price.timeframe == TimeFrame.D1)
+        .where(Price.ts >= price_since)
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    _pts: dict[int, list] = {}
+    _pclose: dict[int, list] = {}
+    for row in price_rows:
+        sid = row.stock_id
+        if sid not in _pts:
+            _pts[sid] = []
+            _pclose[sid] = []
+        d = row.ts.date() if isinstance(row.ts, datetime) else row.ts
+        _pts[sid].append(d)
+        _pclose[sid].append(float(row.close))
+
+    def price_on_or_before(sid: int, d):
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, d) - 1
+        return _pclose[sid][idx] if idx >= 0 else None
+
+    def latest_price_after(sid: int, after_date):
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, after_date)
+        return _pclose[sid][-1] if idx < len(ts_list) else None
+
+    # factor key → (label, neutral baseline, display scale)
+    FACTORS = [
+        ("rsi",             "RSI",             50.0,  100.0),
+        ("adx",             "ADX",             20.0,  100.0),
+        ("volume_z",        "Volume Z",         0.0,    3.0),
+        ("ml_probability",  "ML Probability",   0.5,    1.0),
+        ("news_sentiment",  "News Sentiment",  50.0,  100.0),
+        ("ta_score",        "TA Score",         0.5,    1.0),
+    ]
+
+    correct_vals: dict[str, list[float]] = {f[0]: [] for f in FACTORS}
+    wrong_vals:   dict[str, list[float]] = {f[0]: [] for f in FACTORS}
+    seen: set[tuple] = set()
+    total = 0
+
+    for sig, _ in rows:
+        signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
+        key = (sig.stock_id, signal_date)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        reasons = sig.reasons or {}
+        entry = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
+        if entry is None:
+            continue
+        exit_p = latest_price_after(sig.stock_id, signal_date)
+        if exit_p is None:
+            continue
+
+        total += 1
+        correct = exit_p > entry
+
+        for fname, _, _, _ in FACTORS:
+            raw = reasons.get(fname)
+            if raw is None:
+                continue
+            try:
+                v = float(raw)
+                (correct_vals if correct else wrong_vals)[fname].append(v)
+            except (TypeError, ValueError):
+                pass
+
+    def _avg(lst: list[float]):
+        return round(sum(lst) / len(lst), 4) if lst else None
+
+    factors = []
+    for fname, label, baseline, scale in FACTORS:
+        c_avg = _avg(correct_vals[fname])
+        w_avg = _avg(wrong_vals[fname])
+        # deviation_pct: how far from neutral baseline as % of the scale range
+        def _dev(v):
+            if v is None:
+                return None
+            return round((v - baseline) / scale * 100, 1)
+        factors.append({
+            "key": fname,
+            "label": label,
+            "baseline": baseline,
+            "scale": scale,
+            "correct_avg": c_avg,
+            "wrong_avg": w_avg,
+            "correct_dev_pct": _dev(c_avg),
+            "wrong_dev_pct": _dev(w_avg),
+            "correct_count": len(correct_vals[fname]),
+            "wrong_count": len(wrong_vals[fname]),
+        })
+
+    return {"lookback_days": lookback_days, "signal_count": total, "factors": factors}
+
+
 @router.get("/trade_performance")
 def trade_performance(
     lookback_days: int = Query(180, ge=7, le=730),
@@ -405,6 +665,8 @@ def trade_performance(
             "entry_confidence": round(sig.confidence, 1),
         })
 
+    import math, statistics as _stats
+
     closed = [t for t in trades if t["status"] == "closed"]
     open_t = [t for t in trades if t["status"] == "open"]
     wins   = [t for t in closed if t["win"]]
@@ -431,6 +693,71 @@ def trade_performance(
         for s, v in sorted(by_sym.items())
     ]
 
+    # ── Equity curve (closed trades compounded in entry-date order) ──────────
+    sorted_closed = sorted(closed, key=lambda t: t["entry_date"])
+    equity = 1.0
+    equity_curve: list = []
+    if sorted_closed:
+        equity_curve.append({"date": sorted_closed[0]["entry_date"], "equity": 1.0})
+    for t in sorted_closed:
+        equity *= 1 + t["pct_return"] / 100
+        equity_curve.append({"date": t["exit_date"], "equity": round(equity, 4)})
+
+    total_return = round((equity - 1) * 100, 2) if sorted_closed else None
+
+    # ── Sharpe ratio (per-trade returns, annualised) ─────────────────────────
+    sharpe = None
+    if len(closed) >= 2:
+        returns = [t["pct_return"] for t in closed]
+        avg_hd  = max(sum(t["hold_days"] for t in closed) / len(closed), 1)
+        mean_r  = _stats.mean(returns)
+        std_r   = _stats.stdev(returns)
+        if std_r > 0:
+            sharpe = round(mean_r / std_r * math.sqrt(252 / avg_hd), 2)
+
+    # ── Max drawdown from equity curve ───────────────────────────────────────
+    max_drawdown = None
+    if equity_curve:
+        peak = 1.0
+        worst = 0.0
+        for pt in equity_curve:
+            if pt["equity"] > peak:
+                peak = pt["equity"]
+            dd = (pt["equity"] - peak) / peak * 100
+            if dd < worst:
+                worst = dd
+        max_drawdown = round(worst, 2)  # negative e.g. -12.3
+
+    # ── Calmar ratio ─────────────────────────────────────────────────────────
+    calmar = None
+    if total_return is not None and max_drawdown is not None and max_drawdown < 0 and sorted_closed:
+        first_d   = date.fromisoformat(sorted_closed[0]["entry_date"])
+        last_d    = date.fromisoformat(sorted_closed[-1]["exit_date"])
+        total_days = (last_d - first_d).days
+        if total_days > 0:
+            ann_ret = total_return / total_days * 252
+            calmar  = round(ann_ret / abs(max_drawdown), 2)
+
+    # ── SPY benchmark return over the same date range ────────────────────────
+    spy_return = None
+    if sorted_closed:
+        first_d = date.fromisoformat(sorted_closed[0]["entry_date"])
+        last_d  = date.fromisoformat(sorted_closed[-1]["exit_date"])
+        spy_stock = session.query(Stock).filter(Stock.symbol == "SPY").one_or_none()
+        if spy_stock:
+            spy_prices = session.execute(
+                select(Price.ts, Price.close)
+                .where(Price.stock_id == spy_stock.id)
+                .where(Price.timeframe == TimeFrame.D1)
+                .where(Price.ts >= first_d)
+                .where(Price.ts <= last_d)
+                .order_by(Price.ts)
+            ).all()
+            if len(spy_prices) >= 2:
+                s0 = float(spy_prices[0].close)
+                s1 = float(spy_prices[-1].close)
+                spy_return = round((s1 - s0) / s0 * 100, 2)
+
     return {
         "lookback_days":  lookback_days,
         "closed_trades":  len(closed),
@@ -441,6 +768,12 @@ def trade_performance(
         "avg_loss_pct":   round(-gross_losses / len(losses), 2) if losses else None,
         "profit_factor":  round(gross_wins / gross_losses, 2) if gross_losses > 0 else None,
         "avg_hold_days":  round(sum(t["hold_days"] for t in closed) / len(closed), 1) if closed else None,
+        "total_return":   total_return,
+        "sharpe":         sharpe,
+        "max_drawdown":   max_drawdown,
+        "calmar":         calmar,
+        "spy_return":     spy_return,
+        "equity_curve":   equity_curve,
         "by_symbol":      symbol_summary,
         "trades":         trades,
     }

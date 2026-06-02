@@ -21,14 +21,16 @@ class KScoreComponents:
     volatility: float
     score: float
     fair_price: float | None = None
+    relative_strength: float | None = None
 
 
 _WEIGHTS = {
-    "technical": 0.25,
-    "momentum": 0.25,
-    "value": 0.15,
-    "growth": 0.15,
-    "volatility": 0.20,
+    "technical": 0.22,
+    "momentum": 0.23,
+    "value": 0.13,
+    "growth": 0.14,
+    "volatility": 0.18,
+    "relative_strength": 0.10,
 }
 
 
@@ -72,7 +74,16 @@ def _technical_score(df: pd.DataFrame) -> float:
     sma50_above_sma200 = 1 if sma50 > sma200           else 0
 
     r = _rsi(close).iloc[-1]
-    rsi_score = 100 - abs(r - 55)  # peak at 55 (bullish but not overbought)
+    # Asymmetric: optimal zone is 50-70 (bullish momentum). Oversold (<30) and
+    # very overbought (>80) penalised. A trending RSI=70 scores higher than RSI=40.
+    if r <= 30:
+        rsi_score = 50.0
+    elif r <= 50:
+        rsi_score = 50.0 + (r - 30) * 2.0       # 50→90 as RSI 30→50
+    elif r <= 70:
+        rsi_score = 90.0 + (r - 50) * 0.5        # 90→100 as RSI 50→70
+    else:
+        rsi_score = 100.0 - (r - 70) * 2.5       # 100→62.5 as RSI 70→85+
 
     adx = _adx_value(df)
     # ADX boost: strong trend (>25) lifts score; very weak trend (<15) drags it
@@ -103,10 +114,23 @@ def _volatility_score(df: pd.DataFrame) -> float:
 
 
 def _value_proxy(df: pd.DataFrame) -> float:
-    """Proxy: distance below 52w high. Deep discount → higher value."""
+    """Proxy: distance below 52w high, gated by trend direction.
+
+    Falling-knife guard: if both 1m and 3m returns are negative the stock is
+    in a downtrend — a deep discount without recovery is a risk, not value.
+    Cap score at 25 in that case so it can't drag down the composite K-Score.
+    """
     high_52  = df["close"].tail(252).max()
     discount = 1 - df["close"].iloc[-1] / high_52
-    return float(np.clip(discount * 200, 0, 100))
+    raw_score = float(np.clip(discount * 200, 0, 100))
+
+    if len(df) >= 63:
+        r1m = df["close"].iloc[-1] / df["close"].iloc[-21] - 1
+        r3m = df["close"].iloc[-1] / df["close"].iloc[-63] - 1
+        if r1m < -0.05 and r3m < -0.15:
+            return min(raw_score, 25.0)
+
+    return raw_score
 
 
 def _growth_proxy(df: pd.DataFrame) -> float:
@@ -117,20 +141,45 @@ def _growth_proxy(df: pd.DataFrame) -> float:
     return float(np.clip(50 + cagr * 120, 0, 100))
 
 
-def compute_kscore(df: pd.DataFrame) -> KScoreComponents:
+def compute_kscore(
+    df: pd.DataFrame,
+    rs_score: float | None = None,
+    value_score: float | None = None,
+    growth_score: float | None = None,
+) -> KScoreComponents:
+    """Compute K-Score composite.
+
+    value_score / growth_score (0-100): when provided, these replace the
+    price-based proxies with sector-relative percentile ranks derived from
+    real fundamental data (PE, PB, EV/EBITDA, revenue growth, ROE, etc.).
+    Fall back to the price proxy when fundamentals are unavailable.
+    """
     tech = _technical_score(df)
     mom  = _momentum_score(df)
-    val  = _value_proxy(df)
-    gro  = _growth_proxy(df)
+    val  = value_score  if value_score  is not None else _value_proxy(df)
+    gro  = growth_score if growth_score is not None else _growth_proxy(df)
     vol  = _volatility_score(df)
 
-    score = (
-        _WEIGHTS["technical"]  * tech
-        + _WEIGHTS["momentum"] * mom
-        + _WEIGHTS["value"]    * val
-        + _WEIGHTS["growth"]   * gro
-        + _WEIGHTS["volatility"] * vol
-    )
+    if rs_score is not None:
+        score = (
+            _WEIGHTS["technical"]        * tech
+            + _WEIGHTS["momentum"]       * mom
+            + _WEIGHTS["value"]          * val
+            + _WEIGHTS["growth"]         * gro
+            + _WEIGHTS["volatility"]     * vol
+            + _WEIGHTS["relative_strength"] * rs_score
+        )
+    else:
+        # No RS data: redistribute RS weight proportionally among other factors
+        w_sum = 1.0 - _WEIGHTS["relative_strength"]
+        score = (
+            (_WEIGHTS["technical"]    / w_sum) * tech
+            + (_WEIGHTS["momentum"]   / w_sum) * mom
+            + (_WEIGHTS["value"]      / w_sum) * val
+            + (_WEIGHTS["growth"]     / w_sum) * gro
+            + (_WEIGHTS["volatility"] / w_sum) * vol
+        )
+
     sma200 = df["close"].rolling(200).mean().iloc[-1]
     fair   = float(sma200) if not pd.isna(sma200) else None
 
@@ -142,4 +191,5 @@ def compute_kscore(df: pd.DataFrame) -> KScoreComponents:
         volatility=round(vol, 2),
         score=round(score, 2),
         fair_price=round(fair, 2) if fair else None,
+        relative_strength=round(rs_score, 2) if rs_score is not None else None,
     )

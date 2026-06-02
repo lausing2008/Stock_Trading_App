@@ -8,7 +8,7 @@ const STAGES = ['watch', 'planning', 'active', 'closed'] as const;
 type Stage = typeof STAGES[number];
 
 const STAGE_META: Record<Stage, { label: string; color: string; bg: string; border: string; desc: string }> = {
-  watch:    { label: 'Watch',    color: '#94a3b8', bg: 'rgba(148,163,184,0.06)', border: 'rgba(148,163,184,0.15)', desc: 'Tracking — no position yet' },
+  watch:    { label: 'Radar',    color: '#94a3b8', bg: 'rgba(148,163,184,0.06)', border: 'rgba(148,163,184,0.15)', desc: 'On radar — shortlisted from screener or forecast' },
   planning: { label: 'Planning', color: '#818cf8', bg: 'rgba(129,140,248,0.06)', border: 'rgba(129,140,248,0.2)',  desc: 'AI plan generated, evaluating entry' },
   active:   { label: 'Active',   color: '#4ade80', bg: 'rgba(74,222,128,0.06)',  border: 'rgba(74,222,128,0.2)',   desc: 'In trade — monitoring' },
   closed:   { label: 'Closed',   color: '#475569', bg: 'rgba(71,85,105,0.05)',   border: 'rgba(71,85,105,0.15)',   desc: 'Trade completed' },
@@ -19,6 +19,15 @@ const SOURCE_LABEL: Record<string, string> = {
   forecast: '🔮 Forecast',
   manual:   '✏️ Manual',
 };
+
+function Stat({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.03)', border: '1px solid #1e293b' }}>
+      <span style={{ fontSize: '10px', color: '#334155' }}>{label}</span>
+      <span style={{ fontSize: '13px', fontWeight: 800, fontFamily: 'monospace', color }}>{value}</span>
+    </div>
+  );
+}
 
 function fmt(n: number | null | undefined) {
   if (n == null) return '—';
@@ -243,7 +252,7 @@ function AlertModal({ plan, priceAlerts, signalAlert, suggestions, onClose, onAl
   return createPortal(modal, document.body);
 }
 
-function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, onDelete, onAlertsChange }: {
+function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, onDelete, onAlertsChange, onExitSaved }: {
   plan: TradePlan;
   priceAlerts: PriceAlert[];
   signalAlert: SignalAlertItem | null;
@@ -251,12 +260,32 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
   onStageChange: (id: number, stage: Stage) => void;
   onDelete: (id: number) => void;
   onAlertsChange: () => void;
+  onExitSaved: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [alertOpen, setAlertOpen] = useState(false);
+  const [exitInput, setExitInput] = useState('');
+  const [savingExit, setSavingExit] = useState(false);
   const meta = STAGE_META[plan.stage as Stage] ?? STAGE_META.watch;
   const gp = plan.game_plan as StoredGamePlan | null;
+
+  const pnlPct = plan.exit_price != null && plan.entry_price != null && plan.entry_price > 0
+    ? ((plan.exit_price - plan.entry_price) / plan.entry_price) * 100
+    : null;
+
+  async function saveExitPrice() {
+    const val = parseFloat(exitInput);
+    if (isNaN(val) || val <= 0) return;
+    setSavingExit(true);
+    try {
+      await api.updateBoardPlan(plan.id, { exit_price: val });
+      setExitInput('');
+      onExitSaved();
+    } finally {
+      setSavingExit(false);
+    }
+  }
 
   // Build suggested price levels — prefer TradePlan DB fields, fall back to game_plan JSON
   const suggestions = useMemo<Suggestion[]>(() => {
@@ -364,6 +393,49 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
             </div>
           )}
         </div>
+
+        {/* Closed: P&L outcome */}
+        {plan.stage === 'closed' && (
+          <div style={{ marginBottom: '8px', padding: '8px 10px', borderRadius: '7px', background: pnlPct != null ? (pnlPct >= 0 ? 'rgba(74,222,128,0.07)' : 'rgba(239,68,68,0.07)') : 'rgba(255,255,255,0.02)', border: `1px solid ${pnlPct != null ? (pnlPct >= 0 ? 'rgba(74,222,128,0.2)' : 'rgba(239,68,68,0.2)') : 'rgba(255,255,255,0.04)'}` }}>
+            {pnlPct != null ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '20px', fontWeight: 900, fontFamily: 'monospace', color: pnlPct >= 0 ? '#4ade80' : '#f87171' }}>
+                  {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+                </span>
+                <div style={{ fontSize: '11px', color: '#475569' }}>
+                  <div>Exit <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>${plan.exit_price!.toFixed(2)}</span></div>
+                  {plan.entry_price != null && <div>Entry <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>${plan.entry_price.toFixed(2)}</span></div>}
+                </div>
+                {plan.take_profit != null && plan.entry_price != null && plan.entry_price > 0 && (
+                  <div style={{ marginLeft: 'auto', fontSize: '10px', color: '#475569' }}>
+                    {((plan.exit_price! - plan.entry_price) / (plan.take_profit - plan.entry_price) * 100).toFixed(0)}% of target
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: '10px', color: '#475569', marginBottom: '5px' }}>Record exit price to track P&L</div>
+                <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
+                  <input
+                    type="number"
+                    placeholder="Exit price"
+                    value={exitInput}
+                    onChange={e => setExitInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && saveExitPrice()}
+                    style={{ width: '100px', padding: '3px 8px', borderRadius: '5px', border: '1px solid #1e293b', background: '#0b1020', color: '#e2e8f0', fontSize: '12px', fontFamily: 'monospace' }}
+                  />
+                  <button
+                    onClick={saveExitPrice}
+                    disabled={savingExit || !exitInput}
+                    style={{ padding: '3px 10px', borderRadius: '5px', fontSize: '11px', fontWeight: 600, border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.1)', color: '#818cf8', cursor: 'pointer' }}
+                  >
+                    {savingExit ? '…' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Active: distance from key levels */}
         {plan.stage === 'active' && livePrice && (plan.entry_price != null || plan.stop_loss != null || plan.take_profit != null) && (() => {
@@ -568,6 +640,18 @@ export default function BoardPage() {
   const usCnt = (data ?? []).filter(p => !isHK(p.symbol)).length;
   const hkCnt = (data ?? []).filter(p => isHK(p.symbol)).length;
 
+  // Performance summary from closed trades with both entry + exit price
+  const perfStats = useMemo(() => {
+    const closed = byStage.closed.filter(p => p.entry_price != null && p.exit_price != null && p.entry_price > 0);
+    if (closed.length === 0) return null;
+    const returns = closed.map(p => ((p.exit_price! - p.entry_price!) / p.entry_price!) * 100);
+    const wins = returns.filter(r => r > 0).length;
+    const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const best = Math.max(...returns);
+    const worst = Math.min(...returns);
+    return { count: closed.length, winRate: (wins / closed.length) * 100, avgReturn, best, worst };
+  }, [byStage.closed]);
+
   return (
     <div>
       {/* Header */}
@@ -586,6 +670,18 @@ export default function BoardPage() {
           ))}
         </div>
       </div>
+
+      {/* Performance summary */}
+      {perfStats && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '16px', padding: '10px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b', alignItems: 'center' }}>
+          <span style={{ fontSize: '11px', fontWeight: 700, color: '#475569', marginRight: '4px' }}>Track Record</span>
+          <Stat label="Closed" value={`${perfStats.count}`} color="#94a3b8" />
+          <Stat label="Win Rate" value={`${perfStats.winRate.toFixed(0)}%`} color={perfStats.winRate >= 50 ? '#4ade80' : '#f87171'} />
+          <Stat label="Avg Return" value={`${perfStats.avgReturn >= 0 ? '+' : ''}${perfStats.avgReturn.toFixed(1)}%`} color={perfStats.avgReturn >= 0 ? '#4ade80' : '#f87171'} />
+          <Stat label="Best" value={`+${perfStats.best.toFixed(1)}%`} color="#4ade80" />
+          <Stat label="Worst" value={`${perfStats.worst.toFixed(1)}%`} color="#f87171" />
+        </div>
+      )}
 
       {/* Market tabs */}
       <div style={{ display: 'flex', gap: '6px', marginBottom: '20px' }}>
@@ -647,6 +743,7 @@ export default function BoardPage() {
                       onStageChange={handleStageChange}
                       onDelete={handleDelete}
                       onAlertsChange={handleAlertsChange}
+                      onExitSaved={mutate}
                     />
                   ))}
                 </div>

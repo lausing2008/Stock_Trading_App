@@ -178,6 +178,7 @@ class Ranking(Base):
     growth: Mapped[float] = mapped_column(Float)
     volatility: Mapped[float] = mapped_column(Float)
     fair_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rs_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __table_args__ = (UniqueConstraint("stock_id", "as_of", name="uq_rank_stock_date"),)
 
@@ -413,6 +414,8 @@ class TradePlan(Base):
     take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)  # gameplan|forecast|manual
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

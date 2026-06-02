@@ -58,7 +58,9 @@ def get_indicators(
         "sma_50": sma(df["close"], 50),
         "sma_200": sma(df["close"], 200),
         "ema_12": df["close"].ewm(span=12, adjust=False).mean(),
+        "ema_20": df["close"].ewm(span=20, adjust=False).mean(),
         "ema_26": df["close"].ewm(span=26, adjust=False).mean(),
+        "ema_50": df["close"].ewm(span=50, adjust=False).mean(),
         "rsi_14": rsi(df["close"], 14),
         "vwap": vwap(df["high"], df["low"], df["close"], df["volume"]),
     }

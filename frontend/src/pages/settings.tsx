@@ -139,6 +139,33 @@ export default function SettingsPage() {
   const [resetPwd, setResetPwd] = useState('');
   const [resetMsg, setResetMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // Admin shared AI key
+  const [sharedKeyMsg, setSharedKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [sharedKeyLoading, setSharedKeyLoading] = useState(false);
+
+  async function handlePushSharedKey() {
+    if (s.aiProvider === 'none') return;
+    setSharedKeyLoading(true);
+    setSharedKeyMsg(null);
+    try {
+      const payload: Parameters<typeof api.pushConfig>[0] = {};
+      if (s.aiProvider === 'claude') {
+        if (s.claudeApiKey.trim()) payload.claude_api_key = s.claudeApiKey.trim();
+        if (s.claudeModel) payload.claude_model = s.claudeModel;
+      } else {
+        if (s.deepseekApiKey.trim()) payload.deepseek_api_key = s.deepseekApiKey.trim();
+        if (s.deepseekModel) payload.deepseek_model = s.deepseekModel;
+      }
+      await api.pushConfig(payload);
+      setSharedKeyMsg({ ok: true, text: 'Shared key saved — all users can now use AI features.' });
+      setTimeout(() => setSharedKeyMsg(null), 4000);
+    } catch {
+      setSharedKeyMsg({ ok: false, text: 'Failed to save shared key.' });
+    } finally {
+      setSharedKeyLoading(false);
+    }
+  }
+
   // Import / Export
   const [ioStatus, setIoStatus]   = useState<{ ok: boolean; text: string } | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -665,6 +692,38 @@ export default function SettingsPage() {
         {s.aiProvider === 'none' && (
           <div style={{ padding: '14px 20px', fontSize: '12px', color: '#334155' }}>
             Select a provider above to enable AI-powered stock analysis and chat on stock detail pages.
+          </div>
+        )}
+
+        {/* Admin: share key with all users */}
+        {isAdmin && s.aiProvider !== 'none' && (
+          <div style={{ padding: '14px 20px', borderTop: '1px solid #1e293b', background: 'rgba(167,139,250,0.04)' }}>
+            <label style={lbl}>
+              Shared Server Key
+              <span style={{ fontSize: '10px', color: '#a78bfa', fontWeight: 400, marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(167,139,250,0.3)', borderRadius: '4px', background: 'rgba(167,139,250,0.1)' }}>Admin only</span>
+            </label>
+            <div style={{ fontSize: '12px', color: '#475569', marginBottom: '10px' }}>
+              Push your configured {s.aiProvider === 'claude' ? 'Claude' : 'DeepSeek'} key + model to the server so users without their own key (e.g. lauwing2) can use AI features.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <button
+                onClick={handlePushSharedKey}
+                disabled={sharedKeyLoading}
+                style={{
+                  padding: '8px 18px', borderRadius: '8px', fontSize: '13px', fontWeight: 600,
+                  cursor: sharedKeyLoading ? 'not-allowed' : 'pointer',
+                  background: 'rgba(167,139,250,0.15)', border: '1px solid rgba(167,139,250,0.4)',
+                  color: '#c4b5fd', transition: 'all 0.15s',
+                }}
+              >
+                {sharedKeyLoading ? '⟳ Saving…' : 'Share my key with all users'}
+              </button>
+              {sharedKeyMsg && (
+                <span style={{ fontSize: '12px', color: sharedKeyMsg.ok ? '#4ade80' : '#f87171' }}>
+                  {sharedKeyMsg.text}
+                </span>
+              )}
+            </div>
           </div>
         )}
       </div>

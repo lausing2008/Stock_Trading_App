@@ -1,4 +1,5 @@
-import type { RankingRow, LatestPrice } from '@/lib/api';
+import type { RankingRow, LatestPrice, SignalSummary } from '@/lib/api';
+import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 
 type PriceMap = Record<string, LatestPrice>;
 
@@ -10,7 +11,15 @@ function fmtVol(n: number | null | undefined): string {
   return String(n);
 }
 
-export default function RankingsTable({ rows, prices }: { rows: RankingRow[]; prices?: PriceMap }) {
+export default function RankingsTable({
+  rows,
+  prices,
+  signals,
+}: {
+  rows: RankingRow[];
+  prices?: PriceMap;
+  signals?: Record<string, SignalSummary>;
+}) {
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
       <table className="w-full text-left text-sm text-slate-200">
@@ -25,6 +34,8 @@ export default function RankingsTable({ rows, prices }: { rows: RankingRow[]; pr
             <th className="px-3 py-2 text-right">Volume</th>
             <th className="px-3 py-2 text-right">vs Avg</th>
             <th className="px-3 py-2 text-right">K-Score</th>
+            <th className="px-3 py-2 text-right" title="Relative Strength vs sector ETF (0-100). >60 = leading sector, <40 = lagging">RS</th>
+            <th className="px-3 py-2 text-right">Confluence</th>
             <th className="px-3 py-2 text-right">Fair Price</th>
           </tr>
         </thead>
@@ -40,6 +51,9 @@ export default function RankingsTable({ rows, prices }: { rows: RankingRow[]; pr
               : volRatio >= 1.5 ? '#86efac'
               : volRatio < 0.5 ? '#f87171'
               : '#64748b';
+            const sig = signals?.[r.symbol];
+            const cs = pending ? null : confluenceScore(r, sig);
+            const grade = cs != null ? confluenceGrade(cs) : null;
             return (
               <tr key={r.symbol} className={`border-t border-slate-800 hover:bg-slate-900${pending ? ' opacity-50' : ''}`}>
                 <td className="px-3 py-2 text-slate-500">{pending ? '—' : i + 1}</td>
@@ -65,6 +79,22 @@ export default function RankingsTable({ rows, prices }: { rows: RankingRow[]; pr
                 </td>
                 <td className="px-3 py-2 text-right font-semibold">
                   {pending ? <span className="text-xs text-slate-600">Pending data</span> : r.score != null ? r.score.toFixed(1) : '—'}
+                </td>
+                <td className="px-3 py-2 text-right text-xs font-semibold" style={{
+                  color: r.relative_strength == null ? '#475569'
+                    : r.relative_strength >= 60 ? '#4ade80'
+                    : r.relative_strength >= 45 ? '#94a3b8'
+                    : '#f87171',
+                }}>
+                  {r.relative_strength != null ? r.relative_strength.toFixed(0) : '—'}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  {grade && cs != null ? (
+                    <span title={`${grade.description} · max position ${grade.maxPositionPct}`}>
+                      <span style={{ fontWeight: 700, color: grade.color, fontSize: '13px' }}>{cs}</span>
+                      <span style={{ fontSize: '10px', color: grade.color, opacity: 0.75, marginLeft: '4px' }}>{grade.label}</span>
+                    </span>
+                  ) : <span className="text-slate-600">—</span>}
                 </td>
                 <td className="px-3 py-2 text-right text-indigo-400">{r.fair_price?.toFixed(2) ?? '—'}</td>
               </tr>

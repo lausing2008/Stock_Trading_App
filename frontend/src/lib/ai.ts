@@ -66,12 +66,14 @@ export function getAiProviderLabel(): string {
   return PROVIDER_LABELS[loadSettings().aiProvider] ?? 'AI';
 }
 
-/** Returns true if a provider is selected and an API key is present. */
+/**
+ * Returns true if a provider is selected.
+ * The backend will fall back to the admin-configured shared key in Redis
+ * if the user hasn't set their own key, so we don't gate on key presence here.
+ */
 export function isAiConfigured(): boolean {
   const s = loadSettings();
-  if (s.aiProvider === 'none') return false;
-  const key = s.aiProvider === 'claude' ? s.claudeApiKey : s.deepseekApiKey;
-  return key.trim().length > 0;
+  return s.aiProvider !== 'none';
 }
 
 /**
@@ -95,9 +97,7 @@ export async function askAI(
   }
   const apiKey = s.aiProvider === 'claude' ? s.claudeApiKey : s.deepseekApiKey;
   const model = s.aiProvider === 'claude' ? s.claudeModel : s.deepseekModel;
-  if (!apiKey.trim()) {
-    throw new Error(`${PROVIDER_LABELS[s.aiProvider]} API key not set. Go to Settings → AI Assistant.`);
-  }
+  // Send whatever key we have (may be empty); backend falls back to Redis admin key.
 
   const base = process.env.NEXT_PUBLIC_API_URL ?? '/api';
   const res = await fetch(`${base}/ai/chat`, {

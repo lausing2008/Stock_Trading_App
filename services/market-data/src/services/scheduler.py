@@ -8,7 +8,7 @@ Three phases per market day, plus a weekly deep-clean:
   Open burst   — every 5 min for 20 min around the open.  Catches gap opens,
                  early momentum, and first-bar signal updates.
 
-  Regular hrs  — every 10 min through the session.  Prices, rankings,
+  Regular hrs  — every 10 min through the session.  Prices, rankings,22
                  momentum, and signals are all pure local math (TA + XGBoost,
                  no external API cost), so 10-min cadence is safe and free.
 
@@ -149,6 +149,130 @@ _BEARISH_TRANSITIONS = {
 }
 _BULLISH_ANALYST = {"buy", "strong_buy", "strongbuy", "outperform"}
 
+# Conviction thresholds — ALL five layers must clear for a BUY email to fire.
+# Bearish/exit alerts bypass these — you always want the exit warning.
+_MIN_CONFIDENCE  = 60.0   # AI signal confidence %
+_MIN_CONFLUENCE  = 75     # combined 5-factor confluence score
+
+
+def _confluence_score_full(
+    signal: str,
+    confidence: float,
+    kscore: float,
+    technical: float,
+    momentum: float,
+    rec_mean: float | None,
+) -> int:
+    """Mirror of frontend confluenceScoreFull() — 5-factor weighted score 0-100.
+
+    Weights: AI signal×conf 30%, K-Score 25%, Analyst 20%, Technical 15%, Momentum 10%.
+    rec_mean is the yfinance recommendationMean: 1.0 = Strong Buy, 5.0 = Sell.
+    """
+    ai_dir = 100 if signal == "BUY" else 50 if signal == "HOLD" else 25 if signal == "WAIT" else 0
+    ai = ai_dir * confidence / 100
+    analyst = max(0.0, min(100.0, (5.0 - rec_mean) / 4.0 * 100.0)) if rec_mean is not None else 50.0
+    return round(
+        ai         * 0.30 +
+        kscore     * 0.25 +
+        analyst    * 0.20 +
+        technical  * 0.15 +
+        momentum   * 0.10,
+    )
+
+
+def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[bool, list[str], list[str]]:
+    """Check all conviction layers for a BUY signal across all 4 framework layers.
+
+    Returns (all_passed, passed_layers, failed_layers).
+
+    Layer 1 — Fundamental filter   : Analyst bullish (checked separately before call)
+    Layer 2 — Conviction score     : K-Score ≥ 55
+    Layer 3 — Timing trigger       : AI Signal = BUY (checked separately)
+    Layer 4 — Technical confirmation:
+        4a. Uptrend structure       — SMA50 > SMA200 AND price > SMA50
+        4b. Entry timing            — RSI 45-65 AND Stoch RSI recovering from oversold
+        4c. MACD momentum           — histogram positive+rising OR zero-line crossover
+        4d. Volume confirms         — OBV bullish
+        4e. Trend has real strength — ADX > 25 (signals reliable only in trending market)
+    Layer 5 — ML confirms TA       : ML probability > 70%
+
+    Disqualifiers (false-BUY flags from FEATURES.md — block even if all layers pass):
+        • Bearish RSI divergence (price rising but momentum fading)
+        • Stoch RSI overbought (RSI itself overextended)
+    """
+    reasons = signal_data.get("reasons") or {}
+    passed: list[str] = []
+    failed: list[str] = []
+
+    # Layer 2 — K-Score conviction (≥ 55 = positive territory)
+    if kscore is not None:
+        if kscore >= 55:
+            passed.append(f"K-Score: {kscore:.0f} — conviction positive")
+        else:
+            failed.append(f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case")
+
+    # Layer 4a — Clean uptrend structure
+    if reasons.get("sma50_above_sma200") and reasons.get("trend_above_sma50"):
+        passed.append("Uptrend: SMA50 > SMA200, price > SMA50")
+    else:
+        failed.append("Uptrend structure not aligned (SMA50/SMA200/price)")
+
+    # Layer 4b — Entry timing: dip bought, not overextended
+    rsi = reasons.get("rsi")
+    stoch_k = float(reasons.get("stoch_rsi_k") or 50)
+    stoch_cross_up = bool(reasons.get("stoch_rsi_cross_up"))
+    stoch_oversold = bool(reasons.get("stoch_rsi_oversold"))
+    rsi_ok = rsi is not None and 45.0 <= float(rsi) <= 65.0
+    stoch_ok = stoch_cross_up or (stoch_oversold and stoch_k < 60)
+    if rsi_ok and stoch_ok:
+        passed.append(f"Entry timing: RSI {float(rsi):.0f}, Stoch RSI recovering from oversold")
+    else:
+        parts = []
+        if not rsi_ok:
+            parts.append(f"RSI {float(rsi):.0f} outside 45-65" if rsi is not None else "RSI unavailable")
+        if not stoch_ok:
+            parts.append("Stoch RSI not recovering from oversold")
+        failed.append("Entry timing: " + "; ".join(parts))
+
+    # Layer 4c — MACD momentum confirmed
+    macd_hist = float(reasons.get("macd_hist") or 0)
+    macd_rising = bool(reasons.get("macd_rising"))
+    macd_zero_cross = bool(reasons.get("macd_zero_cross_up"))
+    if (macd_hist > 0 and macd_rising) or macd_zero_cross:
+        passed.append("MACD: histogram positive+rising" if not macd_zero_cross else "MACD: zero-line crossover")
+    else:
+        failed.append("MACD: momentum not confirmed (histogram negative or falling)")
+
+    # Layer 4d — Volume confirms direction
+    if reasons.get("obv_bullish"):
+        passed.append("OBV: volume confirming price direction")
+    else:
+        failed.append("OBV: volume not confirming direction")
+
+    # Layer 4e — ADX: trend has real strength (signals unreliable in choppy market)
+    if reasons.get("adx_trending"):
+        adx = reasons.get("adx", 0)
+        passed.append(f"ADX {float(adx):.0f}: trend confirmed, signals reliable")
+    else:
+        adx = reasons.get("adx", 0)
+        failed.append(f"ADX {float(adx):.0f} < 25: market choppy, signals unreliable")
+
+    # Layer 5 — ML model agrees with TA
+    ml_prob = reasons.get("ml_probability")
+    if ml_prob is not None and float(ml_prob) > 0.70:
+        passed.append(f"ML: {float(ml_prob) * 100:.0f}% bullish probability")
+    else:
+        prob_str = f"{float(ml_prob) * 100:.0f}%" if ml_prob is not None else "unavailable"
+        failed.append(f"ML probability {prob_str} (need >70%)")
+
+    # Disqualifiers — false-BUY flags that block regardless of layer scores
+    if reasons.get("rsi_divergence") == "bearish":
+        failed.append("Bearish RSI divergence: price rising but momentum fading — high false-BUY risk")
+    if bool(reasons.get("stoch_rsi_overbought")):
+        failed.append("Stoch RSI overbought: RSI itself overextended — pullback risk elevated")
+
+    return len(failed) == 0, passed, failed
+
 
 def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) -> dict | None:
     """Build a rule-based game plan from technical data when signal transitions to BUY."""
@@ -263,7 +387,17 @@ def _round_step(price: float) -> float:
 
 
 def check_signal_alerts() -> None:
-    """Fire signal-change notifications when AI Signal improves AND analyst is BUY/STRONG BUY."""
+    """Fire conviction BUY alerts when all 5 layers align; fire exit warnings unconditionally.
+
+    Five-layer conviction gate (BUY transitions only):
+      1. Signal transitions to BUY
+      2. AI confidence >= 60%
+      3. Analyst consensus = buy / strong_buy / outperform
+      4+5. K-Score + Technical + Momentum sub-scores via confluence >= 75
+
+    Bearish/exit transitions (BUY→HOLD/WAIT/SELL) bypass the gate — exit
+    warnings are always sent regardless of scores.
+    """
     try:
         with SessionLocal() as session:
             alerts = session.execute(select(SignalAlert)).scalars().all()
@@ -272,7 +406,7 @@ def check_signal_alerts() -> None:
 
             symbols = list({a.symbol for a in alerts})
 
-            # Fetch current signals (keep full payload for reasons)
+            # Fetch current signals (keep full payload for confidence + reasons)
             signals: dict[str, str] = {}
             signal_details: dict[str, dict] = {}
             for sym in symbols:
@@ -285,7 +419,7 @@ def check_signal_alerts() -> None:
                 except Exception:
                     pass
 
-            # Fetch analyst ratings + fundamentals (earnings, insider data)
+            # Fetch analyst ratings + fundamentals (rec_mean, earnings, insider data)
             analyst_ratings: dict[str, str] = {}
             fundamentals_cache: dict[str, dict] = {}
             for sym in symbols:
@@ -298,6 +432,17 @@ def check_signal_alerts() -> None:
                 except Exception:
                     pass
 
+            # Fetch K-Scores in one bulk call for Layer 2 conviction check
+            kscores: dict[str, float] = {}
+            try:
+                r = httpx.get(f"{_settings.ranking_engine_url}/rankings", timeout=15)
+                if r.status_code == 200:
+                    for row in r.json().get("rankings", []):
+                        if row.get("score") is not None:
+                            kscores[row["symbol"]] = float(row["score"])
+            except Exception:
+                pass
+
             fired = 0
             for alert in alerts:
                 current = signals.get(alert.symbol)
@@ -306,24 +451,52 @@ def check_signal_alerts() -> None:
 
                 prev = alert.last_signal
 
-                # Always update tracked signal, even if we don't fire
                 if prev == current:
                     continue
 
                 is_bullish = (prev, current) in _BULLISH_TRANSITIONS
                 is_bearish = (prev, current) in _BEARISH_TRANSITIONS
-                analyst_ok = analyst_ratings.get(alert.symbol, "") in _BULLISH_ANALYST
 
-                alert.last_signal = current  # update regardless
+                alert.last_signal = current  # update regardless of whether we fire
 
-                # Bullish transitions require bullish analyst consensus.
-                # Bearish transitions (exit warnings) fire regardless of analyst.
                 if not is_bullish and not is_bearish:
                     continue
-                if is_bullish and not analyst_ok:
-                    continue
 
-                # Build game plan only for BUY transitions
+                conviction_passed: list[str] | None = None
+                if is_bullish:
+                    sig_data = signal_details.get(alert.symbol) or {}
+                    confidence = float(sig_data.get("confidence") or 0)
+
+                    if current == "BUY":
+                        # Full 4-layer conviction gate
+                        all_pass, passed, failed = _is_conviction_buy(
+                            sig_data, kscore=kscores.get(alert.symbol)
+                        )
+                        if not all_pass:
+                            log.info(
+                                "signal_alert.skipped", symbol=alert.symbol,
+                                reason="conviction_layers_failed", failed=failed,
+                            )
+                            continue
+                        conviction_passed = passed
+                        log.info(
+                            "signal_alert.conviction_met", symbol=alert.symbol,
+                            passed=passed,
+                        )
+                    else:
+                        # Non-BUY bullish improvement (e.g. WAIT→HOLD) — lighter gate:
+                        # analyst bullish + minimum confidence
+                        analyst_ok = analyst_ratings.get(alert.symbol, "") in _BULLISH_ANALYST
+                        if not analyst_ok or confidence < _MIN_CONFIDENCE:
+                            log.info(
+                                "signal_alert.skipped", symbol=alert.symbol,
+                                reason="analyst_or_confidence",
+                                analyst=analyst_ratings.get(alert.symbol, ""),
+                                confidence=confidence,
+                            )
+                            continue
+
+                # Build game plan for BUY transitions
                 game_plan = None
                 if current == "BUY":
                     game_plan = _build_game_plan(
@@ -341,6 +514,7 @@ def check_signal_alerts() -> None:
                     signal_data=signal_details.get(alert.symbol, {}),
                     fundamentals=fundamentals_cache.get(alert.symbol),
                     game_plan=game_plan,
+                    conviction_layers=conviction_passed,
                 )
                 if email_ok:
                     fired += 1
@@ -583,6 +757,25 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.ml_prediction_url}/ml/tune_all")
 
 
+def _refresh_5m(market: str) -> None:
+    """Ingest the latest 5-minute bars for all active stocks in the given market.
+
+    Runs every 5 minutes during regular market hours so the intraday chart on
+    the stock detail page always shows up-to-date candles.  Only fetches bars
+    since the last stored bar — incremental, not a full re-download.
+    Rankings and signals are NOT updated (they use daily bars only).
+    """
+    symbols = _symbols_for(market)
+    if not symbols:
+        return
+    log.info("scheduler.5m_ingest_start", market=market, count=len(symbols))
+    try:
+        ingest_universe(symbols, "5m")
+        log.info("scheduler.5m_ingest_done", market=market, count=len(symbols))
+    except Exception as exc:
+        log.error("scheduler.5m_ingest_failed", market=market, error=str(exc))
+
+
 def start_scheduler() -> None:
     """Register all APScheduler jobs and start the background scheduler.
 
@@ -595,6 +788,7 @@ def start_scheduler() -> None:
       - Regular hrs (10:00–15:00): every 10 min — prices + rankings + signals
       - Close burst (15:30–16:15): every 5 min  — prices + rankings + signals
       - Post-close  (16:30):       once         — above + ML retrain
+      - 5m ingest   (9:30–16:00): every 5 min  — intraday bars only (US + HK)
       - Weekly full refresh (Sun 16:00 PST): force re-ingest 3 years
         → then tune_all (Optuna, 60 trials/symbol, ~2–4 h, background)
 
@@ -605,7 +799,8 @@ def start_scheduler() -> None:
     Hyperparameter tuning runs once on Sunday so each symbol's best params are
     ready for the week ahead; subsequent daily retrains pick them up automatically.
 
-    Job count: 4 US + 4 HK + 1 weekly full refresh + tune_all + 1 price alert checker = 10.
+    Job count: 4 US + 4 HK + 2 5m intraday + 1 weekly full refresh + tune_all
+               + 1 price alert checker = 12.
     """
     global _scheduler
     if _scheduler is not None:
@@ -685,6 +880,30 @@ def start_scheduler() -> None:
         id="weekly_full_refresh", replace_existing=True,
     )
 
+    # ── 5-minute intraday bars — US market hours ────────────────────────────
+    _scheduler.add_job(
+        lambda: _refresh_5m("US"),
+        CronTrigger(
+            hour="9,10,11,12,13,14,15",
+            minute="30,35,40,45,50,55,0,5,10,15,20,25",
+            day_of_week="mon-fri",
+            timezone="America/New_York",
+        ),
+        id="us_5m_intraday", replace_existing=True,
+    )
+
+    # ── 5-minute intraday bars — HK market hours ────────────────────────────
+    _scheduler.add_job(
+        lambda: _refresh_5m("HK"),
+        CronTrigger(
+            hour="9,10,11,12,13,14,15",
+            minute="30,35,40,45,50,55,0,5,10,15,20,25",
+            day_of_week="mon-fri",
+            timezone="Asia/Hong_Kong",
+        ),
+        id="hk_5m_intraday", replace_existing=True,
+    )
+
     # ── Price alert checker — every minute ──────────────────────────────────
     _scheduler.add_job(
         check_price_alerts,
@@ -695,4 +914,4 @@ def start_scheduler() -> None:
     )
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=10)
+    log.info("scheduler.started", jobs=12)

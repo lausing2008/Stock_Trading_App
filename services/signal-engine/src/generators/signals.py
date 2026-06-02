@@ -18,6 +18,24 @@ Accuracy improvements (v3):
   - Earnings proximity penalty: compresses signal when earnings < 10 days away
   - Chart pattern fusion: bull_flag/cup_and_handle/double_bottom boost signal;
     head_and_shoulders/double_top/bear_flag reduce it
+
+Accuracy improvements (v4):
+  - ML probability soft-cap [0.05, 0.95]: prevents XGBoost overconfidence (e.g. 100%)
+    from dominating the fused signal when TA tells a different story
+  - ML-TA disagreement dampening: when |ml_prob - ta_prob| > 0.35, ML weight is
+    scaled back so strong TA evidence isn't simply overridden
+  - ADX choppy market compression: ADX < 20 (directionless market) compresses
+    the signal 10% toward neutral, reducing false BUY/SELL in range-bound stocks
+  - 4-state regime detection: bull / high_vol (fear&greed < 30) / bear / unknown;
+    high_vol raises the BUY threshold to 0.70 and compresses all signals 15%
+
+Accuracy improvements (v5):
+  - Market breadth: % of US universe stocks above their 200-day SMA, fetched from
+    market-data and cached in Redis (4 h). When breadth < 40% (most stocks below
+    their long-term trend line) during a nominally-bull regime, the signal is
+    additionally compressed 10% toward neutral. A BUY signal in a market where
+    most stocks are below their 200MA carries much higher false-positive risk
+    regardless of the S&P 500 price. Breadth stored in reasons as breadth_pct.
 """
 from __future__ import annotations
 
@@ -65,12 +83,13 @@ def _fetch_weekly_prices(symbol: str) -> pd.DataFrame:
 
 
 def _fetch_ml_data(symbol: str) -> tuple[float | None, float]:
-    """Return (bullish_probability, cv_auc_mean).
+    """Return (bullish_probability, test_auc).
 
     Tries the XGBoost+RF ensemble first; falls back to XGBoost-only.
-    cv_auc_mean drives the dynamic ML/TA fusion weight — a high-quality model
-    (AUC 0.70) earns up to 75% weight; a near-random model (AUC 0.50) gets
-    only 40% so the hand-tuned TA rules compensate.
+    test_auc (held-out test set AUC, not CV AUC) drives the dynamic ML/TA
+    fusion weight — a high-quality model (AUC 0.70) earns up to 75% weight;
+    a near-random model (AUC 0.50) gets only 40% so the hand-tuned TA rules
+    compensate. Falls back to cv_auc_mean for models trained before this fix.
     """
     payload = {"symbol": symbol}
     for endpoint in ("/ml/predict_ensemble", "/ml/predict"):
@@ -83,23 +102,51 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float]:
                 if r.status_code == 200:
                     data = r.json()
                     prob = float(data.get("bullish_probability", 0.5))
-                    cv_auc = float((data.get("metrics") or {}).get("cv_auc_mean") or 0.55)
-                    return prob, cv_auc
+                    m = data.get("metrics") or {}
+                    # Prefer unbiased held-out test AUC; fall back to CV AUC for older bundles
+                    test_auc = float(m.get("test_auc_mean") or m.get("auc") or m.get("cv_auc_mean") or 0.55)
+                    return prob, test_auc
         except Exception as exc:
             log.warning("ml.fetch_failed", symbol=symbol, endpoint=endpoint, error=str(exc))
     return None, 0.55
 
 
-def _fetch_market_regime() -> str:
-    """Returns 'bull', 'bear', or 'unknown'. Uses Redis-cached fear_greed endpoint."""
+def _fetch_market_regime() -> tuple[str, float | None]:
+    """Returns (regime, fear_greed_score).
+
+    Regime is one of: 'bull', 'high_vol', 'bear', 'unknown'.
+    - 'bear'     : S&P 500 below its 200-day MA
+    - 'high_vol' : S&P 500 in bull territory but Fear & Greed score < 30
+                   (market stress despite price holding — elevated crash risk)
+    - 'bull'     : S&P 500 above 200-day MA, fear & greed >= 30
+    """
     try:
         with httpx.Client(timeout=5) as c:
             r = c.get(f"{_settings.market_data_url}/stocks/fear_greed")
             if r.status_code == 200:
-                return r.json().get("sp500_regime", "unknown")
+                data = r.json()
+                sp500_regime = data.get("sp500_regime", "unknown")
+                fg_score = data.get("score")
+                if sp500_regime == "bear":
+                    return "bear", fg_score
+                if fg_score is not None and fg_score < 30:
+                    return "high_vol", fg_score
+                return "bull", fg_score
     except Exception:
         pass
-    return "unknown"
+    return "unknown", None
+
+
+def _fetch_market_breadth() -> float | None:
+    """Return % of US stocks above their 200-day SMA, or None on failure."""
+    try:
+        with httpx.Client(timeout=5) as c:
+            r = c.get(f"{_settings.market_data_url}/stocks/market_breadth")
+            if r.status_code == 200:
+                return r.json().get("breadth_pct")
+    except Exception:
+        pass
+    return None
 
 
 def _fetch_earnings_proximity(symbol: str) -> int | None:
@@ -113,6 +160,99 @@ def _fetch_earnings_proximity(symbol: str) -> int | None:
     except Exception:
         pass
     return None
+
+
+def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
+    """Return (rs_score 0-100, rs_rank) vs the stock's sector ETF.
+
+    Fetches the stock's sector from market-data, maps to the matching SPDR ETF
+    (or ^HSI for HK stocks), then computes the 20-day return ratio.
+    Returns (None, None) on any failure.
+    """
+    _SECTOR_ETF = {
+        "Technology": "XLK", "Health Care": "XLV", "Healthcare": "XLV",
+        "Financials": "XLF", "Financial Services": "XLF",
+        "Consumer Discretionary": "XLY", "Consumer Staples": "XLP",
+        "Energy": "XLE", "Utilities": "XLU", "Materials": "XLB",
+        "Industrials": "XLI", "Real Estate": "XLRE",
+        "Communication Services": "XLC", "Telecommunications": "XLC",
+    }
+    try:
+        import yfinance as yf
+
+        url = f"{_settings.market_data_url}/stocks/{symbol}"
+        with httpx.Client(timeout=8) as c:
+            r = c.get(url)
+            if r.status_code != 200:
+                return None, None
+        info = r.json()
+        market = info.get("market", "US")
+        sector = info.get("sector") or ""
+        etf_ticker = "^HSI" if str(market).upper() == "HK" else _SECTOR_ETF.get(sector, "SPY")
+
+        stock_hist = yf.Ticker(symbol).history(period="2mo")
+        etf_hist   = yf.Ticker(etf_ticker).history(period="2mo")
+        if stock_hist.empty or len(stock_hist) < 21:
+            return None, None
+        if etf_hist.empty or len(etf_hist) < 21:
+            return None, None
+
+        stock_ret = float(stock_hist["Close"].iloc[-1] / stock_hist["Close"].iloc[-21] - 1)
+        etf_ret   = float(etf_hist["Close"].iloc[-1] / etf_hist["Close"].iloc[-21] - 1)
+        denom = 1 + etf_ret if abs(etf_ret + 1) > 1e-6 else 1e-6
+        rs_rank = (1 + stock_ret) / denom
+        rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
+        return round(rs_score, 1), round(rs_rank, 4)
+    except Exception:
+        return None, None
+
+
+def _fetch_news_sentiment(symbol: str) -> float | None:
+    """Return a 7-day news sentiment score (0–100, 50 = neutral).
+
+    Uses the sentiment field already computed by the market-data news endpoint
+    (yfinance VADER scores, range −1 to +1). Maps to 0–100 and averages the
+    last 10 articles (yfinance typically returns 7–10 recent items).
+    Returns None if no news available or endpoint unreachable.
+    """
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/news?sources=yfinance&limit=10"
+        with httpx.Client(timeout=8) as c:
+            r = c.get(url)
+            if r.status_code != 200:
+                return None
+        articles = r.json()
+        if not articles:
+            return None
+        scores = [
+            float(a["sentiment"]) * 50 + 50  # map −1..+1 → 0..100
+            for a in articles
+            if isinstance(a.get("sentiment"), (int, float))
+        ]
+        return round(sum(scores) / len(scores), 1) if scores else None
+    except Exception:
+        return None
+
+
+def _fetch_options_flow(symbol: str) -> tuple[str | None, float | None]:
+    """Return (sentiment, cp_ratio) from the options-flow endpoint.
+
+    sentiment: 'strongly_bullish' | 'bullish' | 'neutral' | 'slightly_bearish' | 'bearish'
+    cp_ratio:  call volume / put volume for the nearest two expiries
+    Returns (None, None) for HK stocks, unavailable symbols, or endpoint errors.
+    """
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/options-flow"
+        with httpx.Client(timeout=10) as c:
+            r = c.get(url)
+            if r.status_code != 200:
+                return None, None
+        data = r.json()
+        if not data.get("available"):
+            return None, None
+        return data.get("sentiment"), data.get("cp_ratio")
+    except Exception:
+        return None, None
 
 
 def _fetch_patterns_from_ta(symbol: str) -> list[dict]:
@@ -174,6 +314,32 @@ def _stoch_rsi(rsi: pd.Series, period: int = 14, smooth_k: int = 3, smooth_d: in
     k_val = float(k.iloc[-1]) if not pd.isna(k.iloc[-1]) else 0.5
     d_val = float(d.iloc[-1]) if not pd.isna(d.iloc[-1]) else 0.5
     return k_val, d_val, k
+
+
+def _resample_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
+    """Resample a daily OHLCV DataFrame to weekly bars (Monday-anchored).
+
+    Uses the 'ts' column as the date index. Returns empty DataFrame if
+    fewer than 10 weekly bars can be formed (not enough history).
+    """
+    if df.empty or len(df) < 10:
+        return pd.DataFrame()
+    try:
+        d = df.copy()
+        d["ts"] = pd.to_datetime(d["ts"])
+        d = d.set_index("ts").sort_index()
+        weekly = d.resample("W-MON", label="left", closed="left").agg({
+            "open":   "first",
+            "high":   "max",
+            "low":    "min",
+            "close":  "last",
+            "volume": "sum",
+        }).dropna(subset=["close"])
+        weekly = weekly.reset_index()
+        weekly.rename(columns={"ts": "ts"}, inplace=True)
+        return weekly if len(weekly) >= 10 else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 
 def _weekly_ta_score(df: pd.DataFrame) -> float:
@@ -391,12 +557,15 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 def _decide(fused_prob: float, market_regime: str) -> tuple[str, str]:
     """Map fused probability to a signal label.
 
-    In a bear market (S&P 500 below 200MA), raise the BUY threshold to avoid
-    false entries during broad market downtrends.
+    Thresholds are tightened in bear and high-volatility regimes to reduce
+    false entries when the broad market is under stress.
     """
     if market_regime == "bear":
         buy_threshold  = 0.73
         hold_threshold = 0.56
+    elif market_regime == "high_vol":
+        buy_threshold  = 0.70
+        hold_threshold = 0.54
     else:
         buy_threshold  = 0.65
         hold_threshold = 0.50
@@ -407,21 +576,68 @@ def _decide(fused_prob: float, market_regime: str) -> tuple[str, str]:
     return "SELL", "SWING"
 
 
+def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
+    """Return True (and log) if the most recent price bar is older than 3 calendar days.
+
+    Stale data causes the signal to reflect an outdated market picture. The
+    ingest scheduler should keep data fresh, so staleness indicates a pipeline
+    gap rather than normal operation.
+    """
+    from datetime import date as _date
+    try:
+        last_ts = pd.to_datetime(df["ts"]).max()
+        days_old = (_date.today() - last_ts.date()).days
+        if days_old > 3:
+            log.warning(
+                "signal.stale_price_data",
+                symbol=symbol,
+                last_bar=last_ts.strftime("%Y-%m-%d"),
+                days_old=days_old,
+            )
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def generate_signal(symbol: str) -> AIConfidence:
     df = _fetch_prices(symbol)
     if df.empty:
         raise ValueError(f"No price data for {symbol}")
 
-    ta_prob, reasons = _ta_score(df)
-    ml_prob, ml_cv_auc = _fetch_ml_data(symbol)
-    market_regime = _fetch_market_regime()
-    reasons["market_regime"] = market_regime
+    is_stale = _check_price_staleness(df, symbol)
 
-    # Dynamic fusion: ML weight scales with model quality (CV AUC).
+    ta_prob, reasons = _ta_score(df)
+    ml_prob, ml_test_auc = _fetch_ml_data(symbol)
+    market_regime, fg_score = _fetch_market_regime()
+    breadth_pct = _fetch_market_breadth()
+    reasons["market_regime"] = market_regime
+    reasons["fear_greed_score"] = fg_score
+    reasons["breadth_pct"] = breadth_pct
+
+    # Dynamic fusion: ML weight scales with held-out test AUC (unbiased).
     # AUC 0.50 (random) → 40% ML; AUC 0.70+ (excellent) → 75% ML.
     # This prevents a poorly-fit symbol model from overriding the TA rules.
     if ml_prob is not None:
-        ml_weight = float(np.clip(0.40 + (ml_cv_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
+        # v4: soft-cap ML probability to [0.05, 0.95] — XGBoost frequently
+        # outputs 0.0 or 1.0 when a few features pattern-match strongly, but
+        # these extremes overstate certainty. The cap preserves the signal
+        # direction while allowing TA to have meaningful influence.
+        ml_prob = float(np.clip(ml_prob, 0.05, 0.95))
+
+        ml_weight = float(np.clip(0.40 + (ml_test_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
+
+        # v4: disagreement dampening — when ML and TA strongly disagree,
+        # reduce the ML weight so clear TA signals aren't simply overridden.
+        # |gap| > 0.35 → scale ML weight down by up to 25%.
+        ml_ta_gap = abs(ml_prob - ta_prob)
+        if ml_ta_gap > 0.35:
+            dampen = 1.0 - 0.25 * min((ml_ta_gap - 0.35) / 0.30, 1.0)
+            ml_weight = ml_weight * dampen
+            reasons["ml_ta_conflict"] = True
+        else:
+            reasons["ml_ta_conflict"] = False
+
         ta_weight = 1.0 - ml_weight
         fused = ml_weight * ml_prob + ta_weight * ta_prob
         reasons["ml_probability"] = ml_prob
@@ -430,10 +646,14 @@ def generate_signal(symbol: str) -> AIConfidence:
         fused = ta_prob
         reasons["ml_probability"] = None
         reasons["ml_weight"] = 0.0
+        reasons["ml_ta_conflict"] = False
     reasons["ta_score"] = ta_prob
 
     # ── Multi-timeframe confirmation (weekly) ─────────────────────────────
-    df_weekly = _fetch_weekly_prices(symbol)
+    # Resample daily bars to weekly rather than fetching from DB — weekly bars
+    # are not stored in the prices table (only D1 and M5 exist). Resampling
+    # here is free since we already hold the daily DataFrame in memory.
+    df_weekly = _resample_to_weekly(df)
     weekly_score = _weekly_ta_score(df_weekly)
     reasons["weekly_ta_score"] = round(weekly_score, 3)
 
@@ -447,6 +667,37 @@ def generate_signal(symbol: str) -> AIConfidence:
         fused = 0.5 + daily_direction * 0.85
     fused = float(np.clip(fused, 0.0, 1.0))
     reasons["weekly_alignment"] = (daily_direction * weekly_direction) > 0
+
+    # ── ADX choppy market compression ─────────────────────────────────────
+    # When ADX < 20 the market is directionless — both BUY and SELL signals
+    # are less reliable because there is no confirmed trend to follow.
+    adx_val = reasons.get("adx") or 0.0
+    if adx_val < 20:
+        fused = 0.5 + (fused - 0.5) * 0.90
+        reasons["adx_compression"] = True
+    else:
+        reasons["adx_compression"] = False
+
+    # ── High-volatility regime compression ────────────────────────────────
+    # In high-vol regimes (bull price but fear & greed < 30) the market is
+    # unstable — compress all signals 15% to avoid entries into whipsaws.
+    if market_regime == "high_vol":
+        fused = 0.5 + (fused - 0.5) * 0.85
+        reasons["high_vol_compression"] = True
+    else:
+        reasons["high_vol_compression"] = False
+
+    # ── Market breadth compression (v5) ───────────────────────────────────
+    # When < 40% of US stocks are above their 200-day SMA, the broad market
+    # is in internal decline even if the S&P 500 price hasn't broken down yet.
+    # Only apply in bull/high_vol — bear regime already has raised thresholds.
+    if breadth_pct is not None and breadth_pct < 40 and market_regime in ("bull", "high_vol", "unknown"):
+        fused = 0.5 + (fused - 0.5) * 0.90
+        reasons["breadth_compression"] = True
+    else:
+        reasons["breadth_compression"] = False
+
+    fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── Chart pattern fusion ───────────────────────────────────────────────
     patterns = _fetch_patterns_from_ta(symbol)
@@ -469,6 +720,64 @@ def generate_signal(symbol: str) -> AIConfidence:
         elif days_to_earnings <= 10:
             fused = 0.5 + (fused - 0.5) * 0.80
             reasons["earnings_warning"] = "note"
+
+    # ── News sentiment filter ──────────────────────────────────────────────
+    # Persistently negative news (score < 30) compresses the signal toward
+    # neutral. This suppresses BUY signals ahead of regulatory action,
+    # leadership crises, or product recalls that technicals won't catch yet.
+    news_sentiment = _fetch_news_sentiment(symbol)
+    reasons["news_sentiment"] = news_sentiment
+    if news_sentiment is not None:
+        if news_sentiment < 25:
+            fused = 0.5 + (fused - 0.5) * 0.70  # strongly negative — compress 30%
+            reasons["news_sentiment_flag"] = "strongly_negative"
+        elif news_sentiment < 35:
+            fused = 0.5 + (fused - 0.5) * 0.80  # moderately negative — compress 20%
+            reasons["news_sentiment_flag"] = "negative"
+        else:
+            reasons["news_sentiment_flag"] = "neutral_or_positive"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Relative strength vs sector ETF ───────────────────────────────────
+    rs_score, rs_rank = _fetch_relative_strength(symbol)
+    reasons["rs_score"] = rs_score
+    reasons["rs_rank"] = rs_rank
+    if rs_rank is not None and rs_rank < 0.8:
+        # Stock lagging its sector by >20% over 20 days — reduce BUY confidence
+        fused = 0.5 + (fused - 0.5) * 0.85
+        reasons["rs_flag"] = "lagging_sector"
+    elif rs_rank is not None:
+        reasons["rs_flag"] = "in_line_or_leading"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Options flow ──────────────────────────────────────────────────────────
+    # Unusual call volume is a leading indicator — institutions often position
+    # in options before moving the underlying. Strongly bullish flow boosts
+    # the signal; bearish flow compresses it. Only available for US stocks.
+    options_sentiment, cp_ratio = _fetch_options_flow(symbol)
+    reasons["options_sentiment"] = options_sentiment
+    reasons["options_cp_ratio"] = round(cp_ratio, 2) if cp_ratio is not None else None
+    if options_sentiment == "strongly_bullish":
+        fused = float(np.clip(fused + 0.07, 0.0, 1.0))   # +7% boost
+        reasons["options_flag"] = "unusual_call_activity"
+    elif options_sentiment == "bullish":
+        fused = float(np.clip(fused + 0.03, 0.0, 1.0))   # +3% nudge
+        reasons["options_flag"] = "elevated_call_volume"
+    elif options_sentiment == "bearish":
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.85, 0.0, 1.0))  # -15% compress
+        reasons["options_flag"] = "elevated_put_volume"
+    elif options_sentiment == "slightly_bearish":
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))  # -8% compress
+        reasons["options_flag"] = "slightly_elevated_puts"
+    elif options_sentiment is not None:
+        reasons["options_flag"] = "neutral"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # Stale price data: compress signal 40% toward neutral so outdated bars
+    # don't generate high-confidence signals. The ingest gap is flagged in reasons.
+    if is_stale:
+        fused = 0.5 + (fused - 0.5) * 0.6
+        reasons["stale_price_warning"] = True
 
     signal, horizon = _decide(fused, market_regime)
     confidence = round(abs(fused - 0.5) * 200, 2)
