@@ -236,17 +236,48 @@ export default function App({ Component, pageProps }: AppProps) {
 
     async function runCheck() {
       try {
-        const [priceList, signalList, rankData] = await Promise.all([
+        const globalStyle = getSignalStyle();
+
+        // Fetch base market data and watchlist metadata in parallel
+        const [priceList, rankData, watchlists] = await Promise.all([
           api.latestPrices(),
-          api.allSignals(getSignalStyle()),
           api.rankings(),
+          api.listWatchlists().catch(() => [] as Awaited<ReturnType<typeof api.listWatchlists>>),
         ]);
+
+        // Build symbol→style map from watchlists that have a trading style override
+        const symbolStyleMap: Record<string, string> = {};
+        const styledLists = watchlists.filter(wl => wl.trading_style);
+        if (styledLists.length > 0) {
+          const itemArrays = await Promise.all(
+            styledLists.map(wl => api.listWatchlist(wl.id).catch(() => [] as Awaited<ReturnType<typeof api.listWatchlist>>))
+          );
+          itemArrays.forEach((items, i) => {
+            const style = styledLists[i].trading_style!;
+            items.forEach(item => { symbolStyleMap[item.symbol] = style; });
+          });
+        }
+
+        // Fetch signals for each distinct style actually needed (usually just 1-2)
+        const stylesNeeded = new Set<string>([globalStyle, ...Object.values(symbolStyleMap)]);
+        const signalsByStyle: Record<string, Awaited<ReturnType<typeof api.allSignals>>> = {};
+        await Promise.all([...stylesNeeded].map(async style => {
+          signalsByStyle[style] = await api.allSignals(style).catch(() => []);
+        }));
 
         const prices: Record<string, { price: number; change_pct: number | null }> = {};
         for (const p of priceList) prices[p.symbol] = { price: p.price, change_pct: p.change_pct ?? null };
 
-        const signals: Record<string, { signal: string; confidence: number }> = {};
-        for (const s of signalList) signals[s.symbol] = { signal: s.signal, confidence: s.confidence };
+        // Each symbol gets the signal from its applicable style
+        const signals: Record<string, { signal: string; confidence: number; style?: string }> = {};
+        for (const [style, sigs] of Object.entries(signalsByStyle)) {
+          for (const s of sigs) {
+            const applicableStyle = symbolStyleMap[s.symbol] ?? globalStyle;
+            if (style === applicableStyle) {
+              signals[s.symbol] = { signal: s.signal, confidence: s.confidence, style };
+            }
+          }
+        }
 
         const scores: Record<string, { score: number }> = {};
         for (const r of (rankData.rankings ?? [])) if (r.score != null) scores[r.symbol] = { score: r.score };
