@@ -509,3 +509,29 @@ Bugs 24–30 found during targeted investigation of why buy signal emails were n
 ---
 
 *Audit round 4 conducted: 2026-06-02*
+
+---
+
+## Audit Round 5 — 2026-06-02
+
+### 32. Options flow sentiment labels fire without sufficient put volume
+**File:** `services/market-data/src/api/routes.py`
+**Commit:** `f5c3a00`
+
+**Root cause:** The `sufficient_put_vol` guard (`total_put_vol >= 100`) was only applied to the `"strongly_bullish"` branch. The `"bullish"`, `"bearish"`, and `"slightly_bearish"` labels fired on `cp_ratio` alone, regardless of put volume. With very few puts (e.g., 2 calls vs 1 put → cp_ratio = 2.0, put_vol = 1), the label returned `"bullish"` on a completely illiquid name.
+
+**Impact:** Signals for low-liquidity options would show bullish/bearish sentiment when the data was meaningless. This false options sentiment flowed into the signal conviction check, potentially blocking or passing emails incorrectly.
+
+**Fix:** Applied `and sufficient_put_vol` to all four sentiment branches. Any ticker with fewer than 100 put contracts falls through to `"neutral"` regardless of cp_ratio.
+
+---
+
+## Summary — Audit Round 5
+
+| Service | Bugs fixed |
+|---------|-----------|
+| market-data/api/routes | 1 (options flow sentiment volume guard) |
+
+---
+
+*Audit round 5 conducted: 2026-06-02*
