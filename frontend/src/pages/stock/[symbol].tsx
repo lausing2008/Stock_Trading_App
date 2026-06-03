@@ -250,6 +250,15 @@ export default function StockDetail() {
     api.isWatched(symbol).then(setWatched).catch(() => {});
   }, [symbol]);
 
+  useEffect(() => {
+    setGamePlan(null);
+    setGamePlanError('');
+    setGamePlanOpen(true);
+    setSavedToBoard(false);
+    setAiMessages([]);
+    setMlResult(null);
+  }, [symbol]);
+
 
   useEffect(() => {
     if (!watchMenuOpen) return;
@@ -432,6 +441,9 @@ Return ONLY valid JSON — no markdown, no prose:
       }
       if (objEnd === -1) throw new Error('AI response contained malformed JSON.');
       const parsed = JSON.parse(raw.slice(objStart, objEnd + 1)) as GamePlan;
+      if (parsed.take_profit && currentPrice != null && parsed.take_profit.price <= currentPrice) {
+        throw new Error(`Take profit $${parsed.take_profit.price.toFixed(2)} is at or below current price $${currentPrice.toFixed(2)} — regenerate.`);
+      }
       setGamePlan(parsed);
     } catch (e: unknown) {
       setGamePlanError(e instanceof Error ? e.message : 'Failed to generate game plan.');

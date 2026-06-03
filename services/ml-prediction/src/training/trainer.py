@@ -366,8 +366,8 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
         "metrics": {
             "test_auc_mean": round((xgb_auc + rf_auc) / 2, 4),
             "cv_auc_mean": round(
-                ((xgb.get("metrics") or {}).get("cv_auc_mean") or xgb_auc +
-                 (rf.get("metrics") or {}).get("cv_auc_mean") or rf_auc) / 2, 4
+                (((xgb.get("metrics") or {}).get("cv_auc_mean") or xgb_auc) +
+                 ((rf.get("metrics") or {}).get("cv_auc_mean") or rf_auc)) / 2, 4
             ),
             "buy_threshold": buy_threshold,
         },
