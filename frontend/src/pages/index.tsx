@@ -195,7 +195,7 @@ export default function Home() {
   const { data: watchlists, mutate: mutateWatchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
-  const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
+  const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
   const { data: marketData } = useSWR<MarketIndex[]>('market-overview', () => api.marketOverview(), { refreshInterval: 60_000 });
   const { data: breadthData } = useSWR<MarketBreadth>('market-breadth', () => api.marketBreadth(), { refreshInterval: 4 * 60 * 60 * 1000 });
 

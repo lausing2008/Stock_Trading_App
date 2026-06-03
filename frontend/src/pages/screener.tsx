@@ -118,7 +118,7 @@ export default function Screener() {
   const isAdmin = getSession()?.role === 'admin';
 
   const { data: rankData } = useSWR('rankings-all', () => api.rankings());
-  const { data: signals }  = useSWR('all-signals',  () => api.allSignals());
+  const { data: signals }  = useSWR('signals-' + getSignalStyle(),  () => api.allSignals(getSignalStyle()));
   const { data: prices }   = useSWR('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: wlItems }  = useSWR('watchlist', () => api.listWatchlist());
 

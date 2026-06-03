@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from common.logging import get_logger
 from db import Price, Signal, SignalHorizon, SignalType, Stock, TimeFrame, get_session
 
-from ..generators import generate_signal
+from ..generators import generate_signal, generate_all_signals
 
 log = get_logger("signals")
 
@@ -16,19 +16,35 @@ router = APIRouter(prefix="/signals", tags=["signals"])
 
 
 @router.get("")
-def all_latest_signals(session: Session = Depends(get_session)):
-    """Return the most recently persisted signal for every active stock."""
+def all_latest_signals(
+    style: str | None = Query(None, description="Filter by trading style: SHORT, SWING, LONG"),
+    session: Session = Depends(get_session),
+):
+    """Return the most recently persisted signal for every active stock.
+
+    Optional ?style=SWING (default) filters to a specific trading horizon.
+    If omitted, returns the most recent signal regardless of style.
+    """
+    horizon_filter = style.upper() if style else "SWING"
+    # Subquery: latest ts per (stock_id, horizon)
     latest_subq = (
-        select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
-        .group_by(Signal.stock_id)
+        select(Signal.stock_id, Signal.horizon, func.max(Signal.ts).label("max_ts"))
+        .group_by(Signal.stock_id, Signal.horizon)
         .subquery()
     )
-    rows = session.execute(
+    q = (
         select(Stock.symbol, Signal.signal, Signal.horizon, Signal.confidence, Signal.bullish_probability, Signal.ts)
         .join(Signal, Stock.id == Signal.stock_id)
-        .join(latest_subq, (Signal.stock_id == latest_subq.c.stock_id) & (Signal.ts == latest_subq.c.max_ts))
+        .join(latest_subq, (Signal.stock_id == latest_subq.c.stock_id)
+              & (Signal.horizon == latest_subq.c.horizon)
+              & (Signal.ts == latest_subq.c.max_ts))
         .where(Stock.active.is_(True))
-    ).all()
+    )
+    try:
+        q = q.where(Signal.horizon == SignalHorizon(horizon_filter))
+    except ValueError:
+        pass  # unknown style — return all
+    rows = session.execute(q).all()
     return [
         {
             "symbol": row.symbol,
@@ -73,30 +89,30 @@ def _bulk_persist(symbols: list[str]) -> None:
     from sqlalchemy import desc
     for symbol in symbols:
         try:
-            ai = generate_signal(symbol)
+            all_sig = generate_all_signals(symbol)
             with SessionLocal() as s:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
                 if not stock:
                     continue
-                # Only insert if the signal type changed since the last persisted signal.
-                # The scheduler refreshes every 10 min, so without this check every stock
-                # accumulates dozens of identical rows per day, polluting Trade Performance.
-                last = s.execute(
-                    select(Signal.signal)
-                    .where(Signal.stock_id == stock.id)
-                    .order_by(desc(Signal.ts))
-                    .limit(1)
-                ).scalar_one_or_none()
-                if last is not None and last == SignalType(ai.signal):
-                    continue  # signal unchanged — skip insert
-                s.add(Signal(
-                    stock_id=stock.id,
-                    signal=SignalType(ai.signal),
-                    horizon=SignalHorizon(ai.horizon),
-                    confidence=ai.confidence,
-                    bullish_probability=ai.bullish_probability,
-                    reasons=ai.reasons,
-                ))
+                for style_key, ai in all_sig.items():
+                    horizon_enum = SignalHorizon(ai.horizon)
+                    # Only insert if the signal type changed for this (stock, horizon) pair.
+                    last = s.execute(
+                        select(Signal.signal)
+                        .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
+                        .order_by(desc(Signal.ts))
+                        .limit(1)
+                    ).scalar_one_or_none()
+                    if last is not None and last == SignalType(ai.signal):
+                        continue
+                    s.add(Signal(
+                        stock_id=stock.id,
+                        signal=SignalType(ai.signal),
+                        horizon=horizon_enum,
+                        confidence=ai.confidence,
+                        bullish_probability=ai.bullish_probability,
+                        reasons=ai.reasons,
+                    ))
                 s.commit()
         except Exception as exc:
             log.warning("signals.refresh.skip", symbol=symbol, error=str(exc))
@@ -779,25 +795,43 @@ def trade_performance(
 
 
 @router.get("/{symbol}")
-def signal_for(symbol: str, persist: bool = False, session: Session = Depends(get_session)):
-    """Generate (and optionally persist) a fresh signal for the given symbol."""
+def signal_for(
+    symbol: str,
+    persist: bool = False,
+    style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG. Returns all 3 if omitted."),
+    session: Session = Depends(get_session),
+):
+    """Generate (and optionally persist) fresh signals for the given symbol.
+
+    Returns all 3 style signals by default, or just the requested style.
+    """
     try:
-        ai = generate_signal(symbol)
+        all_sig = generate_all_signals(symbol)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
 
     if persist:
+        from sqlalchemy import desc
         stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
         if stock:
-            session.add(
-                Signal(
+            for ai in all_sig.values():
+                session.add(Signal(
                     stock_id=stock.id,
                     signal=SignalType(ai.signal),
                     horizon=SignalHorizon(ai.horizon),
                     confidence=ai.confidence,
                     bullish_probability=ai.bullish_probability,
                     reasons=ai.reasons,
-                )
-            )
+                ))
             session.commit()
-    return {"symbol": symbol, **asdict(ai)}
+
+    if style:
+        style_key = style.upper()
+        ai = all_sig.get(style_key) or all_sig["SWING"]
+        return {"symbol": symbol, **asdict(ai)}
+
+    # Return all 3 styles
+    return {
+        "symbol": symbol,
+        "signals": {k: asdict(v) for k, v in all_sig.items()},
+    }

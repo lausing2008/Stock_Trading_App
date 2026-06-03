@@ -103,7 +103,7 @@ export default function Positions() {
   const { data: cash = { USD: 0, HKD: 0 }, mutate: mutateCash } = useSWR<CashByMarket>('positions/cash', () => api.getCash());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: rankingsData }  = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
-  const { data: signalsData }   = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
+  const { data: signalsData }   = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
   const { data: watchlistData, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
 
   /* pre-fill symbol from ?add= query (coming from watchlist) */

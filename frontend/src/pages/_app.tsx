@@ -6,7 +6,7 @@ import '@/styles/globals.css';
 import { getSession, logout, getImpersonatedUser, exitImpersonation } from '@/lib/auth';
 import { checkAlerts, playNotificationSound } from '@/lib/alerts';
 import { confluenceScore } from '@/lib/confluence';
-import { loadSettings } from '@/lib/settings';
+import { loadSettings, getSignalStyle } from '@/lib/settings';
 import NotificationBell from '@/components/NotificationBell';
 import { api } from '@/lib/api';
 
@@ -238,7 +238,7 @@ export default function App({ Component, pageProps }: AppProps) {
       try {
         const [priceList, signalList, rankData] = await Promise.all([
           api.latestPrices(),
-          api.allSignals(),
+          api.allSignals(getSignalStyle()),
           api.rankings(),
         ]);
 
