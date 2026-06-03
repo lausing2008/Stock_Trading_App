@@ -100,6 +100,7 @@ export default function StockDetail() {
   const [mlError, setMlError] = useState('');
   const [trainAllState, setTrainAllState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [trainAllMsg, setTrainAllMsg] = useState('');
+  const [mlTrainOpen, setMlTrainOpen] = useState(false);
 
   // AI chat state
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
@@ -251,6 +252,19 @@ export default function StockDetail() {
     api.isWatched(symbol).then(setWatched).catch(() => {});
   }, [symbol]);
 
+  // Auto-run ML prediction when the page loads for this symbol
+  useEffect(() => {
+    if (!symbol) return;
+    setMlResult(null);
+    setMlError('');
+    setMlLoading(true);
+    api.predict(symbol, mlModel)
+      .then(r => setMlResult(r))
+      .catch(() => setMlError('No model trained yet — click Train This to build one.'))
+      .finally(() => setMlLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol]);
+
   useEffect(() => {
     if (!watchMenuOpen) return;
     function handler(e: MouseEvent) {
@@ -363,7 +377,9 @@ CURRENCY: ${lp?.currency ?? 'USD'}
 AI SIGNAL: ${sig?.signal ?? 'N/A'} | CONFIDENCE: ${sig?.confidence?.toFixed(0) ?? '?'}% | BULLISH PROB: ${sig?.bullish_probability != null ? (sig.bullish_probability * 100).toFixed(0) : '?'}%
 K-SCORE: ${rank?.score?.toFixed(0) ?? '?'} | TECHNICAL: ${rank?.technical?.toFixed(0) ?? '?'} | MOMENTUM: ${rank?.momentum?.toFixed(0) ?? '?'} | VALUE: ${rank?.value?.toFixed(0) ?? '?'}
 FAIR VALUE (K-Score intrinsic estimate): ${rank?.fair_price != null ? `$${rank.fair_price.toFixed(2)}${currentPrice != null ? ` — ${rank.fair_price > currentPrice ? `+${(((rank.fair_price - currentPrice) / currentPrice) * 100).toFixed(1)}% above current (valid take-profit candidate)` : `${(((rank.fair_price - currentPrice) / currentPrice) * 100).toFixed(1)}% below current (stock overvalued; do NOT use as take-profit)`}` : ''}` : 'N/A'}
-ANALYST TARGET: ${fund?.target_price != null ? fund.target_price.toFixed(2) : 'N/A'} | RECOMMENDATION: ${fund?.recommendation?.toUpperCase() ?? 'N/A'} | # ANALYSTS: ${fund?.number_of_analysts ?? '?'}
+ANALYST TARGET (mean): ${fund?.target_price != null ? `$${fund.target_price.toFixed(2)}${currentPrice != null ? (fund.target_price <= currentPrice ? ' — BELOW CURRENT PRICE, do NOT use as take-profit' : ` — +${(((fund.target_price - currentPrice) / currentPrice) * 100).toFixed(1)}% above current (valid take-profit candidate)`) : ''}` : 'N/A'}
+ANALYST TARGET (high): ${fund?.target_high != null ? `$${fund.target_high.toFixed(2)}${currentPrice != null ? (fund.target_high <= currentPrice ? ' — BELOW CURRENT PRICE, do NOT use as take-profit' : ` — +${(((fund.target_high - currentPrice) / currentPrice) * 100).toFixed(1)}% above current (valid take-profit candidate)`) : ''}` : 'N/A'}
+RECOMMENDATION: ${fund?.recommendation?.toUpperCase() ?? 'N/A'} | # ANALYSTS: ${fund?.number_of_analysts ?? '?'}
 BETA: ${fund?.beta?.toFixed(2) ?? 'N/A'} | SECTOR: ${data.price?.sector ?? 'N/A'}
 NEXT EARNINGS: ${fund?.next_earnings_date ?? 'N/A'}${fund?.days_to_earnings != null ? ` (${fund.days_to_earnings}d away)` : ''}
 
@@ -396,7 +412,7 @@ RULES:
 - Entry 2 (50% position): at a deeper support or fibonacci level for averaging down
 - Breakout entry: above the nearest resistance level if the above limits don't fill — take 50% size
 - Stop loss: just below the lowest entry support — a close below this invalidates the setup
-- Take profit: use analyst target if above current price; otherwise use the nearest resistance above current price; if fair value is marked as a "valid take-profit candidate" it may be used
+- Take profit: choose the BEST of these — in order of preference: (1) analyst mean or high target if labelled "valid take-profit candidate" and meaningfully above current price (>3%); (2) K-Score fair value if labelled "valid take-profit candidate"; (3) nearest resistance above current price. NEVER use any target labelled "BELOW CURRENT PRICE"
 - Catalysts: 3 bullets, each ≤12 words, specific (mention earnings date, sector, analyst coverage)
 - Risk: single sentence naming the biggest concrete threat (earnings, macro, overbought, etc.)
 - Use the same currency as the stock (check CURRENCY field)
@@ -929,46 +945,69 @@ Return ONLY valid JSON — no markdown, no prose:
 
           {/* ML Prediction — full width of left column */}
           <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <h3 className="text-sm font-semibold text-slate-300">ML Prediction</h3>
-              <select
-                value={mlModel}
-                onChange={e => setMlModel(e.target.value)}
-                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
-              >
-                {['xgboost', 'random_forest', 'gradient_boosting', 'lstm'].map(m => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <select
+                  value={mlModel}
+                  onChange={e => { setMlModel(e.target.value); setMlResult(null); }}
+                  className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
+                >
+                  {['xgboost', 'random_forest', 'gradient_boosting', 'lstm'].map(m => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <button onClick={runML} disabled={mlLoading} style={{ borderRadius: 6, background: '#4f46e5', border: 'none', padding: '5px 12px', fontSize: 12, color: '#fff', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1, fontWeight: 600 }}>
+                  {mlLoading ? '…' : '↻ Predict'}
+                </button>
+              </div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: mlResult ? '1fr 1fr' : '1fr', gap: 12, alignItems: 'center' }}>
-              {mlResult && (
+            {mlLoading && (
+              <div style={{ fontSize: 12, color: '#475569' }}>Running model…</div>
+            )}
+            {mlError && !mlLoading && (
+              <div style={{ fontSize: 11, color: '#fbbf24', marginBottom: 8 }}>{mlError}</div>
+            )}
+            {mlResult && !mlLoading && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
                 <div>
-                  <div className={`text-2xl font-bold ${mlResult.direction === 'UP' ? 'text-green-400' : 'text-red-400'}`} style={{ lineHeight: 1 }}>
+                  <div className={`text-3xl font-bold ${mlResult.direction === 'UP' ? 'text-green-400' : 'text-red-400'}`} style={{ lineHeight: 1 }}>
                     {mlResult.direction === 'UP' ? '↑' : '↓'} {mlResult.direction}
                   </div>
-                  <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 3 }}>{bullPct}% bullish · {mlResult.confidence?.toFixed(1)}% confidence</div>
-                  <div style={{ marginTop: 8, height: 6, borderRadius: 3, background: '#1e293b', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${mlResult.bullish_probability * 100}%`, background: mlResult.direction === 'UP' ? '#4ade80' : '#f87171', borderRadius: 3, transition: 'width 0.4s' }} />
+                  <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>{bullPct}% bullish · {mlResult.confidence?.toFixed(1)}% confidence</div>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${mlResult.bullish_probability * 100}%`, background: mlResult.direction === 'UP' ? '#4ade80' : '#f87171', borderRadius: 4, transition: 'width 0.4s' }} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, color: '#334155' }}>
+                    <span>Bearish 0%</span><span>Bullish 100%</span>
                   </div>
                 </div>
-              )}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {mlError && <div style={{ fontSize: '11px', color: '#fbbf24' }}>{mlError}</div>}
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button onClick={runML} disabled={mlLoading} style={{ flex: 1, borderRadius: 6, background: '#4f46e5', border: 'none', padding: '7px', fontSize: 12, color: '#fff', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1, fontWeight: 600 }}>
-                    {mlLoading ? 'Running…' : 'Predict'}
-                  </button>
-                  <button onClick={trainML} disabled={mlLoading} style={{ flex: 1, borderRadius: 6, background: 'transparent', border: '1px solid #334155', padding: '7px', fontSize: 12, color: '#94a3b8', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1 }}>
-                    Train This
-                  </button>
-                </div>
-                <button onClick={handleTrainAll} disabled={trainAllState === 'running'} style={{ borderRadius: 6, padding: '7px', border: '1px solid rgba(99,102,241,0.3)', background: trainAllState === 'running' ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.08)', color: trainAllState === 'running' ? '#818cf8' : '#6366f1', fontSize: 12, fontWeight: 600, cursor: trainAllState === 'running' ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
-                  <span style={{ animation: trainAllState === 'running' ? 'spin 0.8s linear infinite' : 'none', display: 'inline-block' }}>{trainAllState === 'running' ? '↻' : '⚡'}</span>
-                  {trainAllState === 'running' ? 'Training All…' : 'Train All Stocks'}
-                </button>
-                {trainAllMsg && <div style={{ fontSize: 11, color: trainAllState === 'done' ? '#4ade80' : '#f87171' }}>{trainAllMsg}</div>}
               </div>
+            )}
+            {/* Training controls — collapsed by default */}
+            <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid #1e293b' }}>
+              <button
+                onClick={() => setMlTrainOpen(o => !o)}
+                style={{ fontSize: 11, color: '#334155', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}
+              >
+                <span style={{ fontSize: 9 }}>{mlTrainOpen ? '▾' : '▸'}</span> Model training
+              </button>
+              {mlTrainOpen && (
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={trainML} disabled={mlLoading} style={{ flex: 1, borderRadius: 6, background: 'transparent', border: '1px solid #334155', padding: '6px', fontSize: 12, color: '#94a3b8', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1 }}>
+                      Train This Stock
+                    </button>
+                    <button onClick={handleTrainAll} disabled={trainAllState === 'running'} style={{ flex: 1, borderRadius: 6, padding: '6px', border: '1px solid rgba(99,102,241,0.3)', background: 'rgba(99,102,241,0.08)', color: '#6366f1', fontSize: 12, fontWeight: 600, cursor: trainAllState === 'running' ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                      <span style={{ animation: trainAllState === 'running' ? 'spin 0.8s linear infinite' : 'none', display: 'inline-block' }}>{trainAllState === 'running' ? '↻' : '⚡'}</span>
+                      {trainAllState === 'running' ? 'Training…' : 'Train All'}
+                    </button>
+                  </div>
+                  {trainAllMsg && <div style={{ fontSize: 11, color: trainAllState === 'done' ? '#4ade80' : '#f87171' }}>{trainAllMsg}</div>}
+                </div>
+              )}
             </div>
           </div>
 
