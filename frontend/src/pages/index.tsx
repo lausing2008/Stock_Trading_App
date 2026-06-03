@@ -3,6 +3,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { api, type Stock, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex, type MarketBreadth } from '@/lib/api';
+import { getSignalStyle } from '@/lib/settings';
 import AddStockModal from '@/components/AddStockModal';
 
 const SECTOR_COLOR: Record<string, { text: string; bg: string }> = {

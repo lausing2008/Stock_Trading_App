@@ -29,6 +29,7 @@ import { api, type RankingRow, type LatestPrice, type SignalSummary, type QuickS
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel } from '@/lib/ai';
 import WatchlistPickerButton from '@/components/WatchlistPickerButton';
+import { getSignalStyle } from '@/lib/settings';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
