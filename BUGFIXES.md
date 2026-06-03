@@ -773,3 +773,169 @@ GET `/signals/factor-exposure` endpoint. Aggregates RSI, ADX, Volume Z-score, ML
 | I-23 | Factor exposure analysis | 2026-06-01/02 |
 
 *Expert review batch completed: 2026-05-31 → 2026-06-03*
+
+---
+
+---
+
+# Signal Quality Review — 2026-06-03
+
+An honest assessment of whether each improvement is generating better signals or adding noise.
+Reviewed after all 23 improvements were live.
+
+---
+
+## Verdict summary
+
+| Rating | Improvements |
+|--------|-------------|
+| Clearly helping | I-1, I-3, I-4, I-8, I-10, I-12, I-19, I-21 |
+| Probably helping (unverified) | I-2, I-7, I-15 (alignment), I-18 |
+| Needs validation before trusting | I-15 (BUY gate), earnings compression magnitude |
+| Likely adding noise | I-20 (VADER news sentiment), I-17 (options flow data quality) |
+| No signal impact (display/tooling) | I-5, I-6, I-9, I-11, I-13, I-14, I-16, I-22, I-23 |
+
+---
+
+## What is clearly helping
+
+### Data quality fixes (I-3, I-4, I-8, I-10)
+Removing bad data is an unambiguous improvement — it does not "add" a signal layer, it removes systematic errors that were corrupting existing ones.
+
+- **I-8 (adj close):** A 2-for-1 split created an apparent 50% price crash in raw data. Momentum, SMA, and ATR were all measuring a phantom crash. Now fixed at the adapter boundary.
+- **I-4 (look-ahead guard):** Partial mid-session bars in the training set contaminated rolling feature windows. The model was unknowingly trained on slightly-future data.
+- **I-10 (zero-volume filter):** Trading halt bars (volume = 0) inflated ATR and distorted OBV, making stocks look more volatile than they are.
+- **I-3 (Redis macro fallback):** yfinance failures caused macro features to zero-fill, making every signal look like extreme market panic. Now the most-recent successful fetch is used instead.
+
+### ML probability calibration and weight formula (I-1, I-12)
+Everything downstream — the 65% confidence display, the BUY threshold comparison, the signal fusion weight — depends on the ML probability being a real probability. Without isotonic calibration, a 65% output might correspond to only 52% true probability. These two fixes are foundational: nothing else in the system is reliable until these are right.
+
+### Four-state market regime (I-21)
+Raising BUY thresholds during `high_vol` and `bear` regimes is grounded in 40+ years of documented evidence that momentum and breakout strategies underperform in volatile regimes. The addition of market breadth (% stocks above 200-day SMA) as a second regime input — compressing signals when breadth < 40% — adds a meaningful cross-sectional check that the regime classification is not just SPY-specific.
+
+### Relative strength vs sector (I-19)
+RS is one of the most replicated and durable factors in quantitative finance. A stock outperforming its sector ETF on a 20-day basis while generating a BUY setup is a meaningfully different situation from one that is lagging the sector. The 15% compression for `rs_rank < 0.8` is directionally correct and has academic backing.
+
+---
+
+## What is probably helping but unverified
+
+### Weekly alignment — boost/compress (I-15, existing part)
+When daily and weekly directions agree, amplifying the signal is sound multi-timeframe practice. When they conflict, compressing it is conservative and correct. The 10-week SMA (changed from 20-week) responds faster to genuine trend changes. **Verdict: directionally right, but the magnitude of boost (1.12×) and compress (0.85×) have not been empirically tuned.**
+
+### K-Score RSI curve and falling knife gate (I-2, I-7)
+Both fix obvious logical errors in K-Score computation (a stock down 80% should not score 80 on "value"; RSI 70 should not score the same as RSI 40). These improve the K-Score quality, which feeds into LONG-style signal boosts. Effect on short-term signal accuracy is indirect.
+
+### Earnings surprise model (I-18)
+A history of consistently beating EPS estimates is one of the best-documented predictors of analyst upgrades and post-earnings drift. Adding it to the research engine score (+5 pts for beat_rate ≥ 75%) is correct. **Effect is felt in research engine scores, not directly in signal fusion.**
+
+---
+
+## What needs validation before trusting
+
+### Weekly BUY gate — the 0.40× compression (I-15, new part)
+The gate fires when `weekly_rsi < 40 AND weekly_trend == "down"` simultaneously. The logic is sound: this combination indicates a confirmed bearish weekly structure, not a temporary dip. However:
+
+- **Unknown false-negative rate.** Early reversals from a weekly downtrend are exactly when a SWING BUY can be most profitable (catching the turn). The gate will block many of these.
+- **0.40× is a strong compression.** A fused score of 0.80 becomes 0.66 — just above SWING bull threshold of 0.65. Only a truly extreme daily signal (~0.90+) gets through. This may be too aggressive.
+- **Needs walk-forward validation.** The correct evaluation: did signals blocked by the gate have worse outcomes than those that passed? That requires the walk-forward backtest (still pending).
+
+### Earnings proximity compression magnitude
+The `0.50×` compression for earnings ≤ 2 days was fixed from an impossible `0.25×`, but `0.50×` still means you need a fused score of ~1.30 to get a SWING BUY with earnings in 2 days. That is unreachable (scores are clipped to 1.0). In practice, no BUY signal can fire within 2 days of earnings for SWING. This may be intentional (earnings are binary events) but it is a hard block, not a compression.
+
+---
+
+## What is likely adding noise
+
+### VADER news sentiment (I-20)
+
+**Assessment: weak signal source, probably net negative for accuracy.**
+
+VADER is a rule-based lexicon tool designed for social media text. Financial news has domain-specific language that VADER handles poorly:
+
+| Headline | VADER reads | Correct reading |
+|----------|-------------|-----------------|
+| "Stock faces regulatory headwinds" | Negative (sees "headwinds") | Neutral/contextual |
+| "Volatile session closes flat" | Negative (sees "volatile") | Neutral |
+| "Earnings beat but stock falls on guidance" | Mixed/neutral | Negative (guidance matters more) |
+| "Apple hits resistance at 52-week high" | Negative (sees "resistance") | Neutral — this is a technical observation |
+
+The 30% compression when sentiment < 25 is a large penalty applied to a noisy score. If VADER misclassifies a neutral article as negative, a legitimate BUY signal is suppressed with no recovery mechanism.
+
+**Recommended fix:** Replace VADER with a Claude API call. A single classification call (`POSITIVE / NEGATIVE / NEUTRAL` with a short financial-context system prompt) on the top 3 headlines would be far more accurate. Claude is already in the stack for research reports — this would cost ~$0.001 per signal refresh and would actually understand financial language.
+
+### Options flow via yfinance (I-17)
+
+**Assessment: data quality is too low for the signal magnitudes applied.**
+
+The signals that actually predict moves are:
+- **Intraday sweep orders** — large block trades executed across multiple exchanges within seconds (dark pool + lit market)
+- **Short-dated OTM calls with unusual size vs. open interest** — in real-time, before the move
+- **Gamma exposure concentration** at specific strikes
+
+What yfinance provides is **end-of-day aggregate volume** across all strikes and all expiries. By the time this data is available:
+1. Informed traders have already positioned
+2. The C/P ratio reflects what happened yesterday, not what is being positioned for tomorrow
+3. Retail activity dilutes any institutional signal, especially for large-cap stocks
+
+**Specific risk:** C/P ratio is correlated with recent price direction (stocks that went up yesterday have more calls today). This makes it a **lagging indicator** — it confirms a move that already happened rather than predicting one.
+
+The ±7%/±15% boost/compress magnitudes are large relative to the signal quality. A spurious `strongly_bullish` options reading (2 calls to 1 put, both with 5 contracts) boosts a fused score from 0.62 to 0.67, potentially triggering a BUY that would not have fired.
+
+**Recommended fix:** Either (a) reduce boost/compress magnitudes to ±3%/±5% until a real options data source is integrated, or (b) raise the minimum contract threshold from 100 to 500 put contracts to filter out all but the most liquid names.
+
+---
+
+## The compression accumulation problem
+
+This is the most important systemic risk introduced by the improvement batch. Each compression layer is independent but they multiply together. A plausible scenario for a stock in a choppy market:
+
+| Compression source | Factor applied |
+|-------------------|----------------|
+| Weekly direction conflict | 0.85× |
+| Weekly BUY gate fires (RSI < 40, trend down) | 0.40× |
+| ADX below minimum (choppy market) | 0.90× |
+| High-volatility regime | 0.85× |
+| News sentiment < 35 | 0.85× |
+| Earnings in 5 days | 0.75× |
+| RS rank < 0.80 | 0.85× |
+
+**Combined raw compression: 0.85 × 0.40 × 0.90 × 0.85 × 0.85 × 0.75 × 0.85 ≈ 0.127×**
+
+The `max_compress_ratio` cap (SWING = 0.55, LONG = 0.65) prevents reaching 0.127× in practice, but even with the cap, a fused score of 0.80 becomes at most `0.5 + (0.30 × 0.55) = 0.665` — barely above the SWING bull threshold of 0.65. In genuinely adverse conditions (bear regime, threshold = 0.73), even this would not be a BUY.
+
+**Net effect:** In any choppy, uncertain market — which describes the majority of trading days — the system may produce near-zero BUY signals. If the system is supposed to find opportunities in all market conditions, this is over-suppression. If it is supposed to only fire in ideal conditions, this is correct behavior. That decision has not been made explicitly.
+
+**Diagnostic query to run:**
+```sql
+SELECT signal, horizon, COUNT(*) as n,
+       ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY horizon), 1) as pct
+FROM signals
+WHERE ts > now() - interval '30 days'
+GROUP BY signal, horizon
+ORDER BY horizon, signal;
+```
+If BUY signals are < 10% of total for each style, the system is likely over-compressed.
+
+---
+
+## Recommendations
+
+### R-1. Replace VADER with Claude news sentiment
+**Priority: High.** One API call per symbol per refresh. System prompt: "You are a financial analyst. Classify this headline as POSITIVE, NEGATIVE, or NEUTRAL for a stock investor. Respond with one word." Cost: negligible. Accuracy: dramatically better than VADER for financial text.
+
+### R-2. Reduce options flow magnitudes or raise liquidity threshold
+**Priority: Medium.** Change boost from +7%/+3% to +4%/+2%, and compress from −15% to −8%. Alternatively, raise minimum put contract threshold from 100 to 500. Both changes reduce the impact of noisy data without removing the signal.
+
+### R-3. Monitor BUY signal rate over time
+**Priority: High.** Add a daily metric: how many BUY signals fired per style, as a percentage of all signals computed. If this drops below 10–15% consistently, investigate which compression layers are dominating. The signal distribution is the canary — a system that almost never says BUY is either very conservative or broken.
+
+### R-4. Build the walk-forward backtest
+**Priority: High (already in improvements tracker).** The only way to empirically validate whether the weekly BUY gate, news compression, and options flow are improving or hurting accuracy is to replay historical signals and measure outcomes. Without this, every compression decision is faith-based.
+
+### R-5. Consider a compression budget
+**Priority: Medium.** Rather than stacking independent multipliers, define a total maximum compression budget per signal. Example: no combination of filters can compress a signal by more than 50% of its pre-filter deviation from 0.5. This prevents the scenario where 7 individually reasonable filters combine to make BUY effectively unreachable.
+
+---
+
+*Signal quality review conducted: 2026-06-03*
