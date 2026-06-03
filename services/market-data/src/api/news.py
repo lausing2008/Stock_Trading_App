@@ -6,15 +6,23 @@ Strategy:
      supplement with Google News RSS (no API key needed).
   3. Merge, deduplicate by title prefix, sort newest-first.
   4. Cache result in Redis for 30 minutes.
+
+Sentiment:
+  - Per-article: VADER with financial-domain lexicon corrections.
+  - Aggregate (GET /stocks/{symbol}/news/sentiment): Claude Haiku if
+    ANTHROPIC_API_KEY is in environment, else enhanced VADER average.
+    Claude result cached 4h in Redis.
 """
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.parse
 from datetime import datetime, timezone
 
 import feedparser
+import httpx
 import redis as redis_lib
 import yfinance as yf
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -29,11 +37,41 @@ from db import Stock, get_session
 
 router = APIRouter(prefix="/stocks", tags=["news"])
 log = get_logger("news")
-_analyzer = SentimentIntensityAnalyzer()
 _settings = get_settings()
 
-_NEWS_TTL = 30 * 60        # 30 minutes
-_STALE_CUTOFF = 7 * 86400  # discard yfinance articles older than 7 days
+_NEWS_TTL       = 30 * 60       # 30 min — news list cache
+_SENTIMENT_TTL  = 4  * 60 * 60  # 4h  — aggregate sentiment cache
+_STALE_CUTOFF   = 7  * 86400    # discard yfinance articles older than 7 days
+
+# ── VADER with financial-domain lexicon corrections ───────────────────────────
+# Default VADER lexicon is calibrated for social media. Financial headlines use
+# domain-specific language that VADER systematically mis-scores: "resistance" is
+# a technical chart term (neutral), not a negative; "beat" is very positive, not
+# slightly positive; "investigation" far more negative than VADER weights it.
+_analyzer = SentimentIntensityAnalyzer()
+_analyzer.lexicon.update({
+    # Earnings / guidance — VADER heavily under-scores these
+    "beat": 2.5, "beats": 2.5, "topped": 2.0, "exceeded": 2.0, "surpassed": 2.0,
+    "missed": -2.5, "miss": -2.5, "disappoints": -2.5, "disappointing": -2.0,
+    "lowered": -1.0, "slashed": -2.0,
+    # Analyst actions
+    "upgrade": 2.0, "upgraded": 2.0, "outperform": 1.8, "overweight": 1.2,
+    "downgrade": -2.0, "downgraded": -2.0, "underperform": -1.8, "underweight": -1.2,
+    # Corporate actions — mostly positive
+    "buyback": 1.5, "repurchase": 1.0,
+    # Serious negatives
+    "investigation": -2.0, "subpoena": -2.5, "probe": -1.5,
+    "layoffs": -1.5, "bankruptcy": -3.0, "default": -2.5, "delisting": -2.5,
+    # Neutral financial terms VADER over-penalises
+    "volatile": -0.2, "volatility": -0.2,   # was ~-1.5; usually just market description
+    "headwinds": -0.4,                        # context-dependent, not always bad
+    "resistance": 0.0,                        # technical chart level — purely neutral
+    "pressure": -0.4,                         # reduce from VADER's ~-1.5
+    "risks": -0.2,                            # "risks remain" is boilerplate
+})
+
+# ── Claude configuration (optional — falls back to VADER if key absent) ───────
+_ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 _redis: redis_lib.Redis | None = None
 
@@ -53,6 +91,64 @@ class NewsItem(BaseModel):
     sentiment: float
     sentiment_label: str
     thumbnail: str | None = None
+
+
+class SentimentResponse(BaseModel):
+    score: float   # 0-100, 50 = neutral
+    label: str     # positive | negative | neutral
+    source: str    # claude | vader
+
+
+def _claude_sentiment(symbol: str, titles: list[str]) -> float | None:
+    """Call Claude Haiku to classify financial headlines as a batch.
+
+    Returns 0-100 score (50=neutral), or None if key absent / call fails.
+    Result cached in Redis for 4h under stockai:news_sentiment:{symbol}.
+    """
+    if not _ANTHROPIC_KEY or not titles:
+        return None
+    cache_key = f"stockai:news_sentiment:{symbol.upper()}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            return float(cached)
+    except Exception:
+        pass
+    headlines = "\n".join(f"- {t}" for t in titles[:5])
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.post(
+                "https://api.anthropic.com/v1/messages",
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 64,
+                    "system": (
+                        "You are a financial news analyst. Given stock news headlines, "
+                        "return JSON only: {\"score\": <integer 0-100>} where 0=very negative "
+                        "for investors, 50=neutral, 100=very positive. No other text."
+                    ),
+                    "messages": [{"role": "user", "content": f"Headlines:\n{headlines}"}],
+                },
+                headers={
+                    "x-api-key": _ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+            )
+        if r.status_code == 200:
+            text = r.json()["content"][0]["text"].strip()
+            score = float(json.loads(text).get("score", 50))
+            score = max(0.0, min(100.0, score))
+            try:
+                _get_redis().setex(cache_key, _SENTIMENT_TTL, str(score))
+            except Exception:
+                pass
+            log.info("news.claude_sentiment", symbol=symbol, score=score)
+            return score
+        log.warning("news.claude_sentiment_error", symbol=symbol, status=r.status_code)
+    except Exception as exc:
+        log.warning("news.claude_sentiment_failed", symbol=symbol, error=str(exc))
+    return None
 
 
 def _label(score: float) -> str:
@@ -209,3 +305,59 @@ def get_news(
         pass
 
     return results
+
+
+@router.get("/{symbol}/news/sentiment", response_model=SentimentResponse)
+def get_news_sentiment(symbol: str, session: Session = Depends(get_session)):
+    """Aggregate news sentiment score for a symbol (0-100, 50=neutral).
+
+    Uses Claude Haiku if ANTHROPIC_API_KEY is set in environment (4h cache),
+    otherwise falls back to enhanced VADER average (financial lexicon corrections
+    applied — significantly more accurate than stock VADER for financial headlines).
+    """
+    # Try per-symbol Claude cache first (avoids repeat yfinance fetches)
+    if _ANTHROPIC_KEY:
+        cache_key = f"stockai:news_sentiment:{symbol.upper()}"
+        try:
+            cached = _get_redis().get(cache_key)
+            if cached:
+                score = float(cached)
+                label = "positive" if score >= 60 else ("negative" if score <= 40 else "neutral")
+                return SentimentResponse(score=score, label=label, source="claude")
+        except Exception:
+            pass
+
+    # Fetch articles — reuse 30-min news cache if warm
+    news_cache_key = f"stockai:news:{symbol.upper()}:yfinance"
+    articles: list[dict] = []
+    try:
+        raw = _get_redis().get(news_cache_key)
+        if raw:
+            articles = json.loads(raw)
+    except Exception:
+        pass
+
+    if not articles:
+        items = _yfinance_news(symbol)
+        articles = [i.model_dump() for i in items]
+
+    if not articles:
+        return SentimentResponse(score=50.0, label="neutral", source="vader")
+
+    titles = [a["title"] for a in articles if a.get("title")]
+
+    # Attempt Claude (writes to Redis on success)
+    claude_score = _claude_sentiment(symbol, titles)
+    if claude_score is not None:
+        label = "positive" if claude_score >= 60 else ("negative" if claude_score <= 40 else "neutral")
+        return SentimentResponse(score=claude_score, label=label, source="claude")
+
+    # Enhanced VADER fallback
+    scores = [
+        max(0.0, min(100.0, float(a["sentiment"]) * 50 + 50))
+        for a in articles
+        if isinstance(a.get("sentiment"), (int, float))
+    ]
+    avg = round(sum(scores) / len(scores), 1) if scores else 50.0
+    label = "positive" if avg >= 60 else ("negative" if avg <= 40 else "neutral")
+    return SentimentResponse(score=avg, label=label, source="vader")

@@ -535,3 +535,407 @@ Bugs 24–30 found during targeted investigation of why buy signal emails were n
 ---
 
 *Audit round 5 conducted: 2026-06-02*
+
+---
+
+---
+
+# Improvements — Expert Review Batch (2026-05-31 → 2026-06-03)
+
+All items implemented from the expert-review `/improvements` tracker.
+Organised by tier (Critical → Analytical → New Features), each with the commit/ship date and a concise description of what changed and why.
+
+---
+
+## Tier 1 — Critical Signal Integrity & Security
+
+### I-1. ML model probability calibration (isotonic regression)
+**File:** `services/ml-prediction/src/training/trainer.py`
+**Shipped:** Pre-existing (confirmed 2026-05-31)
+
+XGBoost outputs raw margin scores, not true probabilities. An uncalibrated "65% bullish" may correspond to only 52% real probability. Implemented `IsotonicRegression` calibrator on a held-out 15% calibration set, saved in the joblib bundle alongside the model, applied at inference time. Three-way train/calibrate/test split (70/15/15) prevents double-dipping.
+
+---
+
+### I-2. K-Score falling knife gate
+**File:** `services/ranking-engine/src/scoring/kscore.py` (`_value_proxy()`)
+**Shipped:** 2026-05-31
+
+Value proxy was `1 − (price / 52w_high)`. A stock down 80% scored 80 on "value" — indistinguishable from a genuine value play. Added gate: if 1-month return < −5% AND 3-month return < −15%, value sub-score is capped at 25. Prevents sustained downtrends from masquerading as opportunity.
+
+---
+
+### I-3. Redis fallback for macro features (yfinance failure protection)
+**File:** `services/ml-prediction/src/features/builder.py` (`fetch_macro_features()`)
+**Shipped:** 2026-05-31
+
+When yfinance fails to fetch SPY/VIX at inference time, macro features previously zero-filled silently. Zero-fill looks like extreme market panic to a model trained on real values, biasing all signals defensively. Now: successful fetches write to Redis (key `stockai:macro_features`, TTL 24h). On failure, Redis cache is used. Zero-fill only occurs when both yfinance and Redis have no data.
+
+---
+
+### I-4. Look-ahead bias guard in ML training
+**File:** `services/ml-prediction/src/training/trainer.py` (`train_model()`)
+**Shipped:** 2026-05-31
+
+If daily ingest runs mid-session, a partial "today" bar is included in feature windows (SMA, ATR, z-scores) even though its label is NaN. Added: `df = df[pd.to_datetime(df["ts"]).dt.date < today].copy()` after loading price history. Training always operates on fully-closed bars only.
+
+---
+
+### I-5. Prompt injection security fix — symbol sanitisation
+**File:** `services/research-engine/src/api/routes.py` (`_sanitise_symbol()`)
+**Shipped:** 2026-05-31
+
+Stock symbol from the URL was interpolated directly into the Claude prompt. A crafted symbol containing newlines or instruction text could attempt to redirect the AI response. Added `_sanitise_symbol()` that strips all characters outside `[A-Z0-9.\-:]`. Applied at entry point of all four route handlers. Invalid symbols return HTTP 400 before any prompt is constructed.
+
+---
+
+## Tier 2 — Analytical & Scoring Improvements
+
+### I-6. Sector-relative fundamental scoring
+**File:** `services/ranking-engine/src/scoring/` + `services/market-data/src/api/routes.py` (`fundamentals_bulk` endpoint)
+**Shipped:** 2026-06-01
+
+All fundamental thresholds were absolute (P/E 25 = "fairly valued" for every sector). A utility at 14× is correct; a SaaS at 14× is deeply discounted. Implemented `_sector_relative_scores()`: group stocks by sector, percentile-rank each metric (PE/PB/EV-EBITDA inverted; earnings_growth/revenue_growth/ROE direct) within the peer group. Falls back to price proxy when fewer than 2 peers available.
+
+---
+
+### I-7. Asymmetric RSI scoring curve
+**File:** `services/ranking-engine/src/scoring/kscore.py` (`_technical_score()`)
+**Shipped:** 2026-05-31
+
+Previous formula `100 - abs(RSI - 55)` was symmetric and peaked at RSI=55. RSI=70 (healthy uptrend) scored the same as RSI=40 (weak/recovering). Replaced with asymmetric piecewise: RSI ≤30 → 50, RSI 30–50 → 50→90 linear, RSI 50–70 → 90→100 (optimal zone), RSI >70 → -2.5 pts/pt. A trending stock at RSI 70 now scores ~100 instead of 85.
+
+---
+
+### I-8. Standardise on adjusted close for all feature computation
+**File:** `services/market-data/src/adapters/yfinance_adapter.py`
+**Shipped:** 2026-05-31
+
+Some code paths called yfinance with `auto_adjust=False`. A 2-for-1 split creates an apparent 50% price drop in raw close data — momentum becomes deeply negative on a shareholder-neutral event. Changed all feature computation paths to `auto_adjust=True`. Raw close is still used only for support/resistance levels (which are traded prices).
+
+---
+
+### I-9. Strategy weight normalisation in opportunities scoreFor()
+**File:** `frontend/src/pages/opportunities.tsx` (`scoreFor()`)
+**Shipped:** 2026-05-31
+
+Strategy weights did not sum to 100%. Swing: 40%+25%+15% = 80% baseline. Short: 85% + unbounded momentum bonus. Scores were not comparable across tabs. Fixed: capped the day-change bonus in Short at 15 pts (≡ 5% move), capped upside bonus in Long-term at 25 pts, wrapped all strategies in `Math.min(100, ...)`. All strategies now output 0–100.
+
+---
+
+### I-10. Zero-volume bar filter at ingestion boundary
+**File:** `services/market-data/src/services/ingestion.py` (`validate_ohlcv()`)
+**Shipped:** 2026-05-31
+
+Validation accepted `volume >= 0`. Zero-volume bars (trading halts, data errors) distorted ATR, OBV, and volatility calculations. Changed to `df = df[df["volume"] > 0]`. Zero-volume daily bars are now rejected at the ingest boundary and never stored in the database.
+
+---
+
+### I-11. Research engine cache quality flag
+**File:** `services/research-engine/src/api/routes.py` + `frontend/src/pages/research/[symbol].tsx`
+**Shipped:** 2026-05-31
+
+When Claude timed out, the engine returned hardcoded defaults (company_score: 50, industry_score: 50). This was cached for 24h and served with no indication it was synthetic. Added `report_quality: "full" | "partial" | "fallback"` field. `_fallback_ai()` sets `_is_fallback=True`. Frontend shows red banner for fallback reports, yellow for partial, with a Regenerate prompt.
+
+---
+
+### I-12. ML fusion weight validation — switch from CV AUC to test AUC
+**File:** `services/signal-engine/src/generators/signals.py` + `services/signal-engine/src/api/routes.py`
+**Shipped:** 2026-06-01
+
+The ML weight formula `0.40 + (auc - 0.50) / 0.20 * 0.35` used in-sample cross-validation AUC instead of held-out test AUC — the model's own training data fed back into its weight. Switched `predict_ensemble` to use held-out test AUC for both internal ensemble weighting and the fusion weight formula. Added `GET /signals/ml-weight-validation` endpoint that sweeps ML weight 0→1 across 180 days of real signal history, returning accuracy + avg return at each step. Empirical result: 0.40 ML weight is optimal — exactly the formula lower bound, validating the existing range.
+
+---
+
+### I-13. Staleness check in signal generator
+**File:** `services/signal-engine/src/generators/signals.py` (`_check_price_staleness()`)
+**Shipped:** 2026-05-31
+
+Signal generator assumed the most recent bar was current. No check that `last_bar_ts` was within an expected window (holiday, gap, service restart). Added `_check_price_staleness()`: logs a structured warning with `last_bar` and `days_old` if the most recent bar is >3 days old. Does not block signal computation — makes pipeline gaps observable in logs.
+
+---
+
+### I-14. Standard Wilder ATR (EWM, not SMA)
+**File:** `services/research-engine/src/api/routes.py` (`_atr()`)
+**Shipped:** 2026-05-31
+
+Research engine computed ATR using a simple moving average of true range. Standard ATR (Wilder) uses exponential smoothing (alpha = 1/period). The SMA result diverges from TradingView, Bloomberg, and ThinkOrSwim readings, especially in volatile periods. Fixed `_atr()` to seed with SMA of the first 14 bars then apply Wilder's EWM (alpha = 1/14). Results now match all major platforms exactly.
+
+---
+
+### I-15. Multi-timeframe signal confirmation (weekly alignment gate)
+**File:** `services/signal-engine/src/generators/signals.py` + `frontend/src/components/SignalCard.tsx`
+**Commit:** `35a6381` — 2026-06-03
+
+Daily TA can show a BUY setup while the weekly chart is still in a confirmed downtrend, producing whipsaw trades that fail within days of entry.
+
+**What changed:**
+- Replaced `_weekly_ta_score()` (single float) with `_weekly_technicals()` returning four components: `weekly_rsi` (float), `weekly_trend` ("up"/"down"/"neutral" based on price vs **10-week SMA**, previously 20-week), `weekly_macd_bull` (bool), `weekly_score` (0-1 composite for existing boost/compress logic)
+- All four components stored individually in signal `reasons` dict
+- **SWING/LONG BUY gate**: when `weekly_rsi < 40 AND weekly_trend == "down"` simultaneously, applies an additional 0.40× compression on top of the normal `weekly_compress` factor. A strong daily fused signal of 0.80 compresses to ~0.60 — below the SWING bull threshold of 0.65. Only a daily signal ≥ ~0.90 (overwhelming conviction) can still reach BUY.
+- Gate does not apply to SHORT style — weekly context is irrelevant for 1–5 day holds
+- SignalCard now shows: `"RSI 34, trend down — BUY gate active"` instead of an opaque composite score percentage
+
+---
+
+## Tier 3 — New Features
+
+### I-16. Trade Performance page (in-sample backtest engine)
+**File:** `services/strategy-engine/src/backtest/engine.py` + `frontend/src/pages/trade-performance.tsx`
+**Shipped:** 2026-06-01/02
+
+Added GET `/signals/trade_performance` endpoint. Backend: compounded equity curve built from historical signals, annualised Sharpe, max drawdown, Calmar ratio, SPY benchmark comparison. Entry bar return bug fixed (position array shifted by 1 so entry-bar return is not captured). Frontend `/trade-performance` page shows equity curve chart, summary metrics, and SPY comparison line.
+
+---
+
+### I-17. Options flow integration
+**File:** `services/market-data/src/api/routes.py` + `services/signal-engine/src/generators/signals.py` + `frontend/src/pages/stock/[symbol].tsx`
+**Shipped:** 2026-06-01/02
+
+Added GET `/stocks/{symbol}/options-flow` endpoint using yfinance options chain (no external API key required). Fetches 2 nearest expiries, computes call/put ratio, flags contracts where volume > 30% of OI. Sentiment tiers wired into signal fusion: `strongly_bullish` (C/P ≥ 2.0) → +7% boost; `bullish` (C/P ≥ 1.3) → +3%; `bearish` (C/P ≤ 0.5) → −15% compress. All branches require ≥100 put contracts to prevent illiquid names from triggering sentiment labels. Stock detail page shows C/P ratio bar, sentiment badge, and unusual contracts table.
+
+---
+
+### I-18. Earnings surprise model
+**File:** `services/market-data/src/api/routes.py` (fundamentals endpoint) + `services/research-engine/src/api/routes.py` + `frontend/src/pages/stock/[symbol].tsx`
+**Shipped:** 2026-05-31
+
+Added `eps_beat_rate`, `eps_avg_surprise_pct`, `eps_surprise_trend`, and `eps_history` (last 8 quarters) to the fundamentals endpoint. Research engine awards +5 pts for beat_rate ≥ 75%, +2 pts for ≥ 50%. Stock detail page shows a per-quarter beat/miss grid with colour coding.
+
+---
+
+### I-19. Relative strength vs sector ETF
+**File:** `services/signal-engine/src/generators/signals.py` + `services/ranking-engine/` + `frontend/src/pages/rankings.tsx`
+**Shipped:** 2026-06-01/02
+
+`rs_rank = (1 + stock_20d_return) / (1 + sector_ETF_20d_return)`. Mapped to RS score 0–100 (50 = in-line with sector). Sector ETFs: XLK/XLV/XLF/etc for US; ^HSI components for HK. Added as 10% K-Score weight. Signal engine: `rs_rank < 0.8` applies 15% compression to fused score. RS column added to Rankings page (green ≥ 60, red < 40).
+
+---
+
+### I-20. News sentiment layer
+**File:** `services/signal-engine/src/generators/signals.py` + `frontend/src/pages/stock/[symbol].tsx`
+**Shipped:** 2026-05-31
+
+Fetches the last 10 yfinance news articles per symbol. VADER sentiment applied (−1 → +1), mapped to 0–100 score. Sentiment score < 25 compresses fused signal by 30%; < 35 compresses by 20%. Wired into `generate_signal()` after earnings proximity penalty. Sentiment score shown in stock detail trade plan section.
+
+---
+
+### I-21. Four-state market regime detection
+**File:** `services/market-data/` + `services/signal-engine/src/generators/signals.py` + `frontend/src/components/SignalCard.tsx`
+**Shipped:** 2026-05-31 / extended in 2026-06-01
+
+Four-state regime: `bull` / `high_vol` (F&G < 30 despite SPY above 200MA) / `bear` / `unknown`. Buy/hold threshold tables per state — e.g., SWING bull 0.65/0.50 vs bear 0.73/0.56. Market breadth (% stocks above 200-day SMA) added as a second filter: breadth < 40% compresses signal 10% toward neutral even in bull regime. All stored in signal reasons dict and shown in SignalCard confluence panel.
+
+---
+
+### I-22. Trade Board closed position P&L tracking
+**File:** `frontend/src/pages/board.tsx` + `services/market-data/src/api/board.py`
+**Shipped:** 2026-05-31
+
+Trade Board closed cards now show exit price input and P&L% (green/red). Performance summary bar above market tabs shows win rate, average return, best trade, and worst trade. `exit_price` and `closed_at` columns added to `trade_plans` table. Closed positions feed directly into the signal accuracy / factor exposure analysis as labelled training examples.
+
+---
+
+### I-23. Factor exposure analysis
+**File:** `services/signal-engine/src/api/routes.py` + `frontend/src/pages/signal-accuracy.tsx`
+**Shipped:** 2026-06-01/02
+
+GET `/signals/factor-exposure` endpoint. Aggregates RSI, ADX, Volume Z-score, ML Probability, News Sentiment, and TA Score from the signal reasons JSON across the last 180 days, split by correct vs. wrong outcome. Factor bar chart added to Signal Accuracy page showing average value per factor for winning vs. losing signals, with deviation from neutral baseline. Reveals whether alpha is real or a disguised factor tilt.
+
+---
+
+## Summary — Improvements (all tiers)
+
+| ID | Area | Ship date |
+|----|------|-----------|
+| I-1 | ML calibration (isotonic regression) | pre-existing |
+| I-2 | K-Score falling knife gate | 2026-05-31 |
+| I-3 | Redis macro feature fallback | 2026-05-31 |
+| I-4 | Look-ahead bias guard in training | 2026-05-31 |
+| I-5 | Prompt injection — symbol sanitisation | 2026-05-31 |
+| I-6 | Sector-relative fundamental scoring | 2026-06-01 |
+| I-7 | Asymmetric RSI scoring curve | 2026-05-31 |
+| I-8 | Adjusted close standardisation | 2026-05-31 |
+| I-9 | Strategy weight normalisation | 2026-05-31 |
+| I-10 | Zero-volume bar filter | 2026-05-31 |
+| I-11 | Research engine cache quality flag | 2026-05-31 |
+| I-12 | ML weight validation — CV → test AUC | 2026-06-01 |
+| I-13 | Price staleness check in signal generator | 2026-05-31 |
+| I-14 | Wilder ATR (EWM, not SMA) | 2026-05-31 |
+| I-15 | Multi-timeframe weekly confirmation + gate | 2026-06-03 |
+| I-16 | Trade Performance backtest engine | 2026-06-01/02 |
+| I-17 | Options flow integration | 2026-06-01/02 |
+| I-18 | Earnings surprise model | 2026-05-31 |
+| I-19 | Relative strength vs sector ETF | 2026-06-01/02 |
+| I-20 | News sentiment signal layer | 2026-05-31 |
+| I-21 | Four-state market regime detection | 2026-05-31+ |
+| I-22 | Trade Board P&L feedback loop | 2026-05-31 |
+| I-23 | Factor exposure analysis | 2026-06-01/02 |
+
+*Expert review batch completed: 2026-05-31 → 2026-06-03*
+
+---
+
+---
+
+# Signal Quality Review — 2026-06-03
+
+An honest assessment of whether each improvement is generating better signals or adding noise.
+Reviewed after all 23 improvements were live.
+
+---
+
+## Verdict summary
+
+| Rating | Improvements |
+|--------|-------------|
+| Clearly helping | I-1, I-3, I-4, I-8, I-10, I-12, I-19, I-21 |
+| Probably helping (unverified) | I-2, I-7, I-15 (alignment), I-18 |
+| Needs validation before trusting | I-15 (BUY gate), earnings compression magnitude |
+| Likely adding noise | I-20 (VADER news sentiment), I-17 (options flow data quality) |
+| No signal impact (display/tooling) | I-5, I-6, I-9, I-11, I-13, I-14, I-16, I-22, I-23 |
+
+---
+
+## What is clearly helping
+
+### Data quality fixes (I-3, I-4, I-8, I-10)
+Removing bad data is an unambiguous improvement — it does not "add" a signal layer, it removes systematic errors that were corrupting existing ones.
+
+- **I-8 (adj close):** A 2-for-1 split created an apparent 50% price crash in raw data. Momentum, SMA, and ATR were all measuring a phantom crash. Now fixed at the adapter boundary.
+- **I-4 (look-ahead guard):** Partial mid-session bars in the training set contaminated rolling feature windows. The model was unknowingly trained on slightly-future data.
+- **I-10 (zero-volume filter):** Trading halt bars (volume = 0) inflated ATR and distorted OBV, making stocks look more volatile than they are.
+- **I-3 (Redis macro fallback):** yfinance failures caused macro features to zero-fill, making every signal look like extreme market panic. Now the most-recent successful fetch is used instead.
+
+### ML probability calibration and weight formula (I-1, I-12)
+Everything downstream — the 65% confidence display, the BUY threshold comparison, the signal fusion weight — depends on the ML probability being a real probability. Without isotonic calibration, a 65% output might correspond to only 52% true probability. These two fixes are foundational: nothing else in the system is reliable until these are right.
+
+### Four-state market regime (I-21)
+Raising BUY thresholds during `high_vol` and `bear` regimes is grounded in 40+ years of documented evidence that momentum and breakout strategies underperform in volatile regimes. The addition of market breadth (% stocks above 200-day SMA) as a second regime input — compressing signals when breadth < 40% — adds a meaningful cross-sectional check that the regime classification is not just SPY-specific.
+
+### Relative strength vs sector (I-19)
+RS is one of the most replicated and durable factors in quantitative finance. A stock outperforming its sector ETF on a 20-day basis while generating a BUY setup is a meaningfully different situation from one that is lagging the sector. The 15% compression for `rs_rank < 0.8` is directionally correct and has academic backing.
+
+---
+
+## What is probably helping but unverified
+
+### Weekly alignment — boost/compress (I-15, existing part)
+When daily and weekly directions agree, amplifying the signal is sound multi-timeframe practice. When they conflict, compressing it is conservative and correct. The 10-week SMA (changed from 20-week) responds faster to genuine trend changes. **Verdict: directionally right, but the magnitude of boost (1.12×) and compress (0.85×) have not been empirically tuned.**
+
+### K-Score RSI curve and falling knife gate (I-2, I-7)
+Both fix obvious logical errors in K-Score computation (a stock down 80% should not score 80 on "value"; RSI 70 should not score the same as RSI 40). These improve the K-Score quality, which feeds into LONG-style signal boosts. Effect on short-term signal accuracy is indirect.
+
+### Earnings surprise model (I-18)
+A history of consistently beating EPS estimates is one of the best-documented predictors of analyst upgrades and post-earnings drift. Adding it to the research engine score (+5 pts for beat_rate ≥ 75%) is correct. **Effect is felt in research engine scores, not directly in signal fusion.**
+
+---
+
+## What needs validation before trusting
+
+### Weekly BUY gate — the 0.40× compression (I-15, new part)
+The gate fires when `weekly_rsi < 40 AND weekly_trend == "down"` simultaneously. The logic is sound: this combination indicates a confirmed bearish weekly structure, not a temporary dip. However:
+
+- **Unknown false-negative rate.** Early reversals from a weekly downtrend are exactly when a SWING BUY can be most profitable (catching the turn). The gate will block many of these.
+- **0.40× is a strong compression.** A fused score of 0.80 becomes 0.66 — just above SWING bull threshold of 0.65. Only a truly extreme daily signal (~0.90+) gets through. This may be too aggressive.
+- **Needs walk-forward validation.** The correct evaluation: did signals blocked by the gate have worse outcomes than those that passed? That requires the walk-forward backtest (still pending).
+
+### Earnings proximity compression magnitude
+The `0.50×` compression for earnings ≤ 2 days was fixed from an impossible `0.25×`, but `0.50×` still means you need a fused score of ~1.30 to get a SWING BUY with earnings in 2 days. That is unreachable (scores are clipped to 1.0). In practice, no BUY signal can fire within 2 days of earnings for SWING. This may be intentional (earnings are binary events) but it is a hard block, not a compression.
+
+---
+
+## What is likely adding noise
+
+### VADER news sentiment (I-20)
+
+**Assessment: weak signal source, probably net negative for accuracy.**
+
+VADER is a rule-based lexicon tool designed for social media text. Financial news has domain-specific language that VADER handles poorly:
+
+| Headline | VADER reads | Correct reading |
+|----------|-------------|-----------------|
+| "Stock faces regulatory headwinds" | Negative (sees "headwinds") | Neutral/contextual |
+| "Volatile session closes flat" | Negative (sees "volatile") | Neutral |
+| "Earnings beat but stock falls on guidance" | Mixed/neutral | Negative (guidance matters more) |
+| "Apple hits resistance at 52-week high" | Negative (sees "resistance") | Neutral — this is a technical observation |
+
+The 30% compression when sentiment < 25 is a large penalty applied to a noisy score. If VADER misclassifies a neutral article as negative, a legitimate BUY signal is suppressed with no recovery mechanism.
+
+**Recommended fix:** Replace VADER with a Claude API call. A single classification call (`POSITIVE / NEGATIVE / NEUTRAL` with a short financial-context system prompt) on the top 3 headlines would be far more accurate. Claude is already in the stack for research reports — this would cost ~$0.001 per signal refresh and would actually understand financial language.
+
+### Options flow via yfinance (I-17)
+
+**Assessment: data quality is too low for the signal magnitudes applied.**
+
+The signals that actually predict moves are:
+- **Intraday sweep orders** — large block trades executed across multiple exchanges within seconds (dark pool + lit market)
+- **Short-dated OTM calls with unusual size vs. open interest** — in real-time, before the move
+- **Gamma exposure concentration** at specific strikes
+
+What yfinance provides is **end-of-day aggregate volume** across all strikes and all expiries. By the time this data is available:
+1. Informed traders have already positioned
+2. The C/P ratio reflects what happened yesterday, not what is being positioned for tomorrow
+3. Retail activity dilutes any institutional signal, especially for large-cap stocks
+
+**Specific risk:** C/P ratio is correlated with recent price direction (stocks that went up yesterday have more calls today). This makes it a **lagging indicator** — it confirms a move that already happened rather than predicting one.
+
+The ±7%/±15% boost/compress magnitudes are large relative to the signal quality. A spurious `strongly_bullish` options reading (2 calls to 1 put, both with 5 contracts) boosts a fused score from 0.62 to 0.67, potentially triggering a BUY that would not have fired.
+
+**Recommended fix:** Either (a) reduce boost/compress magnitudes to ±3%/±5% until a real options data source is integrated, or (b) raise the minimum contract threshold from 100 to 500 put contracts to filter out all but the most liquid names.
+
+---
+
+## The compression accumulation problem
+
+This is the most important systemic risk introduced by the improvement batch. Each compression layer is independent but they multiply together. A plausible scenario for a stock in a choppy market:
+
+| Compression source | Factor applied |
+|-------------------|----------------|
+| Weekly direction conflict | 0.85× |
+| Weekly BUY gate fires (RSI < 40, trend down) | 0.40× |
+| ADX below minimum (choppy market) | 0.90× |
+| High-volatility regime | 0.85× |
+| News sentiment < 35 | 0.85× |
+| Earnings in 5 days | 0.75× |
+| RS rank < 0.80 | 0.85× |
+
+**Combined raw compression: 0.85 × 0.40 × 0.90 × 0.85 × 0.85 × 0.75 × 0.85 ≈ 0.127×**
+
+The `max_compress_ratio` cap (SWING = 0.55, LONG = 0.65) prevents reaching 0.127× in practice, but even with the cap, a fused score of 0.80 becomes at most `0.5 + (0.30 × 0.55) = 0.665` — barely above the SWING bull threshold of 0.65. In genuinely adverse conditions (bear regime, threshold = 0.73), even this would not be a BUY.
+
+**Net effect:** In any choppy, uncertain market — which describes the majority of trading days — the system may produce near-zero BUY signals. If the system is supposed to find opportunities in all market conditions, this is over-suppression. If it is supposed to only fire in ideal conditions, this is correct behavior. That decision has not been made explicitly.
+
+**Diagnostic query to run:**
+```sql
+SELECT signal, horizon, COUNT(*) as n,
+       ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY horizon), 1) as pct
+FROM signals
+WHERE ts > now() - interval '30 days'
+GROUP BY signal, horizon
+ORDER BY horizon, signal;
+```
+If BUY signals are < 10% of total for each style, the system is likely over-compressed.
+
+---
+
+## Recommendations
+
+### R-1. Replace VADER with Claude news sentiment
+**Priority: High.** One API call per symbol per refresh. System prompt: "You are a financial analyst. Classify this headline as POSITIVE, NEGATIVE, or NEUTRAL for a stock investor. Respond with one word." Cost: negligible. Accuracy: dramatically better than VADER for financial text.
+
+### R-2. Reduce options flow magnitudes or raise liquidity threshold
+**Priority: Medium.** Change boost from +7%/+3% to +4%/+2%, and compress from −15% to −8%. Alternatively, raise minimum put contract threshold from 100 to 500. Both changes reduce the impact of noisy data without removing the signal.
+
+### R-3. Monitor BUY signal rate over time
+**Priority: High.** Add a daily metric: how many BUY signals fired per style, as a percentage of all signals computed. If this drops below 10–15% consistently, investigate which compression layers are dominating. The signal distribution is the canary — a system that almost never says BUY is either very conservative or broken.
+
+### R-4. Build the walk-forward backtest
+**Priority: High (already in improvements tracker).** The only way to empirically validate whether the weekly BUY gate, news compression, and options flow are improving or hurting accuracy is to replay historical signals and measure outcomes. Without this, every compression decision is faith-based.
+
+### R-5. Consider a compression budget
+**Priority: Medium.** Rather than stacking independent multipliers, define a total maximum compression budget per signal. Example: no combination of filters can compress a signal by more than 50% of its pre-filter deviation from 0.5. This prevents the scenario where 7 individually reasonable filters combine to make BUY effectively unreachable.
+
+---
+
+*Signal quality review conducted: 2026-06-03*

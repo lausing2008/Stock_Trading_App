@@ -209,30 +209,21 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
 
 
 def _fetch_news_sentiment(symbol: str) -> float | None:
-    """Return a 7-day news sentiment score (0–100, 50 = neutral).
+    """Return aggregate news sentiment score (0-100, 50=neutral).
 
-    Uses the sentiment field already computed by the market-data news endpoint
-    (yfinance VADER scores, range −1 to +1). Maps to 0–100 and averages the
-    last 10 articles (yfinance typically returns 7–10 recent items).
-    Returns None if no news available or endpoint unreachable.
+    Calls the dedicated /news/sentiment endpoint which uses Claude Haiku
+    (when ANTHROPIC_API_KEY is configured in market-data) or enhanced VADER
+    with financial-domain lexicon corrections as fallback.
     """
     try:
-        url = f"{_settings.market_data_url}/stocks/{symbol}/news?sources=yfinance&limit=10"
-        with httpx.Client(timeout=8) as c:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/news/sentiment"
+        with httpx.Client(timeout=10) as c:
             r = c.get(url)
-            if r.status_code != 200:
-                return None
-        articles = r.json()
-        if not articles:
-            return None
-        scores = [
-            max(0.0, min(100.0, float(a["sentiment"]) * 50 + 50))  # map −1..+1 → 0..100, clamped
-            for a in articles
-            if isinstance(a.get("sentiment"), (int, float))
-        ]
-        return round(sum(scores) / len(scores), 1) if scores else None
+            if r.status_code == 200:
+                return float(r.json()["score"])
     except Exception:
-        return None
+        pass
+    return None
 
 
 def _fetch_options_flow(symbol: str) -> tuple[str | None, float | None]:
@@ -350,10 +341,21 @@ def _resample_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _weekly_ta_score(df: pd.DataFrame) -> float:
-    """Simplified weekly TA score for multi-timeframe confirmation. Returns 0-1."""
+def _weekly_technicals(df: pd.DataFrame) -> dict:
+    """Weekly TA indicators for multi-timeframe confirmation.
+
+    Returns dict with weekly_rsi (float|None), weekly_trend ('up'|'down'|'neutral'),
+    weekly_macd_bull (bool), and weekly_score (float 0-1 composite).
+    Uses 10-week SMA for trend (vs 20-week previously) — more responsive to medium-term turns.
+    """
+    _neutral: dict = {
+        "weekly_rsi": None,
+        "weekly_trend": "neutral",
+        "weekly_macd_bull": False,
+        "weekly_score": 0.5,
+    }
     if df.empty or len(df) < 26:
-        return 0.5
+        return _neutral
     close = df["close"].astype(float)
 
     d = close.diff()
@@ -362,13 +364,20 @@ def _weekly_ta_score(df: pd.DataFrame) -> float:
     rsi = 100 - 100 / (1 + g / l.replace(0, np.nan))
     rsi_val = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None
 
-    sma20 = close.rolling(20).mean()
-    above_sma20 = bool(close.iloc[-1] > sma20.iloc[-1]) if not pd.isna(sma20.iloc[-1]) else False
+    sma10 = close.rolling(10).mean()
+    weekly_trend = "neutral"
+    if not pd.isna(sma10.iloc[-1]):
+        pct = (close.iloc[-1] - float(sma10.iloc[-1])) / float(sma10.iloc[-1])
+        if pct > 0.01:
+            weekly_trend = "up"
+        elif pct < -0.01:
+            weekly_trend = "down"
 
     macd_line = close.ewm(span=12).mean() - close.ewm(span=26).mean()
     hist = macd_line - macd_line.ewm(span=9).mean()
     macd_positive = bool(hist.iloc[-1] > 0)
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
+    weekly_macd_bull = macd_positive and macd_rising
 
     score = 0.35
     if rsi_val is not None:
@@ -376,14 +385,19 @@ def _weekly_ta_score(df: pd.DataFrame) -> float:
             score += 0.20
         elif rsi_val <= 40:
             score += 0.10
-    if above_sma20:
+    if weekly_trend == "up":
         score += 0.25
     if macd_positive and macd_rising:
         score += 0.20
     elif macd_positive:
         score += 0.10
 
-    return float(np.clip(score, 0, 1))
+    return {
+        "weekly_rsi": round(rsi_val, 1) if rsi_val is not None else None,
+        "weekly_trend": weekly_trend,
+        "weekly_macd_bull": weekly_macd_bull,
+        "weekly_score": float(np.clip(score, 0, 1)),
+    }
 
 
 def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float, list[str]]:
@@ -657,7 +671,7 @@ def _apply_style_signal(
     style_key: str,
     market_regime: str,
     adx_val: float,
-    weekly_score: float,
+    weekly_tech: dict,
     pattern_adj: float,
     days_to_earnings: int | None,
     news_sentiment: float | None,
@@ -699,6 +713,9 @@ def _apply_style_signal(
     fused_before_filters = fused  # snapshot before compression — used for cap enforcement
 
     # ── Weekly multi-timeframe alignment ──────────────────────────────────────
+    weekly_score = weekly_tech.get("weekly_score", 0.5)
+    weekly_rsi   = weekly_tech.get("weekly_rsi")
+    weekly_trend = weekly_tech.get("weekly_trend", "neutral")
     daily_dir  = fused - 0.5
     weekly_dir = weekly_score - 0.5
     if daily_dir * weekly_dir > 0:
@@ -775,16 +792,16 @@ def _apply_style_signal(
 
     # ── Options flow ──────────────────────────────────────────────────────────
     if options_sentiment == "strongly_bullish":
-        fused = float(np.clip(fused + 0.07, 0.0, 1.0))
+        fused = float(np.clip(fused + 0.04, 0.0, 1.0))
         reasons["options_flag"] = "unusual_call_activity"
     elif options_sentiment == "bullish":
-        fused = float(np.clip(fused + 0.03, 0.0, 1.0))
+        fused = float(np.clip(fused + 0.02, 0.0, 1.0))
         reasons["options_flag"] = "elevated_call_volume"
     elif options_sentiment == "bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.85, 0.0, 1.0))
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))
         reasons["options_flag"] = "elevated_put_volume"
     elif options_sentiment == "slightly_bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.96, 0.0, 1.0))
         reasons["options_flag"] = "slightly_elevated_puts"
     elif options_sentiment is not None:
         reasons["options_flag"] = "neutral"
@@ -827,6 +844,17 @@ def _apply_style_signal(
         reasons["compression_cap_applied"] = True
     else:
         reasons["compression_cap_applied"] = False
+
+    # ── Weekly BUY gate — applied AFTER compression cap so it cannot be overridden ──
+    # Bearish weekly structure (RSI < 40 AND trend down) is a confirmed downtrend, not a dip.
+    # The 0.40× compression is intentionally exempt from max_compress_ratio so a SWING/LONG
+    # BUY truly cannot fire in this condition without an overwhelming daily signal (≥0.90+).
+    if style_key in ("SWING", "LONG") and weekly_rsi is not None and weekly_rsi < 40 and weekly_trend == "down":
+        fused = 0.5 + (fused - 0.5) * 0.40
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["weekly_gate_fired"] = True
+    else:
+        reasons["weekly_gate_fired"] = False
 
     signal, horizon = _decide_style(fused, style_key, market_regime)
     confidence = round(abs(fused - 0.5) * 200, 2)
@@ -890,7 +918,8 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     patterns = _fetch_patterns_from_ta(symbol)
     pattern_adj, active_patterns = _pattern_score_adjustment(patterns, len(df))
     df_weekly = _resample_to_weekly(df)
-    weekly_score = _weekly_ta_score(df_weekly)
+    weekly_tech = _weekly_technicals(df_weekly)
+    weekly_score = weekly_tech["weekly_score"]
     kscore = _fetch_kscore(symbol)
 
     # Populate shared base reasons (written into every style's output)
@@ -900,6 +929,9 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["ta_score"]           = ta_prob
     reasons["ml_probability"]     = ml_prob
     reasons["weekly_ta_score"]    = round(weekly_score, 3)
+    reasons["weekly_rsi"]         = weekly_tech["weekly_rsi"]
+    reasons["weekly_trend"]       = weekly_tech["weekly_trend"]
+    reasons["weekly_macd_bull"]   = weekly_tech["weekly_macd_bull"]
     reasons["active_patterns"]    = active_patterns
     reasons["pattern_adjustment"] = round(pattern_adj, 3)
     reasons["days_to_earnings"]   = days_to_earnings
@@ -920,7 +952,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             style_key=style_key,
             market_regime=market_regime,
             adx_val=float(reasons.get("adx") or 0.0),
-            weekly_score=weekly_score,
+            weekly_tech=weekly_tech,
             pattern_adj=pattern_adj,
             days_to_earnings=days_to_earnings,
             news_sentiment=news_sentiment,
