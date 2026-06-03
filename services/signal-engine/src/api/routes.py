@@ -530,27 +530,35 @@ def factor_exposure(
 def trade_performance(
     lookback_days: int = Query(180, ge=7, le=730),
     symbol: str | None = None,
+    horizon: str = Query("SWING", regex="^(SHORT|SWING|LONG)$"),
     session: Session = Depends(get_session),
 ):
-    """BUY → SELL/WAIT trade-pair performance over a lookback window.
+    """BUY → SELL trade-pair performance over a lookback window.
 
-    For every BUY signal in the window, finds the next SELL or WAIT signal for
-    the same stock to close the trade.  Open trades (no exit signal yet) use
-    the latest available price.  Uses 4 bulk queries + Python-side matching
-    instead of N×3 per-signal queries to keep response time under 1 second.
+    Filters by horizon (SHORT/SWING/LONG) so SHORT BUY signals are only closed
+    by SHORT SELL signals — not cross-contaminated by signals from other styles
+    running in the same scheduler batch.
+
+    Only SELL signals close a trade. WAIT is a "hold off new entries" signal and
+    does NOT represent an exit — pairing WAIT as an exit created phantom 0-day
+    trades with ~0% return whenever SHORT=BUY and SWING=WAIT fired together.
+
+    Open trades (no exit SELL yet) use the latest available price.
     """
     import bisect
     from collections import defaultdict
 
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+    horizon_enum = SignalHorizon(horizon)
 
-    # 1. All BUY signals in the window
+    # 1. All BUY signals in the window for the requested horizon
     q = (
         select(Signal, Stock.symbol, Stock.name)
         .join(Stock, Signal.stock_id == Stock.id)
         .where(Stock.active.is_(True))
         .where(Signal.ts >= cutoff)
         .where(Signal.signal == SignalType.BUY)
+        .where(Signal.horizon == horizon_enum)
         .order_by(Stock.symbol, Signal.ts)
     )
     if symbol:
@@ -565,11 +573,14 @@ def trade_performance(
 
     stock_ids = list({sig.stock_id for sig, _, _ in buy_rows})
 
-    # 2. All SELL/WAIT signals for those stocks (no date filter — exits may be outside window)
+    # 2. All SELL signals for those stocks, same horizon (no date filter — exits may be outside window)
+    # WAIT is excluded: it means "don't add new entries" not "exit position."
+    # Mixing horizons here was the source of phantom 0-day trades (SHORT=BUY + SWING=WAIT same batch).
     exit_rows = session.execute(
         select(Signal.stock_id, Signal.ts, Signal.signal)
         .where(Signal.stock_id.in_(stock_ids))
-        .where(Signal.signal.in_([SignalType.SELL, SignalType.WAIT]))
+        .where(Signal.signal == SignalType.SELL)
+        .where(Signal.horizon == horizon_enum)
         .order_by(Signal.stock_id, Signal.ts)
     ).all()
 
