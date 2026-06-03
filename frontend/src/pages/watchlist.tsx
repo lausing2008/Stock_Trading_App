@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem } from '@/lib/api';
 import { storage } from '@/lib/storage';
+import { getSignalStyle } from '@/lib/settings';
 
 /* ── helpers ────────────────────────────────────────────── */
 const NOTES_KEY = 'watch_notes';

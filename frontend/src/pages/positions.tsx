@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect } from 'react';
 import { api, type LatestPrice, type RankingRow, type SignalSummary, type WatchlistItem, type UserPosition } from '@/lib/api';
+import { getSignalStyle } from '@/lib/settings';
 
 const DonutChart = dynamic(() => import('@/components/DonutChart'), { ssr: false });
 

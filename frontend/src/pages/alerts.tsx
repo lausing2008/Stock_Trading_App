@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
 import { api, type PriceAlert, type SignalAlertItem, type Stock, type SignalSummary } from '@/lib/api';
+import { getSignalStyle } from '@/lib/settings';
 
 // ── helpers ────────────────────────────────────────────────────────────────
 

@@ -29,6 +29,7 @@ import Link from 'next/link';
 import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type Overview } from '@/lib/api';
 import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 import { askAI, isAiConfigured } from '@/lib/ai';
+import { getSignalStyle } from '@/lib/settings';
 
 type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth' | 'aisignal' | 'confluence';
 type Market = 'all' | 'US' | 'HK';

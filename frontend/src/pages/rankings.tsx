@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import RankingsTable from '@/components/RankingsTable';
 import { api, type Stock, type WatchlistItem, type LatestPrice, type RankingRow, type SignalSummary } from '@/lib/api';
+import { getSignalStyle } from '@/lib/settings';
 
 export default function RankingsPage() {
   const [market, setMarket] = useState<'US' | 'HK' | ''>('');

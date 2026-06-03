@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import { api, type RankingRow, type SignalSummary, type LatestPrice, type WatchlistItem } from '@/lib/api';
 import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 import { getSession } from '@/lib/auth';
+import { getSignalStyle } from '@/lib/settings';
 
 // ─── Merged row type ──────────────────────────────────────────────────────────
 
