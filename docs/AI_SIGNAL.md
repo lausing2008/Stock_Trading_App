@@ -11,8 +11,46 @@ The AI Signal is a **BUY / HOLD / WAIT / SELL** label that fuses two layers of a
 1. **Technical Analysis (TA)** — nine price-based indicators computed from daily OHLCV history
 2. **Machine Learning (ML)** — an XGBoost model trained on the same stock's price patterns
 
-Both layers produce a single number called the **fused bullish probability** (0–1).
-That probability is then converted into a signal label based on the current market regime.
+Both layers produce a single number called the **fused bullish probability** (0–1). That probability is then filtered through style-specific compression factors and converted into a signal label based on the current market regime.
+
+Every stock carries three signals simultaneously — one per trading style (SHORT, SWING, LONG). All three are computed in a single data-fetch pass for efficiency.
+
+---
+
+## Trading Styles
+
+The system supports three trading style profiles. Select your style in **Settings → Trading Style — AI Signal Horizon**. The choice propagates to every signal display across the app (Dashboard, Rankings, Watchlist, Screener, Opportunities, Positions, Forecast).
+
+| Style | Horizon | Character |
+|-------|---------|-----------|
+| **SHORT** | 1 – 5 days | Pure technical analysis. No earnings or news compression. Ideal for volatile small-caps where fundamentals don't apply short-term. |
+| **SWING** | 5 – 20 days | Balanced TA + momentum. Standard earnings and news filters. The default for most stocks. |
+| **LONG** | 30 – 90 days | Fundamentals-heavy. K-Score boost/penalty applied. Strong weekly alignment required. Designed for position trades. |
+
+### Style profile parameters
+
+| Parameter | SHORT | SWING | LONG |
+|-----------|-------|-------|------|
+| **ML weight cap** | 30% | 75% | 45% |
+| **BUY threshold — bull market** | 0.60 | 0.65 | 0.60 |
+| **BUY threshold — high-vol** | 0.65 | 0.70 | 0.65 |
+| **BUY threshold — bear market** | 0.68 | 0.73 | 0.70 |
+| **HOLD threshold — bull** | 0.46 | 0.50 | 0.46 |
+| **HOLD threshold — bear** | 0.52 | 0.56 | 0.54 |
+| **ADX filter (min trending)** | 25 | 20 | off |
+| **ADX compression** | 0.85× | 0.90× | — |
+| **High-vol compression** | 0.92× | 0.85× | 0.90× |
+| **Breadth compression** | off | 0.90× | 0.92× |
+| **Weekly align boost / compress** | 1.08× / 0.93× | 1.12× / 0.85× | 1.18× / 0.80× |
+| **Earnings compression (≤2d / ≤5d / ≤10d)** | off | 0.50× / 0.75× / 0.90× | off |
+| **News compression (sent ≤ −25 / ≤ −35)** | off | 0.75× / 0.85× | off |
+| **RS compression** | 0.90× | 0.85× | 0.80× |
+| **K-Score boost** | off | off | **on** |
+| **Max compression floor** | 0.70 | 0.55 | 0.65 |
+
+**ML weight cap** controls how much the XGBoost probability can dominate. SHORT keeps ML at ≤ 30% because short-term price movements are noisier — TA momentum is more actionable. SWING allows ML up to 75% when the model has high AUC. LONG caps ML at 45% to let weekly alignment and K-Score have meaningful weight.
+
+**Max compression floor** prevents stacked filters from making a BUY mathematically impossible. If all filters combined would compress the fused probability below this floor, the system restores the probability to the floor before applying thresholds. For example: SWING floor is 0.55, so a stock at 0.80 with earnings in 2 days (0.50×) and weak breadth (0.90×) compresses to max(0.80 × 0.50 × 0.90, 0.55) = 0.55 — still HOLD-eligible rather than forced to WAIT.
 
 ---
 
@@ -21,34 +59,36 @@ That probability is then converted into a signal label based on the current mark
 ```
 Daily price history (last 400 bars)
          │
-         ├─► TA score  ──────────────────────────────────────┐
-         │   (9 indicators → probability 0–1)               │
-         │                                                   ▼
-         └─► ML probability  ──────► Fused probability = 60% ML + 40% TA
-             (XGBoost, if trained)
-                                              │
-                                              ▼
-                                   Market regime filter
-                                   (raises BUY threshold in bear market)
-                                              │
-                                              ▼
-                               BUY / HOLD / WAIT / SELL label
+         ├─► TA score  ──────────────────────────────────────────────────────┐
+         │   (9 indicators → probability 0–1)                               │
+         │                                                                   ▼
+         └─► ML probability  ──────► Fused probability = ML×weight + TA×(1-weight)
+             (XGBoost, if trained)           │
+                                             │
+                          ┌──────────────────┼──────────────────────────────┐
+                          ▼                  ▼                              ▼
+                    SHORT filters      SWING filters               LONG filters
+                    (no earn/news)     (earn+news compression)    (K-Score boost)
+                          │                  │                              │
+                          ▼                  ▼                              ▼
+                   AIConfidence        AIConfidence                  AIConfidence
+                   (horizon=SHORT)    (horizon=SWING)               (horizon=LONG)
 ```
 
-If the ML model is unavailable (not yet trained, or the ML service is down), the signal falls back to 100% TA. You can tell this happened when the `reasons.ml_probability` field is `null` in the stock detail page.
+All three results are persisted to the `signals` table in a single pass. The frontend reads whichever horizon matches the user's current style setting.
 
 ---
 
 ## Signal labels and what they mean
 
-| Label | Fused probability (normal / bear market) | Meaning |
-|-------|----------------------------------------|---------|
-| **BUY** | > 0.65 / > 0.73 | Technicals and ML both lean bullish. Entry is supported. |
-| **HOLD** | 0.50–0.65 / 0.56–0.73 | Mildly bullish lean. No strong entry signal yet. |
-| **WAIT** | 0.35–0.50 / 0.35–0.56 | Slightly bearish lean. Keep watching. |
-| **SELL** | < 0.35 / < 0.35 | Bearish. Technical picture has deteriorated. |
+| Label | Meaning |
+|-------|---------|
+| **BUY** | TA, ML, and filters are all aligned bullish. Entry is supported. |
+| **HOLD** | Mildly bullish. No strong entry yet; don't exit existing positions. |
+| **WAIT** | Slightly bearish lean. Watch for confirmation before acting. |
+| **SELL** | Bearish. Technical picture has deteriorated. |
 
-The BUY and HOLD thresholds are **raised in a bear market** (when S&P 500 is below its 200-day MA) because individual stock signals are less reliable when systemic risk dominates. You need stronger conviction before entering in a broad downtrend.
+Exact thresholds depend on style and market regime — see the table above. In bear markets all BUY/HOLD thresholds are raised, requiring stronger conviction before entry signals fire.
 
 ---
 
@@ -56,251 +96,307 @@ The BUY and HOLD thresholds are **raised in a bear market** (when S&P 500 is bel
 
 Two numbers accompany every signal in the UI:
 
-**Bullish Probability %** — the raw fused probability scaled to a percentage.
+**Bullish Probability %** — the fused probability after all style filters, scaled to a percentage.
 - 70%+ = genuinely bullish
 - 50% = neutral (coin-flip)
-- 30%- = genuinely bearish
+- 30%− = genuinely bearish
 
-**Confidence** — how far the probability is from 50%, scaled to 0–100:
+**Confidence** — how far the final probability is from 50%, scaled to 0–100:
 ```
 confidence = |fused_probability − 0.5| × 200
 ```
-A BUY signal at 80% bullish probability has confidence 60. A HOLD at 55% has confidence 10.
-High confidence + BUY is very different from low confidence + BUY — the latter can flip at the next refresh.
+A BUY at 80% bullish probability has confidence 60. A HOLD at 55% has confidence 10. High confidence + BUY is very different from low confidence + BUY — the latter can flip at the next refresh.
 
 ---
 
 ## The Technical Analysis layer
 
-The TA score is built from nine independent indicators. Each contributes a fixed weight to a probability (0–1). Here is what each one checks and why.
+The TA score is built from nine independent indicators. Each contributes a fixed weight to a probability (0–1).
 
 ### 1. SMA trend alignment (up to +0.35)
 
 | Condition | Score | What it means |
 |-----------|-------|---------------|
 | Price above SMA(50) | +0.15 | Short-term trend is up |
-| SMA(50) above SMA(200) | +0.10 | Medium-term trend is up — "golden cross regime" |
-| Golden cross just fired | +0.10 | SMA(50) crossed *above* SMA(200) this bar — strong bullish regime change |
-| Death cross just fired | −0.10 | SMA(50) crossed *below* SMA(200) — regime turned bearish |
-
-The SMA trend is the backbone. A stock can score well on RSI and MACD but still get a WAIT/SELL if it sits below both moving averages. SMA alignment tells you *which direction the market has been trending* — not whether it's about to move.
+| SMA(50) above SMA(200) | +0.10 | Medium-term trend is up |
+| Golden cross just fired | +0.10 | SMA(50) crossed above SMA(200) — regime change |
+| Death cross just fired | −0.10 | SMA(50) crossed below SMA(200) — regime turned bearish |
 
 ### 2. RSI (14-period) (up to +0.15)
 
 | RSI range | Score | Zone |
 |-----------|-------|------|
-| 45–65 | +0.15 | Ideal entry zone — bullish but not overbought |
-| 35–45 | +0.08 | Oversold recovery — dip buyers may be stepping in |
-| 65–72 | +0.06 | Extended but not extreme — still acceptable |
-| > 72 | 0 | Overbought — pullback risk elevated |
-| < 35 | 0 | Extreme oversold — too early, can keep falling |
-
-RSI by itself is not a buy/sell trigger. The app uses it to measure *momentum quality* — whether the current price level is entering from a healthy base (RSI 40–60) or from an overextended extreme (RSI > 70 or < 30).
+| 45–65 | +0.15 | Ideal entry zone |
+| 35–45 | +0.08 | Oversold recovery |
+| 65–72 | +0.06 | Extended but not extreme |
+| > 72 | 0 | Overbought — pullback risk |
+| < 35 | 0 | Extreme oversold — too early |
 
 ### 3. Stochastic RSI (up to +0.10, down to −0.08)
 
-Stochastic RSI normalises RSI itself into a 0–1 range, then smooths it. It detects *when RSI is at an extreme relative to itself* — faster and more sensitive than raw RSI.
-
 | Condition | Score | Signal |
 |-----------|-------|--------|
-| Stoch RSI K < 0.20 (RSI oversold zone) | +0.10 | RSI is at a low extreme — potential dip entry |
-| Stoch RSI K just crossed up through 0.20 | +0.05 | Fresh oversold recovery — early confirmation |
-| Stoch RSI K > 0.80 (RSI overbought zone) | −0.08 | RSI is stretched — upside may be limited |
-
-When both RSI and Stochastic RSI are oversold simultaneously (+0.15 + 0.10 = +0.25), the signal has a strong oversold-recovery basis.
+| Stoch RSI K < 0.20 | +0.10 | RSI at low extreme — potential dip entry |
+| Stoch RSI K just crossed up through 0.20 | +0.05 | Fresh oversold recovery |
+| Stoch RSI K > 0.80 | −0.08 | RSI stretched — upside may be limited |
 
 ### 4. RSI divergence (up to ±0.10)
 
-Looks back 10 bars to detect when price and momentum are moving in opposite directions.
-
 | Divergence | Score | What it means |
 |------------|-------|---------------|
-| Bearish: price higher, RSI lower | −0.10 | Momentum is fading even as price rises — pullback risk |
-| Bullish: price lower, RSI higher | +0.08 | Momentum is recovering even as price falls — reversal potential |
-| None | 0 | No divergence detected |
-
-Bearish RSI divergence is one of the most reliable warnings before a price top. If a stock shows BUY but has bearish RSI divergence, treat the signal with more caution.
+| Bearish: price higher, RSI lower | −0.10 | Momentum fading as price rises |
+| Bullish: price lower, RSI higher | +0.08 | Momentum recovering as price falls |
+| None | 0 | No divergence |
 
 ### 5. MACD (up to +0.20)
 
 | Condition | Score | Signal |
 |-----------|-------|--------|
-| MACD histogram > 0 AND rising | +0.15 | Momentum is accelerating upward — strong bullish |
-| MACD histogram > 0 (but not rising) | +0.08 | Upward momentum, but slowing |
-| MACD line just crossed zero from below | +0.05 | Trend-direction confirmation — MACD turned positive |
-
-MACD histogram captures *momentum acceleration*, not just direction. `macd_hist > 0 AND macd_rising = true` is the strongest MACD reading. If `macd_hist > 0` but `macd_rising = false`, momentum exists but may be peaking.
+| MACD histogram > 0 AND rising | +0.15 | Momentum accelerating upward |
+| MACD histogram > 0 (not rising) | +0.08 | Upward momentum, but slowing |
+| MACD line just crossed zero from below | +0.05 | Trend-direction confirmation |
 
 ### 6. Bollinger Bands %B (up to +0.10)
 
-%B = `(price − lower band) / (upper band − lower band)`
-
 | %B | Score | Zone |
 |----|-------|------|
-| 0.20 to 0.80 | +0.10 | Price is in the middle zone — not at an extreme |
-| < 0.20 | 0 | Near lower band — could be oversold, but also falling through |
-| > 0.80 | 0 | Near upper band — could be overbought |
-
-This indicator rewards stocks trading in the middle of their Bollinger range — suggesting controlled momentum rather than parabolic extension or breakdown.
+| 0.20 to 0.80 | +0.10 | Middle zone — not at an extreme |
+| < 0.20 or > 0.80 | 0 | Near band — overextended or breaking down |
 
 ### 7. ADX — trend strength (up to +0.10)
 
-ADX measures *how strongly the price is trending*, regardless of direction. DI+ and DI− determine which direction.
+| Condition | Score | Signal |
+|-----------|-------|--------|
+| ADX > threshold AND DI+ > DI− | +0.10 | Strong upward trend |
+| ADX > threshold AND DI+ ≤ DI− | 0 | Strong trend, but downward |
+| ADX ≤ threshold | 0 (compressed) | Ranging — signals less reliable |
+
+ADX threshold is 25 for SHORT and SWING, disabled entirely for LONG. When ADX is below threshold, the fused probability is multiplied by the style's `adx_compression` factor.
+
+### 8. OBV (up to +0.10)
 
 | Condition | Score | Signal |
 |-----------|-------|--------|
-| ADX > 25 AND DI+ > DI− | +0.10 | Strong upward trend — signals are more reliable |
-| ADX > 25 AND DI+ ≤ DI− | 0 | Strong trend, but downward |
-| ADX ≤ 25 | 0 | Weak/ranging — all other signals are less reliable |
-
-When `adx_trending = false` in the reasons field, the market is choppy. Reduce conviction in any BUY signal — the TA indicators are less meaningful in a sideways market.
-
-### 8. OBV (On-Balance Volume) (up to +0.10)
-
-OBV tracks whether volume is flowing into or out of the stock.
-
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| OBV 10-day avg > OBV 30-day avg | +0.10 | Recent volume is net positive — buyers outnumber sellers |
-
-`obv_bullish = true` means that on days the stock went up, the volume was higher than on days it went down. This is the most direct confirmation that price direction has volume support.
+| OBV 10-day avg > OBV 30-day avg | +0.10 | Net volume flow is bullish |
 
 ### 9. Volume Z-score (up to +0.05)
 
 | Condition | Score | Signal |
 |-----------|-------|--------|
-| Volume > 0.5 std above 20-day average | +0.05 | Above-average participation — signal has more weight |
-
-Small bonus for elevated volume. A BUY signal on 3× average volume is more significant than one on light holiday trading.
+| Volume > 0.5σ above 20-day average | +0.05 | Above-average participation |
 
 ---
 
 ## The Machine Learning layer
 
-The ML layer uses an XGBoost classifier trained on the stock's own price history. It predicts the **bullish probability** — the likelihood that the price is higher at a future point given the current pattern.
+The ML layer uses an XGBoost classifier trained on the stock's own price history. It predicts the bullish probability — the likelihood the price is higher at the target horizon given the current pattern.
 
-Key facts:
+- **Trained per-symbol**: MU's model is trained on MU data only.
+- **22 features**: returns at multiple timeframes, RSI, MACD, ATR, volume ratios, SMA ratios, Stoch RSI, BB %B, and others derived from daily bars.
+- **AUC-gated blending**: ML weight is scaled down when `test_auc < 0.52`. A model that barely beats random gets a low vote. High-AUC models (> 0.65) get full weight up to the style's `ml_weight_cap`.
+- **Retrained nightly** at post-close. Intra-day refreshes use the previous close model.
+- **Cold-start fallback**: New stocks with no trained model fall back to 100% TA until **Train All** is clicked.
 
-- Trained per-symbol, not a universal model. MU's model is trained on MU data only.
-- Features are price-based: returns at multiple timeframes, RSI, MACD, ATR, volume ratios, and others derived from the same daily bars the TA layer uses.
-- The model is retrained once per day at post-close (16:30). Intra-day refreshes use the model from the previous close.
-- If the model has never been trained (new stock), the signal is 100% TA until you click **Train All** on the dashboard.
-- ML failure (service down, model missing) is non-fatal — the system logs a warning and falls back to TA-only.
-
-The ML probability is blended with the TA score at **60% ML weight**. This means the ML layer has a stronger vote than any single TA indicator. When ML and TA agree, the signal is high-confidence. When they disagree, the fused result is pulled toward whichever is stronger.
+The ML probability is blended with the TA score. The exact weight depends on the style's `ml_weight_cap`, the model's AUC, and whether weekly alignment data is available.
 
 ---
 
-## Why a stock shows a specific signal
+## Style-specific filters applied after ML blending
 
-### Why BUY
+After the initial fused probability is computed, additional multipliers are applied in order:
 
-All of these (or most) are true:
+1. **Weekly alignment** — Checks if the weekly timeframe agrees with the daily signal. Bull weekly → probability boosted by `weekly_boost`; bear weekly → multiplied by `weekly_compress`. LONG has the strongest weekly alignment requirement (1.18× boost / 0.80× compress).
 
-- Price is above SMA(50) and SMA(50) is above SMA(200) — uptrend intact
-- RSI is in the 45–65 zone — not overbought
-- MACD histogram is positive and rising — momentum accelerating
-- OBV is bullish — volume is confirming the price direction
-- ADX > 25 with DI+ > DI− — the trend has real strength
-- ML model gives probability > 65% bullish
+2. **ADX / trend strength** (SHORT and SWING only) — If ADX is below the style minimum, the probability is multiplied by `adx_compression`. LONG skips this filter to allow fundamentals to dominate even in ranging markets.
 
-**Common BUY patterns:**
-- Stock is in a clean uptrend with RSI holding 50–60 (healthy momentum, not extended)
-- Stock pulled back to SMA(50), RSI dipped to 40–45, Stoch RSI turned oversold, then recovered — classic buy-the-dip setup
-- Golden cross just fired — SMA(50) crossed SMA(200) for the first time after a prolonged downtrend
+3. **High-volatility regime** (all styles) — When market breadth VIX/ATR indicates elevated volatility, a compression is applied and the BUY threshold is raised from "bull" to "high_vol".
 
-### Why HOLD
+4. **Breadth compression** (SWING and LONG only) — If fewer than 50% of tracked stocks are in uptrend, the probability is further compressed. SHORT skips this — short-term trades don't require broad participation.
 
-The stock is mildly bullish but lacks full conviction. Typical reasons:
+5. **Pattern adjustment** — Candlestick pattern recognition applies a small multiplier (±5–8%) for known reversal patterns.
 
-- Price above SMA(50) but RSI is elevated (65–72) — extended short-term
-- MACD is positive but not rising — momentum exists but isn't accelerating
-- ML and TA are not in full agreement — fused probability is 55–65%
-- Market is choppy (ADX < 25) — signals are uncertain
+6. **Earnings compression** (SWING only) — If earnings are within N days, the probability is multiplied down to reduce false signals around earnings gaps. The exact multipliers are: `{≤2d: 0.50×, ≤5d: 0.75×, ≤10d: 0.90×}`. SHORT and LONG skip this entirely.
 
-HOLD means "don't add to a new position, but don't exit an existing one either."
+7. **News sentiment compression** (SWING only) — If the stock's aggregated news sentiment is strongly negative (score ≤ −25), the probability is multiplied by 0.75× or 0.85×. SHORT ignores news (too reactive); LONG ignores it (price-in already).
 
-### Why WAIT
+8. **Relative Strength compression** — If the stock is underperforming its sector significantly, a compression applies. LONG has the strongest RS filter (0.80×), penalising laggards most.
 
-Slightly bearish lean. Common causes:
+9. **K-Score boost** (LONG only) — The K-Score (0–100 fundamental composite) is fetched from the Ranking Engine. Score > 70 boosts the probability by up to 10%. Score < 30 penalises by up to 12%.
 
-- Price below SMA(50) — short-term trend is down
-- RSI is in the 35–50 range — recovering but not yet confirmed bullish
-- MACD histogram is negative — momentum is on the bearish side
-- Stoch RSI is neither oversold nor overbought — no clear reversal signal yet
-
-WAIT means the setup is deteriorating but not yet conclusively bearish. Watch for a RSI drop below 35 (Stoch RSI oversold trigger) or a MACD zero-line crossover as the next signal.
-
-### Why SELL
-
-Multiple bearish indicators are aligned. Typical combination:
-
-- Price below both SMA(50) and SMA(200) — both short and medium-term trends are down
-- RSI > 70 (overbought) or RSI < 35 (no support, freefall mode)
-- MACD histogram negative and falling — momentum accelerating down
-- OBV not bullish — volume confirming the price decline
-- Death cross: SMA(50) just dropped below SMA(200)
-- ML probability < 35%
-
-**Note on overbought SELL:** A stock can show SELL while the price is still rising, if RSI is extremely overbought (> 72) and Stoch RSI is in the overbought zone. This is not a crash warning — it means the recent run is overextended and a short-term pullback is likely. Hold existing positions; do not add.
+10. **Compression cap** — After all multipliers, if the probability has been pushed below the style's `max_compress_ratio`, it is restored to that floor. This prevents mathematically impossible BUY thresholds from stacking.
 
 ---
 
-## The market regime adjustment
+## Market regime
 
-The signal engine checks whether the **S&P 500 is above or below its 200-day moving average** on every signal computation.
+The signal engine determines the current market regime on every computation:
+
+| Regime | How detected | Effect |
+|--------|-------------|--------|
+| `bull` | S&P 500 above 200-day MA, VIX < 20 | Normal thresholds |
+| `high_vol` | VIX ≥ 20 or S&P in elevated-vol period | Raised thresholds, additional compression |
+| `bear` | S&P 500 below 200-day MA | Highest thresholds — requires strongest conviction |
+| `unknown` | Data unavailable | Slightly raised thresholds as a precaution |
+
+SWING thresholds by regime:
 
 | Regime | BUY threshold | HOLD threshold |
 |--------|--------------|----------------|
-| Bull (S&P above 200MA) | Fused prob > 0.65 | Fused prob > 0.50 |
-| Bear (S&P below 200MA) | Fused prob > **0.73** | Fused prob > **0.56** |
-
-In a bear market, the same stock that would get a BUY in a bull market might only get a HOLD. This is intentional — individual stock signals are less actionable when the broad market is in a sustained downtrend. You can see the current regime on the **Fear & Greed** section of any stock detail page.
-
-If a stock shows BUY in a bear market, it required a particularly strong technical and ML setup to clear the higher threshold. These signals carry more weight, not less.
+| Bull | 0.65 | 0.50 |
+| High-vol | 0.70 | 0.54 |
+| Bear | 0.73 | 0.56 |
+| Unknown | 0.65 | 0.50 |
 
 ---
 
-## Reading the reasons field
+## The `signals` table
 
-The stock detail page (`/stock/[symbol]`) shows the full indicator breakdown in the sidebar. Here is the complete field reference:
+Every computed signal is persisted to the `signals` table in PostgreSQL.
 
-| Field | What to look for |
-|-------|-----------------|
-| `market_regime` | `bull` or `bear`. Bear raises the BUY threshold. |
-| `trend_above_sma50` | `true` = short-term trend is up. False → uptrend not intact. |
-| `sma50_above_sma200` | `true` = medium-term trend is up. Both true = clean uptrend. |
-| `golden_cross_event` | `true` = SMA(50) just crossed above SMA(200) — regime change. |
-| `death_cross_event` | `true` = SMA(50) just crossed below SMA(200) — regime change. |
-| `rsi` | 45–65 = ideal entry. > 70 = extended. < 40 = oversold dip zone. |
-| `stoch_rsi_k` | < 0.20 = oversold extreme. > 0.80 = overbought extreme. |
-| `stoch_rsi_cross_up` | `true` = just recovered from oversold — early buy signal. |
-| `rsi_divergence` | `"bearish"` = price up but RSI declining (momentum fading). `"bullish"` = price down but RSI recovering. |
-| `macd_hist` | Positive + rising = strongest BUY confirmation. Negative + falling = SELL confirmation. |
-| `macd_rising` | `true` = histogram grew since last bar — momentum increasing. |
-| `macd_zero_cross_up` | `true` = MACD line just turned positive — trend direction confirmed. |
-| `bb_pct_b` | 0.2–0.8 = healthy middle zone. > 0.85 = near upper band (extended). < 0.15 = near lower band. |
-| `adx` | < 20 = choppy, ignore other signals. 20–40 = moderate trend. > 40 = strong trend. |
-| `adx_trending` | `true` if ADX > 25. If false, all TA signals have lower reliability. |
-| `adx_bullish` | `true` if ADX trending AND DI+ > DI−. Upward directional trend confirmed. |
-| `obv_bullish` | `true` = volume confirms price direction. The best volume-based confirmation. |
-| `volume_z` | Standard deviations above 20-day average. > 1.5 = unusually high volume. |
-| `ta_score` | Raw TA probability before ML blending (0–1). Compare to ML to see which is driving the signal. |
-| `ml_probability` | XGBoost bullish probability (0–1). `null` = model not trained yet. |
+```sql
+CREATE TABLE signals (
+    id                 BIGSERIAL PRIMARY KEY,
+    stock_id           BIGINT NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
+    ts                 TIMESTAMP NOT NULL DEFAULT now(),
+    signal             signal_type NOT NULL,     -- BUY | HOLD | WAIT | SELL
+    horizon            signal_horizon NOT NULL,  -- SHORT | SWING | LONG
+    confidence         FLOAT NOT NULL,           -- 0–100
+    bullish_probability FLOAT,                   -- 0–1, nullable
+    reasons            JSONB,                    -- full indicator breakdown
+    source             VARCHAR(64) DEFAULT 'signal-engine'
+);
+
+CREATE INDEX ix_signals_stock_ts ON signals (stock_id, ts);
+```
+
+### Column reference
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | bigint | Auto-increment primary key |
+| `stock_id` | bigint | FK → `stocks.id`. Cascades on delete. |
+| `ts` | timestamp | When the signal was computed (UTC) |
+| `signal` | enum | `BUY`, `HOLD`, `WAIT`, or `SELL` |
+| `horizon` | enum | `SHORT`, `SWING`, or `LONG` — the trading style this signal belongs to |
+| `confidence` | float | 0–100. Distance of `bullish_probability` from 0.50, scaled. |
+| `bullish_probability` | float | 0–1. The final fused probability after all style filters. |
+| `reasons` | jsonb | Full indicator snapshot (see Reasons field reference below). |
+| `source` | varchar | Always `signal-engine` for automated signals. |
+
+### `horizon` enum values
+
+| Value | Meaning |
+|-------|---------|
+| `SHORT` | 1–5 day trading style |
+| `SWING` | 5–20 day trading style |
+| `LONG` | 30–90 day trading style |
+
+Prior to the trading style refactor, all signals were stored with `horizon = SWING`. After the refactor, each stock receives **three rows per refresh cycle** — one per horizon. The API's `/signals/latest` endpoint accepts a `?style=SWING` query parameter to filter by horizon.
+
+### Uniqueness and "latest signal" queries
+
+The latest signal per `(stock_id, horizon)` pair is determined by `MAX(ts)` within a subquery grouped on both columns. This means a single stock has up to three "current" signals — one per style — and changing your style setting switches which row the UI displays.
+
+### Reasons JSONB field
+
+The `reasons` column stores the full indicator state at signal time. Key fields:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `market_regime` | string | `bull`, `high_vol`, `bear`, or `unknown` |
+| `trend_above_sma50` | bool | Price is above SMA(50) |
+| `sma50_above_sma200` | bool | SMA(50) is above SMA(200) — uptrend intact |
+| `golden_cross_event` | bool | SMA(50) just crossed above SMA(200) |
+| `death_cross_event` | bool | SMA(50) just crossed below SMA(200) |
+| `rsi` | float | 14-period RSI value |
+| `stoch_rsi_k` | float | Stochastic RSI K line (0–1) |
+| `stoch_rsi_cross_up` | bool | Stoch RSI just recovered from oversold |
+| `rsi_divergence` | string | `"bullish"`, `"bearish"`, or `"none"` |
+| `macd_hist` | float | MACD histogram value |
+| `macd_rising` | bool | Histogram grew since last bar |
+| `macd_zero_cross_up` | bool | MACD line just turned positive |
+| `bb_pct_b` | float | Bollinger Bands %B (0–1) |
+| `adx` | float | ADX value |
+| `adx_trending` | bool | ADX is above the style's minimum threshold |
+| `adx_bullish` | bool | ADX trending AND DI+ > DI− |
+| `obv_bullish` | bool | OBV 10-day avg > OBV 30-day avg |
+| `volume_z` | float | Volume standard deviations above 20-day mean |
+| `ta_score` | float | Raw TA probability before ML blending (0–1) |
+| `ml_probability` | float\|null | XGBoost bullish probability. `null` = not trained. |
+| `ml_weight` | float | Actual ML blending weight used (0–1) |
+| `weekly_alignment` | bool | Weekly timeframe agrees with daily direction |
+| `days_to_earnings` | int\|null | Calendar days until next earnings report |
+| `news_sentiment` | float\|null | Aggregated VADER sentiment score (−100 to 100) |
+| `kscore` | float\|null | K-Score from ranking engine (0–100). LONG style only. |
+| `horizon` | string | Which style profile was applied |
 
 ---
 
-## High-confidence vs low-confidence signals
+## The `trade_plans` table
 
-The confidence number tells you how decisive the signal is. Two stocks can both show BUY but behave very differently:
+The Trade Board Kanban cards are persisted in `trade_plans`. Each row represents one card for one user.
 
-| Confidence | Bullish prob | What it means |
-|------------|-------------|---------------|
-| 60–80 | 80–90% | Strong signal — TA, ML, and market regime all aligned |
-| 30–50 | 65–75% | Moderate signal — cleared the threshold but not by much |
-| 5–20 | 55–60% | Weak signal — just barely crossed into BUY territory; can flip on the next refresh |
+```sql
+CREATE TABLE trade_plans (
+    id                 SERIAL PRIMARY KEY,
+    user_id            INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    symbol             VARCHAR(32) NOT NULL,
+    stage              VARCHAR(20) NOT NULL DEFAULT 'watch',
+    game_plan          JSONB,
+    entry_price        FLOAT,
+    stop_loss          FLOAT,
+    take_profit        FLOAT,
+    notes              TEXT,
+    source             VARCHAR(32),
+    exit_price         FLOAT,
+    actual_entry_price FLOAT,
+    shares             FLOAT,
+    closed_at          TIMESTAMP,
+    created_at         TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMP NOT NULL DEFAULT now()
+);
+```
 
-When confidence is below 20, treat the signal as "leaning BUY" rather than a confirmed entry. It is common for these to oscillate between BUY and HOLD day-to-day as minor price moves shift the RSI or MACD.
+### Column reference
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | int | Auto-increment primary key |
+| `user_id` | int | FK → `users.id`. Each card belongs to one user. |
+| `symbol` | varchar(32) | Ticker symbol (e.g. `NVDA`, `0700.HK`) |
+| `stage` | varchar(20) | Kanban column: `watch`, `planning`, `active`, or `closed` |
+| `game_plan` | jsonb | Full AI game plan object (targets, rationale, catalysts, risks) |
+| `entry_price` | float | **Planned** limit/target entry price from the game plan |
+| `stop_loss` | float | Planned stop loss level |
+| `take_profit` | float | Planned take profit target (primary) |
+| `notes` | text | Free-form user notes |
+| `source` | varchar(32) | Origin: `gameplan`, `forecast`, or `manual` |
+| `exit_price` | float | Actual exit price when card is moved to Closed |
+| `actual_entry_price` | float | **Actual fill price** captured when card is moved to Active via the Fill modal |
+| `shares` | float | Number of shares filled, captured alongside `actual_entry_price` |
+| `closed_at` | timestamp | When the card was moved to Closed |
+| `created_at` | timestamp | Row creation time |
+| `updated_at` | timestamp | Last update time (auto-updates on any write) |
+
+### Stage lifecycle
+
+```
+watch → planning → active → closed
+```
+
+Cards can be dragged between columns on the Trade Board. The transition to `active` triggers the Fill modal — prompting for `actual_entry_price` and `shares` to capture the real fill rather than the planned price.
+
+### P&L calculation
+
+Dollar P&L is computed at display time from persisted fields:
+
+```
+effective_entry = actual_entry_price ?? entry_price
+pct_pnl  = (exit_price - effective_entry) / effective_entry × 100
+dollar_pnl = (exit_price - effective_entry) × shares   (only when shares is set)
+```
+
+`actual_entry_price` takes priority over `entry_price` wherever P&L is shown — on the card itself, in the performance stats row, and in the overall board stats.
 
 ---
 
@@ -308,52 +404,53 @@ When confidence is below 20, treat the signal as "leaning BUY" rather than a con
 
 Dashboard cards show a colored timestamp below each signal badge:
 
-| Color | Age | What to do |
-|-------|-----|-----------|
+| Color | Age | Meaning |
+|-------|-----|---------|
 | Green | < 1 hour | Fresh — computed this session |
 | Yellow | 1–8 hours | Current trading day, still reliable |
 | Orange | 8–24 hours | From earlier today or overnight |
 | Red | > 24 hours | Stale — may not reflect today's price action |
 
-Signals are persisted to the database after each scheduled refresh (5× per trading day). On weekends and non-trading days, the signal age will naturally be red — this is expected and does not mean the signal has changed. Click **⚡ Refresh Signals** in the dashboard toolbar to recompute fresh signals for all your tracked stocks immediately.
+Signals are refreshed 5× per trading day by the scheduler. On weekends and non-trading days, red age is expected and does not mean the signal changed. Click **⚡ Refresh Signals** to recompute immediately.
 
 ---
 
 ## What this signal cannot do
 
-- **Earnings gaps**: The signal is trained on normal price behavior. An earnings surprise can move a stock 15–30% in one session — no technical signal predicts this. Check the earnings calendar on the stock detail page and reduce position size in the week before results.
-- **Macro shocks**: Rate decisions, geopolitical events, and sector rotations can override any technical setup. The market regime filter (bull/bear) partially accounts for broad trends, but cannot predict sudden shocks.
-- **Thin liquidity**: For small-cap or illiquid HK stocks with few daily bars, the TA indicators are less reliable. Volume Z-score will be low, ADX may be weak, and OBV may show erratic values.
-- **New stocks**: If a stock was just added to the system and has less than 200 daily bars, indicators like SMA(200) and Momentum sub-scores will not yet be fully computed. The signal will have lower confidence until more history is ingested.
-- **ML cold start**: A newly added stock has no trained ML model. The signal is 100% TA (visible when `ml_probability = null`). Click **Train All** on the dashboard to train the model on existing history.
+- **Earnings gaps**: A 15–30% overnight gap is unpredictable by any technical signal. Check the earnings calendar before entering. SWING style applies compression within 10 days of earnings specifically to reduce this risk.
+- **Macro shocks**: Rate decisions, geopolitical events, and sector rotations can override any technical setup. The market regime filter partially accounts for sustained trends but not sudden shocks.
+- **Thin liquidity**: For illiquid stocks with few daily bars, TA indicators are less reliable. ADX may be weak, OBV erratic. Consider using SHORT style for these — it drops earnings/news filters and is less demanding on data quality.
+- **New stocks**: Less than 200 bars means SMA(200) and some momentum sub-scores are incomplete. The signal will have lower confidence until more history is ingested.
+- **ML cold start**: A newly added stock has no trained model. Signal is 100% TA until **Train All** is clicked. Visible when `ml_probability = null` in the reasons panel.
 
 ---
 
-## Quick reference — strongest setups
+## Strongest setups by style
 
-### Highest-conviction BUY setup
+### SHORT — highest conviction
 
-All five conditions are present:
+1. Price above SMA(50) — uptrend intact
+2. RSI 45–60 and Stoch RSI just recovered from oversold — dip bought
+3. MACD histogram positive and rising — momentum accelerating
+4. ADX > 25 with DI+ > DI− — trending strongly
+5. Volume spike (Z > 1.5) — institutional participation
 
-1. SMA(50) above SMA(200), price above SMA(50) — clean uptrend
-2. RSI 45–60, Stoch RSI just recovered from oversold — dip bought, not overextended
-3. MACD histogram positive and rising, or MACD zero-line crossover — momentum confirmed
-4. OBV bullish — volume confirms direction
-5. ML probability > 70% — model agrees with TA
+### SWING — highest conviction
 
-Add analyst consensus BUY, earnings > 30 days away, and insider net buying for maximum conviction (see [SCORING.md — Combining AI Signal and Analyst Ratings](SCORING.md#combining-ai-signal-and-analyst-ratings)).
+All of the above, plus:
+- OBV bullish — volume confirming direction
+- No earnings in next 10 days — no binary event risk
+- News sentiment not deeply negative
+- ML probability > 70% — model agrees with TA
 
-### Highest-risk false BUY
+### LONG — highest conviction
 
-Treat a BUY signal with caution when:
-
-- Bearish RSI divergence is present (`rsi_divergence = "bearish"`) — price is rising but momentum is fading
-- Stoch RSI K > 0.80 — RSI itself is in the overbought zone
-- ADX < 20 — market is choppy, signals are noise
-- `ml_probability` is null — no ML layer; TA-only signal is weaker
-- Market regime is `bear` and confidence is < 30 — barely cleared the higher threshold
-- Signal age is red (> 24 hours) and a volatile session has passed since
+1. K-Score > 70 — strong fundamentals composite
+2. Weekly timeframe also bullish — trend confirmed on higher timeframe
+3. ML probability > 65% — multi-week pattern recognized
+4. RS score above sector median — stock is outperforming peers
+5. ADX filter is off — trend strength less critical for long holds
 
 ---
 
-For how to combine this signal with K-Score, analyst ratings, insider activity, and earnings timing, see [SCORING.md](SCORING.md).
+For how to combine AI Signal with K-Score, analyst ratings, insider activity, and earnings timing, see [SCORING.md](SCORING.md).
