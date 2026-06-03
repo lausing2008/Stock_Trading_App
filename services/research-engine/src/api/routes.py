@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 import pandas as pd
@@ -1101,7 +1101,7 @@ async def get_research(symbol: str):
     entry = _cache.get(sym)
     if entry:
         report, ts = entry
-        if (datetime.utcnow() - ts).total_seconds() < CACHE_TTL_SEC:
+        if (datetime.now(timezone.utc) - ts).total_seconds() < CACHE_TTL_SEC:
             return report
     raise HTTPException(404, "No cached research report. POST to /research/{symbol} to generate.")
 
@@ -1219,7 +1219,7 @@ async def generate_research(symbol: str, req: ResearchRequest):
     report = {
         "symbol": sym,
         "company_name": stock.get("name", sym),
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
         "report_quality": report_quality,
         "current_price": price,
         "market_cap": fund.get("market_cap"),
@@ -1273,7 +1273,7 @@ async def generate_research(symbol: str, req: ResearchRequest):
         "days_to_earnings": fund.get("days_to_earnings"),
     }
 
-    _cache[sym] = (report, datetime.utcnow())
+    _cache[sym] = (report, datetime.now(timezone.utc))
     log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation)
     return report
 

@@ -1,5 +1,5 @@
 """/stocks, /stocks/{symbol}/prices — read API for market data."""
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 
 import pandas as pd
@@ -515,7 +515,7 @@ def market_breadth(session: Session = Depends(get_session)):
         "total": total,
         "label": breadth_label,
         "color": breadth_color,
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
         _get_redis().setex(_MARKET_BREADTH_KEY, _MARKET_BREADTH_TTL, json.dumps(result))
@@ -1241,7 +1241,7 @@ def relative_performance(
 ):
     """Return base-100 normalized daily close series for multiple symbols."""
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()][:8]
-    cutoff = datetime.utcnow() - timedelta(days=days + 5)  # +5 for alignment buffer
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days + 5)  # +5 for alignment buffer
     result: dict[str, list] = {}
 
     for symbol in sym_list:
