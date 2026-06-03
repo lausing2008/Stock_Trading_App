@@ -337,6 +337,13 @@ def _resample_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
         }).dropna(subset=["close"])
         weekly = weekly.reset_index()
         weekly.rename(columns={"ts": "ts"}, inplace=True)
+        # Drop the current (latest) week if it started within the past 4 days —
+        # a partial week bar has too few sessions to be a reliable signal.
+        if not weekly.empty:
+            from datetime import date as _date, timedelta as _td
+            latest_week_start = pd.to_datetime(weekly["ts"].iloc[-1]).date()
+            if (_date.today() - latest_week_start) < _td(days=4):
+                weekly = weekly.iloc[:-1]
         return weekly if len(weekly) >= 10 else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
@@ -717,7 +724,7 @@ def _apply_style_signal(
     breadth_pct = base_reasons.get("breadth_pct")
     bc = p.get("breadth_compression")
     breadth_fired = False
-    if bc is not None and breadth_pct is not None and breadth_pct < 40 and market_regime in ("bull", "high_vol", "unknown"):
+    if bc is not None and breadth_pct is not None and breadth_pct < 40:
         fused = 0.5 + (fused - 0.5) * bc
         breadth_fired = True
     reasons["breadth_compression"] = breadth_fired
@@ -796,6 +803,12 @@ def _apply_style_signal(
         fused = 0.5 + (fused - 0.5) * 0.6
         reasons["stale_price_warning"] = True
 
+    # ── Insufficient history penalty ──────────────────────────────────────────
+    # < 50 bars means SMA200, ADX, and RSI are unreliable; compress toward neutral.
+    if base_reasons.get("insufficient_history"):
+        fused = 0.5 + (fused - 0.5) * 0.5
+        reasons["insufficient_history_warning"] = True
+
     fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── Compression cap ───────────────────────────────────────────────────────
@@ -858,6 +871,10 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     if df.empty:
         raise ValueError(f"No price data for {symbol}")
 
+    # Fewer than 50 bars means SMA200, ADX, and RSI are all unreliable.
+    # Flag the signal as low-confidence rather than silently serving defaults.
+    insufficient_history = len(df) < 50
+
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df)
     ml_prob, ml_test_auc = _fetch_ml_data(symbol)
@@ -889,6 +906,8 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["options_sentiment"]  = options_sentiment
     reasons["options_cp_ratio"]   = round(cp_ratio, 2) if cp_ratio is not None else None
     reasons["kscore"]             = kscore
+    reasons["insufficient_history"] = insufficient_history
+    reasons["bar_count"]          = len(df)
 
     return {
         style_key: _apply_style_signal(

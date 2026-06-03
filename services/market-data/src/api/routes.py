@@ -1342,9 +1342,13 @@ def get_options_flow(symbol: str):
             result = {"symbol": sym, "available": False, "reason": "no_volume"}
             return result
 
-        cp_ratio = round(total_call_vol / max(total_put_vol, 1), 2)
+        # Cap ratio at 10 to prevent unbounded values when put volume is near-zero.
+        # Also require at least 100 put contracts before declaring strongly_bullish —
+        # zero or tiny put volume usually means illiquid options, not extreme bullishness.
+        cp_ratio = round(min(total_call_vol / max(total_put_vol, 1), 10.0), 2)
+        sufficient_put_vol = total_put_vol >= 100
 
-        if cp_ratio >= 2.0:
+        if cp_ratio >= 2.0 and sufficient_put_vol:
             sentiment = "strongly_bullish"
         elif cp_ratio >= 1.3:
             sentiment = "bullish"
