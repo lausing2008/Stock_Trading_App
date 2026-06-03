@@ -418,6 +418,7 @@ class TradePlan(Base):
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     actual_entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     shares: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trading_style: Mapped[str | None] = mapped_column(String(16), nullable=True)  # SHORT|SWING|LONG
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

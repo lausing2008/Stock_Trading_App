@@ -170,6 +170,9 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE trade_plans ADD COLUMN IF NOT EXISTS shares FLOAT"
         ))
+        conn.execute(text(
+            "ALTER TABLE trade_plans ADD COLUMN IF NOT EXISTS trading_style VARCHAR(16)"
+        ))
 
 
 def _seed_admin() -> None:
