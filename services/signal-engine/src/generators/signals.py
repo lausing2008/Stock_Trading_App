@@ -199,8 +199,9 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
 
         stock_ret = float(stock_hist["Close"].iloc[-1] / stock_hist["Close"].iloc[-21] - 1)
         etf_ret   = float(etf_hist["Close"].iloc[-1] / etf_hist["Close"].iloc[-21] - 1)
-        denom = 1 + etf_ret if abs(etf_ret + 1) > 1e-6 else 1e-6
-        rs_rank = (1 + stock_ret) / denom
+        if abs(1 + etf_ret) < 0.01:
+            return None, None
+        rs_rank = (1 + stock_ret) / (1 + etf_ret)
         rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
         return round(rs_score, 1), round(rs_rank, 4)
     except Exception:

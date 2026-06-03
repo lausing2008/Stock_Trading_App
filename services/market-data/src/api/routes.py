@@ -362,7 +362,7 @@ def _compute_fear_greed() -> dict:
     ma_score = 75.0 if spx_now > float(ma125) else 25.0
 
     # 3. 20-day momentum
-    r20 = float(spx_close.iloc[-1] / spx_close.iloc[-21] - 1) if len(spx_close) > 21 else 0.0
+    r20 = float(spx_close.iloc[-1] / spx_close.iloc[-21] - 1) if len(spx_close) >= 21 else 0.0
     mom_score = float(min(max(50 + r20 * 300, 0), 100))
 
     # 4. VIX spike vs 20-day avg (spike = fear)
@@ -1516,6 +1516,10 @@ def get_prices(
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
     if not stock:
         raise HTTPException(404, f"Unknown symbol: {symbol}")
+    try:
+        tf = TimeFrame(timeframe)
+    except ValueError:
+        raise HTTPException(400, f"Invalid timeframe '{timeframe}'. Valid values: {[v.value for v in TimeFrame]}")
     if not end:
         end = date.today()
 
@@ -1523,7 +1527,7 @@ def get_prices(
         select(Price)
         .where(
             Price.stock_id == stock.id,
-            Price.timeframe == TimeFrame(timeframe),
+            Price.timeframe == tf,
             *(Price.ts >= start,) if start else (),
             Price.ts <= end,
         )
