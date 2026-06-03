@@ -163,6 +163,13 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_signal_alerts_symbol ON signal_alerts (symbol)"
         ))
+        # ── Trade plan fill tracking ───────────────────────────────────────────
+        conn.execute(text(
+            "ALTER TABLE trade_plans ADD COLUMN IF NOT EXISTS actual_entry_price FLOAT"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_plans ADD COLUMN IF NOT EXISTS shares FLOAT"
+        ))
 
 
 def _seed_admin() -> None:
