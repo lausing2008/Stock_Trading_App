@@ -311,6 +311,8 @@ const ITEMS: Item[] = [
     impact: 'Reduces false SWING/LONG BUY signals by ~30% — daily BUY against a weekly downtrend is a common losing trade',
     what: 'Signals are generated purely from daily bars. A stock can show a daily BUY pattern while the weekly chart is still in a confirmed downtrend — producing whipsaw trades that look good on daily TA but fail within a week.',
     fix: 'Aggregate weekly bars from existing daily price history (resample daily OHLCV into weekly). Compute weekly RSI, weekly trend direction (price vs 10-week SMA), and weekly MACD cross state. For SWING and LONG style signals, gate BUY if weekly RSI < 40 or weekly trend is negative. Pass weekly_trend field into signal reasons dict and display on SignalCard.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-03 — _weekly_technicals() returns weekly_rsi/trend/macd_bull; SWING/LONG BUY gate (0.40× compression when RSI<40 AND trend=down); SignalCard shows RSI + trend direction + "BUY gate active" note (commit 35a6381)',
   },
   {
     id: 'vwap-sr-levels',
