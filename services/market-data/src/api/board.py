@@ -23,6 +23,8 @@ class PlanIn(BaseModel):
     take_profit: float | None = None
     notes: str | None = None
     source: str | None = None  # gameplan | forecast | manual
+    actual_entry_price: float | None = None
+    shares: float | None = None
 
 
 class PlanUpdate(BaseModel):
@@ -32,6 +34,8 @@ class PlanUpdate(BaseModel):
     stop_loss: float | None = None
     take_profit: float | None = None
     exit_price: float | None = None
+    actual_entry_price: float | None = None
+    shares: float | None = None
 
 
 class PlanOut(BaseModel):
@@ -45,6 +49,8 @@ class PlanOut(BaseModel):
     notes: str | None
     source: str | None
     exit_price: float | None
+    actual_entry_price: float | None
+    shares: float | None
     closed_at: str | None
     created_at: str
     updated_at: str
@@ -65,6 +71,8 @@ def _out(p: TradePlan) -> PlanOut:
         notes=p.notes,
         source=p.source,
         exit_price=p.exit_price,
+        actual_entry_price=p.actual_entry_price,
+        shares=p.shares,
         closed_at=p.closed_at.isoformat() if p.closed_at else None,
         created_at=p.created_at.isoformat(),
         updated_at=p.updated_at.isoformat(),
@@ -102,6 +110,8 @@ def create_plan(
         take_profit=body.take_profit,
         notes=body.notes,
         source=body.source,
+        actual_entry_price=body.actual_entry_price,
+        shares=body.shares,
     )
     session.add(plan)
     session.commit()
@@ -137,6 +147,10 @@ def update_plan(
         plan.take_profit = body.take_profit
     if body.exit_price is not None:
         plan.exit_price = body.exit_price
+    if body.actual_entry_price is not None:
+        plan.actual_entry_price = body.actual_entry_price
+    if body.shares is not None:
+        plan.shares = body.shares
     plan.updated_at = datetime.utcnow()
     session.commit()
     session.refresh(plan)
