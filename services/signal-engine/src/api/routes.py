@@ -170,15 +170,14 @@ def signal_accuracy(
         return _pclose[sid][idx] if idx >= 0 else None
 
     def latest_price_after(sid: int, after_date):
-        """Most recent close strictly after after_date, returns (close, date) or (None, None)."""
+        """First close strictly after after_date, returns (close, date) or (None, None)."""
         ts_list = _pts.get(sid)
         if not ts_list:
             return None, None
         idx = bisect.bisect_right(ts_list, after_date)
         if idx >= len(ts_list):
             return None, None
-        # Return the LAST element after after_date (most recent)
-        return _pclose[sid][-1], ts_list[-1]
+        return _pclose[sid][idx], ts_list[idx]
 
     # Deduplicate: the scheduler runs every ~10 min and inserts repeated signals on
     # the same day. One evaluation per (stock, signal_type, day) is the right unit —
@@ -311,7 +310,7 @@ def ml_weight_validation(
         if not ts_list:
             return None
         idx = bisect.bisect_right(ts_list, after_date)
-        return _pclose[sid][-1] if idx < len(ts_list) else None
+        return _pclose[sid][idx] if idx < len(ts_list) else None
 
     # Build list of (ml_prob, ta_score, pct_change) for signals with complete data
     observations: list[tuple[float, float, float]] = []
@@ -438,7 +437,7 @@ def factor_exposure(
         if not ts_list:
             return None
         idx = bisect.bisect_right(ts_list, after_date)
-        return _pclose[sid][-1] if idx < len(ts_list) else None
+        return _pclose[sid][idx] if idx < len(ts_list) else None
 
     # factor key → (label, neutral baseline, display scale)
     FACTORS = [
@@ -630,7 +629,7 @@ def trade_performance(
 
         exit_ts, exit_signal_val = next_exit(sid, sig.ts)
         if exit_ts is not None:
-            exit_date  = exit_ts.date()
+            exit_date  = exit_ts.date() + timedelta(days=1)  # execute next day, symmetric with entry
             exit_price = price_on_or_before(sid, exit_date)
             status     = "closed"
             last_exit_ts[sid] = exit_ts  # block duplicate BUYs that fall before this exit
