@@ -143,9 +143,12 @@ _BULLISH_TRANSITIONS = {
     ("WAIT", "HOLD"), ("WAIT", "BUY"),
     ("HOLD", "BUY"),
 }
-# Fired regardless of analyst rating — these are exit warnings
+# Fired regardless of analyst rating — always send exit warnings.
+# Covers deterioration from any bullish state (BUY, HOLD, WAIT) downward.
 _BEARISH_TRANSITIONS = {
-    ("BUY", "HOLD"), ("BUY", "WAIT"), ("BUY", "SELL"),
+    ("BUY",  "HOLD"), ("BUY",  "WAIT"), ("BUY",  "SELL"),
+    ("HOLD", "WAIT"), ("HOLD", "SELL"),
+    ("WAIT", "SELL"),
 }
 _BULLISH_ANALYST = {"buy", "strong_buy", "strongbuy", "outperform"}
 
@@ -205,11 +208,12 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[
     failed: list[str] = []
 
     # Layer 2 — K-Score conviction (≥ 55 = positive territory)
-    if kscore is not None:
-        if kscore >= 55:
-            passed.append(f"K-Score: {kscore:.0f} — conviction positive")
-        else:
-            failed.append(f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case")
+    if kscore is None:
+        failed.append("K-Score unavailable (rankings API down) — cannot verify conviction")
+    elif kscore >= 55:
+        passed.append(f"K-Score: {kscore:.0f} — conviction positive")
+    else:
+        failed.append(f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case")
 
     # Layer 4a — Clean uptrend structure
     if reasons.get("sma50_above_sma200") and reasons.get("trend_above_sma50"):
@@ -527,6 +531,12 @@ def check_signal_alerts() -> None:
                             )
                             continue  # last_signal NOT updated — retried next run
 
+                # Guard: no email address → log and advance state to avoid infinite retry
+                if not (alert.email or "").strip():
+                    log.warning("signal_alert.skipped", symbol=alert.symbol, reason="no_email_address")
+                    alert.last_signal = current
+                    continue
+
                 # Build game plan for BUY transitions
                 game_plan = None
                 if current == "BUY":
@@ -537,11 +547,11 @@ def check_signal_alerts() -> None:
                     )
 
                 email_ok = send_signal_alert_email(
-                    to=alert.email or "",
+                    to=alert.email,
                     symbol=alert.symbol,
                     prev_signal=prev,
                     new_signal=current,
-                    analyst=analyst_ratings.get(alert.symbol, "buy"),
+                    analyst=analyst_ratings.get(alert.symbol, ""),
                     signal_data=signal_details.get(key, {}),
                     fundamentals=fundamentals_cache.get(alert.symbol),
                     game_plan=game_plan,

@@ -55,6 +55,9 @@ def _send_ses(to: str, subject: str, body_html: str, body_text: str) -> None:
 
 def send_email(to: str, subject: str, body_html: str, body_text: str) -> bool:
     """Send an email. Returns True on success, False on failure or disabled."""
+    if not (to or "").strip():
+        log.warning("email.invalid_recipient", to=repr(to))
+        return False
     provider = _settings.email_provider.lower()
     if not provider:
         log.info("email.disabled", to=to, subject=subject)
