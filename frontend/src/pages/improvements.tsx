@@ -365,6 +365,16 @@ const ITEMS: Item[] = [
     fix: 'Add GET /signals/rolling_accuracy?window=30 endpoint: for each 30-day rolling window in signal history, compute accuracy (signals confirmed by price move within 5 days). Return time series [{date, accuracy_30d, signal_count}]. Add to Signal Accuracy page as a line chart. Add warning badge if latest 30d accuracy < 55% (below coin-flip + margin). Log structured alert when drift detected so it shows in admin dashboard.',
   },
   {
+    id: 'walkforward-backtest',
+    tier: 3, severity: 'feature',
+    title: 'Walk-forward backtest framework — out-of-sample signal validation',
+    file: 'services/strategy-engine/src/backtest/ + services/signal-engine/src/api/routes.py + frontend/src/pages/signal-accuracy.tsx',
+    effort: '2 weeks',
+    impact: 'THE most critical validation gap — proves (or disproves) that signals generate alpha on data the model has never seen',
+    what: 'The current Trade Performance page runs an in-sample backtest: the same data used to train the ML model is used to evaluate signal quality. This always looks good because the model partially memorised the training set. A walk-forward test simulates the real experience — train on data up to month N, test strictly on month N+1 (genuinely unseen), slide forward, repeat. A strategy that is profitable in walk-forward testing has learned real patterns; one that only works in-sample is curve-fitting noise.',
+    fix: 'POST /backtest/walkforward endpoint. Accepts: symbol, start_date, end_date, train_window_days (default 180), test_window_days (default 30). For each slide: (1) load only bars up to window end, (2) generate signals as-of that date using only historically-available data, (3) record entry/exit/return for signals in the test window. Aggregate across all windows: win rate, avg return per trade, Sharpe vs SPY, max drawdown, equity curve. Frontend: new "Walk-Forward" tab on Signal Accuracy page — equity curve vs SPY, per-window accuracy heatmap, rolling Sharpe line chart. Key insight displayed: if walk-forward Sharpe > 1.0, signals are generating real alpha; if < 0.5, system is curve-fitting.',
+  },
+  {
     id: 'dcf-fair-value',
     tier: 3, severity: 'feature',
     title: 'DCF-based fair value model in research engine',
@@ -642,7 +652,7 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current → Target (after 7 new items shipped)
+          Current → Target (after 8 new items shipped)
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
@@ -668,7 +678,7 @@ export default function ImprovementsPage() {
           ))}
         </div>
         <p style={{ fontSize: 12, color: '#64748b', margin: 0, lineHeight: 1.6 }}>
-          All 19 original items are shipped. Seven new items target the three weakest dimensions:
+          All 19 original items are shipped. Eight new items target the three weakest dimensions:
           <strong style={{ color: '#94a3b8' }}> risk management</strong> (position sizing + portfolio VaR, 6.0 → 9.0),
           <strong style={{ color: '#94a3b8' }}> signal logic</strong> (weekly alignment gate + VWAP/S&R, 7.0 → 8.5),
           and <strong style={{ color: '#94a3b8' }}> research engine</strong> (DCF fair value, 6.5 → 8.5).
