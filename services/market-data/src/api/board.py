@@ -1,5 +1,5 @@
 """Trade Board endpoints — per-user Kanban cards (game plans + forecast picks)."""
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -141,7 +141,7 @@ def update_plan(
             raise HTTPException(400, f"stage must be one of {sorted(VALID_STAGES)}")
         plan.stage = body.stage
         if body.stage == "closed" and plan.closed_at is None:
-            plan.closed_at = datetime.utcnow()
+            plan.closed_at = datetime.now(timezone.utc)
     if body.notes is not None:
         plan.notes = body.notes
     if body.entry_price is not None:
@@ -158,7 +158,7 @@ def update_plan(
         plan.shares = body.shares
     if body.trading_style is not None:
         plan.trading_style = body.trading_style
-    plan.updated_at = datetime.utcnow()
+    plan.updated_at = datetime.now(timezone.utc)
     session.commit()
     session.refresh(plan)
     return _out(plan)

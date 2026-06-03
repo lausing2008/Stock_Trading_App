@@ -441,3 +441,71 @@ Bugs 24–30 found during targeted investigation of why buy signal emails were n
 ---
 
 *Audit rounds 2 & 3 conducted: 2026-06-02*
+
+---
+
+## Feature Fix — Style-Aware Game Plans (2026-06-02)
+
+### 30. `_build_game_plan()` used identical levels for all trading styles
+**Files:** `services/market-data/src/services/scheduler.py`, `services/market-data/src/services/email_service.py`, `frontend/src/pages/stock/[symbol].tsx`
+**Commit:** `e0ebe0e`
+
+**Root cause:** `_build_game_plan()` used hardcoded fixed percentages for entry, stop, and take-profit regardless of whether the user's trading style was SHORT, SWING, or LONG. The `style` variable was available in the calling scope but was never passed to the function.
+
+**Impact:** A SHORT-term momentum trader and a LONG-term position trader received identical entry levels (-1.5%/-3.5%), stops (-5.5%), and a +12% target — completely wrong for SHORT (too wide stop, too large target) and for LONG (stop too tight, target too small for months-long hold).
+
+**Fix — scheduler.py:** Added `_STYLE_PARAMS` dict with per-style multipliers:
+
+| Style | Entry 1 | Entry 2 | Stop | Default Target |
+|-------|---------|---------|------|----------------|
+| SHORT (1–5d) | -0.5% | -1.5% | -3% | +5% |
+| SWING (5–30d) | -1.5% | -3.5% | -5.5% | +12% |
+| LONG (1–12mo) | -2% | -5% | -10% | +25% |
+
+`_build_game_plan()` now accepts a `style` parameter and selects the matching row. The analyst take-profit threshold is also style-adjusted (LONG requires a larger upside to override the default). A `horizon_note` field is returned to explain the expected hold duration. Call site passes `style` from the per-alert watchlist trading style.
+
+**Fix — email_service.py:** Game plan header updated from hardcoded "10-Day Game Plan" to "Game Plan — {style label} — {symbol}". A `horizon_note` line below the header explains expected hold duration and execution guidance.
+
+**Fix — frontend:** The AI game plan prompt (`generateGamePlan()`) now derives `tradeStyle` from `sig.horizon` and injects a `styleInstruction` block into the Claude system prompt. The instruction block carries style-specific entry/stop/target percentages so the AI returns levels appropriate for the user's actual trading horizon. The JSON title field is also updated to match.
+
+---
+
+*Style-aware game plan fix: 2026-06-02*
+
+---
+
+## Audit Round 4 — 2026-06-02
+
+### 31. `datetime.utcnow()` in 5 files across 3 services (naive vs. aware datetime mismatch)
+**Files:** `services/market-data/src/api/auth.py`, `services/market-data/src/api/board.py`, `services/market-data/src/api/routes.py`, `services/signal-engine/src/api/routes.py`, `services/research-engine/src/api/routes.py`
+**Commit:** `d044524`
+
+**Root cause:** `datetime.utcnow()` returns a *naive* datetime (no timezone info). When compared against timezone-aware datetimes in SQLAlchemy queries or Python datetime arithmetic, this can cause `TypeError: can't compare offset-naive and offset-aware datetimes` in Python 3.11+ and silently wrong comparisons in earlier versions.
+
+**Affected call sites:**
+- `auth.py:37` — JWT `exp` claim: token expiry used naive datetime
+- `board.py:144,161` — plan `closed_at` / `updated_at` timestamps stored as naive
+- `routes.py:518` — market breadth `updated_at` metadata field
+- `routes.py:1244` — relative-performance chart lookback cutoff
+- `signal-engine/routes.py:137,138,289,290,419,420,559` — signal accuracy / factor exposure / trade performance lookback windows (8 call sites)
+- `research-engine/routes.py:1104,1276` — cache TTL check and cache write (must be consistent for `(now - ts).total_seconds()` to work without a TypeError)
+
+**Impact:** Mixed naive/aware datetimes could silently produce wrong lookback windows (all signals shown, or none), broken JWT token validation, and crash the research-engine cache on Python 3.11+.
+
+**Fix:** Replaced all occurrences with `datetime.now(timezone.utc)` and added `timezone` to imports in each file.
+
+---
+
+## Summary by service — Audit Round 4
+
+| Service | Bugs fixed |
+|---------|-----------|
+| market-data/api/auth | 1 (JWT naive datetime) |
+| market-data/api/board | 1 (plan timestamp naive datetime) |
+| market-data/api/routes | 2 (market breadth + relative-performance cutoff) |
+| signal-engine/api/routes | 1 (4 endpoints × 2 cutoffs = 8 call sites) |
+| research-engine/api/routes | 1 (cache TTL check + write) |
+
+---
+
+*Audit round 4 conducted: 2026-06-02*

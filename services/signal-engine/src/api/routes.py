@@ -1,5 +1,5 @@
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -134,8 +134,8 @@ def signal_accuracy(
     """
     import bisect
 
-    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-    outcome_cutoff = datetime.utcnow() - timedelta(days=1)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
 
     q = (
         select(Signal, Stock.symbol, Stock.name)
@@ -286,8 +286,8 @@ def ml_weight_validation(
     """
     import bisect
 
-    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-    outcome_cutoff = datetime.utcnow() - timedelta(days=1)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
 
     rows = session.execute(
         select(Signal, Stock.symbol)
@@ -416,8 +416,8 @@ def factor_exposure(
     """
     import bisect
 
-    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
-    outcome_cutoff = datetime.utcnow() - timedelta(days=1)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
 
     rows = session.execute(
         select(Signal, Stock.symbol)
@@ -556,7 +556,7 @@ def trade_performance(
     import bisect
     from collections import defaultdict
 
-    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     horizon_enum = SignalHorizon(horizon)
 
     # 1. All BUY signals in the window for the requested horizon

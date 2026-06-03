@@ -352,6 +352,37 @@ export default function StockDetail() {
     const fund = data.fundamentals;
     const levels = data.levels;
 
+    const tradeStyle = (sig?.horizon ?? 'SWING').toUpperCase() as 'SHORT' | 'SWING' | 'LONG';
+    const styleLabels: Record<string, string> = {
+      SHORT: 'Short-Term (1–5 Days)',
+      SWING: 'Swing (5–30 Days)',
+      LONG: 'Position (1–12 Months)',
+    };
+    const styleRules: Record<string, string> = {
+      SHORT: `TRADING STYLE: SHORT-TERM (1–5 days)
+- Entry 1: 0.5% below current — tight entry for quick momentum trade
+- Entry 2: 1.5% below current — secondary entry on minor intraday dip
+- Breakout entry: 1% above current
+- Stop loss: 3% below current — tight stop, this is a momentum play
+- Take profit: 5% above current or nearest resistance (whichever is closer)
+- Prioritise speed of execution over perfect fill; note this is a momentum trade`,
+      SWING: `TRADING STYLE: SWING (5–30 days)
+- Entry 1: at or just above the nearest strong support below current price (typically 1.5–2% below)
+- Entry 2: at a deeper support or fibonacci level for averaging down (typically 3.5–4% below)
+- Breakout entry: above the nearest resistance level — take 50% size
+- Stop loss: just below the lowest entry support — a close below invalidates the setup (typically 5.5% below)
+- Take profit: analyst target or +12% from current`,
+      LONG: `TRADING STYLE: POSITION / LONG (1–12 months)
+- Entry 1: 2% below current — build initial position, patient entry
+- Entry 2: 5% below current — add on deeper pullback to accumulate over days/weeks
+- Breakout entry: 3% above current — only if fundamental thesis strengthens
+- Stop loss: 10% below current — wide stop allows for normal volatility; weekly close below invalidates thesis
+- Take profit: analyst mean/high target or +25% from current (position trade requires large reward/risk)
+- Note this is a multi-month hold; size for volatility and manage around earnings`,
+    };
+    const planLabel = styleLabels[tradeStyle] ?? tradeStyle;
+    const styleInstruction = styleRules[tradeStyle] ?? styleRules['SWING'];
+
     // Sort supports/resistances by distance from current price
     const supports = (levels?.support_resistance ?? [])
       .filter(l => currentPrice == null || l.price < currentPrice)
@@ -399,24 +430,21 @@ TECHNICAL INDICATORS:
   News sentiment (7d): ${reasons.news_sentiment != null ? `${Number(reasons.news_sentiment).toFixed(0)}/100` : 'N/A'}${reasons.news_sentiment_flag ? ` — ${String(reasons.news_sentiment_flag).replace(/_/g, ' ')}` : ''}
   Market regime: ${reasons.market_regime ?? 'unknown'}`;
 
-    const systemPrompt = `You are a professional swing trader generating a concrete 10-day trade plan for a stock that has just received a BUY AI signal.
+    const systemPrompt = `You are a professional trader generating a concrete trade plan for a stock that has just received a BUY AI signal.
 
-RULES:
+${styleInstruction}
+
+ADDITIONAL RULES:
 - Use the exact support/resistance/fibonacci levels provided — pick the most relevant ones for entry and stop placement
-- Entry 1 (50% position): at or just above the nearest strong support below current price
-- Entry 2 (50% position): at a deeper support or fibonacci level for averaging down
-- Breakout entry: above the nearest resistance level if the above limits don't fill — take 50% size
-- Stop loss: just below the lowest entry support — a close below this invalidates the setup
 - Take profit: choose the BEST of these — in order of preference: (1) analyst mean or high target if labelled "valid take-profit candidate" and meaningfully above current price (>3%); (2) K-Score fair value if labelled "valid take-profit candidate"; (3) nearest resistance above current price. NEVER use any target labelled "BELOW CURRENT PRICE"
 - Catalysts: 3 bullets, each ≤12 words, specific (mention earnings date, sector, analyst coverage)
 - Risk: single sentence naming the biggest concrete threat (earnings, macro, overbought, etc.)
 - Use the same currency as the stock (check CURRENCY field)
-- If no support/resistance data is available, estimate levels at -2%/-4% below current for entries and -6% for stop
 - CRITICAL PRICE CONSTRAINTS: entry prices MUST be below current price; stop loss MUST be below all entry prices; take profit MUST be above current price — violating any of these makes the plan unusable
 
 Return ONLY valid JSON — no markdown, no prose:
 {
-  "title": "10-Day Game Plan for SYMBOL",
+  "title": "Game Plan — ${planLabel} — SYMBOL",
   "entries": [
     { "label": "Limit buy — 50%", "price": 0.00, "rationale": "..." },
     { "label": "Limit buy — 50%", "price": 0.00, "rationale": "..." },
