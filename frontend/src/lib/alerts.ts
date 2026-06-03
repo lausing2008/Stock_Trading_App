@@ -213,13 +213,15 @@ export function checkAlerts(
       case 'signal_buy':
         if (s?.signal === 'BUY') {
           const styleTag = s.style ? ` [${s.style}]` : '';
-          message = `${alert.symbol} signal is BUY${styleTag} (${s.confidence.toFixed(0)}% confidence)`;
+          const conf = s.confidence != null ? `${s.confidence.toFixed(0)}%` : '—';
+          message = `${alert.symbol} signal is BUY${styleTag} (${conf} confidence)`;
         }
         break;
       case 'signal_sell':
         if (s?.signal === 'SELL') {
           const styleTag = s.style ? ` [${s.style}]` : '';
-          message = `${alert.symbol} signal is SELL${styleTag} (${s.confidence.toFixed(0)}% confidence)`;
+          const conf = s.confidence != null ? `${s.confidence.toFixed(0)}%` : '—';
+          message = `${alert.symbol} signal is SELL${styleTag} (${conf} confidence)`;
         }
         break;
       case 'score_above':
