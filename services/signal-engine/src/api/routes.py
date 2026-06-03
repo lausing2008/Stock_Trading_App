@@ -457,12 +457,11 @@ def factor_exposure(
         idx = bisect.bisect_right(ts_list, d) - 1
         return _pclose[sid][idx] if idx >= 0 else None
 
-    def latest_price_after(sid: int, after_date):
+    def most_recent_close_fe(sid: int):
         ts_list = _pts.get(sid)
         if not ts_list:
             return None
-        idx = bisect.bisect_right(ts_list, after_date)
-        return _pclose[sid][idx] if idx < len(ts_list) else None
+        return _pclose[sid][-1]
 
     # factor key → (label, neutral baseline, display scale)
     FACTORS = [
@@ -488,9 +487,9 @@ def factor_exposure(
 
         reasons = sig.reasons or {}
         entry = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
-        if entry is None:
+        if entry is None or entry <= 0:
             continue
-        exit_p = latest_price_after(sig.stock_id, signal_date)
+        exit_p = most_recent_close_fe(sig.stock_id)
         if exit_p is None:
             continue
 
