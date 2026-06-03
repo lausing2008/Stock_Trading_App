@@ -25,6 +25,7 @@ class PlanIn(BaseModel):
     source: str | None = None  # gameplan | forecast | manual
     actual_entry_price: float | None = None
     shares: float | None = None
+    trading_style: str | None = None  # SHORT|SWING|LONG
 
 
 class PlanUpdate(BaseModel):
@@ -36,6 +37,7 @@ class PlanUpdate(BaseModel):
     exit_price: float | None = None
     actual_entry_price: float | None = None
     shares: float | None = None
+    trading_style: str | None = None
 
 
 class PlanOut(BaseModel):
@@ -51,6 +53,7 @@ class PlanOut(BaseModel):
     exit_price: float | None
     actual_entry_price: float | None
     shares: float | None
+    trading_style: str | None
     closed_at: str | None
     created_at: str
     updated_at: str
@@ -73,6 +76,7 @@ def _out(p: TradePlan) -> PlanOut:
         exit_price=p.exit_price,
         actual_entry_price=p.actual_entry_price,
         shares=p.shares,
+        trading_style=p.trading_style,
         closed_at=p.closed_at.isoformat() if p.closed_at else None,
         created_at=p.created_at.isoformat(),
         updated_at=p.updated_at.isoformat(),
@@ -112,6 +116,7 @@ def create_plan(
         source=body.source,
         actual_entry_price=body.actual_entry_price,
         shares=body.shares,
+        trading_style=body.trading_style,
     )
     session.add(plan)
     session.commit()
@@ -151,6 +156,8 @@ def update_plan(
         plan.actual_entry_price = body.actual_entry_price
     if body.shares is not None:
         plan.shares = body.shares
+    if body.trading_style is not None:
+        plan.trading_style = body.trading_style
     plan.updated_at = datetime.utcnow()
     session.commit()
     session.refresh(plan)

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type TradePlan, type PriceAlert, type SignalAlertItem } from '@/lib/api';
+import { getSignalStyle } from '@/lib/settings';
 
 const STAGES = ['watch', 'planning', 'active', 'closed'] as const;
 type Stage = typeof STAGES[number];
@@ -514,11 +515,24 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
                     </div>
                   )}
                 </div>
-                {plan.take_profit != null && effectiveEntry != null && effectiveEntry > 0 && plan.take_profit !== effectiveEntry && plan.exit_price != null && (
-                  <div style={{ marginLeft: 'auto', fontSize: '10px', color: '#475569' }}>
-                    {((plan.exit_price! - effectiveEntry) / (plan.take_profit - effectiveEntry) * 100).toFixed(0)}% of target
-                  </div>
-                )}
+                <div style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                  {plan.take_profit != null && effectiveEntry != null && effectiveEntry > 0 && plan.take_profit !== effectiveEntry && plan.exit_price != null && (
+                    <div style={{ fontSize: '10px', color: '#475569' }}>
+                      {((plan.exit_price! - effectiveEntry) / (plan.take_profit - effectiveEntry) * 100).toFixed(0)}% of target
+                    </div>
+                  )}
+                  {plan.trading_style && (
+                    <div style={{
+                      fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px',
+                      letterSpacing: '0.06em',
+                      color: plan.trading_style === 'SHORT' ? '#f87171' : plan.trading_style === 'LONG' ? '#4ade80' : '#818cf8',
+                      background: plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.12)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.12)' : 'rgba(129,140,248,0.12)',
+                      border: `1px solid ${plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.3)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.3)' : 'rgba(129,140,248,0.3)'}`,
+                    }}>
+                      {plan.trading_style}
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <div>
@@ -748,6 +762,7 @@ export default function BoardPage() {
     await api.updateBoardPlan(fillTarget.id, {
       stage: 'active',
       actual_entry_price: fillPrice,
+      trading_style: getSignalStyle(),
       ...(shares != null ? { shares } : {}),
     });
     setFillTarget(null);
@@ -756,7 +771,7 @@ export default function BoardPage() {
 
   async function handleFillSkip() {
     if (!fillTarget) return;
-    await api.updateBoardPlan(fillTarget.id, { stage: 'active' });
+    await api.updateBoardPlan(fillTarget.id, { stage: 'active', trading_style: getSignalStyle() });
     setFillTarget(null);
     mutate();
   }
@@ -774,7 +789,7 @@ export default function BoardPage() {
   }
 
   async function handleAdd(symbol: string, notes: string) {
-    await api.createBoardPlan({ symbol, stage: 'watch', notes: notes || null, source: 'manual' });
+    await api.createBoardPlan({ symbol, stage: 'watch', notes: notes || null, source: 'manual', trading_style: getSignalStyle() });
     mutate();
   }
 
@@ -794,7 +809,24 @@ export default function BoardPage() {
     const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
     const best = Math.max(...returns);
     const worst = Math.min(...returns);
-    return { count: closed.length, winRate: (wins / closed.length) * 100, avgReturn, best, worst };
+
+    // Per-style breakdown
+    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80' };
+    const styleBreakdown = (['SHORT', 'SWING', 'LONG'] as const)
+      .map(style => {
+        const group = closed.filter(p => p.trading_style === style);
+        if (group.length === 0) return null;
+        const rets = group.map(p => {
+          const eff = p.actual_entry_price ?? p.entry_price!;
+          return ((p.exit_price! - eff) / eff) * 100;
+        });
+        const winRate = (rets.filter(r => r > 0).length / rets.length) * 100;
+        const avg = rets.reduce((a, b) => a + b, 0) / rets.length;
+        return { style, count: group.length, winRate, avg, color: styleColors[style] };
+      })
+      .filter(Boolean) as { style: string; count: number; winRate: number; avg: number; color: string }[];
+
+    return { count: closed.length, winRate: (wins / closed.length) * 100, avgReturn, best, worst, styleBreakdown };
   }, [byStage.closed]);
 
   return (
@@ -818,13 +850,28 @@ export default function BoardPage() {
 
       {/* Performance summary */}
       {perfStats && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '16px', padding: '10px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b', alignItems: 'center' }}>
-          <span style={{ fontSize: '11px', fontWeight: 700, color: '#475569', marginRight: '4px' }}>Track Record</span>
-          <Stat label="Closed" value={`${perfStats.count}`} color="#94a3b8" />
-          <Stat label="Win Rate" value={`${perfStats.winRate.toFixed(0)}%`} color={perfStats.winRate >= 50 ? '#4ade80' : '#f87171'} />
-          <Stat label="Avg Return" value={`${perfStats.avgReturn >= 0 ? '+' : ''}${perfStats.avgReturn.toFixed(1)}%`} color={perfStats.avgReturn >= 0 ? '#4ade80' : '#f87171'} />
-          <Stat label="Best" value={`+${perfStats.best.toFixed(1)}%`} color="#4ade80" />
-          <Stat label="Worst" value={`${perfStats.worst.toFixed(1)}%`} color="#f87171" />
+        <div style={{ marginBottom: '16px', padding: '12px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: '#475569', marginRight: '4px' }}>Track Record</span>
+            <Stat label="Closed" value={`${perfStats.count}`} color="#94a3b8" />
+            <Stat label="Win Rate" value={`${perfStats.winRate.toFixed(0)}%`} color={perfStats.winRate >= 50 ? '#4ade80' : '#f87171'} />
+            <Stat label="Avg Return" value={`${perfStats.avgReturn >= 0 ? '+' : ''}${perfStats.avgReturn.toFixed(1)}%`} color={perfStats.avgReturn >= 0 ? '#4ade80' : '#f87171'} />
+            <Stat label="Best" value={`+${perfStats.best.toFixed(1)}%`} color="#4ade80" />
+            <Stat label="Worst" value={`${perfStats.worst.toFixed(1)}%`} color="#f87171" />
+          </div>
+          {perfStats.styleBreakdown.length > 0 && (
+            <div style={{ display: 'flex', gap: '8px', marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #0f172a', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '10px', fontWeight: 700, color: '#334155', alignSelf: 'center', marginRight: '2px' }}>BY STYLE</span>
+              {perfStats.styleBreakdown.map(sb => (
+                <div key={sb.style} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '3px 10px', borderRadius: '6px', background: `${sb.color}08`, border: `1px solid ${sb.color}25` }}>
+                  <span style={{ fontSize: '10px', fontWeight: 800, color: sb.color }}>{sb.style}</span>
+                  <span style={{ fontSize: '10px', color: '#475569' }}>{sb.count} trade{sb.count !== 1 ? 's' : ''}</span>
+                  <span style={{ fontSize: '10px', color: sb.winRate >= 50 ? '#4ade80' : '#f87171', fontWeight: 600 }}>{sb.winRate.toFixed(0)}% win</span>
+                  <span style={{ fontSize: '10px', color: sb.avg >= 0 ? '#4ade80' : '#f87171', fontFamily: 'monospace' }}>{sb.avg >= 0 ? '+' : ''}{sb.avg.toFixed(1)}%</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
