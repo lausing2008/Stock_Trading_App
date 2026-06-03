@@ -1350,11 +1350,11 @@ def get_options_flow(symbol: str):
 
         if cp_ratio >= 2.0 and sufficient_put_vol:
             sentiment = "strongly_bullish"
-        elif cp_ratio >= 1.3:
+        elif cp_ratio >= 1.3 and sufficient_put_vol:
             sentiment = "bullish"
-        elif cp_ratio <= 0.5:
+        elif cp_ratio <= 0.5 and sufficient_put_vol:
             sentiment = "bearish"
-        elif cp_ratio <= 0.8:
+        elif cp_ratio <= 0.8 and sufficient_put_vol:
             sentiment = "slightly_bearish"
         else:
             sentiment = "neutral"
