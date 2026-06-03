@@ -226,7 +226,7 @@ def _fetch_news_sentiment(symbol: str) -> float | None:
         if not articles:
             return None
         scores = [
-            float(a["sentiment"]) * 50 + 50  # map −1..+1 → 0..100
+            max(0.0, min(100.0, float(a["sentiment"]) * 50 + 50))  # map −1..+1 → 0..100, clamped
             for a in articles
             if isinstance(a.get("sentiment"), (int, float))
         ]

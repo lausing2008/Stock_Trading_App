@@ -143,7 +143,7 @@ export default function StockDetail() {
         stage: 'planning',
         game_plan: gamePlan as unknown as Record<string, unknown>,
         entry_price: gamePlan.entries[0]?.price ?? null,
-        stop_loss: gamePlan.stop_loss.price,
+        stop_loss: gamePlan.stop_loss?.price ?? null,
         take_profit: gamePlan.take_profit?.price ?? null,
         source: 'gameplan',
       });
@@ -159,13 +159,13 @@ export default function StockDetail() {
       `📋 ${symbol} — ${gamePlan.title}`,
       '',
       'ENTRY STRATEGY',
-      ...gamePlan.entries.map((e: GamePlanEntry) => `  ${e.label}: $${e.price.toFixed(2)} — ${e.rationale}`),
+      ...(gamePlan.entries ?? []).map((e: GamePlanEntry) => `  ${e.label}: $${e.price.toFixed(2)} — ${e.rationale}`),
       '',
-      `STOP LOSS: $${gamePlan.stop_loss.price.toFixed(2)} — ${gamePlan.stop_loss.rationale}`,
+      gamePlan.stop_loss ? `STOP LOSS: $${gamePlan.stop_loss.price.toFixed(2)} — ${gamePlan.stop_loss.rationale}` : '',
       gamePlan.take_profit ? `TAKE PROFIT: $${gamePlan.take_profit.price.toFixed(2)} — ${gamePlan.take_profit.rationale}` : '',
       '',
       'CATALYSTS',
-      ...gamePlan.catalysts.map((c: string) => `  › ${c}`),
+      ...(gamePlan.catalysts ?? []).map((c: string) => `  › ${c}`),
       '',
       `KEY RISK: ${gamePlan.risk}`,
     ].filter(l => l !== undefined);
@@ -1327,7 +1327,7 @@ Return ONLY valid JSON — no markdown, no prose:
                       <div>
                         <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '7px' }}>Entry Strategy</div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                          {gamePlan.entries.map((e, i) => {
+                          {(gamePlan.entries ?? []).map((e, i) => {
                             const isBreakout = e.label.toLowerCase().includes('breakout');
                             return (
                               <div key={i} style={{ padding: '8px 10px', borderRadius: '6px', border: `1px solid ${isBreakout ? 'rgba(251,191,36,0.25)' : 'rgba(34,197,94,0.2)'}`, background: isBreakout ? 'rgba(251,191,36,0.05)' : 'rgba(34,197,94,0.05)' }}>
@@ -1346,8 +1346,8 @@ Return ONLY valid JSON — no markdown, no prose:
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
                         <div style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid rgba(248,113,113,0.25)', background: 'rgba(248,113,113,0.05)' }}>
                           <div style={{ fontSize: '10px', fontWeight: 700, color: '#f87171', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>Stop Loss</div>
-                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#f87171', fontFamily: 'monospace' }}>${gamePlan.stop_loss.price.toFixed(2)}</div>
-                          <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', lineHeight: 1.3 }}>{gamePlan.stop_loss.rationale}</div>
+                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#f87171', fontFamily: 'monospace' }}>${(gamePlan.stop_loss?.price ?? 0).toFixed(2)}</div>
+                          <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', lineHeight: 1.3 }}>{gamePlan.stop_loss?.rationale ?? ''}</div>
                         </div>
                         {gamePlan.take_profit && (
                           <div style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid rgba(99,102,241,0.25)', background: 'rgba(99,102,241,0.05)' }}>
@@ -1362,7 +1362,7 @@ Return ONLY valid JSON — no markdown, no prose:
                       <div>
                         <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '7px' }}>Catalysts in the Window</div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                          {gamePlan.catalysts.map((c, i) => (
+                          {(gamePlan.catalysts ?? []).map((c, i) => (
                             <div key={i} style={{ display: 'flex', gap: '7px', fontSize: '11px', color: '#94a3b8', lineHeight: 1.4 }}>
                               <span style={{ color: '#4ade80', flexShrink: 0 }}>›</span>
                               <span>{c}</span>
