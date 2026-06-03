@@ -477,13 +477,21 @@ def check_signal_alerts() -> None:
                 if prev == current:
                     continue
 
-                is_bullish = (prev, current) in _BULLISH_TRANSITIONS
+                # Treat None→BUY as a bullish transition (stock was already at BUY
+                # when the alert was first created; prev=None since no prior state).
+                is_bullish = (prev, current) in _BULLISH_TRANSITIONS or (prev is None and current == "BUY")
                 is_bearish = (prev, current) in _BEARISH_TRANSITIONS
 
-                alert.last_signal = current  # update regardless of whether we fire
-
                 if not is_bullish and not is_bearish:
+                    # Neutral or unrecognised transition — just advance the stored state.
+                    alert.last_signal = current
                     continue
+
+                # Bearish/exit: advance state immediately so repeated checks don't re-fire.
+                # Bullish: state is advanced only after a successful email send so that a
+                # failed conviction check can be retried on the next scheduler run.
+                if is_bearish:
+                    alert.last_signal = current
 
                 conviction_passed: list[str] | None = None
                 if is_bullish:
@@ -500,7 +508,7 @@ def check_signal_alerts() -> None:
                                 "signal_alert.skipped", symbol=alert.symbol,
                                 reason="conviction_layers_failed", failed=failed,
                             )
-                            continue
+                            continue  # last_signal NOT updated — retried next run
                         conviction_passed = passed
                         log.info(
                             "signal_alert.conviction_met", symbol=alert.symbol,
@@ -517,7 +525,7 @@ def check_signal_alerts() -> None:
                                 analyst=analyst_ratings.get(alert.symbol, ""),
                                 confidence=confidence,
                             )
-                            continue
+                            continue  # last_signal NOT updated — retried next run
 
                 # Build game plan for BUY transitions
                 game_plan = None
@@ -541,6 +549,7 @@ def check_signal_alerts() -> None:
                     horizon=style,
                 )
                 if email_ok:
+                    alert.last_signal = current  # advance state only after successful send
                     fired += 1
                     log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
 
