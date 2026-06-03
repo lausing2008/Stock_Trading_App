@@ -178,7 +178,7 @@ Return ONLY a JSON array of ticker strings: ["SOFI","HOOD","DKNG","PLTR","AI","R
 export default function ForecastPage() {
   const aiReady = isAiConfigured();
 
-  const { data: signals }  = useSWR<SignalSummary[]>('all-signals',     () => api.allSignals(),   { revalidateOnFocus: false });
+  const { data: signals }  = useSWR<SignalSummary[]>('signals-' + getSignalStyle(),     () => api.allSignals(getSignalStyle()),   { revalidateOnFocus: false });
   const { data: rankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings(), { revalidateOnFocus: false });
   const { data: prices }   = useSWR<LatestPrice[]>('latest-prices',     () => api.latestPrices(), { revalidateOnFocus: false });
 

@@ -555,26 +555,272 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     return float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0)), reasons
 
 
-def _decide(fused_prob: float, market_regime: str) -> tuple[str, str]:
-    """Map fused probability to a signal label.
+# ── Trading Style Profiles ────────────────────────────────────────────────────
+# Each profile controls how filters, weights, and thresholds behave for that
+# trading horizon. All compression multipliers follow the same convention as the
+# rest of this file: fused = 0.5 + (fused - 0.5) × multiplier.
+#
+# Key design decisions per style:
+#   SHORT  — Pure momentum. Earnings = potential catalyst, not risk. No news noise.
+#            ML weight capped low (ML targets 20-day returns, not 1-5 day moves).
+#            Needs a confirmed trend (ADX > 25) but lighter macro filters.
+#   SWING  — Balanced. Fixed: earnings compression was 0.25× (impossible to BUY
+#            with earnings in ≤2 days). Now 0.50× — still strong but achievable.
+#            Stacked filters capped at 45% total compression.
+#   LONG   — Fundamentals (K-Score) boost the signal. Ignores short-term noise
+#            (earnings in 10 days, daily news sentiment). Weekly alignment is the
+#            most important filter. ML weight capped (20d-trained, less useful).
+_STYLE_PROFILES: dict[str, dict] = {
+    "SHORT": {
+        "ml_weight_cap": 0.30,
+        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.62},
+        "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.52, "unknown": 0.47},
+        "adx_min": 25, "adx_compression": 0.85,
+        "high_vol_compression": 0.92,
+        "breadth_compression": None,
+        "weekly_boost": 1.08, "weekly_compress": 0.93,
+        "earnings_compression": None,
+        "news_compression": None,
+        "rs_compression": 0.90,
+        "kscore_boost": False,
+        "max_compress_ratio": 0.70,
+    },
+    "SWING": {
+        "ml_weight_cap": 0.75,
+        "buy_threshold":  {"bull": 0.65, "high_vol": 0.70, "bear": 0.73, "unknown": 0.65},
+        "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
+        "adx_min": 20, "adx_compression": 0.90,
+        "high_vol_compression": 0.85,
+        "breadth_compression": 0.90,
+        "weekly_boost": 1.12, "weekly_compress": 0.85,
+        # Fixed: was {2: 0.25, 5: 0.55, 10: 0.80}. The 0.25× meant a stock needed
+        # fused_prob ≈ 1.10 to fire a BUY with earnings in ≤2 days — impossible.
+        "earnings_compression": {2: 0.50, 5: 0.75, 10: 0.90},
+        "news_compression": {25: 0.75, 35: 0.85},
+        "rs_compression": 0.85,
+        "kscore_boost": False,
+        "max_compress_ratio": 0.55,
+    },
+    "LONG": {
+        "ml_weight_cap": 0.45,
+        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.70, "unknown": 0.62},
+        "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.54, "unknown": 0.46},
+        "adx_min": None, "adx_compression": None,
+        "high_vol_compression": 0.90,
+        "breadth_compression": 0.92,
+        "weekly_boost": 1.18, "weekly_compress": 0.80,
+        "earnings_compression": None,
+        "news_compression": None,
+        "rs_compression": 0.80,
+        "kscore_boost": True,
+        "max_compress_ratio": 0.65,
+    },
+}
 
-    Thresholds are tightened in bear and high-volatility regimes to reduce
-    false entries when the broad market is under stress.
+
+def _fetch_kscore(symbol: str) -> float | None:
+    """Fetch the latest K-Score (0-100) from the ranking engine, or None on failure."""
+    try:
+        with httpx.Client(timeout=8) as c:
+            r = c.get(f"{_settings.ranking_engine_url}/rankings/{symbol}")
+            if r.status_code == 200:
+                return r.json().get("score")
+    except Exception:
+        pass
+    return None
+
+
+def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str]:
+    """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds."""
+    p = _STYLE_PROFILES[style_key]
+    reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "unknown"
+    buy_t  = p["buy_threshold"][reg]
+    hold_t = p["hold_threshold"][reg]
+    if fused_prob > buy_t:   return "BUY",  style_key
+    if fused_prob > hold_t:  return "HOLD", style_key
+    if fused_prob >= 0.35:   return "WAIT", style_key
+    return "SELL", style_key
+
+
+def _apply_style_signal(
+    ta_prob: float,
+    ml_prob: float | None,
+    ml_test_auc: float,
+    style_key: str,
+    market_regime: str,
+    adx_val: float,
+    weekly_score: float,
+    pattern_adj: float,
+    days_to_earnings: int | None,
+    news_sentiment: float | None,
+    rs_rank: float | None,
+    options_sentiment: str | None,
+    cp_ratio: float | None,
+    kscore: float | None,
+    is_stale: bool,
+    base_reasons: dict,
+) -> "AIConfidence":
+    """Apply style-specific fusion and filters from shared base values.
+
+    All expensive data fetching has already been done. This function takes the
+    shared pre-computed values and applies the profile-specific weights,
+    compression multipliers, and thresholds for the given trading style.
     """
-    if market_regime == "bear":
-        buy_threshold  = 0.73
-        hold_threshold = 0.56
-    elif market_regime == "high_vol":
-        buy_threshold  = 0.70
-        hold_threshold = 0.54
-    else:
-        buy_threshold  = 0.65
-        hold_threshold = 0.50
+    p = _STYLE_PROFILES[style_key]
+    reasons = dict(base_reasons)
 
-    if fused_prob > buy_threshold:   return "BUY",  "SWING"
-    if fused_prob > hold_threshold:  return "HOLD", "SWING"
-    if fused_prob >= 0.35:           return "WAIT", "SWING"
-    return "SELL", "SWING"
+    # ── ML / TA fusion with style-specific ML weight cap ─────────────────────
+    if ml_prob is not None:
+        ml_prob_c = float(np.clip(ml_prob, 0.05, 0.95))
+        raw_w = float(np.clip(0.40 + (ml_test_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
+        ml_w  = min(raw_w, p["ml_weight_cap"])
+        gap = abs(ml_prob_c - ta_prob)
+        if gap > 0.35:
+            ml_w *= 1.0 - 0.25 * min((gap - 0.35) / 0.30, 1.0)
+            reasons["ml_ta_conflict"] = True
+        else:
+            reasons["ml_ta_conflict"] = False
+        fused = ml_w * ml_prob_c + (1.0 - ml_w) * ta_prob
+        reasons["ml_weight"] = round(ml_w, 2)
+    else:
+        fused = ta_prob
+        reasons["ml_ta_conflict"] = False
+        reasons["ml_weight"] = 0.0
+
+    fused = float(np.clip(fused, 0.0, 1.0))
+    fused_before_filters = fused  # snapshot before compression — used for cap enforcement
+
+    # ── Weekly multi-timeframe alignment ──────────────────────────────────────
+    daily_dir  = fused - 0.5
+    weekly_dir = weekly_score - 0.5
+    if daily_dir * weekly_dir > 0:
+        fused = float(np.clip(0.5 + daily_dir * p["weekly_boost"], 0.0, 1.0))
+        reasons["weekly_alignment"] = True
+    else:
+        fused = float(np.clip(0.5 + daily_dir * p["weekly_compress"], 0.0, 1.0))
+        reasons["weekly_alignment"] = False
+
+    # ── ADX choppy-market compression ────────────────────────────────────────
+    adx_min  = p.get("adx_min")
+    adx_comp = p.get("adx_compression")
+    if adx_min is not None and adx_comp is not None and adx_val < adx_min:
+        fused = 0.5 + (fused - 0.5) * adx_comp
+    reasons["adx_compression"] = (adx_min is not None and adx_val < (adx_min or 0))
+
+    # ── High-volatility regime compression ───────────────────────────────────
+    hv_comp = p.get("high_vol_compression")
+    if hv_comp is not None and market_regime == "high_vol":
+        fused = 0.5 + (fused - 0.5) * hv_comp
+    reasons["high_vol_compression"] = (hv_comp is not None and market_regime == "high_vol")
+
+    # ── Market breadth compression ────────────────────────────────────────────
+    breadth_pct = base_reasons.get("breadth_pct")
+    bc = p.get("breadth_compression")
+    breadth_fired = False
+    if bc is not None and breadth_pct is not None and breadth_pct < 40 and market_regime in ("bull", "high_vol", "unknown"):
+        fused = 0.5 + (fused - 0.5) * bc
+        breadth_fired = True
+    reasons["breadth_compression"] = breadth_fired
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Chart pattern adjustment ──────────────────────────────────────────────
+    fused = float(np.clip(fused + pattern_adj, 0.0, 1.0))
+
+    # ── Earnings proximity (style-specific) ───────────────────────────────────
+    ec = p.get("earnings_compression")
+    if ec is not None and days_to_earnings is not None:
+        if 0 <= days_to_earnings <= 2:
+            fused = 0.5 + (fused - 0.5) * ec[2]
+            reasons["earnings_warning"] = "caution"
+        elif days_to_earnings <= 5:
+            fused = 0.5 + (fused - 0.5) * ec[5]
+            reasons["earnings_warning"] = "note"
+        elif days_to_earnings <= 10:
+            fused = 0.5 + (fused - 0.5) * ec[10]
+            reasons["earnings_warning"] = "watch"
+        else:
+            reasons.setdefault("earnings_warning", None)
+    else:
+        reasons.setdefault("earnings_warning", None)
+
+    # ── News sentiment compression (style-specific) ───────────────────────────
+    nc = p.get("news_compression")
+    if nc is not None and news_sentiment is not None:
+        if news_sentiment < 25:
+            fused = 0.5 + (fused - 0.5) * nc[25]
+            reasons["news_sentiment_flag"] = "strongly_negative"
+        elif news_sentiment < 35:
+            fused = 0.5 + (fused - 0.5) * nc[35]
+            reasons["news_sentiment_flag"] = "negative"
+        else:
+            reasons["news_sentiment_flag"] = "neutral_or_positive"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Relative strength vs sector ───────────────────────────────────────────
+    rs_comp = p.get("rs_compression")
+    if rs_comp is not None and rs_rank is not None and rs_rank < 0.8:
+        fused = 0.5 + (fused - 0.5) * rs_comp
+        reasons["rs_flag"] = "lagging_sector"
+    elif rs_rank is not None:
+        reasons["rs_flag"] = "in_line_or_leading"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Options flow ──────────────────────────────────────────────────────────
+    if options_sentiment == "strongly_bullish":
+        fused = float(np.clip(fused + 0.07, 0.0, 1.0))
+        reasons["options_flag"] = "unusual_call_activity"
+    elif options_sentiment == "bullish":
+        fused = float(np.clip(fused + 0.03, 0.0, 1.0))
+        reasons["options_flag"] = "elevated_call_volume"
+    elif options_sentiment == "bearish":
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.85, 0.0, 1.0))
+        reasons["options_flag"] = "elevated_put_volume"
+    elif options_sentiment == "slightly_bearish":
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))
+        reasons["options_flag"] = "slightly_elevated_puts"
+    elif options_sentiment is not None:
+        reasons["options_flag"] = "neutral"
+
+    # ── K-Score fundamental boost (LONG only) ────────────────────────────────
+    if p.get("kscore_boost") and kscore is not None:
+        if kscore >= 70:
+            fused = float(np.clip(fused + 0.08, 0.0, 1.0))
+        elif kscore >= 55:
+            fused = float(np.clip(fused + 0.04, 0.0, 1.0))
+        elif kscore < 35:
+            fused = float(np.clip(fused - 0.06, 0.0, 1.0))
+        reasons["kscore_used"] = kscore
+
+    # ── Stale price penalty ───────────────────────────────────────────────────
+    if is_stale:
+        fused = 0.5 + (fused - 0.5) * 0.6
+        reasons["stale_price_warning"] = True
+
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Compression cap ───────────────────────────────────────────────────────
+    # Stacked filters can over-suppress signals when multiple risks coexist.
+    # If the cumulative compression has squeezed the signal below the max_compress_ratio
+    # floor, restore it so a genuinely bullish base signal can still fire a BUY.
+    max_ratio = p.get("max_compress_ratio", 0.50)
+    orig_dist = fused_before_filters - 0.5
+    curr_dist = fused - 0.5
+    if orig_dist != 0 and abs(curr_dist) < abs(orig_dist) * max_ratio:
+        fused = 0.5 + float(np.sign(orig_dist)) * abs(orig_dist) * max_ratio
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["compression_cap_applied"] = True
+    else:
+        reasons["compression_cap_applied"] = False
+
+    signal, horizon = _decide_style(fused, style_key, market_regime)
+    confidence = round(abs(fused - 0.5) * 200, 2)
+    return AIConfidence(
+        signal=signal,
+        horizon=horizon,
+        confidence=confidence,
+        bullish_probability=round(fused, 4),
+        reasons=reasons,
+    )
 
 
 def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
@@ -601,192 +847,72 @@ def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
     return False
 
 
-def generate_signal(symbol: str) -> AIConfidence:
+def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
+    """Generate SHORT, SWING, and LONG signals in a single data-fetch pass.
+
+    Returns a dict keyed by horizon string: {'SHORT': ..., 'SWING': ..., 'LONG': ...}.
+    All expensive I/O (prices, ML, market regime, etc.) happens once; each style
+    then applies its own profile to the shared base values.
+    """
     df = _fetch_prices(symbol)
     if df.empty:
         raise ValueError(f"No price data for {symbol}")
 
     is_stale = _check_price_staleness(df, symbol)
-
     ta_prob, reasons = _ta_score(df)
     ml_prob, ml_test_auc = _fetch_ml_data(symbol)
     market_regime, fg_score = _fetch_market_regime()
     breadth_pct = _fetch_market_breadth()
-    reasons["market_regime"] = market_regime
-    reasons["fear_greed_score"] = fg_score
-    reasons["breadth_pct"] = breadth_pct
-
-    # Dynamic fusion: ML weight scales with held-out test AUC (unbiased).
-    # AUC 0.50 (random) → 40% ML; AUC 0.70+ (excellent) → 75% ML.
-    # This prevents a poorly-fit symbol model from overriding the TA rules.
-    if ml_prob is not None:
-        # v4: soft-cap ML probability to [0.05, 0.95] — XGBoost frequently
-        # outputs 0.0 or 1.0 when a few features pattern-match strongly, but
-        # these extremes overstate certainty. The cap preserves the signal
-        # direction while allowing TA to have meaningful influence.
-        ml_prob = float(np.clip(ml_prob, 0.05, 0.95))
-
-        ml_weight = float(np.clip(0.40 + (ml_test_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
-
-        # v4: disagreement dampening — when ML and TA strongly disagree,
-        # reduce the ML weight so clear TA signals aren't simply overridden.
-        # |gap| > 0.35 → scale ML weight down by up to 25%.
-        ml_ta_gap = abs(ml_prob - ta_prob)
-        if ml_ta_gap > 0.35:
-            dampen = 1.0 - 0.25 * min((ml_ta_gap - 0.35) / 0.30, 1.0)
-            ml_weight = ml_weight * dampen
-            reasons["ml_ta_conflict"] = True
-        else:
-            reasons["ml_ta_conflict"] = False
-
-        ta_weight = 1.0 - ml_weight
-        fused = ml_weight * ml_prob + ta_weight * ta_prob
-        reasons["ml_probability"] = ml_prob
-        reasons["ml_weight"] = round(ml_weight, 2)
-    else:
-        fused = ta_prob
-        reasons["ml_probability"] = None
-        reasons["ml_weight"] = 0.0
-        reasons["ml_ta_conflict"] = False
-    reasons["ta_score"] = ta_prob
-
-    # ── Multi-timeframe confirmation (weekly) ─────────────────────────────
-    # Resample daily bars to weekly rather than fetching from DB — weekly bars
-    # are not stored in the prices table (only D1 and M5 exist). Resampling
-    # here is free since we already hold the daily DataFrame in memory.
-    df_weekly = _resample_to_weekly(df)
-    weekly_score = _weekly_ta_score(df_weekly)
-    reasons["weekly_ta_score"] = round(weekly_score, 3)
-
-    daily_direction  = fused - 0.5
-    weekly_direction = weekly_score - 0.5
-    if daily_direction * weekly_direction > 0:
-        # Both timeframes agree → amplify signal by 12%
-        fused = 0.5 + daily_direction * 1.12
-    else:
-        # Timeframes conflict → compress signal toward neutral by 15%
-        fused = 0.5 + daily_direction * 0.85
-    fused = float(np.clip(fused, 0.0, 1.0))
-    reasons["weekly_alignment"] = (daily_direction * weekly_direction) > 0
-
-    # ── ADX choppy market compression ─────────────────────────────────────
-    # When ADX < 20 the market is directionless — both BUY and SELL signals
-    # are less reliable because there is no confirmed trend to follow.
-    adx_val = reasons.get("adx") or 0.0
-    if adx_val < 20:
-        fused = 0.5 + (fused - 0.5) * 0.90
-        reasons["adx_compression"] = True
-    else:
-        reasons["adx_compression"] = False
-
-    # ── High-volatility regime compression ────────────────────────────────
-    # In high-vol regimes (bull price but fear & greed < 30) the market is
-    # unstable — compress all signals 15% to avoid entries into whipsaws.
-    if market_regime == "high_vol":
-        fused = 0.5 + (fused - 0.5) * 0.85
-        reasons["high_vol_compression"] = True
-    else:
-        reasons["high_vol_compression"] = False
-
-    # ── Market breadth compression (v5) ───────────────────────────────────
-    # When < 40% of US stocks are above their 200-day SMA, the broad market
-    # is in internal decline even if the S&P 500 price hasn't broken down yet.
-    # Only apply in bull/high_vol — bear regime already has raised thresholds.
-    if breadth_pct is not None and breadth_pct < 40 and market_regime in ("bull", "high_vol", "unknown"):
-        fused = 0.5 + (fused - 0.5) * 0.90
-        reasons["breadth_compression"] = True
-    else:
-        reasons["breadth_compression"] = False
-
-    fused = float(np.clip(fused, 0.0, 1.0))
-
-    # ── Chart pattern fusion ───────────────────────────────────────────────
+    days_to_earnings = _fetch_earnings_proximity(symbol)
+    news_sentiment = _fetch_news_sentiment(symbol)
+    rs_score, rs_rank = _fetch_relative_strength(symbol)
+    options_sentiment, cp_ratio = _fetch_options_flow(symbol)
     patterns = _fetch_patterns_from_ta(symbol)
     pattern_adj, active_patterns = _pattern_score_adjustment(patterns, len(df))
-    fused = float(np.clip(fused + pattern_adj, 0.0, 1.0))
-    reasons["active_patterns"] = active_patterns
+    df_weekly = _resample_to_weekly(df)
+    weekly_score = _weekly_ta_score(df_weekly)
+    kscore = _fetch_kscore(symbol)
+
+    # Populate shared base reasons (written into every style's output)
+    reasons["market_regime"]      = market_regime
+    reasons["fear_greed_score"]   = fg_score
+    reasons["breadth_pct"]        = breadth_pct
+    reasons["ta_score"]           = ta_prob
+    reasons["ml_probability"]     = ml_prob
+    reasons["weekly_ta_score"]    = round(weekly_score, 3)
+    reasons["active_patterns"]    = active_patterns
     reasons["pattern_adjustment"] = round(pattern_adj, 3)
+    reasons["days_to_earnings"]   = days_to_earnings
+    reasons["news_sentiment"]     = news_sentiment
+    reasons["rs_score"]           = rs_score
+    reasons["rs_rank"]            = rs_rank
+    reasons["options_sentiment"]  = options_sentiment
+    reasons["options_cp_ratio"]   = round(cp_ratio, 2) if cp_ratio is not None else None
+    reasons["kscore"]             = kscore
 
-    # ── Earnings proximity penalty ─────────────────────────────────────────
-    days_to_earnings = _fetch_earnings_proximity(symbol)
-    reasons["days_to_earnings"] = days_to_earnings
-    if days_to_earnings is not None:
-        if 0 <= days_to_earnings <= 2:
-            # Earnings in 0-2 days: extreme uncertainty, compress hard toward 0.5
-            fused = 0.5 + (fused - 0.5) * 0.25
-            reasons["earnings_warning"] = "critical"
-        elif days_to_earnings <= 5:
-            fused = 0.5 + (fused - 0.5) * 0.55
-            reasons["earnings_warning"] = "caution"
-        elif days_to_earnings <= 10:
-            fused = 0.5 + (fused - 0.5) * 0.80
-            reasons["earnings_warning"] = "note"
+    return {
+        style_key: _apply_style_signal(
+            ta_prob=ta_prob,
+            ml_prob=ml_prob,
+            ml_test_auc=ml_test_auc,
+            style_key=style_key,
+            market_regime=market_regime,
+            adx_val=float(reasons.get("adx") or 0.0),
+            weekly_score=weekly_score,
+            pattern_adj=pattern_adj,
+            days_to_earnings=days_to_earnings,
+            news_sentiment=news_sentiment,
+            rs_rank=rs_rank,
+            options_sentiment=options_sentiment,
+            cp_ratio=cp_ratio,
+            kscore=kscore,
+            is_stale=is_stale,
+            base_reasons=reasons,
+        )
+        for style_key in ("SHORT", "SWING", "LONG")
+    }
 
-    # ── News sentiment filter ──────────────────────────────────────────────
-    # Persistently negative news (score < 30) compresses the signal toward
-    # neutral. This suppresses BUY signals ahead of regulatory action,
-    # leadership crises, or product recalls that technicals won't catch yet.
-    news_sentiment = _fetch_news_sentiment(symbol)
-    reasons["news_sentiment"] = news_sentiment
-    if news_sentiment is not None:
-        if news_sentiment < 25:
-            fused = 0.5 + (fused - 0.5) * 0.70  # strongly negative — compress 30%
-            reasons["news_sentiment_flag"] = "strongly_negative"
-        elif news_sentiment < 35:
-            fused = 0.5 + (fused - 0.5) * 0.80  # moderately negative — compress 20%
-            reasons["news_sentiment_flag"] = "negative"
-        else:
-            reasons["news_sentiment_flag"] = "neutral_or_positive"
-    fused = float(np.clip(fused, 0.0, 1.0))
 
-    # ── Relative strength vs sector ETF ───────────────────────────────────
-    rs_score, rs_rank = _fetch_relative_strength(symbol)
-    reasons["rs_score"] = rs_score
-    reasons["rs_rank"] = rs_rank
-    if rs_rank is not None and rs_rank < 0.8:
-        # Stock lagging its sector by >20% over 20 days — reduce BUY confidence
-        fused = 0.5 + (fused - 0.5) * 0.85
-        reasons["rs_flag"] = "lagging_sector"
-    elif rs_rank is not None:
-        reasons["rs_flag"] = "in_line_or_leading"
-    fused = float(np.clip(fused, 0.0, 1.0))
-
-    # ── Options flow ──────────────────────────────────────────────────────────
-    # Unusual call volume is a leading indicator — institutions often position
-    # in options before moving the underlying. Strongly bullish flow boosts
-    # the signal; bearish flow compresses it. Only available for US stocks.
-    options_sentiment, cp_ratio = _fetch_options_flow(symbol)
-    reasons["options_sentiment"] = options_sentiment
-    reasons["options_cp_ratio"] = round(cp_ratio, 2) if cp_ratio is not None else None
-    if options_sentiment == "strongly_bullish":
-        fused = float(np.clip(fused + 0.07, 0.0, 1.0))   # +7% boost
-        reasons["options_flag"] = "unusual_call_activity"
-    elif options_sentiment == "bullish":
-        fused = float(np.clip(fused + 0.03, 0.0, 1.0))   # +3% nudge
-        reasons["options_flag"] = "elevated_call_volume"
-    elif options_sentiment == "bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.85, 0.0, 1.0))  # -15% compress
-        reasons["options_flag"] = "elevated_put_volume"
-    elif options_sentiment == "slightly_bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))  # -8% compress
-        reasons["options_flag"] = "slightly_elevated_puts"
-    elif options_sentiment is not None:
-        reasons["options_flag"] = "neutral"
-    fused = float(np.clip(fused, 0.0, 1.0))
-
-    # Stale price data: compress signal 40% toward neutral so outdated bars
-    # don't generate high-confidence signals. The ingest gap is flagged in reasons.
-    if is_stale:
-        fused = 0.5 + (fused - 0.5) * 0.6
-        reasons["stale_price_warning"] = True
-
-    signal, horizon = _decide(fused, market_regime)
-    confidence = round(abs(fused - 0.5) * 200, 2)
-
-    return AIConfidence(
-        signal=signal,
-        horizon=horizon,
-        confidence=confidence,
-        bullish_probability=round(fused, 4),
-        reasons=reasons,
-    )
+def generate_signal(symbol: str) -> AIConfidence:
+    """Generate the SWING signal for a symbol — backwards-compatible wrapper."""
+    return generate_all_signals(symbol)["SWING"]

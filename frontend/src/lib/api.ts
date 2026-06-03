@@ -46,8 +46,8 @@ export const api = {
     if (market) params.set('market', market);
     return request<{ rankings: RankingRow[] }>(`/rankings?${params}`);
   },
-  signal: (symbol: string) => request<Signal>(`/signals/${symbol}`),
-  allSignals: () => request<SignalSummary[]>(`/signals`),
+  signal: (symbol: string, style?: string) => request<Signal>(`/signals/${symbol}${style ? `?style=${style}` : ''}`),
+  allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
   refreshSignal: (symbol: string) => request<Signal>(`/signals/${symbol}?persist=true`),
   refreshSignals: (market?: string) => request<{ refreshed: number }>(`/signals/refresh`, { method: 'POST', body: JSON.stringify(market ? { market } : {}) }),
   predict: (symbol: string, model = 'xgboost') =>

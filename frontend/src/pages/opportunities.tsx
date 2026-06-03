@@ -442,7 +442,7 @@ export default function Opportunities() {
 
   const { data: rankData, isLoading } = useSWR('rankings-all', () => api.rankings());
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
-  const { data: signalsData } = useSWR('signals-all', () => api.allSignals());
+  const { data: signalsData } = useSWR('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
   const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
 
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);

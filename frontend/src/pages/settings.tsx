@@ -578,6 +578,74 @@ export default function SettingsPage() {
         </div>
       </div>
 
+      {/* ── Trading Style ──────────────────────────────────────────────── */}
+      <div style={section('#6366f1')}>
+        <div style={sectionBar('linear-gradient(90deg,#6366f1,#a78bfa,#ec4899,#a78bfa,#6366f1)')} />
+        <div style={sectionHead}>Trading Style — AI Signal Horizon</div>
+        <div style={{ padding: '16px 20px' }}>
+          <label style={lbl}>Select your default trading style</label>
+          <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+            {([
+              {
+                value: 'SHORT' as const,
+                label: 'Short Term',
+                horizon: '1 – 5 days',
+                color: '#f87171',
+                desc: 'Pure technical analysis. No earnings or news filters. Tight momentum thresholds. Best for day/swing trades on volatile small-caps.',
+              },
+              {
+                value: 'SWING' as const,
+                label: 'Swing Trade',
+                horizon: '5 – 20 days',
+                color: '#818cf8',
+                desc: 'Balanced TA + momentum + mild regime filter. Standard earnings & news compression. The recommended default for most stocks.',
+              },
+              {
+                value: 'LONG' as const,
+                label: 'Long Term',
+                horizon: '30 – 90 days',
+                color: '#4ade80',
+                desc: 'Fundamentals-heavy. K-Score boost/penalty applied. Strong weekly alignment required. Filters out noise for position trades.',
+              },
+            ]).map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => update('tradingStyle', opt.value)}
+                style={{
+                  flex: 1, padding: '14px 16px', borderRadius: '12px', cursor: 'pointer',
+                  textAlign: 'left', transition: 'all 0.15s',
+                  background: s.tradingStyle === opt.value ? `${opt.color}12` : 'rgba(15,23,42,0.6)',
+                  border: s.tradingStyle === opt.value ? `1px solid ${opt.color}55` : '1px solid #1e293b',
+                  boxShadow: s.tradingStyle === opt.value ? `0 0 0 1px ${opt.color}22` : 'none',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <div style={{ fontSize: '14px', fontWeight: 800, color: s.tradingStyle === opt.value ? opt.color : '#94a3b8' }}>
+                    {opt.label}
+                  </div>
+                  {s.tradingStyle === opt.value && (
+                    <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', background: `${opt.color}20`, color: opt.color, letterSpacing: '0.06em' }}>
+                      ACTIVE
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: '11px', fontWeight: 600, color: s.tradingStyle === opt.value ? opt.color : '#475569', marginBottom: '8px' }}>
+                  {opt.horizon}
+                </div>
+                <div style={{ fontSize: '11px', color: '#475569', lineHeight: 1.5 }}>
+                  {opt.desc}
+                </div>
+              </button>
+            ))}
+          </div>
+          <div style={{ ...hint, marginTop: '10px' }}>
+            This controls which AI signal criteria apply across all pages (Dashboard, Rankings, Watchlist, Screener, etc.).
+            SHORT uses pure TA — ideal for volatile small-caps where fundamentals are unreliable.
+            Signals are pre-computed for all 3 styles; switching style takes effect immediately.
+          </div>
+        </div>
+      </div>
+
       {/* ── AI Assistant ───────────────────────────────────────────────── */}
       <div style={section('#a78bfa')}>
         <div style={sectionBar('linear-gradient(90deg,#a78bfa,#c4b5fd,#a78bfa)')} />
