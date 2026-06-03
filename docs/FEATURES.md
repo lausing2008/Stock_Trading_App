@@ -923,15 +923,38 @@ Leaderboard of all active stocks sorted by K-Score. A quick, always-sorted view 
 
 ## Watchlist (`/watchlist`)
 
-Your curated list of stocks to monitor closely.
+Your curated list of stocks to monitor closely. Each watchlist is independent — it has its own stock list, its own trading style, and its own signal view.
 
 ### Features
 - Multiple named lists — create / delete / switch via tabs; move stocks between lists
+- **Per-list trading style** — assign SHORT, SWING, or LONG to each list so signal columns automatically show the right horizon for that list's purpose (see [Trading Style System](#trading-style-system) below)
 - Signal stats bar (BUY / HOLD / WAIT / SELL counts with colour-coded tiles)
 - Signal filter tabs (ALL / BUY / HOLD / WAIT / SELL)
 - Sort by: Symbol, Signal, K-Score, Change%, Price
 - Auto-refreshing live prices every 60 s
 - **Compare view** — select up to 8 stocks for a base-100 relative performance SVG chart (30 / 60 / 90 / 180 / 365 day periods)
+
+### Per-list trading style
+
+Every watchlist can be assigned its own trading style, overriding the global setting for that list only.
+
+**Setting the style when creating a list** — the New Watchlist modal includes a style picker with four options:
+
+| Option | Signals used |
+|--------|-------------|
+| Global default | Follows Settings → Trading Style (default) |
+| Short Term | SHORT signals — 1–5 day pure TA |
+| Swing Trade | SWING signals — 5–20 day balanced (default) |
+| Long Term | LONG signals — 30–90 day fundamentals-heavy |
+
+**Changing style on an existing list** — each tab shows a small colored badge when a style is assigned (`SHORT` in red / `SWING` in indigo / `LONG` in green). Click the badge to cycle to the next style. On the active tab with no style set, a `+style` prompt appears as a reminder.
+
+When you switch between lists, all signal columns (BUY/HOLD/WAIT/SELL, confidence, bullish probability) immediately reload using that list's style — no manual switching needed.
+
+**Practical use** — create separate lists for different time horizons:
+- "Swing Trades" → SWING signals (earnings compression active, balanced TA+ML)
+- "Long Holds" → LONG signals (K-Score boost, fundamentals weight, no earnings filter)
+- "Spec Plays" → SHORT signals (pure TA, no news/earnings filter, ideal for small caps)
 
 ### Per-stock card
 - Price + day change, signal badge, K-Score bar, fair value, note preview, price alert banner
@@ -979,20 +1002,54 @@ Each card shows:
 - **Stage selector** — click any stage pill to move the card instantly
 - **Relative date** — "Today / Yesterday / Nd ago" based on last update
 
+### Fill price tracking (actual entry)
+
+When a card is moved to **Active**, a **Record Fill** modal appears:
+- **Fill Price** (required) — the actual price you were filled at, which may differ from the planned entry
+- **Shares** (optional) — number of shares bought; enables dollar P&L calculation
+
+Both values are saved to the card and displayed in the prices row as "Fill $X × N" alongside the original "Plan $X". All P&L calculations use the fill price when available, falling back to the planned entry price if no fill was recorded.
+
+The fill can be skipped — clicking "Skip, use plan price" moves the card to Active without recording fill data.
+
 ### Closed trade P&L tracking
 
 When a card is moved to **Closed**:
 - An **exit price input** appears on the card — type the price you closed at and press Enter to save it.
-- **P&L %** is calculated as `(exit_price − entry_price) / entry_price × 100` and displayed in green (profit) or red (loss).
+- **P&L %** is calculated as `(exit − effective_entry) / effective_entry × 100`, where `effective_entry = actual_entry_price ?? entry_price`.
+- **Dollar P&L** is shown when shares are recorded: `(exit − effective_entry) × shares`.
+- **% of target reached** — shown when a take_profit level was set.
 - `closed_at` timestamp is set automatically the first time a card enters the Closed stage.
 
-A **Performance Summary bar** appears above the board columns showing aggregate stats across all closed cards:
+### Trading style badge on closed cards
+
+Each closed card shows a small colored badge in the P&L section — **SHORT** (red) / **SWING** (indigo) / **LONG** (green) — recording which trading style was active when the position was opened. This lets you compare performance across different signal approaches at a glance.
+
+The style is captured automatically when a card is activated (from the global or per-list style setting at that moment). It can only be set once — it records historical context, not current state.
+
+### Performance Summary bar
+
+Appears above the board when at least one closed trade has both an entry and exit price:
+
+**Overall stats row:**
+
 | Stat | Description |
 |---|---|
+| Closed | Total closed trades with P&L data |
 | Win Rate | % of closed cards with positive P&L |
 | Avg Return | Average P&L % across all closed cards |
 | Best | Highest individual P&L % |
 | Worst | Lowest individual P&L % |
+
+**By Style breakdown row** (shown when trades from multiple styles exist):
+
+For each style that has at least one closed trade, a chip shows:
+- Style label (SHORT / SWING / LONG) with its color
+- Trade count
+- Win rate %
+- Average return %
+
+This lets you evaluate whether SHORT, SWING, or LONG signals have been more accurate for your actual trades over time.
 
 ### Adding cards
 
@@ -1003,15 +1060,37 @@ Four ways to create a board card:
 3. **Manual** — click **+ Add** in the Radar column header on the board itself. Enter a symbol and optional notes.
 4. **Unified + Add ▾ button** — appears on Screener results and Forecast cards. Opens a dropdown with two sections: **Watchlists** (add to any named watchlist with item count shown) and **Trade Board** (add to Radar). A checkmark appears once added — prevents duplicates within the same session.
 
+### Adding cards
+
+Four ways to create a board card:
+
+1. **Stock detail page** — after the AI generates a game plan, click **📌 Save to Board** in the game plan card header. Saves with stage = Planning, entry/stop/target prices pre-filled.
+2. **Forecast page** — each AI pick has a **📌 Save to Board** button. Saves with stage = Radar, notes from the pick's setup/catalyst/risk text.
+3. **Manual** — click **+ Add** in the Radar column header on the board itself. Enter a symbol and optional notes.
+4. **Unified + Add ▾ button** — appears on Screener results and Forecast cards. Opens a dropdown with two sections: **Watchlists** (add to any named watchlist with item count shown) and **Trade Board** (add to Radar). A checkmark appears once added — prevents duplicates within the same session.
+
+### Drag-and-drop between columns
+
+Cards can be dragged from any column to any other. Dragging highlights the target column with a colored border. Dropping onto **Active** triggers the Fill modal to capture the actual fill price — same as clicking the stage pill.
+
 ### API endpoints
 ```
 GET    /board              # list all trade plans for the current user (ordered by last update)
-POST   /board              # create a plan {symbol, stage, game_plan, entry_price, stop_loss, take_profit, notes, source}
-PUT    /board/{id}         # update stage, notes, entry_price, stop_loss, take_profit, exit_price
+POST   /board              # create a plan {symbol, stage, game_plan, entry_price, stop_loss, take_profit, notes, source, trading_style}
+PUT    /board/{id}         # update stage, notes, prices, exit_price, actual_entry_price, shares, trading_style
 DELETE /board/{id}         # delete a plan
 ```
 
-`exit_price` and `closed_at` are stored on the `trade_plans` table. `closed_at` is set automatically server-side the first time `stage = "closed"` is submitted.
+Key columns on `trade_plans`:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `entry_price` | float | Planned limit/target price from the game plan |
+| `actual_entry_price` | float | Real fill price, captured via the Fill modal |
+| `shares` | float | Shares filled — enables dollar P&L |
+| `trading_style` | varchar(16) | SHORT / SWING / LONG — style active at activation time |
+| `exit_price` | float | Closing price, entered manually on the closed card |
+| `closed_at` | timestamp | Set automatically the first time `stage = "closed"` is submitted |
 
 ---
 
@@ -1414,6 +1493,22 @@ Total return %, Sharpe ratio, Max drawdown %, CAGR, Win rate %, Profit factor, E
 
 Central configuration page for all app preferences, data sources, and AI integration.
 Changes take effect immediately on save (persisted to localStorage).
+
+### Trading Style — AI Signal Horizon
+
+Controls which signal profile is used across all pages by default.
+
+| Style | Horizon | Character |
+|-------|---------|-----------|
+| **Short Term** | 1–5 days | Pure TA, no earnings/news filters. Ideal for volatile small-caps. |
+| **Swing Trade** | 5–20 days | Balanced TA + momentum. Earnings + news compression active. Default. |
+| **Long Term** | 30–90 days | Fundamentals-heavy. K-Score boost applied. Weekly alignment required. |
+
+Switching style takes effect immediately — all signal columns across Dashboard, Rankings, Watchlist, Screener, and Opportunities reload automatically.
+
+Individual watchlists can override this setting with their own per-list style (see [Watchlist](#watchlist-watchlist)). The global setting is the fallback for any list that has no style assigned.
+
+For a full technical breakdown of what changes per style (ML weight caps, BUY thresholds, compression multipliers, filter enables), see [AI_SIGNAL.md — Style profile parameters](AI_SIGNAL.md#style-profile-parameters).
 
 ### Stock Price Data Sources
 Toggle which providers supply historical OHLCV data and fundamentals.
@@ -2532,3 +2627,114 @@ Response (when available):
 | `services/signal-engine/src/generators/signals.py` | `_fetch_options_flow()` helper; options boost/compress applied after RS filter |
 | `frontend/src/lib/api.ts` | `getOptionsFlow()` call + `OptionsFlow` / `OptionsFlowContract` types |
 | `frontend/src/pages/stock/[symbol].tsx` | Options Flow section with C/P bar, sentiment badge, unusual contracts table |
+
+---
+
+## Trading Style System
+
+The trading style system lets you match AI signal criteria to your actual holding horizon — SHORT (1–5 days), SWING (5–20 days), or LONG (30–90 days). All three signal profiles are computed in a single data pass for every stock on every refresh cycle, so switching style is instant.
+
+### How it works
+
+All three signals are generated by `generate_all_signals(symbol)` in `services/signal-engine/src/generators/signals.py` and stored as separate rows in the `signals` table with `horizon = SHORT / SWING / LONG`. The frontend reads whichever horizon matches the active style.
+
+### Where the style setting is resolved
+
+The system has a three-level hierarchy:
+
+| Level | Where set | Scope |
+|-------|----------|-------|
+| **Global default** | Settings → Trading Style | All pages that have no override |
+| **Per-list override** | Watchlist tab badge / Create modal | That watchlist only |
+| **Historical capture** | Trade Board (set at activation) | Individual closed trade record |
+
+### Global default (Settings page)
+
+Set once in **Settings → Trading Style — AI Signal Horizon**. Applies to Dashboard, Rankings, Screener, Opportunities, Forecast, Positions, Alerts, and any watchlist that has no style assigned. Stored in browser localStorage as `tradingStyle` inside the settings JSON blob. Read at page load via `getSignalStyle()` from `frontend/src/lib/settings.ts`.
+
+### Per-list style (Watchlist page)
+
+Each watchlist carries a `trading_style` column (nullable). When you view a watchlist:
+- If the list has a style set, signal columns use that style
+- If the list has no style, the global setting is used as fallback
+
+**Create** — the New Watchlist modal has a style picker (Global default / Short Term / Swing Trade / Long Term). Stored via `POST /watchlists` with `trading_style` in the body.
+
+**Change** — the tab badge cycles through `null → SHORT → SWING → LONG → null` on each click. Stored via `PUT /watchlists/{id}` with `trading_style` in the body. Sending an empty string clears the style back to null (inherits global).
+
+**Display** — the tab shows a small colored chip: `SHORT` (red), `SWING` (indigo), `LONG` (green). Lists with no style show a `+style` prompt on the active tab only.
+
+### Historical style capture (Trade Board)
+
+When a card is moved to Active (via drag-and-drop or the stage pill), the system records the style that was active at that moment — either the global setting or the relevant list's override — and stores it as `trading_style` on the `trade_plans` row. This value is immutable after it is set; it represents the signal context at trade entry, not the current setting.
+
+The captured style appears as a colored badge on closed cards and is used to generate the **By Style** breakdown in the Performance Summary bar.
+
+### Signal API
+
+The signal engine API accepts a `?style=` query parameter:
+
+```
+GET /signals/latest?style=SWING     # latest SWING signal for all stocks
+GET /signals/latest?style=SHORT     # latest SHORT signal for all stocks
+GET /signal_for/{symbol}?style=LONG # LONG signal for one stock (regenerated if stale)
+```
+
+All three styles are computed and persisted in one call. The `?style=` parameter only filters what is returned — it does not affect what is computed and stored.
+
+### `signals` table — `horizon` column
+
+| Value | Meaning |
+|-------|---------|
+| `SHORT` | 1–5 day signal — pure TA, no earnings/news compression, ADX floor = 25 |
+| `SWING` | 5–20 day signal — balanced, earnings + news compression, ADX floor = 20 |
+| `LONG` | 30–90 day signal — K-Score boost, heavy weekly alignment, ADX filter off |
+
+The unique "latest signal" per stock is defined by `MAX(ts)` grouped on `(stock_id, horizon)` — not just `stock_id`. Each stock therefore has up to three current signals simultaneously.
+
+### `watchlists` table — `trading_style` column
+
+| Value | Meaning |
+|-------|---------|
+| `NULL` | No override — inherits global setting |
+| `'SHORT'` | Force SHORT signals for this list |
+| `'SWING'` | Force SWING signals for this list |
+| `'LONG'` | Force LONG signals for this list |
+
+### `trade_plans` table — `trading_style` column
+
+Records which style was active at the time the position was opened. Set once at activation, never updated. Used for the per-style performance breakdown in the Trade Board performance stats.
+
+### Style profile parameter summary
+
+| Parameter | SHORT | SWING | LONG |
+|-----------|-------|-------|------|
+| ML weight cap | 30% | 75% | 45% |
+| BUY threshold (bull) | 0.60 | 0.65 | 0.60 |
+| BUY threshold (bear) | 0.68 | 0.73 | 0.70 |
+| ADX filter | 25 min | 20 min | off |
+| Earnings compression | off | 0.50× / 0.75× / 0.90× | off |
+| News compression | off | 0.75× / 0.85× | off |
+| K-Score boost | off | off | on |
+| Max compression floor | 0.70 | 0.55 | 0.65 |
+| Weekly align boost/compress | 1.08× / 0.93× | 1.12× / 0.85× | 1.18× / 0.80× |
+
+For the complete parameter table and compression pipeline walkthrough, see [AI_SIGNAL.md](AI_SIGNAL.md).
+
+### Implementation files
+
+| File | Role |
+|------|------|
+| `services/signal-engine/src/generators/signals.py` | `_STYLE_PROFILES` dict, `generate_all_signals()`, `_apply_style_signal()`, compression cap |
+| `services/signal-engine/src/generators/__init__.py` | Exports `generate_all_signals` |
+| `services/signal-engine/src/api/routes.py` | `?style=` filter, per-`(stock_id, horizon)` latest-signal subquery, bulk persist of all 3 styles |
+| `shared/db/models.py` | `Signal.horizon` column; `Watchlist.trading_style`; `TradePlan.trading_style`, `actual_entry_price`, `shares` |
+| `shared/db/session.py` | Migrations: `signals.horizon`, `watchlists.trading_style`, `trade_plans.trading_style`, `actual_entry_price`, `shares` |
+| `services/market-data/src/api/watchlist.py` | `trading_style` in `WatchlistOut`, `CreateWatchlistRequest`, `RenameWatchlistRequest`; create/update handlers |
+| `services/market-data/src/api/board.py` | `trading_style`, `actual_entry_price`, `shares` in `PlanIn`, `PlanUpdate`, `PlanOut`; captured at activation |
+| `frontend/src/lib/settings.ts` | `tradingStyle` field in `AppSettings`; `getSignalStyle()` helper |
+| `frontend/src/lib/api.ts` | `allSignals(style?)`, `signal(symbol, style?)`, `WatchlistMeta.trading_style`, `TradePlan.trading_style` |
+| `frontend/src/pages/settings.tsx` | Trading Style selector section |
+| `frontend/src/pages/watchlist.tsx` | Per-list style picker in create modal; tab badge with click-to-cycle; `effectiveStyle` signal fetch |
+| `frontend/src/pages/board.tsx` | Fill modal; `trading_style` captured on activate; style badge on closed cards; By Style perf breakdown |
+| All signal-consuming pages | `api.allSignals(getSignalStyle())` with `'signals-' + getSignalStyle()` SWR cache key |
