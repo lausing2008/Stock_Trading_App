@@ -788,6 +788,8 @@ def _apply_style_signal(
         reasons["options_flag"] = "slightly_elevated_puts"
     elif options_sentiment is not None:
         reasons["options_flag"] = "neutral"
+    else:
+        reasons["options_flag"] = "no_data"
 
     # ── K-Score fundamental boost (LONG only) ────────────────────────────────
     if p.get("kscore_boost") and kscore is not None:

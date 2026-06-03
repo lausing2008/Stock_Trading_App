@@ -184,6 +184,10 @@ def train_model(
     y_cal   = y_dir.iloc[split_train:split_cal]
     y_test  = y_dir.iloc[split_cal:]
 
+    if len(np.unique(y_train)) < 2:
+        log.warning("train.skipped", symbol=symbol, reason="degenerate labels — all same class after dead-zone filter")
+        return {"symbol": symbol, "skipped": True, "reason": "degenerate labels after dead-zone filter"}
+
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train.values)
     X_cal_s   = scaler.transform(X_cal.values)

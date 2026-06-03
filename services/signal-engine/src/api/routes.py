@@ -178,15 +178,8 @@ def signal_accuracy(
         _pts[sid].append(d)
         _pclose[sid].append(float(row.close))
 
-    def price_on_or_before(sid: int, d) -> float | None:
-        ts_list = _pts.get(sid)
-        if not ts_list:
-            return None
-        idx = bisect.bisect_right(ts_list, d) - 1
-        return _pclose[sid][idx] if idx >= 0 else None
-
-    def latest_price_after(sid: int, after_date):
-        """First close strictly after after_date, returns (close, date) or (None, None)."""
+    def first_close_after(sid: int, after_date):
+        """First close STRICTLY after after_date, returns (close, date) or (None, None)."""
         ts_list = _pts.get(sid)
         if not ts_list:
             return None, None
@@ -194,6 +187,13 @@ def signal_accuracy(
         if idx >= len(ts_list):
             return None, None
         return _pclose[sid][idx], ts_list[idx]
+
+    def most_recent_close(sid: int):
+        """Most recent (last) close in the loaded price window, returns (close, date) or (None, None)."""
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None, None
+        return _pclose[sid][-1], ts_list[-1]
 
     # Deduplicate: the scheduler runs every ~10 min and inserts repeated signals on
     # the same day. One evaluation per (stock, signal_type, day) is the right unit —
@@ -208,13 +208,17 @@ def signal_accuracy(
             continue
         seen_keys.add(dedup_key)
 
-        entry_close = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
+        # Entry: first close STRICTLY after signal date — avoids same-day look-ahead
+        # (old code used price_on_or_before(signal_date+1) which returned Friday's close
+        # for Friday signals since signal_date+1 = Saturday is not a trading day)
+        entry_close, entry_date = first_close_after(sig.stock_id, signal_date)
         if entry_close is None:
             continue
 
-        # Exit: most recent close after the signal date (running P&L to latest available price)
-        exit_close, exit_date = latest_price_after(sig.stock_id, signal_date)
-        if exit_close is None:
+        # Exit: most recent available close — shows running P&L from entry to today
+        # (old code used first_close_after for exit too, making entry == exit → pct=0%)
+        exit_close, exit_date = most_recent_close(sig.stock_id)
+        if exit_close is None or exit_date is None or exit_date <= signal_date:
             continue
 
         pct_change  = (exit_close - entry_close) / entry_close * 100
@@ -314,19 +318,20 @@ def ml_weight_validation(
         _pts[sid].append(d)
         _pclose[sid].append(float(row.close))
 
-    def price_on_or_before(sid, d):
+    def _first_close_after(sid, after_date):
         ts_list = _pts.get(sid)
         if not ts_list:
-            return None
-        idx = bisect.bisect_right(ts_list, d) - 1
-        return _pclose[sid][idx] if idx >= 0 else None
-
-    def latest_price_after(sid, after_date):
-        ts_list = _pts.get(sid)
-        if not ts_list:
-            return None
+            return None, None
         idx = bisect.bisect_right(ts_list, after_date)
-        return _pclose[sid][idx] if idx < len(ts_list) else None
+        if idx >= len(ts_list):
+            return None, None
+        return _pclose[sid][idx], ts_list[idx]
+
+    def _most_recent_close(sid):
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None, None
+        return _pclose[sid][-1], ts_list[-1]
 
     # Build list of (ml_prob, ta_score, pct_change) for signals with complete data
     observations: list[tuple[float, float, float]] = []
@@ -345,9 +350,9 @@ def ml_weight_validation(
         if ml_prob is None or ta_score is None:
             continue
 
-        entry = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
-        exit_p = latest_price_after(sig.stock_id, signal_date)
-        if entry is None or exit_p is None:
+        entry, entry_date = _first_close_after(sig.stock_id, signal_date)
+        exit_p, exit_date = _most_recent_close(sig.stock_id)
+        if entry is None or exit_p is None or exit_date is None or exit_date <= signal_date:
             continue
 
         pct = (exit_p - entry) / entry * 100
