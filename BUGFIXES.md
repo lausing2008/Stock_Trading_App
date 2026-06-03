@@ -217,7 +217,7 @@ except ValueError:
 
 ---
 
-## Summary by service
+## Summary by service — Audit Round 1 (2026-06-02)
 
 | Service | Bugs fixed |
 |---------|-----------|
@@ -230,4 +230,214 @@ except ValueError:
 
 ---
 
-*Audit conducted: 2026-06-02*
+---
+
+# Audit Round 2 — 2026-06-02 (continued)
+
+Bugs 16–23 found during deeper audits of the frontend, alert system, ML inference, and signal alert email pipeline.
+
+---
+
+## High — Wrong results in specific conditions
+
+### 16. Factor exposure: correct always False
+**File:** `services/signal-engine/src/api/routes.py`
+**Commits:** `5165023`
+
+**Root cause:** The `factor_exposure` endpoint defined its own local `price_on_or_before` and `latest_price_after` helpers. Entry used `price_on_or_before(signal_date + 1 day)` and exit used `latest_price_after(signal_date)`. Both resolved to the same close (first trading day after signal), so `correct = exit_p > entry` was always `False`.
+
+**Impact:** Every signal classified as "wrong" regardless of actual outcome. The factor analysis (which factors correlate with success) was entirely based on noise.
+
+**Fix:** Added `most_recent_close_fe()` helper. Exit now uses the most recent available close (running P&L to today), making the `correct` classification meaningful.
+
+---
+
+### 17. Bullish probability displayed as ~1% instead of ~65%
+**File:** `frontend/src/pages/opportunities.tsx:524`
+**Commits:** `5165023`
+
+**Root cause:** `bullish_probability` is a 0–1 decimal from the API. The tooltip used `.toFixed(0)` without multiplying by 100 first. `(0.65).toFixed(0)` → `"1"`, showing "1%" instead of "65%".
+
+**Impact:** Every AI Signal tooltip in the Opportunities page showed near-zero bullish probability regardless of actual signal strength.
+
+**Fix:** `(sig.bullish_probability * 100).toFixed(0)`.
+
+---
+
+### 18. Best-performer P&L shows "+−5.00%" when all positions losing
+**File:** `frontend/src/pages/positions.tsx:335`
+**Commits:** `5165023`
+
+**Root cause:** Hardcoded `+` prefix: `+{fmt(mBest.pnlPct ?? 0)}%`. If all positions are negative, `mBest.pnlPct` is the least-negative value (still negative). `fmt(-5.0)` = `"-5.00"`, producing `"+-5.00%"`.
+
+**Impact:** Visually broken display in the edge case where every portfolio position is underwater.
+
+**Fix:** Conditional sign: `{(mBest.pnlPct ?? 0) >= 0 ? '+' : ''}{fmt(Math.abs(mBest.pnlPct ?? 0))}%`.
+
+---
+
+### 19. 52-week high/low alert window one bar short
+**File:** `services/market-data/src/services/scheduler.py:694, 703`
+**Commits:** `5165023`
+
+**Root cause:** `close.iloc[:-1].tail(251)` used 251 bars for a 52-week (252 trading day) window. The bar exactly 252 trading days ago was excluded.
+
+**Impact:** If the excluded bar was the actual prior 52-week high, the stock would appear to set a new high when it hasn't — triggering a false breakout alert.
+
+**Fix:** Changed to `tail(252)` for both the high and low checks.
+
+---
+
+### 20. Alert triggered_at uses naive datetime alongside aware datetimes
+**File:** `services/market-data/src/services/scheduler.py:590`
+**Commits:** `5165023`
+
+**Root cause:** One code path used `datetime.utcnow()` (naive UTC) while another used `datetime.now(timezone.utc)` (timezone-aware). Both write to the same `triggered_at` column.
+
+**Impact:** Mixed naive/aware datetimes in the same column cause comparison failures in SQLAlchemy, breaking alert deduplication.
+
+**Fix:** Changed to `datetime.now(timezone.utc)` throughout.
+
+---
+
+## High — Page crashes on malformed AI response
+
+### 21. GamePlan null dereferences crash the stock detail page
+**File:** `frontend/src/pages/stock/[symbol].tsx:146, 162, 164, 168, 1330, 1349, 1350, 1365`
+**Commits:** `a75060f`
+
+**Root cause:** `gamePlan.stop_loss.price`, `gamePlan.entries.map()`, and `gamePlan.catalysts.map()` were accessed without optional chaining. `take_profit` was already guarded with `?.` but `stop_loss`, `entries`, and `catalysts` were not. The AI occasionally returns partial game plan objects with missing fields.
+
+**Impact:** If the AI response omits `stop_loss` or returns `entries` as null, the page crashes with "Cannot read property 'price' of null."
+
+**Fix:** Added `?.` optional chaining on all `stop_loss` property accesses; changed `.map()` calls to `(field ?? []).map()` pattern for arrays.
+
+---
+
+## Medium — Silent wrong calculations
+
+### 22. News sentiment score not clamped to [0, 100]
+**File:** `services/signal-engine/src/generators/signals.py:229`
+**Commits:** `a75060f`
+
+**Root cause:** `float(a["sentiment"]) * 50 + 50` assumes sentiment is in [-1, 1]. If a sentiment API returns a value slightly outside this range (e.g., 1.1 → score of 105, or -1.1 → -5), the downstream flag thresholds (`< 25`, `< 35`) produce wrong results.
+
+**Impact:** Sentiment scores outside [0, 100] give incorrect `news_sentiment_flag` classifications, slightly skewing signal fusion.
+
+**Fix:** `max(0.0, min(100.0, float(a["sentiment"]) * 50 + 50))`.
+
+---
+
+### 23. Research engine growth rate heuristic misidentifies ≥1000% growth
+**File:** `services/research-engine/src/api/routes.py:448, 462, 539`
+**Commits:** `a75060f`
+
+**Root cause:** `rev_pct = rev_growth * 100 if rev_growth < 10 else rev_growth` was a defensive guard for ambiguous decimal/percentage format. For decimal values ≥ 10.0 (representing ≥1000% growth), the condition `< 10` is False and the value is treated as already a percentage — showing "10%" instead of "1000%". Same bug in earnings growth and PEG calculation.
+
+**Impact:** Hyper-growth stocks (rare but real, e.g. post-pandemic recovery names) show incorrect growth scores in the research report.
+
+**Fix:** Removed heuristic. yfinance always returns growth as a decimal fraction; always multiply by 100.
+
+---
+
+---
+
+# Audit Round 3 — 2026-06-02 (signal alert email pipeline)
+
+Bugs 24–30 found during targeted investigation of why buy signal emails were not being sent.
+
+---
+
+## Critical — Emails silently never sent
+
+### 24. Signal alert state consumed by failed conviction gate
+**File:** `services/market-data/src/services/scheduler.py`
+**Commits:** `648d315`
+
+**Root cause:** `alert.last_signal = current` was executed on line 483, unconditionally, BEFORE running the conviction gate. If the 5-layer gate failed (e.g., RSI at 67 instead of ≤65, ML at 0.68 instead of >0.70), the function exited via `continue` — but `last_signal` was already updated to `"BUY"`. On every subsequent scheduler run: `prev == current == "BUY"` → no transition detected → no email, forever.
+
+**Impact:** The conviction gate had exactly one chance per BUY transition. If it failed for any reason (slightly out-of-range RSI, choppy ADX, weak ML), the opportunity was permanently lost regardless of how conditions improved later.
+
+**Fix:** Moved `alert.last_signal = current` to after a successful email send for bullish transitions. Failed conviction checks leave `last_signal` unchanged so the transition is retried on the next scheduler run.
+
+---
+
+### 25. New alert for stock already at BUY never triggers email
+**File:** `services/market-data/src/services/scheduler.py`
+**Commits:** `648d315`
+
+**Root cause:** New `SignalAlert` records have `last_signal = None`. The transition `(None, "BUY")` was not in `_BULLISH_TRANSITIONS`. It was classified as a neutral/unknown transition and skipped — but `last_signal` was still updated to `"BUY"`, permanently locking out any future email for that alert.
+
+**Impact:** If a user created a signal alert while the stock was already at BUY, they would never receive an email for that stock regardless of future signal changes.
+
+**Fix:** Added `or (prev is None and current == "BUY")` to the bullish check, so the conviction gate runs and fires an email on first detection.
+
+---
+
+### 26. Missing bearish exit transitions — HOLD and WAIT deteriorations silent
+**File:** `services/market-data/src/services/scheduler.py:147-149`
+**Commits:** `b4bc6ce`
+
+**Root cause:** `_BEARISH_TRANSITIONS` only contained transitions from BUY: `{(BUY,HOLD), (BUY,WAIT), (BUY,SELL)}`. Three deterioration paths were missing:
+- `(HOLD, WAIT)` — signal backing off from hold
+- `(HOLD, SELL)` — direct sell signal from hold
+- `(WAIT, SELL)` — signal turning bearish from wait
+
+**Impact:** Users subscribed to stocks at HOLD or WAIT never received exit warnings when the signal deteriorated. Only users whose stocks were at BUY received exit alerts.
+
+**Fix:** Added the three missing transitions to `_BEARISH_TRANSITIONS`.
+
+---
+
+## High — Conviction gate bypass
+
+### 27. K-Score unavailable silently passes Layer 2
+**File:** `services/market-data/src/services/scheduler.py:207-212`
+**Commits:** `b4bc6ce`
+
+**Root cause:** `if kscore is not None:` skipped the entire K-Score check when the rankings API was unreachable. Neither `passed` nor `failed` was updated, so an unavailable K-Score was effectively treated as a free pass for Layer 2.
+
+**Impact:** BUY conviction emails could fire without any fundamental/momentum verification during rankings API outages, sending low-quality alerts.
+
+**Fix:** `kscore is None` now explicitly appends a failed layer: `"K-Score unavailable (rankings API down) — cannot verify conviction"`.
+
+---
+
+### 28. Empty email address causes infinite retry loop
+**File:** `services/market-data/src/services/scheduler.py`, `services/market-data/src/services/email_service.py`
+**Commits:** `b4bc6ce`
+
+**Root cause:** `to=alert.email or ""` passed an empty string to the SMTP/SES call when `alert.email` was None. The send raised an exception, returned `False`, and because `last_signal` is now only updated after a successful send, the alert retried the same failed transition on every scheduler run indefinitely.
+
+**Impact:** Any alert with a missing email address spammed the error log every minute and blocked the state machine permanently.
+
+**Fix:** Added explicit guard before the send call — if email is empty, log a warning, advance `last_signal` (to prevent the loop), and continue. Added a second guard at the top of `send_email()` as defence-in-depth.
+
+---
+
+### 29. Analyst rating default inconsistency
+**File:** `services/market-data/src/services/scheduler.py`
+**Commits:** `b4bc6ce`
+
+**Root cause:** The conviction gate defaulted to `""` when analyst data was unavailable (correctly fails the gate), but the email send call defaulted to `"buy"` — so the email template displayed a false "buy" analyst consensus on stocks where no analyst data existed.
+
+**Impact:** Email recipients saw a "buy" analyst rating on stocks that had no analyst coverage, misleading them about the strength of the signal.
+
+**Fix:** Changed the email call to use `""` as default, consistent with the gate logic.
+
+---
+
+## Summary by service — Audit Rounds 2 & 3
+
+| Service | Bugs fixed |
+|---------|-----------|
+| scheduler / signal alerts | 6 (state machine, missing transitions, K-Score bypass, email loop, analyst inconsistency, datetime) |
+| frontend / stock detail | 1 (gamePlan null dereferences) |
+| frontend / opportunities | 1 (bullish probability ×100 missing) |
+| frontend / positions | 1 (sign prefix on best-performer card) |
+| signal-engine | 2 (factor exposure always-false, news sentiment clamping) |
+| research-engine | 1 (growth rate heuristic) |
+
+---
+
+*Audit rounds 2 & 3 conducted: 2026-06-02*
