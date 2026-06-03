@@ -74,8 +74,8 @@ export const api = {
   fearGreed: () => request<FearGreed>(`/stocks/fear_greed`),
   marketBreadth: () => request<MarketBreadth>(`/stocks/market_breadth`),
   listWatchlists: () => request<WatchlistMeta[]>(`/watchlists`),
-  createWatchlist: (name: string) => request<WatchlistMeta>(`/watchlists`, { method: 'POST', body: JSON.stringify({ name }) }),
-  renameWatchlist: (id: number, name: string) => request<WatchlistMeta>(`/watchlists/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+  createWatchlist: (name: string, trading_style?: string | null) => request<WatchlistMeta>(`/watchlists`, { method: 'POST', body: JSON.stringify({ name, trading_style }) }),
+  renameWatchlist: (id: number, name: string, trading_style?: string | null) => request<WatchlistMeta>(`/watchlists/${id}`, { method: 'PUT', body: JSON.stringify({ name, trading_style }) }),
   deleteWatchlist: (id: number) => request(`/watchlists/${id}`, { method: 'DELETE' }),
   listWatchlist: (listId?: number) => request<WatchlistItem[]>(`/watchlist${listId != null ? `?list_id=${listId}` : ''}`),
   addToWatchlist: (symbol: string, listId?: number) => request<WatchlistItem>(`/watchlist/${symbol}${listId != null ? `?list_id=${listId}` : ''}`, { method: 'POST' }),
@@ -295,7 +295,7 @@ export type PortfolioWeights = {
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string; volume: number | null; avg_volume: number | null };
 export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string };
-export type WatchlistMeta = { id: number; name: string; item_count: number; created_at: string };
+export type WatchlistMeta = { id: number; name: string; item_count: number; trading_style: string | null; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };

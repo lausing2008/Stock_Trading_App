@@ -252,6 +252,7 @@ class Watchlist(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(128))
+    trading_style: Mapped[str | None] = mapped_column(String(16), nullable=True)  # SHORT|SWING|LONG|None=global
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="watchlists")
