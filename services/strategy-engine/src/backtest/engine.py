@@ -1,5 +1,8 @@
-"""Vectorized backtester — single-asset, long-only, next-bar fill.
+"""Vectorized backtester — single-asset, long-only, same-bar-close fill.
 
+Entry and exit execute at the close of the bar on which the signal fires.
+Equity curve uses position.shift(1) so entry-bar return is excluded (you
+can't capture the return from the prior close to your entry close).
 Equity returns assume 100% allocation when entry rule fires and flat when exit
 fires. This is intentional simplicity for MVP — portfolio-level and multi-asset
 testing is a future extension documented in ARCHITECTURE.md.
@@ -63,7 +66,10 @@ class BacktestEngine:
             exit_prices.append(exit_p)
             trades[-1].update({"exit_ts": str(feat["ts"].iloc[-1]), "exit": exit_p, "ret": exit_p / entry_p - 1})
 
-        rets = feat["close"].pct_change().fillna(0) * position
+        # Shift position by 1: entry is at bar-i close, so first return should be
+        # bar i → bar i+1 (not bar i-1 → bar i, which you didn't hold).
+        pos_shifted = pd.Series(position).shift(1, fill_value=0).values
+        rets = feat["close"].pct_change().fillna(0) * pos_shifted
         equity = (1 + rets).cumprod()
         dd = 1 - equity / equity.cummax()
 
