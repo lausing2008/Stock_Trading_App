@@ -5,8 +5,9 @@
  * ─────────────
  * Every time the system issued a BUY signal, this page tracks what happened
  * next. A "trade" starts on the BUY signal date and ends when the system
- * issues a SELL or WAIT signal for the same stock. If there's no exit signal
- * yet, the trade is still "Open" and uses today's price as the exit.
+ * issues a SELL signal for the same stock and same trading horizon (SHORT/SWING/LONG).
+ * WAIT signals are NOT exits — they mean "hold off new entries," not "close position."
+ * If there's no SELL yet, the trade is still "Open" and uses today's price as the exit.
  *
  * HOW TO READ THE SUMMARY CARDS
  * ──────────────────────────────
@@ -38,7 +39,7 @@
  *   Exit date   — when the next SELL or WAIT signal was issued
  *   Return      — (exit price - entry price) / entry price × 100
  *   Hold days   — calendar days from entry to exit
- *   Exit signal — SELL, WAIT, or OPEN (still holding)
+ *   Exit signal — SELL or OPEN (still holding). WAIT no longer closes trades.
  *
  * DIFFERENCE FROM SIGNAL ACCURACY
  * ─────────────────────────────────
@@ -159,16 +160,23 @@ function EquityCurve({ points, spyReturn }: { points: EquityPoint[]; spyReturn: 
   );
 }
 
+const HORIZON_OPTIONS = [
+  { label: 'SHORT  (1–5d)',   value: 'SHORT' },
+  { label: 'SWING  (5–20d)',  value: 'SWING' },
+  { label: 'LONG  (30–90d)', value: 'LONG'  },
+];
+
 export default function TradePerformancePage() {
   const [lookback, setLookback]         = useState(180);
+  const [horizon, setHorizon]           = useState<'SHORT' | 'SWING' | 'LONG'>('SWING');
   const [filterSymbol, setFilterSymbol] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'closed' | 'open'>('ALL');
   const [outcomeFilter, setOutcomeFilter] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
   const [sortBy, setSortBy]             = useState<'date' | 'return' | 'hold'>('date');
 
   const { data, isLoading, error } = useSWR(
-    ['trade-performance', lookback],
-    () => api.tradePerformance(lookback),
+    ['trade-performance', lookback, horizon],
+    () => api.tradePerformance(lookback, undefined, horizon),
     { revalidateOnFocus: false },
   );
 
@@ -200,12 +208,26 @@ export default function TradePerformancePage() {
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>Trade Performance</h1>
         <p style={{ fontSize: 13, color: '#64748b' }}>
-          Real P&amp;L from BUY → SELL/WAIT signal pairs. Each row is one complete trade.
+          Real P&amp;L from BUY → SELL signal pairs, per trading style. Each row is one complete trade.
+          WAIT signals are not counted as exits — only SELL closes a position.
         </p>
       </div>
 
       {/* Controls */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center' }}>
+        {/* Horizon selector */}
+        <div style={{ display: 'flex', gap: 4 }}>
+          {HORIZON_OPTIONS.map(o => (
+            <button key={o.value} onClick={() => setHorizon(o.value as 'SHORT' | 'SWING' | 'LONG')}
+              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                borderColor: horizon === o.value ? '#4ade80' : '#1e293b',
+                background: horizon === o.value ? 'rgba(74,222,128,0.12)' : 'transparent',
+                color: horizon === o.value ? '#4ade80' : '#64748b' }}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ width: 1, background: '#1e293b', alignSelf: 'stretch' }} />
         <div style={{ display: 'flex', gap: 4 }}>
           {LOOKBACK_OPTIONS.map(o => (
             <button key={o.value} onClick={() => setLookback(o.value)}
