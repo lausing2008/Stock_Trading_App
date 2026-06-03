@@ -250,18 +250,6 @@ export default function StockDetail() {
     api.isWatched(symbol).then(setWatched).catch(() => {});
   }, [symbol]);
 
-  // Auto-run ML prediction when the page loads for this symbol
-  useEffect(() => {
-    if (!symbol) return;
-    setMlResult(null);
-    setMlError('');
-    setMlLoading(true);
-    api.predict(symbol, mlModel)
-      .then(r => setMlResult(r))
-      .catch(() => setMlError('No model trained yet — click Train This to build one.'))
-      .finally(() => setMlLoading(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol]);
 
   useEffect(() => {
     if (!watchMenuOpen) return;
@@ -532,7 +520,6 @@ Return ONLY valid JSON — no markdown, no prose:
   const levels = data.levels;
   const srLevels = levels?.support_resistance ?? [];
   const fibLevels = levels?.fibonacci ?? {};
-  const bullPct = mlResult ? (mlResult.bullish_probability * 100).toFixed(1) : null;
 
   return (
     <div className="space-y-4">
@@ -944,30 +931,46 @@ Return ONLY valid JSON — no markdown, no prose:
                 </button>
               </div>
             </div>
-            {mlLoading && (
-              <div style={{ fontSize: 12, color: '#475569' }}>Running model…</div>
-            )}
-            {mlError && !mlLoading && (
-              <div style={{ fontSize: 11, color: '#fbbf24', marginBottom: 8 }}>{mlError}</div>
-            )}
-            {mlResult && !mlLoading && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+            {/* Default: show ML prob already baked into the AI Signal (always consistent with dashboard) */}
+            {(() => {
+              const displayResult = mlResult ?? (data.signal?.bullish_probability != null ? {
+                direction: data.signal.bullish_probability >= 0.5 ? 'UP' : 'DOWN',
+                bullish_probability: data.signal.bullish_probability,
+                confidence: Math.abs(data.signal.bullish_probability - 0.5) * 200,
+              } : null);
+              const isFresh = !!mlResult;
+              if (mlLoading) return <div style={{ fontSize: 12, color: '#475569' }}>Running model…</div>;
+              if (mlError && !displayResult) return <div style={{ fontSize: 11, color: '#fbbf24' }}>{mlError}</div>;
+              if (!displayResult) return <div style={{ fontSize: 12, color: '#334155' }}>No signal data yet.</div>;
+              const bullishPct = Math.round(displayResult.bullish_probability * 100);
+              const isUp = displayResult.direction === 'UP';
+              return (
                 <div>
-                  <div className={`text-3xl font-bold ${mlResult.direction === 'UP' ? 'text-green-400' : 'text-red-400'}`} style={{ lineHeight: 1 }}>
-                    {mlResult.direction === 'UP' ? '↑' : '↓'} {mlResult.direction}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 28, fontWeight: 800, color: isUp ? '#4ade80' : '#f87171', lineHeight: 1 }}>
+                        {isUp ? '↑' : '↓'} {displayResult.direction}
+                      </div>
+                      <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>
+                        {bullishPct}% bullish · {displayResult.confidence?.toFixed(1)}% confidence
+                      </div>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${bullishPct}%`, background: isUp ? '#4ade80' : '#f87171', borderRadius: 4, transition: 'width 0.4s' }} />
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, color: '#334155' }}>
+                        <span>Bearish 0%</span><span>Bullish 100%</span>
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>{bullPct}% bullish · {mlResult.confidence?.toFixed(1)}% confidence</div>
+                  <div style={{ fontSize: 10, color: '#334155' }}>
+                    {isFresh ? '↻ Fresh model run · may differ from AI Signal' : 'From AI Signal — same value used by the dashboard'}
+                  </div>
+                  {mlError && <div style={{ fontSize: 11, color: '#fbbf24', marginTop: 4 }}>{mlError}</div>}
                 </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ height: 8, borderRadius: 4, background: '#1e293b', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${mlResult.bullish_probability * 100}%`, background: mlResult.direction === 'UP' ? '#4ade80' : '#f87171', borderRadius: 4, transition: 'width 0.4s' }} />
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, color: '#334155' }}>
-                    <span>Bearish 0%</span><span>Bullish 100%</span>
-                  </div>
-                </div>
-              </div>
-            )}
+              );
+            })()}
             {/* Training controls — collapsed by default */}
             <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid #1e293b' }}>
               <button
