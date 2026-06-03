@@ -278,8 +278,56 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[
     return len(failed) == 0, passed, failed
 
 
-def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) -> dict | None:
-    """Build a rule-based game plan from technical data when signal transitions to BUY."""
+_STYLE_PARAMS: dict[str, dict] = {
+    # SHORT: 1–5 day momentum trade — tight entries and stop, modest target
+    "SHORT": {
+        "entry1_pct":   0.995,   # -0.5%
+        "entry2_pct":   0.985,   # -1.5%
+        "breakout_pct": 1.010,   # +1%
+        "stop_pct":     0.970,   # -3%
+        "default_tp_pct": 1.05,  # +5% default target
+        "entry1_label": "tight entry — short-term momentum play",
+        "entry2_label": "secondary entry on minor intraday dip",
+        "stop_label":   "tight stop — short-term trade invalidated on 3% breach",
+        "tp_fallback":  "+5% quick target for short-term momentum trade",
+        "horizon_note": "Short-term trade (1–5 days) — prioritise execution speed over perfect fill",
+    },
+    # SWING: 5–30 day swing trade — original balanced levels
+    "SWING": {
+        "entry1_pct":   0.985,   # -1.5%
+        "entry2_pct":   0.965,   # -3.5%
+        "breakout_pct": 1.020,   # +2%
+        "stop_pct":     0.945,   # -5.5%
+        "default_tp_pct": 1.12,  # +12% default target
+        "entry1_label": "near-term support — scale in on weakness",
+        "entry2_label": "secondary support — averaging down level",
+        "stop_label":   "daily close below invalidates bullish swing setup",
+        "tp_fallback":  "+12% from current, near next resistance",
+        "horizon_note": "Swing trade (5–30 days) — hold through normal volatility",
+    },
+    # LONG: 30–365 day position trade — wider entries/stop, larger target
+    "LONG": {
+        "entry1_pct":   0.980,   # -2%
+        "entry2_pct":   0.950,   # -5%
+        "breakout_pct": 1.030,   # +3%
+        "stop_pct":     0.900,   # -10%
+        "default_tp_pct": 1.25,  # +25% default target
+        "entry1_label": "initial position — build on weakness over days/weeks",
+        "entry2_label": "add-to level — deeper pullback absorption zone",
+        "stop_label":   "wide stop allows normal volatility; weekly close below invalidates thesis",
+        "tp_fallback":  "+25% medium-term target (position trade)",
+        "horizon_note": "Position trade (1–12 months) — manage around earnings; size for volatility",
+    },
+}
+
+
+def _build_game_plan(
+    symbol: str,
+    signal_data: dict,
+    fundamentals: dict | None,
+    style: str = "SWING",
+) -> dict | None:
+    """Build a rule-based game plan tailored to the user's trading style (SHORT/SWING/LONG)."""
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
@@ -288,6 +336,7 @@ def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) 
             return None
         current_price = float(hist["Close"].iloc[-1])
 
+        params = _STYLE_PARAMS.get(style.upper(), _STYLE_PARAMS["SWING"])
         reasons = signal_data.get("reasons", {})
 
         # Derive entry levels from technical structure
@@ -296,30 +345,23 @@ def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) 
         rsi = reasons.get("rsi")
         bb_pct_b = reasons.get("bb_pct_b")
 
-        # Entry 1: 1.5–2% below current (near support), rounder number
-        raw_entry1 = current_price * 0.985
-        entry1 = round(raw_entry1 / _round_step(current_price)) * _round_step(current_price)
+        step = _round_step(current_price)
+        entry1   = round(current_price * params["entry1_pct"]   / step) * step
+        entry2   = round(current_price * params["entry2_pct"]   / step) * step
+        breakout = round(current_price * params["breakout_pct"] / step) * step
+        stop     = round(current_price * params["stop_pct"]     / step) * step
 
-        # Entry 2: deeper pullback (3.5–4%), ideally near a fibonacci/sma zone
-        raw_entry2 = current_price * 0.965
-        entry2 = round(raw_entry2 / _round_step(current_price)) * _round_step(current_price)
-
-        # Breakout: 2% above current
-        breakout = round(current_price * 1.02 / _round_step(current_price)) * _round_step(current_price)
-
-        # Stop: below entry2 by ~2% — close below = invalidated
-        stop = round(current_price * 0.945 / _round_step(current_price)) * _round_step(current_price)
-
-        # Take profit: analyst target or +12%
+        # Take profit: analyst target (only if meaningfully above current) else style default
         target_price = (fundamentals or {}).get("target_price")
-        if target_price and float(target_price) > current_price * 1.03:
+        min_tp_pct = params["default_tp_pct"]
+        if target_price and float(target_price) > current_price * min(1.03, min_tp_pct * 0.8):
             take_profit = float(target_price)
             tp_note = "analyst mean price target"
         else:
-            take_profit = round(current_price * 1.12 / _round_step(current_price)) * _round_step(current_price)
-            tp_note = "+12% from current, near next resistance"
+            take_profit = round(current_price * min_tp_pct / step) * step
+            tp_note = params["tp_fallback"]
 
-        # Entry rationale hints from technicals
+        # Entry rationale: technical hints override style defaults
         if rsi is not None and float(rsi) < 45:
             e1_note = f"RSI {float(rsi):.0f} — oversold recovery zone"
             e2_note = "oversold extension — scale in on deeper dip"
@@ -330,14 +372,13 @@ def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) 
             e1_note = "pullback to SMA50 support zone"
             e2_note = "deeper pullback — maintain SMA50 as key level"
         else:
-            e1_note = "near-term support — scale in on weakness"
-            e2_note = "secondary support — averaging down level"
+            e1_note = params["entry1_label"]
+            e2_note = params["entry2_label"]
 
         breakout_note = "breakout above resistance on volume — momentum confirmed"
-        if sma50_above_sma200:
+        stop_note = params["stop_label"]
+        if sma50_above_sma200 and style.upper() != "SHORT":
             stop_note = "daily close below signals golden-cross breakdown"
-        else:
-            stop_note = "daily close below invalidates bullish setup"
 
         # Earnings catalyst / risk
         next_earnings = (fundamentals or {}).get("next_earnings_date")
@@ -375,6 +416,8 @@ def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) 
             "catalysts": catalysts,
             "risk": risk,
             "current_price": current_price,
+            "horizon_note": params["horizon_note"],
+            "style": style.upper(),
         }
     except Exception as exc:
         log.warning("game_plan.build_failed", symbol=symbol, error=str(exc))
@@ -537,13 +580,14 @@ def check_signal_alerts() -> None:
                     alert.last_signal = current
                     continue
 
-                # Build game plan for BUY transitions
+                # Build game plan for BUY transitions, tailored to the user's trading style
                 game_plan = None
                 if current == "BUY":
                     game_plan = _build_game_plan(
                         alert.symbol,
                         signal_details.get(key, {}),
                         fundamentals_cache.get(alert.symbol),
+                        style=style,
                     )
 
                 email_ok = send_signal_alert_email(

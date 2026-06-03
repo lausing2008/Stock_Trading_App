@@ -238,6 +238,10 @@ def send_signal_alert_email(
         sl, tp = game_plan["stop"], game_plan["take_profit"]
         cats = game_plan.get("catalysts", [])
         risk = game_plan.get("risk", "")
+        gp_style = game_plan.get("style", horizon or "SWING")
+        horizon_note = game_plan.get("horizon_note", "")
+        _style_labels = {"SHORT": "Short-Term (1–5 Days)", "SWING": "Swing (5–30 Days)", "LONG": "Position (1–12 Months)"}
+        plan_label = _style_labels.get(gp_style, gp_style)
 
         def _pct(target: float) -> str:
             if cp <= 0: return ""
@@ -248,9 +252,14 @@ def send_signal_alert_email(
             f'<tr><td style="padding:5px 10px;font-size:12px;color:#1e293b;border-bottom:1px solid #f1f5f9">› {c}</td></tr>'
             for c in cats
         )
+        horizon_note_html = (
+            f'<div style="font-size:11px;color:#64748b;font-style:italic;margin-bottom:10px">{horizon_note}</div>'
+            if horizon_note else ""
+        )
         game_plan_html = f"""
     <div style="margin-top:24px">
-      <div style="font-size:11px;font-weight:700;color:#16a34a;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">📋 10-Day Game Plan for {symbol}</div>
+      <div style="font-size:11px;font-weight:700;color:#16a34a;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">📋 Game Plan — {plan_label} — {symbol}</div>
+      {horizon_note_html}
 
       <!-- Entry levels -->
       <table style="width:100%;border-collapse:collapse;background:#f0fdf4;border-radius:8px;overflow:hidden;border:1px solid #bbf7d0;margin-bottom:10px">
@@ -307,7 +316,8 @@ def send_signal_alert_email(
     </div>"""
 
         game_plan_text = f"""
---- 10-Day Game Plan for {symbol} ---
+--- Game Plan ({plan_label}) for {symbol} ---
+{horizon_note}
 Entry 1 (50%): ${e1:.2f}{_pct(e1)} — {game_plan["entry1_note"]}
 Entry 2 (50%): ${e2:.2f}{_pct(e2)} — {game_plan["entry2_note"]}
 Breakout (50%): ${bo:.2f}{_pct(bo)} — {game_plan["breakout_note"]}
