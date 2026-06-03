@@ -767,8 +767,10 @@ Return ONLY valid JSON — no markdown, no prose:
 
       {/* Main layout: chart left, sidebar right */}
       <div className="grid gap-4" style={{ gridTemplateColumns: '1fr 320px' }}>
-        {/* Chart */}
-        <div>
+        {/* Left column: chart + analysis panels */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+          {/* Chart */}
           {data.prices && data.prices.length > 0 ? (
             <PriceChart symbol={symbol as string} prices={data.prices} indicators={data.indicators} levels={data.levels} />
           ) : (
@@ -776,6 +778,252 @@ Return ONLY valid JSON — no markdown, no prose:
               No price data available for {symbol}. Try clicking Full Refresh above to ingest history.
             </div>
           )}
+
+          {/* K-Score + Fear & Greed side by side */}
+          {(ranking || fearGreed) && (
+            <div style={{ display: 'grid', gridTemplateColumns: ranking && fearGreed ? '1fr 1fr' : '1fr', gap: '16px', alignItems: 'start' }}>
+
+              {/* K-Score with progress bars */}
+              {ranking && (() => {
+                const s = ranking.score ?? 0;
+                const scoreColor = s >= 70 ? '#4ade80' : s >= 50 ? '#facc15' : '#f87171';
+                const bars: [string, number | null | undefined, string][] = [
+                  ['Technical', ranking.technical, '35%'],
+                  ['Momentum',  ranking.momentum,  '25%'],
+                  ['Value',     ranking.value,      '20%'],
+                  ['Growth',    ranking.growth,     '10%'],
+                  ['Volatility',ranking.volatility, '10%'],
+                ];
+                return (
+                  <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                      <h3 className="text-sm font-semibold text-slate-300">K-Score Breakdown</h3>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                        <span style={{ fontSize: 26, fontWeight: 800, color: scoreColor, lineHeight: 1 }}>{s.toFixed(0)}</span>
+                        <span style={{ fontSize: 11, color: '#475569' }}>/100</span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                      {bars.map(([label, value, weight]) => {
+                        const pct = typeof value === 'number' ? value : 0;
+                        const bc = pct >= 70 ? '#4ade80' : pct >= 50 ? '#facc15' : '#f87171';
+                        return (
+                          <div key={label}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                              <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                                {label} <span style={{ color: '#334155', fontSize: 10 }}>{weight}</span>
+                              </span>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: bc }}>{typeof value === 'number' ? value.toFixed(0) : '—'}</span>
+                            </div>
+                            <div style={{ height: 4, borderRadius: 2, background: '#1e293b' }}>
+                              <div style={{ height: '100%', width: `${pct}%`, background: bc, borderRadius: 2, transition: 'width 0.5s' }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {(ranking.fair_price != null || ranking.relative_strength != null) && (
+                      <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid #1e293b', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {ranking.fair_price != null && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                            <span style={{ color: '#64748b' }}>Fair Price</span>
+                            <span style={{ color: '#a5b4fc', fontWeight: 600 }}>${ranking.fair_price.toFixed(2)}</span>
+                          </div>
+                        )}
+                        {ranking.relative_strength != null && (() => {
+                          const rs = ranking.relative_strength as number;
+                          const rsColor = rs >= 60 ? '#4ade80' : rs >= 45 ? '#94a3b8' : '#f87171';
+                          return (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                              <span style={{ color: '#64748b' }}>Rel. Strength vs sector</span>
+                              <span style={{ color: rsColor, fontWeight: 600 }}>{rs.toFixed(0)} — {rs >= 60 ? 'leading' : rs >= 45 ? 'in-line' : 'lagging'}</span>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Fear & Greed */}
+              {fearGreed && (() => {
+                const score = fearGreed.score;
+                const ratingColor: Record<string, string> = {
+                  'Extreme Fear': '#ef4444', 'Fear': '#f97316',
+                  'Neutral': '#facc15', 'Greed': '#86efac', 'Extreme Greed': '#22c55e',
+                };
+                const color = ratingColor[fearGreed.rating] ?? '#94a3b8';
+                const angle = (score / 100) * 180 - 90;
+                return (
+                  <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                      <h3 className="text-sm font-semibold text-slate-300">Fear &amp; Greed Index</h3>
+                      <span style={{ fontSize: '10px', color: '#475569' }}>CNN · 1 h cache</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+                      {/* Gauge */}
+                      <div style={{ flexShrink: 0 }}>
+                        <div style={{ position: 'relative', width: '130px', height: '68px', overflow: 'hidden' }}>
+                          <svg width="130" height="68" viewBox="0 0 140 72">
+                            <path d="M 10 70 A 60 60 0 0 1 130 70" fill="none" stroke="#1e293b" strokeWidth="12" strokeLinecap="round"/>
+                            {[
+                              { start: 0,   end: 36,  color: '#ef4444' },
+                              { start: 36,  end: 72,  color: '#f97316' },
+                              { start: 72,  end: 108, color: '#facc15' },
+                              { start: 108, end: 144, color: '#86efac' },
+                              { start: 144, end: 180, color: '#22c55e' },
+                            ].map(seg => {
+                              const r = 60, cx = 70, cy = 70;
+                              const toRad = (d: number) => (d - 180) * Math.PI / 180;
+                              const x1 = cx + r * Math.cos(toRad(seg.start));
+                              const y1 = cy + r * Math.sin(toRad(seg.start));
+                              const x2 = cx + r * Math.cos(toRad(seg.end));
+                              const y2 = cy + r * Math.sin(toRad(seg.end));
+                              return <path key={seg.start} d={`M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`} fill="none" stroke={seg.color} strokeWidth="10" strokeLinecap="butt" opacity="0.85" />;
+                            })}
+                            <line x1="70" y1="70" x2={70 + 52 * Math.cos((angle - 90) * Math.PI / 180)} y2={70 + 52 * Math.sin((angle - 90) * Math.PI / 180)} stroke={color} strokeWidth="2.5" strokeLinecap="round" />
+                            <circle cx="70" cy="70" r="5" fill={color} />
+                          </svg>
+                        </div>
+                        <div style={{ textAlign: 'center', marginTop: 2 }}>
+                          <div style={{ fontSize: '22px', fontWeight: 800, color, lineHeight: 1 }}>{score}</div>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color, marginTop: '2px' }}>{fearGreed.rating}</div>
+                        </div>
+                      </div>
+                      {/* Right side: history + regime */}
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                          {[['Prev close', fearGreed.previous_close], ['1 Week ago', fearGreed.previous_1_week], ['1 Month ago', fearGreed.previous_1_month], ['1 Year ago', fearGreed.previous_1_year]].map(([lbl, val]) => (
+                            <div key={lbl as string} style={{ background: '#0f172a', borderRadius: 5, padding: '5px 8px' }}>
+                              <div style={{ fontSize: '9px', color: '#475569', fontWeight: 700, textTransform: 'uppercase' }}>{lbl}</div>
+                              <div style={{ fontSize: '13px', fontWeight: 700, color: '#94a3b8' }}>{val != null ? (val as number).toFixed(0) : '—'}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {fearGreed.sp500_regime && (
+                          <div style={{ paddingTop: 8, borderTop: '1px solid #1e293b' }}>
+                            <div style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>S&amp;P 500 Regime</div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: fearGreed.sp500_regime === 'bull' ? '#22c55e' : '#ef4444', display: 'inline-block', boxShadow: `0 0 6px ${fearGreed.sp500_regime === 'bull' ? '#22c55e' : '#ef4444'}` }} />
+                                <span style={{ fontSize: 13, fontWeight: 800, color: fearGreed.sp500_regime === 'bull' ? '#4ade80' : '#f87171' }}>
+                                  {fearGreed.sp500_regime === 'bull' ? 'Bull Market' : 'Bear Market'}
+                                </span>
+                              </div>
+                              {fearGreed.sp500_vs_ma200_pct != null && (
+                                <span style={{ fontSize: 11, fontWeight: 700, color: fearGreed.sp500_vs_ma200_pct >= 0 ? '#4ade80' : '#f87171' }}>
+                                  {fearGreed.sp500_vs_ma200_pct >= 0 ? '+' : ''}{fearGreed.sp500_vs_ma200_pct.toFixed(1)}% vs 200MA
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* ML Prediction — full width of left column */}
+          <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <h3 className="text-sm font-semibold text-slate-300">ML Prediction</h3>
+              <select
+                value={mlModel}
+                onChange={e => setMlModel(e.target.value)}
+                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
+              >
+                {['xgboost', 'random_forest', 'gradient_boosting', 'lstm'].map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: mlResult ? '1fr 1fr' : '1fr', gap: 12, alignItems: 'center' }}>
+              {mlResult && (
+                <div>
+                  <div className={`text-2xl font-bold ${mlResult.direction === 'UP' ? 'text-green-400' : 'text-red-400'}`} style={{ lineHeight: 1 }}>
+                    {mlResult.direction === 'UP' ? '↑' : '↓'} {mlResult.direction}
+                  </div>
+                  <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 3 }}>{bullPct}% bullish · {mlResult.confidence?.toFixed(1)}% confidence</div>
+                  <div style={{ marginTop: 8, height: 6, borderRadius: 3, background: '#1e293b', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${mlResult.bullish_probability * 100}%`, background: mlResult.direction === 'UP' ? '#4ade80' : '#f87171', borderRadius: 3, transition: 'width 0.4s' }} />
+                  </div>
+                </div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {mlError && <div style={{ fontSize: '11px', color: '#fbbf24' }}>{mlError}</div>}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button onClick={runML} disabled={mlLoading} style={{ flex: 1, borderRadius: 6, background: '#4f46e5', border: 'none', padding: '7px', fontSize: 12, color: '#fff', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1, fontWeight: 600 }}>
+                    {mlLoading ? 'Running…' : 'Predict'}
+                  </button>
+                  <button onClick={trainML} disabled={mlLoading} style={{ flex: 1, borderRadius: 6, background: 'transparent', border: '1px solid #334155', padding: '7px', fontSize: 12, color: '#94a3b8', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1 }}>
+                    Train This
+                  </button>
+                </div>
+                <button onClick={handleTrainAll} disabled={trainAllState === 'running'} style={{ borderRadius: 6, padding: '7px', border: '1px solid rgba(99,102,241,0.3)', background: trainAllState === 'running' ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.08)', color: trainAllState === 'running' ? '#818cf8' : '#6366f1', fontSize: 12, fontWeight: 600, cursor: trainAllState === 'running' ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
+                  <span style={{ animation: trainAllState === 'running' ? 'spin 0.8s linear infinite' : 'none', display: 'inline-block' }}>{trainAllState === 'running' ? '↻' : '⚡'}</span>
+                  {trainAllState === 'running' ? 'Training All…' : 'Train All Stocks'}
+                </button>
+                {trainAllMsg && <div style={{ fontSize: 11, color: trainAllState === 'done' ? '#4ade80' : '#f87171' }}>{trainAllMsg}</div>}
+              </div>
+            </div>
+          </div>
+
+          {/* S/R + Fibonacci + Patterns */}
+          {(srLevels.length > 0 || Object.keys(fibLevels).length > 0 || (data.patterns?.patterns && data.patterns.patterns.length > 0)) && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', alignItems: 'start' }}>
+
+              {srLevels.length > 0 && (
+                <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+                  <h3 className="text-sm font-semibold text-slate-300 mb-2">Support &amp; Resistance</h3>
+                  <div className="space-y-1">
+                    {srLevels.slice().map(lvl => ({ ...lvl, kind: curPrice != null ? (lvl.price > curPrice ? 'resistance' : 'support') : lvl.kind })).sort((a, b) => b.price - a.price).slice(0, 8).map((lvl, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs">
+                        <span className={lvl.kind === 'support' ? 'text-green-400' : 'text-red-400'}>
+                          {lvl.kind === 'support' ? 'S' : 'R'} ${lvl.price.toFixed(2)}
+                        </span>
+                        <span className="text-slate-500">{lvl.strength} {lvl.strength === 1 ? 'touch' : 'touches'}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-2 pt-2 border-t border-slate-800 text-xs text-slate-600">Touches = bounces off this level</div>
+                </div>
+              )}
+
+              {Object.keys(fibLevels).length > 0 && (
+                <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+                  <h3 className="text-sm font-semibold text-slate-300 mb-2">Fibonacci Levels</h3>
+                  <div className="space-y-1">
+                    {Object.entries(fibLevels).map(([k, v]) => (
+                      <div key={k} className="flex justify-between text-xs">
+                        <span className="text-slate-500">{k}</span>
+                        <span className="text-slate-300">${(v as number).toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {data.patterns?.patterns && data.patterns.patterns.length > 0 && (
+                <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+                  <h3 className="text-sm font-semibold text-slate-300 mb-2">Chart Patterns</h3>
+                  <div className="space-y-1">
+                    {data.patterns.patterns.map((p, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs">
+                        <span className="text-slate-300">{p.name}</span>
+                        <span className="text-slate-500">{(p.confidence * 100).toFixed(0)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+
         </div>
 
         {/* Sidebar */}
@@ -1122,264 +1370,6 @@ Return ONLY valid JSON — no markdown, no prose:
         </div>
       </div>
 
-      {/* Analysis sections — full-width 3-column grid below the chart */}
-      <div style={{ marginTop: '20px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', alignItems: 'start' }}>
-
-        {/* K-Score */}
-        {ranking && (
-          <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
-            <div className="flex items-baseline justify-between mb-2">
-              <h3 className="text-sm font-semibold text-slate-300">K-Score Breakdown</h3>
-              <span className="text-2xl font-bold">{ranking.score?.toFixed(1)}</span>
-            </div>
-            <div className="grid grid-cols-2 gap-y-1.5 text-xs text-slate-500">
-              {[
-                ['Technical', ranking.technical],
-                ['Momentum', ranking.momentum],
-                ['Value', ranking.value],
-                ['Growth', ranking.growth],
-                ['Volatility', ranking.volatility],
-                ['Fair Price', ranking.fair_price != null ? `$${ranking.fair_price.toFixed(2)}` : '—'],
-              ].map(([k, v]) => (
-                <div key={k as string}><span className="text-slate-600">{k}:</span> {typeof v === 'number' ? v.toFixed(0) : (v ?? '—')}</div>
-              ))}
-              {ranking.relative_strength != null && (() => {
-                const rs = ranking.relative_strength as number;
-                const rsColor = rs >= 60 ? '#4ade80' : rs >= 45 ? '#94a3b8' : '#f87171';
-                const rsLabel = rs >= 60 ? 'leading' : rs >= 45 ? 'in-line' : 'lagging';
-                return (
-                  <div className="col-span-2 mt-1 pt-1 border-t border-slate-800">
-                    <span className="text-slate-600">Rel. Strength vs sector:</span>{' '}
-                    <span style={{ color: rsColor, fontWeight: 600 }}>{rs.toFixed(0)}</span>
-                    <span className="text-slate-600"> — {rsLabel}</span>
-                    {ranking.rs_rank != null && <span className="text-slate-700 ml-1">(rank {(ranking.rs_rank as number).toFixed(2)}×)</span>}
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
-        )}
-
-        {/* Fear & Greed Index */}
-        {fearGreed ? (() => {
-          const score = fearGreed.score;
-          const ratingColor: Record<string, string> = {
-            'Extreme Fear': '#ef4444',
-            'Fear': '#f97316',
-            'Neutral': '#facc15',
-            'Greed': '#86efac',
-            'Extreme Greed': '#22c55e',
-          };
-          const color = ratingColor[fearGreed.rating] ?? '#94a3b8';
-          const angle = (score / 100) * 180 - 90;
-          return (
-            <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-slate-300">Fear &amp; Greed Index</h3>
-                <span style={{ fontSize: '10px', color: '#475569' }}>CNN · 1 h cache</span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                <div style={{ position: 'relative', width: '140px', height: '72px', overflow: 'hidden' }}>
-                  <svg width="140" height="72" viewBox="0 0 140 72">
-                    <path d="M 10 70 A 60 60 0 0 1 130 70" fill="none" stroke="#1e293b" strokeWidth="12" strokeLinecap="round"/>
-                    {[
-                      { start: 0,   end: 36,  color: '#ef4444' },
-                      { start: 36,  end: 72,  color: '#f97316' },
-                      { start: 72,  end: 108, color: '#facc15' },
-                      { start: 108, end: 144, color: '#86efac' },
-                      { start: 144, end: 180, color: '#22c55e' },
-                    ].map(seg => {
-                      const r = 60, cx = 70, cy = 70;
-                      const toRad = (d: number) => (d - 180) * Math.PI / 180;
-                      const x1 = cx + r * Math.cos(toRad(seg.start));
-                      const y1 = cy + r * Math.sin(toRad(seg.start));
-                      const x2 = cx + r * Math.cos(toRad(seg.end));
-                      const y2 = cy + r * Math.sin(toRad(seg.end));
-                      return (
-                        <path key={seg.start}
-                          d={`M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`}
-                          fill="none" stroke={seg.color} strokeWidth="10" strokeLinecap="butt" opacity="0.85"
-                        />
-                      );
-                    })}
-                    <line
-                      x1="70" y1="70"
-                      x2={70 + 52 * Math.cos((angle - 90) * Math.PI / 180)}
-                      y2={70 + 52 * Math.sin((angle - 90) * Math.PI / 180)}
-                      stroke={color} strokeWidth="2.5" strokeLinecap="round"
-                    />
-                    <circle cx="70" cy="70" r="5" fill={color} />
-                  </svg>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '24px', fontWeight: 800, color, lineHeight: 1 }}>{score}</div>
-                  <div style={{ fontSize: '12px', fontWeight: 700, color, marginTop: '2px' }}>{fearGreed.rating}</div>
-                </div>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-                  {[
-                    ['Prev', fearGreed.previous_close],
-                    ['1W', fearGreed.previous_1_week],
-                    ['1M', fearGreed.previous_1_month],
-                    ['1Y', fearGreed.previous_1_year],
-                  ].map(([lbl, val]) => (
-                    <div key={lbl as string} style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: '9px', color: '#475569', fontWeight: 700, textTransform: 'uppercase' }}>{lbl}</div>
-                      <div style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8' }}>{val != null ? (val as number).toFixed(0) : '—'}</div>
-                    </div>
-                  ))}
-                </div>
-                {fearGreed.sp500_regime && (
-                  <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #1e293b', width: '100%' }}>
-                    <div style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>S&amp;P 500 Regime</div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: fearGreed.sp500_regime === 'bull' ? '#22c55e' : '#ef4444', display: 'inline-block', boxShadow: `0 0 6px ${fearGreed.sp500_regime === 'bull' ? '#22c55e' : '#ef4444'}` }} />
-                        <span style={{ fontSize: '13px', fontWeight: 800, color: fearGreed.sp500_regime === 'bull' ? '#4ade80' : '#f87171' }}>
-                          {fearGreed.sp500_regime === 'bull' ? 'Bull Market' : 'Bear Market'}
-                        </span>
-                      </div>
-                      {fearGreed.sp500_vs_ma200_pct != null && (
-                        <span style={{ fontSize: '11px', fontWeight: 700, color: fearGreed.sp500_vs_ma200_pct >= 0 ? '#4ade80' : '#f87171' }}>
-                          {fearGreed.sp500_vs_ma200_pct >= 0 ? '+' : ''}{fearGreed.sp500_vs_ma200_pct.toFixed(1)}% vs 200MA
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })() : null}
-
-        {/* ML Prediction */}
-        <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
-          <h3 className="text-sm font-semibold text-slate-300 mb-2">ML Prediction</h3>
-          <div className="flex gap-2 mb-2">
-            <select
-              value={mlModel}
-              onChange={e => setMlModel(e.target.value)}
-              className="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
-            >
-              {['xgboost', 'random_forest', 'gradient_boosting', 'lstm'].map(m => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </div>
-          {mlResult && (
-            <div className="mb-2">
-              <div className={`text-lg font-bold ${mlResult.direction === 'UP' ? 'text-green-400' : 'text-red-400'}`}>
-                {mlResult.direction} · {bullPct}% bullish
-              </div>
-              <div className="text-xs text-slate-500">Confidence: {mlResult.confidence?.toFixed(1)}%</div>
-              <div className="mt-1.5 h-1.5 rounded-full bg-slate-700 overflow-hidden">
-                <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${mlResult.bullish_probability * 100}%` }} />
-              </div>
-            </div>
-          )}
-          {mlError && <div style={{ fontSize: '11px', color: '#fbbf24', marginBottom: '8px' }}>{mlError}</div>}
-          <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
-            <button
-              onClick={runML}
-              disabled={mlLoading}
-              style={{ flex: 1, borderRadius: '6px', background: '#4f46e5', border: 'none', padding: '6px', fontSize: '12px', color: '#fff', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1 }}
-            >
-              {mlLoading ? 'Running…' : 'Predict'}
-            </button>
-            <button
-              onClick={trainML}
-              disabled={mlLoading}
-              style={{ flex: 1, borderRadius: '6px', background: 'transparent', border: '1px solid #475569', padding: '6px', fontSize: '12px', color: '#94a3b8', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1 }}
-            >
-              Train This
-            </button>
-          </div>
-          <button
-            onClick={handleTrainAll}
-            disabled={trainAllState === 'running'}
-            style={{
-              width: '100%', borderRadius: '6px', padding: '7px',
-              border: '1px solid rgba(99,102,241,0.3)',
-              background: trainAllState === 'running' ? 'rgba(99,102,241,0.15)' : 'rgba(99,102,241,0.08)',
-              color: trainAllState === 'running' ? '#818cf8' : '#6366f1',
-              fontSize: '12px', fontWeight: 600, cursor: trainAllState === 'running' ? 'not-allowed' : 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
-            }}
-          >
-            <span style={{ animation: trainAllState === 'running' ? 'spin 0.8s linear infinite' : 'none', display: 'inline-block' }}>
-              {trainAllState === 'running' ? '↻' : '⚡'}
-            </span>
-            {trainAllState === 'running' ? 'Training All…' : 'Train All Stocks'}
-          </button>
-          {trainAllMsg && (
-            <div style={{ marginTop: '6px', fontSize: '11px', color: trainAllState === 'done' ? '#4ade80' : '#f87171' }}>
-              {trainAllMsg}
-            </div>
-          )}
-        </div>
-
-        {/* Support / Resistance levels */}
-        {srLevels.length > 0 && (
-          <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
-            <h3 className="text-sm font-semibold text-slate-300 mb-2">Support &amp; Resistance</h3>
-            <div className="space-y-1">
-              {srLevels
-                .slice()
-                .map(lvl => ({
-                  ...lvl,
-                  kind: curPrice != null
-                    ? (lvl.price > curPrice ? 'resistance' : 'support')
-                    : lvl.kind,
-                }))
-                .sort((a, b) => b.price - a.price)
-                .slice(0, 8)
-                .map((lvl, i) => (
-                  <div key={i} className="flex items-center justify-between text-xs">
-                    <span className={lvl.kind === 'support' ? 'text-green-400' : 'text-red-400'}>
-                      {lvl.kind === 'support' ? 'S' : 'R'} ${lvl.price.toFixed(2)}
-                    </span>
-                    <span className="text-slate-500" title="Number of times price has bounced off this level">
-                      {lvl.strength} {lvl.strength === 1 ? 'touch' : 'touches'}
-                    </span>
-                  </div>
-                ))}
-            </div>
-            <div className="mt-2 pt-2 border-t border-slate-800 text-xs text-slate-600">
-              Touches = times price bounced off this level
-            </div>
-          </div>
-        )}
-
-        {/* Fibonacci levels */}
-        {Object.keys(fibLevels).length > 0 && (
-          <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
-            <h3 className="text-sm font-semibold text-slate-300 mb-2">Fibonacci Levels</h3>
-            <div className="space-y-1">
-              {Object.entries(fibLevels).map(([k, v]) => (
-                <div key={k} className="flex justify-between text-xs">
-                  <span className="text-slate-500">{k}</span>
-                  <span className="text-slate-300">${(v as number).toFixed(2)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Chart Patterns */}
-        {data.patterns?.patterns && data.patterns.patterns.length > 0 && (
-          <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
-            <h3 className="text-sm font-semibold text-slate-300 mb-2">Chart Patterns</h3>
-            <div className="space-y-1">
-              {data.patterns.patterns.map((p, i) => (
-                <div key={i} className="flex items-center justify-between text-xs">
-                  <span className="text-slate-300">{p.name}</span>
-                  <span className="text-slate-500">{(p.confidence * 100).toFixed(0)}%</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-      </div>
 
       {/* Company Financials — full width */}
       {data.fundamentals && (() => {
