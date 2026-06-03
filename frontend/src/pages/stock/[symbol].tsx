@@ -98,8 +98,6 @@ export default function StockDetail() {
   const [mlModel, setMlModel] = useState('xgboost');
   const [mlLoading, setMlLoading] = useState(false);
   const [mlError, setMlError] = useState('');
-  const [trainAllState, setTrainAllState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
-  const [trainAllMsg, setTrainAllMsg] = useState('');
   const [mlTrainOpen, setMlTrainOpen] = useState(false);
 
   // AI chat state
@@ -517,22 +515,6 @@ Return ONLY valid JSON — no markdown, no prose:
     }
   }
 
-  async function handleTrainAll() {
-    if (trainAllState === 'running') return;
-    setTrainAllState('running');
-    setTrainAllMsg('');
-    try {
-      const stocks = await api.listStocks();
-      try { await api.ingest(stocks.map(s => s.symbol)); } catch { /* non-fatal */ }
-      await mutateOverview().catch(() => {});
-      const res = await api.trainAll();
-      setTrainAllState('done');
-      setTrainAllMsg(`✓ Ingested ${stocks.length} stocks · Scheduled ${res.count} ML models — ready in ~2–5 min`);
-    } catch {
-      setTrainAllState('error');
-      setTrainAllMsg('Pipeline failed. Check backend logs.');
-    }
-  }
 
   if (isLoading) return <div className="text-slate-400 p-4">Loading…</div>;
   if (error || !data) return <div className="text-slate-300 p-4">Error loading {symbol}.</div>;
@@ -797,7 +779,7 @@ Return ONLY valid JSON — no markdown, no prose:
 
           {/* K-Score + Fear & Greed side by side */}
           {(ranking || fearGreed) && (
-            <div style={{ display: 'grid', gridTemplateColumns: ranking && fearGreed ? '1fr 1fr' : '1fr', gap: '16px', alignItems: 'start' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: ranking && fearGreed ? '1fr 1fr' : '1fr', gap: '16px', alignItems: 'stretch' }}>
 
               {/* K-Score with progress bars */}
               {ranking && (() => {
@@ -996,16 +978,9 @@ Return ONLY valid JSON — no markdown, no prose:
               </button>
               {mlTrainOpen && (
                 <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button onClick={trainML} disabled={mlLoading} style={{ flex: 1, borderRadius: 6, background: 'transparent', border: '1px solid #334155', padding: '6px', fontSize: 12, color: '#94a3b8', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1 }}>
-                      Train This Stock
-                    </button>
-                    <button onClick={handleTrainAll} disabled={trainAllState === 'running'} style={{ flex: 1, borderRadius: 6, padding: '6px', border: '1px solid rgba(99,102,241,0.3)', background: 'rgba(99,102,241,0.08)', color: '#6366f1', fontSize: 12, fontWeight: 600, cursor: trainAllState === 'running' ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                      <span style={{ animation: trainAllState === 'running' ? 'spin 0.8s linear infinite' : 'none', display: 'inline-block' }}>{trainAllState === 'running' ? '↻' : '⚡'}</span>
-                      {trainAllState === 'running' ? 'Training…' : 'Train All'}
-                    </button>
-                  </div>
-                  {trainAllMsg && <div style={{ fontSize: 11, color: trainAllState === 'done' ? '#4ade80' : '#f87171' }}>{trainAllMsg}</div>}
+                  <button onClick={trainML} disabled={mlLoading} style={{ borderRadius: 6, background: 'transparent', border: '1px solid #334155', padding: '6px', fontSize: 12, color: '#94a3b8', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1 }}>
+                    {mlLoading ? 'Training…' : 'Train model for this stock'}
+                  </button>
                 </div>
               )}
             </div>
