@@ -23,11 +23,14 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     """Extend OHLCV with standard indicators used by the DSL."""
     out = df.copy()
     close = out["close"]
-    out["sma_20"] = close.rolling(20).mean()
-    out["sma_50"] = close.rolling(50).mean()
+    high  = out["high"]   if "high"   in out.columns else close
+    low   = out["low"]    if "low"    in out.columns else close
+
+    out["sma_20"]  = close.rolling(20).mean()
+    out["sma_50"]  = close.rolling(50).mean()
     out["sma_200"] = close.rolling(200).mean()
-    out["ema_12"] = close.ewm(span=12, adjust=False).mean()
-    out["ema_26"] = close.ewm(span=26, adjust=False).mean()
+    out["ema_12"]  = close.ewm(span=12, adjust=False).mean()
+    out["ema_26"]  = close.ewm(span=26, adjust=False).mean()
 
     d = close.diff()
     g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
@@ -36,9 +39,33 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     out["rsi_14"] = 100 - 100 / (1 + rs)
 
     macd = out["ema_12"] - out["ema_26"]
-    out["macd"] = macd
+    out["macd"]        = macd
     out["macd_signal"] = macd.ewm(span=9, adjust=False).mean()
-    out["macd_hist"] = out["macd"] - out["macd_signal"]
+    out["macd_hist"]   = out["macd"] - out["macd_signal"]
+
+    # ATR(14) — Wilder smoothing using EWM
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low  - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    out["atr_14"] = tr.ewm(alpha=1 / 14, adjust=False).mean()
+
+    # Bollinger Bands (20-period, 2σ)
+    bb_std         = close.rolling(20).std()
+    out["bb_upper"] = out["sma_20"] + 2 * bb_std
+    out["bb_lower"] = out["sma_20"] - 2 * bb_std
+    bb_range        = (out["bb_upper"] - out["bb_lower"]).replace(0, np.nan)
+    out["bb_pct"]   = (close - out["bb_lower"]) / bb_range  # 0=lower band, 1=upper band
+
+    # Volume (relative to 20-day average)
+    if "volume" in out.columns:
+        out["volume_sma_20"] = out["volume"].rolling(20).mean()
+        out["volume_ratio"]  = out["volume"] / out["volume_sma_20"].replace(0, np.nan)
+    else:
+        out["volume_sma_20"] = np.nan
+        out["volume_ratio"]  = np.nan
+
     return out
 
 

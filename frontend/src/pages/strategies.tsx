@@ -10,7 +10,15 @@ interface Preset {
   entry: Cond[]; exit: Cond[];
 }
 
-const FEATURES = ['close', 'sma_20', 'sma_50', 'sma_200', 'rsi_14', 'macd', 'macd_signal', 'macd_hist'];
+const FEATURES = [
+  'close', 'sma_20', 'sma_50', 'sma_200',
+  'ema_12', 'ema_26',
+  'rsi_14',
+  'macd', 'macd_signal', 'macd_hist',
+  'atr_14',
+  'bb_upper', 'bb_lower', 'bb_pct',
+  'volume_ratio',
+];
 const OPS = ['<', '<=', '>', '>=', 'crosses_above', 'crosses_below'];
 
 const OPP_TO_PRESET: Record<string, string> = {
@@ -32,9 +40,9 @@ const PRESETS: Preset[] = [
   },
   {
     key: 'longterm', label: 'Long-Term Value', icon: '🏛️', tagline: '6–24 month horizon',
-    description: 'Oversold RSI with price below SMA200 — a classic deep-value entry for patient investors. Exit when RSI signals overbought.',
-    entry: [{ feature: 'rsi_14', op: '<', right: '40' }, { feature: 'close', op: '<', right: 'sma_200' }],
-    exit:  [{ feature: 'rsi_14', op: '>', right: '65' }],
+    description: 'Buys oversold dips (RSI < 45) while the 200-day uptrend is confirmed (price above SMA200). Enters quality stocks on pullbacks rather than catching a falling knife. Exit when RSI reaches overbought.',
+    entry: [{ feature: 'rsi_14', op: '<', right: '45' }, { feature: 'close', op: '>', right: 'sma_200' }],
+    exit:  [{ feature: 'rsi_14', op: '>', right: '70' }],
   },
   {
     key: 'growth', label: 'Growth Momentum', icon: '🚀', tagline: 'Ride the uptrend',
@@ -80,14 +88,33 @@ const PRESETS: Preset[] = [
   },
   {
     key: 'ai_signal', label: 'AI Signal', icon: '🤖', tagline: 'Mirrors live BUY conditions',
-    description: 'Matches the live AI engine\'s BUY conditions: RSI in the 40–68 sweet spot (not oversold, not overbought), MACD histogram positive (momentum building), and price above SMA50. These are the exact TA thresholds the signal engine uses before applying ML. Exit when MACD histogram turns negative.',
+    description: 'Approximates the live AI engine\'s SWING BUY conditions: RSI in the optimal 40–68 zone, MACD histogram positive (momentum building), price above SMA50, and SMA50 above SMA200 (golden cross — weekly uptrend confirmed). These match the TA thresholds the signal engine uses before applying ML. Exit when MACD histogram turns negative (momentum stall).',
     entry: [
       { feature: 'rsi_14', op: '>', right: '40' },
       { feature: 'rsi_14', op: '<', right: '68' },
       { feature: 'macd_hist', op: '>', right: '0' },
       { feature: 'close', op: '>', right: 'sma_50' },
+      { feature: 'sma_50', op: '>', right: 'sma_200' },
     ],
     exit:  [{ feature: 'macd_hist', op: '<', right: '0' }],
+  },
+  {
+    key: 'volume_breakout', label: 'Volume Breakout', icon: '📣', tagline: '1–10 day breakout',
+    description: 'Buys when price crosses above SMA20 on at least 1.5× average volume — confirming real institutional participation, not a fake-out. Exit immediately if price falls back below SMA20.',
+    entry: [
+      { feature: 'close', op: 'crosses_above', right: 'sma_20' },
+      { feature: 'volume_ratio', op: '>=', right: '1.5' },
+    ],
+    exit: [{ feature: 'close', op: 'crosses_below', right: 'sma_20' }],
+  },
+  {
+    key: 'bb_bounce', label: 'Bollinger Bounce', icon: '🎱', tagline: 'Mean reversion at the band',
+    description: 'Enters when price is near the lower Bollinger Band (bb_pct < 0.2) with RSI also oversold (< 38). Expects a mean-reversion snap back toward the middle band. Exit when price reaches the upper half of the band (bb_pct > 0.75).',
+    entry: [
+      { feature: 'bb_pct', op: '<', right: '0.2' },
+      { feature: 'rsi_14', op: '<', right: '38' },
+    ],
+    exit: [{ feature: 'bb_pct', op: '>', right: '0.75' }],
   },
 ];
 
@@ -368,7 +395,7 @@ export default function StrategiesPage() {
         <h1 style={{ fontSize: '20px', fontWeight: 800, color: '#f1f5f9', margin: '0 0 4px' }}>Strategy Backtester</h1>
         <p style={{ fontSize: '12px', color: '#475569', margin: 0 }}>
           Every run is auto-saved. Load past results, compare up to 3 runs side-by-side.
-          Fees: 5 bps + 2 bps slippage. Long-only, next-bar fill.
+          Fees: 5 bps + 2 bps slippage · Long-only · Next-bar fill · Features: RSI, MACD, SMA, ATR, Bollinger Bands, volume ratio.
         </p>
       </div>
 
