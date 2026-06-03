@@ -445,7 +445,7 @@ def _score_fundamental(fund: dict) -> dict:
     rev_growth = fund.get("revenue_growth")
     rev_assess = "Unknown"
     if rev_growth is not None:
-        rev_pct = rev_growth * 100 if rev_growth < 10 else rev_growth  # handle decimal vs pct
+        rev_pct = rev_growth * 100  # yfinance returns decimal fraction (0.10 = 10%)
         if rev_pct >= 20:
             rev_assess = "Excellent"; score += 10
         elif rev_pct >= 10:
@@ -459,7 +459,7 @@ def _score_fundamental(fund: dict) -> dict:
     eps_growth = fund.get("earnings_growth")
     eps_assess = "Unknown"
     if eps_growth is not None:
-        eps_pct = eps_growth * 100 if abs(eps_growth) < 10 else eps_growth
+        eps_pct = eps_growth * 100  # yfinance returns decimal fraction
         if eps_pct >= 25:
             eps_assess = "Excellent"; score += 10
         elif eps_pct >= 10:
@@ -536,7 +536,7 @@ def _score_fundamental(fund: dict) -> dict:
 
     peg = None
     if pe and rev_growth and rev_growth > 0:
-        g = rev_growth * 100 if rev_growth < 10 else rev_growth
+        g = rev_growth * 100  # yfinance returns decimal fraction
         peg = round(pe / g, 2) if g > 0 else None
 
     # Profitability
