@@ -220,6 +220,8 @@ def signal_accuracy(
         exit_close, exit_date = most_recent_close(sig.stock_id)
         if exit_close is None or exit_date is None or exit_date <= signal_date:
             continue
+        if entry_close <= 0:
+            continue
 
         pct_change  = (exit_close - entry_close) / entry_close * 100
         signal_type = sig.signal.value
@@ -353,6 +355,8 @@ def ml_weight_validation(
         entry, entry_date = _first_close_after(sig.stock_id, signal_date)
         exit_p, exit_date = _most_recent_close(sig.stock_id)
         if entry is None or exit_p is None or exit_date is None or exit_date <= signal_date:
+            continue
+        if entry <= 0:
             continue
 
         pct = (exit_p - entry) / entry * 100
@@ -675,7 +679,7 @@ def trade_performance(
             status          = "open"
             in_open_trade.add(sid)  # block any later BUYs — position is already open
 
-        if exit_price is None:
+        if exit_price is None or entry_price <= 0:
             continue
 
         pct       = (exit_price - entry_price) / entry_price * 100
