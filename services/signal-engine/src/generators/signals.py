@@ -209,30 +209,21 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
 
 
 def _fetch_news_sentiment(symbol: str) -> float | None:
-    """Return a 7-day news sentiment score (0–100, 50 = neutral).
+    """Return aggregate news sentiment score (0-100, 50=neutral).
 
-    Uses the sentiment field already computed by the market-data news endpoint
-    (yfinance VADER scores, range −1 to +1). Maps to 0–100 and averages the
-    last 10 articles (yfinance typically returns 7–10 recent items).
-    Returns None if no news available or endpoint unreachable.
+    Calls the dedicated /news/sentiment endpoint which uses Claude Haiku
+    (when ANTHROPIC_API_KEY is configured in market-data) or enhanced VADER
+    with financial-domain lexicon corrections as fallback.
     """
     try:
-        url = f"{_settings.market_data_url}/stocks/{symbol}/news?sources=yfinance&limit=10"
-        with httpx.Client(timeout=8) as c:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/news/sentiment"
+        with httpx.Client(timeout=10) as c:
             r = c.get(url)
-            if r.status_code != 200:
-                return None
-        articles = r.json()
-        if not articles:
-            return None
-        scores = [
-            max(0.0, min(100.0, float(a["sentiment"]) * 50 + 50))  # map −1..+1 → 0..100, clamped
-            for a in articles
-            if isinstance(a.get("sentiment"), (int, float))
-        ]
-        return round(sum(scores) / len(scores), 1) if scores else None
+            if r.status_code == 200:
+                return float(r.json()["score"])
     except Exception:
-        return None
+        pass
+    return None
 
 
 def _fetch_options_flow(symbol: str) -> tuple[str | None, float | None]:
@@ -734,15 +725,6 @@ def _apply_style_signal(
         fused = float(np.clip(0.5 + daily_dir * p["weekly_compress"], 0.0, 1.0))
         reasons["weekly_alignment"] = False
 
-    # SWING/LONG BUY gate: bearish weekly RSI + downtrend requires overwhelming daily signal.
-    # Applied after weekly_compress — an additional 0.40× compression ensures the fused score
-    # cannot cross the BUY threshold unless the daily signal is extremely strong (≥0.9 pre-gate).
-    if style_key in ("SWING", "LONG") and weekly_rsi is not None and weekly_rsi < 40 and weekly_trend == "down":
-        fused = 0.5 + (fused - 0.5) * 0.40
-        reasons["weekly_gate_fired"] = True
-    else:
-        reasons["weekly_gate_fired"] = False
-
     # ── ADX choppy-market compression ────────────────────────────────────────
     adx_min  = p.get("adx_min")
     adx_comp = p.get("adx_compression")
@@ -810,16 +792,16 @@ def _apply_style_signal(
 
     # ── Options flow ──────────────────────────────────────────────────────────
     if options_sentiment == "strongly_bullish":
-        fused = float(np.clip(fused + 0.07, 0.0, 1.0))
+        fused = float(np.clip(fused + 0.04, 0.0, 1.0))
         reasons["options_flag"] = "unusual_call_activity"
     elif options_sentiment == "bullish":
-        fused = float(np.clip(fused + 0.03, 0.0, 1.0))
+        fused = float(np.clip(fused + 0.02, 0.0, 1.0))
         reasons["options_flag"] = "elevated_call_volume"
     elif options_sentiment == "bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.85, 0.0, 1.0))
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))
         reasons["options_flag"] = "elevated_put_volume"
     elif options_sentiment == "slightly_bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.96, 0.0, 1.0))
         reasons["options_flag"] = "slightly_elevated_puts"
     elif options_sentiment is not None:
         reasons["options_flag"] = "neutral"
@@ -862,6 +844,17 @@ def _apply_style_signal(
         reasons["compression_cap_applied"] = True
     else:
         reasons["compression_cap_applied"] = False
+
+    # ── Weekly BUY gate — applied AFTER compression cap so it cannot be overridden ──
+    # Bearish weekly structure (RSI < 40 AND trend down) is a confirmed downtrend, not a dip.
+    # The 0.40× compression is intentionally exempt from max_compress_ratio so a SWING/LONG
+    # BUY truly cannot fire in this condition without an overwhelming daily signal (≥0.90+).
+    if style_key in ("SWING", "LONG") and weekly_rsi is not None and weekly_rsi < 40 and weekly_trend == "down":
+        fused = 0.5 + (fused - 0.5) * 0.40
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["weekly_gate_fired"] = True
+    else:
+        reasons["weekly_gate_fired"] = False
 
     signal, horizon = _decide_style(fused, style_key, market_regime)
     confidence = round(abs(fused - 0.5) * 200, 2)
