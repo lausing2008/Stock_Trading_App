@@ -133,10 +133,10 @@ function getReasons(
       out.push({ text: `${Math.abs(upside).toFixed(1)}% above fair value — watch valuation`, positive: false });
   }
 
-  if ((r.technical ?? 0) >= 70) out.push({ text: `Strong bullish technical setup (${r.technical?.toFixed(0)}/100)`, positive: true });
-  if ((r.momentum  ?? 0) >= 70) out.push({ text: `Strong price momentum (${r.momentum?.toFixed(0)}/100)`, positive: true });
-  if ((r.value     ?? 0) >= 70) out.push({ text: `Attractive valuation vs peers (${r.value?.toFixed(0)}/100)`, positive: true });
-  if ((r.growth    ?? 0) >= 70) out.push({ text: `High revenue/earnings growth (${r.growth?.toFixed(0)}/100)`, positive: true });
+  if ((r.technical ?? 0) >= 70) out.push({ text: `Strong bullish technical setup (${(r.technical ?? 0).toFixed(0)}/100)`, positive: true });
+  if ((r.momentum  ?? 0) >= 70) out.push({ text: `Strong price momentum (${(r.momentum ?? 0).toFixed(0)}/100)`, positive: true });
+  if ((r.value     ?? 0) >= 70) out.push({ text: `Attractive valuation vs peers (${(r.value ?? 0).toFixed(0)}/100)`, positive: true });
+  if ((r.growth    ?? 0) >= 70) out.push({ text: `High revenue/earnings growth (${(r.growth ?? 0).toFixed(0)}/100)`, positive: true });
   if ((r.volatility ?? 0) >= 70) out.push({ text: `Low volatility — stable risk profile`, positive: true });
 
   if ((lp?.change_pct ?? 0) > 2) out.push({ text: `Up ${lp!.change_pct!.toFixed(2)}% today — momentum building`, positive: true });

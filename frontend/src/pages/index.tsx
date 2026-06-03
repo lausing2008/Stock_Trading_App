@@ -174,7 +174,7 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
               <div style={{ width: `${breadth.breadth_pct}%`, height: '100%', background: breadth.color, borderRadius: '3px', transition: 'width 0.4s' }} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span style={{ fontSize: '18px', fontWeight: 800, color: breadth.color }}>{breadth.breadth_pct.toFixed(0)}%</span>
+              <span style={{ fontSize: '18px', fontWeight: 800, color: breadth.color }}>{(breadth.breadth_pct ?? 0).toFixed(0)}%</span>
               <span style={{ fontSize: '10px', fontWeight: 700, color: breadth.color }}>{breadth.label}</span>
             </div>
             <div style={{ fontSize: '10px', color: '#334155', marginTop: '3px' }}>

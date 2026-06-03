@@ -500,7 +500,7 @@ Return ONLY valid JSON — no markdown, no prose:
       const systemCtx = [
         `You are a financial analyst assistant for the stock ${symbol} (${(data as Overview & { price?: { name?: string } })?.price?.name ?? symbol}).`,
         `Current price: ${data?.price ? JSON.stringify(data.price) : 'N/A'}`,
-        data?.signal ? `Signal: ${data.signal.signal} (${(data.signal.bullish_probability * 100).toFixed(0)}% bullish, ${(data.signal.confidence ?? 0).toFixed(0)}% confidence)` : '',
+        data?.signal ? `Signal: ${data.signal.signal} (${((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}% bullish, ${(data.signal.confidence ?? 0).toFixed(0)}% confidence)` : '',
         data?.ranking ? `K-Score: ${data.ranking.score?.toFixed(0)}, Fair Value: $${data.ranking.fair_price?.toFixed(2)}` : '',
         `Recent headlines: ${(news ?? []).slice(0, 5).map(n => n.title).join(' | ')}`,
         'Be concise, data-driven, and reference the above context in your answers.',
@@ -616,7 +616,7 @@ Return ONLY valid JSON — no markdown, no prose:
               <div className={`rounded-md border px-4 py-2 text-center ${borderCls}`}>
                 <div className={`text-xs font-medium mb-0.5 ${labelCls}`}>AI Signal</div>
                 <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
-                <div className="text-xs text-slate-500 mt-0.5">{(data.signal.bullish_probability * 100).toFixed(0)}% bullish</div>
+                <div className="text-xs text-slate-500 mt-0.5">{((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}% bullish</div>
               </div>
             );
           })()}
