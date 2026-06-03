@@ -441,3 +441,33 @@ Bugs 24–30 found during targeted investigation of why buy signal emails were n
 ---
 
 *Audit rounds 2 & 3 conducted: 2026-06-02*
+
+---
+
+## Feature Fix — Style-Aware Game Plans (2026-06-02)
+
+### 30. `_build_game_plan()` used identical levels for all trading styles
+**Files:** `services/market-data/src/services/scheduler.py`, `services/market-data/src/services/email_service.py`, `frontend/src/pages/stock/[symbol].tsx`
+**Commit:** `e0ebe0e`
+
+**Root cause:** `_build_game_plan()` used hardcoded fixed percentages for entry, stop, and take-profit regardless of whether the user's trading style was SHORT, SWING, or LONG. The `style` variable was available in the calling scope but was never passed to the function.
+
+**Impact:** A SHORT-term momentum trader and a LONG-term position trader received identical entry levels (-1.5%/-3.5%), stops (-5.5%), and a +12% target — completely wrong for SHORT (too wide stop, too large target) and for LONG (stop too tight, target too small for months-long hold).
+
+**Fix — scheduler.py:** Added `_STYLE_PARAMS` dict with per-style multipliers:
+
+| Style | Entry 1 | Entry 2 | Stop | Default Target |
+|-------|---------|---------|------|----------------|
+| SHORT (1–5d) | -0.5% | -1.5% | -3% | +5% |
+| SWING (5–30d) | -1.5% | -3.5% | -5.5% | +12% |
+| LONG (1–12mo) | -2% | -5% | -10% | +25% |
+
+`_build_game_plan()` now accepts a `style` parameter and selects the matching row. The analyst take-profit threshold is also style-adjusted (LONG requires a larger upside to override the default). A `horizon_note` field is returned to explain the expected hold duration. Call site passes `style` from the per-alert watchlist trading style.
+
+**Fix — email_service.py:** Game plan header updated from hardcoded "10-Day Game Plan" to "Game Plan — {style label} — {symbol}". A `horizon_note` line below the header explains expected hold duration and execution guidance.
+
+**Fix — frontend:** The AI game plan prompt (`generateGamePlan()`) now derives `tradeStyle` from `sig.horizon` and injects a `styleInstruction` block into the Claude system prompt. The instruction block carries style-specific entry/stop/target percentages so the AI returns levels appropriate for the user's actual trading horizon. The JSON title field is also updated to match.
+
+---
+
+*Style-aware game plan fix: 2026-06-02*
