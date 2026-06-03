@@ -521,7 +521,7 @@ export default function Opportunities() {
 Name: ${r.name}${r.name_zh ? ` (${r.name_zh})` : ''}
 Sector: ${r.sector ?? 'Unknown'} | Market: ${r.market}
 Current Price: ${lp?.price != null ? lp.price.toFixed(2) : 'N/A'} | Today: ${lp?.change_pct != null ? `${lp.change_pct >= 0 ? '+' : ''}${lp.change_pct.toFixed(2)}%` : 'N/A'}
-AI Signal: ${sig?.signal ?? 'N/A'} | Horizon: ${sig?.horizon ?? 'N/A'} | Confidence: ${sig?.confidence?.toFixed(0) ?? 0}% | Bullish Probability: ${sig?.bullish_probability != null ? `${sig.bullish_probability.toFixed(0)}%` : 'N/A'}
+AI Signal: ${sig?.signal ?? 'N/A'} | Horizon: ${sig?.horizon ?? 'N/A'} | Confidence: ${sig?.confidence?.toFixed(0) ?? 0}% | Bullish Probability: ${sig?.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(0)}%` : 'N/A'}
 K-Score: ${(r.score ?? 0).toFixed(0)} | Technical: ${(r.technical ?? 0).toFixed(0)} | Momentum: ${(r.momentum ?? 0).toFixed(0)} | Value: ${(r.value ?? 0).toFixed(0)} | Growth: ${(r.growth ?? 0).toFixed(0)} | Volatility: ${(r.volatility ?? 0).toFixed(0)}
 Fair Value Upside: ${fairUpside != null ? `${Number(fairUpside) >= 0 ? '+' : ''}${fairUpside}%` : 'N/A'}
 Recent News Headlines (5 most recent):

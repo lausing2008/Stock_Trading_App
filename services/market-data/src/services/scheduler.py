@@ -587,7 +587,7 @@ def check_price_alerts() -> None:
                     continue
 
                 alert.triggered = True
-                alert.triggered_at = datetime.utcnow()
+                alert.triggered_at = datetime.now(timezone.utc)
                 fired += 1
                 log.info("alert.triggered", symbol=alert.symbol, price=price, threshold=alert.threshold)
 
@@ -691,7 +691,7 @@ def check_technical_alerts() -> None:
                     elif cond == AlertCondition.NEW_52WK_HIGH:
                         if len(close) < 2:
                             continue
-                        high_52 = float(close.iloc[:-1].tail(251).max())
+                        high_52 = float(close.iloc[:-1].tail(252).max())
                         if float(close.iloc[-1]) <= high_52:
                             continue
                         cond_label = f"hit a new 52-week high (prev high {high_52:.2f})"
@@ -700,7 +700,7 @@ def check_technical_alerts() -> None:
                     elif cond == AlertCondition.NEW_52WK_LOW:
                         if len(close) < 2:
                             continue
-                        low_52 = float(close.iloc[:-1].tail(251).min())
+                        low_52 = float(close.iloc[:-1].tail(252).min())
                         if float(close.iloc[-1]) >= low_52:
                             continue
                         cond_label = f"hit a new 52-week low (prev low {low_52:.2f})"
