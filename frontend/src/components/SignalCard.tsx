@@ -78,6 +78,10 @@ type Reasons = {
   vwap_20?: number | null;
   weekly_ta_score?: number | null;
   weekly_alignment?: boolean | null;
+  weekly_rsi?: number | null;
+  weekly_trend?: string | null;
+  weekly_macd_bull?: boolean | null;
+  weekly_gate_fired?: boolean | null;
   active_patterns?: string[];
   pattern_adjustment?: number | null;
   days_to_earnings?: number | null;
@@ -164,12 +168,16 @@ function buildReasons(r: Reasons): Factor[] {
 
   // Weekly timeframe alignment
   if (r.weekly_alignment != null) {
+    const wRsi = r.weekly_rsi != null ? `RSI ${Math.round(r.weekly_rsi)}` : null;
+    const wTrend = r.weekly_trend ? `trend ${r.weekly_trend}` : null;
+    const wInfo = [wRsi, wTrend].filter(Boolean).join(', ') || `score ${((r.weekly_ta_score ?? 0) * 100).toFixed(0)}%`;
+    const gateNote = r.weekly_gate_fired ? ' — BUY gate active' : '';
     factors.push({
       label: r.weekly_alignment ? '✦ Weekly Aligned' : 'Weekly Conflict',
       bullish: r.weekly_alignment,
       detail: r.weekly_alignment
-        ? `Weekly trend agrees with daily — signal amplified (weekly score: ${r.weekly_ta_score != null ? (r.weekly_ta_score * 100).toFixed(0) : '?'})`
-        : `Weekly trend conflicts with daily — signal compressed (weekly score: ${r.weekly_ta_score != null ? (r.weekly_ta_score * 100).toFixed(0) : '?'})`,
+        ? `Weekly agrees with daily — amplified (${wInfo})`
+        : `Weekly conflicts with daily — compressed (${wInfo}${gateNote})`,
     });
   }
 
