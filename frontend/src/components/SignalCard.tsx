@@ -353,7 +353,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
       {/* Scores */}
       <div className="grid grid-cols-3 gap-2 mb-3">
         <div className="text-center">
-          <div className="text-lg font-bold text-slate-100">{signal.confidence.toFixed(0)}</div>
+          <div className="text-lg font-bold text-slate-100">{(signal.confidence ?? 0).toFixed(0)}</div>
           <div className="text-xs text-slate-500">Confidence</div>
         </div>
         <div className="text-center">

@@ -121,9 +121,9 @@ function getReasons(
   const out: { text: string; positive: boolean }[] = [];
 
   if (sig?.signal === 'BUY')
-    out.push({ text: `AI signal BUY — ${sig.confidence.toFixed(0)}% confidence`, positive: true });
+    out.push({ text: `AI signal BUY — ${(sig.confidence ?? 0).toFixed(0)}% confidence`, positive: true });
   if (sig?.signal === 'HOLD' && (sig.confidence ?? 0) > 30)
-    out.push({ text: `AI signal HOLD — holding zone with ${sig.confidence.toFixed(0)}% confidence`, positive: true });
+    out.push({ text: `AI signal HOLD — holding zone with ${(sig.confidence ?? 0).toFixed(0)}% confidence`, positive: true });
 
   if (r.fair_price && lp?.price) {
     const upside = ((r.fair_price - lp.price) / lp.price) * 100;
@@ -168,7 +168,7 @@ function getKeyMetric(
       return { label: 'Growth', value: `${(r.growth ?? 0).toFixed(0)}/100`, color: scoreColor(r.growth ?? 0) };
     case 'aisignal':
       return sig
-        ? { label: 'AI Confidence', value: `${sig.confidence.toFixed(0)}%`, color: scoreColor(sig.confidence) }
+        ? { label: 'AI Confidence', value: `${(sig.confidence ?? 0).toFixed(0)}%`, color: scoreColor(sig.confidence ?? 0) }
         : null;
     case 'confluence': {
       const cs = confluenceScore(r, sig);
@@ -781,7 +781,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                       </span>
                       {sig && (
                         <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: SIG_COLOR[sig.signal]?.color, background: SIG_COLOR[sig.signal]?.bg, border: `1px solid ${SIG_COLOR[sig.signal]?.border}` }}>
-                          {sig.signal} {sig.confidence.toFixed(0)}%
+                          {sig.signal} {(sig.confidence ?? 0).toFixed(0)}%
                         </span>
                       )}
                       {lp?.change_pct != null && (

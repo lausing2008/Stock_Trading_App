@@ -500,7 +500,7 @@ Return ONLY valid JSON — no markdown, no prose:
       const systemCtx = [
         `You are a financial analyst assistant for the stock ${symbol} (${(data as Overview & { price?: { name?: string } })?.price?.name ?? symbol}).`,
         `Current price: ${data?.price ? JSON.stringify(data.price) : 'N/A'}`,
-        data?.signal ? `Signal: ${data.signal.signal} (${(data.signal.bullish_probability * 100).toFixed(0)}% bullish, ${data.signal.confidence.toFixed(0)}% confidence)` : '',
+        data?.signal ? `Signal: ${data.signal.signal} (${(data.signal.bullish_probability * 100).toFixed(0)}% bullish, ${(data.signal.confidence ?? 0).toFixed(0)}% confidence)` : '',
         data?.ranking ? `K-Score: ${data.ranking.score?.toFixed(0)}, Fair Value: $${data.ranking.fair_price?.toFixed(2)}` : '',
         `Recent headlines: ${(news ?? []).slice(0, 5).map(n => n.title).join(' | ')}`,
         'Be concise, data-driven, and reference the above context in your answers.',
@@ -1043,7 +1043,7 @@ Return ONLY valid JSON — no markdown, no prose:
                     {data.patterns.patterns.map((p, i) => (
                       <div key={i} className="flex items-center justify-between text-xs">
                         <span className="text-slate-300">{p.name}</span>
-                        <span className="text-slate-500">{(p.confidence * 100).toFixed(0)}%</span>
+                        <span className="text-slate-500">{((p.confidence ?? 0) * 100).toFixed(0)}%</span>
                       </div>
                     ))}
                   </div>
