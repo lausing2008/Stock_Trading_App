@@ -83,6 +83,7 @@ def send_signal_alert_email(
     fundamentals: dict | None = None,
     game_plan: dict | None = None,
     conviction_layers: list[str] | None = None,
+    horizon: str | None = None,
 ) -> bool:
     direction_map = {
         ("SELL", "HOLD"): ("cautious",  "moving out of sell territory"),
@@ -321,7 +322,8 @@ Key Risk: {risk}
         subject_prefix = "⚠ Signal Weakening"
     else:
         subject_prefix = "Signal Alert"
-    subject = f"{subject_prefix}: {symbol} {prev_signal} → {new_signal} (Analyst: {analyst.upper()})"
+    horizon_tag = f" [{horizon}]" if horizon else ""
+    subject = f"{subject_prefix}: {symbol} {prev_signal} → {new_signal}{horizon_tag} (Analyst: {analyst.upper()})"
     cta = (
         "AI signal has reversed — consider reviewing your position.\n"
         if is_exit_alert else
@@ -329,7 +331,7 @@ Key Risk: {risk}
     )
     body_text = (
         f"Your signal alert for {symbol} has fired.\n\n"
-        f"AI Signal: {prev_signal} → {new_signal} ({desc})\n"
+        f"AI Signal: {prev_signal} → {new_signal}{horizon_tag} ({desc})\n"
         f"Analyst consensus: {analyst.upper()}\n"
         + (f"Bullish probability: {float(bullish_prob)*100:.1f}%  |  Confidence: {float(confidence):.1f}%\n" if bullish_prob is not None else "")
         + f"\nWhy the signal changed:\n{rows_text}\n\n"
@@ -346,6 +348,20 @@ Key Risk: {risk}
         header_label = "StockAI Signal Weakening"
     else:
         header_label = "StockAI Signal Alert"
+
+    # Horizon / trading style badge
+    _horizon_colors = {"SHORT": "#ef4444", "SWING": "#6366f1", "LONG": "#22c55e"}
+    _horizon_labels = {"SHORT": "Short-term (1–5d)", "SWING": "Swing (5–20d)", "LONG": "Position (30–90d)"}
+    horizon_badge_html = ""
+    if horizon:
+        hc = _horizon_colors.get(horizon, "#6366f1")
+        hl = _horizon_labels.get(horizon, horizon)
+        horizon_badge_html = (
+            f'<div style="margin-top:12px;display:inline-block;padding:4px 10px;'
+            f'border-radius:6px;border:1px solid {hc}60;background:{hc}18;'
+            f'font-size:11px;font-weight:700;color:{hc};letter-spacing:.06em">'
+            f'&#128260; {horizon} &nbsp;·&nbsp; {hl}</div>'
+        )
     cta_html = (
         f'<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:13px;color:#991b1b">'
         f'&#9888; {cta.strip()}</div>'
@@ -356,6 +372,7 @@ Key Risk: {risk}
   <div style="max-width:520px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     <h2 style="margin-top:0;color:{'#ef4444' if is_exit_alert else '#6366f1'}">{header_icon} {header_label}</h2>
     <p style="font-size:16px"><strong>{symbol}</strong> AI Signal has changed:</p>
+    {horizon_badge_html}
 
     <div style="background:#f1f5f9;border-radius:8px;padding:16px;margin:16px 0;display:flex;align-items:center;gap:24px">
       <div style="text-align:center">

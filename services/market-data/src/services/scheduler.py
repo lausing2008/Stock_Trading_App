@@ -76,7 +76,7 @@ from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, Price, PriceAlert, SignalAlert, SessionLocal, Stock
+from db import AlertCondition, Price, PriceAlert, SignalAlert, SessionLocal, Stock, Watchlist, WatchlistItem
 
 from .ingestion import ingest_universe
 from .email_service import send_price_alert_email, send_signal_alert_email
@@ -406,16 +406,37 @@ def check_signal_alerts() -> None:
 
             symbols = list({a.symbol for a in alerts})
 
-            # Fetch current signals (keep full payload for confidence + reasons)
-            signals: dict[str, str] = {}
-            signal_details: dict[str, dict] = {}
-            for sym in symbols:
+            # Build (user_id, symbol) → trading_style map from watchlists with a style override
+            symbol_user_style: dict[tuple[int, str], str] = {}
+            try:
+                rows = session.execute(
+                    select(Stock.symbol, Watchlist.user_id, Watchlist.trading_style)
+                    .join(WatchlistItem, WatchlistItem.watchlist_id == Watchlist.id)
+                    .join(Stock, WatchlistItem.stock_id == Stock.id)
+                    .where(Watchlist.trading_style.isnot(None))
+                ).all()
+                for sym, uid, style in rows:
+                    symbol_user_style[(uid, sym)] = style
+            except Exception as exc:
+                log.warning("signal_alert.style_lookup_failed", error=str(exc))
+
+            # Fetch current signals per unique (symbol, style) pair
+            signals: dict[tuple[str, str], str] = {}
+            signal_details: dict[tuple[str, str], dict] = {}
+            style_sym_pairs = {
+                (a.symbol, symbol_user_style.get((a.user_id, a.symbol), "SWING"))
+                for a in alerts
+            }
+            for sym, style in style_sym_pairs:
                 try:
-                    r = httpx.get(f"{_settings.signal_engine_url}/signals/{sym}", timeout=10)
+                    r = httpx.get(
+                        f"{_settings.signal_engine_url}/signals/{sym}",
+                        params={"style": style}, timeout=10,
+                    )
                     if r.status_code == 200:
                         payload = r.json()
-                        signals[sym] = payload.get("signal", "")
-                        signal_details[sym] = payload
+                        signals[(sym, style)] = payload.get("signal", "")
+                        signal_details[(sym, style)] = payload
                 except Exception:
                     pass
 
@@ -445,7 +466,9 @@ def check_signal_alerts() -> None:
 
             fired = 0
             for alert in alerts:
-                current = signals.get(alert.symbol)
+                style = symbol_user_style.get((alert.user_id, alert.symbol), "SWING")
+                key = (alert.symbol, style)
+                current = signals.get(key)
                 if not current:
                     continue
 
@@ -464,7 +487,7 @@ def check_signal_alerts() -> None:
 
                 conviction_passed: list[str] | None = None
                 if is_bullish:
-                    sig_data = signal_details.get(alert.symbol) or {}
+                    sig_data = signal_details.get(key) or {}
                     confidence = float(sig_data.get("confidence") or 0)
 
                     if current == "BUY":
@@ -501,7 +524,7 @@ def check_signal_alerts() -> None:
                 if current == "BUY":
                     game_plan = _build_game_plan(
                         alert.symbol,
-                        signal_details.get(alert.symbol, {}),
+                        signal_details.get(key, {}),
                         fundamentals_cache.get(alert.symbol),
                     )
 
@@ -511,14 +534,15 @@ def check_signal_alerts() -> None:
                     prev_signal=prev,
                     new_signal=current,
                     analyst=analyst_ratings.get(alert.symbol, "buy"),
-                    signal_data=signal_details.get(alert.symbol, {}),
+                    signal_data=signal_details.get(key, {}),
                     fundamentals=fundamentals_cache.get(alert.symbol),
                     game_plan=game_plan,
                     conviction_layers=conviction_passed,
+                    horizon=style,
                 )
                 if email_ok:
                     fired += 1
-                    log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current)
+                    log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
 
             session.commit()
             if fired:
