@@ -83,9 +83,9 @@ function numVal(row: SuppressedSignalRow, key: SortKey): number {
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function SortTh({
-  col, label, sortKey, dir, onSort,
+  col, label, sortKey, dir, onSort, extraStyle,
 }: {
-  col: SortKey; label: string; sortKey: SortKey; dir: 'asc' | 'desc'; onSort: (k: SortKey) => void;
+  col: SortKey; label: string; sortKey: SortKey; dir: 'asc' | 'desc'; onSort: (k: SortKey) => void; extraStyle?: React.CSSProperties;
 }) {
   const active = col === sortKey;
   const tip = COL_TIPS[col] ?? '';
@@ -99,6 +99,7 @@ function SortTh({
         textTransform: 'uppercase', letterSpacing: '0.04em',
         cursor: 'pointer', userSelect: 'none',
         borderBottom: active ? '1px solid #6366f1' : '1px solid #1e293b',
+        ...extraStyle,
       }}
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -385,7 +386,7 @@ export default function SignalFiltersPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr>
-                <SortTh col="symbol"             label="Symbol"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortTh col="symbol"             label="Symbol"   sortKey={sortKey} dir={sortDir} onSort={handleSort} extraStyle={{ position: 'sticky', left: 0, zIndex: 2, background: '#0b1420' }} />
                 <SortTh col="signal"             label="Signal"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <th style={TH_STATIC} title="Email alert status from the conviction gate. ✓ = email sent. ✗ = gate blocked — hover to see why. — = no alert subscription or not yet checked.">
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -474,8 +475,8 @@ export default function SignalFiltersPage() {
                       hasGate ? '#ef444408' : row.suppression_count >= 3 ? '#f9731604' : 'transparent'
                     )}
                   >
-                    {/* Symbol */}
-                    <td style={TD}>
+                    {/* Symbol — sticky left */}
+                    <td style={{ ...TD, position: 'sticky', left: 0, zIndex: 1, background: hasGate ? '#1a0f10' : row.suppression_count >= 3 ? '#130f0b' : '#0b1420' }}>
                       <Link href={`/stock/${row.symbol}`} style={{ color: '#818cf8', textDecoration: 'none', fontWeight: 600 }}>
                         {row.symbol}
                       </Link>
