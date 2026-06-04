@@ -1496,6 +1496,23 @@ def get_institutional(symbol: str):
                 "major_holders": {}, "institutional_holders": [], "error": str(e)}
 
 
+@router.get("/conviction")
+def conviction_status():
+    """Return latest conviction gate check result per symbol:style from Redis."""
+    import json as _json
+    r = _get_redis()
+    keys = r.keys("conv_gate:*")
+    result: dict = {}
+    for key in keys:
+        parts = key.split(":", 2)
+        if len(parts) == 3:
+            _, sym, style = parts
+            raw = r.get(key)
+            if raw:
+                result[f"{sym}:{style}"] = _json.loads(raw)
+    return result
+
+
 @router.get("/{symbol}", response_model=StockOut)
 def get_stock(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()

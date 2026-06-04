@@ -256,6 +256,13 @@ export type SuppressedSignalRow = {
   days_to_earnings: number | null;
   news_sentiment: number | null;
   rs_score: number | null;
+  conviction: {
+    sent: boolean;
+    passed: string[];
+    failed: string[];
+    signal: string;
+    ts: string;
+  } | null;
 };
 
 export type Stock = {

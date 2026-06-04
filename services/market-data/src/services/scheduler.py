@@ -67,6 +67,8 @@ yfinance rate-limit notes
 from __future__ import annotations
 
 import httpx
+import json
+import redis as redis_lib
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
@@ -84,6 +86,31 @@ from .email_service import send_price_alert_email, send_signal_alert_email
 log = get_logger("scheduler")
 _settings = get_settings()
 _scheduler: BackgroundScheduler | None = None
+_redis: redis_lib.Redis | None = None
+
+
+def _get_redis() -> redis_lib.Redis:
+    global _redis
+    if _redis is None:
+        _redis = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+    return _redis
+
+
+def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str) -> None:
+    try:
+        _get_redis().setex(
+            f"conv_gate:{symbol}:{style}",
+            86400 * 7,  # 7-day TTL
+            json.dumps({
+                "sent": sent,
+                "passed": passed,
+                "failed": failed,
+                "signal": signal,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }),
+        )
+    except Exception:
+        pass
 
 
 def _symbols_for(market: str) -> list[str]:
@@ -526,6 +553,15 @@ def check_signal_alerts() -> None:
                 prev = alert.last_signal
 
                 if prev == current:
+                    # Refresh conviction status for stable BUY stocks every minute.
+                    # Email was already sent (last_signal advanced only after email_ok),
+                    # so sent=True always; failed shows if gate would block a re-trigger.
+                    if current == "BUY":
+                        sig_data = signal_details.get(key) or {}
+                        all_pass, passed, failed = _is_conviction_buy(
+                            sig_data, kscore=kscores.get(alert.symbol)
+                        )
+                        _store_conviction(alert.symbol, style, True, passed, failed, current)
                     continue
 
                 # Treat None→BUY as a bullish transition (stock was already at BUY
@@ -536,6 +572,7 @@ def check_signal_alerts() -> None:
                 if not is_bullish and not is_bearish:
                     # Neutral or unrecognised transition — just advance the stored state.
                     alert.last_signal = current
+                    _store_conviction(alert.symbol, style, False, [], [f"Signal is {current} — gate only runs on BUY transitions"], current)
                     continue
 
                 # Bearish/exit: advance state immediately so repeated checks don't re-fire.
@@ -559,6 +596,7 @@ def check_signal_alerts() -> None:
                                 "signal_alert.skipped", symbol=alert.symbol,
                                 reason="conviction_layers_failed", failed=failed,
                             )
+                            _store_conviction(alert.symbol, style, False, passed, failed, current)
                             continue  # last_signal NOT updated — retried next run
                         conviction_passed = passed
                         log.info(
@@ -610,6 +648,7 @@ def check_signal_alerts() -> None:
                     alert.last_signal = current  # advance state only after successful send
                     fired += 1
                     log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
+                    _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current)
 
             session.commit()
             if fired:
