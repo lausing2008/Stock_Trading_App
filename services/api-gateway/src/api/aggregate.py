@@ -44,4 +44,16 @@ async def overview(symbol: str):
     out = dict(zip(tasks.keys(), results, strict=False))
     if all(v is None for v in out.values()):
         raise HTTPException(502, "All upstream services failed")
+
+    # Signal engine returns {symbol, signals: {SHORT, SWING, LONG}}.
+    # Flatten: expose SWING as the flat `signal` field (backward-compatible with frontend),
+    # and keep all three under `signals` for future trading-style selector.
+    raw_signal = out.get("signal")
+    if isinstance(raw_signal, dict) and "signals" in raw_signal:
+        style_signals = raw_signal["signals"]
+        out["signals"] = style_signals
+        swing = style_signals.get("SWING")
+        if swing:
+            swing["symbol"] = raw_signal.get("symbol", symbol)
+        out["signal"] = swing
     return out
