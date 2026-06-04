@@ -387,6 +387,18 @@ export default function SignalFiltersPage() {
               <tr>
                 <SortTh col="symbol"             label="Symbol"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="signal"             label="Signal"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <th style={TH_STATIC} title="Email alert status from the conviction gate. ✓ = email sent. ✗ = gate blocked — hover to see why. — = no alert subscription or not yet checked.">
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Alert
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      width: 13, height: 13, borderRadius: '50%',
+                      background: '#1e293b', color: '#64748b',
+                      fontSize: 9, fontWeight: 700, cursor: 'help',
+                      border: '1px solid #334155', lineHeight: 1,
+                    }}>!</span>
+                  </span>
+                </th>
                 <SortTh col="bullish_probability" label="Bull%"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="suppression_count"  label="Filters"  sortKey={sortKey} dir={sortDir} onSort={handleSort} />
 
@@ -445,18 +457,6 @@ export default function SignalFiltersPage() {
                     }}>!</span>
                   </span>
                 </th>
-                <th style={TH_STATIC} title="Email alert status from the conviction gate (runs every minute for stocks with active alert subscriptions). ✓ = email sent. ✗ = conviction gate blocked — hover to see which layers failed. — = no alert subscription or no BUY transition checked yet.">
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    Alert
-                    <span style={{
-                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                      width: 13, height: 13, borderRadius: '50%',
-                      background: '#1e293b', color: '#64748b',
-                      fontSize: 9, fontWeight: 700, cursor: 'help',
-                      border: '1px solid #334155', lineHeight: 1,
-                    }}>!</span>
-                  </span>
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -490,6 +490,25 @@ export default function SignalFiltersPage() {
                         padding: '2px 8px', borderRadius: 5, fontSize: 11, fontWeight: 700,
                         background: sigColor + '22', color: sigColor, border: `1px solid ${sigColor}44`,
                       }}>{row.signal}</span>
+                    </td>
+
+                    {/* Alert / conviction gate */}
+                    <td style={{ ...TD, minWidth: 90 }}>
+                      {row.conviction == null ? (
+                        <span style={{ color: '#475569', fontSize: 11 }}>—</span>
+                      ) : row.conviction.sent ? (
+                        <span style={{ color: '#22c55e', fontSize: 11, fontWeight: 700 }}>✓ Sent</span>
+                      ) : (
+                        <span
+                          title={row.conviction.failed.join('\n')}
+                          style={{ color: '#f87171', fontSize: 11, cursor: 'help', display: 'block', lineHeight: 1.4 }}
+                        >
+                          ✗ {row.conviction.failed[0] ?? 'Gate failed'}
+                          {row.conviction.failed.length > 1 && (
+                            <span style={{ color: '#64748b' }}> +{row.conviction.failed.length - 1}</span>
+                          )}
+                        </span>
+                      )}
                     </td>
 
                     {/* Bull% */}
@@ -595,25 +614,6 @@ export default function SignalFiltersPage() {
                     {/* Regime */}
                     <td style={{ ...TD, color: REGIME_COLORS[row.market_regime ?? ''] ?? '#64748b', fontWeight: 600 }}>
                       {row.market_regime ?? '—'}
-                    </td>
-
-                    {/* Alert / conviction gate */}
-                    <td style={{ ...TD, maxWidth: 180 }}>
-                      {row.conviction == null ? (
-                        <span style={{ color: '#475569', fontSize: 11 }}>—</span>
-                      ) : row.conviction.sent ? (
-                        <span style={{ color: '#22c55e', fontSize: 11, fontWeight: 700 }}>✓ Sent</span>
-                      ) : (
-                        <span
-                          title={row.conviction.failed.join('\n')}
-                          style={{ color: '#f87171', fontSize: 11, cursor: 'help', display: 'block', lineHeight: 1.4 }}
-                        >
-                          ✗ {row.conviction.failed[0] ?? 'Gate failed'}
-                          {row.conviction.failed.length > 1 && (
-                            <span style={{ color: '#64748b' }}> +{row.conviction.failed.length - 1}</span>
-                          )}
-                        </span>
-                      )}
                     </td>
                   </tr>
                 );
