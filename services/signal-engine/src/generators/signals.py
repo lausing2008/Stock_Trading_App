@@ -441,13 +441,17 @@ def _sr_context(df: pd.DataFrame) -> dict:
     sr_context = "neutral"
 
     if nearest_res is not None:
-        dist = (nearest_res - current) / nearest_res
-        if dist <= thr:
-            # Breakout: previous bar was clearly below the level, now at/above it
-            if prev < nearest_res * (1.0 - thr):
-                sr_context = "breakout"
-            else:
-                sr_context = "at_resistance"
+        if current >= nearest_res:
+            # Price already cleared the level — always a breakout
+            sr_context = "breakout"
+        else:
+            dist = (nearest_res - current) / nearest_res
+            if dist <= thr:
+                # Approaching resistance: breakout if prev bar was clearly below
+                if prev < nearest_res * (1.0 - thr):
+                    sr_context = "breakout"
+                else:
+                    sr_context = "at_resistance"
     if sr_context == "neutral" and nearest_sup is not None:
         dist = (current - nearest_sup) / current
         if dist <= thr:

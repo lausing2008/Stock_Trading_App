@@ -588,11 +588,8 @@ def check_signal_alerts() -> None:
                     _store_conviction(alert.symbol, style, False, [], [f"Signal is {current} — gate only runs on BUY transitions"], current)
                     continue
 
-                # Bearish/exit: advance state immediately so repeated checks don't re-fire.
-                # Bullish: state is advanced only after a successful email send so that a
-                # failed conviction check can be retried on the next scheduler run.
-                if is_bearish:
-                    alert.last_signal = current
+                # Both bullish and bearish state advances happen only after successful email
+                # send (see `if email_ok` below), so a failed send can be retried next run.
 
                 conviction_passed: list[str] | None = None
                 if is_bullish:

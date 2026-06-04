@@ -341,7 +341,7 @@ def rolling_accuracy(
     seen: set[tuple] = set()
     for sig, sym in rows:
         sig_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
-        key = (sig.stock_id, sig_date)
+        key = (sig.stock_id, sig_date, sig.horizon)
         if key in seen:
             continue
         seen.add(key)
@@ -360,7 +360,7 @@ def rolling_accuracy(
     unique_dates = sorted({d for d, _ in evaluated})
     series = []
     for end_date in unique_dates:
-        start_date = end_date - timedelta(days=window)
+        start_date = end_date - timedelta(days=window - 1)
         window_sigs = [(d, c) for d, c in evaluated if start_date <= d <= end_date]
         if len(window_sigs) < 3:
             continue

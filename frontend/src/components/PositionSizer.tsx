@@ -20,6 +20,13 @@ export default function PositionSizer({ entryPrice, stopLoss, atrStop, atr, take
   const [stop, setStop] = useState<number>(defaultStop);
   const [target, setTarget] = useState<number>(takeProfit ?? 0);
 
+  // Sync settings from localStorage after SSR hydration
+  useEffect(() => {
+    const s = loadSettings();
+    if (s.accountSize) setAccountSize(s.accountSize);
+    if (s.riskPctPerTrade) setRiskPct(s.riskPctPerTrade);
+  }, []);
+
   // Sync when props change (e.g. when signal loads)
   useEffect(() => { if (entryPrice) setEntry(entryPrice); }, [entryPrice]);
   useEffect(() => {

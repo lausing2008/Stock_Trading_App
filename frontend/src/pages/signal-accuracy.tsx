@@ -56,7 +56,7 @@ function RollingAccuracyChart({ series, driftWarning, latestAccuracy, window: wi
   latestAccuracy: number | null;
   window: number;
 }) {
-  if (!series.length) return null;
+  if (series.length < 2) return null;
   const accs = series.map(p => p.accuracy);
   const minA = Math.min(...accs, 40);
   const maxA = Math.max(...accs, 70);

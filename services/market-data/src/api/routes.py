@@ -241,7 +241,7 @@ def _latest_prices_from_db(session: Session) -> list[LatestPriceOut]:
     """Fallback: read most recent stored close from Postgres."""
     ranked = (
         select(
-            Price.stock_id, Price.close, Price.ts,
+            Price.stock_id, Price.close, Price.ts, Price.volume,
             func.row_number()
             .over(partition_by=Price.stock_id, order_by=Price.ts.desc())
             .label("rn"),
