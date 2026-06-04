@@ -46,6 +46,8 @@ export const api = {
     if (market) params.set('market', market);
     return request<{ rankings: RankingRow[] }>(`/rankings?${params}`);
   },
+  sectorRotation: (market?: string) =>
+    request<SectorRotationReport>(`/rankings/sector_rotation${market ? `?market=${market}` : ''}`),
   signal: (symbol: string, style?: string) => request<Signal>(`/signals/${symbol}${style ? `?style=${style}` : ''}`),
   allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
   refreshSignal: (symbol: string) => request<Signal>(`/signals/${symbol}?persist=true`),
@@ -297,6 +299,9 @@ export type Signal = {
 
 export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null; ts: string | null };
 export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null; relative_strength?: number | null };
+export type SectorRsStock = { symbol: string; name: string; rs_score: number | null; kscore: number | null; past_rs: number | null };
+export type SectorRotationEntry = { sector: string; etf: string; avg_rs: number; rs_change: number | null; stock_count: number; leading: number; lagging: number; leading_pct: number; top_stocks: SectorRsStock[]; bottom_stocks: SectorRsStock[] };
+export type SectorRotationReport = { as_of: string; sectors: SectorRotationEntry[] };
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {
   backtest_id: number | null;

@@ -29,7 +29,8 @@ const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { label: 'Dashboard',    href: '/' },
       { label: 'Heatmap',      href: '/heatmap',      color: '#38bdf8', tag: 'live' },
-      { label: 'Rankings',     href: '/rankings' },
+      { label: 'Rankings',         href: '/rankings' },
+      { label: 'Sector Rotation',  href: '/sector-rotation', color: '#38bdf8' },
       { label: 'Forecast',     href: '/forecast',     color: '#4ade80' },
     ],
   },
