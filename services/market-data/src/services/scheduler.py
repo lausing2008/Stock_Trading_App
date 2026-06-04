@@ -697,6 +697,7 @@ def check_price_alerts() -> None:
                     pass
 
             fired = 0
+            pending_emails: list[dict] = []
             for alert in alerts:
                 price = prices.get(alert.symbol)
                 if price is None:
@@ -714,20 +715,21 @@ def check_price_alerts() -> None:
                 log.info("alert.triggered", symbol=alert.symbol, price=price, threshold=alert.threshold)
 
                 if alert.email:
-                    email_ok = send_price_alert_email(
-                        to=alert.email,
-                        symbol=alert.symbol,
+                    pending_emails.append(dict(
+                        to=alert.email, symbol=alert.symbol,
                         condition=alert.condition.value,
-                        threshold=alert.threshold,
-                        price=price,
-                        note=alert.note,
-                    )
-                    if not email_ok:
-                        log.warning("alert.email_failed", symbol=alert.symbol, email=alert.email)
+                        threshold=alert.threshold, price=price, note=alert.note,
+                    ))
 
-            session.commit()
+            # Commit triggered flags BEFORE sending emails so a crash between
+            # commit and send causes a missed email rather than a duplicate.
             if fired:
+                session.commit()
                 log.info("alert.check_done", fired=fired, checked=len(alerts))
+
+            for kwargs in pending_emails:
+                if not send_price_alert_email(**kwargs):
+                    log.warning("alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
     except Exception as exc:
         log.error("alert.check_error", error=str(exc))
 
@@ -786,6 +788,7 @@ def check_technical_alerts() -> None:
                     log.warning("tech_alert.price_error", symbol=sym, error=str(exc))
 
             fired = 0
+            pending_emails: list[dict] = []
             for alert in alerts:
                 close = prices_by_sym.get(alert.symbol)
                 if close is None:
@@ -854,21 +857,25 @@ def check_technical_alerts() -> None:
                     log.info("tech_alert.triggered", symbol=alert.symbol, condition=cond_label)
 
                     if alert.email:
-                        send_price_alert_email(
+                        pending_emails.append(dict(
                             to=alert.email,
                             symbol=alert.symbol,
                             condition=cond_label,
                             threshold=threshold_val,
                             price=float(close.iloc[-1]),
                             note=alert.note,
-                        )
+                        ))
 
                 except Exception as exc:
                     log.warning("tech_alert.check_error", symbol=alert.symbol, error=str(exc))
 
-            session.commit()
             if fired:
+                session.commit()
                 log.info("tech_alert.check_done", fired=fired)
+
+            for kwargs in pending_emails:
+                if not send_price_alert_email(**kwargs):
+                    log.warning("tech_alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
 
     except Exception as exc:
         log.error("tech_alert.error", error=str(exc))
