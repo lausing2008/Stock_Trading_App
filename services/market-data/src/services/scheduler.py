@@ -572,7 +572,9 @@ def check_signal_alerts() -> None:
                         all_pass, passed, failed = _is_conviction_buy(
                             sig_data, kscore=kscores.get(alert.symbol)
                         )
-                        _store_conviction(alert.symbol, style, True, passed, failed, current)
+                        # Use DB-persisted sent_at as fallback so Redis restarts don't lose the timestamp.
+                        db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
+                        _store_conviction(alert.symbol, style, True, passed, failed, current, sent_at=db_sent_at)
                     continue
 
                 # Treat None→BUY as a bullish transition (stock was already at BUY
@@ -657,10 +659,12 @@ def check_signal_alerts() -> None:
                 )
                 if email_ok:
                     alert.last_signal = current  # advance state only after successful send
+                    now_utc = datetime.now(timezone.utc)
+                    alert.last_sent_at = now_utc   # persist so Redis restarts don't lose sent_at
                     fired += 1
                     log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
                     _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current,
-                                      sent_at=datetime.now(timezone.utc).isoformat())
+                                      sent_at=now_utc.isoformat())
 
             session.commit()
             if fired:
@@ -1052,6 +1056,16 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="price_alert_check",
+        replace_existing=True,
+    )
+
+    # ── Signal alert checker — every minute (independent of full refresh) ───
+    # Runs separately so conviction/Redis data is restored quickly after restarts.
+    _scheduler.add_job(
+        check_signal_alerts,
+        "interval",
+        minutes=1,
+        id="signal_alert_check",
         replace_existing=True,
     )
 

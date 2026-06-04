@@ -316,6 +316,7 @@ class SignalAlert(Base):
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     email: Mapped[str | None] = mapped_column(String(256), nullable=True)
     last_signal: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="signal_alerts")
