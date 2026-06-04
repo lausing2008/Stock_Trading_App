@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are shipped. All Tier 2 items are now shipped: sector-relative fundamental scoring and research engine cache quality flag completed 2026-06-04. Remaining roadmap items are Tier 3 new features.
+StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are shipped. All Tier 2 items are shipped. First Tier 3 feature (sector rotation dashboard) shipped 2026-06-04. Remaining roadmap items are further Tier 3 features.
 
 This document is the single source of truth for everything that was found, why it matters, and how to fix it.
 
@@ -38,6 +38,7 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-04 | Frontend strategy weight normalisation | frontend/opportunities.tsx | ✅ Done |
 | 2026-06-04 | Research engine cache quality flag (banner) | frontend/research/[symbol].tsx | ✅ Done |
 | 2026-06-04 | Sector-relative fundamental scoring | research-engine/routes.py | ✅ Done |
+| 2026-06-04 | Sector rotation dashboard | ranking-engine/routes.py, frontend/sector-rotation.tsx, _app.tsx, api.ts | ✅ Done |
 
 ---
 
@@ -50,9 +51,9 @@ This document is the single source of truth for everything that was found, why i
 | Signal logic | 7.5 / 10 | ↑ Options flow integrated; stale price guard; ML weight formula validated |
 | K-Score ranking | 7.5 / 10 | ↑ Falling knife gate + RSI curve fixed |
 | Research engine | 7.5 / 10 | ↑ Sector-relative fundamental scoring + cache quality flag shipped 2026-06-04 |
-| Frontend / UX | 9.0 / 10 | ↑ Signal Filter Monitor, strategy score normalisation, backtest equity curve |
+| Frontend / UX | 9.0 / 10 | ↑ Signal Filter Monitor, strategy score normalisation, backtest equity curve, sector rotation page |
 | Risk management | 7.5 / 10 | ↑ Backtest engine shipped: equity curve, Sharpe, max drawdown, Calmar, SPY comparison |
-| **Overall** | **8.2 / 10** | *(was 7.5 → 8.0 → 8.2 — all Tier 2 items shipped 2026-06-01 to 2026-06-04)* |
+| **Overall** | **8.3 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 — Tier 3 sector rotation dashboard shipped 2026-06-04)* |
 
 ---
 
@@ -541,16 +542,16 @@ Without factor exposure analysis, you cannot distinguish between genuine alpha a
 
 ### Tier 3 — New Features (Roadmap)
 
-| Feature | Effort | Expected Signal Quality Improvement |
-|---------|--------|-------------------------------------|
-| Walk-forward backtest engine | 2 weeks | Validates whether signals generate alpha at all |
-| Options flow integration | 5 days | +15–20% signal accuracy on high-flow events |
-| Earnings surprise model | 4 days | Better earnings event handling |
-| Relative strength vs. sector | 3 days | Filters sector-rotation noise from signals |
-| News sentiment layer | 4 days | Suppresses signals ahead of negative catalysts |
-| Market regime detection (4-state) | 1 week | Better position sizing across market environments |
-| Position P&L feedback loop | 1 week | System learns from its own track record |
-| Factor exposure analysis | 4 days | Distinguishes alpha from factor tilts |
+| Feature | Effort | Expected Signal Quality Improvement | Status |
+|---------|--------|--------------------------------------|--------|
+| Walk-forward backtest engine | 2 weeks | Validates whether signals generate alpha at all | ✅ Done |
+| Options flow integration | 5 days | +15–20% signal accuracy on high-flow events | ✅ Done |
+| Factor exposure analysis | 4 days | Distinguishes alpha from factor tilts | ✅ Done |
+| Relative strength vs. sector | 3 days | Filters sector-rotation noise from signals | ✅ Done 2026-06-04 |
+| Earnings surprise model | 4 days | Better earnings event handling | ⏳ Pending |
+| News sentiment layer | 4 days | Suppresses signals ahead of negative catalysts | ⏳ Pending |
+| Market regime detection (4-state) | 1 week | Better position sizing across market environments | ⏳ Pending |
+| Position P&L feedback loop | 1 week | System learns from its own track record | ⏳ Pending |
 
 ---
 
