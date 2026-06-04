@@ -1,23 +1,15 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { useRouter } from 'next/router';
-import { login, resetPassword, getSession } from '@/lib/auth';
-
-type Mode = 'login' | 'reset';
+import { login, getSession } from '@/lib/auth';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode>('login');
 
   // Login state
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
-
-  // Reset state
-  const [rUser, setRUser] = useState('');
-  const [rOld, setROld] = useState('');
-  const [rNew, setRNew] = useState('');
   const [rConfirm, setRConfirm] = useState('');
   const [resetMsg, setResetMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -35,31 +27,6 @@ export default function LoginPage() {
     } else {
       setLoginError('Incorrect username or password.');
       setLoginLoading(false);
-    }
-  }
-
-  async function handleReset(e: FormEvent) {
-    e.preventDefault();
-    setResetMsg(null);
-    if (rNew !== rConfirm) {
-      setResetMsg({ ok: false, text: 'New passwords do not match.' });
-      return;
-    }
-    if (rNew.length < 4) {
-      setResetMsg({ ok: false, text: 'New password must be at least 4 characters.' });
-      return;
-    }
-    const result = await resetPassword(rUser, rOld, rNew);
-    if (result === 'ok') {
-      setResetMsg({ ok: true, text: 'Password updated. You can now log in.' });
-      setRUser(''); setROld(''); setRNew(''); setRConfirm('');
-      setTimeout(() => { setMode('login'); setResetMsg(null); }, 1800);
-    } else if (result === 'wrong_password') {
-      setResetMsg({ ok: false, text: 'Current password is incorrect.' });
-    } else if (result === 'not_found') {
-      setResetMsg({ ok: false, text: 'Username not found.' });
-    } else {
-      setResetMsg({ ok: false, text: 'Server error. Please try again.' });
     }
   }
 
@@ -99,30 +66,8 @@ export default function LoginPage() {
             </div>
           </div>
 
-          {/* Tab switcher */}
-          <div style={{
-            display: 'flex', background: '#0a0f1e', borderRadius: '8px',
-            padding: '3px', marginBottom: '28px', border: '1px solid #1e293b',
-          }}>
-            {(['login', 'reset'] as Mode[]).map(m => (
-              <button
-                key={m}
-                onClick={() => { setMode(m); setLoginError(''); setResetMsg(null); }}
-                style={{
-                  flex: 1, padding: '8px', borderRadius: '6px', fontSize: '13px',
-                  fontWeight: 600, border: 'none', cursor: 'pointer', transition: 'all 0.15s',
-                  background: mode === m ? '#1e293b' : 'transparent',
-                  color: mode === m ? '#e2e8f0' : '#475569',
-                }}
-              >
-                {m === 'login' ? 'Sign In' : 'Reset Password'}
-              </button>
-            ))}
-          </div>
-
           {/* Login form */}
-          {mode === 'login' && (
-            <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div>
                 <label style={{ fontSize: '12px', color: '#64748b', fontWeight: 600, letterSpacing: '0.04em', display: 'block', marginBottom: '6px' }}>
                   USERNAME
@@ -183,57 +128,6 @@ export default function LoginPage() {
                 ) : 'Sign In'}
               </button>
             </form>
-          )}
-
-          {/* Reset password form */}
-          {mode === 'reset' && (
-            <form onSubmit={handleReset} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {[
-                { label: 'USERNAME', value: rUser, set: setRUser, type: 'text', ph: 'Your username' },
-                { label: 'CURRENT PASSWORD', value: rOld, set: setROld, type: 'password', ph: 'Current password' },
-                { label: 'NEW PASSWORD', value: rNew, set: setRNew, type: 'password', ph: 'New password (min 4 chars)' },
-                { label: 'CONFIRM NEW PASSWORD', value: rConfirm, set: setRConfirm, type: 'password', ph: 'Repeat new password' },
-              ].map(({ label, value, set, type, ph }) => (
-                <div key={label}>
-                  <label style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, letterSpacing: '0.04em', display: 'block', marginBottom: '5px' }}>
-                    {label}
-                  </label>
-                  <input
-                    type={type}
-                    value={value}
-                    onChange={e => set(e.target.value)}
-                    placeholder={ph}
-                    required
-                    style={inputStyle}
-                  />
-                </div>
-              ))}
-
-              {resetMsg && (
-                <div style={{
-                  borderRadius: '8px', padding: '10px 14px', fontSize: '13px',
-                  background: resetMsg.ok ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-                  border: `1px solid ${resetMsg.ok ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
-                  color: resetMsg.ok ? '#4ade80' : '#f87171',
-                }}>
-                  {resetMsg.text}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                style={{
-                  width: '100%', padding: '11px', borderRadius: '8px',
-                  border: '1px solid rgba(99,102,241,0.3)',
-                  background: 'rgba(99,102,241,0.15)',
-                  color: '#818cf8', fontSize: '14px', fontWeight: 700,
-                  cursor: 'pointer', transition: 'all 0.15s', marginTop: '2px',
-                }}
-              >
-                Update Password
-              </button>
-            </form>
-          )}
         </div>
 
         {/* Footer */}
