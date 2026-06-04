@@ -158,6 +158,8 @@ export const api = {
     if (symbol) params.set('symbol', symbol);
     return request<TradePerformanceReport>(`/signals/trade_performance?${params}`);
   },
+  suppressedSignals: (style = 'SWING') =>
+    request<SuppressedSignalRow[]>(`/signals/suppressed?style=${style}`),
 
   // Trade Journal
   listJournal: () => request<JournalTrade[]>('/journal'),
@@ -215,6 +217,45 @@ export const api = {
   clearResearch: (symbol: string) => request(`/research/${symbol}`, { method: 'DELETE' }),
   chatResearch: (symbol: string, messages: {role: string; content: string}[], api_key: string, model: string, provider: string) =>
     request<{role: string; content: string}>(`/research/${symbol}/chat`, { method: 'POST', body: JSON.stringify({ messages, api_key, model, provider }) }, 60_000),
+};
+
+export type SuppressedSignalConditions = {
+  weekly_gate: boolean;
+  weekly_misalignment: boolean;
+  adx_choppy: boolean;
+  high_vol_regime: boolean;
+  low_breadth: boolean;
+  earnings_caution: boolean;
+  earnings_level: string | null;
+  negative_news: boolean;
+  news_level: string | null;
+  rs_lagging: boolean;
+  bearish_options: boolean;
+  options_level: string | null;
+  stale_data: boolean;
+  insufficient_history: boolean;
+  compression_cap: boolean;
+};
+
+export type SuppressedSignalRow = {
+  symbol: string;
+  name: string;
+  signal: string;
+  horizon: string;
+  confidence: number;
+  bullish_probability: number | null;
+  ts: string | null;
+  conditions: SuppressedSignalConditions;
+  suppression_count: number;
+  market_regime: string | null;
+  weekly_rsi: number | null;
+  weekly_trend: string | null;
+  rsi: number | null;
+  adx: number | null;
+  breadth_pct: number | null;
+  days_to_earnings: number | null;
+  news_sentiment: number | null;
+  rs_score: number | null;
 };
 
 export type Stock = {

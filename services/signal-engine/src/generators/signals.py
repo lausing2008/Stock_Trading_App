@@ -718,7 +718,14 @@ def _apply_style_signal(
     weekly_trend = weekly_tech.get("weekly_trend", "neutral")
     daily_dir  = fused - 0.5
     weekly_dir = weekly_score - 0.5
-    if daily_dir * weekly_dir > 0:
+    # Only apply alignment boost/compress when weekly data is actually available.
+    # weekly_rsi is None when < 26 weekly bars exist. In that case weekly_score
+    # defaults to 0.5, making weekly_dir = 0 — which would always trigger the
+    # misalignment branch (0 > 0 is False) and penalise every data-sparse stock.
+    if weekly_rsi is None:
+        # No weekly history — skip alignment filter entirely, treat as neutral
+        reasons["weekly_alignment"] = None
+    elif daily_dir * weekly_dir > 0:
         fused = float(np.clip(0.5 + daily_dir * p["weekly_boost"], 0.0, 1.0))
         reasons["weekly_alignment"] = True
     else:

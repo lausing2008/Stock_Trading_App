@@ -939,3 +939,369 @@ If BUY signals are < 10% of total for each style, the system is likely over-comp
 ---
 
 *Signal quality review conducted: 2026-06-03*
+
+---
+
+---
+
+# Signal Filter Reference — Gate Conditions and Signal Suppression (2026-06-03)
+
+Complete reference for every condition that can block or suppress a BUY signal, ordered by severity.
+All compression multipliers follow the convention: `fused = 0.5 + (fused − 0.5) × multiplier`.
+
+---
+
+## Hard blocks — BUY is effectively impossible
+
+These conditions make a BUY signal practically unreachable without an extreme daily setup (fused ≥ 0.90+).
+
+### Weekly BUY gate (SWING and LONG only)
+**File:** `services/signal-engine/src/generators/signals.py` — applied after compression cap
+
+**Fires when:** `weekly_rsi < 40 AND weekly_trend == "down"` simultaneously.
+
+**Weekly RSI definition:**
+- RSI(14) computed on weekly bars — daily OHLCV resampled to Monday-anchored weekly bars
+- Current (partial) week is dropped if it started within the past 4 calendar days (unreliable partial bar)
+- Requires ≥ 26 weekly bars (≈ 6 months) to compute; returns `None` if insufficient history
+- RSI < 40 = weekly momentum has entered bearish territory (not just neutral — confirmed weak)
+
+**Weekly trend definition:**
+- 10-week SMA (changed from 20-week in v3 — more responsive to medium-term turns)
+- `"up"`: price > SMA by more than +1%
+- `"down"`: price < SMA by more than −1%
+- `"neutral"`: within ±1% band
+
+**Effect:** 0.40× compression applied **after** the `max_compress_ratio` cap — making it the final, unoverridable filter.
+
+| SWING starting fused | After gate (0.40×) | vs. bull BUY threshold (0.65) |
+|---------------------|-------------------|-------------------------------|
+| 0.80 | 0.5 + (0.30 × 0.40) = 0.62 | Below threshold — HOLD |
+| 0.90 | 0.5 + (0.40 × 0.40) = 0.66 | Above threshold — BUY (barely) |
+| 0.95 | 0.5 + (0.45 × 0.40) = 0.68 | Above threshold — BUY |
+
+In practice: only an overwhelming daily setup (RSI oversold, golden cross, MACD breakout, strong volume) reaches 0.90+ fused, so the gate blocks the vast majority of BUY attempts during confirmed weekly downtrends.
+
+**Applies to:** SWING and LONG. SHORT style is excluded — short-term momentum plays can legitimately run against the weekly trend.
+
+---
+
+### Earnings in ≤ 2 days (SWING only)
+**Compression:** 0.50×. A fused score of 0.80 becomes 0.65 — just at the SWING bull threshold. A score of 0.79 becomes 0.645 — below it. The earnings binary event risk is treated as a near-hard block for SWING.
+
+---
+
+### Stale price data
+**Fires when:** Most recent price bar is > 3 calendar days old (pipeline gap).
+**Compression:** 0.60×. Signals based on stale data are unreliable; this prevents a Monday signal from reflecting last Wednesday's close as if it were current.
+
+---
+
+### Insufficient history
+**Fires when:** Fewer than 50 daily bars available for the symbol.
+**Compression:** 0.50×. SMA200, ADX(14), and RSI(14) are all unreliable below 50 bars. The signal is flagged as low-confidence rather than silently serving defaults.
+
+---
+
+## Strong compressions — meaningfully reduce BUY probability
+
+These apply in common conditions and can stack.
+
+| Condition | Applies to | Multiplier | Threshold |
+|-----------|-----------|-----------|-----------|
+| Weekly misalignment (daily vs. weekly direction conflict) | SHORT / SWING / LONG | 0.93× / 0.85× / 0.80× | Always when directions disagree |
+| ADX choppy market | SHORT (< 25), SWING (< 20) | 0.85× / 0.90× | ADX below minimum |
+| High-volatility regime (Fear & Greed < 30) | All styles | 0.92× / 0.85× / 0.90× | F&G < 30 |
+| Market breadth < 40% | SWING, LONG | 0.90× / 0.92× | < 40% of US stocks above 200-day SMA |
+| News sentiment strongly negative (SWING only) | SWING | 0.75× | Sentiment score < 25/100 |
+| News sentiment negative (SWING only) | SWING | 0.85× | Sentiment score < 35/100 |
+| Earnings in ≤ 5 days (SWING only) | SWING | 0.75× | days_to_earnings ≤ 5 |
+| Earnings in ≤ 10 days (SWING only) | SWING | 0.90× | days_to_earnings ≤ 10 |
+| Relative strength lagging sector | SHORT / SWING / LONG | 0.90× / 0.85× / 0.80× | rs_rank < 0.80 (stock underperforming sector ETF by > 20% on 20d basis) |
+| Options flow bearish | All styles | 0.92× | C/P ratio < 0.7, put vol ≥ 100 |
+| Options flow slightly bearish | All styles | 0.96× | C/P ratio < 1.0 |
+| K-Score weak fundamentals (LONG only) | LONG | −0.06 direct | K-Score < 35/100 |
+| Bearish chart pattern (active, recent) | All styles | up to −0.15 direct | head_and_shoulders, double_top, bear_flag, descending_triangle |
+
+---
+
+## Threshold-based blocks — market regime raises the bar
+
+The BUY threshold itself increases in adverse regimes, meaning a signal must be stronger to fire even without any compression.
+
+| Style | Bull BUY threshold | High-vol BUY threshold | Bear BUY threshold |
+|-------|-------------------|----------------------|-------------------|
+| SHORT | 0.60 | 0.65 | 0.68 |
+| SWING | 0.65 | 0.70 | 0.73 |
+| LONG  | 0.60 | 0.65 | 0.70 |
+
+In a bear regime, the threshold increase alone is equivalent to applying an additional ~0.85× compression on a typical 0.80 fused signal.
+
+---
+
+## Compression cap (safety valve)
+
+The `max_compress_ratio` prevents stacked filters from making BUY completely unreachable:
+
+| Style | Cap ratio | Effect on fused 0.80 |
+|-------|-----------|---------------------|
+| SHORT | 0.70× | Minimum fused = 0.5 + (0.30 × 0.70) = 0.71 |
+| SWING | 0.55× | Minimum fused = 0.5 + (0.30 × 0.55) = 0.665 |
+| LONG  | 0.65× | Minimum fused = 0.5 + (0.30 × 0.65) = 0.695 |
+
+**Exception:** The weekly BUY gate is applied after the cap and is not subject to it. This is intentional — a confirmed bearish weekly structure overrides the safety valve.
+
+---
+
+## Typical scenario — worst-case SWING compression
+
+A stock in a choppy market with several bearish signals hitting simultaneously:
+
+| Layer | Multiplier | Cumulative fused (starting 0.80) |
+|-------|-----------|----------------------------------|
+| Starting fused | — | 0.80 |
+| Weekly misalignment | 0.85× | 0.775 |
+| ADX choppy (< 20) | 0.90× | 0.748 |
+| High-vol regime | 0.85× | 0.723 |
+| Market breadth < 40% | 0.90× | 0.700 |
+| News sentiment < 35 | 0.85× | 0.678 |
+| Earnings in 5 days | 0.75× | 0.658 |
+| RS lagging sector | 0.85× | 0.640 |
+| Cap enforced (0.55×) | → | 0.665 (floor) |
+| Weekly gate fires (RSI < 40, trend down) | 0.40× | **0.583** — HOLD |
+
+**Conclusion:** In a genuinely adverse environment, even a strong daily signal (fused 0.80) cannot reach a SWING BUY (threshold 0.65 in bull, 0.73 in bear) if the weekly gate fires.
+
+---
+
+*Filter reference written: 2026-06-03*
+
+---
+
+---
+
+# Signal Firing Mechanics — Do All Conditions Need to Be Clear? (2026-06-03)
+
+**Short answer: No.** A BUY signal does not require all suppression conditions to be inactive.
+Each condition compresses the fused score toward 0.5 — it does not zero it out or directly block the signal.
+A stock with a strong enough underlying TA/ML signal can fire a BUY even with several conditions active.
+
+The Signal Filter Monitor page uses coloured dots to show which conditions are firing:
+- **Dot OFF (gray)** = condition is not suppressing the signal (good)
+- **Dot ON (coloured)** = condition is actively compressing the fused score (bad)
+
+---
+
+## How the threshold works
+
+A BUY signal fires when the final fused probability exceeds the style-specific BUY threshold:
+
+| Style | Bull threshold | High-vol threshold | Bear threshold |
+|-------|---------------|-------------------|----------------|
+| SHORT | 60% | 65% | 68% |
+| SWING | 65% | 70% | 73% |
+| LONG  | 60% | 65% | 70% |
+
+Every suppression condition reduces how far the fused score sits above 0.5. If the score still clears the threshold after all compressions, the signal fires BUY regardless of how many conditions are active.
+
+---
+
+## Concrete examples (SWING, bull regime, BUY threshold = 65%)
+
+| Scenario | Starting fused | Active conditions | Final fused | Signal |
+|----------|---------------|-------------------|-------------|--------|
+| All clear | 72% | None | 72% | **BUY** |
+| Moderate suppression | 80% | W.Align + ADX + RS (×3) | ~66.5% (cap floor) | **BUY** |
+| Gate fires, weak signal | 70% | Weekly Gate | 58% | HOLD |
+| Gate fires, strong signal | 92% | Weekly Gate | 67% | **BUY** (barely) |
+| Gate + three other filters | 80% | Gate + W.Align + ADX + RS | 58% (gate after cap) | HOLD |
+
+---
+
+## The compression cap — safety net for stacked filters
+
+The `max_compress_ratio` prevents multiple soft filters from stacking into an effective hard block:
+
+- SWING cap: **0.55×** — minimum 55% of pre-filter distance from neutral is preserved
+- LONG cap: **0.65×**
+- SHORT cap: **0.70×**
+
+Example: if starting fused = 0.80 (distance = 0.30 above neutral), no combination of soft filters can push the final score below `0.5 + 0.30 × 0.55 = 0.665`.
+
+**In a bull regime (threshold 0.65), a stock with fused 0.80+ will fire BUY even if every soft filter fires simultaneously**, because the cap floor (0.665) is still above the threshold.
+
+In a bear regime (threshold 0.73), this same stock would be HOLD (0.665 < 0.73).
+
+---
+
+## The Weekly Gate — the one true hard block
+
+The Weekly Gate is exempt from the compression cap. It is applied after the cap and its compression cannot be offset by any other factor.
+
+**Gate fires when:** `weekly_rsi < 40 AND weekly_trend == "down"` simultaneously (SWING and LONG only).
+
+**Effect:** 0.40× compression applied to the post-cap fused score.
+
+| Post-cap fused | After gate (0.40×) | vs. SWING bull threshold (0.65) |
+|---------------|-------------------|----------------------------------|
+| 0.665 (cap floor for 0.80 signal) | 0.566 | **HOLD** |
+| 0.80 | 0.62 | **HOLD** |
+| 0.90 | 0.66 | **BUY** (barely) |
+| 0.95 | 0.68 | **BUY** |
+
+**Practical implication:** A stock with the Weekly Gate active needs a fused score of approximately 0.89+ after all other filters to still reach BUY. This represents an exceptionally strong daily setup — RSI oversold, golden cross, MACD breakout, strong volume, and bullish chart patterns all firing together.
+
+---
+
+## Decision guide for reading the Signal Filter Monitor
+
+| What you see | What it means |
+|---|---|
+| All dots gray, signal = BUY | Clean signal — no suppression, fired on merit |
+| Several soft dots on, signal = BUY | Strong underlying signal overcame the suppression |
+| Several soft dots on, signal = HOLD | Signal is being held back; a stronger daily setup could push it to BUY |
+| Gate dot on, signal = HOLD | Very unlikely to flip to BUY — needs extreme daily setup (≥90%+) |
+| Gate dot on + other dots on, signal = HOLD | Effectively blocked in all realistic market conditions |
+| Stale or History dot on | Signal quality is unreliable regardless of what it says — data gap or new stock |
+
+---
+
+## Why filters exist even when signal fires BUY
+
+A BUY signal with 3 soft filters active is a lower-conviction call than one with zero filters. The filters document the risk factors the system is aware of but could not fully suppress. This is intentional — the system does not silence a strong signal just because conditions are imperfect, but the filter monitor lets you see exactly what risks exist so you can decide whether to act.
+
+---
+
+*Signal firing mechanics documented: 2026-06-03*
+
+---
+
+---
+
+# Two-Tier Signal System — Engine vs Email Alert (2026-06-03)
+
+The system has two completely independent layers that must both pass before a user sees an actionable outcome. Confusing them is the most common source of "why didn't I get a signal?" questions.
+
+---
+
+## Tier 1 — Signal Engine (what the Signal Filter Monitor shows)
+
+The signal engine runs for every active stock on every scheduler tick. It produces a fused probability score and maps it to BUY / HOLD / WAIT / SELL. This result is what the Signal Filter Monitor page displays.
+
+**A BUY on the Signal Filter Monitor means: the fused score crossed the threshold. It does NOT mean an email was sent.**
+
+### How the score is computed
+
+1. TA score (RSI, MACD, SMA, Bollinger, VWAP, OBV, ADX, Stoch RSI) — normalised to 0–1
+2. ML probability (XGBoost+RF ensemble) — blended with TA using AUC-based dynamic weight (0.40–0.75)
+3. Fused score passed through suppression filters (see Signal Filter Reference section above)
+4. Final score compared to BUY threshold → signal label
+
+### What the dots on the Signal Filter Monitor mean
+
+Each coloured dot represents one suppression condition that is compressing the fused score. Dots off (gray) = clean. Dots on (coloured) = actively suppressing. A BUY can still fire with several dots on if the underlying signal is strong enough. The Weekly Gate (red) is the only near-hard block.
+
+---
+
+## Tier 2 — Email Alert Conviction Gate (what triggers a notification)
+
+The scheduler runs the conviction gate only for stocks where a user has created a signal alert AND the signal has just transitioned to a bullish state. All 5 layers must pass for an email to be sent.
+
+### The 5-layer conviction gate
+
+| Layer | What it checks | Requirement |
+|-------|---------------|-------------|
+| 1 | Analyst consensus | Recommendation mean must be in bullish range ("buy" / "strong buy" / "outperform") |
+| 2 | K-Score | ≥ 55 / 100 (fundamental + momentum composite) |
+| 3 | Signal engine | BUY (already confirmed — gate only runs on BUY transitions) |
+| 4a | Uptrend structure | SMA50 > SMA200 AND price > SMA50 (golden cross alignment) |
+| 4b | Entry timing | RSI 45–65 AND Stoch RSI recovering from oversold (cross_up OR oversold+K<60) |
+| 4c | MACD momentum | Histogram positive+rising OR zero-line crossover |
+| 4d | Volume confirmation | OBV bullish (20-day OBV avg above 30-day avg) |
+| 4e | Trend strength | ADX > 25 (signal unreliable in choppy/directionless markets) |
+| 5 | ML agrees with TA | ML bullish probability > 70% |
+
+**Disqualifiers** — block the email even if all layers pass:
+- Bearish RSI divergence: price rising but RSI falling (momentum fading — high false-BUY risk)
+- Stoch RSI overbought: K > 0.80 (RSI itself overextended — pullback risk elevated)
+
+### Additional gate for non-BUY bullish improvements (e.g. WAIT→HOLD)
+
+Lighter check: analyst must be bullish AND confidence ≥ minimum threshold. No full 5-layer check.
+
+### State machine — why a stock already at BUY never sends a second email
+
+The gate only fires on signal **transitions**. The `last_signal` field tracks the previous signal per stock per user alert. If `last_signal == "BUY"` and the new signal is also `"BUY"`, no transition is detected and no email is sent regardless of how strong the signal is.
+
+This prevents spam on stocks that remain at BUY across many scheduler runs. A new email is only sent if the signal leaves BUY (e.g. drops to HOLD or SELL) and then returns to BUY again.
+
+---
+
+## Real example — FCEL (2026-06-03)
+
+FCEL showed BUY at 69.3% bullish probability with only 1 suppression filter active (earnings in 5 days). No email was sent.
+
+| Layer | Requirement | FCEL result |
+|-------|-------------|-------------|
+| 2 — K-Score | ≥ 55 | ✅ 69 |
+| 4a — Uptrend | SMA50 > SMA200, price > SMA50 | ✅ |
+| 4b — Entry timing | RSI 45–65, Stoch recovering | ✅ RSI 62, Stoch oversold (K=0.05) |
+| 4c — MACD | Histogram positive+rising or zero-cross | ❌ hist −0.29, falling |
+| 4d — OBV | Bullish | ✅ |
+| 4e — ADX | > 25 | ✅ 46 |
+| 5 — ML probability | > 70% | ❌ unavailable (model not trained for FCEL) |
+
+Two layers failed → email blocked despite the signal engine reporting BUY. The Signal Filter Monitor correctly showed BUY because the fused score (69%) crossed the SWING bull threshold (65%). The conviction gate is a separate, stricter check designed to prevent low-confidence BUY emails.
+
+---
+
+## Full flow — from price data to user notification
+
+```
+Market closes
+    │
+    ▼
+Scheduler tick
+    │
+    ├─► Signal Engine (runs for ALL stocks)
+    │       TA score → ML fusion → suppression filters → BUY/HOLD/WAIT/SELL
+    │       Result stored in signals table
+    │       Visible on: Signal Filter Monitor, Opportunities, Stock Detail
+    │
+    └─► Alert Checker (runs only for stocks with user signal alerts)
+            Has signal transitioned? (last_signal → new signal)
+            │
+            ├─ No transition → skip (no email)
+            │
+            └─ Bullish transition detected
+                    │
+                    ├─ BUY transition → run full 5-layer conviction gate
+                    │       All 5 pass → send email, update last_signal
+                    │       Any fail  → skip, last_signal NOT updated (retry next tick)
+                    │
+                    └─ WAIT/HOLD improvement → lighter gate (analyst + confidence)
+                            Pass → send email, update last_signal
+                            Fail → skip, last_signal NOT updated
+```
+
+---
+
+## Practical guide — "why didn't I get an email for X?"
+
+Check in this order:
+
+1. **Is there a signal alert set up for this stock?** (Alerts page → Signal Alerts tab)
+2. **What is the current signal?** HOLD/WAIT/SELL → email only sent on BUY transition
+3. **Was it already at BUY last time?** If `last_signal == BUY` already, no transition → no email
+4. **Did the conviction gate pass?** Fetch `GET /signals/{symbol}?style=SWING` and check reasons against the gate table above:
+   - `sma50_above_sma200` + `trend_above_sma50` → Layer 4a
+   - `rsi` 45–65 + (`stoch_rsi_cross_up` OR `stoch_rsi_oversold`) → Layer 4b
+   - `macd_hist` > 0 + `macd_rising` → Layer 4c
+   - `obv_bullish` → Layer 4d
+   - `adx_trending` (ADX > 25) → Layer 4e
+   - `ml_probability` > 0.70 → Layer 5
+5. **Check disqualifiers:** `rsi_divergence == "bearish"` or `stoch_rsi_overbought == True`
+
+---
+
+*Two-tier system documented: 2026-06-03*

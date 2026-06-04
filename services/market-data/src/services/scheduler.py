@@ -262,12 +262,16 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[
         failed.append(f"ADX {float(adx):.0f} < 25: market choppy, signals unreliable")
 
     # Layer 5 — ML model agrees with TA
+    # If ml_probability is None the model has not been trained for this stock yet.
+    # Treat as a soft warning rather than a hard block — the TA evidence (layers 4a-4e)
+    # is sufficient on its own for stocks without ML coverage.
     ml_prob = reasons.get("ml_probability")
-    if ml_prob is not None and float(ml_prob) > 0.70:
+    if ml_prob is None:
+        passed.append("ML: no model trained yet — TA-only signal (soft pass)")
+    elif float(ml_prob) > 0.70:
         passed.append(f"ML: {float(ml_prob) * 100:.0f}% bullish probability")
     else:
-        prob_str = f"{float(ml_prob) * 100:.0f}%" if ml_prob is not None else "unavailable"
-        failed.append(f"ML probability {prob_str} (need >70%)")
+        failed.append(f"ML probability {float(ml_prob) * 100:.0f}% below 70% threshold")
 
     # Disqualifiers — false-BUY flags that block regardless of layer scores
     if reasons.get("rsi_divergence") == "bearish":
