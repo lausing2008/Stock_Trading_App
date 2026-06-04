@@ -96,9 +96,19 @@ def _get_redis() -> redis_lib.Redis:
     return _redis
 
 
-def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str) -> None:
+def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None) -> None:
     try:
-        _get_redis().setex(
+        r = _get_redis()
+        now = datetime.now(timezone.utc).isoformat()
+        # Preserve existing sent_at if not explicitly provided (stable BUY refresh path)
+        if sent_at is None and sent:
+            try:
+                existing = r.get(f"conv_gate:{symbol}:{style}")
+                if existing:
+                    sent_at = json.loads(existing).get("sent_at")
+            except Exception:
+                pass
+        r.setex(
             f"conv_gate:{symbol}:{style}",
             86400 * 7,  # 7-day TTL
             json.dumps({
@@ -106,7 +116,8 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
                 "passed": passed,
                 "failed": failed,
                 "signal": signal,
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": now,
+                "sent_at": sent_at,
             }),
         )
     except Exception:
@@ -648,7 +659,8 @@ def check_signal_alerts() -> None:
                     alert.last_signal = current  # advance state only after successful send
                     fired += 1
                     log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
-                    _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current)
+                    _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current,
+                                      sent_at=datetime.now(timezone.utc).isoformat())
 
             session.commit()
             if fired:

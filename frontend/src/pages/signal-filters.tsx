@@ -510,7 +510,9 @@ export default function SignalFiltersPage() {
                         <span style={{ display: 'block', lineHeight: 1.5 }}>
                           <span style={{ color: '#22c55e', fontSize: 11, fontWeight: 700 }}>✓ Sent</span>
                           <span style={{ display: 'block', color: '#475569', fontSize: 10 }}>
-                            {fmtTs(row.conviction.ts)}
+                            {row.conviction.sent_at
+                              ? `Sent: ${fmtTs(row.conviction.sent_at)}`
+                              : `Checked: ${fmtTs(row.conviction.ts)}`}
                           </span>
                         </span>
                       ) : (
@@ -523,7 +525,7 @@ export default function SignalFiltersPage() {
                             <span style={{ color: '#64748b' }}> +{row.conviction.failed.length - 1}</span>
                           )}
                           <span style={{ display: 'block', color: '#475569', fontSize: 10 }}>
-                            {fmtTs(row.conviction.ts)}
+                            {`Checked: ${fmtTs(row.conviction.ts)}`}
                           </span>
                         </span>
                       )}

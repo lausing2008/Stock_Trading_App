@@ -262,6 +262,7 @@ export type SuppressedSignalRow = {
     failed: string[];
     signal: string;
     ts: string;
+    sent_at: string | null;
   } | null;
 };
 
