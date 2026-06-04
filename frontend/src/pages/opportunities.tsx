@@ -94,19 +94,21 @@ function scoreFor(
   const chg  = lp?.change_pct ?? 0;
   const upside = r.fair_price && lp?.price ? ((r.fair_price - lp.price) / lp.price) * 100 : 0;
 
+  // All formulas produce 0–100 exactly. Max weights sum verified per case.
+  const bullPct = (sig?.bullish_probability ?? 0) * 100; // normalise 0-1 → 0-100
   switch (strategy) {
-    // all: K-Score already 0-100; signal bonus capped so max ≈ 108 → display as-is
-    case 'all':      return (r.score ?? 0) + (sig?.signal === 'BUY' ? 8 : sig?.signal === 'HOLD' ? 3 : 0);
-    // swing max: 40+25+20+15 = 100 (sigB max 20, conf max 100)
+    // all: K-Score 0-100 + small BUY bonus, clamped
+    case 'all':      return Math.min(100, Math.round((r.score ?? 0) + (sig?.signal === 'BUY' ? 8 : sig?.signal === 'HOLD' ? 3 : 0)));
+    // swing max: tech*0.40 + mom*0.25 + sigB(max 20) + conf*0.15 = 40+25+20+15 = 100
     case 'swing':    return Math.min(100, Math.round(tech * 0.40 + mom * 0.25 + sigB + conf * 0.15));
-    // short: cap day-change bonus at 15 (≡ 5% move) so max = 50+25+15+10 = 100
+    // short max: mom*0.50 + tech*0.25 + chg_bonus(max 15) + vlt*0.10 = 50+25+15+10 = 100
     case 'short':    return Math.min(100, Math.round(mom * 0.50 + tech * 0.25 + Math.min(Math.abs(chg) * 3, 15) + vlt * 0.10));
-    // longterm: cap upside bonus at 25 pts so max ≈ 40+30+25+15 = 110 → clamped to 100
-    case 'longterm': return Math.min(100, Math.round(val * 0.40 + grow * 0.30 + Math.min(Math.max(0, upside), 25) + vlt * 0.15));
-    // growth max: 50+30+20 = 100
+    // longterm max: val*0.40 + grow*0.30 + upside_bonus(max 15) + vlt*0.15 = 40+30+15+15 = 100
+    case 'longterm': return Math.min(100, Math.round(val * 0.40 + grow * 0.30 + Math.min(Math.max(0, upside), 15) + vlt * 0.15));
+    // growth max: grow*0.50 + mom*0.30 + tech*0.20 = 50+30+20 = 100
     case 'growth':   return Math.min(100, Math.round(grow * 0.50 + mom * 0.30 + tech * 0.20));
-    // aisignal: conf 0-100 × 0.70 = 70 max; bullish_probability 0-1 × 50 = 50 → clamp to 100
-    case 'aisignal':   return Math.min(100, Math.round(conf * 0.70 + (sig?.bullish_probability ?? 0) * 50 + tech * 0.15 + mom * 0.10));
+    // aisignal max: bullPct*0.45 + conf*0.35 + tech*0.10 + mom*0.10 = 45+35+10+10 = 100
+    case 'aisignal':   return Math.min(100, Math.round(bullPct * 0.45 + conf * 0.35 + tech * 0.10 + mom * 0.10));
     case 'confluence': return confluenceScore(r, sig);
     default:           return r.score ?? 0;
   }
@@ -928,7 +930,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-        {opportunities.map(({ row: r, lp, sig }, idx) => {
+        {opportunities.map(({ row: r, lp, sig, stratScore }, idx) => {
           const sc = SIG_COLOR[sig?.signal ?? ''] ?? SIG_COLOR.HOLD;
           const reasons = getReasons(strategy, r, sig, lp);
           const keyMetric = getKeyMetric(strategy, r, sig, lp);
@@ -1034,8 +1036,9 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                         <div style={{ fontSize: '14px', fontWeight: 800, color: keyMetric.color ?? '#e2e8f0' }}>{keyMetric.value}</div>
                       </div>
                     )}
-                    <div style={{ fontSize: '10px', color: '#334155', marginTop: '4px' }}>
-                      K {(r.score ?? 0).toFixed(0)}
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '4px' }}>
+                      <span style={{ color: scoreColor(stratScore), fontWeight: 700 }}>{stratScore}</span>
+                      <span style={{ color: '#334155' }}> · K{(r.score ?? 0).toFixed(0)}</span>
                     </div>
                     {/* Bell button */}
                     <button
