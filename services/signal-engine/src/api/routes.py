@@ -5,8 +5,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from common.config import get_settings
 from common.logging import get_logger
 from db import Price, Signal, SignalHorizon, SignalType, Stock, TimeFrame, get_session
+
+_settings = get_settings()
 
 from ..generators import generate_signal, generate_all_signals
 
@@ -854,6 +857,17 @@ def suppressed_signals(
         pass
 
     rows = session.execute(q).all()
+
+    # Fetch conviction gate results from market-data Redis cache
+    conviction_data: dict = {}
+    try:
+        import httpx as _httpx
+        cr = _httpx.get(f"{_settings.market_data_url}/stocks/conviction", timeout=4)
+        if cr.status_code == 200:
+            conviction_data = cr.json()
+    except Exception:
+        pass
+
     results = []
 
     for row in rows:
@@ -883,6 +897,7 @@ def suppressed_signals(
             if k not in ("earnings_level", "news_level", "options_level") and v is True
         )
 
+        conv = conviction_data.get(f"{row.symbol}:{horizon_filter}")
         results.append({
             "symbol":              row.symbol,
             "name":                row.name,
@@ -902,6 +917,7 @@ def suppressed_signals(
             "days_to_earnings":    r.get("days_to_earnings"),
             "news_sentiment":      r.get("news_sentiment"),
             "rs_score":            r.get("rs_score"),
+            "conviction":          conv,
         })
 
     results.sort(key=lambda x: (-x["suppression_count"], -(x["bullish_probability"] or 0)))
