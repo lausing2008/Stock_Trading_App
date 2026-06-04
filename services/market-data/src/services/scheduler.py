@@ -72,7 +72,7 @@ import redis as redis_lib
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -1059,13 +1059,15 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # ── Signal alert checker — every minute (independent of full refresh) ───
-    # Runs separately so conviction/Redis data is restored quickly after restarts.
+    # ── One-shot startup run to restore conviction/Redis data after restarts ─
+    # check_signal_alerts() is normally called by _run_market_refresh() (5×/day).
+    # Running it once at startup (60s delay) repopulates Redis without adding a
+    # permanent 1-minute schedule that could race with the full market refresh.
     _scheduler.add_job(
         check_signal_alerts,
-        "interval",
-        minutes=1,
-        id="signal_alert_check",
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
+        id="signal_alert_startup",
         replace_existing=True,
     )
 

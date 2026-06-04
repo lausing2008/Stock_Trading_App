@@ -527,14 +527,14 @@ def _persist_rankings(stock_ids: list[int]) -> None:
                 {
                     "stock_id": sid,
                     "as_of": today,
-                    "score": c.score,
-                    "technical": c.technical,
-                    "momentum": c.momentum,
-                    "value": c.value,
-                    "growth": c.growth,
-                    "volatility": c.volatility,
-                    "fair_price": c.fair_price,
-                    "rs_score": c.relative_strength,
+                    "score":     _clean(c.score),
+                    "technical": _clean(c.technical),
+                    "momentum":  _clean(c.momentum),
+                    "value":     _clean(c.value),
+                    "growth":    _clean(c.growth),
+                    "volatility":_clean(c.volatility),
+                    "fair_price":_clean(c.fair_price),
+                    "rs_score":  _clean(c.relative_strength),
                 }
             )
         if rows:
