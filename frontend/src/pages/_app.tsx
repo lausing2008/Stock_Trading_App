@@ -197,19 +197,7 @@ export default function App({ Component, pageProps }: AppProps) {
     }
 
     async function doCheck() {
-      if (!hasGateCookie()) {
-        try {
-          const r = await fetch('/api/gate');
-          const { enabled } = await r.json() as { enabled: boolean };
-          if (enabled) {
-            router.replace(`/gate?next=${encodeURIComponent(router.pathname)}`);
-            return;
-          }
-        } catch {
-          // If the gate API is unreachable, let the user through
-        }
-      }
-
+      // If the user has a valid JWT session, skip the gate — they've already authenticated
       const session = getSession();
       if (session) {
         setUsername(session.username);
@@ -223,9 +211,25 @@ export default function App({ Component, pageProps }: AppProps) {
             quiver_api_key: settings.quiverApiKey || undefined,
           }).catch(() => {});
         }
-      } else {
-        router.replace('/login');
+        setChecked(true);
+        return;
       }
+
+      // Gate check only for unauthenticated visitors
+      if (!hasGateCookie()) {
+        try {
+          const r = await fetch('/api/gate');
+          const { enabled } = await r.json() as { enabled: boolean };
+          if (enabled) {
+            router.replace(`/gate?next=${encodeURIComponent(router.pathname)}`);
+            return;
+          }
+        } catch {
+          // If the gate API is unreachable, let the user through
+        }
+      }
+
+      router.replace('/login');
       setChecked(true);
     }
 
