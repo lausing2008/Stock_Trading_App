@@ -432,23 +432,51 @@ def _hist_interp(status):
     return m.get(status, "Histogram data unavailable.")
 
 
+# ── Sector benchmarks ────────────────────────────────────────────────────────
+# Typical fair multiples / growth thresholds by GICS sector.
+# fair_pe: midpoint fair-value trailing P/E for the sector
+# rev_good: revenue growth (%) threshold for "Good" rating
+# gross_good: gross margin (%) threshold for "above average"
+# op_good: operating margin (%) threshold for "above average"
+# gross_good=0 means gross margin is not meaningful for that sector (Financials)
+_SECTOR_BENCHMARKS: dict[str, dict] = {
+    "Technology":             {"fair_pe": 30, "rev_good": 15, "gross_good": 65, "op_good": 20},
+    "Communication Services": {"fair_pe": 25, "rev_good": 10, "gross_good": 55, "op_good": 18},
+    "Healthcare":             {"fair_pe": 25, "rev_good": 10, "gross_good": 55, "op_good": 15},
+    "Consumer Discretionary": {"fair_pe": 22, "rev_good": 8,  "gross_good": 38, "op_good": 12},
+    "Consumer Staples":       {"fair_pe": 20, "rev_good": 5,  "gross_good": 42, "op_good": 12},
+    "Financials":             {"fair_pe": 13, "rev_good": 8,  "gross_good": 0,  "op_good": 28},
+    "Industrials":            {"fair_pe": 20, "rev_good": 8,  "gross_good": 35, "op_good": 12},
+    "Energy":                 {"fair_pe": 12, "rev_good": 5,  "gross_good": 30, "op_good": 10},
+    "Materials":              {"fair_pe": 16, "rev_good": 5,  "gross_good": 32, "op_good": 12},
+    "Real Estate":            {"fair_pe": 30, "rev_good": 5,  "gross_good": 60, "op_good": 30},
+    "Utilities":              {"fair_pe": 18, "rev_good": 3,  "gross_good": 42, "op_good": 18},
+    "Unknown":                {"fair_pe": 22, "rev_good": 10, "gross_good": 40, "op_good": 15},
+}
+
+
+def _sector_bench(sector: str) -> dict:
+    return _SECTOR_BENCHMARKS.get(sector, _SECTOR_BENCHMARKS["Unknown"])
+
+
 # ── Fundamental scoring ───────────────────────────────────────────────────────
 
-def _score_fundamental(fund: dict) -> dict:
+def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
     if not fund:
         return {"score": 50, "revenue": {}, "eps": {}, "margins": {}, "balance_sheet": {},
                 "cash_flow": {}, "valuation": {}, "profitability": {}}
 
+    bench = _sector_bench(sector)
     score = 50
 
-    # Revenue growth
+    # Revenue growth — relative to sector benchmark
     rev_growth = fund.get("revenue_growth")
     rev_assess = "Unknown"
     if rev_growth is not None:
         rev_pct = rev_growth * 100  # yfinance returns decimal fraction (0.10 = 10%)
-        if rev_pct >= 20:
+        if rev_pct >= bench["rev_good"] * 2:
             rev_assess = "Excellent"; score += 10
-        elif rev_pct >= 10:
+        elif rev_pct >= bench["rev_good"]:
             rev_assess = "Good"; score += 5
         elif rev_pct >= 0:
             rev_assess = "Average"
@@ -469,18 +497,32 @@ def _score_fundamental(fund: dict) -> dict:
         else:
             eps_assess = "Weak"; score -= 7
 
-    # Margins
+    # Margins — relative to sector benchmarks
     gross_m = fund.get("gross_margin")
     op_m = fund.get("operating_margin")
     net_m = fund.get("profit_margin")
-    if gross_m and gross_m > 0.4:
+    gross_threshold = bench["gross_good"] / 100.0
+    op_threshold = bench["op_good"] / 100.0
+
+    if gross_threshold > 0:  # gross margin not meaningful for Financials
+        if gross_m and gross_m > gross_threshold:
+            score += 5
+        elif gross_m and gross_m < gross_threshold * 0.5:
+            score -= 3
+    if op_m and op_m > op_threshold:
         score += 5
-    elif gross_m and gross_m < 0.2:
+    elif op_m and op_m < op_threshold * 0.25:
         score -= 3
-    if op_m and op_m > 0.2:
-        score += 5
-    elif op_m and op_m < 0.05:
-        score -= 3
+
+    if gross_threshold > 0 and gross_m:
+        if gross_m > gross_threshold:
+            margin_vs_sector = f"Above {sector} average (>{bench['gross_good']}% gross)"
+        elif gross_m < gross_threshold * 0.75:
+            margin_vs_sector = f"Below {sector} average (<{int(bench['gross_good']*0.75)}% gross)"
+        else:
+            margin_vs_sector = f"Inline with {sector} average"
+    else:
+        margin_vs_sector = f"Inline with {sector} average"
 
     def pct(v):
         if v is None:
@@ -518,18 +560,19 @@ def _score_fundamental(fund: dict) -> dict:
     else:
         fcf_margin = None
 
-    # Valuation
+    # Valuation — relative to sector fair P/E
     pe = fund.get("trailing_pe")
     fpe = fund.get("forward_pe")
     ps = fund.get("ev_to_revenue")
     ev_ebitda = fund.get("ev_to_ebitda")
     val_assess = "Fairly Valued"
+    fair_pe = bench["fair_pe"]
     if pe is not None and pe > 0:
-        if pe < 15:
+        if pe < fair_pe * 0.65:
             val_assess = "Undervalued"; score += 8
-        elif pe < 25:
+        elif pe < fair_pe * 1.1:
             val_assess = "Fairly Valued"; score += 3
-        elif pe < 40:
+        elif pe < fair_pe * 1.5:
             val_assess = "Fairly Valued"
         else:
             val_assess = "Overvalued"; score -= 5
@@ -585,7 +628,7 @@ def _score_fundamental(fund: dict) -> dict:
             "gross": pct(gross_m),
             "operating": pct(op_m),
             "net": pct(net_m),
-            "comparison": "Above typical industry average" if gross_m and gross_m > 0.35 else "Inline with industry",
+            "comparison": margin_vs_sector,
         },
         "balance_sheet": {
             "cash": cash,
@@ -1167,7 +1210,7 @@ async def generate_research(symbol: str, req: ResearchRequest):
 
     # Compute scores
     tech = _score_technical(stock, prices, indicators, levels, live_price=price)
-    fund_scores = _score_fundamental(fund)
+    fund_scores = _score_fundamental(fund, sector=stock.get("sector", "Unknown"))
 
     # Call Claude for qualitative analysis
     ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price)

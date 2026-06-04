@@ -1,15 +1,15 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-04  
+**Last updated:** 2026-06-04 (2)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 8.0 / 10 *(was 7.5 — 2 more Tier 2 items shipped 2026-06-04)*
+**Overall rating:** 8.2 / 10 *(was 8.0 — 2 final Tier 2 items shipped 2026-06-04)*
 
 ---
 
 ## Executive Summary
 
-StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are shipped. All Tier 2 items are now shipped except sector-relative fundamental scoring and the research engine cache quality flag. Remaining priorities are those two items plus the walk-forward backtest (already shipped in separate session — see below).
+StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are shipped. All Tier 2 items are now shipped: sector-relative fundamental scoring and research engine cache quality flag completed 2026-06-04. Remaining roadmap items are Tier 3 new features.
 
 This document is the single source of truth for everything that was found, why it matters, and how to fix it.
 
@@ -36,6 +36,8 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-01/02 | Backtest engine (equity curve + Sharpe + drawdown) | signal-engine/routes.py, frontend/trade-performance.tsx | ✅ Done |
 | 2026-06-04 | adj_close consistency (split-adjust upsert) | market-data/ingestion.py | ✅ Done |
 | 2026-06-04 | Frontend strategy weight normalisation | frontend/opportunities.tsx | ✅ Done |
+| 2026-06-04 | Research engine cache quality flag (banner) | frontend/research/[symbol].tsx | ✅ Done |
+| 2026-06-04 | Sector-relative fundamental scoring | research-engine/routes.py | ✅ Done |
 
 ---
 
@@ -47,10 +49,10 @@ This document is the single source of truth for everything that was found, why i
 | ML methodology | 7.8 / 10 | ↑ Test AUC formula fixed; ML weight validation chart live; look-ahead guard + macro cache |
 | Signal logic | 7.5 / 10 | ↑ Options flow integrated; stale price guard; ML weight formula validated |
 | K-Score ranking | 7.5 / 10 | ↑ Falling knife gate + RSI curve fixed |
-| Research engine | 6.5 / 10 | Sector-blind thresholds + cache quality flag still pending |
+| Research engine | 7.5 / 10 | ↑ Sector-relative fundamental scoring + cache quality flag shipped 2026-06-04 |
 | Frontend / UX | 9.0 / 10 | ↑ Signal Filter Monitor, strategy score normalisation, backtest equity curve |
 | Risk management | 7.5 / 10 | ↑ Backtest engine shipped: equity curve, Sharpe, max drawdown, Calmar, SPY comparison |
-| **Overall** | **8.0 / 10** | *(was 7.5 — 8 more items shipped 2026-06-01 to 2026-06-04)* |
+| **Overall** | **8.2 / 10** | *(was 7.5 → 8.0 → 8.2 — all Tier 2 items shipped 2026-06-01 to 2026-06-04)* |
 
 ---
 
@@ -529,13 +531,13 @@ Without factor exposure analysis, you cannot distinguish between genuine alpha a
 
 | Fix | File(s) | Effort | Impact | Status |
 |-----|---------|--------|--------|--------|
-| Sector-relative fundamental scoring | research-engine/scoring.py | 3 days | Fixes PE/growth/margin thresholds | ⏳ Pending |
+| Sector-relative fundamental scoring | research-engine/routes.py | 3 days | Fixes PE/growth/margin thresholds | ✅ Done 2026-06-04 |
 | RSI scoring curve fix | ranking-engine/kscore.py | 0.5 days | More accurate trend stock scoring | ✅ Done |
 | adj_close consistency | market-data/ingestion.py | 1 day | Fixes split/dividend distortion | ✅ Done 2026-06-04 |
 | Frontend strategy weight normalisation | opportunities.tsx | 0.5 days | Comparable cross-strategy scores | ✅ Done 2026-06-04 |
 | Zero-volume bar filtering | market-data/ingestion.py | 0.5 days | Cleaner volatility calculations | ✅ Done |
 | Stale price guard | signal-engine/signals.py | 0.5 days | Observable pipeline gaps | ✅ Done |
-| Research engine cache quality flag | research-engine/routes.py | 1 day | Prevents serving fallback as real data | ⏳ Pending |
+| Research engine cache quality flag | research-engine/routes.py + frontend/research/[symbol].tsx | 1 day | Prevents serving fallback as real data | ✅ Done 2026-06-04 |
 
 ### Tier 3 — New Features (Roadmap)
 
