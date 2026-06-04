@@ -65,6 +65,15 @@ function fmt(n: number | null | undefined, digits = 1): string {
   return n == null ? '—' : n.toFixed(digits);
 }
 
+function fmtTs(ts: string | null | undefined): string {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+      d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  } catch { return ''; }
+}
+
 function numVal(row: SuppressedSignalRow, key: SortKey): number {
   if (key === 'symbol') return 0;
   if (key === 'signal') return ['BUY', 'HOLD', 'WAIT', 'SELL'].indexOf(row.signal);
@@ -494,20 +503,28 @@ export default function SignalFiltersPage() {
                     </td>
 
                     {/* Alert / conviction gate */}
-                    <td style={{ ...TD, minWidth: 90 }}>
+                    <td style={{ ...TD, minWidth: 110 }}>
                       {row.conviction == null ? (
                         <span style={{ color: '#475569', fontSize: 11 }}>—</span>
                       ) : row.conviction.sent ? (
-                        <span style={{ color: '#22c55e', fontSize: 11, fontWeight: 700 }}>✓ Sent</span>
+                        <span style={{ display: 'block', lineHeight: 1.5 }}>
+                          <span style={{ color: '#22c55e', fontSize: 11, fontWeight: 700 }}>✓ Sent</span>
+                          <span style={{ display: 'block', color: '#475569', fontSize: 10 }}>
+                            {fmtTs(row.conviction.ts)}
+                          </span>
+                        </span>
                       ) : (
                         <span
                           title={row.conviction.failed.join('\n')}
-                          style={{ color: '#f87171', fontSize: 11, cursor: 'help', display: 'block', lineHeight: 1.4 }}
+                          style={{ color: '#f87171', fontSize: 11, cursor: 'help', display: 'block', lineHeight: 1.5 }}
                         >
                           ✗ {row.conviction.failed[0] ?? 'Gate failed'}
                           {row.conviction.failed.length > 1 && (
                             <span style={{ color: '#64748b' }}> +{row.conviction.failed.length - 1}</span>
                           )}
+                          <span style={{ display: 'block', color: '#475569', fontSize: 10 }}>
+                            {fmtTs(row.conviction.ts)}
+                          </span>
                         </span>
                       )}
                     </td>
