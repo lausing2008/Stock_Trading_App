@@ -352,6 +352,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'peer-comparison-table',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-04 — PeerCompareDrawer component shows side-by-side K-Score/sub-scores with green/red cell coding. Rankings page: + toggle per row, "Compare (N)" button opens drawer for up to 4 stocks. Stock detail page: Sector Peers panel auto-suggests top 3 same-sector stocks with "Compare" button that opens drawer including current stock.',
     tier: 3, severity: 'feature',
     title: 'Peer comparison table — side-by-side K-Score breakdown',
     file: 'frontend/src/pages/rankings.tsx + frontend/src/pages/stock/[symbol].tsx',

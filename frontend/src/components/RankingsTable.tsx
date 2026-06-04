@@ -15,16 +15,21 @@ export default function RankingsTable({
   rows,
   prices,
   signals,
+  selectedSymbols,
+  onToggleCompare,
 }: {
   rows: RankingRow[];
   prices?: PriceMap;
   signals?: Record<string, SignalSummary>;
+  selectedSymbols?: Set<string>;
+  onToggleCompare?: (symbol: string) => void;
 }) {
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
       <table className="w-full text-left text-sm text-slate-200">
         <thead className="bg-slate-800/60 text-slate-300">
           <tr>
+            {onToggleCompare && <th className="px-2 py-2 w-8" title="Select to compare"></th>}
             <th className="px-3 py-2">#</th>
             <th className="px-3 py-2">Symbol</th>
             <th className="px-3 py-2">Name</th>
@@ -56,6 +61,23 @@ export default function RankingsTable({
             const grade = cs != null ? confluenceGrade(cs) : null;
             return (
               <tr key={r.symbol} className={`border-t border-slate-800 hover:bg-slate-900${pending ? ' opacity-50' : ''}`}>
+                {onToggleCompare && (
+                  <td className="px-2 py-2">
+                    <button
+                      onClick={() => onToggleCompare(r.symbol)}
+                      title={selectedSymbols?.has(r.symbol) ? 'Remove from comparison' : 'Add to comparison'}
+                      style={{
+                        width: 22, height: 22, borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                        border: `1px solid ${selectedSymbols?.has(r.symbol) ? '#6366f1' : '#334155'}`,
+                        background: selectedSymbols?.has(r.symbol) ? 'rgba(99,102,241,0.2)' : 'transparent',
+                        color: selectedSymbols?.has(r.symbol) ? '#818cf8' : '#475569',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}
+                    >
+                      {selectedSymbols?.has(r.symbol) ? '✓' : '+'}
+                    </button>
+                  </td>
+                )}
                 <td className="px-3 py-2 text-slate-500">{pending ? '—' : i + 1}</td>
                 <td className="px-3 py-2 font-medium">
                   <a href={`/stock/${r.symbol}`} className="text-indigo-400 hover:underline">{r.symbol}</a>

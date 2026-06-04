@@ -30,13 +30,14 @@
  * max_tokens=2048 (default).
  */
 import { useRouter } from 'next/router';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
+import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData } from '@/lib/api';
+import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -205,6 +206,14 @@ export default function StockDetail() {
     () => api.stockAtr(symbol),
     { revalidateOnFocus: false },
   );
+
+  const { data: allRankings } = useSWR(
+    'rankings-all',
+    () => api.rankings(),
+    { revalidateOnFocus: false },
+  );
+
+  const [compareOpen, setCompareOpen] = useState(false);
 
   // Alert form state
   const [alertOpen, setAlertOpen] = useState<boolean>(false);
@@ -562,6 +571,43 @@ Return ONLY valid JSON — no markdown, no prose:
   const fairUpside = (ranking?.fair_price != null && curPrice != null)
     ? ((ranking.fair_price - curPrice) / curPrice) * 100
     : null;
+
+  const priceMap = useMemo(() => {
+    const m: Record<string, LatestPrice> = {};
+    for (const p of allPrices ?? []) m[p.symbol] = p;
+    return m;
+  }, [allPrices]);
+
+  const currentSector = (data.price as { sector?: string })?.sector ?? null;
+  const currentMarket = (data.price as { market?: string })?.market ?? null;
+
+  const sectorPeers = useMemo((): RankingRow[] => {
+    if (!allRankings || !currentSector) return [];
+    return allRankings.rankings
+      .filter((r: RankingRow) => r.symbol !== symbol && r.sector === currentSector && (!currentMarket || r.market === currentMarket))
+      .sort((a: RankingRow, b: RankingRow) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, 3);
+  }, [allRankings, currentSector, currentMarket, symbol]);
+
+  const compareRows = useMemo((): RankingRow[] => {
+    if (!ranking) return sectorPeers;
+    const currentRow: RankingRow = {
+      symbol: symbol as string,
+      name: (data.price as { name?: string })?.name ?? (symbol as string),
+      name_zh: (data.price as { name_zh?: string | null })?.name_zh ?? null,
+      market: currentMarket ?? '',
+      sector: currentSector ?? null,
+      score: ranking.score,
+      technical: ranking.technical,
+      momentum: ranking.momentum,
+      value: ranking.value,
+      growth: ranking.growth,
+      volatility: ranking.volatility,
+      fair_price: ranking.fair_price ?? null,
+      relative_strength: ranking.relative_strength ?? null,
+    };
+    return [currentRow, ...sectorPeers];
+  }, [ranking, sectorPeers, symbol, data.price, currentMarket, currentSector]);
 
   const levels = data.levels;
   const srLevels = levels?.support_resistance ?? [];
@@ -955,6 +1001,63 @@ Return ONLY valid JSON — no markdown, no prose:
                   </div>
                 );
               })()}
+            </div>
+          )}
+
+          {/* Sector Peers comparison */}
+          {sectorPeers.length > 0 && (
+            <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-300">Sector Peers</h3>
+                  {currentSector && <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>{currentSector}</div>}
+                </div>
+                {ranking && (
+                  <button
+                    onClick={() => setCompareOpen(true)}
+                    style={{
+                      padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                      border: '1px solid #6366f1', background: 'rgba(99,102,241,0.12)',
+                      color: '#818cf8', cursor: 'pointer',
+                    }}
+                  >
+                    Compare
+                  </button>
+                )}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {sectorPeers.map(peer => {
+                  const pp = priceMap[peer.symbol];
+                  const chg = pp?.change_pct;
+                  return (
+                    <a
+                      key={peer.symbol}
+                      href={`/stock/${peer.symbol}`}
+                      style={{
+                        display: 'flex', flexDirection: 'column', alignItems: 'center',
+                        padding: '8px 14px', borderRadius: 8,
+                        border: '1px solid #1e293b', background: 'rgba(255,255,255,0.02)',
+                        textDecoration: 'none', minWidth: 90,
+                      }}
+                    >
+                      <span style={{ fontSize: 13, fontWeight: 700, color: '#818cf8' }}>{peer.symbol}</span>
+                      {peer.score != null && (
+                        <span style={{ fontSize: 10, color: peer.score >= 70 ? '#4ade80' : peer.score >= 50 ? '#facc15' : '#f87171', marginTop: 2 }}>
+                          K {peer.score.toFixed(0)}
+                        </span>
+                      )}
+                      {pp?.price != null && (
+                        <span style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>${pp.price.toFixed(2)}</span>
+                      )}
+                      {chg != null && (
+                        <span style={{ fontSize: 10, color: chg >= 0 ? '#4ade80' : '#f87171' }}>
+                          {chg >= 0 ? '+' : ''}{chg.toFixed(2)}%
+                        </span>
+                      )}
+                    </a>
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -2510,6 +2613,14 @@ Return ONLY valid JSON — no markdown, no prose:
       </div>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+      {compareOpen && compareRows.length >= 2 && (
+        <PeerCompareDrawer
+          rows={compareRows}
+          prices={priceMap}
+          onClose={() => setCompareOpen(false)}
+        />
+      )}
     </div>
   );
 }
