@@ -275,6 +275,110 @@ def signal_accuracy(
     }
 
 
+@router.get("/rolling_accuracy")
+def rolling_accuracy(
+    window: int = Query(30, ge=7, le=90),
+    lookback_days: int = Query(180, ge=60, le=730),
+    session: Session = Depends(get_session),
+):
+    """Rolling accuracy of BUY signals over a sliding window.
+
+    Returns a time-series of {date, accuracy_30d, signal_count} for each day in
+    the lookback period where at least `window` evaluated BUY signals exist.
+    Also returns a drift_warning flag if the latest window accuracy < 55%.
+    """
+    import bisect
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+
+    rows = session.execute(
+        select(Signal, Stock.symbol)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .where(
+            Signal.ts >= cutoff,
+            Signal.ts <= outcome_cutoff,
+            Signal.signal == SignalType.BUY,
+        )
+        .order_by(Signal.ts.asc())
+    ).all()
+
+    if not rows:
+        return {"window": window, "lookback_days": lookback_days, "series": [], "drift_warning": False, "latest_accuracy": None}
+
+    stock_ids = list({sig.stock_id for sig, _ in rows})
+    price_since = (cutoff - timedelta(days=5)).date()
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(Price.stock_id.in_(stock_ids), Price.timeframe == TimeFrame.D1, Price.ts >= price_since)
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    _pts: dict[int, list] = {}
+    _pclose: dict[int, list] = {}
+    for row in price_rows:
+        sid = row.stock_id
+        if sid not in _pts:
+            _pts[sid] = []
+            _pclose[sid] = []
+        d = row.ts.date() if isinstance(row.ts, datetime) else row.ts
+        _pts[sid].append(d)
+        _pclose[sid].append(float(row.close))
+
+    def first_close_after(sid, after_date):
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, after_date)
+        return _pclose[sid][idx] if idx < len(ts_list) else None
+
+    def latest_close(sid):
+        cl = _pclose.get(sid)
+        return cl[-1] if cl else None
+
+    # Build list of evaluated signals with their date and correct flag
+    evaluated: list[tuple[date, bool]] = []
+    seen: set[tuple] = set()
+    for sig, sym in rows:
+        sig_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
+        key = (sig.stock_id, sig_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = first_close_after(sig.stock_id, sig_date)
+        exit_ = latest_close(sig.stock_id)
+        if entry is None or exit_ is None or entry <= 0:
+            continue
+        correct = exit_ > entry
+        evaluated.append((sig_date, correct))
+
+    if not evaluated:
+        return {"window": window, "lookback_days": lookback_days, "series": [], "drift_warning": False, "latest_accuracy": None}
+
+    # Compute rolling accuracy: for each unique date in the dataset, use the
+    # trailing `window` calendar days of evaluated signals ending on that date.
+    unique_dates = sorted({d for d, _ in evaluated})
+    series = []
+    for end_date in unique_dates:
+        start_date = end_date - timedelta(days=window)
+        window_sigs = [(d, c) for d, c in evaluated if start_date <= d <= end_date]
+        if len(window_sigs) < 3:
+            continue
+        acc = round(sum(1 for _, c in window_sigs if c) / len(window_sigs) * 100, 1)
+        series.append({"date": end_date.isoformat(), "accuracy": acc, "signal_count": len(window_sigs)})
+
+    latest_accuracy = series[-1]["accuracy"] if series else None
+    drift_warning = latest_accuracy is not None and latest_accuracy < 55.0
+
+    return {
+        "window": window,
+        "lookback_days": lookback_days,
+        "series": series,
+        "drift_warning": drift_warning,
+        "latest_accuracy": latest_accuracy,
+    }
+
+
 @router.get("/ml-weight-validation")
 def ml_weight_validation(
     lookback_days: int = Query(180, ge=30, le=730),

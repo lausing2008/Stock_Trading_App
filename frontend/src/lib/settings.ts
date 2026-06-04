@@ -38,6 +38,10 @@ export type AppSettings = {
 
   // Trading Style — determines which AI Signal horizon to display globally
   tradingStyle: 'SHORT' | 'SWING' | 'LONG';
+
+  // Position Sizing — used for ATR-based stop-loss and size calculations
+  accountSize: number;
+  riskPctPerTrade: number;
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -66,6 +70,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   deepseekModel: 'deepseek-chat',
 
   tradingStyle: 'SWING',
+
+  accountSize: 0,
+  riskPctPerTrade: 1,
 };
 
 export function loadSettings(): AppSettings {

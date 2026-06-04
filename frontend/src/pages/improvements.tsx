@@ -316,6 +316,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'vwap-sr-levels',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-04 — _sr_context() in signals.py detects swing pivots + 52w high/low; sr_context: breakout/at_resistance/at_support/neutral; at_resistance compresses 15%, breakout boosts +5%, at_support boosts +3%; sr_flag shown in SignalCard.',
     tier: 2, severity: 'medium',
     title: 'VWAP + support/resistance zone awareness',
     file: 'services/signal-engine/src/generators/signals.py + services/market-data/src/api/routes.py',
@@ -328,6 +330,8 @@ const ITEMS: Item[] = [
   // ── Tier 3 additions — 2026-06-02 second-pass review ────────────────────
   {
     id: 'position-sizing-engine',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-04 — GET /stocks/{symbol}/atr endpoint (Wilder ATR); PositionSizer component reads accountSize + riskPctPerTrade from Settings; stop = price − 2×ATR(14); shows shares, dollar risk, R:R, potential profit. Settings page has Account Size + Risk % fields.',
     tier: 3, severity: 'feature',
     title: 'ATR-based position sizing engine',
     file: 'frontend/src/pages/stock/[symbol].tsx + frontend/src/components/SignalCard.tsx',
@@ -358,6 +362,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'model-drift-detection',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-04 — GET /signals/rolling_accuracy?window=30&lookback_days=180; returns time series of 30d rolling BUY accuracy + drift_warning flag when < 55%; line chart with 50%/55% reference lines added to Signal Accuracy page.',
     tier: 3, severity: 'feature',
     title: 'Model drift detection — rolling accuracy monitor with retrain trigger',
     file: 'services/signal-engine/src/api/routes.py + signal-accuracy.tsx',

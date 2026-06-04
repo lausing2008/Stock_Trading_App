@@ -91,6 +91,12 @@ type Reasons = {
   adx_compression?: boolean;
   high_vol_compression?: boolean;
   fear_greed_score?: number | null;
+  // v5 additions
+  sr_context?: string | null;
+  sr_flag?: string | null;
+  sr_nearest_resistance?: number | null;
+  sr_nearest_support?: number | null;
+  sr_52w_high?: number | null;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
@@ -201,6 +207,25 @@ function buildReasons(r: Reasons): Factor[] {
       detail: r.price_above_vwap
         ? `Price above 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — institutional support zone`
         : `Price below 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — below average transaction price`,
+    });
+  }
+
+  // S/R zone context
+  if (r.sr_flag && r.sr_flag !== 'neutral') {
+    const isBreakout = r.sr_flag === 'breakout_confirmed';
+    const isResistance = r.sr_flag === 'at_resistance';
+    const isSupport = r.sr_flag === 'at_support';
+    const level = isResistance || isBreakout
+      ? r.sr_nearest_resistance != null ? `$${r.sr_nearest_resistance.toFixed(2)}` : (r.sr_52w_high != null ? `52w high $${r.sr_52w_high.toFixed(2)}` : '')
+      : r.sr_nearest_support != null ? `$${r.sr_nearest_support.toFixed(2)}` : '';
+    factors.push({
+      label: isBreakout ? '✦ Level Breakout' : isResistance ? 'At Resistance' : 'At Support',
+      bullish: isBreakout || isSupport,
+      detail: isBreakout
+        ? `Price broke above resistance${level ? ` (${level})` : ''} — confirmed level break, signal boosted`
+        : isResistance
+          ? `Price approaching resistance${level ? ` (${level})` : ''} — signal compressed 15%`
+          : `Price near support zone${level ? ` (${level})` : ''} — demand area, small signal boost`,
     });
   }
 

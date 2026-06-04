@@ -162,6 +162,10 @@ export const api = {
   },
   suppressedSignals: (style = 'SWING') =>
     request<SuppressedSignalRow[]>(`/signals/suppressed?style=${style}`),
+  rollingAccuracy: (window = 30, lookbackDays = 180) =>
+    request<{ window: number; lookback_days: number; series: { date: string; accuracy: number; signal_count: number }[]; drift_warning: boolean; latest_accuracy: number | null }>(`/signals/rolling_accuracy?window=${window}&lookback_days=${lookbackDays}`),
+  stockAtr: (symbol: string, period = 14) =>
+    request<{ symbol: string; atr: number; close: number; stop_loss_2atr: number; period: number }>(`/stocks/${symbol}/atr?period=${period}`),
 
   // Trade Journal
   listJournal: () => request<JournalTrade[]>('/journal'),

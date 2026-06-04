@@ -200,6 +200,12 @@ export default function StockDetail() {
     { revalidateOnFocus: false },
   );
 
+  const { data: atrData } = useSWR(
+    symbol ? `atr-${symbol}` : null,
+    () => api.stockAtr(symbol),
+    { revalidateOnFocus: false },
+  );
+
   // Alert form state
   const [alertOpen, setAlertOpen] = useState<boolean>(false);
   const [alertCondition, setAlertCondition] = useState<string>('above');
@@ -1215,6 +1221,8 @@ Return ONLY valid JSON — no markdown, no prose:
               <PositionSizer
                 symbol={symbol as string}
                 entryPrice={curPx}
+                atrStop={atrData?.stop_loss_2atr ?? null}
+                atr={atrData?.atr ?? null}
                 stopLoss={nearestSupport}
                 takeProfit={data.fundamentals?.target_price ?? undefined}
               />

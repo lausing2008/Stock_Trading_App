@@ -1,22 +1,31 @@
 import { useState, useEffect } from 'react';
+import { loadSettings } from '@/lib/settings';
 
 type Props = {
   entryPrice?: number;
   stopLoss?: number;
+  atrStop?: number | null;
+  atr?: number | null;
   takeProfit?: number;
   symbol?: string;
 };
 
-export default function PositionSizer({ entryPrice, stopLoss, takeProfit, symbol }: Props) {
-  const [accountSize, setAccountSize] = useState<number>(10000);
-  const [riskPct, setRiskPct] = useState<number>(1);
+export default function PositionSizer({ entryPrice, stopLoss, atrStop, atr, takeProfit, symbol }: Props) {
+  const settings = typeof window !== 'undefined' ? loadSettings() : null;
+  const [accountSize, setAccountSize] = useState<number>(settings?.accountSize || 10000);
+  const [riskPct, setRiskPct] = useState<number>(settings?.riskPctPerTrade || 1);
+  // Prefer ATR-based stop, fall back to support level
+  const defaultStop = atrStop ?? stopLoss ?? 0;
   const [entry, setEntry] = useState<number>(entryPrice ?? 0);
-  const [stop, setStop] = useState<number>(stopLoss ?? 0);
+  const [stop, setStop] = useState<number>(defaultStop);
   const [target, setTarget] = useState<number>(takeProfit ?? 0);
 
   // Sync when props change (e.g. when signal loads)
   useEffect(() => { if (entryPrice) setEntry(entryPrice); }, [entryPrice]);
-  useEffect(() => { if (stopLoss)   setStop(stopLoss);   }, [stopLoss]);
+  useEffect(() => {
+    const s = atrStop ?? stopLoss;
+    if (s) setStop(s);
+  }, [atrStop, stopLoss]);
   useEffect(() => { if (takeProfit) setTarget(takeProfit); }, [takeProfit]);
 
   const riskPerShare = entry > 0 && stop > 0 ? Math.abs(entry - stop) : null;
@@ -38,9 +47,16 @@ export default function PositionSizer({ entryPrice, stopLoss, takeProfit, symbol
 
   return (
     <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 16 }}>
-      <h3 style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 14 }}>
-        Position Sizer {symbol ? `— ${symbol}` : ''}
-      </h3>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <h3 style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', margin: 0 }}>
+          Position Sizer {symbol ? `— ${symbol}` : ''}
+        </h3>
+        {atr != null && (
+          <span style={{ fontSize: 10, color: '#475569', background: '#0d1424', border: '1px solid #1e293b', borderRadius: 4, padding: '2px 7px' }}>
+            ATR(14) = {atr.toFixed(2)} · stop = 2×ATR
+          </span>
+        )}
+      </div>
 
       {/* Inputs */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>

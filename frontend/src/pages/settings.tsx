@@ -646,6 +646,41 @@ export default function SettingsPage() {
         </div>
       </div>
 
+      {/* ── Position Sizing ────────────────────────────────────────────── */}
+      <div style={section('#34d399')}>
+        <div style={sectionBar('linear-gradient(90deg,#34d399,#6ee7b7,#34d399)')} />
+        <div style={sectionHead}>Position Sizing — ATR-Based Risk Management</div>
+        <div style={{ padding: '16px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+          <div>
+            <label style={lbl}>Account Size (USD)</label>
+            <input
+              type="number" min={0} step={1000}
+              value={s.accountSize || ''}
+              onChange={e => update('accountSize', parseFloat(e.target.value) || 0)}
+              placeholder="e.g. 50000"
+              style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: '13px' }}
+            />
+            <div style={hint}>Total portfolio size used to compute share quantity.</div>
+          </div>
+          <div>
+            <label style={lbl}>Risk Per Trade (%)</label>
+            <input
+              type="number" min={0.1} max={5} step={0.1}
+              value={s.riskPctPerTrade || ''}
+              onChange={e => update('riskPctPerTrade', parseFloat(e.target.value) || 1)}
+              placeholder="e.g. 1"
+              style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid #1e293b', background: '#020617', color: '#e2e8f0', fontSize: '13px' }}
+            />
+            <div style={hint}>% of account to risk on each trade. 1–2% is professional standard.</div>
+          </div>
+        </div>
+        <div style={{ padding: '0 20px 14px', fontSize: '11px', color: '#334155', lineHeight: 1.6 }}>
+          Used on stock detail pages to show ATR-based stop-loss price, recommended share quantity, and risk/reward ratio.
+          Stop placed at <strong style={{ color: '#4ade80' }}>entry − 2 × ATR(14)</strong>.
+          Position size = <strong style={{ color: '#4ade80' }}>(account × risk%) ÷ (entry − stop)</strong>.
+        </div>
+      </div>
+
       {/* ── AI Assistant ───────────────────────────────────────────────── */}
       <div style={section('#a78bfa')}>
         <div style={sectionBar('linear-gradient(90deg,#a78bfa,#c4b5fd,#a78bfa)')} />

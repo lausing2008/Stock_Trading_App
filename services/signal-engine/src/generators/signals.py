@@ -400,6 +400,68 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
     }
 
 
+def _sr_context(df: pd.DataFrame) -> dict:
+    """Detect price position relative to key support/resistance levels.
+
+    Uses swing high/low pivots from the last 60 bars plus 52-week high/low.
+    Returns sr_context: 'breakout' | 'at_resistance' | 'at_support' | 'neutral'.
+    """
+    close = df["close"].astype(float)
+    high  = df["high"].astype(float)
+    low   = df["low"].astype(float)
+    current = float(close.iloc[-1])
+    prev    = float(close.iloc[-2]) if len(close) >= 2 else current
+
+    # 52-week high/low from historical bars (excluding today to avoid look-ahead)
+    hist_len = min(252, len(close) - 1)
+    hist_high = float(high.iloc[-hist_len - 1:-1].max()) if hist_len > 0 else float(high.max())
+    hist_low  = float(low.iloc[-hist_len - 1:-1].min())  if hist_len > 0 else float(low.min())
+
+    # Swing pivot detection on last 60 bars (local max/min with 3-bar window each side)
+    n = min(60, len(high))
+    pw = 3
+    r_h = high.iloc[-n:].reset_index(drop=True)
+    r_l = low.iloc[-n:].reset_index(drop=True)
+
+    resistances: list[float] = [hist_high]
+    supports: list[float] = []
+    for i in range(pw, len(r_h) - pw):
+        val = float(r_h.iloc[i])
+        if all(val >= float(r_h.iloc[i + j]) for j in range(-pw, pw + 1) if j != 0):
+            resistances.append(val)
+    for i in range(pw, len(r_l) - pw):
+        val = float(r_l.iloc[i])
+        if all(val <= float(r_l.iloc[i + j]) for j in range(-pw, pw + 1) if j != 0):
+            supports.append(val)
+
+    nearest_res = min((r for r in resistances if r > current), default=None)
+    nearest_sup = max((s for s in supports if s < current), default=None)
+
+    thr = 0.015  # 1.5% proximity threshold
+    sr_context = "neutral"
+
+    if nearest_res is not None:
+        dist = (nearest_res - current) / nearest_res
+        if dist <= thr:
+            # Breakout: previous bar was clearly below the level, now at/above it
+            if prev < nearest_res * (1.0 - thr):
+                sr_context = "breakout"
+            else:
+                sr_context = "at_resistance"
+    if sr_context == "neutral" and nearest_sup is not None:
+        dist = (current - nearest_sup) / current
+        if dist <= thr:
+            sr_context = "at_support"
+
+    return {
+        "sr_context": sr_context,
+        "sr_nearest_resistance": round(nearest_res, 2) if nearest_res is not None else None,
+        "sr_nearest_support": round(nearest_sup, 2) if nearest_sup is not None else None,
+        "sr_52w_high": round(hist_high, 2),
+        "sr_52w_low": round(hist_low, 2),
+    }
+
+
 def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float, list[str]]:
     """Returns (probability adjustment, list of active pattern names).
 
@@ -815,6 +877,21 @@ def _apply_style_signal(
     else:
         reasons["options_flag"] = "no_data"
 
+    # ── S/R zone context ──────────────────────────────────────────────────────
+    sr_ctx = base_reasons.get("sr_context", "neutral")
+    if sr_ctx == "at_resistance":
+        fused = 0.5 + (fused - 0.5) * 0.85   # compress 15% — price stalling at ceiling
+        reasons["sr_flag"] = "at_resistance"
+    elif sr_ctx == "breakout":
+        fused = float(np.clip(fused + 0.05, 0.0, 1.0))  # boost — confirmed level break
+        reasons["sr_flag"] = "breakout_confirmed"
+    elif sr_ctx == "at_support":
+        fused = float(np.clip(fused + 0.03, 0.0, 1.0))  # small boost — near demand zone
+        reasons["sr_flag"] = "at_support"
+    else:
+        reasons["sr_flag"] = "neutral"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
     # ── K-Score fundamental boost (LONG only) ────────────────────────────────
     if p.get("kscore_boost") and kscore is not None:
         if kscore >= 70:
@@ -915,6 +992,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
 
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df)
+    sr_data = _sr_context(df)
     ml_prob, ml_test_auc = _fetch_ml_data(symbol)
     market_regime, fg_score = _fetch_market_regime()
     breadth_pct = _fetch_market_breadth()
@@ -950,6 +1028,11 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["kscore"]             = kscore
     reasons["insufficient_history"] = insufficient_history
     reasons["bar_count"]          = len(df)
+    reasons["sr_context"]           = sr_data["sr_context"]
+    reasons["sr_nearest_resistance"] = sr_data["sr_nearest_resistance"]
+    reasons["sr_nearest_support"]   = sr_data["sr_nearest_support"]
+    reasons["sr_52w_high"]          = sr_data["sr_52w_high"]
+    reasons["sr_52w_low"]           = sr_data["sr_52w_low"]
 
     return {
         style_key: _apply_style_signal(

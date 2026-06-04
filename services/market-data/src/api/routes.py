@@ -1513,6 +1513,53 @@ def conviction_status():
     return result
 
 
+@router.get("/{symbol}/atr")
+def stock_atr(
+    symbol: str,
+    period: int = Query(14, ge=5, le=50),
+    session: Session = Depends(get_session),
+):
+    """Wilder ATR(period) for position sizing. Returns ATR, current close, and 2×ATR stop-loss."""
+    import numpy as np
+
+    stock = session.execute(select(Stock).where(Stock.symbol == symbol.upper())).scalar_one_or_none()
+    if not stock:
+        raise HTTPException(404, f"Unknown symbol: {symbol}")
+
+    rows = session.execute(
+        select(Price.high, Price.low, Price.close)
+        .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1)
+        .order_by(Price.ts.desc())
+        .limit(period * 4)
+    ).all()
+    if len(rows) < period + 2:
+        raise HTTPException(422, "Insufficient price history for ATR")
+
+    rows = list(reversed(rows))
+    h = [float(r.high)  for r in rows]
+    l = [float(r.low)   for r in rows]
+    c = [float(r.close) for r in rows]
+
+    # True Range
+    tr = [max(h[i] - l[i], abs(h[i] - c[i-1]), abs(l[i] - c[i-1])) for i in range(1, len(c))]
+
+    # Wilder smoothing: seed with SMA of first `period` TRs, then EMA
+    if len(tr) < period:
+        raise HTTPException(422, "Insufficient price history for ATR")
+    atr = sum(tr[:period]) / period
+    for t in tr[period:]:
+        atr = (atr * (period - 1) + t) / period
+
+    close_now = c[-1]
+    return {
+        "symbol": symbol.upper(),
+        "atr": round(atr, 4),
+        "close": round(close_now, 4),
+        "stop_loss_2atr": round(close_now - 2 * atr, 4),
+        "period": period,
+    }
+
+
 @router.get("/{symbol}", response_model=StockOut)
 def get_stock(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()

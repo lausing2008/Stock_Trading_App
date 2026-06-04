@@ -48,6 +48,84 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint } from '@/lib/api';
 
+type RollingPoint = { date: string; accuracy: number; signal_count: number };
+
+function RollingAccuracyChart({ series, driftWarning, latestAccuracy, window: win }: {
+  series: RollingPoint[];
+  driftWarning: boolean;
+  latestAccuracy: number | null;
+  window: number;
+}) {
+  if (!series.length) return null;
+  const accs = series.map(p => p.accuracy);
+  const minA = Math.min(...accs, 40);
+  const maxA = Math.max(...accs, 70);
+  const range = maxA - minA || 1;
+  const h = 80;
+
+  return (
+    <div style={{ background: '#0f172a', border: `1px solid ${driftWarning ? 'rgba(239,68,68,0.4)' : '#1e293b'}`, borderRadius: 8, padding: '14px 16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>Rolling {win}-day BUY Accuracy</div>
+          <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>Model drift monitor — each point = accuracy over trailing {win} days</div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          {latestAccuracy != null && (
+            <div style={{ fontSize: 14, fontWeight: 700, color: latestAccuracy >= 60 ? '#4ade80' : latestAccuracy >= 50 ? '#facc15' : '#f87171' }}>
+              {latestAccuracy.toFixed(1)}% now
+            </div>
+          )}
+          {driftWarning && (
+            <div style={{ fontSize: 10, color: '#f87171', fontWeight: 700, marginTop: 2 }}>⚠ DRIFT DETECTED</div>
+          )}
+        </div>
+      </div>
+
+      {/* Line chart — SVG polyline */}
+      <div style={{ position: 'relative', height: h + 20 }}>
+        <svg width="100%" height={h} style={{ overflow: 'visible' }}>
+          {/* 50% reference line */}
+          <line
+            x1="0" y1={`${((maxA - 50) / range) * h}`}
+            x2="100%" y2={`${((maxA - 50) / range) * h}`}
+            stroke="#334155" strokeWidth="1" strokeDasharray="4,3"
+          />
+          {/* 55% reference line */}
+          <line
+            x1="0" y1={`${((maxA - 55) / range) * h}`}
+            x2="100%" y2={`${((maxA - 55) / range) * h}`}
+            stroke="#475569" strokeWidth="1" strokeDasharray="2,4"
+          />
+          <polyline
+            fill="none"
+            stroke={driftWarning ? '#f87171' : '#818cf8'}
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+            points={series.map((p, i) => {
+              const x = (i / (series.length - 1)) * 100;
+              const y = ((maxA - p.accuracy) / range) * h;
+              return `${x}%,${y}`;
+            }).join(' ')}
+          />
+          {/* dots at first and last */}
+          {[series[0], series[series.length - 1]].map((p, idx) => {
+            const i = idx === 0 ? 0 : series.length - 1;
+            const x = (i / (series.length - 1)) * 100;
+            const y = ((maxA - p.accuracy) / range) * h;
+            return <circle key={idx} cx={`${x}%`} cy={y} r={3} fill={driftWarning ? '#f87171' : '#818cf8'} />;
+          })}
+        </svg>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#334155', marginTop: 2 }}>
+          <span>{series[0]?.date}</span>
+          <span style={{ fontSize: 10, color: '#475569' }}>— 50% random  ··· 55% target</span>
+          <span>{series[series.length - 1]?.date}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const LOOKBACK_OPTIONS = [
   { label: '30d', value: 30 },
   { label: '60d', value: 60 },
@@ -207,6 +285,12 @@ export default function SignalAccuracyPage() {
     { revalidateOnFocus: false },
   );
 
+  const { data: rollingData } = useSWR(
+    'rolling-accuracy',
+    () => api.rollingAccuracy(30, 180),
+    { revalidateOnFocus: false },
+  );
+
   async function handleReset() {
     if (!confirm('Wipe all persisted signals and re-persist fresh ones? This cannot be undone.')) return;
     setResetting(true);
@@ -344,6 +428,19 @@ export default function SignalAccuracyPage() {
         optimalWeight={mlWeight.optimal_weight}
         formulaRange={mlWeight.current_formula_range}
         signalCount={mlWeight.signal_count}
+      />
+    </div>
+  )}
+
+  {/* Rolling Accuracy / Drift Monitor */}
+  {rollingData && rollingData.series.length > 0 && (
+    <div style={{ marginBottom: 28 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 2 }}>Model Drift Detection</div>
+      <RollingAccuracyChart
+        series={rollingData.series}
+        driftWarning={rollingData.drift_warning}
+        latestAccuracy={rollingData.latest_accuracy}
+        window={rollingData.window}
       />
     </div>
   )}
