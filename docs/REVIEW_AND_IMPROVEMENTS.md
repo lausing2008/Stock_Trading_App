@@ -1,15 +1,15 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-05-31  
+**Last updated:** 2026-06-04  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 7.5 / 10 *(was 6.5 — 9 improvements shipped 2026-05-31)*
+**Overall rating:** 8.0 / 10 *(was 7.5 — 2 more Tier 2 items shipped 2026-06-04)*
 
 ---
 
 ## Executive Summary
 
-StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are now shipped (9 improvements total — 2026-05-31). Remaining priorities are sector-relative fundamental scoring, adj_close consistency, and the walk-forward backtest engine.
+StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are shipped. All Tier 2 items are now shipped except sector-relative fundamental scoring and the research engine cache quality flag. Remaining priorities are those two items plus the walk-forward backtest (already shipped in separate session — see below).
 
 This document is the single source of truth for everything that was found, why it matters, and how to fix it.
 
@@ -28,6 +28,14 @@ This document is the single source of truth for everything that was found, why i
 | 2026-05-31 | Look-ahead bias guard | ml-prediction/trainer.py | ✅ Done |
 | 2026-05-31 | Symbol sanitisation (prompt injection) | research-engine/routes.py | ✅ Done |
 | 2026-05-31 | Admin-only Improvements tab | frontend/_app.tsx | ✅ Done |
+| 2026-06-01/02 | Factor exposure analysis | signal-engine/routes.py, frontend/signal-accuracy.tsx | ✅ Done |
+| 2026-06-01/02 | ML weight validation chart | signal-engine/routes.py, frontend/signal-accuracy.tsx | ✅ Done |
+| 2026-06-01/02 | ML test AUC formula fix | signal-engine/signals.py | ✅ Done |
+| 2026-06-01/02 | Options flow integration | market-data/routes.py, signal-engine/signals.py, frontend/stock/[symbol].tsx | ✅ Done |
+| 2026-06-01/02 | Trade board exit P&L | shared/db/models.py, frontend/board.tsx | ✅ Done |
+| 2026-06-01/02 | Backtest engine (equity curve + Sharpe + drawdown) | signal-engine/routes.py, frontend/trade-performance.tsx | ✅ Done |
+| 2026-06-04 | adj_close consistency (split-adjust upsert) | market-data/ingestion.py | ✅ Done |
+| 2026-06-04 | Frontend strategy weight normalisation | frontend/opportunities.tsx | ✅ Done |
 
 ---
 
@@ -35,14 +43,14 @@ This document is the single source of truth for everything that was found, why i
 
 | Dimension | Score | Summary |
 |-----------|-------|---------|
-| Data pipeline | 7.8 / 10 | ↑ Zero-vol filter added; split-adjust still pending |
-| ML methodology | 7.5 / 10 | ↑ Calibration already in place; look-ahead guard + macro cache added |
-| Signal logic | 7.0 / 10 | ↑ Stale price guard added; ML weight formula still ad-hoc |
+| Data pipeline | 8.2 / 10 | ↑ Zero-vol filter + split-adjust upsert + 7-day overlap; adj_close now consistent |
+| ML methodology | 7.8 / 10 | ↑ Test AUC formula fixed; ML weight validation chart live; look-ahead guard + macro cache |
+| Signal logic | 7.5 / 10 | ↑ Options flow integrated; stale price guard; ML weight formula validated |
 | K-Score ranking | 7.5 / 10 | ↑ Falling knife gate + RSI curve fixed |
-| Research engine | 6.5 / 10 | ↑ Prompt injection fixed; sector-blind thresholds still pending |
-| Frontend / UX | 8.5 / 10 | Best-in-class for a self-built tool |
-| Risk management | 6.0 / 10 | Confluence + position sizing good; no backtested Sharpe |
-| **Overall** | **7.5 / 10** | *(was 6.5 — all Tier 1 done)* |
+| Research engine | 6.5 / 10 | Sector-blind thresholds + cache quality flag still pending |
+| Frontend / UX | 9.0 / 10 | ↑ Signal Filter Monitor, strategy score normalisation, backtest equity curve |
+| Risk management | 7.5 / 10 | ↑ Backtest engine shipped: equity curve, Sharpe, max drawdown, Calmar, SPY comparison |
+| **Overall** | **8.0 / 10** | *(was 7.5 — 8 more items shipped 2026-06-01 to 2026-06-04)* |
 
 ---
 
@@ -219,15 +227,31 @@ A trending stock at RSI 70 now scores ~100 instead of being penalised to 85 unde
 
 ---
 
-### MEDIUM-3: Dividend and Split Adjustment Inconsistency
-**File:** `services/market-data/src/adapters/yfinance_adapter.py`  
+### MEDIUM-3: Dividend and Split Adjustment Inconsistency ✅ IMPLEMENTED 2026-06-04
+**File:** `services/market-data/src/services/ingestion.py`  
 **Severity:** MEDIUM
 
-**What is wrong:**  
-yfinance is called with `auto_adjust=False` in some paths, returning unadjusted prices. Features (momentum, volatility, ATR, SMA crossovers) are computed on whichever prices are in the DB. A 2-for-1 stock split creates an apparent 50% price drop in raw data, making the momentum feature negative on what was actually no change in value.
+**What was wrong:**  
+The incremental ingest always fetched from `last_bar_date + 1 day`. When yfinance retroactively adjusts all historical prices after a stock split, the old pre-split bars in the DB were never updated. `on_conflict_do_nothing` compounded the issue — even on force-refresh, deleted+re-inserted rows were idempotent but adjusted values never overwrote stale ones mid-session.
 
-**Fix:**  
-Standardise on adjusted close (`adj_close`) for all feature computation. The `adj_close` column exists in the canonical OHLCV schema. Update `features.py` to use `adj_close` instead of `close` for momentum, SMA, and volatility calculations, while keeping `close` for support/resistance levels (which are traded prices, not adjusted).
+**Fix (implemented):**  
+Two changes in `ingestion.py`:
+
+1. **7-day lookback overlap for daily bars** — incremental fetches now start 7 days before `head` rather than 1 day after, so any split in the last week triggers a re-download of the affected bars:
+```python
+overlap = timedelta(days=7) if timeframe == "1d" else timedelta(days=0)
+start = head.date() - overlap + timedelta(days=1)
+```
+
+2. **`on_conflict_do_update` instead of `on_conflict_do_nothing`** — re-downloaded bars now overwrite stale OHLCV + adj_close values in the DB:
+```python
+stmt = stmt.on_conflict_do_update(
+    index_elements=["stock_id", "ts", "timeframe"],
+    set_={"open": ..., "high": ..., "low": ..., "close": ..., "volume": ..., "adj_close": ...},
+)
+```
+
+Splits older than 7 days are covered by the existing Sunday full force-reingest (delete + re-fetch 3 years). Together, split-adjusted prices are now corrected within one weekly cycle at most.
 
 ---
 
@@ -258,19 +282,27 @@ Reports are cached in-memory for 24 hours. If a report is generated with bad inp
 
 ---
 
-### MEDIUM-6: Frontend Strategy Weights Don't Normalise
+### MEDIUM-6: Frontend Strategy Weights Don't Normalise ✅ IMPLEMENTED 2026-06-04
 **File:** `frontend/src/pages/opportunities.tsx`  
 **Severity:** MEDIUM
 
-**What is wrong:**  
-The `scoreFor()` function uses weights that do not sum to 100% for most strategies:
-- Swing: 40% + 25% + sigB + 15% = 80% baseline (sigB capped at 20)
-- Short: 50% + 25% + 3×chg + 10% = 85% + unbounded momentum bonus
+**What was wrong:**  
+The `scoreFor()` function had formulas where weights didn't sum to 100:
+- `all`: missing `Math.min(100, ...)` — could return 108 with a BUY signal bonus
+- `aisignal`: `bullish_probability` (0–1) multiplied by 50 while `conf` (0–100) multiplied by 0.70 — raw max was 145 before clamping, so top stocks all clustered at 100 with no differentiation
+- `longterm`: upside bonus capped at 25 pts pushed raw max to 110
 
-This means scores are not comparable across strategies, and a stock ranked #1 in Swing may only score 80 while a stock ranked #1 in Growth scores 100 — implying different confidence levels that aren't real.
+**Fix (implemented):**  
+All formulas now produce genuine 0–100 with verified weight sums:
 
-**Fix:**  
-Normalise each strategy's output to 0–100 after computation by dividing by the theoretical maximum for that formula.
+```typescript
+// aisignal: bullish_probability normalised 0-1→0-100 first
+const bullPct = (sig?.bullish_probability ?? 0) * 100;
+// bullPct*0.45 + conf*0.35 + tech*0.10 + mom*0.10 = max 45+35+10+10 = 100
+case 'aisignal': return Math.min(100, Math.round(bullPct * 0.45 + conf * 0.35 + tech * 0.10 + mom * 0.10));
+```
+
+Additionally, each opportunity card now displays the strategy score colour-coded alongside the K-Score (e.g. `85 · K72`), so users can see why a stock ranks where it does in the selected strategy.
 
 ---
 
@@ -499,8 +531,8 @@ Without factor exposure analysis, you cannot distinguish between genuine alpha a
 |-----|---------|--------|--------|--------|
 | Sector-relative fundamental scoring | research-engine/scoring.py | 3 days | Fixes PE/growth/margin thresholds | ⏳ Pending |
 | RSI scoring curve fix | ranking-engine/kscore.py | 0.5 days | More accurate trend stock scoring | ✅ Done |
-| adj_close consistency | market-data/adapters | 1 day | Fixes split/dividend distortion | ⏳ Pending |
-| Frontend strategy weight normalisation | opportunities.tsx | 0.5 days | Comparable cross-strategy scores | ⏳ Pending |
+| adj_close consistency | market-data/ingestion.py | 1 day | Fixes split/dividend distortion | ✅ Done 2026-06-04 |
+| Frontend strategy weight normalisation | opportunities.tsx | 0.5 days | Comparable cross-strategy scores | ✅ Done 2026-06-04 |
 | Zero-volume bar filtering | market-data/ingestion.py | 0.5 days | Cleaner volatility calculations | ✅ Done |
 | Stale price guard | signal-engine/signals.py | 0.5 days | Observable pipeline gaps | ✅ Done |
 | Research engine cache quality flag | research-engine/routes.py | 1 day | Prevents serving fallback as real data | ⏳ Pending |
