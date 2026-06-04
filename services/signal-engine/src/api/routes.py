@@ -813,6 +813,101 @@ def trade_performance(
     }
 
 
+@router.get("/suppressed")
+def suppressed_signals(
+    style: str = Query("SWING", description="Trading style: SHORT, SWING, LONG"),
+    session: Session = Depends(get_session),
+):
+    """All active stocks with their latest signal and full suppression condition breakdown.
+
+    Returns each stock's most recent signal plus all filter states extracted from
+    the reasons JSON, so the UI can show which conditions are suppressing each signal.
+    Sorted by suppression_count descending, then bullish_probability descending.
+    """
+    horizon_filter = style.upper()
+
+    latest_subq = (
+        select(Signal.stock_id, Signal.horizon, func.max(Signal.ts).label("max_ts"))
+        .group_by(Signal.stock_id, Signal.horizon)
+        .subquery()
+    )
+
+    q = (
+        select(
+            Stock.symbol, Stock.name,
+            Signal.signal, Signal.horizon, Signal.confidence,
+            Signal.bullish_probability, Signal.ts, Signal.reasons,
+        )
+        .join(Signal, Stock.id == Signal.stock_id)
+        .join(
+            latest_subq,
+            (Signal.stock_id == latest_subq.c.stock_id)
+            & (Signal.horizon == latest_subq.c.horizon)
+            & (Signal.ts == latest_subq.c.max_ts),
+        )
+        .where(Stock.active.is_(True))
+    )
+
+    try:
+        q = q.where(Signal.horizon == SignalHorizon(horizon_filter))
+    except ValueError:
+        pass
+
+    rows = session.execute(q).all()
+    results = []
+
+    for row in rows:
+        r = row.reasons or {}
+
+        conditions = {
+            "weekly_gate":          bool(r.get("weekly_gate_fired", False)),
+            # weekly_alignment=None means no weekly history — not a misalignment, skip filter
+            "weekly_misalignment":  r.get("weekly_alignment") is False,
+            "adx_choppy":           bool(r.get("adx_compression", False)),
+            "high_vol_regime":      bool(r.get("high_vol_compression", False)),
+            "low_breadth":          bool(r.get("breadth_compression", False)),
+            "earnings_caution":     r.get("earnings_warning") in ("caution", "note", "watch"),
+            "earnings_level":       r.get("earnings_warning"),
+            "negative_news":        r.get("news_sentiment_flag") in ("strongly_negative", "negative"),
+            "news_level":           r.get("news_sentiment_flag"),
+            "rs_lagging":           r.get("rs_flag") == "lagging_sector",
+            "bearish_options":      r.get("options_flag") in ("elevated_put_volume", "slightly_elevated_puts"),
+            "options_level":        r.get("options_flag"),
+            "stale_data":           bool(r.get("stale_price_warning", False)),
+            "insufficient_history": bool(r.get("insufficient_history_warning", False)),
+            "compression_cap":      bool(r.get("compression_cap_applied", False)),
+        }
+
+        suppression_count = sum(
+            1 for k, v in conditions.items()
+            if k not in ("earnings_level", "news_level", "options_level") and v is True
+        )
+
+        results.append({
+            "symbol":              row.symbol,
+            "name":                row.name,
+            "signal":              row.signal.value,
+            "horizon":             row.horizon.value,
+            "confidence":          round(row.confidence, 1),
+            "bullish_probability": round(row.bullish_probability, 4) if row.bullish_probability else None,
+            "ts":                  row.ts.isoformat() if row.ts else None,
+            "conditions":          conditions,
+            "suppression_count":   suppression_count,
+            "market_regime":       r.get("market_regime"),
+            "weekly_rsi":          r.get("weekly_rsi"),
+            "weekly_trend":        r.get("weekly_trend"),
+            "rsi":                 r.get("rsi"),
+            "adx":                 r.get("adx"),
+            "breadth_pct":         r.get("breadth_pct"),
+            "days_to_earnings":    r.get("days_to_earnings"),
+            "news_sentiment":      r.get("news_sentiment"),
+            "rs_score":            r.get("rs_score"),
+        })
+
+    results.sort(key=lambda x: (-x["suppression_count"], -(x["bullish_probability"] or 0)))
+    return results
+
+
 @router.get("/{symbol}")
 def signal_for(
     symbol: str,
