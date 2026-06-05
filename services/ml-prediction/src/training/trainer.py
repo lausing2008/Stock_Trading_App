@@ -321,7 +321,9 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     X_aligned = X.reindex(columns=saved_cols, fill_value=0.0).fillna(0.0)
     Xs = scaler.transform(X_aligned.values)
     # Positive-class probability for the latest bar (calibrator expects 1D input).
-    raw_prob = float(model.predict_proba(Xs)[-1, 1])
+    # XGBModel.predict_proba returns 1D (n_samples,); XGBClassifier returns 2D (n_samples, 2).
+    proba = model.predict_proba(Xs)
+    raw_prob = float(proba[-1, 1] if proba.ndim == 2 else proba[-1])
 
     # Apply calibration if the model was trained with it
     prob = float(calibrator.predict([raw_prob])[0]) if calibrator is not None else raw_prob

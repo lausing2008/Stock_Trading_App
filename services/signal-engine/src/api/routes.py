@@ -1170,16 +1170,19 @@ def filter_audit(
             "median_return_pct": round(float(sorted(rets)[len(rets) // 2]) * 100, 2) if rets else None,
         })
 
-    total = len(per_trade)
-    overall_wr = round(sum(1 for t in per_trade if t["win"]) / total * 100, 1) if total else None
+    n_signals = len(rows)
+    n_with_returns = len(per_trade)
+    overall_wr = round(sum(1 for t in per_trade if t["win"]) / n_with_returns * 100, 1) if n_with_returns else None
     return {
-        "lookback_days":       lookback_days,
-        "style":               style,
-        "hold_days":           hold_days,
-        "total_buy_signals":   total,
-        "overall_win_rate_pct": overall_wr,
-        "by_filter_count":     summary,
-        "trades":              per_trade,
+        "lookback_days":          lookback_days,
+        "style":                  style,
+        "hold_days":              hold_days,
+        "n_buy_signals_found":    n_signals,
+        "n_with_return_data":     n_with_returns,
+        "overall_win_rate_pct":   overall_wr,
+        "note": "n_with_return_data < n_buy_signals_found when exit date is in the future or price data is missing.",
+        "by_filter_count":        summary,
+        "trades":                 per_trade,
     }
 
 

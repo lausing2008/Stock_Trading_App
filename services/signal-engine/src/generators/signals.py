@@ -217,44 +217,23 @@ def _fetch_earnings_proximity(symbol: str) -> int | None:
 
 
 def _fetch_earnings_beat_rate(symbol: str) -> float | None:
-    """Return historical earnings beat rate (0-1) from the last 8 quarters.
+    """Return historical EPS beat rate (0-1) from market-data fundamentals.
 
-    Uses yfinance earnings history. Result is cached in Redis with a 7-day TTL
-    so we don't hammer yfinance on every signal generation cycle.
+    The market-data service computes eps_beat_rate from the last 8 quarters of
+    earnings surprises and caches it. This avoids needing yfinance in signal-engine.
 
-    Returns None on failure (treated as neutral — no beat-rate adjustment).
+    Returns None on failure (treated as neutral — no beat-rate compression adjustment).
     """
-    _CACHE_KEY = f"stockai:earnings_beat:{symbol}"
-    _TTL = 7 * 86_400  # 7 days
-
     try:
-        import redis as redis_lib
-        r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
-        cached = r.get(_CACHE_KEY)
-        if cached is not None:
-            return float(cached)
-    except Exception:
-        r = None
-
-    beat_rate: float | None = None
-    try:
-        import yfinance as yf
-        tk = yf.Ticker(symbol)
-        hist = tk.earnings_history
-        if hist is not None and not hist.empty and "surprisePercent" in hist.columns:
-            recent = hist["surprisePercent"].dropna().tail(8)
-            if len(recent) >= 2:
-                beat_rate = float((recent > 0).mean())
+        url = f"{_settings.market_data_url}/stocks/{symbol}/fundamentals"
+        with httpx.Client(timeout=8) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                val = r.json().get("eps_beat_rate")
+                return float(val) if val is not None else None
     except Exception:
         pass
-
-    if beat_rate is not None and r is not None:
-        try:
-            r.setex(_CACHE_KEY, _TTL, str(beat_rate))
-        except Exception:
-            pass
-
-    return beat_rate
+    return None
 
 
 def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
@@ -892,6 +871,7 @@ def _apply_style_signal(
     # confidence factor (0.70–1.0) scales the boost/compress toward neutral so
     # data-sparse stocks get a softer nudge rather than the full filter weight.
     weekly_confidence = weekly_tech.get("weekly_confidence", 1.0)
+    reasons["weekly_confidence"] = round(weekly_confidence, 3)
     if weekly_rsi is None:
         # No weekly history — skip alignment filter entirely, treat as neutral
         reasons["weekly_alignment"] = None
