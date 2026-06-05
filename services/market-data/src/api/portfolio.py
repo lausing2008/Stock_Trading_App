@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from db import Price, Stock, TimeFrame, get_session
 from .auth import get_current_user
 
-router = APIRouter(prefix="/portfolio", tags=["portfolio"])
+router = APIRouter(prefix="/portfolio-risk", tags=["portfolio"])
 
 # Market benchmark tickers
 _BENCH = {"US": "SPY", "HK": "^HSI"}
