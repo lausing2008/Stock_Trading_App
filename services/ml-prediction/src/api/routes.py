@@ -18,6 +18,7 @@ class TuneRequest(BaseModel):
     symbol: str
     n_trials: int = 60
     horizon: int = 5
+    style: str = "SWING"
 
 
 class PredictRequest(BaseModel):
@@ -59,12 +60,12 @@ def train_all(tasks: BackgroundTasks):
 @router.post("/tune")
 def tune(req: TuneRequest, tasks: BackgroundTasks):
     """Run Optuna hyperparameter search for one symbol, then retrain with best params."""
-    tasks.add_task(tune_symbol, req.symbol, req.n_trials, req.horizon)
-    return {"status": "scheduled", "symbol": req.symbol, "n_trials": req.n_trials}
+    tasks.add_task(tune_symbol, req.symbol, req.n_trials, req.horizon, req.style)
+    return {"status": "scheduled", "symbol": req.symbol, "n_trials": req.n_trials, "style": req.style}
 
 
 @router.post("/tune_all")
-def tune_all(tasks: BackgroundTasks, n_trials: int = 60):
+def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING"):
     """Run Optuna tuning sequentially for every active stock (weekend job).
 
     Each symbol gets `n_trials` Optuna trials then a full retrain. Runs in background.
@@ -81,7 +82,7 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60):
     def _run_all():
         results = []
         for sym in symbols:
-            result = tune_symbol(sym, n_trials=n_trials)
+            result = tune_symbol(sym, n_trials=n_trials, style=style)
             results.append(result)
         return results
 

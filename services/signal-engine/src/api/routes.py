@@ -1226,7 +1226,7 @@ def calibrate_ta_weights(
     # TA boolean feature names (positive weights only — penalties excluded from regression)
     TA_FEATURES = [
         "above_sma50", "sma50_above_sma200", "golden_cross_event",
-        "rsi_sweet_spot", "rsi_mild_oversold",
+        "rsi_sweet_spot", "rsi_mild_oversold", "rsi_mild_overbought",
         "stoch_oversold", "stoch_cross_up",
         "rsi_divergence_bullish",
         "macd_strong", "macd_positive", "macd_zero_cross_up",
@@ -1234,24 +1234,26 @@ def calibrate_ta_weights(
         "bullish_trend", "obv_bullish", "volume_surge",
     ]
 
-    # Map reasons JSON keys → feature names
+    # Map feature name → extractor from stored reasons JSON.
+    # Keys must match what signals.py stores, not the weight-dict names.
     REASONS_MAP = {
-        "above_sma50":           lambda r: bool(r.get("above_sma50")),
-        "sma50_above_sma200":    lambda r: bool(r.get("sma50_above_sma200")),
-        "golden_cross_event":    lambda r: bool(r.get("golden_cross")),
-        "rsi_sweet_spot":        lambda r: 45 < (r.get("rsi") or 0) < 65,
-        "rsi_mild_oversold":     lambda r: 35 < (r.get("rsi") or 0) <= 45,
-        "stoch_oversold":        lambda r: bool(r.get("stoch_oversold")),
-        "stoch_cross_up":        lambda r: bool(r.get("stoch_cross_up")),
+        "above_sma50":            lambda r: bool(r.get("trend_above_sma50")),
+        "sma50_above_sma200":     lambda r: bool(r.get("sma50_above_sma200")),
+        "golden_cross_event":     lambda r: bool(r.get("golden_cross_event")),
+        "rsi_sweet_spot":         lambda r: 45 < (r.get("rsi") or 0) < 65,
+        "rsi_mild_oversold":      lambda r: 35 < (r.get("rsi") or 0) <= 45,
+        "rsi_mild_overbought":    lambda r: 65 <= (r.get("rsi") or 0) < 72,
+        "stoch_oversold":         lambda r: bool(r.get("stoch_rsi_oversold")),
+        "stoch_cross_up":         lambda r: bool(r.get("stoch_rsi_cross_up")),
         "rsi_divergence_bullish": lambda r: r.get("rsi_divergence") == "bullish",
-        "macd_strong":           lambda r: bool(r.get("macd_strong")),
-        "macd_positive":         lambda r: bool(r.get("macd_positive")),
-        "macd_zero_cross_up":    lambda r: bool(r.get("macd_zero_cross_up")),
-        "bb_mid_zone":           lambda r: bool(r.get("bb_mid_zone")),
-        "price_above_vwap":      lambda r: r.get("price_above_vwap") is True,
-        "bullish_trend":         lambda r: bool(r.get("bullish_trend")),
-        "obv_bullish":           lambda r: bool(r.get("obv_bullish")),
-        "volume_surge":          lambda r: (r.get("volume_z") or 0) > 0.5,
+        "macd_strong":            lambda r: (r.get("macd_hist") or 0) > 0 and bool(r.get("macd_rising")),
+        "macd_positive":          lambda r: (r.get("macd_hist") or 0) > 0 and not bool(r.get("macd_rising")),
+        "macd_zero_cross_up":     lambda r: bool(r.get("macd_zero_cross_up")),
+        "bb_mid_zone":            lambda r: 0.2 < (r.get("bb_pct_b") or 0) < 0.8,
+        "price_above_vwap":       lambda r: r.get("price_above_vwap") is True,
+        "bullish_trend":          lambda r: bool(r.get("adx_bullish")),
+        "obv_bullish":            lambda r: bool(r.get("obv_bullish")),
+        "volume_surge":           lambda r: (r.get("volume_z") or 0) > 0.5,
     }
 
     X_rows, y_rows, skipped = [], [], 0
@@ -1265,14 +1267,16 @@ def calibrate_ta_weights(
         # Look up price return over hold_days
         signal_date = row.ts.date() if hasattr(row.ts, "date") else row.ts
         entry_price_row = session.execute(
-            select(Price.close).where(Price.stock_id == row.stock_id, Price.timeframe == TimeFrame.daily)
-            .order_by((Price.ts - row.ts).asc() if hasattr(Price.ts, "__sub__") else Price.ts)
+            select(Price.close)
+            .where(Price.stock_id == row.stock_id, Price.timeframe == TimeFrame.D1,
+                   Price.ts >= signal_date)
+            .order_by(Price.ts)
             .limit(1)
         ).scalar_one_or_none()
         exit_price_row = session.execute(
             select(Price.close)
-            .where(Price.stock_id == row.stock_id, Price.timeframe == TimeFrame.daily,
-                   Price.ts >= row.ts + timedelta(days=hold_days))
+            .where(Price.stock_id == row.stock_id, Price.timeframe == TimeFrame.D1,
+                   Price.ts >= signal_date + timedelta(days=hold_days))
             .order_by(Price.ts)
             .limit(1)
         ).scalar_one_or_none()

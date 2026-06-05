@@ -52,7 +52,7 @@ def _suggest(trial: optuna.Trial, name: str) -> int | float:
     return trial.suggest_float(name, spec[1], spec[2], log=log_scale)
 
 
-def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5) -> dict:
+def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = "SWING") -> dict:
     """Run Optuna search for `symbol`, save best params, retrain final model.
 
     Returns a result dict with best_params, best_cv_auc, and final train metrics.
@@ -127,7 +127,7 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5) -> dict:
     log.info("tune.best_params", symbol=symbol, cv_auc=round(best_cv_auc, 4), **best_params)
 
     # Retrain final model using best params (train_model will pick them up via _load_best_params)
-    result = train_model(symbol, "xgboost", horizon, hyperparams=best_params)
+    result = train_model(symbol, "xgboost", horizon, hyperparams=best_params, style=style)
     result["best_params"] = best_params
     result["best_cv_auc"] = round(best_cv_auc, 4)
     return result

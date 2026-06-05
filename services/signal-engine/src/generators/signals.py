@@ -843,10 +843,13 @@ def _apply_style_signal(
         ml_w  = min(raw_w, p["ml_weight_cap"])
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
-            ml_w *= 1.0 - 0.25 * min((gap - 0.35) / 0.30, 1.0)
+            # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).
+            # Continues monotonically from the intermediate band instead of restarting at 0%.
+            extra = 0.25 * min((gap - 0.35) / 0.30, 1.0)
+            ml_w *= (0.75 - extra)
             reasons["ml_ta_conflict"] = True
         elif gap > 0.25:
-            ml_w *= 0.75
+            ml_w *= 0.75  # flat 25% cut for intermediate disagreement
             reasons["ml_ta_conflict"] = True
         else:
             reasons["ml_ta_conflict"] = False
