@@ -776,6 +776,84 @@ def _position_size(tech: dict, portfolio_size: float, max_risk_pct: float, price
     }
 
 
+# ── DCF fair value ────────────────────────────────────────────────────────────
+
+_WACC: dict[str, float] = {
+    "Technology": 0.10, "Healthcare": 0.09, "Financials": 0.11,
+    "Utilities": 0.08, "Energy": 0.10, "Consumer Discretionary": 0.09,
+    "Consumer Staples": 0.08, "Industrials": 0.09, "Materials": 0.10,
+    "Real Estate": 0.09, "Communication Services": 0.10,
+}
+_TERMINAL_GROWTH = 0.03
+
+
+def _dcf_fair_value(fund: dict, price: float, sector: str = "Unknown") -> dict | None:
+    """Simplified 2-stage DCF (5-year explicit + Gordon Growth terminal value).
+
+    Uses FCF per share as the base cash flow. Returns None if FCF is negative
+    or insufficient data is available.
+    """
+    fcf = fund.get("free_cashflow")
+    shares = fund.get("shares_outstanding")
+
+    if not fcf or not shares or shares <= 0 or fcf <= 0:
+        return None
+
+    fcf_per_share = fcf / shares
+
+    # Determine growth rate
+    growth = fund.get("earnings_growth")
+    method = "analyst_growth"
+    if growth is None or growth <= 0:
+        growth = fund.get("revenue_growth")
+        method = "revenue_growth"
+    if growth is None or growth <= 0:
+        growth = 0.07
+        method = "sector_default_7pct"
+
+    growth = float(min(max(growth, -0.05), 0.40))
+
+    wacc = _WACC.get(sector, 0.10)
+    g = _TERMINAL_GROWTH
+
+    # Stage 1 — 5-year explicit FCF
+    pv1 = 0.0
+    fcf_t = fcf_per_share
+    for t in range(1, 6):
+        fcf_t *= (1 + growth)
+        pv1 += fcf_t / (1 + wacc) ** t
+
+    # Stage 2 — terminal value (Gordon Growth)
+    tv = fcf_t * (1 + g) / (wacc - g)
+    pv2 = tv / (1 + wacc) ** 5
+
+    dcf_value = pv1 + pv2
+    if dcf_value <= 0 or price <= 0:
+        return None
+
+    mos = (dcf_value - price) / price * 100
+
+    # High conviction: DCF and analyst target agree on direction within 15 ppt
+    target = fund.get("target_price")
+    high_conviction = False
+    if target and price > 0:
+        analyst_upside = (target - price) / price * 100
+        if abs(mos - analyst_upside) < 15 and mos > 0 and analyst_upside > 0:
+            high_conviction = True
+
+    return {
+        "dcf_fair_value": round(dcf_value, 2),
+        "margin_of_safety_pct": round(mos, 1),
+        "assessment": "Undervalued" if mos > 15 else ("Fairly Valued" if mos > -15 else "Overvalued"),
+        "growth_rate_used_pct": round(growth * 100, 1),
+        "wacc_pct": round(wacc * 100, 1),
+        "terminal_growth_pct": round(g * 100, 1),
+        "fcf_per_share": round(fcf_per_share, 2),
+        "method": method,
+        "high_conviction": high_conviction,
+    }
+
+
 # ── Claude integration ────────────────────────────────────────────────────────
 
 async def _call_claude(req: ResearchRequest, symbol: str, stock: dict, fund: dict,
@@ -1211,6 +1289,7 @@ async def generate_research(symbol: str, req: ResearchRequest):
     # Compute scores
     tech = _score_technical(stock, prices, indicators, levels, live_price=price)
     fund_scores = _score_fundamental(fund, sector=stock.get("sector", "Unknown"))
+    dcf = _dcf_fair_value(fund, price, sector=stock.get("sector", "Unknown"))
 
     # Call Claude for qualitative analysis
     ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price)
@@ -1314,6 +1393,7 @@ async def generate_research(symbol: str, req: ResearchRequest):
         "short_float_pct": fund.get("short_percent_of_float"),
         "next_earnings": fund.get("next_earnings_date"),
         "days_to_earnings": fund.get("days_to_earnings"),
+        "dcf": dcf,
     }
 
     _cache[sym] = (report, datetime.now(timezone.utc))

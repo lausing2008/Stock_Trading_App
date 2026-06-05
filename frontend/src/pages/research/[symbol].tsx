@@ -357,6 +357,28 @@ export default function ResearchPage() {
                   <span style={{ fontSize: '13px', fontWeight: 700, color: '#94a3b8' }}>{report.analyst.recommendation}</span>
                 </div>
               )}
+              {(report as unknown as Record<string, unknown>).dcf != null && (() => {
+                const dcf = (report as unknown as Record<string, unknown>).dcf as {
+                  dcf_fair_value: number;
+                  margin_of_safety_pct: number;
+                  assessment: string;
+                  high_conviction: boolean;
+                };
+                const mos = dcf.margin_of_safety_pct;
+                const mosColor = mos > 15 ? '#4ade80' : mos > -15 ? '#facc15' : '#f87171';
+                return (
+                  <div style={{ padding: '6px 14px', borderRadius: '8px', background: 'rgba(74,222,128,0.06)', border: `1px solid ${mosColor}33` }}>
+                    <span style={{ fontSize: '10px', color: '#475569' }}>DCF Fair Value </span>
+                    <span style={{ fontSize: '13px', fontWeight: 700, color: mosColor }}>${dcf.dcf_fair_value.toFixed(2)}</span>
+                    <span style={{ fontSize: '10px', color: mosColor, marginLeft: '4px' }}>({mos >= 0 ? '+' : ''}{mos.toFixed(1)}%)</span>
+                    {dcf.high_conviction && (
+                      <span style={{ marginLeft: '6px', fontSize: '9px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.15)', padding: '1px 5px', borderRadius: '3px' }}>
+                        HIGH CONVICTION
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
 

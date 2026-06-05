@@ -388,6 +388,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'dcf-fair-value',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-04 — _dcf_fair_value() in research-engine routes.py: 2-stage DCF (5-yr explicit + Gordon Growth terminal at 3% g). Uses FCF/share as base, analyst/revenue/sector-default growth rate. WACC by GICS sector (8–11%). Shows dcf_fair_value + margin_of_safety_pct + "HIGH CONVICTION" badge when DCF and analyst target agree within 15ppt. Displayed on research page signal row.',
     tier: 3, severity: 'feature',
     title: 'DCF-based fair value model in research engine',
     file: 'services/research-engine/src/api/routes.py',
