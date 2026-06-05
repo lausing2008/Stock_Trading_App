@@ -26,7 +26,7 @@ def _fetch_returns(symbols: list[str], session: Session, days: int = 60) -> pd.D
             select(Price.ts, Price.close)
             .join(Stock, Price.stock_id == Stock.id)
             .where(Stock.symbol == sym)
-            .where(Price.timeframe == TimeFrame.day)
+            .where(Price.timeframe == TimeFrame.D1)
             .where(Price.ts >= cutoff)
             .order_by(Price.ts)
         )
@@ -45,8 +45,10 @@ def _beta(stock_rets: pd.Series, bench_rets: pd.Series) -> float:
     s, b = stock_rets.align(bench_rets, join="inner")
     if len(s) < 5:
         return 1.0
-    cov = float(np.cov(s.values, b.values)[0, 1])
-    var = float(np.var(b.values))
+    sv = np.asarray(s, dtype=float).ravel()
+    bv = np.asarray(b, dtype=float).ravel()
+    cov = float(np.cov(sv, bv)[0, 1])
+    var = float(np.var(bv))
     return cov / var if var > 0 else 1.0
 
 
@@ -104,7 +106,7 @@ def portfolio_risk(
             bench_raw = bench_raw["Close"]
         else:
             bench_raw = bench_raw["Close"] if "Close" in bench_raw else bench_raw.iloc[:, 0]
-        bench_rets = bench_raw.pct_change().dropna()
+        bench_rets = bench_raw.squeeze().pct_change().dropna()
         bench_rets.index = pd.to_datetime(bench_rets.index).tz_localize(None)
     except Exception:
         bench_rets = pd.Series(dtype=float)
