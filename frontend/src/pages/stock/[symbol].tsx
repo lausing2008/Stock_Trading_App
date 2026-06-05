@@ -558,6 +558,43 @@ Return ONLY valid JSON — no markdown, no prose:
     }
   }
 
+  const priceMap = useMemo(() => {
+    const m: Record<string, LatestPrice> = {};
+    for (const p of allPrices ?? []) m[p.symbol] = p;
+    return m;
+  }, [allPrices]);
+
+  const currentSector: string | null = data?.price?.sector ?? null;
+  const currentMarket: string | null = data?.price?.market ?? null;
+
+  const sectorPeers = useMemo((): RankingRow[] => {
+    if (!allRankings || !currentSector) return [];
+    return allRankings.rankings
+      .filter((r: RankingRow) => r.symbol !== symbol && r.sector === currentSector && (!currentMarket || r.market === currentMarket))
+      .sort((a: RankingRow, b: RankingRow) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, 3);
+  }, [allRankings, currentSector, currentMarket, symbol]);
+
+  const compareRows = useMemo((): RankingRow[] => {
+    const _ranking = data?.ranking;
+    if (!_ranking) return sectorPeers;
+    const currentRow: RankingRow = {
+      symbol: symbol as string,
+      name: data?.price?.name ?? (symbol as string),
+      name_zh: data?.price?.name_zh ?? null,
+      market: currentMarket ?? '',
+      sector: currentSector ?? null,
+      score: _ranking.score,
+      technical: _ranking.technical,
+      momentum: _ranking.momentum,
+      value: _ranking.value,
+      growth: _ranking.growth,
+      volatility: _ranking.volatility,
+      fair_price: _ranking.fair_price ?? null,
+      relative_strength: _ranking.relative_strength ?? null,
+    };
+    return [currentRow, ...sectorPeers];
+  }, [data?.ranking, sectorPeers, symbol, data?.price, currentMarket, currentSector]);
 
   if (isLoading) return <div className="text-slate-400 p-4">Loading…</div>;
   if (error || !data) return <div className="text-slate-300 p-4">Error loading {symbol}.</div>;
@@ -571,43 +608,6 @@ Return ONLY valid JSON — no markdown, no prose:
   const fairUpside = (ranking?.fair_price != null && curPrice != null)
     ? ((ranking.fair_price - curPrice) / curPrice) * 100
     : null;
-
-  const priceMap = useMemo(() => {
-    const m: Record<string, LatestPrice> = {};
-    for (const p of allPrices ?? []) m[p.symbol] = p;
-    return m;
-  }, [allPrices]);
-
-  const currentSector = (data.price as { sector?: string })?.sector ?? null;
-  const currentMarket = (data.price as { market?: string })?.market ?? null;
-
-  const sectorPeers = useMemo((): RankingRow[] => {
-    if (!allRankings || !currentSector) return [];
-    return allRankings.rankings
-      .filter((r: RankingRow) => r.symbol !== symbol && r.sector === currentSector && (!currentMarket || r.market === currentMarket))
-      .sort((a: RankingRow, b: RankingRow) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, 3);
-  }, [allRankings, currentSector, currentMarket, symbol]);
-
-  const compareRows = useMemo((): RankingRow[] => {
-    if (!ranking) return sectorPeers;
-    const currentRow: RankingRow = {
-      symbol: symbol as string,
-      name: (data.price as { name?: string })?.name ?? (symbol as string),
-      name_zh: (data.price as { name_zh?: string | null })?.name_zh ?? null,
-      market: currentMarket ?? '',
-      sector: currentSector ?? null,
-      score: ranking.score,
-      technical: ranking.technical,
-      momentum: ranking.momentum,
-      value: ranking.value,
-      growth: ranking.growth,
-      volatility: ranking.volatility,
-      fair_price: ranking.fair_price ?? null,
-      relative_strength: ranking.relative_strength ?? null,
-    };
-    return [currentRow, ...sectorPeers];
-  }, [ranking, sectorPeers, symbol, data.price, currentMarket, currentSector]);
 
   const levels = data.levels;
   const srLevels = levels?.support_resistance ?? [];
