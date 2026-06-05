@@ -652,14 +652,16 @@ export default function Watchlist() {
     if (unsubscribed.length === 0) return;
     setBulkSubscribing(true);
     const email = me?.email ?? (typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') ?? undefined : undefined);
-    try {
-      await Promise.all(unsubscribed.map(item => api.createSignalAlert(item.symbol, email)));
-      await mutateSignalAlerts();
-      setAlertToast({ msg: `Signal alerts enabled for ${unsubscribed.length} stocks`, ok: true });
-    } catch {
-      setAlertToast({ msg: 'Some subscriptions failed', ok: false });
-    }
-    setTimeout(() => setAlertToast(null), 3000);
+    const results = await Promise.allSettled(unsubscribed.map(item => api.createSignalAlert(item.symbol, email)));
+    const succeeded = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+    await mutateSignalAlerts();
+    setAlertToast(
+      failed === 0
+        ? { msg: `Signal alerts enabled for ${succeeded} stocks`, ok: true }
+        : { msg: `${succeeded} subscribed, ${failed} failed — check your email in Settings`, ok: false }
+    );
+    setTimeout(() => setAlertToast(null), 4000);
     setBulkSubscribing(false);
   }
 
@@ -667,14 +669,16 @@ export default function Watchlist() {
     const subscribed = (data ?? []).filter(item => signalAlertMap[item.symbol]);
     if (subscribed.length === 0) return;
     setBulkSubscribing(true);
-    try {
-      await Promise.all(subscribed.map(item => api.deleteSignalAlert(signalAlertMap[item.symbol].id)));
-      await mutateSignalAlerts();
-      setAlertToast({ msg: `Signal alerts removed for ${subscribed.length} stocks`, ok: true });
-    } catch {
-      setAlertToast({ msg: 'Some removals failed', ok: false });
-    }
-    setTimeout(() => setAlertToast(null), 3000);
+    const results = await Promise.allSettled(subscribed.map(item => api.deleteSignalAlert(signalAlertMap[item.symbol].id)));
+    const succeeded = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+    await mutateSignalAlerts();
+    setAlertToast(
+      failed === 0
+        ? { msg: `Signal alerts removed for ${succeeded} stocks`, ok: true }
+        : { msg: `${succeeded} removed, ${failed} failed`, ok: false }
+    );
+    setTimeout(() => setAlertToast(null), 4000);
     setBulkSubscribing(false);
   }
 
@@ -812,7 +816,7 @@ export default function Watchlist() {
                 onClick={handleNotifyAll}
                 disabled={bulkSubscribing || allOn}
                 title={allOn ? 'All stocks already have signal alerts' : `Enable signal alerts for all ${data.length - subscribedCount} unsubscribed stocks`}
-                style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '8px', border: '1px solid rgba(129,140,248,0.35)', background: allOn ? 'rgba(129,140,248,0.05)' : 'rgba(129,140,248,0.1)', color: allOn ? '#334155' : '#818cf8', cursor: allOn || bulkSubscribing ? 'default' : 'pointer', fontSize: '12px', fontWeight: 600, opacity: bulkSubscribing ? 0.6 : 1 }}
+                style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '8px', border: `1px solid ${allOn ? 'rgba(74,222,128,0.3)' : 'rgba(129,140,248,0.35)'}`, background: allOn ? 'rgba(74,222,128,0.08)' : 'rgba(129,140,248,0.1)', color: allOn ? '#4ade80' : '#818cf8', cursor: allOn || bulkSubscribing ? 'default' : 'pointer', fontSize: '12px', fontWeight: 600, opacity: bulkSubscribing ? 0.6 : 1 }}
               >
                 📡 {bulkSubscribing ? 'Working…' : allOn ? `All notified (${subscribedCount})` : `Notify All (${data.length - subscribedCount})`}
               </button>

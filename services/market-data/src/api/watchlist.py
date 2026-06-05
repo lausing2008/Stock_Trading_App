@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from db import Stock, User, Watchlist, WatchlistItem, get_session
+from db import SignalAlert, Stock, User, Watchlist, WatchlistItem, get_session
 from .auth import get_current_user
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -212,6 +212,14 @@ def add_to_watchlist(
         return _item_out(existing, stock)
     item = WatchlistItem(stock_id=stock.id, watchlist_id=wl.id)
     session.add(item)
+
+    # Auto-subscribe to signal alerts if not already subscribed
+    existing_alert = session.execute(
+        select(SignalAlert).where(SignalAlert.user_id == current.id, SignalAlert.symbol == stock.symbol)
+    ).scalar_one_or_none()
+    if not existing_alert:
+        session.add(SignalAlert(user_id=current.id, symbol=stock.symbol, email=current.email))
+
     session.commit()
     session.refresh(item)
     return _item_out(item, stock)

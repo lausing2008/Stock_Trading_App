@@ -408,3 +408,126 @@ EXIT
 TRADE PERFORMANCE
 (Review win rate, Sharpe, equity curve — refine your edge)
 ```
+
+---
+
+## Appendix — Signal Tier Framework: Which BUY Signals to Act On
+
+Not all BUY signals are equal. The system generates signals across three quality tiers. Understanding these tiers prevents you from acting on low-conviction noise.
+
+---
+
+### Why tiers exist
+
+A raw BUY signal means the fused probability crossed 0.60 — a necessary but not sufficient condition for a high-quality trade. A signal with 21% confidence is a BUY. So is one with 85% confidence. They require very different responses.
+
+The three tiers reflect how many additional filters the signal has passed on top of the raw BUY threshold.
+
+---
+
+### Tier 1 — Email Conviction Alert (highest quality)
+
+**How you receive it:** An email arrives with the stock symbol, direction, and conviction score.
+
+**What it means:** The signal passed all gates of the conviction filter simultaneously:
+
+| Layer | Gate condition |
+|-------|---------------|
+| **AI signal** | Current signal = BUY AND previous signal ≠ BUY (transition, not persistence) |
+| **AI confidence** | ≥ 60% (fused probability > 0.80) |
+| **K-Score** | ≥ 55 (technically and fundamentally sound) |
+| **Uptrend** | Price > SMA50 AND SMA50 > SMA200 (price structure intact) |
+| **RSI timing** | RSI 45–65 AND Stochastic RSI recovering from oversold (not chasing) |
+| **Momentum** | MACD histogram positive and rising (short-term momentum confirmed) |
+| **Volume** | OBV trend confirming accumulation (smart money is buying) |
+| **Trend strength** | ADX > 25 (the trend has enough force to sustain the move) |
+| **ML model** | ML probability > 70% (the statistical model independently agrees) |
+
+A Tier 1 email means every single one of these conditions was true at the same moment. These signals are rare — expect a handful per month across the full universe.
+
+**Action:** Open the stock detail page. Confirm RSI is still in the 45–65 zone (the signal could be a few hours old). If confirmed, enter using the game plan entry levels. This is the highest-conviction entry the system produces.
+
+---
+
+### Tier 2 — Manual Signal Filter Monitor Check (moderate quality)
+
+**How you find it:** Go to **Signal Filter Monitor**. Apply these filters:
+
+| Filter | Value | Why |
+|--------|-------|-----|
+| Signal | BUY | Only looking at bullish signals |
+| Suppression count | 0 or 1 | More than 1 suppression = multiple gates failing |
+| Weekly gate | Pass | Weekly timeframe must agree with daily |
+| Earnings | > 10 days away | No binary event risk |
+
+From this filtered list, click through to each stock's detail page and verify:
+
+| Check | Minimum bar |
+|-------|------------|
+| Confluence Score | ≥ 75 |
+| K-Score | ≥ 55 |
+| RSI(14) | 45–65 |
+| Trend | Price > SMA50 |
+
+Stocks that pass these checks are valid Tier 2 entries — lower conviction than an email alert but still well-filtered.
+
+**Action:** Enter at the game plan entry price. Use a slightly smaller position size than a Tier 1 signal (e.g. 70% of the system's recommended size). Set a tighter initial stop.
+
+---
+
+### Tier 3 — Ignore (low quality)
+
+**What it looks like:** A BUY signal visible in the Screener or Rankings with confidence below 40%, or in Signal Filter Monitor with suppression count ≥ 2, weekly gate failing, or earnings within 10 days.
+
+**What it means:** The AI signal crossed the raw threshold but the supporting conditions are weak or conflicted. Acting on these signals degrades overall performance — they have near-random outcomes at scale.
+
+**Action:** Do not trade. If you already hold the stock and it drops to Tier 3 status, treat it as a signal to tighten your stop rather than a reason to add.
+
+---
+
+### Tier summary
+
+| Tier | Source | Confidence | Additional filters | Action |
+|------|--------|-----------|-------------------|--------|
+| **1 — Email alert** | Inbox | ≥ 60% | All conviction gates pass simultaneously | Enter at full recommended size |
+| **2 — Monitor check** | Signal Filter Monitor | ≥ 40% | Manual screen: supp ≤ 1, confluence ≥ 75, RSI 45–65 | Enter at 70% recommended size |
+| **3 — Raw BUY** | Screener / Rankings | Any | No additional filters | Ignore |
+
+---
+
+### Daily practical workflow
+
+```
+1. Check email
+   └─ Tier 1 alert received?
+      YES → Open stock detail → confirm RSI still 45–65 → enter
+      NO  → go to step 2
+
+2. Signal Filter Monitor
+   └─ Any stocks with supp ≤ 1, weekly pass, no earnings?
+      YES → Stock detail: Confluence ≥ 75, K-Score ≥ 55, RSI 45–65?
+            ALL PASS → enter at 70% size
+            FAILS    → skip
+      NO  → nothing to trade today, wait
+
+3. Watchlist (open positions)
+   └─ Any signal transition on a held stock?
+      BUY → WAIT/SELL → see exit rules below
+      WAIT → SELL      → exit immediately
+```
+
+---
+
+### Exit rules
+
+| Trigger | Action |
+|---------|--------|
+| **Email exit warning** (BUY → WAIT or BUY → SELL transition email) | Begin reducing immediately; exit fully on SELL |
+| **Signal Filter Monitor suppression count rises to ≥ 3** | Treat as degraded signal; tighten stop to nearest support |
+| **Time-stop: SWING 25 days** | Close the position regardless of signal if no exit signal arrived |
+| **Time-stop: SHORT 7 days** | As above for short-horizon trades |
+| **Time-stop: LONG 90 days** | As above for long-horizon trades |
+| **RSI > 70 (overbought)** | Trim 25–30% of the position; do not exit fully if signal is still BUY |
+| **Earnings within 7 days** | Reduce to 50% of position or exit; re-enter after the print if thesis holds |
+
+The time-stops are hard rules. A position drifting without a clean exit signal is a sign the thesis has stalled — the time-stop protects you from opportunity cost and slow decay.
