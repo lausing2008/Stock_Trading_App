@@ -104,8 +104,8 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
             X_tr, X_val = X_arr[tr_idx], X_arr[val_idx]
             y_tr, y_val = y_arr[tr_idx], y_arr[val_idx]
             sc = StandardScaler()
-            # Recency-weighted training so Optuna optimises for recent market behaviour
-            w = _recency_weights(len(tr_idx))
+            # Recency-weighted training so Optuna optimises for recent market behaviour (5× ratio)
+            w = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
             clf.fit(sc.fit_transform(X_tr), y_tr, sample_weight=w, verbose=False)
             preds = clf.predict_proba(sc.transform(X_val))[:, 1]
             if len(np.unique(y_val)) > 1:

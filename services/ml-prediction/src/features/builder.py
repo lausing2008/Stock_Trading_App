@@ -1,12 +1,12 @@
-"""Feature engineering — 30 features (22 stock-specific + 8 macro).
+"""Feature engineering — 34 features (26 stock-specific + 8 macro).
 
-22 stock-specific:
-  Momentum  : ret_1/5/10/20/60
+26 stock-specific:
+  Momentum  : ret_1/5/10/20/60, momentum_12_1
   Volatility: vol_20, vol_60, atr_14_pct, atr_ratio
-  Trend     : sma_20_gap, sma_50_gap, sma_100_gap
+  Trend     : sma_20_gap, sma_50_gap, sma_100_gap, sma_200_gap
   Oscillators: rsi_14, macd, macd_signal, macd_hist, bb_pct, stoch_k
   Volume    : volume_z, obv_z, cmf_20
-  Range     : high_20_pct
+  Range     : high_20_pct, dist_52w_high, dist_52w_low
 
 8 macro (market-wide context):
   spy_ret_1, spy_ret_5  — S&P 500 short-term direction
@@ -38,16 +38,20 @@ MACRO_COLUMNS = [
 FEATURE_COLUMNS = [
     # Momentum
     "ret_1", "ret_5", "ret_10", "ret_20", "ret_60",
+    "momentum_12_1",       # 12-month minus 1-month return (classic factor; avoids 1m reversal)
     # Volatility
     "vol_20", "vol_60", "atr_14_pct", "atr_ratio",
     # Trend
     "sma_20_gap", "sma_50_gap", "sma_100_gap",
+    "sma_200_gap",         # long-term trend filter; most-watched institutional level
     # Oscillators
     "rsi_14", "macd", "macd_signal", "macd_hist", "bb_pct", "stoch_k",
     # Volume / money flow
     "volume_z", "obv_z", "cmf_20",
     # Range
     "high_20_pct",
+    "dist_52w_high",       # breakout proximity; momentum strength signal
+    "dist_52w_low",        # bounce proximity; mean-reversion/support signal
     # Macro — raw
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Macro — regime boolean flags
@@ -204,6 +208,8 @@ def build_features(
     # --- Momentum ---
     for w in (1, 5, 10, 20, 60):
         out[f"ret_{w}"] = c.pct_change(w)
+    # 12-month minus 1-month: avoids short-term reversal; tracks sustained momentum
+    out["momentum_12_1"] = c.pct_change(252) - c.pct_change(21)
 
     # --- Volatility ---
     daily_ret = c.pct_change()
@@ -220,12 +226,14 @@ def build_features(
     out["atr_ratio"] = atr14 / atr14.rolling(20).mean().replace(0, np.nan)
 
     # --- Trend ---
-    sma20 = c.rolling(20).mean()
-    sma50 = c.rolling(50).mean()
+    sma20  = c.rolling(20).mean()
+    sma50  = c.rolling(50).mean()
     sma100 = c.rolling(100, min_periods=60).mean()
-    out["sma_20_gap"] = (c - sma20) / sma20.replace(0, np.nan)
-    out["sma_50_gap"] = (c - sma50) / sma50.replace(0, np.nan)
+    sma200 = c.rolling(200, min_periods=100).mean()
+    out["sma_20_gap"]  = (c - sma20)  / sma20.replace(0, np.nan)
+    out["sma_50_gap"]  = (c - sma50)  / sma50.replace(0, np.nan)
     out["sma_100_gap"] = (c - sma100) / sma100.replace(0, np.nan)
+    out["sma_200_gap"] = (c - sma200) / sma200.replace(0, np.nan)
 
     # --- Oscillators ---
     out["rsi_14"] = _rsi(c)
@@ -265,8 +273,13 @@ def build_features(
 
     # --- Range position ---
     high20 = h.rolling(20).max()
-    low20 = lo.rolling(20).min()
+    low20  = lo.rolling(20).min()
     out["high_20_pct"] = (c - low20) / (high20 - low20).replace(0, np.nan)
+
+    high252 = h.rolling(252).max()
+    low252  = lo.rolling(252).min()
+    out["dist_52w_high"] = (c - high252) / high252.replace(0, np.nan)
+    out["dist_52w_low"]  = (c - low252)  / low252.replace(0, np.nan)
 
     # --- Macro features (market-wide context) ---
     # Date keys are "YYYY-MM-DD" strings to avoid timezone issues

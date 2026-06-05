@@ -198,8 +198,8 @@ def train_model(
         X_cv_tr_s = sc.fit_transform(X_cv_tr)
         X_cv_val_s = sc.transform(X_cv_val)
 
-        # Recency-weighted training: recent bars matter more
-        cv_weights = _recency_weights(len(tr_idx))
+        # Recency-weighted training: recent bars matter more (5× ratio adapts faster to regime shifts)
+        cv_weights = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
         cv_model = get_model(model_name, **(hyperparams or {}))
         cv_model.fit(X_cv_tr_s, y_cv_tr, sample_weight=cv_weights)
 
@@ -230,8 +230,8 @@ def train_model(
     X_cal_s   = scaler.transform(X_cal.values)
     X_test_s  = scaler.transform(X_test.values)
 
-    # Recency weights for final training
-    train_weights = _recency_weights(len(X_train))
+    # Recency weights for final training (5× ratio adapts faster to regime shifts)
+    train_weights = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
 
     # XGBoost early stopping on calibration set (separate from threshold eval set)
     model = get_model(model_name, early_stopping_rounds=50, **(hyperparams or {}))

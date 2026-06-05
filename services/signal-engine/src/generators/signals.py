@@ -756,9 +756,9 @@ _STYLE_PROFILES: dict[str, dict] = {
     },
     "SWING": {
         "ml_weight_cap": 0.75,
-        "buy_threshold":  {"bull": 0.65, "high_vol": 0.70, "bear": 0.73, "unknown": 0.65},
+        "buy_threshold":  {"bull": 0.62, "high_vol": 0.67, "bear": 0.70, "unknown": 0.62},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
-        "adx_min": 20, "adx_compression": 0.90,
+        "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
         "breadth_compression": 0.90,
         "weekly_boost": 1.12, "weekly_compress": 0.85,
@@ -842,7 +842,11 @@ def _apply_style_signal(
     # ── ML / TA fusion with style-specific ML weight cap ─────────────────────
     if ml_prob is not None:
         ml_prob_c = float(np.clip(ml_prob, 0.05, 0.95))
-        raw_w = float(np.clip(0.40 + (ml_test_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
+        if ml_test_auc < 0.52:
+            # Near-random model (AUC < 0.52) — fall back to TA-only to avoid corrupting fused signal
+            raw_w = 0.0
+        else:
+            raw_w = float(np.clip(0.40 + (ml_test_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
         ml_w  = min(raw_w, p["ml_weight_cap"])
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
