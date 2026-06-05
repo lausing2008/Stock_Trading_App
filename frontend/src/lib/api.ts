@@ -181,7 +181,7 @@ export const api = {
       var_95_pct: number;
       benchmark: string;
       warnings: string[];
-    }>(`/portfolio/risk?${params}`);
+    }>(`/portfolio-risk/risk?${params}`);
   },
 
   // Trade Journal
