@@ -155,9 +155,12 @@ export const api = {
     request<FactorExposureReport>(`/signals/factor-exposure?lookback_days=${lookbackDays}`),
   mlWeightValidation: (lookbackDays = 180) =>
     request<MLWeightValidation>(`/signals/ml-weight-validation?lookback_days=${lookbackDays}`),
-  tradePerformance: (lookbackDays = 180, symbol?: string, horizon = 'SWING') => {
+  tradePerformance: (lookbackDays = 180, symbol?: string, horizon = 'SWING', opts?: { waitExits?: boolean; maxHoldDays?: number; minConfidence?: number }) => {
     const params = new URLSearchParams({ lookback_days: String(lookbackDays), horizon });
     if (symbol) params.set('symbol', symbol);
+    if (opts?.waitExits) params.set('wait_exits', 'true');
+    if (opts?.maxHoldDays != null) params.set('max_hold_days', String(opts.maxHoldDays));
+    if (opts?.minConfidence != null && opts.minConfidence > 0) params.set('min_confidence', String(opts.minConfidence));
     return request<TradePerformanceReport>(`/signals/trade_performance?${params}`);
   },
   suppressedSignals: (style = 'SWING') =>

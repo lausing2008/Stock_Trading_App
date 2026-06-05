@@ -166,17 +166,27 @@ const HORIZON_OPTIONS = [
   { label: 'LONG  (30–90d)', value: 'LONG'  },
 ];
 
+const MAX_HOLD_DEFAULTS: Record<string, number> = { SHORT: 7, SWING: 25, LONG: 90 };
+
 export default function TradePerformancePage() {
-  const [lookback, setLookback]         = useState(180);
-  const [horizon, setHorizon]           = useState<'SHORT' | 'SWING' | 'LONG'>('SWING');
-  const [filterSymbol, setFilterSymbol] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'closed' | 'open'>('ALL');
+  const [lookback, setLookback]           = useState(180);
+  const [horizon, setHorizon]             = useState<'SHORT' | 'SWING' | 'LONG'>('SWING');
+  const [waitExits, setWaitExits]         = useState(false);
+  const [useMaxHold, setUseMaxHold]       = useState(true);
+  const [maxHoldDays, setMaxHoldDays]     = useState<number>(25);
+  const [minConfidence, setMinConfidence] = useState(0);
+  const [filterSymbol, setFilterSymbol]   = useState('');
+  const [statusFilter, setStatusFilter]   = useState<'ALL' | 'closed' | 'open'>('ALL');
   const [outcomeFilter, setOutcomeFilter] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
-  const [sortBy, setSortBy]             = useState<'date' | 'return' | 'hold'>('date');
+  const [sortBy, setSortBy]               = useState<'date' | 'return' | 'hold'>('date');
 
   const { data, isLoading, error } = useSWR(
-    ['trade-performance', lookback, horizon],
-    () => api.tradePerformance(lookback, undefined, horizon),
+    ['trade-performance', lookback, horizon, waitExits, useMaxHold, maxHoldDays, minConfidence],
+    () => api.tradePerformance(lookback, undefined, horizon, {
+      waitExits,
+      maxHoldDays: useMaxHold ? maxHoldDays : undefined,
+      minConfidence: minConfidence > 0 ? minConfidence : undefined,
+    }),
     { revalidateOnFocus: false },
   );
 
@@ -208,8 +218,7 @@ export default function TradePerformancePage() {
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>Trade Performance</h1>
         <p style={{ fontSize: 13, color: '#64748b' }}>
-          Real P&amp;L from BUY → SELL signal pairs, per trading style. Each row is one complete trade.
-          WAIT signals are not counted as exits — only SELL closes a position.
+          Real P&amp;L from BUY → exit signal pairs. Toggle exit rules below to simulate better trade management.
         </p>
       </div>
 
@@ -218,7 +227,7 @@ export default function TradePerformancePage() {
         {/* Horizon selector */}
         <div style={{ display: 'flex', gap: 4 }}>
           {HORIZON_OPTIONS.map(o => (
-            <button key={o.value} onClick={() => setHorizon(o.value as 'SHORT' | 'SWING' | 'LONG')}
+            <button key={o.value} onClick={() => { setHorizon(o.value as 'SHORT' | 'SWING' | 'LONG'); setMaxHoldDays(MAX_HOLD_DEFAULTS[o.value]); }}
               style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
                 borderColor: horizon === o.value ? '#4ade80' : '#1e293b',
                 background: horizon === o.value ? 'rgba(74,222,128,0.12)' : 'transparent',
@@ -239,6 +248,49 @@ export default function TradePerformancePage() {
             </button>
           ))}
         </div>
+        <div style={{ width: 1, background: '#1e293b', alignSelf: 'stretch' }} />
+
+        {/* Exit rule toggles */}
+        <button
+          onClick={() => setWaitExits(v => !v)}
+          title="Exit on WAIT signal (same horizon) — cuts losses when momentum fades instead of waiting for a full SELL"
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+            borderColor: waitExits ? '#f59e0b' : '#1e293b',
+            background: waitExits ? 'rgba(245,158,11,0.12)' : 'transparent',
+            color: waitExits ? '#f59e0b' : '#64748b' }}>
+          WAIT exits {waitExits ? 'ON' : 'OFF'}
+        </button>
+
+        <button
+          onClick={() => setUseMaxHold(v => !v)}
+          title={`Time-stop: force-close after ${maxHoldDays}d regardless of signal. Default: SHORT=7d, SWING=25d, LONG=90d`}
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+            borderColor: useMaxHold ? '#818cf8' : '#1e293b',
+            background: useMaxHold ? 'rgba(129,140,248,0.12)' : 'transparent',
+            color: useMaxHold ? '#818cf8' : '#64748b' }}>
+          Max hold {useMaxHold ? `${maxHoldDays}d` : 'OFF'}
+        </button>
+        {useMaxHold && (
+          <input
+            type="number" value={maxHoldDays} min={1} max={365}
+            onChange={e => setMaxHoldDays(Number(e.target.value))}
+            title="Max hold days"
+            style={{ width: 54, padding: '4px 6px', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#818cf8', fontSize: 12 }}
+          />
+        )}
+
+        <select
+          value={minConfidence}
+          onChange={e => setMinConfidence(Number(e.target.value))}
+          title="Only include BUY signals with confidence ≥ this value. Higher = fewer but higher-quality trades."
+          style={{ padding: '4px 8px', borderRadius: 6, border: `1px solid ${minConfidence > 0 ? '#38bdf8' : '#1e293b'}`, background: '#0f172a', color: minConfidence > 0 ? '#38bdf8' : '#64748b', fontSize: 12 }}>
+          <option value={0}>Min conf: any</option>
+          <option value={40}>Min conf: 40%</option>
+          <option value={50}>Min conf: 50%</option>
+          <option value={60}>Min conf: 60%</option>
+          <option value={70}>Min conf: 70%</option>
+        </select>
+
         <input
           value={filterSymbol} onChange={e => setFilterSymbol(e.target.value)}
           placeholder="Filter symbol…"

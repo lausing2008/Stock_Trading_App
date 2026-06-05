@@ -646,25 +646,33 @@ def trade_performance(
     lookback_days: int = Query(180, ge=7, le=730),
     symbol: str | None = None,
     horizon: str = Query("SWING", regex="^(SHORT|SWING|LONG)$"),
+    wait_exits: bool = Query(False, description="Treat same-horizon WAIT as exit (exits when momentum fades)"),
+    max_hold_days: int | None = Query(None, ge=1, le=365, description="Force-close after N days. Defaults: SHORT=7, SWING=25, LONG=90"),
+    min_confidence: float = Query(0.0, ge=0, le=100, description="Only include BUY signals with confidence >= this value"),
     session: Session = Depends(get_session),
 ):
-    """BUY → SELL trade-pair performance over a lookback window.
+    """BUY → SELL/WAIT trade-pair performance over a lookback window.
 
-    Filters by horizon (SHORT/SWING/LONG) so SHORT BUY signals are only closed
-    by SHORT SELL signals — not cross-contaminated by signals from other styles
-    running in the same scheduler batch.
+    Filters by horizon (SHORT/SWING/LONG) so exits are only matched within the
+    same trading style — no cross-contamination between horizons.
 
-    Only SELL signals close a trade. WAIT is a "hold off new entries" signal and
-    does NOT represent an exit — pairing WAIT as an exit created phantom 0-day
-    trades with ~0% return whenever SHORT=BUY and SWING=WAIT fired together.
+    Exit rules (applied in priority order):
+      1. SELL signal (always an exit)
+      2. WAIT signal when wait_exits=True (exits on fading momentum, same horizon)
+      3. max_hold_days time-stop (defaults: SHORT=7, SWING=25, LONG=90)
+      4. Latest price if no exit found (open trade)
 
-    Open trades (no exit SELL yet) use the latest available price.
+    Open trades (no exit found) use the latest available price.
     """
     import bisect
     from collections import defaultdict
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     horizon_enum = SignalHorizon(horizon)
+
+    # Style-appropriate default max hold periods (prevents SHORT trades drifting for months)
+    _default_max_hold = {"SHORT": 7, "SWING": 25, "LONG": 90}
+    effective_max_hold: int = max_hold_days if max_hold_days is not None else _default_max_hold[horizon]
 
     # 1. All BUY signals in the window for the requested horizon
     q = (
@@ -678,6 +686,8 @@ def trade_performance(
     )
     if symbol:
         q = q.where(Stock.symbol == symbol.upper())
+    if min_confidence > 0:
+        q = q.where(Signal.confidence >= min_confidence)
     buy_rows = session.execute(q).all()
 
     if not buy_rows:
@@ -688,13 +698,18 @@ def trade_performance(
 
     stock_ids = list({sig.stock_id for sig, _, _ in buy_rows})
 
-    # 2. All SELL signals for those stocks, same horizon (no date filter — exits may be outside window)
-    # WAIT is excluded: it means "don't add new entries" not "exit position."
-    # Mixing horizons here was the source of phantom 0-day trades (SHORT=BUY + SWING=WAIT same batch).
+    # 2. Exit signals — SELL always exits; WAIT exits when wait_exits=True.
+    # Both are filtered by the same horizon to prevent cross-style contamination
+    # (the old phantom-0-day bug was SHORT=BUY + SWING=WAIT in the same batch).
+    exit_signal_filter = (
+        Signal.signal.in_([SignalType.SELL, SignalType.WAIT])
+        if wait_exits
+        else Signal.signal == SignalType.SELL
+    )
     exit_rows = session.execute(
         select(Signal.stock_id, Signal.ts, Signal.signal)
         .where(Signal.stock_id.in_(stock_ids))
-        .where(Signal.signal == SignalType.SELL)
+        .where(exit_signal_filter)
         .where(Signal.horizon == horizon_enum)
         .order_by(Signal.stock_id, Signal.ts)
     ).all()
@@ -770,20 +785,43 @@ def trade_performance(
             continue
 
         exit_ts, exit_signal_val = next_exit(sid, sig.ts)
+
+        # Apply max-hold time-stop: if no exit or exit is beyond the limit, cut at max_hold_days.
+        # This prevents SHORT (1-5d) trades from drifting for weeks with no exit.
+        max_exit_date = entry_date + timedelta(days=effective_max_hold)
         if exit_ts is not None:
-            exit_date  = exit_ts.date() + timedelta(days=1)  # execute next day, symmetric with entry
-            exit_price = price_on_or_before(sid, exit_date)
-            status     = "closed"
-            last_exit_ts[sid] = exit_ts  # block duplicate BUYs that fall before this exit
+            signal_exit_date = exit_ts.date() + timedelta(days=1)
+            if signal_exit_date <= max_exit_date:
+                # Normal signal exit within the hold window
+                exit_date  = signal_exit_date
+                exit_price = price_on_or_before(sid, exit_date)
+                status     = "closed"
+                last_exit_ts[sid] = exit_ts
+            else:
+                # Signal exit is beyond max hold — apply time-stop instead
+                exit_date       = max_exit_date
+                exit_price      = price_on_or_before(sid, exit_date)
+                exit_signal_val = f"TIME({effective_max_hold}d)"
+                status          = "closed"
+                last_exit_ts[sid] = exit_ts  # still mark so we don't re-enter
         else:
-            exit_price, exit_ts_raw = latest_price(sid)
-            if exit_price is None:
-                continue
-            # Normalise to date — _price_ts stores date objects after the fix above
-            exit_date       = exit_ts_raw.date() if isinstance(exit_ts_raw, datetime) else exit_ts_raw
-            exit_signal_val = "OPEN"
-            status          = "open"
-            in_open_trade.add(sid)  # block any later BUYs — position is already open
+            # No exit signal found — apply time-stop if position has exceeded limit
+            today = datetime.now(timezone.utc).date()
+            if today >= max_exit_date:
+                # Time-stop triggered
+                exit_date       = max_exit_date
+                exit_price      = price_on_or_before(sid, exit_date)
+                exit_signal_val = f"TIME({effective_max_hold}d)"
+                status          = "closed"
+            else:
+                # Still within hold window — open position, use latest price
+                exit_price, exit_ts_raw = latest_price(sid)
+                if exit_price is None:
+                    continue
+                exit_date       = exit_ts_raw.date() if isinstance(exit_ts_raw, datetime) else exit_ts_raw
+                exit_signal_val = "OPEN"
+                status          = "open"
+                in_open_trade.add(sid)
 
         if exit_price is None or entry_price <= 0:
             continue
