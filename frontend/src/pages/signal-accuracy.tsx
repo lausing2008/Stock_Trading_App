@@ -46,7 +46,7 @@
 import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint } from '@/lib/api';
+import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow } from '@/lib/api';
 
 type RollingPoint = { date: string; accuracy: number; signal_count: number };
 
@@ -258,7 +258,202 @@ function FactorChart({ factors }: { factors: FactorRow[] }) {
   );
 }
 
+function WalkForwardSection() {
+  const [testDays, setTestDays] = useState(30);
+  const [holdDays, setHoldDays] = useState(5);
+
+  const { data, isLoading, error } = useSWR<WalkForwardReport>(
+    ['walkforward', testDays, holdDays],
+    () => api.walkForward(testDays, holdDays, 365),
+    { revalidateOnFocus: false },
+  );
+
+  const wfStatCard = (label: string, value: string, color?: string) => (
+    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 16px', minWidth: 110 }}>
+      <div style={{ fontSize: 20, fontWeight: 700, color: color ?? '#e2e8f0' }}>{value}</div>
+      <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{label}</div>
+    </div>
+  );
+
+  function windowColor(accuracy: number) {
+    if (accuracy >= 65) return '#15803d';
+    if (accuracy >= 60) return '#166534';
+    if (accuracy >= 55) return '#1e3a5f';
+    if (accuracy >= 50) return '#1e293b';
+    return '#7f1d1d';
+  }
+
+  function windowTextColor(accuracy: number) {
+    if (accuracy >= 55) return '#4ade80';
+    if (accuracy >= 50) return '#94a3b8';
+    return '#f87171';
+  }
+
+  if (isLoading) return <div style={{ color: '#64748b', textAlign: 'center', padding: 60 }}>Running walk-forward backtest…</div>;
+  if (error) return <div style={{ color: '#f87171', padding: 16 }}>Failed to load walk-forward data.</div>;
+  if (!data || data.total_windows === 0) return (
+    <div style={{ textAlign: 'center', padding: '60px 0', color: '#475569' }}>
+      <div style={{ fontSize: 32, marginBottom: 8 }}>📉</div>
+      <div>Not enough signal history for a walk-forward test.</div>
+      <div style={{ fontSize: 12, marginTop: 4 }}>Need at least 60 days of BUY signals with settled outcomes. Check back after the system accumulates more history.</div>
+    </div>
+  );
+
+  const sharpeColor = data.sharpe == null ? undefined : data.sharpe >= 1.0 ? '#4ade80' : data.sharpe >= 0.5 ? '#facc15' : '#f87171';
+  const accColor = data.overall_accuracy == null ? undefined : data.overall_accuracy >= 60 ? '#4ade80' : data.overall_accuracy >= 50 ? '#facc15' : '#f87171';
+  const retColor = data.total_return_pct == null ? undefined : data.total_return_pct > 0 ? '#4ade80' : '#f87171';
+
+  // Equity curve chart
+  const hasEquity = data.windows.length >= 2;
+  const equityVals = data.windows.map(w => w.equity);
+  const benchVals = data.benchmark?.windows.map(w => w.equity) ?? [];
+  const allVals = [...equityVals, ...benchVals, 1.0];
+  const minEq = Math.min(...allVals) * 0.98;
+  const maxEq = Math.max(...allVals) * 1.02;
+  const eqRange = maxEq - minEq || 0.01;
+  const chartH = 100;
+
+  function toY(v: number) { return ((maxEq - v) / eqRange) * chartH; }
+  function toX(i: number, total: number) { return total <= 1 ? 50 : (i / (total - 1)) * 100; }
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: 16, marginBottom: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Test window</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {[30, 60].map(v => (
+              <button key={v} onClick={() => setTestDays(v)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                  borderColor: testDays === v ? '#6366f1' : '#1e293b',
+                  background: testDays === v ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: testDays === v ? '#818cf8' : '#64748b' }}>
+                {v}d
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Hold period</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {[5, 10].map(v => (
+              <button key={v} onClick={() => setHoldDays(v)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                  borderColor: holdDays === v ? '#6366f1' : '#1e293b',
+                  background: holdDays === v ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: holdDays === v ? '#818cf8' : '#64748b' }}>
+                {v}d
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: '#334155', marginLeft: 'auto' }}>
+          365d lookback · {data.signal_count} BUY signals across {data.total_windows} test windows
+        </div>
+      </div>
+
+      {/* Stat cards */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
+        {wfStatCard('Out-of-Sample Accuracy', data.overall_accuracy != null ? `${data.overall_accuracy.toFixed(1)}%` : '—', accColor)}
+        {wfStatCard('Sharpe Ratio', data.sharpe != null ? data.sharpe.toFixed(2) : '—', sharpeColor)}
+        {wfStatCard('Total Return', data.total_return_pct != null ? `${data.total_return_pct > 0 ? '+' : ''}${data.total_return_pct.toFixed(1)}%` : '—', retColor)}
+        {wfStatCard('Max Drawdown', data.max_drawdown != null ? `${data.max_drawdown.toFixed(1)}%` : '—', data.max_drawdown != null && data.max_drawdown > 10 ? '#f87171' : '#94a3b8')}
+        {wfStatCard('Profitable Windows', `${data.profitable_windows} / ${data.total_windows}`, data.profitable_windows > data.total_windows / 2 ? '#4ade80' : '#f87171')}
+        {data.benchmark && wfStatCard(`vs ${data.benchmark.symbol}`, `${data.benchmark.total_return_pct > 0 ? '+' : ''}${data.benchmark.total_return_pct.toFixed(1)}%`, '#64748b')}
+      </div>
+
+      {/* Sharpe interpretation */}
+      {data.sharpe != null && (
+        <div style={{ marginBottom: 20, padding: '10px 14px', borderRadius: 8, border: '1px solid #1e293b', background: '#0f172a', fontSize: 12 }}>
+          <span style={{ color: '#64748b' }}>Signal alpha assessment: </span>
+          <span style={{ color: sharpeColor, fontWeight: 600 }}>
+            {data.sharpe >= 1.0 ? 'Sharpe ≥ 1.0 — signals generating real out-of-sample alpha'
+             : data.sharpe >= 0.5 ? 'Sharpe 0.5–1.0 — modest edge, worth monitoring as sample grows'
+             : 'Sharpe < 0.5 — limited out-of-sample edge detected, possible curve-fitting'}
+          </span>
+        </div>
+      )}
+
+      {/* Per-window heatmap */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 8 }}>Per-window accuracy heatmap</div>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {(data.windows as WalkForwardWindow[]).map((w, i) => (
+            <div key={i} title={`${w.start} – ${w.end}\n${w.n_signals} signals · ${w.accuracy}% · avg ${w.avg_return_pct > 0 ? '+' : ''}${w.avg_return_pct.toFixed(1)}%`}
+              style={{ background: windowColor(w.accuracy), borderRadius: 6, padding: '6px 10px', minWidth: 52, textAlign: 'center', cursor: 'default' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: windowTextColor(w.accuracy) }}>{w.accuracy.toFixed(0)}%</div>
+              <div style={{ fontSize: 9, color: '#475569', marginTop: 1 }}>{w.start.slice(5)}</div>
+              <div style={{ fontSize: 9, color: w.avg_return_pct > 0 ? '#4ade80' : '#f87171', marginTop: 1 }}>
+                {w.avg_return_pct > 0 ? '+' : ''}{w.avg_return_pct.toFixed(1)}%
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 10, color: '#475569' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ display: 'inline-block', width: 10, height: 10, background: '#15803d', borderRadius: 2 }} /> ≥65%</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ display: 'inline-block', width: 10, height: 10, background: '#1e3a5f', borderRadius: 2 }} /> 55–64%</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ display: 'inline-block', width: 10, height: 10, background: '#1e293b', borderRadius: 2 }} /> 50–54%</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ display: 'inline-block', width: 10, height: 10, background: '#7f1d1d', borderRadius: 2 }} /> &lt;50%</span>
+        </div>
+      </div>
+
+      {/* Equity curve */}
+      {hasEquity && (
+        <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>Walk-Forward Equity Curve</div>
+              <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>Compounded average return per test window vs {data.benchmark?.symbol ?? 'benchmark'} buy-and-hold</div>
+            </div>
+            <div style={{ display: 'flex', gap: 14, fontSize: 11 }}>
+              <span style={{ color: '#4ade80' }}>— Signals</span>
+              {data.benchmark && <span style={{ color: '#64748b' }}>— {data.benchmark.symbol}</span>}
+            </div>
+          </div>
+          <div style={{ position: 'relative', height: chartH + 24 }}>
+            <svg width="100%" height={chartH} style={{ overflow: 'visible' }}>
+              {/* Baseline at 1.0 */}
+              <line x1="0" y1={toY(1.0)} x2="100%" y2={toY(1.0)}
+                stroke="#334155" strokeWidth="1" strokeDasharray="4,3" />
+              {/* Benchmark line */}
+              {data.benchmark && data.benchmark.windows.length >= 2 && (
+                <polyline fill="none" stroke="#475569" strokeWidth="1.5" strokeLinejoin="round"
+                  points={data.benchmark.windows.map((bw, i) => {
+                    const x = toX(i, data.benchmark!.windows.length);
+                    const y = toY(bw.equity);
+                    return `${x}%,${y}`;
+                  }).join(' ')} />
+              )}
+              {/* Signals equity line */}
+              <polyline fill="none" stroke="#4ade80" strokeWidth="2" strokeLinejoin="round"
+                points={data.windows.map((w, i) => {
+                  const x = toX(i, data.windows.length);
+                  const y = toY(w.equity);
+                  return `${x}%,${y}`;
+                }).join(' ')} />
+              {/* Start/end dots */}
+              {[0, data.windows.length - 1].map(idx => (
+                <circle key={idx}
+                  cx={`${toX(idx, data.windows.length)}%`}
+                  cy={toY(data.windows[idx].equity)}
+                  r={3} fill="#4ade80" />
+              ))}
+            </svg>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#334155', marginTop: 2 }}>
+              <span>{data.windows[0]?.start}</span>
+              <span style={{ color: '#475569' }}>— 1.0× baseline</span>
+              <span>{data.windows[data.windows.length - 1]?.end}</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SignalAccuracyPage() {
+  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward'>('overview');
   const [lookback, setLookback] = useState(90);
   const [filterSymbol, setFilterSymbol] = useState('');
   const [signalFilter, setSignalFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
@@ -332,7 +527,7 @@ export default function SignalAccuracyPage() {
 
   return (
     <div style={{ padding: '24px 0' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>Signal Accuracy Tracker</h1>
           <p style={{ fontSize: 13, color: '#64748b' }}>
@@ -350,6 +545,24 @@ export default function SignalAccuracyPage() {
         </button>
       </div>
 
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #1e293b', paddingBottom: 0 }}>
+        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward']] as const).map(([tab, label]) => (
+          <button key={tab} onClick={() => setActiveTab(tab)}
+            style={{ padding: '7px 18px', borderRadius: '6px 6px 0 0', fontSize: 13, fontWeight: 500, cursor: 'pointer',
+              border: '1px solid', borderBottom: activeTab === tab ? '1px solid #0f172a' : '1px solid transparent',
+              borderColor: activeTab === tab ? '#1e293b' : 'transparent',
+              background: activeTab === tab ? '#0f172a' : 'transparent',
+              color: activeTab === tab ? '#e2e8f0' : '#64748b',
+              marginBottom: activeTab === tab ? -1 : 0 }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'walkforward' && <WalkForwardSection />}
+
+      {activeTab === 'overview' && <>
       {/* Controls */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 4 }}>
@@ -536,6 +749,7 @@ export default function SignalAccuracyPage() {
           <div style={{ fontSize: 12, marginTop: 4 }}>Signals need ~7 days to settle before they're evaluated. Try a longer lookback or refresh signals.</div>
         </div>
       )}
+      </>}
     </div>
   );
 }

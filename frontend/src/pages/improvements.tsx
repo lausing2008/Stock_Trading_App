@@ -378,6 +378,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'walkforward-backtest',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-04 — GET /signals/walkforward: non-overlapping test windows from persisted signals, hold_days-later exit, per-window accuracy + compounded equity curve + Sharpe + max drawdown. SPY/^HSI benchmark via _wf_benchmark(). Walk-Forward tab on Signal Accuracy page: test/hold controls, stat cards (accuracy, Sharpe, return, drawdown, profitable windows), per-window heatmap (color by accuracy %), equity curve SVG vs benchmark, alpha interpretation chip.',
     tier: 3, severity: 'feature',
     title: 'Walk-forward backtest framework — out-of-sample signal validation',
     file: 'services/strategy-engine/src/backtest/ + services/signal-engine/src/api/routes.py + frontend/src/pages/signal-accuracy.tsx',

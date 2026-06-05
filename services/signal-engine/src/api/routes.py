@@ -1069,3 +1069,236 @@ def signal_for(
         "symbol": symbol,
         "signals": {k: asdict(v) for k, v in all_sig.items()},
     }
+
+
+@router.get("/walkforward")
+def walkforward_backtest(
+    train_days: int = Query(180, ge=30, le=365),
+    test_days: int = Query(30, ge=7, le=90),
+    lookback_days: int = Query(365, ge=60, le=730),
+    hold_days: int = Query(5, ge=1, le=30),
+    session: Session = Depends(get_session),
+):
+    """Walk-forward out-of-sample backtest using persisted signals.
+
+    Divides the lookback period into non-overlapping test windows of test_days each.
+    Signals generated during each window are evaluated against prices hold_days
+    later — strictly after the signal date, with no look-ahead. Each window
+    corresponds to a period where the model was trained on earlier data and tested
+    on genuinely unseen future bars.
+
+    Returns per-window accuracy, equity curve, Sharpe, max drawdown, and an optional
+    SPY benchmark curve for comparison.
+    """
+    import bisect
+    import math
+
+    import httpx
+    import numpy as np
+
+    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=hold_days + 1)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+
+    rows = session.execute(
+        select(Signal, Stock.symbol, Stock.market)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .where(
+            Signal.ts >= cutoff,
+            Signal.ts <= outcome_cutoff,
+            Signal.signal == SignalType.BUY,
+            Stock.active.is_(True),
+        )
+        .order_by(Signal.ts.asc())
+    ).all()
+
+    if not rows:
+        return _wf_empty(train_days, test_days, lookback_days, hold_days)
+
+    stock_ids = list({sig.stock_id for sig, _, _ in rows})
+    price_since = (cutoff - timedelta(days=10)).date()
+
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(
+            Price.stock_id.in_(stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= price_since,
+        )
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    _pts: dict[int, list] = {}
+    _pclose: dict[int, list] = {}
+    for row in price_rows:
+        sid = row.stock_id
+        if sid not in _pts:
+            _pts[sid] = []
+            _pclose[sid] = []
+        d = row.ts.date() if isinstance(row.ts, datetime) else row.ts
+        _pts[sid].append(d)
+        _pclose[sid].append(float(row.close))
+
+    def entry_exit(sid: int, sig_date):
+        ts_list = _pts.get(sid, [])
+        if not ts_list:
+            return None, None
+        entry_idx = bisect.bisect_right(ts_list, sig_date)
+        if entry_idx >= len(ts_list):
+            return None, None
+        entry_p = _pclose[sid][entry_idx]
+        exit_idx = entry_idx + hold_days
+        exit_p = _pclose[sid][exit_idx] if exit_idx < len(ts_list) else _pclose[sid][-1]
+        if ts_list[-1] <= sig_date:
+            return entry_p, None
+        return entry_p, exit_p
+
+    seen: set[tuple] = set()
+    evaluated: list[tuple] = []  # (sig_date, return_pct)
+    market_counts: dict[str, int] = {}
+
+    for sig, sym, market in rows:
+        sig_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
+        key = (sig.stock_id, sig_date, sig.horizon)
+        if key in seen:
+            continue
+        seen.add(key)
+        market_counts[market] = market_counts.get(market, 0) + 1
+
+        entry_p, exit_p = entry_exit(sig.stock_id, sig_date)
+        if entry_p is None or exit_p is None or entry_p <= 0:
+            continue
+
+        ret_pct = (exit_p - entry_p) / entry_p * 100
+        evaluated.append((sig_date, ret_pct))
+
+    if not evaluated:
+        return _wf_empty(train_days, test_days, lookback_days, hold_days)
+
+    # Divide into non-overlapping test windows
+    all_dates = [d for d, _ in evaluated]
+    window_start = min(all_dates)
+    window_end_limit = max(all_dates)
+
+    windows = []
+    while window_start <= window_end_limit:
+        wend = window_start + timedelta(days=test_days - 1)
+        wsigs = [(d, r) for d, r in evaluated if window_start <= d <= wend]
+        if len(wsigs) >= 3:
+            n = len(wsigs)
+            n_correct = sum(1 for _, r in wsigs if r > 0)
+            avg_ret = sum(r for _, r in wsigs) / n
+            windows.append({
+                "start": window_start.isoformat(),
+                "end": wend.isoformat(),
+                "n_signals": n,
+                "n_correct": n_correct,
+                "accuracy": round(n_correct / n * 100, 1),
+                "avg_return_pct": round(avg_ret, 2),
+            })
+        window_start = wend + timedelta(days=1)
+
+    if not windows:
+        return _wf_empty(train_days, test_days, lookback_days, hold_days)
+
+    # Equity curve — compound per-window average returns
+    equity = 1.0
+    for w in windows:
+        equity *= (1 + w["avg_return_pct"] / 100)
+        w["equity"] = round(equity, 4)
+
+    # Sharpe (annualised from per-window returns)
+    rets = np.array([w["avg_return_pct"] for w in windows])
+    periods_per_year = 252 / test_days
+    sharpe = float(rets.mean() / rets.std() * math.sqrt(periods_per_year)) if rets.std() > 0 else 0.0
+
+    # Max drawdown
+    eq_arr = np.array([w["equity"] for w in windows])
+    peak = np.maximum.accumulate(eq_arr)
+    max_dd = float(abs(((eq_arr - peak) / peak).min())) if len(eq_arr) > 1 else 0.0
+
+    overall_n = sum(w["n_signals"] for w in windows)
+    overall_correct = sum(w["n_correct"] for w in windows)
+    total_return_pct = round((equity - 1) * 100, 2)
+    profitable_windows = sum(1 for w in windows if w["avg_return_pct"] > 0)
+
+    # Benchmark: prefer SPY for US-majority portfolios, else ^HSI
+    hk_majority = market_counts.get("HK", 0) > market_counts.get("US", 0)
+    bench_sym = "^HSI" if hk_majority else "SPY"
+    benchmark = _wf_benchmark(bench_sym, cutoff.date(), windows)
+
+    return {
+        "train_days": train_days,
+        "test_days": test_days,
+        "lookback_days": lookback_days,
+        "hold_days": hold_days,
+        "windows": windows,
+        "total_windows": len(windows),
+        "profitable_windows": profitable_windows,
+        "signal_count": overall_n,
+        "overall_accuracy": round(overall_correct / overall_n * 100, 1) if overall_n else None,
+        "avg_return_pct": round(float(rets.mean()), 2),
+        "total_return_pct": total_return_pct,
+        "sharpe": round(sharpe, 2),
+        "max_drawdown": round(max_dd * 100, 2),
+        "benchmark": benchmark,
+    }
+
+
+def _wf_empty(train_days, test_days, lookback_days, hold_days):
+    return {
+        "train_days": train_days, "test_days": test_days,
+        "lookback_days": lookback_days, "hold_days": hold_days,
+        "windows": [], "total_windows": 0, "profitable_windows": 0,
+        "signal_count": 0, "overall_accuracy": None, "avg_return_pct": None,
+        "total_return_pct": None, "sharpe": None, "max_drawdown": None,
+        "benchmark": None,
+    }
+
+
+def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
+    import httpx
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/prices"
+        with httpx.Client(timeout=10) as c:
+            r = c.get(url, params={"timeframe": "1d", "start": start.isoformat(), "limit": 1000})
+            if r.status_code != 200:
+                return None
+        data = r.json()
+        if not data:
+            return None
+        prices_by_date = {row["ts"][:10]: float(row["close"]) for row in data}
+        sorted_dates = sorted(prices_by_date)
+
+        # First available price on or after start
+        start_price = None
+        for d in sorted_dates:
+            if d >= start.isoformat():
+                start_price = prices_by_date[d]
+                break
+        if start_price is None or start_price <= 0:
+            return None
+
+        bench_windows = []
+        for w in windows:
+            wend = w["end"]
+            # Latest price on or before window end
+            end_price = None
+            for d in sorted_dates:
+                if d <= wend:
+                    end_price = prices_by_date[d]
+            if end_price is not None:
+                bench_windows.append({
+                    "end": wend,
+                    "equity": round(end_price / start_price, 4),
+                    "cumulative_return_pct": round((end_price / start_price - 1) * 100, 2),
+                })
+
+        if not bench_windows:
+            return None
+        return {
+            "symbol": symbol,
+            "windows": bench_windows,
+            "total_return_pct": bench_windows[-1]["cumulative_return_pct"],
+        }
+    except Exception:
+        return None

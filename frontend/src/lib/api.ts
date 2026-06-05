@@ -164,6 +164,8 @@ export const api = {
     request<SuppressedSignalRow[]>(`/signals/suppressed?style=${style}`),
   rollingAccuracy: (window = 30, lookbackDays = 180) =>
     request<{ window: number; lookback_days: number; series: { date: string; accuracy: number; signal_count: number }[]; drift_warning: boolean; latest_accuracy: number | null }>(`/signals/rolling_accuracy?window=${window}&lookback_days=${lookbackDays}`),
+  walkForward: (testDays = 30, holdDays = 5, lookbackDays = 365) =>
+    request<WalkForwardReport>(`/signals/walkforward?test_days=${testDays}&hold_days=${holdDays}&lookback_days=${lookbackDays}`),
   stockAtr: (symbol: string, period = 14) =>
     request<{ symbol: string; atr: number; close: number; stop_loss_2atr: number; period: number }>(`/stocks/${symbol}/atr?period=${period}`),
   portfolioRisk: (symbols: string[], weights?: number[]) => {
@@ -383,6 +385,15 @@ export type TradePerformanceReport = { lookback_days: number; closed_trades: num
 export type FactorRow = { key: string; label: string; baseline: number; scale: number; correct_avg: number | null; wrong_avg: number | null; correct_dev_pct: number | null; wrong_dev_pct: number | null; correct_count: number; wrong_count: number };
 export type FactorExposureReport = { lookback_days: number; signal_count: number; factors: FactorRow[] };
 export type MLWeightCurvePoint = { weight: number; accuracy: number | null; avg_return_pct: number | null };
+export type WalkForwardWindow = { start: string; end: string; n_signals: number; n_correct: number; accuracy: number; avg_return_pct: number; equity: number };
+export type WalkForwardReport = {
+  train_days: number; test_days: number; lookback_days: number; hold_days: number;
+  windows: WalkForwardWindow[];
+  total_windows: number; profitable_windows: number; signal_count: number;
+  overall_accuracy: number | null; avg_return_pct: number | null;
+  total_return_pct: number | null; sharpe: number | null; max_drawdown: number | null;
+  benchmark: { symbol: string; windows: { end: string; equity: number; cumulative_return_pct: number }[]; total_return_pct: number } | null;
+};
 export type MLWeightValidation = { lookback_days: number; signal_count: number; optimal_weight: number | null; optimal_accuracy: number | null; current_formula_range: [number, number]; curve: MLWeightCurvePoint[] };
 export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean };
 export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number; sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[] };
