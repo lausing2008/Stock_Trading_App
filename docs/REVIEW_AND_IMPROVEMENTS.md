@@ -1,9 +1,9 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-04 (2)  
+**Last updated:** 2026-06-05  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 8.2 / 10 *(was 8.0 — 2 final Tier 2 items shipped 2026-06-04)*
+**Overall rating:** 8.3 / 10 *(was 8.2 — signal alert infrastructure fixed 2026-06-05)*
 
 ---
 
@@ -39,6 +39,11 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-04 | Research engine cache quality flag (banner) | frontend/research/[symbol].tsx | ✅ Done |
 | 2026-06-04 | Sector-relative fundamental scoring | research-engine/routes.py | ✅ Done |
 | 2026-06-04 | Sector rotation dashboard | ranking-engine/routes.py, frontend/sector-rotation.tsx, _app.tsx, api.ts | ✅ Done |
+| 2026-06-05 | Signal alert auto-subscribe on watchlist add | market-data/watchlist.py, DB migration | ✅ Done |
+| 2026-06-05 | Bulk-subscribe all watchlist stocks | DB (signal_alerts) | ✅ Done |
+| 2026-06-05 | Fix watchlists.trading_style missing DB column | DB migration | ✅ Done |
+| 2026-06-05 | Notify All / Mute All: Promise.all → Promise.allSettled | frontend/watchlist.tsx | ✅ Done |
+| 2026-06-05 | Signal tier framework documented | docs/TRADING_WORKFLOW.md | ✅ Done |
 
 ---
 
@@ -516,6 +521,177 @@ Without factor exposure analysis, you cannot distinguish between genuine alpha a
 
 ---
 
+## Part 3B — Signal Accuracy & ML Improvements (2026-06-05 Audit)
+
+A deep audit of the signal fusion pipeline and ML training identified the following concrete improvements, ranked by impact-to-effort. These are incremental changes to existing files — no architectural overhaul required.
+
+---
+
+### SA-1: Lower ML/TA Disagreement Threshold 0.35 → 0.25
+
+**File:** `services/signal-engine/src/generators/signals.py`, lines 765–767  
+**Effort:** 1 day  
+**Expected gain:** +3–8% accuracy  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+When ML probability and TA score disagree, a dampening factor is applied — but only when the gap exceeds 0.35 (35 percentage points). This is a very high bar. A stock where ML says 0.70 and TA says 0.40 (gap = 0.30) passes through undampened even though the disagreement is substantial.
+
+**Fix:**
+```python
+gap = abs(ml_prob - ta_prob)
+if gap > 0.35:
+    ml_w *= 0.5
+elif gap > 0.25:   # NEW: intermediate dampening band
+    ml_w *= 0.75
+```
+This adds a 25% dampening in the 0.25–0.35 gap range, making the system more conservative when ML and TA are in moderate disagreement — a common early-warning sign of regime transitions.
+
+---
+
+### SA-2: Style-Aware ML Precision Targets
+
+**File:** `services/ml-prediction/src/training/trainer.py`, line 28 + line 82  
+**Effort:** 1 day + retrain  
+**Expected gain:** +1–3% SHORT accuracy (fewer false positives)  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+All three trade horizons (SHORT/SWING/LONG) use the same 60% minimum precision when calibrating the buy threshold. SHORT trades (1–7 day holds) have the least time to recover from false entries — they need tighter precision. LONG trades (90-day holds) have more time to absorb noise and can afford more entries.
+
+**Fix:**
+```python
+_PRECISION_BY_STYLE = {"SHORT": 0.70, "SWING": 0.60, "LONG": 0.50}
+```
+Use the style-specific floor in `_precision_threshold()` instead of the global `_MIN_PRECISION`. SHORT models calibrate to 70%+ precision (fewer signals, more reliable); LONG models accept 50%+ (more entries, wider net).
+
+---
+
+### SA-3: Add 4 Macro Regime Boolean Features to ML
+
+**File:** `services/ml-prediction/src/features/builder.py`, ~lines 242–266  
+**Effort:** 3 days + retrain  
+**Expected gain:** +3–8% AUC in bear markets, +1–2% overall  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+The model receives raw macro values (VIX level, SPY returns, SPY volatility) but no boolean regime flags. The model must implicitly learn that VIX=35 means "fear regime" — but with limited training examples, it under-learns this. Explicit flags give XGBoost a clean decision boundary to split on.
+
+**Fix — add these derived features to the feature builder:**
+```python
+# After fetching SPY/VIX data:
+spy_200d = macro["spy"].rolling(200).mean()
+features["is_bear_market"]       = (macro["spy"] < spy_200d).astype(int)
+features["vix_spiking"]          = (macro["vix"] > macro["vix"].rolling(20).mean() * 1.3).astype(int)
+features["market_breadth_weak"]  = (breadth_pct < 40).astype(int)   # breadth_pct already fetched
+features["high_vol_regime"]      = (macro["spy_vol_20"] > 0.02).astype(int)
+```
+Retrain with `POST /ml/tune_all`. Check feature importance — expect these flags to rank in the top 10 for SWING and LONG horizons.
+
+---
+
+### SA-4: Weekly Alignment — Reduce Minimum Bars 26 → 15
+
+**File:** `services/signal-engine/src/generators/signals.py`, ~line 357  
+**Effort:** 1 day  
+**Expected gain:** +1–3% for recently-added stocks  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+The weekly alignment filter requires 26 weekly bars (6 months of data) before it activates. For stocks added to the watchlist in the last 6 months, the weekly filter is silently bypassed (treated as neutral = no boost/compress). A stock with only 3 months of data can still show a clear weekly downtrend that the filter misses entirely.
+
+**Fix:**
+```python
+MIN_WEEKLY_BARS = 15          # was 26 (6 months → 3 months)
+PARTIAL_WEEKLY_CONFIDENCE = 0.7   # scale boost/compress to 70% for 15–25 bars
+
+if len(weekly_df) >= MIN_WEEKLY_BARS:
+    confidence = 1.0 if len(weekly_df) >= 26 else PARTIAL_WEEKLY_CONFIDENCE
+    # apply weekly boost/compress multiplied by confidence
+```
+Stocks with 15–25 weekly bars get 70% of the full weekly adjustment; stocks with ≥26 bars get 100% as before.
+
+---
+
+### SA-5: Data-Driven TA Component Weights (Logistic Regression Calibration)
+
+**File:** `services/signal-engine/src/generators/signals.py`, lines 497–643 (`_ta_score`)  
+**Effort:** 1 week  
+**Expected gain:** +5–10% accuracy (highest single improvement)  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+Every TA component has a hardcoded point allocation (e.g., `above SMA50 = +0.15`, `MACD positive = +0.10`, `OBV confirming = +0.08`) that was manually tuned. There is no empirical evidence that these weights are optimal for this stock universe. A component that rarely precedes profitable moves still gets the same weight as one that reliably does.
+
+**Fix:**
+1. For each stock in the universe, compute all 22 TA binary/continuous features at each bar for the last 3 years.
+2. Compute the 5-day forward return for each bar.
+3. Run logistic regression (or Lasso with L1 penalty): `P(5d_return > threshold) ~ f(ta_features)`.
+4. The fitted coefficients become the new TA component weights (normalized so they sum to the same theoretical maximum as the current hand-tuned weights).
+5. Validate on held-out 12-month window before applying to production.
+
+This is the highest-impact change but requires careful analysis — don't implement before step 5 validation.
+
+---
+
+### SA-6: Filter Interaction Audit Endpoint
+
+**File:** `services/signal-engine/src/api/routes.py` (new endpoint)  
+**Effort:** 1 week  
+**Expected gain:** +2–5% win rate (reduces over-suppression)  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+When multiple filters stack (e.g., earnings compression + market breadth + news sentiment + ADX choppy), the signal collapses from 0.75 → 0.52 — not even close to the BUY threshold. But there is no data on whether those trades would actually have been bad. They might have been some of the best trades, blocked by over-cautious stacking.
+
+**What to build:**  
+New endpoint `GET /signals/filter_audit?lookback_days=180` that:
+1. Loads all signals from the last N days with their stored `signal_reasons` JSON.
+2. Counts how many compression filters were active per signal (earnings, breadth, news, ADX, weekly, etc.).
+3. Cross-references against actual price outcome at the signal horizon (using price data).
+4. Returns win rate grouped by filter count: `{"filters_0": 62%, "filters_1": 58%, "filters_2": 51%, "filters_3+": 38%}`.
+
+If 3+ filters → win rate drops to 38%, the `max_compress_ratio` floor should be raised from 0.50 to 0.65 (allow more original signal to survive heavy stacking). If win rate is stable, the current floor is correct.
+
+---
+
+### SA-7: Regime-Aware Earnings Compression
+
+**File:** `services/signal-engine/src/generators/signals.py`, lines 827–842  
+**Effort:** 1 week  
+**Expected gain:** +2–5% win rate (reduces false suppressions in strong markets)  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+Earnings compression is fixed: SWING signals within 2 days of earnings get 50% compressed regardless of market conditions or the stock's earnings history. In a bull market where a sector beats EPS estimates >60% of the time (e.g., technology in 2023–2024), this 50% compression removes many trades that would have gone up on the earnings beat.
+
+**Fix:**
+- Fetch each stock's last 8 quarters of earnings surprise data from `yfinance.Ticker(symbol).earnings_history`.
+- Compute `beat_rate = beats / total_quarters` (0.0–1.0).
+- Scale compression: `effective_compression = base_compression × (1 + (0.5 - beat_rate))`.
+  - Consistent beater (beat_rate=0.80): compression eases to 0.50 × 0.70 = 0.35 (35% — less suppressive)
+  - Consistent misser (beat_rate=0.25): compression tightens to 0.50 × 1.25 = 0.625 (62.5% — more suppressive)
+- Cache beat_rate in Redis with 7-day TTL (updates weekly on fresh earnings data).
+
+---
+
+### Summary Table
+
+| # | Change | File | Effort | Expected Gain | Status |
+|---|--------|------|--------|---------------|--------|
+| SA-1 | Lower ML/TA disagreement threshold 0.35→0.25 | signals.py 765–767 | 1 day | +3–8% accuracy | ⏳ Pending |
+| SA-2 | Style-aware ML precision targets SHORT:70% LONG:50% | trainer.py 28+82 | 1 day + retrain | +1–3% SHORT accuracy | ⏳ Pending |
+| SA-3 | Add 4 macro regime boolean features to ML | builder.py 242–266 | 3 days + retrain | +3–8% bear market AUC | ⏳ Pending |
+| SA-4 | Weekly alignment min bars 26→15, partial confidence | signals.py ~357 | 1 day | +1–3% new stocks | ⏳ Pending |
+| SA-5 | Data-driven TA weights via logistic regression | signals.py 497–643 | 1 week | +5–10% accuracy | ⏳ Pending |
+| SA-6 | Filter interaction audit endpoint | routes.py (new) | 1 week | +2–5% win rate | ⏳ Pending |
+| SA-7 | Regime-aware earnings compression | signals.py 827–842 | 1 week | +2–5% win rate | ⏳ Pending |
+
+**Recommended implementation order:** SA-1 → SA-4 → SA-2 → SA-3 → SA-6 → SA-5 → SA-7  
+(Low-effort quick wins first; data-driven weight changes last, after filter audit validates assumptions.)
+
+---
+
 ## Part 4 — Implementation Priority Matrix
 
 ### Tier 1 — Fix Before Trusting Signals (Do Now)
@@ -552,6 +728,20 @@ Without factor exposure analysis, you cannot distinguish between genuine alpha a
 | News sentiment layer | 4 days | Suppresses signals ahead of negative catalysts | ⏳ Pending |
 | Market regime detection (4-state) | 1 week | Better position sizing across market environments | ⏳ Pending |
 | Position P&L feedback loop | 1 week | System learns from its own track record | ⏳ Pending |
+
+### Tier 4 — Signal Accuracy & ML Tuning (2026-06-05 Audit)
+
+| Item | File | Effort | Expected Gain | Status |
+|------|------|--------|---------------|--------|
+| SA-1: ML/TA disagreement threshold 0.35→0.25 | signals.py | 1 day | +3–8% accuracy | ⏳ Pending |
+| SA-2: Style-aware precision targets (SHORT 70%, LONG 50%) | trainer.py | 1 day + retrain | +1–3% SHORT | ⏳ Pending |
+| SA-3: 4 macro regime boolean ML features | builder.py | 3 days + retrain | +3–8% bear AUC | ⏳ Pending |
+| SA-4: Weekly alignment min bars 26→15 | signals.py | 1 day | +1–3% new stocks | ⏳ Pending |
+| SA-5: Data-driven TA weights (logistic regression) | signals.py | 1 week | +5–10% accuracy | ⏳ Pending |
+| SA-6: Filter interaction audit endpoint | routes.py | 1 week | +2–5% win rate | ⏳ Pending |
+| SA-7: Regime-aware earnings compression | signals.py | 1 week | +2–5% win rate | ⏳ Pending |
+
+See **Part 3B** for full specifications and code snippets for each item.
 
 ---
 
