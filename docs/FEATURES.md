@@ -2738,3 +2738,242 @@ For the complete parameter table and compression pipeline walkthrough, see [AI_S
 | `frontend/src/pages/watchlist.tsx` | Per-list style picker in create modal; tab badge with click-to-cycle; `effectiveStyle` signal fetch |
 | `frontend/src/pages/board.tsx` | Fill modal; `trading_style` captured on activate; style badge on closed cards; By Style perf breakdown |
 | All signal-consuming pages | `api.allSignals(getSignalStyle())` with `'signals-' + getSignalStyle()` SWR cache key |
+
+---
+
+## VWAP + Support/Resistance Context
+
+Adds real-time price-level awareness to the signal engine. Every signal now knows whether the stock is sitting at a meaningful support or resistance level before the final score is issued.
+
+### How it works
+
+`_sr_context()` in `signals.py` scans the last 60 daily bars for swing pivots (local highs and lows) plus the 52-week high/low. The current price is compared to each level with a ±1 % proximity band.
+
+| Condition | Adjustment |
+|-----------|------------|
+| At resistance | −15% compression on final score |
+| Breakout above resistance | +5% boost |
+| At support | +3% boost |
+
+The VWAP (computed from the current-day intraday bars) is shown alongside the S/R context for reference.
+
+### Where it appears
+
+- **Stock detail page → Signal card**: shows the identified level (e.g. `Support $148.20`) plus the adjustment applied
+- **Signal reasons** include an `sr_context` field with the level type and price
+
+### Implementation files
+
+| File | Role |
+|------|------|
+| `services/signal-engine/src/generators/signals.py` | `_sr_context()` pivot detection; compression/boost applied in `_build_signal()` |
+| `frontend/src/pages/stock/[symbol].tsx` | S/R context chip in SignalCard |
+
+---
+
+## ATR Position Sizing Engine
+
+Turns the abstract "buy signal" into a concrete share count and dollar risk figure, calibrated to the user's own account size and risk tolerance.
+
+### Settings
+
+On the **Settings page**, two new fields are stored in `localStorage`:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Account Size | — | Total portfolio value in dollars |
+| Risk Per Trade % | 1% | Maximum loss per trade as a percentage of account |
+
+### Position Sizer widget
+
+The **Stock detail page** shows a **Position Sizer** panel that reads the ATR stop-loss distance and computes:
+
+| Output | Formula |
+|--------|---------|
+| Stop Loss | Current price − 2 × ATR(14) |
+| Shares | `(accountSize × riskPct) / (price − stopLoss)` |
+| Dollar Risk | `shares × (price − stopLoss)` |
+| R:R ratio | `analystTarget / stopLoss` distance vs risk distance |
+
+The ATR is fetched from `GET /stocks/{symbol}/atr?period=14` which returns the Wilder smoothed ATR and the pre-computed 2-ATR stop level.
+
+### Implementation files
+
+| File | Role |
+|------|------|
+| `services/market-data/src/api/routes.py` | `GET /stocks/{symbol}/atr` — Wilder ATR + stop_loss_2atr |
+| `frontend/src/pages/settings.tsx` | Account Size + Risk Per Trade % inputs |
+| `frontend/src/pages/stock/[symbol].tsx` | PositionSizer component with useEffect localStorage sync |
+
+---
+
+## Model Drift Detection
+
+Monitors the live accuracy of buy signals over time and warns when model performance is degrading.
+
+### How it works
+
+`GET /signals/rolling_accuracy?window=30&lookback_days=180` returns a time series of rolling BUY signal accuracy computed over a sliding 30-day window across the past 180 days. Accuracy is the fraction of BUY signals where the stock was higher than entry after the signal horizon.
+
+A `drift_warning` flag is set when the latest window accuracy falls below **55%**.
+
+### Where it appears
+
+- **Signal Accuracy page** shows a line chart of rolling accuracy with two reference lines:
+  - 50% — random baseline
+  - 55% — drift warning threshold
+- If `drift_warning` is true, a red warning chip appears above the chart
+
+### Implementation files
+
+| File | Role |
+|------|------|
+| `services/market-data/src/api/routes.py` | `GET /signals/rolling_accuracy` — deduped by `(stock_id, sig_date, horizon)`, off-by-one window fixed |
+| `frontend/src/pages/signal-accuracy.tsx` | Line chart + drift warning chip |
+
+---
+
+## Peer Comparison Table
+
+Side-by-side K-Score sub-score breakdown for up to 4 stocks at once. Useful for picking the strongest name within a sector or watchlist.
+
+### How to use it
+
+**From the Rankings page:**
+1. Click **+** in the new Compare column next to any row (up to 4 stocks)
+2. A **Compare (N)** button appears in the toolbar
+3. Click it to open the full comparison drawer
+
+**From a Stock detail page:**
+- A **Sector Peers** panel automatically suggests the top 3 stocks in the same sector sorted by K-Score
+- Click **Compare** to open the drawer with the current stock pre-selected alongside its peers
+
+### What the drawer shows
+
+The drawer is a fixed overlay on the right side of the screen. Columns are the selected stocks; rows are metrics:
+
+| Metric | Description |
+|--------|------------|
+| Price | Live price from the price feed |
+| K-Score | Overall composite score |
+| Technical | RSI, MACD, moving average sub-score |
+| Momentum | Price momentum sub-score |
+| Value | P/E, P/B, EV/EBITDA sub-score |
+| Growth | Revenue + earnings growth sub-score |
+| Volatility | ATR-based risk sub-score (lower = better) |
+| Relative Strength | Performance vs. market sub-score |
+| Upside | (Fair Price − Current Price) / Current Price |
+
+Cells are color-coded: **green** = top quartile within the selected set, **red** = bottom quartile.
+
+### Implementation files
+
+| File | Role |
+|------|------|
+| `frontend/src/components/PeerCompareDrawer.tsx` | Comparison overlay — METRICS array, `cellColor()`, `getValue()` |
+| `frontend/src/components/RankingsTable.tsx` | `selectedSymbols` + `onToggleCompare` props; toggle column |
+| `frontend/src/pages/rankings.tsx` | `compareSymbols` Set state; "Compare (N)" + "Clear" toolbar buttons |
+| `frontend/src/pages/stock/[symbol].tsx` | `sectorPeers` useMemo; Sector Peers panel JSX; `compareRows` construction |
+
+---
+
+## Portfolio Risk Dashboard
+
+Gives a quantitative view of the risk in the current Trade Board positions: correlation between holdings, market sensitivity (beta), and downside exposure (VaR).
+
+### Where it appears
+
+The **Trade Board** page shows a **Portfolio Risk** section below the positions list. It only appears when at least 2 active positions have shares filled in.
+
+### Risk metrics
+
+| Metric | Method |
+|--------|--------|
+| Portfolio Beta | Weighted average of individual betas; each beta = `cov(stock, bench) / var(bench)` over 30 days |
+| 1-Day VaR 95% | Parametric: `portfolio_vol × 1.645 × 100` (percentage of portfolio) |
+| Benchmark | SPY when US positions dominate; ^HSI when HK positions dominate |
+
+### Warnings
+
+Yellow/red chips appear automatically when:
+
+- Portfolio beta > 1.5 (high market sensitivity)
+- VaR > 3% (significant tail risk)
+- Any single sector > 40% of portfolio weight (concentration risk)
+- Any pair of holdings has correlation > 0.8 (redundant positions)
+
+### Visualizations
+
+- **Sector pie chart** — SVG pie with legend showing weights per GICS sector
+- **Correlation heatmap** — grid of colored cells; red > 0.8, yellow > 0.5, grey ≥ 0, blue < 0
+- **Per-symbol beta chips** — quick scan of which holdings are driving the portfolio beta
+
+### Implementation files
+
+| File | Role |
+|------|------|
+| `services/market-data/src/api/portfolio.py` | `GET /portfolio/risk` — `_fetch_returns()`, `_beta()`, VaR, sector weights |
+| `services/market-data/src/main.py` | Registers `portfolio_router` |
+| `frontend/src/lib/api.ts` | `portfolioRisk(symbols, weights?)` typed method |
+| `frontend/src/pages/board.tsx` | Risk section JSX — stat cards, warnings, SVG pie, heatmap, beta chips |
+
+---
+
+## DCF Fair Value
+
+A two-stage Discounted Cash Flow model that produces an independent fair value estimate, separate from the K-Score model's fair price. Shown on the Research page alongside analyst targets.
+
+### Model
+
+**Stage 1 — 5-year FCF projection:**  
+Each year's free cash flow is projected at the growth rate and discounted back at WACC:
+
+```
+PV = Σ (FCF × (1+g)^t) / (1+WACC)^t   for t = 1..5
+```
+
+**Stage 2 — Terminal value (Gordon Growth):**  
+```
+TV = FCF_5 × (1+g_terminal) / (WACC − g_terminal)
+TV_PV = TV / (1+WACC)^5
+```
+
+**Per-share fair value:**  
+```
+(PV + TV_PV) / shares_outstanding
+```
+
+### Growth rate fallback chain
+
+1. Analyst consensus growth rate (from financials API)
+2. Trailing 3-year revenue CAGR
+3. Sector default (7%)
+
+### WACC by sector
+
+| Sector | WACC |
+|--------|------|
+| Utilities, Consumer Staples | 8% |
+| Industrials, Healthcare, Real Estate, Materials | 9% |
+| Technology, Energy, Consumer Discretionary, Communication Services | 10% |
+| Financials | 11% |
+
+The model returns `null` (not shown) when FCF ≤ 0 — the Gordon Growth model is not meaningful for loss-making companies.
+
+### HIGH CONVICTION badge
+
+When the DCF fair value and the analyst consensus target agree within **15 percentage points** of upside/downside, a **HIGH CONVICTION** badge is shown. This indicates two independent valuation methods are aligned.
+
+### Where it appears
+
+The **Research page** (`/research/[symbol]`) shows the DCF chip in the signal + ranking row:
+- Green when DCF upside > 10%
+- Yellow when DCF upside 0–10%
+- Red when DCF shows downside
+
+### Implementation files
+
+| File | Role |
+|------|------|
+| `services/research-engine/src/api/routes.py` | `_WACC` dict, `_TERMINAL_GROWTH`, `_dcf_fair_value()`, injected into `generate_research()` |
+| `frontend/src/pages/research/[symbol].tsx` | DCF chip + HIGH CONVICTION badge in signal row |
