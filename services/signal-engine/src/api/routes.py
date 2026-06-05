@@ -1028,49 +1028,6 @@ def suppressed_signals(
     return results
 
 
-@router.get("/{symbol}")
-def signal_for(
-    symbol: str,
-    persist: bool = False,
-    style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG. Returns all 3 if omitted."),
-    session: Session = Depends(get_session),
-):
-    """Generate (and optionally persist) fresh signals for the given symbol.
-
-    Returns all 3 style signals by default, or just the requested style.
-    """
-    try:
-        all_sig = generate_all_signals(symbol)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-    if persist:
-        from sqlalchemy import desc
-        stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
-        if stock:
-            for ai in all_sig.values():
-                session.add(Signal(
-                    stock_id=stock.id,
-                    signal=SignalType(ai.signal),
-                    horizon=SignalHorizon(ai.horizon),
-                    confidence=ai.confidence,
-                    bullish_probability=ai.bullish_probability,
-                    reasons=ai.reasons,
-                ))
-            session.commit()
-
-    if style:
-        style_key = style.upper()
-        ai = all_sig.get(style_key) or all_sig["SWING"]
-        return {"symbol": symbol, **asdict(ai)}
-
-    # Return all 3 styles
-    return {
-        "symbol": symbol,
-        "signals": {k: asdict(v) for k, v in all_sig.items()},
-    }
-
-
 @router.get("/walkforward")
 def walkforward_backtest(
     train_days: int = Query(180, ge=30, le=365),
@@ -1269,7 +1226,6 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
         prices_by_date = {row["ts"][:10]: float(row["close"]) for row in data}
         sorted_dates = sorted(prices_by_date)
 
-        # First available price on or after start
         start_price = None
         for d in sorted_dates:
             if d >= start.isoformat():
@@ -1281,7 +1237,6 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
         bench_windows = []
         for w in windows:
             wend = w["end"]
-            # Latest price on or before window end
             end_price = None
             for d in sorted_dates:
                 if d <= wend:
@@ -1302,3 +1257,47 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
         }
     except Exception:
         return None
+
+
+@router.get("/{symbol}")
+def signal_for(
+    symbol: str,
+    persist: bool = False,
+    style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG. Returns all 3 if omitted."),
+    session: Session = Depends(get_session),
+):
+    """Generate (and optionally persist) fresh signals for the given symbol.
+
+    Returns all 3 style signals by default, or just the requested style.
+    """
+    try:
+        all_sig = generate_all_signals(symbol)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    if persist:
+        from sqlalchemy import desc
+        stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+        if stock:
+            for ai in all_sig.values():
+                session.add(Signal(
+                    stock_id=stock.id,
+                    signal=SignalType(ai.signal),
+                    horizon=SignalHorizon(ai.horizon),
+                    confidence=ai.confidence,
+                    bullish_probability=ai.bullish_probability,
+                    reasons=ai.reasons,
+                ))
+            session.commit()
+
+    if style:
+        style_key = style.upper()
+        ai = all_sig.get(style_key) or all_sig["SWING"]
+        return {"symbol": symbol, **asdict(ai)}
+
+    # Return all 3 styles
+    return {
+        "symbol": symbol,
+        "signals": {k: asdict(v) for k, v in all_sig.items()},
+    }
+

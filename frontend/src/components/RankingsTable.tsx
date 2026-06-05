@@ -34,6 +34,7 @@ export default function RankingsTable({
             <th className="px-3 py-2">Symbol</th>
             <th className="px-3 py-2">Name</th>
             <th className="px-3 py-2">Market</th>
+            <th className="px-3 py-2">Sector</th>
             <th className="px-3 py-2 text-right">Price</th>
             <th className="px-3 py-2 text-right">Change</th>
             <th className="px-3 py-2 text-right">Volume</th>
@@ -87,6 +88,9 @@ export default function RankingsTable({
                   {r.name_zh && <div className="text-xs text-slate-500 mt-0.5">{r.name_zh}</div>}
                 </td>
                 <td className="px-3 py-2 text-slate-400">{r.market}</td>
+                <td className="px-3 py-2 text-xs text-slate-500" style={{ maxWidth: 120, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.sector ?? undefined}>
+                  {r.sector ?? '—'}
+                </td>
                 <td className="px-3 py-2 text-right font-semibold">
                   {lp ? `$${lp.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                 </td>
