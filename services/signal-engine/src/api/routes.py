@@ -1066,6 +1066,261 @@ def suppressed_signals(
     return results
 
 
+@router.get("/filter_audit")
+def filter_audit(
+    lookback_days: int = Query(180, ge=30, le=730),
+    style: str = Query("SWING", regex="^(SHORT|SWING|LONG)$"),
+    hold_days: int = Query(10, ge=1, le=60, description="Days after signal to measure outcome"),
+    session: Session = Depends(get_session),
+):
+    """Correlate active suppression filter count with actual trade win rate.
+
+    For every BUY signal in the lookback window, counts how many suppression
+    filters were active at signal time (from reasons JSON), then looks up the
+    actual price return hold_days later.  Returns win-rate breakdown by filter
+    count so you can see whether heavily-filtered signals genuinely perform worse.
+    """
+    since = date.today() - timedelta(days=lookback_days)
+    try:
+        horizon_enum = SignalHorizon(style.upper())
+    except ValueError:
+        horizon_enum = SignalHorizon.SWING
+
+    rows = session.execute(
+        select(Signal.ts, Signal.reasons, Signal.stock_id, Stock.symbol)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .where(
+            Signal.signal == SignalType.BUY,
+            Signal.horizon == horizon_enum,
+            Signal.ts >= since,
+            Signal.reasons.isnot(None),
+        )
+        .order_by(Signal.ts)
+    ).all()
+
+    SUPPRESSION_BOOLEAN = [
+        "weekly_gate_fired", "adx_compression",
+        "high_vol_compression", "breadth_compression",
+        "stale_price_warning", "insufficient_history_warning",
+    ]
+    SUPPRESSION_NAMED = {
+        "weekly_alignment":    lambda v: v is False,
+        "earnings_warning":    lambda v: v in ("caution", "note", "watch"),
+        "news_sentiment_flag": lambda v: v in ("strongly_negative", "negative"),
+        "rs_flag":             lambda v: v == "lagging_sector",
+        "options_flag":        lambda v: v in ("elevated_put_volume", "slightly_elevated_puts"),
+    }
+
+    stock_ids = list({r.stock_id for r in rows})
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(
+            Price.stock_id.in_(stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= since,
+            Price.ts <= date.today(),
+        )
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    from collections import defaultdict
+    prices_by_stock: dict[int, list[tuple]] = defaultdict(list)
+    for p in price_rows:
+        prices_by_stock[p.stock_id].append((p.ts, float(p.close)))
+
+    def _nearest_price(stock_id: int, target: date) -> float | None:
+        candidates = prices_by_stock.get(stock_id, [])
+        future = [(abs((d - target).days), c) for d, c in candidates if d >= target]
+        return min(future, key=lambda x: x[0])[1] if future else None
+
+    from collections import defaultdict as _dd
+    buckets: dict[int, list[float]] = _dd(list)
+    per_trade = []
+
+    for row in rows:
+        r = row.reasons or {}
+        count = sum(1 for k in SUPPRESSION_BOOLEAN if r.get(k))
+        count += sum(1 for k, test in SUPPRESSION_NAMED.items() if test(r.get(k)))
+
+        signal_date = row.ts if isinstance(row.ts, date) else row.ts.date()
+        exit_date   = signal_date + timedelta(days=hold_days)
+        entry_price = _nearest_price(row.stock_id, signal_date)
+        exit_price  = _nearest_price(row.stock_id, exit_date)
+
+        if entry_price and exit_price and entry_price > 0:
+            ret = (exit_price - entry_price) / entry_price
+            buckets[count].append(ret)
+            per_trade.append({
+                "symbol":       row.symbol,
+                "signal_date":  signal_date.isoformat(),
+                "filter_count": count,
+                "return_pct":   round(ret * 100, 2),
+                "win":          ret > 0,
+            })
+
+    summary = []
+    for fc in sorted(buckets):
+        rets = buckets[fc]
+        wins = sum(1 for r in rets if r > 0)
+        summary.append({
+            "filter_count":     fc,
+            "trade_count":      len(rets),
+            "win_rate_pct":     round(wins / len(rets) * 100, 1) if rets else None,
+            "avg_return_pct":   round(sum(rets) / len(rets) * 100, 2) if rets else None,
+            "median_return_pct": round(float(sorted(rets)[len(rets) // 2]) * 100, 2) if rets else None,
+        })
+
+    total = len(per_trade)
+    overall_wr = round(sum(1 for t in per_trade if t["win"]) / total * 100, 1) if total else None
+    return {
+        "lookback_days":       lookback_days,
+        "style":               style,
+        "hold_days":           hold_days,
+        "total_buy_signals":   total,
+        "overall_win_rate_pct": overall_wr,
+        "by_filter_count":     summary,
+        "trades":              per_trade,
+    }
+
+
+@router.post("/calibrate_ta_weights")
+def calibrate_ta_weights(
+    lookback_days: int = Query(365, ge=60, le=730),
+    hold_days: int = Query(10, ge=3, le=30),
+    session: Session = Depends(get_session),
+):
+    """Fit logistic regression on historical BUY signals to derive data-driven TA weights.
+
+    Reads the last `lookback_days` of BUY signals, extracts TA boolean features from the
+    stored reasons JSON, looks up actual price returns over `hold_days`, then fits a logistic
+    regression model. The resulting coefficients (clipped to [0, ∞]) become the new TA weights
+    and are written to ta_weights.json next to the ML models directory.
+
+    Returns the fitted weights and in-sample accuracy for review.
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        import numpy as np
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.preprocessing import StandardScaler
+    except ImportError:
+        raise HTTPException(status_code=500, detail="scikit-learn not installed in signal-engine")
+
+    from ..generators.signals import _TA_WEIGHTS_DEFAULT, _TA_WEIGHTS_PATH
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    rows = session.execute(
+        select(Signal.ts, Signal.reasons, Signal.stock_id)
+        .where(Signal.signal == SignalType.BUY, Signal.ts >= cutoff)
+        .order_by(Signal.ts)
+    ).all()
+
+    if len(rows) < 50:
+        raise HTTPException(status_code=400, detail=f"Need ≥50 BUY signals, found {len(rows)}")
+
+    # TA boolean feature names (positive weights only — penalties excluded from regression)
+    TA_FEATURES = [
+        "above_sma50", "sma50_above_sma200", "golden_cross_event",
+        "rsi_sweet_spot", "rsi_mild_oversold",
+        "stoch_oversold", "stoch_cross_up",
+        "rsi_divergence_bullish",
+        "macd_strong", "macd_positive", "macd_zero_cross_up",
+        "bb_mid_zone", "price_above_vwap",
+        "bullish_trend", "obv_bullish", "volume_surge",
+    ]
+
+    # Map reasons JSON keys → feature names
+    REASONS_MAP = {
+        "above_sma50":           lambda r: bool(r.get("above_sma50")),
+        "sma50_above_sma200":    lambda r: bool(r.get("sma50_above_sma200")),
+        "golden_cross_event":    lambda r: bool(r.get("golden_cross")),
+        "rsi_sweet_spot":        lambda r: 45 < (r.get("rsi") or 0) < 65,
+        "rsi_mild_oversold":     lambda r: 35 < (r.get("rsi") or 0) <= 45,
+        "stoch_oversold":        lambda r: bool(r.get("stoch_oversold")),
+        "stoch_cross_up":        lambda r: bool(r.get("stoch_cross_up")),
+        "rsi_divergence_bullish": lambda r: r.get("rsi_divergence") == "bullish",
+        "macd_strong":           lambda r: bool(r.get("macd_strong")),
+        "macd_positive":         lambda r: bool(r.get("macd_positive")),
+        "macd_zero_cross_up":    lambda r: bool(r.get("macd_zero_cross_up")),
+        "bb_mid_zone":           lambda r: bool(r.get("bb_mid_zone")),
+        "price_above_vwap":      lambda r: r.get("price_above_vwap") is True,
+        "bullish_trend":         lambda r: bool(r.get("bullish_trend")),
+        "obv_bullish":           lambda r: bool(r.get("obv_bullish")),
+        "volume_surge":          lambda r: (r.get("volume_z") or 0) > 0.5,
+    }
+
+    X_rows, y_rows, skipped = [], [], 0
+    for row in rows:
+        try:
+            reasons = json.loads(row.reasons) if isinstance(row.reasons, str) else (row.reasons or {})
+        except Exception:
+            skipped += 1
+            continue
+
+        # Look up price return over hold_days
+        signal_date = row.ts.date() if hasattr(row.ts, "date") else row.ts
+        entry_price_row = session.execute(
+            select(Price.close).where(Price.stock_id == row.stock_id, Price.timeframe == TimeFrame.daily)
+            .order_by((Price.ts - row.ts).asc() if hasattr(Price.ts, "__sub__") else Price.ts)
+            .limit(1)
+        ).scalar_one_or_none()
+        exit_price_row = session.execute(
+            select(Price.close)
+            .where(Price.stock_id == row.stock_id, Price.timeframe == TimeFrame.daily,
+                   Price.ts >= row.ts + timedelta(days=hold_days))
+            .order_by(Price.ts)
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if entry_price_row is None or exit_price_row is None:
+            skipped += 1
+            continue
+
+        fwd_ret = float(exit_price_row) / float(entry_price_row) - 1
+        y_rows.append(1 if fwd_ret > 0 else 0)
+        X_rows.append([float(REASONS_MAP[f](reasons)) for f in TA_FEATURES])
+
+    if len(X_rows) < 30:
+        raise HTTPException(status_code=400, detail=f"Only {len(X_rows)} usable rows after price lookup (skipped {skipped})")
+
+    X = np.array(X_rows)
+    y = np.array(y_rows)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    clf = LogisticRegression(max_iter=500, C=1.0, random_state=42)
+    clf.fit(X_scaled, y)
+
+    accuracy = float(np.mean(clf.predict(X_scaled) == y))
+    coefs = clf.coef_[0]
+
+    # Map coefficients → weight dict (clip negatives to 0 for positive-weight features)
+    fitted = {feat: float(max(0.0, coef)) for feat, coef in zip(TA_FEATURES, coefs)}
+
+    # Rescale so the sum of positive weights equals the sum of defaults (preserve scale)
+    default_sum = sum(_TA_WEIGHTS_DEFAULT[k] for k in TA_FEATURES if k in _TA_WEIGHTS_DEFAULT)
+    fitted_sum  = sum(fitted.values()) or 1.0
+    scale_factor = default_sum / fitted_sum
+    fitted_scaled = {k: round(v * scale_factor, 4) for k, v in fitted.items()}
+
+    # Merge with defaults: keep penalty weights from defaults unchanged
+    new_weights = dict(_TA_WEIGHTS_DEFAULT)
+    new_weights.update(fitted_scaled)
+
+    Path(_TA_WEIGHTS_PATH).write_text(json.dumps(new_weights, indent=2))
+    log.info("calibrate_ta_weights: wrote %s (accuracy=%.3f, n=%d)", _TA_WEIGHTS_PATH, accuracy, len(X_rows))
+
+    return {
+        "status":           "ok",
+        "n_signals":        len(rows),
+        "n_usable":         len(X_rows),
+        "n_skipped":        skipped,
+        "in_sample_accuracy": round(accuracy, 4),
+        "weights":          new_weights,
+    }
+
+
 @router.get("/walkforward")
 def walkforward_backtest(
     train_days: int = Query(180, ge=30, le=365),

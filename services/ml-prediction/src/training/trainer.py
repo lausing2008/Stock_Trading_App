@@ -25,7 +25,15 @@ from ..models import BaseModel, get_model
 log = get_logger("trainer")
 _settings = get_settings()
 
-_MIN_PRECISION = 0.60  # minimum precision required for a BUY signal threshold
+_MIN_PRECISION = 0.60  # fallback precision floor (SWING)
+
+# SHORT trades have little time to recover from false entries — require tighter precision.
+# LONG trades can absorb more noise over a 90-day hold — accept a lower floor.
+_PRECISION_BY_STYLE: dict[str, float] = {
+    "SHORT": 0.70,
+    "SWING": 0.60,
+    "LONG":  0.50,
+}
 
 
 def _load_prices(symbol: str, lookback_days: int = 365 * 5) -> pd.DataFrame:
@@ -113,6 +121,7 @@ def train_model(
     model_name: str = "xgboost",
     horizon: int = 5,
     hyperparams: dict | None = None,
+    style: str = "SWING",
 ) -> dict:
     try:
         df = _load_prices(symbol)
@@ -219,7 +228,8 @@ def train_model(
     # --- Precision-optimised BUY threshold (on held-out test set) ---
     raw_test_probs = model.predict_proba(X_test_s)[:, 1]  # shape (n,)
     preds = calibrator.predict(raw_test_probs) if calibrator is not None else raw_test_probs
-    buy_threshold = _precision_threshold(y_test.values, preds)
+    min_prec = _PRECISION_BY_STYLE.get(style.upper(), _MIN_PRECISION)
+    buy_threshold = _precision_threshold(y_test.values, preds, min_precision=min_prec)
 
     y_pred = (preds > buy_threshold).astype(int)
 

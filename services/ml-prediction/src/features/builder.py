@@ -1,4 +1,4 @@
-"""Feature engineering — 26 features (22 stock-specific + 4 macro).
+"""Feature engineering — 30 features (22 stock-specific + 8 macro).
 
 22 stock-specific:
   Momentum  : ret_1/5/10/20/60
@@ -8,10 +8,14 @@
   Volume    : volume_z, obv_z, cmf_20
   Range     : high_20_pct
 
-4 macro (market-wide context):
+8 macro (market-wide context):
   spy_ret_1, spy_ret_5  — S&P 500 short-term direction
   vix_level             — VIX absolute level (fear gauge)
   spy_vol_20            — S&P 500 realized volatility (regime proxy)
+  is_bear_market        — 1 if SPY < 200d SMA (binary regime flag)
+  vix_spiking           — 1 if VIX > 20d MA × 1.3 (sudden fear spike)
+  high_vol_regime       — 1 if spy_vol_20 > 2% annualised daily vol
+  market_stress         — 1 if SPY 5d return < -3% AND VIX above its MA
 
 Label: binary BUY / SELL only — rows where |fwd_ret| < label_threshold are
 excluded from training (dead zone). This removes noise-level moves that are
@@ -25,7 +29,11 @@ import numpy as np
 import pandas as pd
 
 
-MACRO_COLUMNS = ["spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20"]
+MACRO_COLUMNS = [
+    "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
+    # Regime boolean flags (SA-3)
+    "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
+]
 
 FEATURE_COLUMNS = [
     # Momentum
@@ -40,8 +48,10 @@ FEATURE_COLUMNS = [
     "volume_z", "obv_z", "cmf_20",
     # Range
     "high_20_pct",
-    # Macro
+    # Macro — raw
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
+    # Macro — regime boolean flags
+    "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
 ]
 
 
@@ -117,6 +127,17 @@ def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
     macro["spy_ret_5"] = spy_c.pct_change(5).values
     macro["vix_level"] = vix_c.values
     macro["spy_vol_20"] = spy_c.pct_change().rolling(20).std().values
+
+    # ── Regime boolean flags (SA-3) ───────────────────────────────────────────
+    spy_200d = spy_c.rolling(200, min_periods=100).mean()
+    vix_20d  = vix_c.rolling(20, min_periods=10).mean()
+
+    macro["is_bear_market"]  = (spy_c < spy_200d).astype(float)
+    macro["vix_spiking"]     = (vix_c > vix_20d * 1.3).astype(float)
+    macro["high_vol_regime"] = (macro["spy_vol_20"] > 0.02).astype(float)
+    macro["market_stress"]   = (
+        (macro["spy_ret_5"] < -0.03) & (vix_c > vix_20d)
+    ).astype(float)
 
     result = macro.dropna(how="all")
     _redis_save_macro(result)

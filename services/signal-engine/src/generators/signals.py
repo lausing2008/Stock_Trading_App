@@ -22,7 +22,7 @@ Accuracy improvements (v3):
 Accuracy improvements (v4):
   - ML probability soft-cap [0.05, 0.95]: prevents XGBoost overconfidence (e.g. 100%)
     from dominating the fused signal when TA tells a different story
-  - ML-TA disagreement dampening: when |ml_prob - ta_prob| > 0.35, ML weight is
+  - ML-TA disagreement dampening: when |ml_prob - ta_prob| > 0.25, ML weight is
     scaled back so strong TA evidence isn't simply overridden
   - ADX choppy market compression: ADX < 20 (directionless market) compresses
     the signal 10% toward neutral, reducing false BUY/SELL in range-bound stocks
@@ -36,10 +36,21 @@ Accuracy improvements (v5):
     additionally compressed 10% toward neutral. A BUY signal in a market where
     most stocks are below their 200MA carries much higher false-positive risk
     regardless of the S&P 500 price. Breadth stored in reasons as breadth_pct.
+
+Signal accuracy improvements (SA-1 through SA-7):
+  SA-1: ML/TA disagreement dampening band lowered (0.25–0.35 = 25% weight cut)
+  SA-2: Style-aware ML precision targets (SHORT=70%, SWING=60%, LONG=50%)
+  SA-3: 4 macro regime boolean features added to ML feature set
+  SA-4: Weekly alignment min bars 26→15 with partial confidence scaling
+  SA-5: Data-driven TA weights via ta_weights.json (POST /signals/calibrate_ta_weights)
+  SA-6: Filter interaction audit endpoint (GET /signals/filter_audit)
+  SA-7: Regime-aware earnings compression — consistent EPS beaters get 20% relief
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -50,6 +61,49 @@ from common.logging import get_logger
 
 log = get_logger("signal-generator")
 _settings = get_settings()
+
+# ── TA component weights (SA-5) ───────────────────────────────────────────────
+# Defaults are the hand-tuned values used since launch.
+# Run POST /signals/calibrate_ta_weights to compute logistic-regression-derived
+# weights from your actual price history and save them here.
+# Convention: penalty keys end in "_penalty" and store positive magnitudes.
+# The score section subtracts penalty weights; normalisation excludes them.
+_TA_WEIGHTS_DEFAULT: dict[str, float] = {
+    "above_sma50":              0.15,
+    "sma50_above_sma200":       0.10,
+    "golden_cross_event":       0.10,
+    "death_cross_penalty":      0.10,
+    "rsi_sweet_spot":           0.15,
+    "rsi_mild_oversold":        0.08,
+    "rsi_mild_overbought":      0.06,
+    "stoch_oversold":           0.10,
+    "stoch_overbought_penalty": 0.08,
+    "stoch_cross_up":           0.05,
+    "rsi_divergence_bearish_penalty": 0.10,
+    "rsi_divergence_bullish":   0.08,
+    "macd_strong":              0.15,
+    "macd_positive":            0.08,
+    "macd_zero_cross_up":       0.05,
+    "bb_mid_zone":              0.10,
+    "price_above_vwap":         0.08,
+    "price_below_vwap_penalty": 0.05,
+    "bullish_trend":            0.10,
+    "obv_bullish":              0.10,
+    "volume_surge":             0.05,
+}
+_TA_WEIGHTS_PATH = Path(_settings.model_dir) / "ta_weights.json"
+
+def _load_ta_weights() -> dict[str, float]:
+    """Load calibrated TA weights from disk, falling back to defaults."""
+    try:
+        if _TA_WEIGHTS_PATH.exists():
+            with open(_TA_WEIGHTS_PATH) as f:
+                saved = json.load(f)
+            # Merge: saved values override defaults; new keys in defaults keep their value
+            return {**_TA_WEIGHTS_DEFAULT, **saved}
+    except Exception:
+        pass
+    return dict(_TA_WEIGHTS_DEFAULT)
 
 
 @dataclass
@@ -160,6 +214,47 @@ def _fetch_earnings_proximity(symbol: str) -> int | None:
     except Exception:
         pass
     return None
+
+
+def _fetch_earnings_beat_rate(symbol: str) -> float | None:
+    """Return historical earnings beat rate (0-1) from the last 8 quarters.
+
+    Uses yfinance earnings history. Result is cached in Redis with a 7-day TTL
+    so we don't hammer yfinance on every signal generation cycle.
+
+    Returns None on failure (treated as neutral — no beat-rate adjustment).
+    """
+    _CACHE_KEY = f"stockai:earnings_beat:{symbol}"
+    _TTL = 7 * 86_400  # 7 days
+
+    try:
+        import redis as redis_lib
+        r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        cached = r.get(_CACHE_KEY)
+        if cached is not None:
+            return float(cached)
+    except Exception:
+        r = None
+
+    beat_rate: float | None = None
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(symbol)
+        hist = tk.earnings_history
+        if hist is not None and not hist.empty and "surprisePercent" in hist.columns:
+            recent = hist["surprisePercent"].dropna().tail(8)
+            if len(recent) >= 2:
+                beat_rate = float((recent > 0).mean())
+    except Exception:
+        pass
+
+    if beat_rate is not None and r is not None:
+        try:
+            r.setex(_CACHE_KEY, _TTL, str(beat_rate))
+        except Exception:
+            pass
+
+    return beat_rate
 
 
 def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
@@ -353,9 +448,13 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
         "weekly_trend": "neutral",
         "weekly_macd_bull": False,
         "weekly_score": 0.5,
+        "weekly_confidence": 1.0,
     }
-    if df.empty or len(df) < 26:
+    if df.empty or len(df) < 15:
         return _neutral
+    # Partial confidence for 15–25 bars (3–6 months): scales from 0.70→1.0 linearly.
+    # Full confidence (1.0) requires 26+ bars (6 months).
+    weekly_confidence = min(1.0, 0.70 + (len(df) - 15) / (26 - 15) * 0.30) if len(df) < 26 else 1.0
     close = df["close"].astype(float)
 
     d = close.diff()
@@ -397,6 +496,7 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
         "weekly_trend": weekly_trend,
         "weekly_macd_bull": weekly_macd_bull,
         "weekly_score": float(np.clip(score, 0, 1)),
+        "weekly_confidence": weekly_confidence,
     }
 
 
@@ -603,43 +703,42 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     vol_z = (volume.iloc[-1] - volume.rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0
     reasons["volume_z"] = float(vol_z) if not pd.isna(vol_z) else None
 
-    # ── Score ─────────────────────────────────────────────────────────────
+    # ── Score (data-driven weights via ta_weights.json, SA-5) ─────────────
+    w = _load_ta_weights()
     score = 0.0
 
-    if above_sma50:         score += 0.15
-    if sma50_above_sma200:  score += 0.10
-    if golden_cross_event:  score += 0.10
-    if death_cross_event:   score -= 0.10
+    if above_sma50:         score += w["above_sma50"]
+    if sma50_above_sma200:  score += w["sma50_above_sma200"]
+    if golden_cross_event:  score += w["golden_cross_event"]
+    if death_cross_event:   score -= w["death_cross_penalty"]
 
     if rsi_val is not None:
-        if 45 < rsi_val < 65:    score += 0.15
-        elif 35 < rsi_val <= 45: score += 0.08
-        elif 65 <= rsi_val < 72: score += 0.06
+        if 45 < rsi_val < 65:    score += w["rsi_sweet_spot"]
+        elif 35 < rsi_val <= 45: score += w["rsi_mild_oversold"]
+        elif 65 <= rsi_val < 72: score += w["rsi_mild_overbought"]
 
-    if stoch_oversold:      score += 0.10
-    elif stoch_overbought:  score -= 0.08
-    if stoch_cross_up:      score += 0.05
+    if stoch_oversold:      score += w["stoch_oversold"]
+    elif stoch_overbought:  score -= w["stoch_overbought_penalty"]
+    if stoch_cross_up:      score += w["stoch_cross_up"]
 
-    if rsi_divergence == "bearish":   score -= 0.10
-    elif rsi_divergence == "bullish": score += 0.08
+    if rsi_divergence == "bearish":   score -= w["rsi_divergence_bearish_penalty"]
+    elif rsi_divergence == "bullish": score += w["rsi_divergence_bullish"]
 
-    if macd_hist > 0 and macd_rising:  score += 0.15
-    elif macd_hist > 0:                score += 0.08
-    if macd_zero_cross_up:             score += 0.05
+    if macd_hist > 0 and macd_rising:  score += w["macd_strong"]
+    elif macd_hist > 0:                score += w["macd_positive"]
+    if macd_zero_cross_up:             score += w["macd_zero_cross_up"]
 
-    if 0.2 < bb_pct_b < 0.8:   score += 0.10
+    if 0.2 < bb_pct_b < 0.8:   score += w["bb_mid_zone"]
 
-    if price_above_vwap is True:   score += 0.08
-    elif price_above_vwap is False: score -= 0.05
+    if price_above_vwap is True:    score += w["price_above_vwap"]
+    elif price_above_vwap is False: score -= w["price_below_vwap_penalty"]
 
-    if bullish_trend:                                       score += 0.10
-    if obv_bullish:                                         score += 0.10
-    if reasons["volume_z"] and reasons["volume_z"] > 0.5:  score += 0.05
+    if bullish_trend:                                       score += w["bullish_trend"]
+    if obv_bullish:                                         score += w["obv_bullish"]
+    if reasons["volume_z"] and reasons["volume_z"] > 0.5:  score += w["volume_surge"]
 
-    # Normalise by theoretical max (1.36) so the score is a true [0,1] probability.
-    # Without normalisation, stocks triggering all bullish conditions would saturate
-    # at 1.0 before clipping, losing the relative differentiation from ML fusion.
-    _TA_MAX_SCORE = 1.36
+    # Normalise by sum of all positive weights so score stays in [0,1].
+    _TA_MAX_SCORE = sum(v for k, v in w.items() if not k.endswith("_penalty"))
     return float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0)), reasons
 
 
@@ -747,6 +846,7 @@ def _apply_style_signal(
     kscore: float | None,
     is_stale: bool,
     base_reasons: dict,
+    earnings_beat_rate: float | None = None,
 ) -> "AIConfidence":
     """Apply style-specific fusion and filters from shared base values.
 
@@ -765,6 +865,9 @@ def _apply_style_signal(
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
             ml_w *= 1.0 - 0.25 * min((gap - 0.35) / 0.30, 1.0)
+            reasons["ml_ta_conflict"] = True
+        elif gap > 0.25:
+            ml_w *= 0.75
             reasons["ml_ta_conflict"] = True
         else:
             reasons["ml_ta_conflict"] = False
@@ -785,17 +888,20 @@ def _apply_style_signal(
     daily_dir  = fused - 0.5
     weekly_dir = weekly_score - 0.5
     # Only apply alignment boost/compress when weekly data is actually available.
-    # weekly_rsi is None when < 26 weekly bars exist. In that case weekly_score
-    # defaults to 0.5, making weekly_dir = 0 — which would always trigger the
-    # misalignment branch (0 > 0 is False) and penalise every data-sparse stock.
+    # weekly_rsi is None when < 15 weekly bars exist. For 15–25 bars a partial
+    # confidence factor (0.70–1.0) scales the boost/compress toward neutral so
+    # data-sparse stocks get a softer nudge rather than the full filter weight.
+    weekly_confidence = weekly_tech.get("weekly_confidence", 1.0)
     if weekly_rsi is None:
         # No weekly history — skip alignment filter entirely, treat as neutral
         reasons["weekly_alignment"] = None
     elif daily_dir * weekly_dir > 0:
-        fused = float(np.clip(0.5 + daily_dir * p["weekly_boost"], 0.0, 1.0))
+        boosted = float(np.clip(0.5 + daily_dir * p["weekly_boost"], 0.0, 1.0))
+        fused = fused * (1.0 - weekly_confidence) + boosted * weekly_confidence
         reasons["weekly_alignment"] = True
     else:
-        fused = float(np.clip(0.5 + daily_dir * p["weekly_compress"], 0.0, 1.0))
+        compressed = float(np.clip(0.5 + daily_dir * p["weekly_compress"], 0.0, 1.0))
+        fused = fused * (1.0 - weekly_confidence) + compressed * weekly_confidence
         reasons["weekly_alignment"] = False
 
     # ── ADX choppy-market compression ────────────────────────────────────────
@@ -827,18 +933,34 @@ def _apply_style_signal(
     # ── Earnings proximity (style-specific) ───────────────────────────────────
     ec = p.get("earnings_compression")
     if ec is not None and days_to_earnings is not None:
+        # SA-7: regime-aware earnings compression — consistent beaters get 20% relief
+        # on compression (beat_rate ≥ 0.75 = reliable beater; ≤ 0.25 = miss-prone).
+        # beat_scale: 1.0 = full compression (unknown history), >1.0 = looser for beaters.
+        if earnings_beat_rate is not None:
+            beat_scale = float(np.clip(1.0 + 0.20 * (earnings_beat_rate - 0.50) / 0.50, 0.80, 1.20))
+        else:
+            beat_scale = 1.0
+        reasons["earnings_beat_rate"] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None
+
         if 0 <= days_to_earnings <= 2:
-            fused = 0.5 + (fused - 0.5) * ec[2]
+            raw_mult = ec[2]
+            adj_mult = float(np.clip(raw_mult * beat_scale, 0.0, 1.0))
+            fused = 0.5 + (fused - 0.5) * adj_mult
             reasons["earnings_warning"] = "caution"
         elif days_to_earnings <= 5:
-            fused = 0.5 + (fused - 0.5) * ec[5]
+            raw_mult = ec[5]
+            adj_mult = float(np.clip(raw_mult * beat_scale, 0.0, 1.0))
+            fused = 0.5 + (fused - 0.5) * adj_mult
             reasons["earnings_warning"] = "note"
         elif days_to_earnings <= 10:
-            fused = 0.5 + (fused - 0.5) * ec[10]
+            raw_mult = ec[10]
+            adj_mult = float(np.clip(raw_mult * beat_scale, 0.0, 1.0))
+            fused = 0.5 + (fused - 0.5) * adj_mult
             reasons["earnings_warning"] = "watch"
         else:
             reasons.setdefault("earnings_warning", None)
     else:
+        reasons["earnings_beat_rate"] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None
         reasons.setdefault("earnings_warning", None)
 
     # ── News sentiment compression (style-specific) ───────────────────────────
@@ -1001,6 +1123,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     market_regime, fg_score = _fetch_market_regime()
     breadth_pct = _fetch_market_breadth()
     days_to_earnings = _fetch_earnings_proximity(symbol)
+    earnings_beat_rate = _fetch_earnings_beat_rate(symbol)
     news_sentiment = _fetch_news_sentiment(symbol)
     rs_score, rs_rank = _fetch_relative_strength(symbol)
     options_sentiment, cp_ratio = _fetch_options_flow(symbol)
@@ -1056,6 +1179,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             kscore=kscore,
             is_stale=is_stale,
             base_reasons=reasons,
+            earnings_beat_rate=earnings_beat_rate,
         )
         for style_key in ("SHORT", "SWING", "LONG")
     }
