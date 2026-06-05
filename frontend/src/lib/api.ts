@@ -166,6 +166,21 @@ export const api = {
     request<{ window: number; lookback_days: number; series: { date: string; accuracy: number; signal_count: number }[]; drift_warning: boolean; latest_accuracy: number | null }>(`/signals/rolling_accuracy?window=${window}&lookback_days=${lookbackDays}`),
   stockAtr: (symbol: string, period = 14) =>
     request<{ symbol: string; atr: number; close: number; stop_loss_2atr: number; period: number }>(`/stocks/${symbol}/atr?period=${period}`),
+  portfolioRisk: (symbols: string[], weights?: number[]) => {
+    const params = new URLSearchParams({ symbols: symbols.join(',') });
+    if (weights) params.set('weights', weights.join(','));
+    return request<{
+      symbols: string[];
+      weights: number[];
+      correlation: number[][];
+      betas: Record<string, number>;
+      portfolio_beta: number;
+      sector_weights: Record<string, number>;
+      var_95_pct: number;
+      benchmark: string;
+      warnings: string[];
+    }>(`/portfolio/risk?${params}`);
+  },
 
   // Trade Journal
   listJournal: () => request<JournalTrade[]>('/journal'),

@@ -342,9 +342,11 @@ const ITEMS: Item[] = [
   },
   {
     id: 'portfolio-risk-dashboard',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-04 — GET /portfolio/risk: Wilder beta vs SPY/HSI, parametric 1-day VaR 95%, 30-day correlation matrix, sector concentration. Trade Board shows risk section auto-populated from active positions with shares: sector pie chart (SVG), correlation heatmap (colored grid), beta+VaR stat cards, per-symbol betas, and warning chips for high correlation/concentration/VaR.',
     tier: 3, severity: 'feature',
     title: 'Portfolio risk dashboard — correlation, VaR, sector heat',
-    file: 'frontend/src/pages/board.tsx + services/market-data/src/api/routes.py',
+    file: 'frontend/src/pages/board.tsx + services/market-data/src/api/portfolio.py',
     effort: '4 days',
     impact: 'Lifts risk management score from 6.0 to 8.5 — the #1 gap vs professional tools; a portfolio of 6 tech stocks has hidden 90%+ correlation',
     what: 'Trade Board shows individual positions but no aggregate portfolio view. A user can unknowingly hold 80% of their portfolio in correlated tech positions. No VaR, no beta, no sector concentration metric. Risk management score is 6.0 — the lowest of any dimension.',

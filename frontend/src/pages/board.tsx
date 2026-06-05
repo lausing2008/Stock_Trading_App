@@ -829,6 +829,22 @@ export default function BoardPage() {
     return { count: closed.length, winRate: (wins / closed.length) * 100, avgReturn, best, worst, styleBreakdown };
   }, [byStage.closed]);
 
+  // Portfolio risk — compute from active positions with shares
+  const riskPositions = useMemo(
+    () => byStage.active.filter(p => p.shares != null && p.shares > 0 && (p.actual_entry_price ?? p.entry_price) != null),
+    [byStage.active],
+  );
+  const riskSymbols = useMemo(() => riskPositions.map(p => p.symbol), [riskPositions]);
+  const riskWeights = useMemo(
+    () => riskPositions.map(p => p.shares! * (p.actual_entry_price ?? p.entry_price!)),
+    [riskPositions],
+  );
+  const { data: riskData } = useSWR(
+    riskSymbols.length >= 2 ? ['portfolio-risk', riskSymbols.join(','), riskWeights.join(',')] : null,
+    () => api.portfolioRisk(riskSymbols, riskWeights),
+    { revalidateOnFocus: false },
+  );
+
   return (
     <div>
       {/* Header */}
@@ -975,6 +991,155 @@ export default function BoardPage() {
             <li>On the <Link href="/forecast" style={{ color: '#818cf8' }}>Forecast</Link> page — click <strong>📌 Save to Board</strong> on any pick</li>
             <li>Add manually using the <strong>+ Add card</strong> in the Watch column above</li>
           </ul>
+        </div>
+      )}
+
+      {/* Portfolio Risk Dashboard */}
+      {riskData && (
+        <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, background: '#080f1e', border: '1px solid #1e293b' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <div>
+              <h2 style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0', margin: 0 }}>Portfolio Risk</h2>
+              <div style={{ fontSize: 10, color: '#334155', marginTop: 2 }}>
+                {riskData.symbols.length} active positions · beta vs {riskData.benchmark}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              {[
+                { label: 'Portfolio β', value: riskData.portfolio_beta.toFixed(2), color: riskData.portfolio_beta > 1.5 ? '#f87171' : riskData.portfolio_beta < 0.8 ? '#4ade80' : '#94a3b8' },
+                { label: '1-day VaR 95%', value: `${riskData.var_95_pct.toFixed(1)}%`, color: riskData.var_95_pct > 4 ? '#f87171' : riskData.var_95_pct > 2.5 ? '#fbbf24' : '#4ade80' },
+                { label: 'Positions', value: String(riskData.symbols.length), color: '#94a3b8' },
+              ].map(s => (
+                <div key={s.label} style={{ padding: '6px 12px', borderRadius: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid #1e293b', textAlign: 'center' }}>
+                  <div style={{ fontSize: 9, color: '#475569', fontWeight: 600, textTransform: 'uppercase', marginBottom: 2 }}>{s.label}</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: s.color, lineHeight: 1 }}>{s.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Warnings */}
+          {riskData.warnings.length > 0 && (
+            <div style={{ marginBottom: 16, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {riskData.warnings.map((w, i) => (
+                <div key={i} style={{ padding: '4px 10px', borderRadius: 5, background: 'rgba(251,113,133,0.08)', border: '1px solid rgba(251,113,133,0.25)', fontSize: 11, color: '#fca5a5' }}>
+                  ⚠ {w}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            {/* Sector pie */}
+            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 10 }}>Sector Concentration</div>
+              {(() => {
+                const COLORS = ['#818cf8','#4ade80','#fbbf24','#f87171','#38bdf8','#a78bfa','#34d399','#fb923c'];
+                const sectors = Object.entries(riskData.sector_weights).sort((a, b) => b[1] - a[1]);
+                // Pie chart SVG
+                const size = 80, cx = 40, cy = 40, r = 36;
+                let cum = 0;
+                const slices = sectors.map(([, w], i) => {
+                  const start = cum * 2 * Math.PI;
+                  cum += w;
+                  const end = cum * 2 * Math.PI;
+                  const x1 = cx + r * Math.sin(start);
+                  const y1 = cy - r * Math.cos(start);
+                  const x2 = cx + r * Math.sin(end);
+                  const y2 = cy - r * Math.cos(end);
+                  const large = (w > 0.5) ? 1 : 0;
+                  return { d: `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`, color: COLORS[i % COLORS.length] };
+                });
+                return (
+                  <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+                    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink: 0 }}>
+                      {slices.map((s, i) => <path key={i} d={s.d} fill={s.color} opacity={0.85} />)}
+                    </svg>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {sectors.map(([sec, w], i) => (
+                        <div key={sec} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: 2, background: COLORS[i % COLORS.length], flexShrink: 0 }} />
+                          <span style={{ color: '#94a3b8' }}>{sec}</span>
+                          <span style={{ color: '#64748b', marginLeft: 'auto', paddingLeft: 8 }}>{(w * 100).toFixed(0)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Correlation heatmap */}
+            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 10 }}>Return Correlation (30d)</div>
+              {(() => {
+                const syms = riskData.symbols;
+                const corr = riskData.correlation;
+                const cellSize = Math.min(36, Math.floor(200 / syms.length));
+                const labelColor = (v: number) =>
+                  v >= 0.8 ? '#f87171' : v >= 0.5 ? '#fbbf24' : v >= 0 ? '#94a3b8' : '#38bdf8';
+                const bgColor = (v: number) => {
+                  const abs = Math.abs(v);
+                  if (v >= 0.8) return `rgba(248,113,113,${0.1 + abs * 0.3})`;
+                  if (v >= 0.5) return `rgba(251,191,36,${0.1 + abs * 0.2})`;
+                  if (v >= 0) return `rgba(148,163,184,${abs * 0.15})`;
+                  return `rgba(56,189,248,${abs * 0.2})`;
+                };
+                return (
+                  <div style={{ overflowX: 'auto' }}>
+                    <div style={{ display: 'inline-block' }}>
+                      {/* Header row */}
+                      <div style={{ display: 'flex', marginLeft: cellSize + 4 }}>
+                        {syms.map(s => (
+                          <div key={s} style={{ width: cellSize, textAlign: 'center', fontSize: 9, color: '#475569', fontWeight: 700 }}>
+                            {s.length > 5 ? s.slice(0, 4) : s}
+                          </div>
+                        ))}
+                      </div>
+                      {corr.map((row, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', marginTop: 2 }}>
+                          <div style={{ width: cellSize, fontSize: 9, color: '#475569', fontWeight: 700, textAlign: 'right', paddingRight: 4, flexShrink: 0 }}>
+                            {syms[i].length > 5 ? syms[i].slice(0, 4) : syms[i]}
+                          </div>
+                          {row.map((v, j) => (
+                            <div key={j} style={{
+                              width: cellSize, height: cellSize, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              background: i === j ? 'rgba(99,102,241,0.15)' : bgColor(v),
+                              fontSize: 9, fontWeight: 700,
+                              color: i === j ? '#818cf8' : labelColor(v),
+                              borderRadius: 3, marginLeft: 2,
+                            }}>
+                              {v.toFixed(2)}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* Per-symbol betas */}
+          {Object.keys(riskData.betas).length > 0 && (
+            <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {Object.entries(riskData.betas).map(([sym, beta]) => (
+                <div key={sym} style={{ padding: '3px 10px', borderRadius: 5, background: 'rgba(255,255,255,0.03)', border: '1px solid #1e293b', fontSize: 11 }}>
+                  <span style={{ color: '#64748b' }}>{sym} β </span>
+                  <span style={{ color: (beta as number) > 1.3 ? '#f87171' : (beta as number) < 0.7 ? '#4ade80' : '#94a3b8', fontWeight: 700 }}>
+                    {(beta as number).toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {riskSymbols.length >= 2 && !riskData && (
+        <div style={{ marginTop: 24, padding: '12px 20px', borderRadius: 10, background: 'rgba(99,102,241,0.04)', border: '1px solid #1e293b', fontSize: 12, color: '#475569' }}>
+          Computing portfolio risk for {riskSymbols.length} active positions…
         </div>
       )}
     </div>
