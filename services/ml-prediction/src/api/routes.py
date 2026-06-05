@@ -12,6 +12,7 @@ class TrainRequest(BaseModel):
     symbol: str
     model: str = "xgboost"
     horizon: int = 5
+    style: str = "SWING"
 
 
 class TuneRequest(BaseModel):
@@ -36,12 +37,12 @@ def models():
 def train(req: TrainRequest, tasks: BackgroundTasks):
     if req.model not in list_models():
         raise HTTPException(400, f"Unknown model: {req.model}")
-    tasks.add_task(train_model, req.symbol, req.model, req.horizon)
-    return {"status": "scheduled", "symbol": req.symbol, "model": req.model}
+    tasks.add_task(train_model, req.symbol, req.model, req.horizon, style=req.style)
+    return {"status": "scheduled", "symbol": req.symbol, "model": req.model, "style": req.style}
 
 
 @router.post("/train_all")
-def train_all(tasks: BackgroundTasks):
+def train_all(tasks: BackgroundTasks, style: str = "SWING"):
     """Schedule xgboost training for every active stock (uses tuned params if available)."""
     from sqlalchemy import select
     from db import Stock, SessionLocal
@@ -52,9 +53,9 @@ def train_all(tasks: BackgroundTasks):
         ).scalars())
 
     for sym in symbols:
-        tasks.add_task(train_model, sym, "xgboost", 5)
+        tasks.add_task(train_model, sym, "xgboost", 5, style=style)
 
-    return {"status": "scheduled", "count": len(symbols), "symbols": symbols}
+    return {"status": "scheduled", "count": len(symbols), "symbols": symbols, "style": style}
 
 
 @router.post("/tune")
@@ -120,7 +121,7 @@ def predict_ensemble(req: PredictRequest):
 
 
 @router.post("/train_all_ensemble")
-def train_all_ensemble(tasks: BackgroundTasks):
+def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING"):
     """Train XGBoost AND RandomForest for every active symbol.
 
     Enables ensemble predictions via POST /ml/predict_ensemble.
@@ -135,8 +136,8 @@ def train_all_ensemble(tasks: BackgroundTasks):
         ).scalars())
 
     for sym in symbols:
-        tasks.add_task(train_model, sym, "xgboost", 5)
-        tasks.add_task(train_model, sym, "random_forest", 5)
+        tasks.add_task(train_model, sym, "xgboost", 5, style=style)
+        tasks.add_task(train_model, sym, "random_forest", 5, style=style)
 
     return {
         "status": "scheduled",

@@ -111,7 +111,10 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
             if len(np.unique(y_val)) > 1:
                 aucs.append(roc_auc_score(y_val, preds))
 
-        return -float(np.mean(aucs)) if aucs else 0.0
+        # Return a large positive value (bad objective) when no fold produced a valid AUC.
+        # Optuna minimises, so 1.0 (= AUC of 0.0 inverted) is correctly worse than
+        # any real model's objective (which is negative for AUC > 0).
+        return -float(np.mean(aucs)) if aucs else 1.0
 
     study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)

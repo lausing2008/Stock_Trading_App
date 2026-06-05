@@ -132,12 +132,20 @@ def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
     spy_200d = spy_c.rolling(200, min_periods=100).mean()
     vix_20d  = vix_c.rolling(20, min_periods=10).mean()
 
-    macro["is_bear_market"]  = (spy_c < spy_200d).astype(float)
-    macro["vix_spiking"]     = (vix_c > vix_20d * 1.3).astype(float)
+    # np.where produces a numpy array (no index), avoiding DatetimeIndex →
+    # string-index misalignment when assigning to the macro DataFrame.
+    # NaN is preserved where the rolling window hasn't filled in yet.
+    macro["is_bear_market"] = np.where(
+        spy_200d.isna(), np.nan, (spy_c < spy_200d).astype(float)
+    )
+    macro["vix_spiking"] = np.where(
+        vix_20d.isna(), np.nan, (vix_c > vix_20d * 1.3).astype(float)
+    )
     macro["high_vol_regime"] = (macro["spy_vol_20"] > 0.02).astype(float)
-    macro["market_stress"]   = (
-        (macro["spy_ret_5"] < -0.03) & (vix_c > vix_20d)
-    ).astype(float)
+    macro["market_stress"] = np.where(
+        vix_20d.isna(), np.nan,
+        ((macro["spy_ret_5"] < -0.03).values & (vix_c > vix_20d).values).astype(float),
+    )
 
     result = macro.dropna(how="all")
     _redis_save_macro(result)

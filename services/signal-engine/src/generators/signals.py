@@ -294,7 +294,8 @@ def _fetch_news_sentiment(symbol: str) -> float | None:
         with httpx.Client(timeout=10) as c:
             r = c.get(url)
             if r.status_code == 200:
-                return float(r.json()["score"])
+                val = r.json().get("score")
+                return float(val) if val is not None else None
     except Exception:
         pass
     return None
@@ -427,7 +428,7 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
         "weekly_trend": "neutral",
         "weekly_macd_bull": False,
         "weekly_score": 0.5,
-        "weekly_confidence": 1.0,
+        "weekly_confidence": 0.0,  # 0.0 = no weekly data; alignment filter is skipped
     }
     if df.empty or len(df) < 15:
         return _neutral
@@ -718,6 +719,8 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 
     # Normalise by sum of all positive weights so score stays in [0,1].
     _TA_MAX_SCORE = sum(v for k, v in w.items() if not k.endswith("_penalty"))
+    if _TA_MAX_SCORE <= 0:
+        return 0.5, reasons  # degenerate calibration; return neutral
     return float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0)), reasons
 
 
