@@ -289,8 +289,9 @@ def rolling_accuracy(
     """
     import bisect
 
+    # Require 7+ calendar days of forward data so the 5-day exit price exists.
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
 
     rows = session.execute(
         select(Signal, Stock.symbol)
@@ -307,7 +308,8 @@ def rolling_accuracy(
         return {"window": window, "lookback_days": lookback_days, "series": [], "drift_warning": False, "latest_accuracy": None}
 
     stock_ids = list({sig.stock_id for sig, _ in rows})
-    price_since = (cutoff - timedelta(days=5)).date()
+    # Fetch prices from cutoff through today so we can compute 5-day forward exits.
+    price_since = (cutoff - timedelta(days=2)).date()
     price_rows = session.execute(
         select(Price.stock_id, Price.ts, Price.close)
         .where(Price.stock_id.in_(stock_ids), Price.timeframe == TimeFrame.D1, Price.ts >= price_since)
@@ -332,11 +334,8 @@ def rolling_accuracy(
         idx = bisect.bisect_right(ts_list, after_date)
         return _pclose[sid][idx] if idx < len(ts_list) else None
 
-    def latest_close(sid):
-        cl = _pclose.get(sid)
-        return cl[-1] if cl else None
-
-    # Build list of evaluated signals with their date and correct flag
+    # Build list of evaluated signals using fixed 5-day forward exit (same as main accuracy table).
+    # This ensures every signal in the drift series is evaluated over the same holding period.
     evaluated: list[tuple[date, bool]] = []
     seen: set[tuple] = set()
     for sig, sym in rows:
@@ -346,7 +345,8 @@ def rolling_accuracy(
             continue
         seen.add(key)
         entry = first_close_after(sig.stock_id, sig_date)
-        exit_ = latest_close(sig.stock_id)
+        exit_target = sig_date + timedelta(days=7)  # 7 calendar days ≈ 5 trading days
+        exit_ = first_close_after(sig.stock_id, exit_target)
         if entry is None or exit_ is None or entry <= 0:
             continue
         correct = exit_ > entry
@@ -1699,6 +1699,9 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
 
         exit_date = exit_row.ts.date()
         exit_price = exit_row.close
+        if entry_price <= 0:
+            skipped_no_price += 1
+            continue
         pct_return = (exit_price - entry_price) / entry_price
         hold_days_actual = (exit_date - entry_date).days
         is_correct = pct_return > 0 if sig.signal == SignalType.BUY else pct_return < 0
