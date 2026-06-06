@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from db import Stock, User, Watchlist, WatchlistItem, get_session
+from db import SignalAlert, Stock, User, Watchlist, WatchlistItem, get_session
 from .auth import get_current_user
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -27,15 +27,18 @@ class WatchlistOut(BaseModel):
     id: int
     name: str
     item_count: int
+    trading_style: str | None = None
     created_at: str
 
 
 class CreateWatchlistRequest(BaseModel):
     name: str
+    trading_style: str | None = None
 
 
 class RenameWatchlistRequest(BaseModel):
     name: str
+    trading_style: str | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -91,8 +94,8 @@ def list_watchlists(
     if not rows:
         # Auto-create default on first access
         wl = _get_or_create_default(session, current)
-        return [WatchlistOut(id=wl.id, name=wl.name, item_count=0, created_at=wl.created_at.isoformat())]
-    return [WatchlistOut(id=wl.id, name=wl.name, item_count=cnt or 0, created_at=wl.created_at.isoformat())
+        return [WatchlistOut(id=wl.id, name=wl.name, item_count=0, trading_style=wl.trading_style, created_at=wl.created_at.isoformat())]
+    return [WatchlistOut(id=wl.id, name=wl.name, item_count=cnt or 0, trading_style=wl.trading_style, created_at=wl.created_at.isoformat())
             for wl, cnt in rows]
 
 
@@ -109,11 +112,11 @@ def create_watchlist(
         select(Watchlist).where(Watchlist.user_id == current.id, Watchlist.name == name)
     ).scalar_one_or_none():
         raise HTTPException(409, f"'{name}' already exists")
-    wl = Watchlist(user_id=current.id, name=name)
+    wl = Watchlist(user_id=current.id, name=name, trading_style=body.trading_style)
     session.add(wl)
     session.commit()
     session.refresh(wl)
-    return WatchlistOut(id=wl.id, name=wl.name, item_count=0, created_at=wl.created_at.isoformat())
+    return WatchlistOut(id=wl.id, name=wl.name, item_count=0, trading_style=wl.trading_style, created_at=wl.created_at.isoformat())
 
 
 @lists_router.put("/{list_id}", response_model=WatchlistOut)
@@ -128,9 +131,11 @@ def rename_watchlist(
     if not name:
         raise HTTPException(400, "Name cannot be empty")
     wl.name = name
+    if body.trading_style is not None:
+        wl.trading_style = body.trading_style if body.trading_style != '' else None
     session.commit()
     cnt = session.execute(select(func.count()).where(WatchlistItem.watchlist_id == wl.id)).scalar() or 0
-    return WatchlistOut(id=wl.id, name=wl.name, item_count=cnt, created_at=wl.created_at.isoformat())
+    return WatchlistOut(id=wl.id, name=wl.name, item_count=cnt, trading_style=wl.trading_style, created_at=wl.created_at.isoformat())
 
 
 @lists_router.delete("/{list_id}")
@@ -207,6 +212,14 @@ def add_to_watchlist(
         return _item_out(existing, stock)
     item = WatchlistItem(stock_id=stock.id, watchlist_id=wl.id)
     session.add(item)
+
+    # Auto-subscribe to signal alerts if not already subscribed
+    existing_alert = session.execute(
+        select(SignalAlert).where(SignalAlert.user_id == current.id, SignalAlert.symbol == stock.symbol)
+    ).scalar_one_or_none()
+    if not existing_alert:
+        session.add(SignalAlert(user_id=current.id, symbol=stock.symbol, email=current.email))
+
     session.commit()
     session.refresh(item)
     return _item_out(item, stock)

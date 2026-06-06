@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 import pandas as pd
@@ -432,23 +432,51 @@ def _hist_interp(status):
     return m.get(status, "Histogram data unavailable.")
 
 
+# ── Sector benchmarks ────────────────────────────────────────────────────────
+# Typical fair multiples / growth thresholds by GICS sector.
+# fair_pe: midpoint fair-value trailing P/E for the sector
+# rev_good: revenue growth (%) threshold for "Good" rating
+# gross_good: gross margin (%) threshold for "above average"
+# op_good: operating margin (%) threshold for "above average"
+# gross_good=0 means gross margin is not meaningful for that sector (Financials)
+_SECTOR_BENCHMARKS: dict[str, dict] = {
+    "Technology":             {"fair_pe": 30, "rev_good": 15, "gross_good": 65, "op_good": 20},
+    "Communication Services": {"fair_pe": 25, "rev_good": 10, "gross_good": 55, "op_good": 18},
+    "Healthcare":             {"fair_pe": 25, "rev_good": 10, "gross_good": 55, "op_good": 15},
+    "Consumer Discretionary": {"fair_pe": 22, "rev_good": 8,  "gross_good": 38, "op_good": 12},
+    "Consumer Staples":       {"fair_pe": 20, "rev_good": 5,  "gross_good": 42, "op_good": 12},
+    "Financials":             {"fair_pe": 13, "rev_good": 8,  "gross_good": 0,  "op_good": 28},
+    "Industrials":            {"fair_pe": 20, "rev_good": 8,  "gross_good": 35, "op_good": 12},
+    "Energy":                 {"fair_pe": 12, "rev_good": 5,  "gross_good": 30, "op_good": 10},
+    "Materials":              {"fair_pe": 16, "rev_good": 5,  "gross_good": 32, "op_good": 12},
+    "Real Estate":            {"fair_pe": 30, "rev_good": 5,  "gross_good": 60, "op_good": 30},
+    "Utilities":              {"fair_pe": 18, "rev_good": 3,  "gross_good": 42, "op_good": 18},
+    "Unknown":                {"fair_pe": 22, "rev_good": 10, "gross_good": 40, "op_good": 15},
+}
+
+
+def _sector_bench(sector: str) -> dict:
+    return _SECTOR_BENCHMARKS.get(sector, _SECTOR_BENCHMARKS["Unknown"])
+
+
 # ── Fundamental scoring ───────────────────────────────────────────────────────
 
-def _score_fundamental(fund: dict) -> dict:
+def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
     if not fund:
         return {"score": 50, "revenue": {}, "eps": {}, "margins": {}, "balance_sheet": {},
                 "cash_flow": {}, "valuation": {}, "profitability": {}}
 
+    bench = _sector_bench(sector)
     score = 50
 
-    # Revenue growth
+    # Revenue growth — relative to sector benchmark
     rev_growth = fund.get("revenue_growth")
     rev_assess = "Unknown"
     if rev_growth is not None:
-        rev_pct = rev_growth * 100 if rev_growth < 10 else rev_growth  # handle decimal vs pct
-        if rev_pct >= 20:
+        rev_pct = rev_growth * 100  # yfinance returns decimal fraction (0.10 = 10%)
+        if rev_pct >= bench["rev_good"] * 2:
             rev_assess = "Excellent"; score += 10
-        elif rev_pct >= 10:
+        elif rev_pct >= bench["rev_good"]:
             rev_assess = "Good"; score += 5
         elif rev_pct >= 0:
             rev_assess = "Average"
@@ -459,7 +487,7 @@ def _score_fundamental(fund: dict) -> dict:
     eps_growth = fund.get("earnings_growth")
     eps_assess = "Unknown"
     if eps_growth is not None:
-        eps_pct = eps_growth * 100 if abs(eps_growth) < 10 else eps_growth
+        eps_pct = eps_growth * 100  # yfinance returns decimal fraction
         if eps_pct >= 25:
             eps_assess = "Excellent"; score += 10
         elif eps_pct >= 10:
@@ -469,18 +497,32 @@ def _score_fundamental(fund: dict) -> dict:
         else:
             eps_assess = "Weak"; score -= 7
 
-    # Margins
+    # Margins — relative to sector benchmarks
     gross_m = fund.get("gross_margin")
     op_m = fund.get("operating_margin")
     net_m = fund.get("profit_margin")
-    if gross_m and gross_m > 0.4:
+    gross_threshold = bench["gross_good"] / 100.0
+    op_threshold = bench["op_good"] / 100.0
+
+    if gross_threshold > 0:  # gross margin not meaningful for Financials
+        if gross_m and gross_m > gross_threshold:
+            score += 5
+        elif gross_m and gross_m < gross_threshold * 0.5:
+            score -= 3
+    if op_m and op_m > op_threshold:
         score += 5
-    elif gross_m and gross_m < 0.2:
+    elif op_m and op_m < op_threshold * 0.25:
         score -= 3
-    if op_m and op_m > 0.2:
-        score += 5
-    elif op_m and op_m < 0.05:
-        score -= 3
+
+    if gross_threshold > 0 and gross_m:
+        if gross_m > gross_threshold:
+            margin_vs_sector = f"Above {sector} average (>{bench['gross_good']}% gross)"
+        elif gross_m < gross_threshold * 0.75:
+            margin_vs_sector = f"Below {sector} average (<{int(bench['gross_good']*0.75)}% gross)"
+        else:
+            margin_vs_sector = f"Inline with {sector} average"
+    else:
+        margin_vs_sector = f"Inline with {sector} average"
 
     def pct(v):
         if v is None:
@@ -518,25 +560,26 @@ def _score_fundamental(fund: dict) -> dict:
     else:
         fcf_margin = None
 
-    # Valuation
+    # Valuation — relative to sector fair P/E
     pe = fund.get("trailing_pe")
     fpe = fund.get("forward_pe")
     ps = fund.get("ev_to_revenue")
     ev_ebitda = fund.get("ev_to_ebitda")
     val_assess = "Fairly Valued"
+    fair_pe = bench["fair_pe"]
     if pe is not None and pe > 0:
-        if pe < 15:
+        if pe < fair_pe * 0.65:
             val_assess = "Undervalued"; score += 8
-        elif pe < 25:
+        elif pe < fair_pe * 1.1:
             val_assess = "Fairly Valued"; score += 3
-        elif pe < 40:
+        elif pe < fair_pe * 1.5:
             val_assess = "Fairly Valued"
         else:
             val_assess = "Overvalued"; score -= 5
 
     peg = None
     if pe and rev_growth and rev_growth > 0:
-        g = rev_growth * 100 if rev_growth < 10 else rev_growth
+        g = rev_growth * 100  # yfinance returns decimal fraction
         peg = round(pe / g, 2) if g > 0 else None
 
     # Profitability
@@ -585,7 +628,7 @@ def _score_fundamental(fund: dict) -> dict:
             "gross": pct(gross_m),
             "operating": pct(op_m),
             "net": pct(net_m),
-            "comparison": "Above typical industry average" if gross_m and gross_m > 0.35 else "Inline with industry",
+            "comparison": margin_vs_sector,
         },
         "balance_sheet": {
             "cash": cash,
@@ -730,6 +773,84 @@ def _position_size(tech: dict, portfolio_size: float, max_risk_pct: float, price
         "share_quantity": shares,
         "position_size": pos_size,
         "pct_of_portfolio": round(pos_size / portfolio_size * 100, 1) if portfolio_size else None,
+    }
+
+
+# ── DCF fair value ────────────────────────────────────────────────────────────
+
+_WACC: dict[str, float] = {
+    "Technology": 0.10, "Healthcare": 0.09, "Financials": 0.11,
+    "Utilities": 0.08, "Energy": 0.10, "Consumer Discretionary": 0.09,
+    "Consumer Staples": 0.08, "Industrials": 0.09, "Materials": 0.10,
+    "Real Estate": 0.09, "Communication Services": 0.10,
+}
+_TERMINAL_GROWTH = 0.03
+
+
+def _dcf_fair_value(fund: dict, price: float, sector: str = "Unknown") -> dict | None:
+    """Simplified 2-stage DCF (5-year explicit + Gordon Growth terminal value).
+
+    Uses FCF per share as the base cash flow. Returns None if FCF is negative
+    or insufficient data is available.
+    """
+    fcf = fund.get("free_cashflow")
+    shares = fund.get("shares_outstanding")
+
+    if not fcf or not shares or shares <= 0 or fcf <= 0:
+        return None
+
+    fcf_per_share = fcf / shares
+
+    # Determine growth rate
+    growth = fund.get("earnings_growth")
+    method = "analyst_growth"
+    if growth is None or growth <= 0:
+        growth = fund.get("revenue_growth")
+        method = "revenue_growth"
+    if growth is None or growth <= 0:
+        growth = 0.07
+        method = "sector_default_7pct"
+
+    growth = float(min(max(growth, -0.05), 0.40))
+
+    wacc = _WACC.get(sector, 0.10)
+    g = _TERMINAL_GROWTH
+
+    # Stage 1 — 5-year explicit FCF
+    pv1 = 0.0
+    fcf_t = fcf_per_share
+    for t in range(1, 6):
+        fcf_t *= (1 + growth)
+        pv1 += fcf_t / (1 + wacc) ** t
+
+    # Stage 2 — terminal value (Gordon Growth)
+    tv = fcf_t * (1 + g) / (wacc - g)
+    pv2 = tv / (1 + wacc) ** 5
+
+    dcf_value = pv1 + pv2
+    if dcf_value <= 0 or price <= 0:
+        return None
+
+    mos = (dcf_value - price) / price * 100
+
+    # High conviction: DCF and analyst target agree on direction within 15 ppt
+    target = fund.get("target_price")
+    high_conviction = False
+    if target and price > 0:
+        analyst_upside = (target - price) / price * 100
+        if abs(mos - analyst_upside) < 15 and mos > 0 and analyst_upside > 0:
+            high_conviction = True
+
+    return {
+        "dcf_fair_value": round(dcf_value, 2),
+        "margin_of_safety_pct": round(mos, 1),
+        "assessment": "Undervalued" if mos > 15 else ("Fairly Valued" if mos > -15 else "Overvalued"),
+        "growth_rate_used_pct": round(growth * 100, 1),
+        "wacc_pct": round(wacc * 100, 1),
+        "terminal_growth_pct": round(g * 100, 1),
+        "fcf_per_share": round(fcf_per_share, 2),
+        "method": method,
+        "high_conviction": high_conviction,
     }
 
 
@@ -1101,7 +1222,7 @@ async def get_research(symbol: str):
     entry = _cache.get(sym)
     if entry:
         report, ts = entry
-        if (datetime.utcnow() - ts).total_seconds() < CACHE_TTL_SEC:
+        if (datetime.now(timezone.utc) - ts).total_seconds() < CACHE_TTL_SEC:
             return report
     raise HTTPException(404, "No cached research report. POST to /research/{symbol} to generate.")
 
@@ -1167,7 +1288,8 @@ async def generate_research(symbol: str, req: ResearchRequest):
 
     # Compute scores
     tech = _score_technical(stock, prices, indicators, levels, live_price=price)
-    fund_scores = _score_fundamental(fund)
+    fund_scores = _score_fundamental(fund, sector=stock.get("sector", "Unknown"))
+    dcf = _dcf_fair_value(fund, price, sector=stock.get("sector", "Unknown"))
 
     # Call Claude for qualitative analysis
     ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price)
@@ -1219,7 +1341,7 @@ async def generate_research(symbol: str, req: ResearchRequest):
     report = {
         "symbol": sym,
         "company_name": stock.get("name", sym),
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
         "report_quality": report_quality,
         "current_price": price,
         "market_cap": fund.get("market_cap"),
@@ -1271,9 +1393,10 @@ async def generate_research(symbol: str, req: ResearchRequest):
         "short_float_pct": fund.get("short_percent_of_float"),
         "next_earnings": fund.get("next_earnings_date"),
         "days_to_earnings": fund.get("days_to_earnings"),
+        "dcf": dcf,
     }
 
-    _cache[sym] = (report, datetime.utcnow())
+    _cache[sym] = (report, datetime.now(timezone.utc))
     log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation)
     return report
 

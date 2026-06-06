@@ -6,7 +6,7 @@ import '@/styles/globals.css';
 import { getSession, logout, getImpersonatedUser, exitImpersonation } from '@/lib/auth';
 import { checkAlerts, playNotificationSound } from '@/lib/alerts';
 import { confluenceScore } from '@/lib/confluence';
-import { loadSettings } from '@/lib/settings';
+import { loadSettings, getSignalStyle } from '@/lib/settings';
 import NotificationBell from '@/components/NotificationBell';
 import { api } from '@/lib/api';
 
@@ -29,7 +29,8 @@ const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { label: 'Dashboard',    href: '/' },
       { label: 'Heatmap',      href: '/heatmap',      color: '#38bdf8', tag: 'live' },
-      { label: 'Rankings',     href: '/rankings' },
+      { label: 'Rankings',         href: '/rankings' },
+      { label: 'Sector Rotation',  href: '/sector-rotation', color: '#38bdf8' },
       { label: 'Forecast',     href: '/forecast',     color: '#4ade80' },
     ],
   },
@@ -60,6 +61,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Strategies',      href: '/strategies' },
       { label: 'Alerts',          href: '/alerts' },
       { label: 'Signal Accuracy',    href: '/signal-accuracy',    color: '#a78bfa' },
+      { label: 'Signal Filters',     href: '/signal-filters',     color: '#f97316' },
       { label: 'Trade Performance',  href: '/trade-performance',  color: '#34d399' },
       { label: 'Insider / Congress', href: '/insider',      color: '#fb923c' },
       { label: 'Improvements',       href: '/improvements', color: '#f59e0b', tag: 'new', adminOnly: true },
@@ -195,19 +197,7 @@ export default function App({ Component, pageProps }: AppProps) {
     }
 
     async function doCheck() {
-      if (!hasGateCookie()) {
-        try {
-          const r = await fetch('/api/gate');
-          const { enabled } = await r.json() as { enabled: boolean };
-          if (enabled) {
-            router.replace(`/gate?next=${encodeURIComponent(router.pathname)}`);
-            return;
-          }
-        } catch {
-          // If the gate API is unreachable, let the user through
-        }
-      }
-
+      // If the user has a valid JWT session, skip the gate — they've already authenticated
       const session = getSession();
       if (session) {
         setUsername(session.username);
@@ -221,9 +211,25 @@ export default function App({ Component, pageProps }: AppProps) {
             quiver_api_key: settings.quiverApiKey || undefined,
           }).catch(() => {});
         }
-      } else {
-        router.replace('/login');
+        setChecked(true);
+        return;
       }
+
+      // Gate check only for unauthenticated visitors
+      if (!hasGateCookie()) {
+        try {
+          const r = await fetch('/api/gate');
+          const { enabled } = await r.json() as { enabled: boolean };
+          if (enabled) {
+            router.replace(`/gate?next=${encodeURIComponent(router.pathname)}`);
+            return;
+          }
+        } catch {
+          // If the gate API is unreachable, let the user through
+        }
+      }
+
+      router.replace('/login');
       setChecked(true);
     }
 
@@ -236,17 +242,48 @@ export default function App({ Component, pageProps }: AppProps) {
 
     async function runCheck() {
       try {
-        const [priceList, signalList, rankData] = await Promise.all([
+        const globalStyle = getSignalStyle();
+
+        // Fetch base market data and watchlist metadata in parallel
+        const [priceList, rankData, watchlists] = await Promise.all([
           api.latestPrices(),
-          api.allSignals(),
           api.rankings(),
+          api.listWatchlists().catch(() => [] as Awaited<ReturnType<typeof api.listWatchlists>>),
         ]);
+
+        // Build symbol→style map from watchlists that have a trading style override
+        const symbolStyleMap: Record<string, string> = {};
+        const styledLists = watchlists.filter(wl => wl.trading_style);
+        if (styledLists.length > 0) {
+          const itemArrays = await Promise.all(
+            styledLists.map(wl => api.listWatchlist(wl.id).catch(() => [] as Awaited<ReturnType<typeof api.listWatchlist>>))
+          );
+          itemArrays.forEach((items, i) => {
+            const style = styledLists[i].trading_style!;
+            items.forEach(item => { symbolStyleMap[item.symbol] = style; });
+          });
+        }
+
+        // Fetch signals for each distinct style actually needed (usually just 1-2)
+        const stylesNeeded = new Set<string>([globalStyle, ...Object.values(symbolStyleMap)]);
+        const signalsByStyle: Record<string, Awaited<ReturnType<typeof api.allSignals>>> = {};
+        await Promise.all([...stylesNeeded].map(async style => {
+          signalsByStyle[style] = await api.allSignals(style).catch(() => []);
+        }));
 
         const prices: Record<string, { price: number; change_pct: number | null }> = {};
         for (const p of priceList) prices[p.symbol] = { price: p.price, change_pct: p.change_pct ?? null };
 
-        const signals: Record<string, { signal: string; confidence: number }> = {};
-        for (const s of signalList) signals[s.symbol] = { signal: s.signal, confidence: s.confidence };
+        // Each symbol gets the signal from its applicable style
+        const signals: Record<string, { signal: string; confidence: number; style?: string }> = {};
+        for (const [style, sigs] of Object.entries(signalsByStyle)) {
+          for (const s of sigs) {
+            const applicableStyle = symbolStyleMap[s.symbol] ?? globalStyle;
+            if (style === applicableStyle) {
+              signals[s.symbol] = { signal: s.signal, confidence: s.confidence, style };
+            }
+          }
+        }
 
         const scores: Record<string, { score: number }> = {};
         for (const r of (rankData.rankings ?? [])) if (r.score != null) scores[r.symbol] = { score: r.score };

@@ -25,7 +25,15 @@ from ..models import BaseModel, get_model
 log = get_logger("trainer")
 _settings = get_settings()
 
-_MIN_PRECISION = 0.60  # minimum precision required for a BUY signal threshold
+_MIN_PRECISION = 0.60  # fallback precision floor (SWING)
+
+# SHORT trades have little time to recover from false entries — require tighter precision.
+# LONG trades can absorb more noise over a 90-day hold — accept a lower floor.
+_PRECISION_BY_STYLE: dict[str, float] = {
+    "SHORT": 0.70,
+    "SWING": 0.60,
+    "LONG":  0.50,
+}
 
 
 def _load_prices(symbol: str, lookback_days: int = 365 * 5) -> pd.DataFrame:
@@ -79,12 +87,17 @@ def _precision_threshold(
     y_true: np.ndarray,
     y_prob: np.ndarray,
     min_precision: float = _MIN_PRECISION,
+    symbol: str = "",
 ) -> float:
     """Find the lowest threshold where precision >= min_precision and recall >= 5%.
 
     For trading we care about precision (when we say BUY, we're right) more than
-    recall (we don't need to catch every winner).  Falls back to 0.5 if no
-    threshold achieves the precision target on the test set.
+    recall (we don't need to catch every winner).
+
+    Two-stage fallback:
+      1. precision >= min_precision AND recall >= 5%  (ideal)
+      2. precision >= min_precision, any recall       (high-precision, low-recall model)
+      3. 0.5 — model has no signal at target precision
     """
     if len(np.unique(y_true)) < 2:
         return 0.5
@@ -95,10 +108,33 @@ def _precision_threshold(
         t for t, p, r in zip(thresholds, precisions[:-1], recalls[:-1])
         if p >= min_precision and r >= 0.05
     ]
-    return float(min(valid)) if valid else 0.5
+    if valid:
+        return float(min(valid))
+
+    # Stage 2: precision target met but recall < 5% — still tradeable, just rare signals
+    prec_only = [
+        t for t, p in zip(thresholds, precisions[:-1])
+        if p >= min_precision
+    ]
+    if prec_only:
+        log.warning(
+            "train.threshold_low_recall",
+            symbol=symbol,
+            min_precision=min_precision,
+            note="precision target achievable but recall<5%; signals will be rare",
+        )
+        return float(min(prec_only))
+
+    log.warning(
+        "train.threshold_fallback",
+        symbol=symbol,
+        min_precision=min_precision,
+        note="model cannot achieve precision target on test set; falling back to 0.5",
+    )
+    return 0.5
 
 
-def _recency_weights(n: int, newest_to_oldest_ratio: float = 3.0) -> np.ndarray:
+def _recency_weights(n: int, newest_to_oldest_ratio: float = 5.0) -> np.ndarray:
     """Exponential weights so most-recent bar has ~ratio× the weight of oldest.
 
     Normalised so the mean weight equals 1 (total weight ≈ n, consistent with
@@ -113,6 +149,7 @@ def train_model(
     model_name: str = "xgboost",
     horizon: int = 5,
     hyperparams: dict | None = None,
+    style: str = "SWING",
 ) -> dict:
     try:
         df = _load_prices(symbol)
@@ -161,8 +198,8 @@ def train_model(
         X_cv_tr_s = sc.fit_transform(X_cv_tr)
         X_cv_val_s = sc.transform(X_cv_val)
 
-        # Recency-weighted training: recent bars matter more
-        cv_weights = _recency_weights(len(tr_idx))
+        # Recency-weighted training: recent bars matter more (5× ratio adapts faster to regime shifts)
+        cv_weights = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
         cv_model = get_model(model_name, **(hyperparams or {}))
         cv_model.fit(X_cv_tr_s, y_cv_tr, sample_weight=cv_weights)
 
@@ -184,13 +221,17 @@ def train_model(
     y_cal   = y_dir.iloc[split_train:split_cal]
     y_test  = y_dir.iloc[split_cal:]
 
+    if len(np.unique(y_train)) < 2:
+        log.warning("train.skipped", symbol=symbol, reason="degenerate labels — all same class after dead-zone filter")
+        return {"symbol": symbol, "skipped": True, "reason": "degenerate labels after dead-zone filter"}
+
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train.values)
     X_cal_s   = scaler.transform(X_cal.values)
     X_test_s  = scaler.transform(X_test.values)
 
-    # Recency weights for final training
-    train_weights = _recency_weights(len(X_train))
+    # Recency weights for final training (5× ratio adapts faster to regime shifts)
+    train_weights = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
 
     # XGBoost early stopping on calibration set (separate from threshold eval set)
     model = get_model(model_name, early_stopping_rounds=50, **(hyperparams or {}))
@@ -215,7 +256,8 @@ def train_model(
     # --- Precision-optimised BUY threshold (on held-out test set) ---
     raw_test_probs = model.predict_proba(X_test_s)[:, 1]  # shape (n,)
     preds = calibrator.predict(raw_test_probs) if calibrator is not None else raw_test_probs
-    buy_threshold = _precision_threshold(y_test.values, preds)
+    min_prec = _PRECISION_BY_STYLE.get(style.upper(), _MIN_PRECISION)
+    buy_threshold = _precision_threshold(y_test.values, preds, min_precision=min_prec, symbol=symbol)
 
     y_pred = (preds > buy_threshold).astype(int)
 
@@ -230,6 +272,15 @@ def train_model(
         top5 = sorted(feature_importance, key=feature_importance.get, reverse=True)[:5]
         log.info("train.top_features", symbol=symbol, top5=top5)
 
+    cv_auc_mean = float(np.mean(cv_aucs)) if cv_aucs else None
+    if cv_auc_mean is not None and cv_auc_mean < 0.55:
+        log.warning(
+            "train.low_auc",
+            symbol=symbol,
+            cv_auc_mean=round(cv_auc_mean, 4),
+            note="model is near-random; predictions will carry low weight in signal fusion",
+        )
+
     metrics = {
         "accuracy": float(accuracy_score(y_test, y_pred)),
         "auc": float(roc_auc_score(y_test, preds)) if len(np.unique(y_test)) > 1 else None,
@@ -237,7 +288,7 @@ def train_model(
         "recall": float(recall_score(y_test, y_pred, zero_division=0)),
         "f1": float(f1_score(y_test, y_pred, zero_division=0)),
         "buy_threshold": float(buy_threshold),
-        "cv_auc_mean": float(np.mean(cv_aucs)) if cv_aucs else None,
+        "cv_auc_mean": cv_auc_mean,
         "cv_auc_std": float(np.std(cv_aucs)) if cv_aucs else None,
         "cv_acc_mean": float(np.mean(cv_accs)) if cv_accs else None,
         "n_train": int(len(X_train)),
@@ -307,7 +358,9 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     X_aligned = X.reindex(columns=saved_cols, fill_value=0.0).fillna(0.0)
     Xs = scaler.transform(X_aligned.values)
     # Positive-class probability for the latest bar (calibrator expects 1D input).
-    raw_prob = float(model.predict_proba(Xs)[-1, 1])
+    # XGBModel.predict_proba returns 1D (n_samples,); XGBClassifier returns 2D (n_samples, 2).
+    proba = model.predict_proba(Xs)
+    raw_prob = float(proba[-1, 1] if proba.ndim == 2 else proba[-1])
 
     # Apply calibration if the model was trained with it
     prob = float(calibrator.predict([raw_prob])[0]) if calibrator is not None else raw_prob

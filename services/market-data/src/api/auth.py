@@ -1,5 +1,5 @@
 """Auth routes — JWT login, user management (admin), password change."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import bcrypt as _bcrypt
 from fastapi import APIRouter, Depends, HTTPException
@@ -34,7 +34,7 @@ ALGORITHM = "HS256"
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _make_token(username: str, role: str) -> str:
-    expire = datetime.utcnow() + timedelta(days=_settings.jwt_expire_days)
+    expire = datetime.now(timezone.utc) + timedelta(days=_settings.jwt_expire_days)
     return jwt.encode(
         {"sub": username, "role": role.lower(), "exp": expire},
         _settings.jwt_secret,

@@ -138,7 +138,7 @@ export function conditionLabel(c: AlertCondition): string {
 // ─── Alert checker ───────────────────────────────────────────────────────────
 
 type PriceMap      = Record<string, { price: number; change_pct: number | null }>;
-type SignalMap     = Record<string, { signal: string; confidence: number }>;
+type SignalMap     = Record<string, { signal: string; confidence: number; style?: string }>;
 type ScoreMap      = Record<string, { score: number }>;
 type ConfluenceMap = Record<string, { score: number }>;
 
@@ -212,12 +212,16 @@ export function checkAlerts(
         break;
       case 'signal_buy':
         if (s?.signal === 'BUY') {
-          message = `${alert.symbol} signal is BUY (${s.confidence.toFixed(0)}% confidence)`;
+          const styleTag = s.style ? ` [${s.style}]` : '';
+          const conf = s.confidence != null ? `${s.confidence.toFixed(0)}%` : '—';
+          message = `${alert.symbol} signal is BUY${styleTag} (${conf} confidence)`;
         }
         break;
       case 'signal_sell':
         if (s?.signal === 'SELL') {
-          message = `${alert.symbol} signal is SELL (${s.confidence.toFixed(0)}% confidence)`;
+          const styleTag = s.style ? ` [${s.style}]` : '';
+          const conf = s.confidence != null ? `${s.confidence.toFixed(0)}%` : '—';
+          message = `${alert.symbol} signal is SELL${styleTag} (${conf} confidence)`;
         }
         break;
       case 'score_above':

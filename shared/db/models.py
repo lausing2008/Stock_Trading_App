@@ -252,6 +252,7 @@ class Watchlist(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(128))
+    trading_style: Mapped[str | None] = mapped_column(String(16), nullable=True)  # SHORT|SWING|LONG|None=global
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="watchlists")
@@ -315,6 +316,7 @@ class SignalAlert(Base):
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     email: Mapped[str | None] = mapped_column(String(256), nullable=True)
     last_signal: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="signal_alerts")
@@ -401,6 +403,47 @@ class TradeJournal(Base):
     user: Mapped["User"] = relationship(back_populates="trade_journal")
 
 
+class SignalOutcome(Base):
+    """Forward-tracking table: one row per evaluated BUY/SELL signal.
+
+    Written by POST /signals/outcomes/evaluate (runs post-close via scheduler).
+    Captures entry price, exit price, and actual return after the hold window
+    closes. Used for signal accuracy calibration and parameter tuning via Optuna.
+    """
+    __tablename__ = "signal_outcomes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    signal_id: Mapped[int] = mapped_column(
+        ForeignKey("signals.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    stock_id: Mapped[int] = mapped_column(
+        ForeignKey("stocks.id", ondelete="CASCADE"), index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    horizon: Mapped[SignalHorizon] = mapped_column(SAEnum(SignalHorizon), index=True)
+    signal_direction: Mapped[str] = mapped_column(String(8))        # BUY | SELL
+    signal_date: Mapped[date] = mapped_column(Date, index=True)
+    confidence: Mapped[float] = mapped_column(Float)                # 0–100
+    fused_prob: Mapped[float | None] = mapped_column(Float, nullable=True)      # 0–1
+    ta_score: Mapped[float | None] = mapped_column(Float, nullable=True)        # 0–1
+    ml_prob: Mapped[float | None] = mapped_column(Float, nullable=True)         # 0–1
+    ml_auc: Mapped[float | None] = mapped_column(Float, nullable=True)          # 0–1
+    market_regime: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Trade outcome (filled when hold window closes)
+    entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hold_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pct_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    ts_evaluated: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_signal_outcomes_horizon_correct", "horizon", "is_correct"),
+    )
+
+
 class TradePlan(Base):
     """Kanban board card — persisted AI game plan or forecast pick."""
     __tablename__ = "trade_plans"
@@ -418,6 +461,7 @@ class TradePlan(Base):
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     actual_entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     shares: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trading_style: Mapped[str | None] = mapped_column(String(16), nullable=True)  # SHORT|SWING|LONG
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

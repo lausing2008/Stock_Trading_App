@@ -4,7 +4,6 @@ import useSWR from 'swr';
 import { api, type RankingRow, type SignalSummary, type LatestPrice, type WatchlistItem } from '@/lib/api';
 import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 import { getSession } from '@/lib/auth';
-import { getSignalStyle } from '@/lib/settings';
 
 // ─── Merged row type ──────────────────────────────────────────────────────────
 
@@ -119,7 +118,7 @@ export default function Screener() {
   const isAdmin = getSession()?.role === 'admin';
 
   const { data: rankData } = useSWR('rankings-all', () => api.rankings());
-  const { data: signals }  = useSWR('signals-' + getSignalStyle(),  () => api.allSignals(getSignalStyle()));
+  const { data: signals }  = useSWR('all-signals',  () => api.allSignals());
   const { data: prices }   = useSWR('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: wlItems }  = useSWR('watchlist', () => api.listWatchlist());
 
@@ -200,7 +199,7 @@ export default function Screener() {
       if (maxPrc     != null && (r.price ?? 0) > maxPrc) return false;
       if (minDisc != null) {
         if (r.fair_price == null || r.price == null) return false;
-        const discount = (r.fair_price - r.price) / r.price;
+        const discount = (r.fair_price - r.price) / r.fair_price;
         if (discount < minDisc) return false;
       }
       return true;

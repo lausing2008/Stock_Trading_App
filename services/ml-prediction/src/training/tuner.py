@@ -52,7 +52,7 @@ def _suggest(trial: optuna.Trial, name: str) -> int | float:
     return trial.suggest_float(name, spec[1], spec[2], log=log_scale)
 
 
-def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5) -> dict:
+def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = "SWING") -> dict:
     """Run Optuna search for `symbol`, save best params, retrain final model.
 
     Returns a result dict with best_params, best_cv_auc, and final train metrics.
@@ -104,14 +104,17 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5) -> dict:
             X_tr, X_val = X_arr[tr_idx], X_arr[val_idx]
             y_tr, y_val = y_arr[tr_idx], y_arr[val_idx]
             sc = StandardScaler()
-            # Recency-weighted training so Optuna optimises for recent market behaviour
-            w = _recency_weights(len(tr_idx))
+            # Recency-weighted training so Optuna optimises for recent market behaviour (5× ratio)
+            w = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
             clf.fit(sc.fit_transform(X_tr), y_tr, sample_weight=w, verbose=False)
             preds = clf.predict_proba(sc.transform(X_val))[:, 1]
             if len(np.unique(y_val)) > 1:
                 aucs.append(roc_auc_score(y_val, preds))
 
-        return -float(np.mean(aucs)) if aucs else 0.0
+        # Return a large positive value (bad objective) when no fold produced a valid AUC.
+        # Optuna minimises, so 1.0 (= AUC of 0.0 inverted) is correctly worse than
+        # any real model's objective (which is negative for AUC > 0).
+        return -float(np.mean(aucs)) if aucs else 1.0
 
     study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
@@ -127,7 +130,7 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5) -> dict:
     log.info("tune.best_params", symbol=symbol, cv_auc=round(best_cv_auc, 4), **best_params)
 
     # Retrain final model using best params (train_model will pick them up via _load_best_params)
-    result = train_model(symbol, "xgboost", horizon, hyperparams=best_params)
+    result = train_model(symbol, "xgboost", horizon, hyperparams=best_params, style=style)
     result["best_params"] = best_params
     result["best_cv_auc"] = round(best_cv_auc, 4)
     return result

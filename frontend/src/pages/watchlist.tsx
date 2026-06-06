@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem } from '@/lib/api';
 import { storage } from '@/lib/storage';
+import { getSignalStyle } from '@/lib/settings';
 
 /* ── helpers ────────────────────────────────────────────── */
 const NOTES_KEY = 'watch_notes';
@@ -152,21 +153,29 @@ function AlertModal({ symbol, price, existingAlerts, hasEmail, onAdd, onDelete, 
 }
 
 /* ── Create watchlist modal ─────────────────────────────── */
-function CreateWatchlistModal({ onSave, onClose }: { onSave: (name: string) => Promise<void>; onClose: () => void }) {
+const STYLE_OPTS = [
+  { value: null,    label: 'Global default', desc: 'Follows your Settings → Trading Style', color: '#475569' },
+  { value: 'SHORT', label: 'Short Term',      desc: '1–5 days · pure TA',                   color: '#f87171' },
+  { value: 'SWING', label: 'Swing Trade',     desc: '5–20 days · balanced',                 color: '#818cf8' },
+  { value: 'LONG',  label: 'Long Term',       desc: '30–90 days · fundamentals',            color: '#4ade80' },
+] as const;
+
+function CreateWatchlistModal({ onSave, onClose }: { onSave: (name: string, style: string | null) => Promise<void>; onClose: () => void }) {
   const [name, setName] = useState('');
+  const [style, setStyle] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
     setSaving(true);
-    await onSave(name.trim());
+    await onSave(name.trim(), style);
     setSaving(false);
     onClose();
   }
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
       <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.8)', backdropFilter: 'blur(4px)' }} />
-      <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '340px', borderRadius: '14px', background: '#0d1424', border: '1px solid rgba(99,102,241,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
+      <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '380px', borderRadius: '14px', background: '#0d1424', border: '1px solid rgba(99,102,241,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.5)', overflow: 'hidden' }}>
         <div style={{ height: '3px', background: 'linear-gradient(90deg,#4f46e5,#818cf8,#4f46e5)' }} />
         <form onSubmit={submit} style={{ padding: '18px 20px 20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '14px' }}>
@@ -177,14 +186,36 @@ function CreateWatchlistModal({ onSave, onClose }: { onSave: (name: string) => P
             autoFocus
             value={name}
             onChange={e => setName(e.target.value)}
-            placeholder="e.g. Tech Stocks, Dividend Plays…"
+            placeholder="e.g. Swing Trades, Long Holds…"
             maxLength={64}
-            style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box' }}
+            style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box', marginBottom: '14px' }}
           />
+          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Trading Style</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
+            {STYLE_OPTS.map(opt => (
+              <button
+                key={String(opt.value)}
+                type="button"
+                onClick={() => setStyle(opt.value)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px',
+                  borderRadius: '8px', cursor: 'pointer', textAlign: 'left',
+                  background: style === opt.value ? `${opt.color}12` : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${style === opt.value ? `${opt.color}50` : 'rgba(255,255,255,0.06)'}`,
+                }}
+              >
+                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: style === opt.value ? opt.color : '#334155', flexShrink: 0 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: style === opt.value ? opt.color : '#94a3b8' }}>{opt.label}</div>
+                  <div style={{ fontSize: '11px', color: '#475569' }}>{opt.desc}</div>
+                </div>
+              </button>
+            ))}
+          </div>
           <button
             type="submit"
             disabled={!name.trim() || saving}
-            style={{ marginTop: '12px', width: '100%', borderRadius: '8px', padding: '9px', background: name.trim() ? 'linear-gradient(135deg,#4f46e5,#6366f1)' : 'rgba(255,255,255,0.05)', border: 'none', color: name.trim() ? '#fff' : '#475569', fontSize: '13px', fontWeight: 700, cursor: name.trim() ? 'pointer' : 'default' }}
+            style={{ width: '100%', borderRadius: '8px', padding: '9px', background: name.trim() ? 'linear-gradient(135deg,#4f46e5,#6366f1)' : 'rgba(255,255,255,0.05)', border: 'none', color: name.trim() ? '#fff' : '#475569', fontSize: '13px', fontWeight: 700, cursor: name.trim() ? 'pointer' : 'default' }}
           >
             {saving ? 'Creating…' : 'Create Watchlist'}
           </button>
@@ -455,6 +486,9 @@ export default function Watchlist() {
 
   // Resolve active list id from fetched lists
   const resolvedListId = activeListId ?? lists?.[0]?.id ?? null;
+  // Use the active list's trading style if set, else fall back to global setting
+  const activeList = (lists ?? []).find(l => l.id === resolvedListId);
+  const effectiveStyle = activeList?.trading_style ?? getSignalStyle();
 
   const { data, error, isLoading, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>(
     resolvedListId != null ? ['watchlist', resolvedListId] : null,
@@ -462,7 +496,7 @@ export default function Watchlist() {
   );
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
-  const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
+  const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-' + effectiveStyle, () => api.allSignals(effectiveStyle));
 
   const { data: alertsData, mutate: mutateAlerts } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { refreshInterval: 30_000 });
   const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { refreshInterval: 60_000 });
@@ -550,8 +584,8 @@ export default function Watchlist() {
     return () => document.removeEventListener('mousedown', handler);
   }, [moveMenu]);
 
-  async function handleCreateWatchlist(name: string) {
-    await api.createWatchlist(name);
+  async function handleCreateWatchlist(name: string, style: string | null) {
+    await api.createWatchlist(name, style);
     const updated = await mutateLists();
     const newList = updated?.find(l => l.name === name);
     if (newList) setActiveListId(newList.id);
@@ -618,14 +652,16 @@ export default function Watchlist() {
     if (unsubscribed.length === 0) return;
     setBulkSubscribing(true);
     const email = me?.email ?? (typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') ?? undefined : undefined);
-    try {
-      await Promise.all(unsubscribed.map(item => api.createSignalAlert(item.symbol, email)));
-      await mutateSignalAlerts();
-      setAlertToast({ msg: `Signal alerts enabled for ${unsubscribed.length} stocks`, ok: true });
-    } catch {
-      setAlertToast({ msg: 'Some subscriptions failed', ok: false });
-    }
-    setTimeout(() => setAlertToast(null), 3000);
+    const results = await Promise.allSettled(unsubscribed.map(item => api.createSignalAlert(item.symbol, email)));
+    const succeeded = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+    await mutateSignalAlerts();
+    setAlertToast(
+      failed === 0
+        ? { msg: `Signal alerts enabled for ${succeeded} stocks`, ok: true }
+        : { msg: `${succeeded} subscribed, ${failed} failed — check your email in Settings`, ok: false }
+    );
+    setTimeout(() => setAlertToast(null), 4000);
     setBulkSubscribing(false);
   }
 
@@ -633,14 +669,16 @@ export default function Watchlist() {
     const subscribed = (data ?? []).filter(item => signalAlertMap[item.symbol]);
     if (subscribed.length === 0) return;
     setBulkSubscribing(true);
-    try {
-      await Promise.all(subscribed.map(item => api.deleteSignalAlert(signalAlertMap[item.symbol].id)));
-      await mutateSignalAlerts();
-      setAlertToast({ msg: `Signal alerts removed for ${subscribed.length} stocks`, ok: true });
-    } catch {
-      setAlertToast({ msg: 'Some removals failed', ok: false });
-    }
-    setTimeout(() => setAlertToast(null), 3000);
+    const results = await Promise.allSettled(subscribed.map(item => api.deleteSignalAlert(signalAlertMap[item.symbol].id)));
+    const succeeded = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+    await mutateSignalAlerts();
+    setAlertToast(
+      failed === 0
+        ? { msg: `Signal alerts removed for ${succeeded} stocks`, ok: true }
+        : { msg: `${succeeded} removed, ${failed} failed`, ok: false }
+    );
+    setTimeout(() => setAlertToast(null), 4000);
     setBulkSubscribing(false);
   }
 
@@ -708,6 +746,15 @@ export default function Watchlist() {
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
         {(lists ?? []).map(list => {
           const isActive = list.id === resolvedListId;
+          const styleOpt = STYLE_OPTS.find(o => o.value === list.trading_style);
+          const styleColor = styleOpt?.color ?? '#334155';
+          const CYCLE = [null, 'SHORT', 'SWING', 'LONG'] as const;
+          async function cycleStyle() {
+            const idx = CYCLE.indexOf(list.trading_style as typeof CYCLE[number]);
+            const next = CYCLE[(idx + 1) % CYCLE.length];
+            await api.renameWatchlist(list.id, list.name, next ?? '');
+            mutateLists();
+          }
           return (
             <div key={list.id} style={{ display: 'flex', alignItems: 'center', borderRadius: '8px', border: `1px solid ${isActive ? 'rgba(99,102,241,0.5)' : '#1e293b'}`, background: isActive ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.02)', overflow: 'hidden' }}>
               <button
@@ -717,6 +764,23 @@ export default function Watchlist() {
                 {list.name}
                 <span style={{ marginLeft: '6px', fontSize: '11px', color: isActive ? '#6366f1' : '#334155' }}>{list.item_count}</span>
               </button>
+              {list.trading_style ? (
+                <button
+                  onClick={cycleStyle}
+                  title={`Style: ${list.trading_style} — click to change`}
+                  style={{ padding: '3px 7px', background: 'none', border: 'none', borderLeft: '1px solid rgba(255,255,255,0.05)', cursor: 'pointer', fontSize: '9px', fontWeight: 800, letterSpacing: '0.05em', color: styleColor }}
+                >
+                  {list.trading_style}
+                </button>
+              ) : isActive ? (
+                <button
+                  onClick={cycleStyle}
+                  title="Set trading style for this list"
+                  style={{ padding: '3px 7px', background: 'none', border: 'none', borderLeft: '1px solid rgba(255,255,255,0.05)', cursor: 'pointer', fontSize: '9px', color: '#334155' }}
+                >
+                  +style
+                </button>
+              ) : null}
               {(lists ?? []).length > 1 && (
                 <button
                   onClick={() => handleDeleteWatchlist(list.id)}
@@ -752,7 +816,7 @@ export default function Watchlist() {
                 onClick={handleNotifyAll}
                 disabled={bulkSubscribing || allOn}
                 title={allOn ? 'All stocks already have signal alerts' : `Enable signal alerts for all ${data.length - subscribedCount} unsubscribed stocks`}
-                style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '8px', border: '1px solid rgba(129,140,248,0.35)', background: allOn ? 'rgba(129,140,248,0.05)' : 'rgba(129,140,248,0.1)', color: allOn ? '#334155' : '#818cf8', cursor: allOn || bulkSubscribing ? 'default' : 'pointer', fontSize: '12px', fontWeight: 600, opacity: bulkSubscribing ? 0.6 : 1 }}
+                style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 12px', borderRadius: '8px', border: `1px solid ${allOn ? 'rgba(74,222,128,0.3)' : 'rgba(129,140,248,0.35)'}`, background: allOn ? 'rgba(74,222,128,0.08)' : 'rgba(129,140,248,0.1)', color: allOn ? '#4ade80' : '#818cf8', cursor: allOn || bulkSubscribing ? 'default' : 'pointer', fontSize: '12px', fontWeight: 600, opacity: bulkSubscribing ? 0.6 : 1 }}
               >
                 📡 {bulkSubscribing ? 'Working…' : allOn ? `All notified (${subscribedCount})` : `Notify All (${data.length - subscribedCount})`}
               </button>
@@ -970,7 +1034,7 @@ export default function Watchlist() {
 
       {noteModal  && <NoteModal  symbol={noteModal}  initial={notes[noteModal] ?? ''}  onSave={v => saveNote(noteModal, v)}  onClose={() => setNoteModal(null)} />}
       {alertModal && <AlertModal symbol={alertModal} price={priceMap[alertModal]?.price} existingAlerts={alertMap[alertModal] ?? []} hasEmail={hasEmail} onAdd={(t, d) => handleAddAlert(alertModal, t, d)} onDelete={handleDeleteAlert} onClose={() => setAlertModal(null)} />}
-      {showCreateModal && <CreateWatchlistModal onSave={handleCreateWatchlist} onClose={() => setShowCreateModal(false)} />}
+      {showCreateModal && <CreateWatchlistModal onSave={(name, style) => handleCreateWatchlist(name, style)} onClose={() => setShowCreateModal(false)} />}
       {showAddToList && resolvedListId != null && (
         <AddToListModal
           listId={resolvedListId}

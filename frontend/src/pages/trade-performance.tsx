@@ -5,8 +5,9 @@
  * ─────────────
  * Every time the system issued a BUY signal, this page tracks what happened
  * next. A "trade" starts on the BUY signal date and ends when the system
- * issues a SELL or WAIT signal for the same stock. If there's no exit signal
- * yet, the trade is still "Open" and uses today's price as the exit.
+ * issues a SELL signal for the same stock and same trading horizon (SHORT/SWING/LONG).
+ * WAIT signals are NOT exits — they mean "hold off new entries," not "close position."
+ * If there's no SELL yet, the trade is still "Open" and uses today's price as the exit.
  *
  * HOW TO READ THE SUMMARY CARDS
  * ──────────────────────────────
@@ -38,7 +39,7 @@
  *   Exit date   — when the next SELL or WAIT signal was issued
  *   Return      — (exit price - entry price) / entry price × 100
  *   Hold days   — calendar days from entry to exit
- *   Exit signal — SELL, WAIT, or OPEN (still holding)
+ *   Exit signal — SELL or OPEN (still holding). WAIT no longer closes trades.
  *
  * DIFFERENCE FROM SIGNAL ACCURACY
  * ─────────────────────────────────
@@ -159,16 +160,33 @@ function EquityCurve({ points, spyReturn }: { points: EquityPoint[]; spyReturn: 
   );
 }
 
+const HORIZON_OPTIONS = [
+  { label: 'SHORT  (1–5d)',   value: 'SHORT' },
+  { label: 'SWING  (5–20d)',  value: 'SWING' },
+  { label: 'LONG  (30–90d)', value: 'LONG'  },
+];
+
+const MAX_HOLD_DEFAULTS: Record<string, number> = { SHORT: 7, SWING: 25, LONG: 90 };
+
 export default function TradePerformancePage() {
-  const [lookback, setLookback]         = useState(180);
-  const [filterSymbol, setFilterSymbol] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'closed' | 'open'>('ALL');
+  const [lookback, setLookback]           = useState(180);
+  const [horizon, setHorizon]             = useState<'SHORT' | 'SWING' | 'LONG'>('SWING');
+  const [waitExits, setWaitExits]         = useState(false);
+  const [useMaxHold, setUseMaxHold]       = useState(true);
+  const [maxHoldDays, setMaxHoldDays]     = useState<number>(25);
+  const [minConfidence, setMinConfidence] = useState(0);
+  const [filterSymbol, setFilterSymbol]   = useState('');
+  const [statusFilter, setStatusFilter]   = useState<'ALL' | 'closed' | 'open'>('ALL');
   const [outcomeFilter, setOutcomeFilter] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
-  const [sortBy, setSortBy]             = useState<'date' | 'return' | 'hold'>('date');
+  const [sortBy, setSortBy]               = useState<'date' | 'return' | 'hold'>('date');
 
   const { data, isLoading, error } = useSWR(
-    ['trade-performance', lookback],
-    () => api.tradePerformance(lookback),
+    ['trade-performance', lookback, horizon, waitExits, useMaxHold, maxHoldDays, minConfidence],
+    () => api.tradePerformance(lookback, undefined, horizon, {
+      waitExits,
+      maxHoldDays: useMaxHold ? maxHoldDays : undefined,
+      minConfidence: minConfidence > 0 ? minConfidence : undefined,
+    }),
     { revalidateOnFocus: false },
   );
 
@@ -200,12 +218,25 @@ export default function TradePerformancePage() {
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>Trade Performance</h1>
         <p style={{ fontSize: 13, color: '#64748b' }}>
-          Real P&amp;L from BUY → SELL/WAIT signal pairs. Each row is one complete trade.
+          Real P&amp;L from BUY → exit signal pairs. Toggle exit rules below to simulate better trade management.
         </p>
       </div>
 
       {/* Controls */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center' }}>
+        {/* Horizon selector */}
+        <div style={{ display: 'flex', gap: 4 }}>
+          {HORIZON_OPTIONS.map(o => (
+            <button key={o.value} onClick={() => { setHorizon(o.value as 'SHORT' | 'SWING' | 'LONG'); setMaxHoldDays(MAX_HOLD_DEFAULTS[o.value]); }}
+              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                borderColor: horizon === o.value ? '#4ade80' : '#1e293b',
+                background: horizon === o.value ? 'rgba(74,222,128,0.12)' : 'transparent',
+                color: horizon === o.value ? '#4ade80' : '#64748b' }}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ width: 1, background: '#1e293b', alignSelf: 'stretch' }} />
         <div style={{ display: 'flex', gap: 4 }}>
           {LOOKBACK_OPTIONS.map(o => (
             <button key={o.value} onClick={() => setLookback(o.value)}
@@ -217,6 +248,49 @@ export default function TradePerformancePage() {
             </button>
           ))}
         </div>
+        <div style={{ width: 1, background: '#1e293b', alignSelf: 'stretch' }} />
+
+        {/* Exit rule toggles */}
+        <button
+          onClick={() => setWaitExits(v => !v)}
+          title="Exit on WAIT signal (same horizon) — cuts losses when momentum fades instead of waiting for a full SELL"
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+            borderColor: waitExits ? '#f59e0b' : '#1e293b',
+            background: waitExits ? 'rgba(245,158,11,0.12)' : 'transparent',
+            color: waitExits ? '#f59e0b' : '#64748b' }}>
+          WAIT exits {waitExits ? 'ON' : 'OFF'}
+        </button>
+
+        <button
+          onClick={() => setUseMaxHold(v => !v)}
+          title={`Time-stop: force-close after ${maxHoldDays}d regardless of signal. Default: SHORT=7d, SWING=25d, LONG=90d`}
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+            borderColor: useMaxHold ? '#818cf8' : '#1e293b',
+            background: useMaxHold ? 'rgba(129,140,248,0.12)' : 'transparent',
+            color: useMaxHold ? '#818cf8' : '#64748b' }}>
+          Max hold {useMaxHold ? `${maxHoldDays}d` : 'OFF'}
+        </button>
+        {useMaxHold && (
+          <input
+            type="number" value={maxHoldDays} min={1} max={365}
+            onChange={e => setMaxHoldDays(Number(e.target.value))}
+            title="Max hold days"
+            style={{ width: 54, padding: '4px 6px', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#818cf8', fontSize: 12 }}
+          />
+        )}
+
+        <select
+          value={minConfidence}
+          onChange={e => setMinConfidence(Number(e.target.value))}
+          title="Only include BUY signals with confidence ≥ this value. Higher = fewer but higher-quality trades."
+          style={{ padding: '4px 8px', borderRadius: 6, border: `1px solid ${minConfidence > 0 ? '#38bdf8' : '#1e293b'}`, background: '#0f172a', color: minConfidence > 0 ? '#38bdf8' : '#64748b', fontSize: 12 }}>
+          <option value={0}>Min conf: any</option>
+          <option value={40}>Min conf: 40%</option>
+          <option value={50}>Min conf: 50%</option>
+          <option value={60}>Min conf: 60%</option>
+          <option value={70}>Min conf: 70%</option>
+        </select>
+
         <input
           value={filterSymbol} onChange={e => setFilterSymbol(e.target.value)}
           placeholder="Filter symbol…"

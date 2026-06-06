@@ -166,7 +166,154 @@ Add stocks to a watchlist (you can have multiple lists) to monitor without re-en
 
 ---
 
-## Step 8 — Exit Signals
+## Step 8 — Reading Signal Changes
+
+The AI Signal refreshes up to 5× per trading day. When a signal changes, the label alone is not enough — you need to understand **why** it changed before deciding what to do. Open the stock detail page and expand the **Signal Reasons** panel to inspect the underlying indicator values.
+
+---
+
+### BUY → BUY (confidence falling)
+
+The signal label held but conviction is eroding. This is an early warning.
+
+**Check in Signal Reasons:**
+
+| Field | Warning sign |
+|-------|-------------|
+| `confidence` | Dropped below 40% — signal is near the threshold boundary |
+| `ml_ta_conflict` | Flipped to `true` — ML and TA now disagree |
+| `weekly_alignment` | Flipped to `false` — weekly trend no longer confirming daily |
+| `rsi` | Moved above 70 — overbought territory |
+| `macd_rising` | Flipped to `false` — momentum starting to stall |
+
+**Action:** Do not add to the position. Raise your stop-loss to the most recent swing low or 1.5 × ATR below the current price. If you are in meaningful profit (> 1 R), consider trimming 25–30% of the position to de-risk while keeping the core.
+
+---
+
+### BUY → HOLD
+
+The fused probability dropped below the BUY threshold but the model is not yet bearish. Conditions have weakened but not broken.
+
+**Check in Signal Reasons:**
+
+| Field | What it means if changed |
+|-------|--------------------------|
+| `weekly_alignment` | `false` → daily move is now against the weekly trend — the upside is likely limited |
+| `adx_compression` | `true` → ADX dropped below the threshold; stock has entered a range, trend stalled |
+| `market_regime` | Changed to `high_vol` or `bear` → regime shift raised the BUY threshold; signal is the same but the bar got higher |
+| `breadth_compression` | `true` → market-wide weakness is compressing signals; this is macro, not stock-specific |
+| `news_sentiment_flag` | `"negative"` → fresh negative headlines are applying a compression |
+| `earnings_warning` | `"watch"` or `"note"` → upcoming earnings are suppressing conviction |
+| `rsi` | Above 68 → overbought; probability of continued upside decreasing |
+
+**Action:**
+- Do not exit immediately — HOLD means the model is neutral, not bearish.
+- Move your stop-loss to breakeven or to the nearest support below entry.
+- Do not add to the position.
+- Set a signal alert: if it recovers to BUY, you can re-add; if it falls to WAIT, begin reducing.
+- If the change was driven purely by `market_regime` or `breadth_compression` (macro, not stock), be more patient — the stock setup may be intact and the signal will recover when the macro clears.
+
+---
+
+### BUY → WAIT
+
+The fused probability has crossed into slightly bearish territory. The model is no longer neutral — it is saying conditions have **actively turned against** the trade thesis.
+
+**Check in Signal Reasons:**
+
+| Field | What it means if changed |
+|-------|--------------------------|
+| `rsi_divergence` | `"bearish"` → price made a new high but RSI did not — classic topping pattern |
+| `macd_hist` | Turned negative → short-term momentum has flipped bearish |
+| `trend_above_sma50` | `false` → price fell below SMA(50); primary support broken |
+| `ml_probability` | Dropped below 0.45 → ML model is now actively bearish |
+| `weekly_alignment` | `false` + weekly score below 0.5 → weekly trend is now a headwind |
+| `adx_bullish` | `false` + `adx_trending` `true` → strong trend exists but DI− > DI+; trend has reversed direction |
+| `options_flag` | Changed to `"elevated_put_volume"` or `"bearish"` → institutional options flow turned negative |
+
+**Action:**
+- This is an **exit signal** for active positions.
+- Close at least half the position immediately. Keep the remainder only if you believe the change is a temporary filter (e.g. earnings compression that will expire, or a regime blip).
+- Move any remaining stop-loss to the breakeven or a tight technical level (nearest support).
+- Do not average down — a WAIT signal means the model sees more downside than upside.
+- Re-evaluate after the next signal refresh. If it drops to SELL, exit the remainder.
+
+---
+
+### BUY → SELL
+
+The fused probability has crossed the SELL threshold. This is the strongest bearish signal the system generates.
+
+**Action:**
+- Exit the full position. No exceptions.
+- Review what drove the change in Signal Reasons — the combination of `ml_probability`, `rsi_divergence`, and `trend_above_sma50` will tell you whether this is a fundamental shift or a temporary spike.
+- Do not re-enter until the signal recovers to BUY with confidence ≥ 50%.
+
+---
+
+### HOLD → BUY (re-entry signal)
+
+A stock that was on your watchlist as HOLD has strengthened to BUY. This is a valid entry trigger, often cleaner than the original BUY because the setup has had time to build.
+
+**Confirm before acting:**
+
+| Check | What to look for |
+|-------|-----------------|
+| `weekly_alignment` | `true` — weekly timeframe also bullish |
+| `ml_ta_conflict` | `false` — ML and TA agree |
+| `confidence` | ≥ 50% — well above the threshold, not a borderline call |
+| `adx_trending` | `true` — trend has the strength to sustain the move |
+| `market_regime` | `bull` or `unknown` — regime is not actively working against you |
+| `earnings_warning` | null or `"watch"` (≥ 10 days away) — no binary event imminent |
+
+If all of the above are green, this is a high-conviction re-entry. Use the same position size process as a fresh entry.
+
+---
+
+### HOLD / WAIT → SELL
+
+The signal has deteriorated past the HOLD zone directly into bearish territory. The speed of the move matters: a signal that went HOLD → WAIT → SELL across multiple refreshes gave you time to reduce. A single-session jump from HOLD to SELL is more urgent.
+
+**Action:**
+- If you have an open position, exit immediately.
+- Check `market_regime` — if the regime just switched to `bear`, the SELL may apply broadly to everything in the portfolio, not just this stock.
+- Check `breadth_pct` — if it's below 30%, the SELL is regime-driven (macro), not stock-specific. The position may recover when breadth recovers. Still exit — the model says risk is elevated.
+
+---
+
+### Summary table
+
+| Transition | Urgency | Primary action |
+|------------|---------|----------------|
+| BUY → BUY (conf. falling) | Monitor | Raise stop, no adds |
+| BUY → HOLD | Yellow — plan your exit | Move stop to breakeven, no adds |
+| BUY → WAIT | Orange — begin reducing | Exit at least 50%, tight stop on remainder |
+| BUY → SELL | Red — act now | Exit full position |
+| HOLD → BUY | Opportunity | Confirm reasons panel, re-enter if clean |
+| HOLD → WAIT | Yellow | Exit or hedge; no new entries |
+| HOLD → SELL | Red | Exit full position |
+| WAIT → SELL | Red | Exit; check if macro-driven (breadth/regime) |
+| SELL → HOLD/BUY | Do not chase | Wait for two consecutive BUY refreshes before considering re-entry |
+
+---
+
+### How to diagnose the reason for a signal change
+
+Open **Stock Detail → Signal Reasons** panel and look at these fields in order:
+
+1. **`market_regime`** — if this changed, the shift is macro. The stock setup may be intact but the system raised its bar. Be patient.
+2. **`breadth_compression`** — if `true`, market-wide weakness is compressing everything. Same logic as regime change.
+3. **`weekly_alignment`** — if `false`, the signal is fighting the higher timeframe. Real but temporary — weekly trends reverse slowly.
+4. **`ml_ta_conflict`** — if `true`, ML and TA disagree. High uncertainty. Treat the signal as lower confidence than the number suggests.
+5. **`rsi_divergence`** — if `"bearish"`, price may be near a top even if everything else looks OK. A leading indicator.
+6. **`trend_above_sma50`** — if `false`, the price structure has broken. More serious than a TA filter — this is a key level.
+7. **`ml_probability`** — if below 0.45 when the signal was previously BUY, the ML model has flipped its view. Give this significant weight.
+8. **`earnings_warning`** — if `"caution"` (≤ 2 days), the compression is temporary and mechanical. Hold if your thesis is intact, the signal will reset after earnings.
+9. **`stale_price_warning`** or **`insufficient_history_warning`** — if `true`, the signal itself is unreliable. Don't act on it — wait for fresh data.
+
+---
+
+## Step 9 — Exit Signals
 
 Exit triggers (in order of priority):
 
@@ -178,7 +325,7 @@ Exit triggers (in order of priority):
 
 ---
 
-## Step 9 — Review Performance
+## Step 10 — Review Performance
 
 **Page:** Trade Performance
 
@@ -261,3 +408,126 @@ EXIT
 TRADE PERFORMANCE
 (Review win rate, Sharpe, equity curve — refine your edge)
 ```
+
+---
+
+## Appendix — Signal Tier Framework: Which BUY Signals to Act On
+
+Not all BUY signals are equal. The system generates signals across three quality tiers. Understanding these tiers prevents you from acting on low-conviction noise.
+
+---
+
+### Why tiers exist
+
+A raw BUY signal means the fused probability crossed 0.60 — a necessary but not sufficient condition for a high-quality trade. A signal with 21% confidence is a BUY. So is one with 85% confidence. They require very different responses.
+
+The three tiers reflect how many additional filters the signal has passed on top of the raw BUY threshold.
+
+---
+
+### Tier 1 — Email Conviction Alert (highest quality)
+
+**How you receive it:** An email arrives with the stock symbol, direction, and conviction score.
+
+**What it means:** The signal passed all gates of the conviction filter simultaneously:
+
+| Layer | Gate condition |
+|-------|---------------|
+| **AI signal** | Current signal = BUY AND previous signal ≠ BUY (transition, not persistence) |
+| **AI confidence** | ≥ 60% (fused probability > 0.80) |
+| **K-Score** | ≥ 55 (technically and fundamentally sound) |
+| **Uptrend** | Price > SMA50 AND SMA50 > SMA200 (price structure intact) |
+| **RSI timing** | RSI 45–65 AND Stochastic RSI recovering from oversold (not chasing) |
+| **Momentum** | MACD histogram positive and rising (short-term momentum confirmed) |
+| **Volume** | OBV trend confirming accumulation (smart money is buying) |
+| **Trend strength** | ADX > 25 (the trend has enough force to sustain the move) |
+| **ML model** | ML probability > 70% (the statistical model independently agrees) |
+
+A Tier 1 email means every single one of these conditions was true at the same moment. These signals are rare — expect a handful per month across the full universe.
+
+**Action:** Open the stock detail page. Confirm RSI is still in the 45–65 zone (the signal could be a few hours old). If confirmed, enter using the game plan entry levels. This is the highest-conviction entry the system produces.
+
+---
+
+### Tier 2 — Manual Signal Filter Monitor Check (moderate quality)
+
+**How you find it:** Go to **Signal Filter Monitor**. Apply these filters:
+
+| Filter | Value | Why |
+|--------|-------|-----|
+| Signal | BUY | Only looking at bullish signals |
+| Suppression count | 0 or 1 | More than 1 suppression = multiple gates failing |
+| Weekly gate | Pass | Weekly timeframe must agree with daily |
+| Earnings | > 10 days away | No binary event risk |
+
+From this filtered list, click through to each stock's detail page and verify:
+
+| Check | Minimum bar |
+|-------|------------|
+| Confluence Score | ≥ 75 |
+| K-Score | ≥ 55 |
+| RSI(14) | 45–65 |
+| Trend | Price > SMA50 |
+
+Stocks that pass these checks are valid Tier 2 entries — lower conviction than an email alert but still well-filtered.
+
+**Action:** Enter at the game plan entry price. Use a slightly smaller position size than a Tier 1 signal (e.g. 70% of the system's recommended size). Set a tighter initial stop.
+
+---
+
+### Tier 3 — Ignore (low quality)
+
+**What it looks like:** A BUY signal visible in the Screener or Rankings with confidence below 40%, or in Signal Filter Monitor with suppression count ≥ 2, weekly gate failing, or earnings within 10 days.
+
+**What it means:** The AI signal crossed the raw threshold but the supporting conditions are weak or conflicted. Acting on these signals degrades overall performance — they have near-random outcomes at scale.
+
+**Action:** Do not trade. If you already hold the stock and it drops to Tier 3 status, treat it as a signal to tighten your stop rather than a reason to add.
+
+---
+
+### Tier summary
+
+| Tier | Source | Confidence | Additional filters | Action |
+|------|--------|-----------|-------------------|--------|
+| **1 — Email alert** | Inbox | ≥ 60% | All conviction gates pass simultaneously | Enter at full recommended size |
+| **2 — Monitor check** | Signal Filter Monitor | ≥ 40% | Manual screen: supp ≤ 1, confluence ≥ 75, RSI 45–65 | Enter at 70% recommended size |
+| **3 — Raw BUY** | Screener / Rankings | Any | No additional filters | Ignore |
+
+---
+
+### Daily practical workflow
+
+```
+1. Check email
+   └─ Tier 1 alert received?
+      YES → Open stock detail → confirm RSI still 45–65 → enter
+      NO  → go to step 2
+
+2. Signal Filter Monitor
+   └─ Any stocks with supp ≤ 1, weekly pass, no earnings?
+      YES → Stock detail: Confluence ≥ 75, K-Score ≥ 55, RSI 45–65?
+            ALL PASS → enter at 70% size
+            FAILS    → skip
+      NO  → nothing to trade today, wait
+
+3. Watchlist (open positions)
+   └─ Any signal transition on a held stock?
+      BUY → WAIT/SELL → see exit rules below
+      WAIT → SELL      → exit immediately
+```
+
+---
+
+### Exit rules
+
+| Trigger | Action |
+|---------|--------|
+| **Email exit warning** (BUY → WAIT or BUY → SELL transition email) | Begin reducing immediately; exit fully on SELL |
+| **Signal Filter Monitor suppression count rises to ≥ 3** | Treat as degraded signal; tighten stop to nearest support |
+| **Time-stop: SWING 25 days** | Close the position regardless of signal if no exit signal arrived |
+| **Time-stop: SHORT 7 days** | As above for short-horizon trades |
+| **Time-stop: LONG 90 days** | As above for long-horizon trades |
+| **RSI > 70 (overbought)** | Trim 25–30% of the position; do not exit fully if signal is still BUY |
+| **Earnings within 7 days** | Reduce to 50% of position or exit; re-enter after the print if thesis holds |
+
+The time-stops are hard rules. A position drifting without a clean exit signal is a sign the thesis has stalled — the time-stop protects you from opportunity cost and slow decay.

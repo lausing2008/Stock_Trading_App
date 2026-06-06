@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type TradePlan, type PriceAlert, type SignalAlertItem } from '@/lib/api';
-import { getSignalStyle } from '@/lib/settings';
 
 const STAGES = ['watch', 'planning', 'active', 'closed'] as const;
 type Stage = typeof STAGES[number];
@@ -20,15 +19,6 @@ const SOURCE_LABEL: Record<string, string> = {
   forecast: '🔮 Forecast',
   manual:   '✏️ Manual',
 };
-
-function Stat({ label, value, color }: { label: string; value: string; color: string }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.03)', border: '1px solid #1e293b' }}>
-      <span style={{ fontSize: '10px', color: '#334155' }}>{label}</span>
-      <span style={{ fontSize: '13px', fontWeight: 800, fontFamily: 'monospace', color }}>{value}</span>
-    </div>
-  );
-}
 
 function fmt(n: number | null | undefined) {
   if (n == null) return '—';
@@ -253,87 +243,7 @@ function AlertModal({ plan, priceAlerts, signalAlert, suggestions, onClose, onAl
   return createPortal(modal, document.body);
 }
 
-/* ── Fill Modal ──────────────────────────────────────────── */
-function FillModal({ defaultPrice, onConfirm, onSkip }: {
-  defaultPrice: number | null;
-  onConfirm: (fillPrice: number, shares: number | null) => void;
-  onSkip: () => void;
-}) {
-  const [fillInput, setFillInput] = useState(defaultPrice != null ? defaultPrice.toFixed(2) : '');
-  const [sharesInput, setSharesInput] = useState('');
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onSkip(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onSkip]);
-
-  function handleConfirm() {
-    const price = parseFloat(fillInput);
-    if (isNaN(price) || price <= 0) return;
-    const shares = sharesInput ? parseFloat(sharesInput) : null;
-    onConfirm(price, shares && !isNaN(shares) && shares > 0 ? shares : null);
-  }
-
-  const modal = (
-    <div
-      onClick={onSkip}
-      style={{ position: 'fixed', inset: 0, zIndex: 800, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{ background: '#0d1424', border: '1px solid rgba(74,222,128,0.3)', borderRadius: '14px', padding: '24px 28px', width: '340px', boxShadow: '0 24px 60px rgba(0,0,0,0.7)' }}
-      >
-        <div style={{ fontSize: '15px', fontWeight: 800, color: '#e2e8f0', marginBottom: '4px' }}>Record Fill</div>
-        <div style={{ fontSize: '12px', color: '#475569', marginBottom: '20px' }}>What price did you actually buy at?</div>
-
-        <label style={{ display: 'block', fontSize: '11px', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px' }}>Fill Price *</label>
-        <input
-          autoFocus
-          type="number"
-          step="0.01"
-          placeholder="e.g. 151.50"
-          value={fillInput}
-          onChange={e => setFillInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleConfirm()}
-          style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #334155', background: '#060814', color: '#f1f5f9', fontSize: '14px', fontFamily: 'ui-monospace, monospace', outline: 'none', boxSizing: 'border-box', marginBottom: '14px' }}
-        />
-
-        <label style={{ display: 'block', fontSize: '11px', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px' }}>Shares <span style={{ color: '#334155', fontWeight: 400 }}>(optional — enables $ P&L)</span></label>
-        <input
-          type="number"
-          step="1"
-          placeholder="e.g. 50"
-          value={sharesInput}
-          onChange={e => setSharesInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleConfirm()}
-          style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #1e293b', background: '#060814', color: '#f1f5f9', fontSize: '14px', fontFamily: 'ui-monospace, monospace', outline: 'none', boxSizing: 'border-box', marginBottom: '20px' }}
-        />
-
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button
-            onClick={handleConfirm}
-            disabled={!fillInput || isNaN(parseFloat(fillInput))}
-            style={{ flex: 1, padding: '9px', borderRadius: '8px', border: '1px solid rgba(74,222,128,0.3)', background: fillInput ? 'rgba(74,222,128,0.15)' : '#1e293b', color: fillInput ? '#4ade80' : '#334155', fontWeight: 700, fontSize: '13px', cursor: fillInput ? 'pointer' : 'default' }}
-          >
-            Confirm Fill
-          </button>
-          <button
-            onClick={onSkip}
-            style={{ padding: '9px 16px', borderRadius: '8px', border: '1px solid #1e293b', background: 'transparent', color: '#475569', fontSize: '13px', cursor: 'pointer' }}
-          >
-            Skip
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-
-  if (typeof document === 'undefined') return null;
-  return createPortal(modal, document.body);
-}
-
-function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, onDelete, onAlertsChange, onExitSaved, onDragStart }: {
+function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, onDelete, onAlertsChange }: {
   plan: TradePlan;
   priceAlerts: PriceAlert[];
   signalAlert: SignalAlertItem | null;
@@ -341,37 +251,12 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
   onStageChange: (id: number, stage: Stage) => void;
   onDelete: (id: number) => void;
   onAlertsChange: () => void;
-  onExitSaved: () => void;
-  onDragStart: (id: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [alertOpen, setAlertOpen] = useState(false);
-  const [exitInput, setExitInput] = useState('');
-  const [savingExit, setSavingExit] = useState(false);
   const meta = STAGE_META[plan.stage as Stage] ?? STAGE_META.watch;
   const gp = plan.game_plan as StoredGamePlan | null;
-
-  const effectiveEntry = plan.actual_entry_price ?? plan.entry_price;
-  const pnlPct = plan.exit_price != null && effectiveEntry != null && effectiveEntry > 0
-    ? ((plan.exit_price - effectiveEntry) / effectiveEntry) * 100
-    : null;
-  const dollarPnl = plan.exit_price != null && effectiveEntry != null && plan.shares != null
-    ? (plan.exit_price - effectiveEntry) * plan.shares
-    : null;
-
-  async function saveExitPrice() {
-    const val = parseFloat(exitInput);
-    if (isNaN(val) || val <= 0) return;
-    setSavingExit(true);
-    try {
-      await api.updateBoardPlan(plan.id, { exit_price: val });
-      setExitInput('');
-      onExitSaved();
-    } finally {
-      setSavingExit(false);
-    }
-  }
 
   // Build suggested price levels — prefer TradePlan DB fields, fall back to game_plan JSON
   const suggestions = useMemo<Suggestion[]>(() => {
@@ -397,11 +282,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
   const alertCount = priceAlerts.length + (signalAlert ? 1 : 0);
 
   return (
-    <div
-      draggable
-      onDragStart={e => { e.dataTransfer.effectAllowed = 'move'; onDragStart(plan.id); }}
-      style={{ borderRadius: '10px', border: `1px solid ${meta.border}`, background: '#0f172a', overflow: 'hidden', marginBottom: '8px', cursor: 'grab' }}
-    >
+    <div style={{ borderRadius: '10px', border: `1px solid ${meta.border}`, background: '#0f172a', overflow: 'hidden', marginBottom: '8px' }}>
       {/* Colour stripe */}
       <div style={{ height: '2px', background: meta.color, opacity: 0.6 }} />
 
@@ -458,17 +339,10 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
 
         {/* Prices */}
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' }}>
-          {plan.actual_entry_price != null && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>Fill </span>
-              <span style={{ color: '#4ade80', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.actual_entry_price)}</span>
-              {plan.shares != null && <span style={{ color: '#334155' }}> × {plan.shares}</span>}
-            </div>
-          )}
           {plan.entry_price != null && (
             <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>{plan.actual_entry_price != null ? 'Plan ' : 'Entry '}</span>
-              <span style={{ color: plan.actual_entry_price != null ? '#334155' : '#818cf8', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.entry_price)}</span>
+              <span style={{ color: '#475569' }}>Entry </span>
+              <span style={{ color: '#818cf8', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.entry_price)}</span>
             </div>
           )}
           {plan.stop_loss != null && (
@@ -491,78 +365,10 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
           )}
         </div>
 
-        {/* Closed: P&L outcome */}
-        {plan.stage === 'closed' && (
-          <div style={{ marginBottom: '8px', padding: '8px 10px', borderRadius: '7px', background: pnlPct != null ? (pnlPct >= 0 ? 'rgba(74,222,128,0.07)' : 'rgba(239,68,68,0.07)') : 'rgba(255,255,255,0.02)', border: `1px solid ${pnlPct != null ? (pnlPct >= 0 ? 'rgba(74,222,128,0.2)' : 'rgba(239,68,68,0.2)') : 'rgba(255,255,255,0.04)'}` }}>
-            {pnlPct != null ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div>
-                  <span style={{ fontSize: '20px', fontWeight: 900, fontFamily: 'monospace', color: pnlPct >= 0 ? '#4ade80' : '#f87171' }}>
-                    {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
-                  </span>
-                  {dollarPnl != null && (
-                    <div style={{ fontSize: '11px', fontFamily: 'monospace', color: dollarPnl >= 0 ? '#4ade80' : '#f87171', opacity: 0.8 }}>
-                      {dollarPnl >= 0 ? '+' : ''}${Math.abs(dollarPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </div>
-                  )}
-                </div>
-                <div style={{ fontSize: '11px', color: '#475569' }}>
-                  <div>Exit <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>${plan.exit_price!.toFixed(2)}</span></div>
-                  {effectiveEntry != null && (
-                    <div>
-                      {plan.actual_entry_price != null ? 'Fill' : 'Entry'}{' '}
-                      <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>${effectiveEntry.toFixed(2)}</span>
-                    </div>
-                  )}
-                </div>
-                <div style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
-                  {plan.take_profit != null && effectiveEntry != null && effectiveEntry > 0 && plan.take_profit !== effectiveEntry && plan.exit_price != null && (
-                    <div style={{ fontSize: '10px', color: '#475569' }}>
-                      {((plan.exit_price! - effectiveEntry) / (plan.take_profit - effectiveEntry) * 100).toFixed(0)}% of target
-                    </div>
-                  )}
-                  {plan.trading_style && (
-                    <div style={{
-                      fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px',
-                      letterSpacing: '0.06em',
-                      color: plan.trading_style === 'SHORT' ? '#f87171' : plan.trading_style === 'LONG' ? '#4ade80' : '#818cf8',
-                      background: plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.12)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.12)' : 'rgba(129,140,248,0.12)',
-                      border: `1px solid ${plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.3)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.3)' : 'rgba(129,140,248,0.3)'}`,
-                    }}>
-                      {plan.trading_style}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div>
-                <div style={{ fontSize: '10px', color: '#475569', marginBottom: '5px' }}>Record exit price to track P&L</div>
-                <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
-                  <input
-                    type="number"
-                    placeholder="Exit price"
-                    value={exitInput}
-                    onChange={e => setExitInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && saveExitPrice()}
-                    style={{ width: '100px', padding: '3px 8px', borderRadius: '5px', border: '1px solid #1e293b', background: '#0b1020', color: '#e2e8f0', fontSize: '12px', fontFamily: 'monospace' }}
-                  />
-                  <button
-                    onClick={saveExitPrice}
-                    disabled={savingExit || !exitInput}
-                    style={{ padding: '3px 10px', borderRadius: '5px', fontSize: '11px', fontWeight: 600, border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.1)', color: '#818cf8', cursor: 'pointer' }}
-                  >
-                    {savingExit ? '…' : 'Save'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Active: distance from key levels */}
-        {plan.stage === 'active' && livePrice && (effectiveEntry != null || plan.stop_loss != null || plan.take_profit != null) && (() => {
+        {plan.stage === 'active' && livePrice && (plan.entry_price != null || plan.stop_loss != null || plan.take_profit != null) && (() => {
           const cur = livePrice.price;
-          const entry = effectiveEntry;
+          const entry = plan.entry_price;
           const stop = plan.stop_loss ?? (gp?.stop_loss?.price ?? null);
           const target = plan.take_profit ?? (gp?.take_profit?.price ?? null);
           const pct = (ref: number) => ((cur - ref) / ref * 100);
@@ -713,10 +519,6 @@ export default function BoardPage() {
   const { data: priceAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { revalidateOnFocus: false });
   const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { revalidateOnFocus: false });
   const [market, setMarket] = useState<MarketFilter>('US');
-  const [dragId, setDragId] = useState<number | null>(null);
-  const [dragOverStage, setDragOverStage] = useState<Stage | null>(null);
-  type FillTarget = { id: number; defaultPrice: number | null };
-  const [fillTarget, setFillTarget] = useState<FillTarget | null>(null);
 
   // Fetch live prices for board symbols only, refresh every 60 s
   const boardSymbols = useMemo(() => [...new Set((data ?? []).map(p => p.symbol))], [data]);
@@ -748,39 +550,8 @@ export default function BoardPage() {
   }, [filtered]);
 
   async function handleStageChange(id: number, stage: Stage) {
-    if (stage === 'active') {
-      const plan = (data ?? []).find(p => p.id === id);
-      setFillTarget({ id, defaultPrice: livePriceMap[plan?.symbol ?? '']?.price ?? plan?.entry_price ?? null });
-      return;
-    }
     await api.updateBoardPlan(id, { stage });
     mutate();
-  }
-
-  async function handleFillConfirm(fillPrice: number, shares: number | null) {
-    if (!fillTarget) return;
-    await api.updateBoardPlan(fillTarget.id, {
-      stage: 'active',
-      actual_entry_price: fillPrice,
-      trading_style: getSignalStyle(),
-      ...(shares != null ? { shares } : {}),
-    });
-    setFillTarget(null);
-    mutate();
-  }
-
-  async function handleFillSkip() {
-    if (!fillTarget) return;
-    await api.updateBoardPlan(fillTarget.id, { stage: 'active', trading_style: getSignalStyle() });
-    setFillTarget(null);
-    mutate();
-  }
-
-  function handleDrop(stage: Stage) {
-    if (dragId == null) return;
-    handleStageChange(dragId, stage);
-    setDragId(null);
-    setDragOverStage(null);
   }
 
   async function handleDelete(id: number) {
@@ -789,61 +560,13 @@ export default function BoardPage() {
   }
 
   async function handleAdd(symbol: string, notes: string) {
-    await api.createBoardPlan({ symbol, stage: 'watch', notes: notes || null, source: 'manual', trading_style: getSignalStyle() });
+    await api.createBoardPlan({ symbol, stage: 'watch', notes: notes || null, source: 'manual' });
     mutate();
   }
 
   const total = filtered.length;
   const usCnt = (data ?? []).filter(p => !isHK(p.symbol)).length;
   const hkCnt = (data ?? []).filter(p => isHK(p.symbol)).length;
-
-  // Performance summary from closed trades with both entry + exit price
-  const perfStats = useMemo(() => {
-    const closed = byStage.closed.filter(p => p.exit_price != null && (p.actual_entry_price ?? p.entry_price) != null);
-    if (closed.length === 0) return null;
-    const returns = closed.map(p => {
-      const eff = p.actual_entry_price ?? p.entry_price!;
-      return ((p.exit_price! - eff) / eff) * 100;
-    });
-    const wins = returns.filter(r => r > 0).length;
-    const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
-    const best = Math.max(...returns);
-    const worst = Math.min(...returns);
-
-    // Per-style breakdown
-    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80' };
-    const styleBreakdown = (['SHORT', 'SWING', 'LONG'] as const)
-      .map(style => {
-        const group = closed.filter(p => p.trading_style === style);
-        if (group.length === 0) return null;
-        const rets = group.map(p => {
-          const eff = p.actual_entry_price ?? p.entry_price!;
-          return ((p.exit_price! - eff) / eff) * 100;
-        });
-        const winRate = (rets.filter(r => r > 0).length / rets.length) * 100;
-        const avg = rets.reduce((a, b) => a + b, 0) / rets.length;
-        return { style, count: group.length, winRate, avg, color: styleColors[style] };
-      })
-      .filter(Boolean) as { style: string; count: number; winRate: number; avg: number; color: string }[];
-
-    return { count: closed.length, winRate: (wins / closed.length) * 100, avgReturn, best, worst, styleBreakdown };
-  }, [byStage.closed]);
-
-  // Portfolio risk — compute from active positions with shares
-  const riskPositions = useMemo(
-    () => byStage.active.filter(p => p.shares != null && p.shares > 0 && (p.actual_entry_price ?? p.entry_price) != null),
-    [byStage.active],
-  );
-  const riskSymbols = useMemo(() => riskPositions.map(p => p.symbol), [riskPositions]);
-  const riskWeights = useMemo(
-    () => riskPositions.map(p => p.shares! * (p.actual_entry_price ?? p.entry_price!)),
-    [riskPositions],
-  );
-  const { data: riskData } = useSWR(
-    riskSymbols.length >= 2 ? ['portfolio-risk', riskSymbols.join(','), riskWeights.join(',')] : null,
-    () => api.portfolioRisk(riskSymbols, riskWeights),
-    { revalidateOnFocus: false },
-  );
 
   return (
     <div>
@@ -852,7 +575,7 @@ export default function BoardPage() {
         <div>
           <h1 style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '4px' }}>Trade Board</h1>
           <p style={{ fontSize: '12px', color: '#475569' }}>
-            {total > 0 ? `${total} idea${total !== 1 ? 's' : ''} · drag cards between columns` : 'Save game plans and forecast picks here'}
+            {total > 0 ? `${total} idea${total !== 1 ? 's' : ''} · drag-free Kanban` : 'Save game plans and forecast picks here'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px', fontSize: '11px', color: '#334155' }}>
@@ -863,33 +586,6 @@ export default function BoardPage() {
           ))}
         </div>
       </div>
-
-      {/* Performance summary */}
-      {perfStats && (
-        <div style={{ marginBottom: '16px', padding: '12px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b' }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
-            <span style={{ fontSize: '11px', fontWeight: 700, color: '#475569', marginRight: '4px' }}>Track Record</span>
-            <Stat label="Closed" value={`${perfStats.count}`} color="#94a3b8" />
-            <Stat label="Win Rate" value={`${perfStats.winRate.toFixed(0)}%`} color={perfStats.winRate >= 50 ? '#4ade80' : '#f87171'} />
-            <Stat label="Avg Return" value={`${perfStats.avgReturn >= 0 ? '+' : ''}${perfStats.avgReturn.toFixed(1)}%`} color={perfStats.avgReturn >= 0 ? '#4ade80' : '#f87171'} />
-            <Stat label="Best" value={`+${perfStats.best.toFixed(1)}%`} color="#4ade80" />
-            <Stat label="Worst" value={`${perfStats.worst.toFixed(1)}%`} color="#f87171" />
-          </div>
-          {perfStats.styleBreakdown.length > 0 && (
-            <div style={{ display: 'flex', gap: '8px', marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #0f172a', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '10px', fontWeight: 700, color: '#334155', alignSelf: 'center', marginRight: '2px' }}>BY STYLE</span>
-              {perfStats.styleBreakdown.map(sb => (
-                <div key={sb.style} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '3px 10px', borderRadius: '6px', background: `${sb.color}08`, border: `1px solid ${sb.color}25` }}>
-                  <span style={{ fontSize: '10px', fontWeight: 800, color: sb.color }}>{sb.style}</span>
-                  <span style={{ fontSize: '10px', color: '#475569' }}>{sb.count} trade{sb.count !== 1 ? 's' : ''}</span>
-                  <span style={{ fontSize: '10px', color: sb.winRate >= 50 ? '#4ade80' : '#f87171', fontWeight: 600 }}>{sb.winRate.toFixed(0)}% win</span>
-                  <span style={{ fontSize: '10px', color: sb.avg >= 0 ? '#4ade80' : '#f87171', fontFamily: 'monospace' }}>{sb.avg >= 0 ? '+' : ''}{sb.avg.toFixed(1)}%</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Market tabs */}
       <div style={{ display: 'flex', gap: '6px', marginBottom: '20px' }}>
@@ -909,14 +605,6 @@ export default function BoardPage() {
         ))}
       </div>
 
-      {fillTarget && (
-        <FillModal
-          defaultPrice={fillTarget.defaultPrice}
-          onConfirm={handleFillConfirm}
-          onSkip={handleFillSkip}
-        />
-      )}
-
       {isLoading && <div style={{ color: '#475569', fontSize: '13px', padding: '40px 0', textAlign: 'center' }}>Loading board…</div>}
 
       {error && (
@@ -930,21 +618,8 @@ export default function BoardPage() {
           {STAGES.map(stage => {
             const m = STAGE_META[stage];
             const cards = byStage[stage];
-            const isDropTarget = dragOverStage === stage && dragId != null;
             return (
-              <div
-                key={stage}
-                onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverStage(stage); }}
-                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverStage(null); }}
-                onDrop={e => { e.preventDefault(); handleDrop(stage); }}
-                style={{
-                  borderRadius: '12px',
-                  border: `1px solid ${isDropTarget ? m.color : m.border}`,
-                  background: isDropTarget ? m.bg : '#080f1e',
-                  overflow: 'hidden',
-                  transition: 'border-color 0.15s, background 0.15s',
-                }}
-              >
+              <div key={stage} style={{ borderRadius: '12px', border: `1px solid ${m.border}`, background: '#080f1e', overflow: 'hidden' }}>
                 {/* Column header */}
                 <div style={{ padding: '10px 14px 8px', background: m.bg, borderBottom: `1px solid ${m.border}` }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -955,11 +630,11 @@ export default function BoardPage() {
                 </div>
 
                 {/* Cards */}
-                <div style={{ padding: '10px', minHeight: '60px' }}>
+                <div style={{ padding: '10px' }}>
                   {stage === 'watch' && <AddCardForm onAdd={handleAdd} />}
                   {cards.length === 0 && stage !== 'watch' && (
-                    <div style={{ textAlign: 'center', padding: '24px 0', fontSize: '11px', color: isDropTarget ? m.color : '#1e293b', transition: 'color 0.15s' }}>
-                      {isDropTarget ? `Drop to move here` : 'Move cards here as your trade progresses'}
+                    <div style={{ textAlign: 'center', padding: '24px 0', fontSize: '11px', color: '#1e293b' }}>
+                      Move cards here as your trade progresses
                     </div>
                   )}
                   {cards.map(plan => (
@@ -972,8 +647,6 @@ export default function BoardPage() {
                       onStageChange={handleStageChange}
                       onDelete={handleDelete}
                       onAlertsChange={handleAlertsChange}
-                      onExitSaved={mutate}
-                      onDragStart={setDragId}
                     />
                   ))}
                 </div>
@@ -991,155 +664,6 @@ export default function BoardPage() {
             <li>On the <Link href="/forecast" style={{ color: '#818cf8' }}>Forecast</Link> page — click <strong>📌 Save to Board</strong> on any pick</li>
             <li>Add manually using the <strong>+ Add card</strong> in the Watch column above</li>
           </ul>
-        </div>
-      )}
-
-      {/* Portfolio Risk Dashboard */}
-      {riskData && (
-        <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 12, background: '#080f1e', border: '1px solid #1e293b' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-            <div>
-              <h2 style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0', margin: 0 }}>Portfolio Risk</h2>
-              <div style={{ fontSize: 10, color: '#334155', marginTop: 2 }}>
-                {riskData.symbols.length} active positions · beta vs {riskData.benchmark}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              {[
-                { label: 'Portfolio β', value: riskData.portfolio_beta.toFixed(2), color: riskData.portfolio_beta > 1.5 ? '#f87171' : riskData.portfolio_beta < 0.8 ? '#4ade80' : '#94a3b8' },
-                { label: '1-day VaR 95%', value: `${riskData.var_95_pct.toFixed(1)}%`, color: riskData.var_95_pct > 4 ? '#f87171' : riskData.var_95_pct > 2.5 ? '#fbbf24' : '#4ade80' },
-                { label: 'Positions', value: String(riskData.symbols.length), color: '#94a3b8' },
-              ].map(s => (
-                <div key={s.label} style={{ padding: '6px 12px', borderRadius: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid #1e293b', textAlign: 'center' }}>
-                  <div style={{ fontSize: 9, color: '#475569', fontWeight: 600, textTransform: 'uppercase', marginBottom: 2 }}>{s.label}</div>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: s.color, lineHeight: 1 }}>{s.value}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Warnings */}
-          {riskData.warnings.length > 0 && (
-            <div style={{ marginBottom: 16, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {riskData.warnings.map((w, i) => (
-                <div key={i} style={{ padding: '4px 10px', borderRadius: 5, background: 'rgba(251,113,133,0.08)', border: '1px solid rgba(251,113,133,0.25)', fontSize: 11, color: '#fca5a5' }}>
-                  ⚠ {w}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            {/* Sector pie */}
-            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 10 }}>Sector Concentration</div>
-              {(() => {
-                const COLORS = ['#818cf8','#4ade80','#fbbf24','#f87171','#38bdf8','#a78bfa','#34d399','#fb923c'];
-                const sectors = Object.entries(riskData.sector_weights).sort((a, b) => b[1] - a[1]);
-                // Pie chart SVG
-                const size = 80, cx = 40, cy = 40, r = 36;
-                let cum = 0;
-                const slices = sectors.map(([, w], i) => {
-                  const start = cum * 2 * Math.PI;
-                  cum += w;
-                  const end = cum * 2 * Math.PI;
-                  const x1 = cx + r * Math.sin(start);
-                  const y1 = cy - r * Math.cos(start);
-                  const x2 = cx + r * Math.sin(end);
-                  const y2 = cy - r * Math.cos(end);
-                  const large = (w > 0.5) ? 1 : 0;
-                  return { d: `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`, color: COLORS[i % COLORS.length] };
-                });
-                return (
-                  <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-                    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink: 0 }}>
-                      {slices.map((s, i) => <path key={i} d={s.d} fill={s.color} opacity={0.85} />)}
-                    </svg>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      {sectors.map(([sec, w], i) => (
-                        <div key={sec} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
-                          <div style={{ width: 8, height: 8, borderRadius: 2, background: COLORS[i % COLORS.length], flexShrink: 0 }} />
-                          <span style={{ color: '#94a3b8' }}>{sec}</span>
-                          <span style={{ color: '#64748b', marginLeft: 'auto', paddingLeft: 8 }}>{(w * 100).toFixed(0)}%</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* Correlation heatmap */}
-            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 10 }}>Return Correlation (30d)</div>
-              {(() => {
-                const syms = riskData.symbols;
-                const corr = riskData.correlation;
-                const cellSize = Math.min(36, Math.floor(200 / syms.length));
-                const labelColor = (v: number) =>
-                  v >= 0.8 ? '#f87171' : v >= 0.5 ? '#fbbf24' : v >= 0 ? '#94a3b8' : '#38bdf8';
-                const bgColor = (v: number) => {
-                  const abs = Math.abs(v);
-                  if (v >= 0.8) return `rgba(248,113,113,${0.1 + abs * 0.3})`;
-                  if (v >= 0.5) return `rgba(251,191,36,${0.1 + abs * 0.2})`;
-                  if (v >= 0) return `rgba(148,163,184,${abs * 0.15})`;
-                  return `rgba(56,189,248,${abs * 0.2})`;
-                };
-                return (
-                  <div style={{ overflowX: 'auto' }}>
-                    <div style={{ display: 'inline-block' }}>
-                      {/* Header row */}
-                      <div style={{ display: 'flex', marginLeft: cellSize + 4 }}>
-                        {syms.map(s => (
-                          <div key={s} style={{ width: cellSize, textAlign: 'center', fontSize: 9, color: '#475569', fontWeight: 700 }}>
-                            {s.length > 5 ? s.slice(0, 4) : s}
-                          </div>
-                        ))}
-                      </div>
-                      {corr.map((row, i) => (
-                        <div key={i} style={{ display: 'flex', alignItems: 'center', marginTop: 2 }}>
-                          <div style={{ width: cellSize, fontSize: 9, color: '#475569', fontWeight: 700, textAlign: 'right', paddingRight: 4, flexShrink: 0 }}>
-                            {syms[i].length > 5 ? syms[i].slice(0, 4) : syms[i]}
-                          </div>
-                          {row.map((v, j) => (
-                            <div key={j} style={{
-                              width: cellSize, height: cellSize, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              background: i === j ? 'rgba(99,102,241,0.15)' : bgColor(v),
-                              fontSize: 9, fontWeight: 700,
-                              color: i === j ? '#818cf8' : labelColor(v),
-                              borderRadius: 3, marginLeft: 2,
-                            }}>
-                              {v.toFixed(2)}
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
-
-          {/* Per-symbol betas */}
-          {Object.keys(riskData.betas).length > 0 && (
-            <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {Object.entries(riskData.betas).map(([sym, beta]) => (
-                <div key={sym} style={{ padding: '3px 10px', borderRadius: 5, background: 'rgba(255,255,255,0.03)', border: '1px solid #1e293b', fontSize: 11 }}>
-                  <span style={{ color: '#64748b' }}>{sym} β </span>
-                  <span style={{ color: (beta as number) > 1.3 ? '#f87171' : (beta as number) < 0.7 ? '#4ade80' : '#94a3b8', fontWeight: 700 }}>
-                    {(beta as number).toFixed(2)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {riskSymbols.length >= 2 && !riskData && (
-        <div style={{ marginTop: 24, padding: '12px 20px', borderRadius: 10, background: 'rgba(99,102,241,0.04)', border: '1px solid #1e293b', fontSize: 12, color: '#475569' }}>
-          Computing portfolio risk for {riskSymbols.length} active positions…
         </div>
       )}
     </div>

@@ -29,6 +29,7 @@ import Link from 'next/link';
 import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type Overview } from '@/lib/api';
 import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 import { askAI, isAiConfigured } from '@/lib/ai';
+import { getSignalStyle } from '@/lib/settings';
 
 type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth' | 'aisignal' | 'confluence';
 type Market = 'all' | 'US' | 'HK';
@@ -93,19 +94,21 @@ function scoreFor(
   const chg  = lp?.change_pct ?? 0;
   const upside = r.fair_price && lp?.price ? ((r.fair_price - lp.price) / lp.price) * 100 : 0;
 
+  // All formulas produce 0–100 exactly. Max weights sum verified per case.
+  const bullPct = (sig?.bullish_probability ?? 0) * 100; // normalise 0-1 → 0-100
   switch (strategy) {
-    // all: K-Score already 0-100; signal bonus capped so max ≈ 108 → display as-is
-    case 'all':      return (r.score ?? 0) + (sig?.signal === 'BUY' ? 8 : sig?.signal === 'HOLD' ? 3 : 0);
-    // swing max: 40+25+20+15 = 100 (sigB max 20, conf max 100)
+    // all: K-Score 0-100 + small BUY bonus, clamped
+    case 'all':      return Math.min(100, Math.round((r.score ?? 0) + (sig?.signal === 'BUY' ? 8 : sig?.signal === 'HOLD' ? 3 : 0)));
+    // swing max: tech*0.40 + mom*0.25 + sigB(max 20) + conf*0.15 = 40+25+20+15 = 100
     case 'swing':    return Math.min(100, Math.round(tech * 0.40 + mom * 0.25 + sigB + conf * 0.15));
-    // short: cap day-change bonus at 15 (≡ 5% move) so max = 50+25+15+10 = 100
+    // short max: mom*0.50 + tech*0.25 + chg_bonus(max 15) + vlt*0.10 = 50+25+15+10 = 100
     case 'short':    return Math.min(100, Math.round(mom * 0.50 + tech * 0.25 + Math.min(Math.abs(chg) * 3, 15) + vlt * 0.10));
-    // longterm: cap upside bonus at 25 pts so max ≈ 40+30+25+15 = 110 → clamped to 100
-    case 'longterm': return Math.min(100, Math.round(val * 0.40 + grow * 0.30 + Math.min(Math.max(0, upside), 25) + vlt * 0.15));
-    // growth max: 50+30+20 = 100
+    // longterm max: val*0.40 + grow*0.30 + upside_bonus(max 15) + vlt*0.15 = 40+30+15+15 = 100
+    case 'longterm': return Math.min(100, Math.round(val * 0.40 + grow * 0.30 + Math.min(Math.max(0, upside), 15) + vlt * 0.15));
+    // growth max: grow*0.50 + mom*0.30 + tech*0.20 = 50+30+20 = 100
     case 'growth':   return Math.min(100, Math.round(grow * 0.50 + mom * 0.30 + tech * 0.20));
-    // aisignal: conf 0-100 × 0.70 = 70 max; bullish_probability 0-1 × 50 = 50 → clamp to 100
-    case 'aisignal':   return Math.min(100, Math.round(conf * 0.70 + (sig?.bullish_probability ?? 0) * 50 + tech * 0.15 + mom * 0.10));
+    // aisignal max: bullPct*0.45 + conf*0.35 + tech*0.10 + mom*0.10 = 45+35+10+10 = 100
+    case 'aisignal':   return Math.min(100, Math.round(bullPct * 0.45 + conf * 0.35 + tech * 0.10 + mom * 0.10));
     case 'confluence': return confluenceScore(r, sig);
     default:           return r.score ?? 0;
   }
@@ -120,9 +123,9 @@ function getReasons(
   const out: { text: string; positive: boolean }[] = [];
 
   if (sig?.signal === 'BUY')
-    out.push({ text: `AI signal BUY — ${sig.confidence.toFixed(0)}% confidence`, positive: true });
+    out.push({ text: `AI signal BUY — ${(sig.confidence ?? 0).toFixed(0)}% confidence`, positive: true });
   if (sig?.signal === 'HOLD' && (sig.confidence ?? 0) > 30)
-    out.push({ text: `AI signal HOLD — holding zone with ${sig.confidence.toFixed(0)}% confidence`, positive: true });
+    out.push({ text: `AI signal HOLD — holding zone with ${(sig.confidence ?? 0).toFixed(0)}% confidence`, positive: true });
 
   if (r.fair_price && lp?.price) {
     const upside = ((r.fair_price - lp.price) / lp.price) * 100;
@@ -132,10 +135,10 @@ function getReasons(
       out.push({ text: `${Math.abs(upside).toFixed(1)}% above fair value — watch valuation`, positive: false });
   }
 
-  if ((r.technical ?? 0) >= 70) out.push({ text: `Strong bullish technical setup (${r.technical?.toFixed(0)}/100)`, positive: true });
-  if ((r.momentum  ?? 0) >= 70) out.push({ text: `Strong price momentum (${r.momentum?.toFixed(0)}/100)`, positive: true });
-  if ((r.value     ?? 0) >= 70) out.push({ text: `Attractive valuation vs peers (${r.value?.toFixed(0)}/100)`, positive: true });
-  if ((r.growth    ?? 0) >= 70) out.push({ text: `High revenue/earnings growth (${r.growth?.toFixed(0)}/100)`, positive: true });
+  if ((r.technical ?? 0) >= 70) out.push({ text: `Strong bullish technical setup (${(r.technical ?? 0).toFixed(0)}/100)`, positive: true });
+  if ((r.momentum  ?? 0) >= 70) out.push({ text: `Strong price momentum (${(r.momentum ?? 0).toFixed(0)}/100)`, positive: true });
+  if ((r.value     ?? 0) >= 70) out.push({ text: `Attractive valuation vs peers (${(r.value ?? 0).toFixed(0)}/100)`, positive: true });
+  if ((r.growth    ?? 0) >= 70) out.push({ text: `High revenue/earnings growth (${(r.growth ?? 0).toFixed(0)}/100)`, positive: true });
   if ((r.volatility ?? 0) >= 70) out.push({ text: `Low volatility — stable risk profile`, positive: true });
 
   if ((lp?.change_pct ?? 0) > 2) out.push({ text: `Up ${lp!.change_pct!.toFixed(2)}% today — momentum building`, positive: true });
@@ -167,7 +170,7 @@ function getKeyMetric(
       return { label: 'Growth', value: `${(r.growth ?? 0).toFixed(0)}/100`, color: scoreColor(r.growth ?? 0) };
     case 'aisignal':
       return sig
-        ? { label: 'AI Confidence', value: `${sig.confidence.toFixed(0)}%`, color: scoreColor(sig.confidence) }
+        ? { label: 'AI Confidence', value: `${(sig.confidence ?? 0).toFixed(0)}%`, color: scoreColor(sig.confidence ?? 0) }
         : null;
     case 'confluence': {
       const cs = confluenceScore(r, sig);
@@ -442,7 +445,7 @@ export default function Opportunities() {
 
   const { data: rankData, isLoading } = useSWR('rankings-all', () => api.rankings());
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
-  const { data: signalsData } = useSWR('signals-all', () => api.allSignals());
+  const { data: signalsData } = useSWR('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
   const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
 
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
@@ -520,7 +523,7 @@ export default function Opportunities() {
 Name: ${r.name}${r.name_zh ? ` (${r.name_zh})` : ''}
 Sector: ${r.sector ?? 'Unknown'} | Market: ${r.market}
 Current Price: ${lp?.price != null ? lp.price.toFixed(2) : 'N/A'} | Today: ${lp?.change_pct != null ? `${lp.change_pct >= 0 ? '+' : ''}${lp.change_pct.toFixed(2)}%` : 'N/A'}
-AI Signal: ${sig?.signal ?? 'N/A'} | Horizon: ${sig?.horizon ?? 'N/A'} | Confidence: ${sig?.confidence?.toFixed(0) ?? 0}% | Bullish Probability: ${sig?.bullish_probability != null ? `${sig.bullish_probability.toFixed(0)}%` : 'N/A'}
+AI Signal: ${sig?.signal ?? 'N/A'} | Horizon: ${sig?.horizon ?? 'N/A'} | Confidence: ${sig?.confidence?.toFixed(0) ?? 0}% | Bullish Probability: ${sig?.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(0)}%` : 'N/A'}
 K-Score: ${(r.score ?? 0).toFixed(0)} | Technical: ${(r.technical ?? 0).toFixed(0)} | Momentum: ${(r.momentum ?? 0).toFixed(0)} | Value: ${(r.value ?? 0).toFixed(0)} | Growth: ${(r.growth ?? 0).toFixed(0)} | Volatility: ${(r.volatility ?? 0).toFixed(0)}
 Fair Value Upside: ${fairUpside != null ? `${Number(fairUpside) >= 0 ? '+' : ''}${fairUpside}%` : 'N/A'}
 Recent News Headlines (5 most recent):
@@ -780,7 +783,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                       </span>
                       {sig && (
                         <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: SIG_COLOR[sig.signal]?.color, background: SIG_COLOR[sig.signal]?.bg, border: `1px solid ${SIG_COLOR[sig.signal]?.border}` }}>
-                          {sig.signal} {sig.confidence.toFixed(0)}%
+                          {sig.signal} {(sig.confidence ?? 0).toFixed(0)}%
                         </span>
                       )}
                       {lp?.change_pct != null && (
@@ -927,7 +930,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-        {opportunities.map(({ row: r, lp, sig }, idx) => {
+        {opportunities.map(({ row: r, lp, sig, stratScore }, idx) => {
           const sc = SIG_COLOR[sig?.signal ?? ''] ?? SIG_COLOR.HOLD;
           const reasons = getReasons(strategy, r, sig, lp);
           const keyMetric = getKeyMetric(strategy, r, sig, lp);
@@ -1033,8 +1036,9 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                         <div style={{ fontSize: '14px', fontWeight: 800, color: keyMetric.color ?? '#e2e8f0' }}>{keyMetric.value}</div>
                       </div>
                     )}
-                    <div style={{ fontSize: '10px', color: '#334155', marginTop: '4px' }}>
-                      K {(r.score ?? 0).toFixed(0)}
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '4px' }}>
+                      <span style={{ color: scoreColor(stratScore), fontWeight: 700 }}>{stratScore}</span>
+                      <span style={{ color: '#334155' }}> · K{(r.score ?? 0).toFixed(0)}</span>
                     </div>
                     {/* Bell button */}
                     <button

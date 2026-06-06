@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect } from 'react';
 import { api, type LatestPrice, type RankingRow, type SignalSummary, type WatchlistItem, type UserPosition } from '@/lib/api';
+import { getSignalStyle } from '@/lib/settings';
 
 const DonutChart = dynamic(() => import('@/components/DonutChart'), { ssr: false });
 
@@ -103,7 +104,7 @@ export default function Positions() {
   const { data: cash = { USD: 0, HKD: 0 }, mutate: mutateCash } = useSWR<CashByMarket>('positions/cash', () => api.getCash());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: rankingsData }  = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
-  const { data: signalsData }   = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
+  const { data: signalsData }   = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
   const { data: watchlistData, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
 
   /* pre-fill symbol from ?add= query (coming from watchlist) */
@@ -331,7 +332,7 @@ export default function Positions() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <Link href={`/stock/${mBest.symbol}`} style={{ fontWeight: 800, fontSize: '15px', color: '#f1f5f9', fontFamily: 'monospace' }}>{mBest.symbol}</Link>
                         <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#4ade80' }}>+{fmt(mBest.pnlPct ?? 0)}%</div>
+                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#4ade80' }}>{(mBest.pnlPct ?? 0) >= 0 ? '+' : ''}{fmt(Math.abs(mBest.pnlPct ?? 0))}%</div>
                           <div style={{ fontSize: '11px', color: '#16a34a' }}>{p}{fmt(mBest.pnl ?? 0)}</div>
                         </div>
                       </div>

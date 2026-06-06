@@ -3,6 +3,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { api, type Stock, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex, type MarketBreadth } from '@/lib/api';
+import { getSignalStyle } from '@/lib/settings';
 import AddStockModal from '@/components/AddStockModal';
 
 const SECTOR_COLOR: Record<string, { text: string; bg: string }> = {
@@ -173,7 +174,7 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
               <div style={{ width: `${breadth.breadth_pct}%`, height: '100%', background: breadth.color, borderRadius: '3px', transition: 'width 0.4s' }} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span style={{ fontSize: '18px', fontWeight: 800, color: breadth.color }}>{breadth.breadth_pct.toFixed(0)}%</span>
+              <span style={{ fontSize: '18px', fontWeight: 800, color: breadth.color }}>{(breadth.breadth_pct ?? 0).toFixed(0)}%</span>
               <span style={{ fontSize: '10px', fontWeight: 700, color: breadth.color }}>{breadth.label}</span>
             </div>
             <div style={{ fontSize: '10px', color: '#334155', marginTop: '3px' }}>
@@ -195,7 +196,7 @@ export default function Home() {
   const { data: watchlists, mutate: mutateWatchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
-  const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-all', () => api.allSignals());
+  const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
   const { data: marketData } = useSWR<MarketIndex[]>('market-overview', () => api.marketOverview(), { refreshInterval: 60_000 });
   const { data: breadthData } = useSWR<MarketBreadth>('market-breadth', () => api.marketBreadth(), { refreshInterval: 4 * 60 * 60 * 1000 });
 

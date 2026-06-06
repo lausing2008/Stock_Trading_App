@@ -7,17 +7,27 @@ from ..training import predict_latest, predict_latest_ensemble, train_model, tun
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
+# Training horizon per style: SHORT holds 1-5 days, SWING 1-4 weeks, LONG 1-3 months.
+# Matching the label horizon to the intended hold period improves signal precision.
+_HORIZON_BY_STYLE: dict[str, int] = {
+    "SHORT": 5,
+    "SWING": 10,
+    "LONG": 20,
+}
+
 
 class TrainRequest(BaseModel):
     symbol: str
     model: str = "xgboost"
     horizon: int = 5
+    style: str = "SWING"
 
 
 class TuneRequest(BaseModel):
     symbol: str
     n_trials: int = 60
     horizon: int = 5
+    style: str = "SWING"
 
 
 class PredictRequest(BaseModel):
@@ -35,40 +45,16 @@ def models():
 def train(req: TrainRequest, tasks: BackgroundTasks):
     if req.model not in list_models():
         raise HTTPException(400, f"Unknown model: {req.model}")
-    tasks.add_task(train_model, req.symbol, req.model, req.horizon)
-    return {"status": "scheduled", "symbol": req.symbol, "model": req.model}
+    horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
+    tasks.add_task(train_model, req.symbol, req.model, horizon, style=req.style)
+    return {"status": "scheduled", "symbol": req.symbol, "model": req.model, "style": req.style, "horizon": horizon}
 
 
 @router.post("/train_all")
-def train_all(tasks: BackgroundTasks):
-    """Schedule xgboost training for every active stock (uses tuned params if available)."""
-    from sqlalchemy import select
-    from db import Stock, SessionLocal
+def train_all(tasks: BackgroundTasks, style: str = "SWING"):
+    """Schedule xgboost training for every active stock (uses tuned params if available).
 
-    with SessionLocal() as session:
-        symbols = list(session.execute(
-            select(Stock.symbol).where(Stock.active.is_(True))
-        ).scalars())
-
-    for sym in symbols:
-        tasks.add_task(train_model, sym, "xgboost", 5)
-
-    return {"status": "scheduled", "count": len(symbols), "symbols": symbols}
-
-
-@router.post("/tune")
-def tune(req: TuneRequest, tasks: BackgroundTasks):
-    """Run Optuna hyperparameter search for one symbol, then retrain with best params."""
-    tasks.add_task(tune_symbol, req.symbol, req.n_trials, req.horizon)
-    return {"status": "scheduled", "symbol": req.symbol, "n_trials": req.n_trials}
-
-
-@router.post("/tune_all")
-def tune_all(tasks: BackgroundTasks, n_trials: int = 60):
-    """Run Optuna tuning sequentially for every active stock (weekend job).
-
-    Each symbol gets `n_trials` Optuna trials then a full retrain. Runs in background.
-    With 60 symbols × 60 trials this takes roughly 2-4 hours on EC2.
+    Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
     """
     from sqlalchemy import select
     from db import Stock, SessionLocal
@@ -78,10 +64,43 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60):
             select(Stock.symbol).where(Stock.active.is_(True))
         ).scalars())
 
+    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
+    for sym in symbols:
+        tasks.add_task(train_model, sym, "xgboost", horizon, style=style)
+
+    return {"status": "scheduled", "count": len(symbols), "symbols": symbols, "style": style, "horizon": horizon}
+
+
+@router.post("/tune")
+def tune(req: TuneRequest, tasks: BackgroundTasks):
+    """Run Optuna hyperparameter search for one symbol, then retrain with best params."""
+    horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
+    tasks.add_task(tune_symbol, req.symbol, req.n_trials, horizon, req.style)
+    return {"status": "scheduled", "symbol": req.symbol, "n_trials": req.n_trials, "style": req.style, "horizon": horizon}
+
+
+@router.post("/tune_all")
+def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING"):
+    """Run Optuna tuning sequentially for every active stock (weekend job).
+
+    Each symbol gets `n_trials` Optuna trials then a full retrain. Runs in background.
+    Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
+    With 123 symbols × 60 trials this takes roughly 3-5 hours on EC2.
+    """
+    from sqlalchemy import select
+    from db import Stock, SessionLocal
+
+    with SessionLocal() as session:
+        symbols = list(session.execute(
+            select(Stock.symbol).where(Stock.active.is_(True))
+        ).scalars())
+
+    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
+
     def _run_all():
         results = []
         for sym in symbols:
-            result = tune_symbol(sym, n_trials=n_trials)
+            result = tune_symbol(sym, n_trials=n_trials, horizon=horizon, style=style)
             results.append(result)
         return results
 
@@ -91,6 +110,8 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60):
         "count": len(symbols),
         "symbols": symbols,
         "n_trials_per_symbol": n_trials,
+        "style": style,
+        "horizon": horizon,
         "note": "Check container logs for progress. Each symbol logs tune.best_params when done.",
     }
 
@@ -119,11 +140,11 @@ def predict_ensemble(req: PredictRequest):
 
 
 @router.post("/train_all_ensemble")
-def train_all_ensemble(tasks: BackgroundTasks):
+def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING"):
     """Train XGBoost AND RandomForest for every active symbol.
 
     Enables ensemble predictions via POST /ml/predict_ensemble.
-    Takes roughly 1.5× longer than train_all (RF trains faster than XGBoost).
+    Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
     """
     from sqlalchemy import select
     from db import Stock, SessionLocal
@@ -133,13 +154,16 @@ def train_all_ensemble(tasks: BackgroundTasks):
             select(Stock.symbol).where(Stock.active.is_(True))
         ).scalars())
 
+    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
     for sym in symbols:
-        tasks.add_task(train_model, sym, "xgboost", 5)
-        tasks.add_task(train_model, sym, "random_forest", 5)
+        tasks.add_task(train_model, sym, "xgboost", horizon, style=style)
+        tasks.add_task(train_model, sym, "random_forest", horizon, style=style)
 
     return {
         "status": "scheduled",
         "count": len(symbols),
         "models": ["xgboost", "random_forest"],
+        "style": style,
+        "horizon": horizon,
         "note": "After completion, use POST /ml/predict_ensemble for ensemble predictions.",
     }

@@ -67,16 +67,18 @@ yfinance rate-limit notes
 from __future__ import annotations
 
 import httpx
+import json
+import redis as redis_lib
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, Price, PriceAlert, SignalAlert, SessionLocal, Stock
+from db import AlertCondition, Price, PriceAlert, SignalAlert, SessionLocal, Stock, Watchlist, WatchlistItem
 
 from .ingestion import ingest_universe
 from .email_service import send_price_alert_email, send_signal_alert_email
@@ -84,6 +86,42 @@ from .email_service import send_price_alert_email, send_signal_alert_email
 log = get_logger("scheduler")
 _settings = get_settings()
 _scheduler: BackgroundScheduler | None = None
+_redis: redis_lib.Redis | None = None
+
+
+def _get_redis() -> redis_lib.Redis:
+    global _redis
+    if _redis is None:
+        _redis = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+    return _redis
+
+
+def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None) -> None:
+    try:
+        r = _get_redis()
+        now = datetime.now(timezone.utc).isoformat()
+        # Preserve existing sent_at if not explicitly provided (stable BUY refresh path)
+        if sent_at is None and sent:
+            try:
+                existing = r.get(f"conv_gate:{symbol}:{style}")
+                if existing:
+                    sent_at = json.loads(existing).get("sent_at")
+            except Exception:
+                pass
+        r.setex(
+            f"conv_gate:{symbol}:{style}",
+            86400 * 7,  # 7-day TTL
+            json.dumps({
+                "sent": sent,
+                "passed": passed,
+                "failed": failed,
+                "signal": signal,
+                "ts": now,
+                "sent_at": sent_at,
+            }),
+        )
+    except Exception:
+        pass
 
 
 def _symbols_for(market: str) -> list[str]:
@@ -132,6 +170,9 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
 
     if post_close:
         _post(f"{_settings.ml_prediction_url}/ml/train_all")
+        # Evaluate any BUY/SELL signals whose hold window has now expired and
+        # persist their outcomes to signal_outcomes for accuracy tracking.
+        _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
 
     check_signal_alerts()
     check_technical_alerts()
@@ -143,9 +184,12 @@ _BULLISH_TRANSITIONS = {
     ("WAIT", "HOLD"), ("WAIT", "BUY"),
     ("HOLD", "BUY"),
 }
-# Fired regardless of analyst rating — these are exit warnings
+# Fired regardless of analyst rating — always send exit warnings.
+# Covers deterioration from any bullish state (BUY, HOLD, WAIT) downward.
 _BEARISH_TRANSITIONS = {
-    ("BUY", "HOLD"), ("BUY", "WAIT"), ("BUY", "SELL"),
+    ("BUY",  "HOLD"), ("BUY",  "WAIT"), ("BUY",  "SELL"),
+    ("HOLD", "WAIT"), ("HOLD", "SELL"),
+    ("WAIT", "SELL"),
 }
 _BULLISH_ANALYST = {"buy", "strong_buy", "strongbuy", "outperform"}
 
@@ -205,11 +249,12 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[
     failed: list[str] = []
 
     # Layer 2 — K-Score conviction (≥ 55 = positive territory)
-    if kscore is not None:
-        if kscore >= 55:
-            passed.append(f"K-Score: {kscore:.0f} — conviction positive")
-        else:
-            failed.append(f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case")
+    if kscore is None:
+        failed.append("K-Score unavailable (rankings API down) — cannot verify conviction")
+    elif kscore >= 55:
+        passed.append(f"K-Score: {kscore:.0f} — conviction positive")
+    else:
+        failed.append(f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case")
 
     # Layer 4a — Clean uptrend structure
     if reasons.get("sma50_above_sma200") and reasons.get("trend_above_sma50"):
@@ -258,12 +303,16 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[
         failed.append(f"ADX {float(adx):.0f} < 25: market choppy, signals unreliable")
 
     # Layer 5 — ML model agrees with TA
+    # If ml_probability is None the model has not been trained for this stock yet.
+    # Treat as a soft warning rather than a hard block — the TA evidence (layers 4a-4e)
+    # is sufficient on its own for stocks without ML coverage.
     ml_prob = reasons.get("ml_probability")
-    if ml_prob is not None and float(ml_prob) > 0.70:
+    if ml_prob is None:
+        passed.append("ML: no model trained yet — TA-only signal (soft pass)")
+    elif float(ml_prob) > 0.70:
         passed.append(f"ML: {float(ml_prob) * 100:.0f}% bullish probability")
     else:
-        prob_str = f"{float(ml_prob) * 100:.0f}%" if ml_prob is not None else "unavailable"
-        failed.append(f"ML probability {prob_str} (need >70%)")
+        failed.append(f"ML probability {float(ml_prob) * 100:.0f}% below 70% threshold")
 
     # Disqualifiers — false-BUY flags that block regardless of layer scores
     if reasons.get("rsi_divergence") == "bearish":
@@ -274,8 +323,56 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[
     return len(failed) == 0, passed, failed
 
 
-def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) -> dict | None:
-    """Build a rule-based game plan from technical data when signal transitions to BUY."""
+_STYLE_PARAMS: dict[str, dict] = {
+    # SHORT: 1–5 day momentum trade — tight entries and stop, modest target
+    "SHORT": {
+        "entry1_pct":   0.995,   # -0.5%
+        "entry2_pct":   0.985,   # -1.5%
+        "breakout_pct": 1.010,   # +1%
+        "stop_pct":     0.970,   # -3%
+        "default_tp_pct": 1.05,  # +5% default target
+        "entry1_label": "tight entry — short-term momentum play",
+        "entry2_label": "secondary entry on minor intraday dip",
+        "stop_label":   "tight stop — short-term trade invalidated on 3% breach",
+        "tp_fallback":  "+5% quick target for short-term momentum trade",
+        "horizon_note": "Short-term trade (1–5 days) — prioritise execution speed over perfect fill",
+    },
+    # SWING: 5–30 day swing trade — original balanced levels
+    "SWING": {
+        "entry1_pct":   0.985,   # -1.5%
+        "entry2_pct":   0.965,   # -3.5%
+        "breakout_pct": 1.020,   # +2%
+        "stop_pct":     0.945,   # -5.5%
+        "default_tp_pct": 1.12,  # +12% default target
+        "entry1_label": "near-term support — scale in on weakness",
+        "entry2_label": "secondary support — averaging down level",
+        "stop_label":   "daily close below invalidates bullish swing setup",
+        "tp_fallback":  "+12% from current, near next resistance",
+        "horizon_note": "Swing trade (5–30 days) — hold through normal volatility",
+    },
+    # LONG: 30–365 day position trade — wider entries/stop, larger target
+    "LONG": {
+        "entry1_pct":   0.980,   # -2%
+        "entry2_pct":   0.950,   # -5%
+        "breakout_pct": 1.030,   # +3%
+        "stop_pct":     0.900,   # -10%
+        "default_tp_pct": 1.25,  # +25% default target
+        "entry1_label": "initial position — build on weakness over days/weeks",
+        "entry2_label": "add-to level — deeper pullback absorption zone",
+        "stop_label":   "wide stop allows normal volatility; weekly close below invalidates thesis",
+        "tp_fallback":  "+25% medium-term target (position trade)",
+        "horizon_note": "Position trade (1–12 months) — manage around earnings; size for volatility",
+    },
+}
+
+
+def _build_game_plan(
+    symbol: str,
+    signal_data: dict,
+    fundamentals: dict | None,
+    style: str = "SWING",
+) -> dict | None:
+    """Build a rule-based game plan tailored to the user's trading style (SHORT/SWING/LONG)."""
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
@@ -284,6 +381,7 @@ def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) 
             return None
         current_price = float(hist["Close"].iloc[-1])
 
+        params = _STYLE_PARAMS.get(style.upper(), _STYLE_PARAMS["SWING"])
         reasons = signal_data.get("reasons", {})
 
         # Derive entry levels from technical structure
@@ -292,30 +390,23 @@ def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) 
         rsi = reasons.get("rsi")
         bb_pct_b = reasons.get("bb_pct_b")
 
-        # Entry 1: 1.5–2% below current (near support), rounder number
-        raw_entry1 = current_price * 0.985
-        entry1 = round(raw_entry1 / _round_step(current_price)) * _round_step(current_price)
+        step = _round_step(current_price)
+        entry1   = round(current_price * params["entry1_pct"]   / step) * step
+        entry2   = round(current_price * params["entry2_pct"]   / step) * step
+        breakout = round(current_price * params["breakout_pct"] / step) * step
+        stop     = round(current_price * params["stop_pct"]     / step) * step
 
-        # Entry 2: deeper pullback (3.5–4%), ideally near a fibonacci/sma zone
-        raw_entry2 = current_price * 0.965
-        entry2 = round(raw_entry2 / _round_step(current_price)) * _round_step(current_price)
-
-        # Breakout: 2% above current
-        breakout = round(current_price * 1.02 / _round_step(current_price)) * _round_step(current_price)
-
-        # Stop: below entry2 by ~2% — close below = invalidated
-        stop = round(current_price * 0.945 / _round_step(current_price)) * _round_step(current_price)
-
-        # Take profit: analyst target or +12%
+        # Take profit: analyst target (only if meaningfully above current) else style default
         target_price = (fundamentals or {}).get("target_price")
-        if target_price and float(target_price) > current_price * 1.03:
+        min_tp_pct = params["default_tp_pct"]
+        if target_price and float(target_price) > current_price * min(1.03, min_tp_pct * 0.8):
             take_profit = float(target_price)
             tp_note = "analyst mean price target"
         else:
-            take_profit = round(current_price * 1.12 / _round_step(current_price)) * _round_step(current_price)
-            tp_note = "+12% from current, near next resistance"
+            take_profit = round(current_price * min_tp_pct / step) * step
+            tp_note = params["tp_fallback"]
 
-        # Entry rationale hints from technicals
+        # Entry rationale: technical hints override style defaults
         if rsi is not None and float(rsi) < 45:
             e1_note = f"RSI {float(rsi):.0f} — oversold recovery zone"
             e2_note = "oversold extension — scale in on deeper dip"
@@ -326,14 +417,13 @@ def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) 
             e1_note = "pullback to SMA50 support zone"
             e2_note = "deeper pullback — maintain SMA50 as key level"
         else:
-            e1_note = "near-term support — scale in on weakness"
-            e2_note = "secondary support — averaging down level"
+            e1_note = params["entry1_label"]
+            e2_note = params["entry2_label"]
 
         breakout_note = "breakout above resistance on volume — momentum confirmed"
-        if sma50_above_sma200:
+        stop_note = params["stop_label"]
+        if sma50_above_sma200 and style.upper() != "SHORT":
             stop_note = "daily close below signals golden-cross breakdown"
-        else:
-            stop_note = "daily close below invalidates bullish setup"
 
         # Earnings catalyst / risk
         next_earnings = (fundamentals or {}).get("next_earnings_date")
@@ -371,6 +461,8 @@ def _build_game_plan(symbol: str, signal_data: dict, fundamentals: dict | None) 
             "catalysts": catalysts,
             "risk": risk,
             "current_price": current_price,
+            "horizon_note": params["horizon_note"],
+            "style": style.upper(),
         }
     except Exception as exc:
         log.warning("game_plan.build_failed", symbol=symbol, error=str(exc))
@@ -406,16 +498,37 @@ def check_signal_alerts() -> None:
 
             symbols = list({a.symbol for a in alerts})
 
-            # Fetch current signals (keep full payload for confidence + reasons)
-            signals: dict[str, str] = {}
-            signal_details: dict[str, dict] = {}
-            for sym in symbols:
+            # Build (user_id, symbol) → trading_style map from watchlists with a style override
+            symbol_user_style: dict[tuple[int, str], str] = {}
+            try:
+                rows = session.execute(
+                    select(Stock.symbol, Watchlist.user_id, Watchlist.trading_style)
+                    .join(WatchlistItem, WatchlistItem.watchlist_id == Watchlist.id)
+                    .join(Stock, WatchlistItem.stock_id == Stock.id)
+                    .where(Watchlist.trading_style.isnot(None))
+                ).all()
+                for sym, uid, style in rows:
+                    symbol_user_style[(uid, sym)] = style
+            except Exception as exc:
+                log.warning("signal_alert.style_lookup_failed", error=str(exc))
+
+            # Fetch current signals per unique (symbol, style) pair
+            signals: dict[tuple[str, str], str] = {}
+            signal_details: dict[tuple[str, str], dict] = {}
+            style_sym_pairs = {
+                (a.symbol, symbol_user_style.get((a.user_id, a.symbol), "SWING"))
+                for a in alerts
+            }
+            for sym, style in style_sym_pairs:
                 try:
-                    r = httpx.get(f"{_settings.signal_engine_url}/signals/{sym}", timeout=10)
+                    r = httpx.get(
+                        f"{_settings.signal_engine_url}/signals/{sym}",
+                        params={"style": style}, timeout=10,
+                    )
                     if r.status_code == 200:
                         payload = r.json()
-                        signals[sym] = payload.get("signal", "")
-                        signal_details[sym] = payload
+                        signals[(sym, style)] = payload.get("signal", "")
+                        signal_details[(sym, style)] = payload
                 except Exception:
                     pass
 
@@ -445,26 +558,45 @@ def check_signal_alerts() -> None:
 
             fired = 0
             for alert in alerts:
-                current = signals.get(alert.symbol)
+                style = symbol_user_style.get((alert.user_id, alert.symbol), "SWING")
+                key = (alert.symbol, style)
+                current = signals.get(key)
                 if not current:
                     continue
 
                 prev = alert.last_signal
 
                 if prev == current:
+                    # Refresh conviction status for stable BUY stocks every minute.
+                    # Email was already sent (last_signal advanced only after email_ok),
+                    # so sent=True always; failed shows if gate would block a re-trigger.
+                    if current == "BUY":
+                        sig_data = signal_details.get(key) or {}
+                        all_pass, passed, failed = _is_conviction_buy(
+                            sig_data, kscore=kscores.get(alert.symbol)
+                        )
+                        # Use DB-persisted sent_at as fallback so Redis restarts don't lose the timestamp.
+                        db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
+                        _store_conviction(alert.symbol, style, True, passed, failed, current, sent_at=db_sent_at)
                     continue
 
-                is_bullish = (prev, current) in _BULLISH_TRANSITIONS
+                # Treat None→BUY as a bullish transition (stock was already at BUY
+                # when the alert was first created; prev=None since no prior state).
+                is_bullish = (prev, current) in _BULLISH_TRANSITIONS or (prev is None and current == "BUY")
                 is_bearish = (prev, current) in _BEARISH_TRANSITIONS
 
-                alert.last_signal = current  # update regardless of whether we fire
-
                 if not is_bullish and not is_bearish:
+                    # Neutral or unrecognised transition — just advance the stored state.
+                    alert.last_signal = current
+                    _store_conviction(alert.symbol, style, False, [], [f"Signal is {current} — gate only runs on BUY transitions"], current)
                     continue
+
+                # Both bullish and bearish state advances happen only after successful email
+                # send (see `if email_ok` below), so a failed send can be retried next run.
 
                 conviction_passed: list[str] | None = None
                 if is_bullish:
-                    sig_data = signal_details.get(alert.symbol) or {}
+                    sig_data = signal_details.get(key) or {}
                     confidence = float(sig_data.get("confidence") or 0)
 
                     if current == "BUY":
@@ -477,7 +609,8 @@ def check_signal_alerts() -> None:
                                 "signal_alert.skipped", symbol=alert.symbol,
                                 reason="conviction_layers_failed", failed=failed,
                             )
-                            continue
+                            _store_conviction(alert.symbol, style, False, passed, failed, current)
+                            continue  # last_signal NOT updated — retried next run
                         conviction_passed = passed
                         log.info(
                             "signal_alert.conviction_met", symbol=alert.symbol,
@@ -494,31 +627,44 @@ def check_signal_alerts() -> None:
                                 analyst=analyst_ratings.get(alert.symbol, ""),
                                 confidence=confidence,
                             )
-                            continue
+                            continue  # last_signal NOT updated — retried next run
 
-                # Build game plan for BUY transitions
+                # Guard: no email address → log and advance state to avoid infinite retry
+                if not (alert.email or "").strip():
+                    log.warning("signal_alert.skipped", symbol=alert.symbol, reason="no_email_address")
+                    alert.last_signal = current
+                    continue
+
+                # Build game plan for BUY transitions, tailored to the user's trading style
                 game_plan = None
                 if current == "BUY":
                     game_plan = _build_game_plan(
                         alert.symbol,
-                        signal_details.get(alert.symbol, {}),
+                        signal_details.get(key, {}),
                         fundamentals_cache.get(alert.symbol),
+                        style=style,
                     )
 
                 email_ok = send_signal_alert_email(
-                    to=alert.email or "",
+                    to=alert.email,
                     symbol=alert.symbol,
                     prev_signal=prev,
                     new_signal=current,
-                    analyst=analyst_ratings.get(alert.symbol, "buy"),
-                    signal_data=signal_details.get(alert.symbol, {}),
+                    analyst=analyst_ratings.get(alert.symbol, ""),
+                    signal_data=signal_details.get(key, {}),
                     fundamentals=fundamentals_cache.get(alert.symbol),
                     game_plan=game_plan,
                     conviction_layers=conviction_passed,
+                    horizon=style,
                 )
                 if email_ok:
+                    alert.last_signal = current  # advance state only after successful send
+                    now_utc = datetime.now(timezone.utc)
+                    alert.last_sent_at = now_utc   # persist so Redis restarts don't lose sent_at
                     fired += 1
-                    log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current)
+                    log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
+                    _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current,
+                                      sent_at=now_utc.isoformat())
 
             session.commit()
             if fired:
@@ -551,6 +697,7 @@ def check_price_alerts() -> None:
                     pass
 
             fired = 0
+            pending_emails: list[dict] = []
             for alert in alerts:
                 price = prices.get(alert.symbol)
                 if price is None:
@@ -563,25 +710,26 @@ def check_price_alerts() -> None:
                     continue
 
                 alert.triggered = True
-                alert.triggered_at = datetime.utcnow()
+                alert.triggered_at = datetime.now(timezone.utc)
                 fired += 1
                 log.info("alert.triggered", symbol=alert.symbol, price=price, threshold=alert.threshold)
 
                 if alert.email:
-                    email_ok = send_price_alert_email(
-                        to=alert.email,
-                        symbol=alert.symbol,
+                    pending_emails.append(dict(
+                        to=alert.email, symbol=alert.symbol,
                         condition=alert.condition.value,
-                        threshold=alert.threshold,
-                        price=price,
-                        note=alert.note,
-                    )
-                    if not email_ok:
-                        log.warning("alert.email_failed", symbol=alert.symbol, email=alert.email)
+                        threshold=alert.threshold, price=price, note=alert.note,
+                    ))
 
-            session.commit()
+            # Commit triggered flags BEFORE sending emails so a crash between
+            # commit and send causes a missed email rather than a duplicate.
             if fired:
+                session.commit()
                 log.info("alert.check_done", fired=fired, checked=len(alerts))
+
+            for kwargs in pending_emails:
+                if not send_price_alert_email(**kwargs):
+                    log.warning("alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
     except Exception as exc:
         log.error("alert.check_error", error=str(exc))
 
@@ -640,6 +788,7 @@ def check_technical_alerts() -> None:
                     log.warning("tech_alert.price_error", symbol=sym, error=str(exc))
 
             fired = 0
+            pending_emails: list[dict] = []
             for alert in alerts:
                 close = prices_by_sym.get(alert.symbol)
                 if close is None:
@@ -667,7 +816,7 @@ def check_technical_alerts() -> None:
                     elif cond == AlertCondition.NEW_52WK_HIGH:
                         if len(close) < 2:
                             continue
-                        high_52 = float(close.iloc[:-1].tail(251).max())
+                        high_52 = float(close.iloc[:-1].tail(252).max())
                         if float(close.iloc[-1]) <= high_52:
                             continue
                         cond_label = f"hit a new 52-week high (prev high {high_52:.2f})"
@@ -676,7 +825,7 @@ def check_technical_alerts() -> None:
                     elif cond == AlertCondition.NEW_52WK_LOW:
                         if len(close) < 2:
                             continue
-                        low_52 = float(close.iloc[:-1].tail(251).min())
+                        low_52 = float(close.iloc[:-1].tail(252).min())
                         if float(close.iloc[-1]) >= low_52:
                             continue
                         cond_label = f"hit a new 52-week low (prev low {low_52:.2f})"
@@ -708,21 +857,25 @@ def check_technical_alerts() -> None:
                     log.info("tech_alert.triggered", symbol=alert.symbol, condition=cond_label)
 
                     if alert.email:
-                        send_price_alert_email(
+                        pending_emails.append(dict(
                             to=alert.email,
                             symbol=alert.symbol,
                             condition=cond_label,
                             threshold=threshold_val,
                             price=float(close.iloc[-1]),
                             note=alert.note,
-                        )
+                        ))
 
                 except Exception as exc:
                     log.warning("tech_alert.check_error", symbol=alert.symbol, error=str(exc))
 
-            session.commit()
             if fired:
+                session.commit()
                 log.info("tech_alert.check_done", fired=fired)
+
+            for kwargs in pending_emails:
+                if not send_price_alert_email(**kwargs):
+                    log.warning("tech_alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
 
     except Exception as exc:
         log.error("tech_alert.error", error=str(exc))
@@ -910,6 +1063,18 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="price_alert_check",
+        replace_existing=True,
+    )
+
+    # ── One-shot startup run to restore conviction/Redis data after restarts ─
+    # check_signal_alerts() is normally called by _run_market_refresh() (5×/day).
+    # Running it once at startup (60s delay) repopulates Redis without adding a
+    # permanent 1-minute schedule that could race with the full market refresh.
+    _scheduler.add_job(
+        check_signal_alerts,
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
+        id="signal_alert_startup",
         replace_existing=True,
     )
 

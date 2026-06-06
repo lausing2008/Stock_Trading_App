@@ -46,8 +46,10 @@ export const api = {
     if (market) params.set('market', market);
     return request<{ rankings: RankingRow[] }>(`/rankings?${params}`);
   },
-  signal: (symbol: string) => request<Signal>(`/signals/${symbol}`),
-  allSignals: () => request<SignalSummary[]>(`/signals`),
+  sectorRotation: (market?: string) =>
+    request<SectorRotationReport>(`/rankings/sector_rotation${market ? `?market=${market}` : ''}`),
+  signal: (symbol: string, style?: string) => request<Signal>(`/signals/${symbol}${style ? `?style=${style}` : ''}`),
+  allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
   refreshSignal: (symbol: string) => request<Signal>(`/signals/${symbol}?persist=true`),
   refreshSignals: (market?: string) => request<{ refreshed: number }>(`/signals/refresh`, { method: 'POST', body: JSON.stringify(market ? { market } : {}) }),
   predict: (symbol: string, model = 'xgboost') =>
@@ -74,8 +76,8 @@ export const api = {
   fearGreed: () => request<FearGreed>(`/stocks/fear_greed`),
   marketBreadth: () => request<MarketBreadth>(`/stocks/market_breadth`),
   listWatchlists: () => request<WatchlistMeta[]>(`/watchlists`),
-  createWatchlist: (name: string) => request<WatchlistMeta>(`/watchlists`, { method: 'POST', body: JSON.stringify({ name }) }),
-  renameWatchlist: (id: number, name: string) => request<WatchlistMeta>(`/watchlists/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+  createWatchlist: (name: string, trading_style?: string | null) => request<WatchlistMeta>(`/watchlists`, { method: 'POST', body: JSON.stringify({ name, trading_style }) }),
+  renameWatchlist: (id: number, name: string, trading_style?: string | null) => request<WatchlistMeta>(`/watchlists/${id}`, { method: 'PUT', body: JSON.stringify({ name, trading_style }) }),
   deleteWatchlist: (id: number) => request(`/watchlists/${id}`, { method: 'DELETE' }),
   listWatchlist: (listId?: number) => request<WatchlistItem[]>(`/watchlist${listId != null ? `?list_id=${listId}` : ''}`),
   addToWatchlist: (symbol: string, listId?: number) => request<WatchlistItem>(`/watchlist/${symbol}${listId != null ? `?list_id=${listId}` : ''}`, { method: 'POST' }),
@@ -102,9 +104,9 @@ export const api = {
   createBoardPlan: (body: {
     symbol: string; stage?: string; game_plan?: object | null;
     entry_price?: number | null; stop_loss?: number | null; take_profit?: number | null;
-    notes?: string | null; source?: string | null;
+    notes?: string | null; source?: string | null; trading_style?: string | null;
   }) => request<TradePlan>(`/board`, { method: 'POST', body: JSON.stringify(body) }),
-  updateBoardPlan: (id: number, body: { stage?: string; notes?: string; entry_price?: number; stop_loss?: number; take_profit?: number; exit_price?: number; actual_entry_price?: number; shares?: number }) =>
+  updateBoardPlan: (id: number, body: { stage?: string; notes?: string; entry_price?: number; stop_loss?: number; take_profit?: number; exit_price?: number; actual_entry_price?: number; shares?: number; trading_style?: string }) =>
     request<TradePlan>(`/board/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteBoardPlan: (id: number) => request(`/board/${id}`, { method: 'DELETE' }),
 
@@ -153,10 +155,36 @@ export const api = {
     request<FactorExposureReport>(`/signals/factor-exposure?lookback_days=${lookbackDays}`),
   mlWeightValidation: (lookbackDays = 180) =>
     request<MLWeightValidation>(`/signals/ml-weight-validation?lookback_days=${lookbackDays}`),
-  tradePerformance: (lookbackDays = 180, symbol?: string) => {
-    const params = new URLSearchParams({ lookback_days: String(lookbackDays) });
+  tradePerformance: (lookbackDays = 180, symbol?: string, horizon = 'SWING', opts?: { waitExits?: boolean; maxHoldDays?: number; minConfidence?: number }) => {
+    const params = new URLSearchParams({ lookback_days: String(lookbackDays), horizon });
     if (symbol) params.set('symbol', symbol);
+    if (opts?.waitExits) params.set('wait_exits', 'true');
+    if (opts?.maxHoldDays != null) params.set('max_hold_days', String(opts.maxHoldDays));
+    if (opts?.minConfidence != null && opts.minConfidence > 0) params.set('min_confidence', String(opts.minConfidence));
     return request<TradePerformanceReport>(`/signals/trade_performance?${params}`);
+  },
+  suppressedSignals: (style = 'SWING') =>
+    request<SuppressedSignalRow[]>(`/signals/suppressed?style=${style}`),
+  rollingAccuracy: (window = 30, lookbackDays = 180) =>
+    request<{ window: number; lookback_days: number; series: { date: string; accuracy: number; signal_count: number }[]; drift_warning: boolean; latest_accuracy: number | null }>(`/signals/rolling_accuracy?window=${window}&lookback_days=${lookbackDays}`),
+  walkForward: (testDays = 30, holdDays = 5, lookbackDays = 365) =>
+    request<WalkForwardReport>(`/signals/walkforward?test_days=${testDays}&hold_days=${holdDays}&lookback_days=${lookbackDays}`),
+  stockAtr: (symbol: string, period = 14) =>
+    request<{ symbol: string; atr: number; close: number; stop_loss_2atr: number; period: number }>(`/stocks/${symbol}/atr?period=${period}`),
+  portfolioRisk: (symbols: string[], weights?: number[]) => {
+    const params = new URLSearchParams({ symbols: symbols.join(',') });
+    if (weights) params.set('weights', weights.join(','));
+    return request<{
+      symbols: string[];
+      weights: number[];
+      correlation: number[][];
+      betas: Record<string, number>;
+      portfolio_beta: number;
+      sector_weights: Record<string, number>;
+      var_95_pct: number;
+      benchmark: string;
+      warnings: string[];
+    }>(`/portfolio-risk/risk?${params}`);
   },
 
   // Trade Journal
@@ -217,6 +245,53 @@ export const api = {
     request<{role: string; content: string}>(`/research/${symbol}/chat`, { method: 'POST', body: JSON.stringify({ messages, api_key, model, provider }) }, 60_000),
 };
 
+export type SuppressedSignalConditions = {
+  weekly_gate: boolean;
+  weekly_misalignment: boolean;
+  adx_choppy: boolean;
+  high_vol_regime: boolean;
+  low_breadth: boolean;
+  earnings_caution: boolean;
+  earnings_level: string | null;
+  negative_news: boolean;
+  news_level: string | null;
+  rs_lagging: boolean;
+  bearish_options: boolean;
+  options_level: string | null;
+  stale_data: boolean;
+  insufficient_history: boolean;
+  compression_cap: boolean;
+};
+
+export type SuppressedSignalRow = {
+  symbol: string;
+  name: string;
+  signal: string;
+  horizon: string;
+  confidence: number;
+  bullish_probability: number | null;
+  ts: string | null;
+  conditions: SuppressedSignalConditions;
+  suppression_count: number;
+  market_regime: string | null;
+  weekly_rsi: number | null;
+  weekly_trend: string | null;
+  rsi: number | null;
+  adx: number | null;
+  breadth_pct: number | null;
+  days_to_earnings: number | null;
+  news_sentiment: number | null;
+  rs_score: number | null;
+  conviction: {
+    sent: boolean;
+    passed: string[];
+    failed: string[];
+    signal: string;
+    ts: string;
+    sent_at: string | null;
+  } | null;
+};
+
 export type Stock = {
   id: number;
   symbol: string;
@@ -248,6 +323,9 @@ export type Signal = {
 
 export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null; ts: string | null };
 export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null; relative_strength?: number | null };
+export type SectorRsStock = { symbol: string; name: string; rs_score: number | null; kscore: number | null; past_rs: number | null };
+export type SectorRotationEntry = { sector: string; etf: string; avg_rs: number; rs_change: number | null; stock_count: number; leading: number; lagging: number; leading_pct: number; top_stocks: SectorRsStock[]; bottom_stocks: SectorRsStock[] };
+export type SectorRotationReport = { as_of: string; sectors: SectorRotationEntry[] };
 export type Prediction = { symbol: string; bullish_probability: number; confidence: number; direction: string };
 export type Backtest = {
   backtest_id: number | null;
@@ -295,12 +373,12 @@ export type PortfolioWeights = {
 export type LatestPrice = { symbol: string; price: number; prev_close: number | null; change_pct: number | null; currency: string; volume: number | null; avg_volume: number | null };
 export type MarketIndex = { name: string; ticker: string; market: string; price: number | null; change_pct: number | null };
 export type WatchlistItem = { symbol: string; name: string; name_zh?: string | null; market: string; exchange: string; sector?: string; currency: string; added_at: string };
-export type WatchlistMeta = { id: number; name: string; item_count: number; created_at: string };
+export type WatchlistMeta = { id: number; name: string; item_count: number; trading_style: string | null; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };
 export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; created_at: string };
-export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; exit_price: number | null; actual_entry_price: number | null; shares: number | null; closed_at: string | null; created_at: string; updated_at: string };
+export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; exit_price: number | null; actual_entry_price: number | null; shares: number | null; trading_style: string | null; closed_at: string | null; created_at: string; updated_at: string };
 export type CongressTrade = { Ticker: string; Date: string; Politician: string; Transaction: string; Min: number | null; Max: number | null; Party: string | null; State: string | null; Chamber: string | null; ReportDate: string | null };
 export type SignalAccuracyRow = { symbol: string; name: string; signal: 'BUY' | 'SELL'; confidence: number; bullish_probability: number | null; signal_date: string; entry_price: number; exit_price: number; pct_change: number; correct: boolean; days_held: number };
 export type SignalAccuracyReport = { lookback_days: number; total_signals: number; buy_count: number; sell_count: number; buy_accuracy: number | null; sell_accuracy: number | null; overall_accuracy: number | null; avg_buy_return_pct: number | null; avg_sell_return_pct: number | null; profit_factor: number | null; signals: SignalAccuracyRow[] };
@@ -310,6 +388,15 @@ export type TradePerformanceReport = { lookback_days: number; closed_trades: num
 export type FactorRow = { key: string; label: string; baseline: number; scale: number; correct_avg: number | null; wrong_avg: number | null; correct_dev_pct: number | null; wrong_dev_pct: number | null; correct_count: number; wrong_count: number };
 export type FactorExposureReport = { lookback_days: number; signal_count: number; factors: FactorRow[] };
 export type MLWeightCurvePoint = { weight: number; accuracy: number | null; avg_return_pct: number | null };
+export type WalkForwardWindow = { start: string; end: string; n_signals: number; n_correct: number; accuracy: number; avg_return_pct: number; equity: number };
+export type WalkForwardReport = {
+  train_days: number; test_days: number; lookback_days: number; hold_days: number;
+  windows: WalkForwardWindow[];
+  total_windows: number; profitable_windows: number; signal_count: number;
+  overall_accuracy: number | null; avg_return_pct: number | null;
+  total_return_pct: number | null; sharpe: number | null; max_drawdown: number | null;
+  benchmark: { symbol: string; windows: { end: string; equity: number; cumulative_return_pct: number }[]; total_return_pct: number } | null;
+};
 export type MLWeightValidation = { lookback_days: number; signal_count: number; optimal_weight: number | null; optimal_accuracy: number | null; current_formula_range: [number, number]; curve: MLWeightCurvePoint[] };
 export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean };
 export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number; sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[] };

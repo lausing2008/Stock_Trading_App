@@ -78,6 +78,10 @@ type Reasons = {
   vwap_20?: number | null;
   weekly_ta_score?: number | null;
   weekly_alignment?: boolean | null;
+  weekly_rsi?: number | null;
+  weekly_trend?: string | null;
+  weekly_macd_bull?: boolean | null;
+  weekly_gate_fired?: boolean | null;
   active_patterns?: string[];
   pattern_adjustment?: number | null;
   days_to_earnings?: number | null;
@@ -87,6 +91,12 @@ type Reasons = {
   adx_compression?: boolean;
   high_vol_compression?: boolean;
   fear_greed_score?: number | null;
+  // v5 additions
+  sr_context?: string | null;
+  sr_flag?: string | null;
+  sr_nearest_resistance?: number | null;
+  sr_nearest_support?: number | null;
+  sr_52w_high?: number | null;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
@@ -164,12 +174,16 @@ function buildReasons(r: Reasons): Factor[] {
 
   // Weekly timeframe alignment
   if (r.weekly_alignment != null) {
+    const wRsi = r.weekly_rsi != null ? `RSI ${Math.round(r.weekly_rsi)}` : null;
+    const wTrend = r.weekly_trend ? `trend ${r.weekly_trend}` : null;
+    const wInfo = [wRsi, wTrend].filter(Boolean).join(', ') || `score ${((r.weekly_ta_score ?? 0) * 100).toFixed(0)}%`;
+    const gateNote = r.weekly_gate_fired ? ' — BUY gate active' : '';
     factors.push({
       label: r.weekly_alignment ? '✦ Weekly Aligned' : 'Weekly Conflict',
       bullish: r.weekly_alignment,
       detail: r.weekly_alignment
-        ? `Weekly trend agrees with daily — signal amplified (weekly score: ${r.weekly_ta_score != null ? (r.weekly_ta_score * 100).toFixed(0) : '?'})`
-        : `Weekly trend conflicts with daily — signal compressed (weekly score: ${r.weekly_ta_score != null ? (r.weekly_ta_score * 100).toFixed(0) : '?'})`,
+        ? `Weekly agrees with daily — amplified (${wInfo})`
+        : `Weekly conflicts with daily — compressed (${wInfo}${gateNote})`,
     });
   }
 
@@ -193,6 +207,25 @@ function buildReasons(r: Reasons): Factor[] {
       detail: r.price_above_vwap
         ? `Price above 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — institutional support zone`
         : `Price below 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — below average transaction price`,
+    });
+  }
+
+  // S/R zone context
+  if (r.sr_flag && r.sr_flag !== 'neutral') {
+    const isBreakout = r.sr_flag === 'breakout_confirmed';
+    const isResistance = r.sr_flag === 'at_resistance';
+    const isSupport = r.sr_flag === 'at_support';
+    const level = isResistance || isBreakout
+      ? r.sr_nearest_resistance != null ? `$${r.sr_nearest_resistance.toFixed(2)}` : (r.sr_52w_high != null ? `52w high $${r.sr_52w_high.toFixed(2)}` : '')
+      : r.sr_nearest_support != null ? `$${r.sr_nearest_support.toFixed(2)}` : '';
+    factors.push({
+      label: isBreakout ? '✦ Level Breakout' : isResistance ? 'At Resistance' : 'At Support',
+      bullish: isBreakout || isSupport,
+      detail: isBreakout
+        ? `Price broke above resistance${level ? ` (${level})` : ''} — confirmed level break, signal boosted`
+        : isResistance
+          ? `Price approaching resistance${level ? ` (${level})` : ''} — signal compressed 15%`
+          : `Price near support zone${level ? ` (${level})` : ''} — demand area, small signal boost`,
     });
   }
 
@@ -353,7 +386,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
       {/* Scores */}
       <div className="grid grid-cols-3 gap-2 mb-3">
         <div className="text-center">
-          <div className="text-lg font-bold text-slate-100">{signal.confidence.toFixed(0)}</div>
+          <div className="text-lg font-bold text-slate-100">{(signal.confidence ?? 0).toFixed(0)}</div>
           <div className="text-xs text-slate-500">Confidence</div>
         </div>
         <div className="text-center">

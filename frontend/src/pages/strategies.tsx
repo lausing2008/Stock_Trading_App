@@ -10,7 +10,15 @@ interface Preset {
   entry: Cond[]; exit: Cond[];
 }
 
-const FEATURES = ['close', 'sma_20', 'sma_50', 'sma_200', 'rsi_14', 'macd', 'macd_signal', 'macd_hist'];
+const FEATURES = [
+  'close', 'sma_20', 'sma_50', 'sma_200',
+  'ema_12', 'ema_26',
+  'rsi_14',
+  'macd', 'macd_signal', 'macd_hist',
+  'atr_14',
+  'bb_upper', 'bb_lower', 'bb_pct',
+  'volume_ratio',
+];
 const OPS = ['<', '<=', '>', '>=', 'crosses_above', 'crosses_below'];
 
 const OPP_TO_PRESET: Record<string, string> = {
@@ -32,9 +40,9 @@ const PRESETS: Preset[] = [
   },
   {
     key: 'longterm', label: 'Long-Term Value', icon: '🏛️', tagline: '6–24 month horizon',
-    description: 'Oversold RSI with price below SMA200 — a classic deep-value entry for patient investors. Exit when RSI signals overbought.',
-    entry: [{ feature: 'rsi_14', op: '<', right: '40' }, { feature: 'close', op: '<', right: 'sma_200' }],
-    exit:  [{ feature: 'rsi_14', op: '>', right: '65' }],
+    description: 'Buys oversold dips (RSI < 45) while the 200-day uptrend is confirmed (price above SMA200). Enters quality stocks on pullbacks rather than catching a falling knife. Exit when RSI reaches overbought.',
+    entry: [{ feature: 'rsi_14', op: '<', right: '45' }, { feature: 'close', op: '>', right: 'sma_200' }],
+    exit:  [{ feature: 'rsi_14', op: '>', right: '70' }],
   },
   {
     key: 'growth', label: 'Growth Momentum', icon: '🚀', tagline: 'Ride the uptrend',
@@ -80,16 +88,76 @@ const PRESETS: Preset[] = [
   },
   {
     key: 'ai_signal', label: 'AI Signal', icon: '🤖', tagline: 'Mirrors live BUY conditions',
-    description: 'Matches the live AI engine\'s BUY conditions: RSI in the 40–68 sweet spot (not oversold, not overbought), MACD histogram positive (momentum building), and price above SMA50. These are the exact TA thresholds the signal engine uses before applying ML. Exit when MACD histogram turns negative.',
+    description: 'Approximates the live AI engine\'s SWING BUY conditions: RSI in the optimal 40–68 zone, MACD histogram positive (momentum building), price above SMA50, and SMA50 above SMA200 (golden cross — weekly uptrend confirmed). These match the TA thresholds the signal engine uses before applying ML. Exit when MACD histogram turns negative (momentum stall).',
     entry: [
       { feature: 'rsi_14', op: '>', right: '40' },
       { feature: 'rsi_14', op: '<', right: '68' },
       { feature: 'macd_hist', op: '>', right: '0' },
       { feature: 'close', op: '>', right: 'sma_50' },
+      { feature: 'sma_50', op: '>', right: 'sma_200' },
     ],
     exit:  [{ feature: 'macd_hist', op: '<', right: '0' }],
   },
+  {
+    key: 'volume_breakout', label: 'Volume Breakout', icon: '📣', tagline: '1–10 day breakout',
+    description: 'Buys when price crosses above SMA20 on at least 1.5× average volume — confirming real institutional participation, not a fake-out. Exit immediately if price falls back below SMA20.',
+    entry: [
+      { feature: 'close', op: 'crosses_above', right: 'sma_20' },
+      { feature: 'volume_ratio', op: '>=', right: '1.5' },
+    ],
+    exit: [{ feature: 'close', op: 'crosses_below', right: 'sma_20' }],
+  },
+  {
+    key: 'bb_bounce', label: 'Bollinger Bounce', icon: '🎱', tagline: 'Mean reversion at the band',
+    description: 'Enters when price is near the lower Bollinger Band (bb_pct < 0.2) with RSI also oversold (< 38). Expects a mean-reversion snap back toward the middle band. Exit when price reaches the upper half of the band (bb_pct > 0.75).',
+    entry: [
+      { feature: 'bb_pct', op: '<', right: '0.2' },
+      { feature: 'rsi_14', op: '<', right: '38' },
+    ],
+    exit: [{ feature: 'bb_pct', op: '>', right: '0.75' }],
+  },
 ];
+
+type AiStyle = 'SHORT' | 'SWING' | 'LONG';
+
+const AI_SIGNAL_VARIANTS: Record<AiStyle, { label: string; tagline: string; description: string; entry: Cond[]; exit: Cond[] }> = {
+  SHORT: {
+    label: 'AI Signal — SHORT',
+    tagline: '1–5 day breakout',
+    description: 'Mirrors the live SHORT signal engine: RSI in the wider 35–72 zone (fires more easily for quick setups), MACD histogram positive (early momentum), price above SMA20. No SMA200 filter — short-term trades don\'t require long-term trend alignment. Exit when RSI hits 65.',
+    entry: [
+      { feature: 'rsi_14',   op: '>',  right: '35' },
+      { feature: 'rsi_14',   op: '<',  right: '72' },
+      { feature: 'macd_hist', op: '>', right: '0'  },
+      { feature: 'close',    op: '>',  right: 'sma_20' },
+    ],
+    exit: [{ feature: 'rsi_14', op: '>', right: '65' }],
+  },
+  SWING: {
+    label: 'AI Signal — SWING',
+    tagline: '5–30 day hold',
+    description: 'Mirrors the live SWING signal engine: RSI in the optimal 40–68 zone, MACD histogram positive (momentum building), price above SMA50, and SMA50 above SMA200 (golden cross — weekly uptrend confirmed). Matches the TA thresholds used before ML is applied. Exit when MACD histogram turns negative.',
+    entry: [
+      { feature: 'rsi_14',   op: '>',  right: '40' },
+      { feature: 'rsi_14',   op: '<',  right: '68' },
+      { feature: 'macd_hist', op: '>', right: '0'  },
+      { feature: 'close',    op: '>',  right: 'sma_50'  },
+      { feature: 'sma_50',   op: '>',  right: 'sma_200' },
+    ],
+    exit: [{ feature: 'macd_hist', op: '<', right: '0' }],
+  },
+  LONG: {
+    label: 'AI Signal — LONG',
+    tagline: '30–365 day position',
+    description: 'Mirrors the live LONG signal engine: buys oversold dips (RSI < 45) in a confirmed 200-day uptrend (close > SMA200, SMA50 > SMA200). Patient entry — waits for pullbacks in established uptrends rather than chasing breakouts. Exit when RSI reaches overbought (> 70).',
+    entry: [
+      { feature: 'rsi_14',  op: '<', right: '45'     },
+      { feature: 'close',   op: '>', right: 'sma_200' },
+      { feature: 'sma_50',  op: '>', right: 'sma_200' },
+    ],
+    exit: [{ feature: 'rsi_14', op: '>', right: '70' }],
+  },
+};
 
 function fromNode(node: any): Cond[] {
   if (!node) return [];
@@ -228,6 +296,8 @@ export default function StrategiesPage() {
   const [error, setError]       = useState('');
   const [showAll, setShowAll]   = useState(false);
 
+  const [aiSignalStyle, setAiSignalStyle] = useState<AiStyle>('SWING');
+
   const [deleting,      setDeleting]      = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [loadingRun,  setLoadingRun]  = useState<number | null>(null);
@@ -252,10 +322,28 @@ export default function StrategiesPage() {
 
   function applyPreset(p: Preset, clearResult = true) {
     setSelectedPreset(p.key);
-    setName(p.label);
-    setEntry(p.entry.map(c => ({ ...c })));
-    setExit(p.exit.map(c => ({ ...c })));
+    if (p.key === 'ai_signal') {
+      const v = AI_SIGNAL_VARIANTS['SWING'];
+      setAiSignalStyle('SWING');
+      setName(v.label);
+      setEntry(v.entry.map(c => ({ ...c })));
+      setExit(v.exit.map(c => ({ ...c })));
+    } else {
+      setName(p.label);
+      setEntry(p.entry.map(c => ({ ...c })));
+      setExit(p.exit.map(c => ({ ...c })));
+    }
     if (clearResult) { setResult(null); setError(''); }
+  }
+
+  function applyAiSignalStyle(style: AiStyle) {
+    const v = AI_SIGNAL_VARIANTS[style];
+    setAiSignalStyle(style);
+    setEntry(v.entry.map(c => ({ ...c })));
+    setExit(v.exit.map(c => ({ ...c })));
+    setName(v.label);
+    setResult(null);
+    setError('');
   }
 
   function addCond(kind: 'entry' | 'exit') {
@@ -368,7 +456,7 @@ export default function StrategiesPage() {
         <h1 style={{ fontSize: '20px', fontWeight: 800, color: '#f1f5f9', margin: '0 0 4px' }}>Strategy Backtester</h1>
         <p style={{ fontSize: '12px', color: '#475569', margin: 0 }}>
           Every run is auto-saved. Load past results, compare up to 3 runs side-by-side.
-          Fees: 5 bps + 2 bps slippage. Long-only, next-bar fill.
+          Fees: 5 bps + 2 bps slippage · Long-only · Next-bar fill · Features: RSI, MACD, SMA, ATR, Bollinger Bands, volume ratio.
         </p>
       </div>
 
@@ -402,9 +490,38 @@ export default function StrategiesPage() {
         <div style={{ borderRadius: '12px', border: '1px solid rgba(99,102,241,0.25)', background: 'rgba(15,23,42,0.95)', overflow: 'hidden' }}>
           <div style={{ height: '3px', background: 'linear-gradient(90deg,#4f46e5,#818cf8,#4f46e5)' }} />
           <div style={{ padding: '20px 24px' }}>
-            {(() => { const p = PRESETS.find(x => x.key === selectedPreset); return p ? (
-              <div style={{ marginBottom: '16px', padding: '10px 13px', borderRadius: '8px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.15)', fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>{p.description}</div>
-            ) : null; })()}
+            {(() => {
+              const p = PRESETS.find(x => x.key === selectedPreset);
+              if (!p) return null;
+              const desc = selectedPreset === 'ai_signal' ? AI_SIGNAL_VARIANTS[aiSignalStyle].description : p.description;
+              return (
+                <>
+                  <div style={{ marginBottom: selectedPreset === 'ai_signal' ? '10px' : '16px', padding: '10px 13px', borderRadius: '8px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.15)', fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>{desc}</div>
+                  {selectedPreset === 'ai_signal' && (
+                    <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>Trading Style</span>
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        {(['SHORT', 'SWING', 'LONG'] as const).map(s => (
+                          <button key={s} onClick={() => applyAiSignalStyle(s)}
+                            style={{
+                              padding: '4px 14px', borderRadius: '5px', fontSize: '11px', fontWeight: 700, cursor: 'pointer',
+                              border: aiSignalStyle === s ? '1px solid rgba(99,102,241,0.6)' : '1px solid #1e293b',
+                              background: aiSignalStyle === s ? 'rgba(79,70,229,0.25)' : 'rgba(255,255,255,0.02)',
+                              color: aiSignalStyle === s ? '#c7d2fe' : '#475569',
+                              transition: 'all 0.1s',
+                            }}>
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                      <span style={{ fontSize: '10px', color: '#334155' }}>
+                        {aiSignalStyle === 'SHORT' ? '1–5 days' : aiSignalStyle === 'SWING' ? '5–30 days' : '30–365 days'}
+                      </span>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
 
             <div style={{ marginBottom: '16px' }}>
               <label style={lbl}>Strategy Name</label>

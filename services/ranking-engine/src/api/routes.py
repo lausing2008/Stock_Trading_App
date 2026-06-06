@@ -6,7 +6,12 @@ from datetime import date, timedelta
 import httpx
 import numpy as np
 import pandas as pd
-import yfinance as yf
+try:
+    import yfinance as yf
+    _HAS_YF = True
+except ImportError:
+    yf = None  # type: ignore[assignment]
+    _HAS_YF = False
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -60,6 +65,9 @@ def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | No
                 _ETF_CACHE[ticker] = ret
                 return ret
     # Fallback: yfinance (for ^HSI index and any ETF not yet in DB)
+    if not _HAS_YF:
+        _ETF_CACHE[ticker] = None
+        return None
     try:
         hist = yf.Ticker(ticker).history(period="2mo")
         if hist.empty or len(hist) < 21:
@@ -248,6 +256,103 @@ def _stock_rs(stock: "Stock", df: pd.DataFrame, session: "Session | None" = None
     return score, rs_rank
 
 
+@router.get("/sector_rotation")
+def sector_rotation(
+    market: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """Return sectors ranked by average relative strength vs their ETF benchmark.
+
+    Includes RS momentum (change vs 5-7 days ago) and top/bottom stocks per sector.
+    """
+    # ── Current rankings ──────────────────────────────────────────────────────
+    latest_subq = (
+        select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .group_by(Ranking.stock_id)
+        .subquery()
+    )
+    stmt = (
+        select(Stock, Ranking)
+        .join(Ranking, Stock.id == Ranking.stock_id)
+        .join(latest_subq,
+              (Ranking.stock_id == latest_subq.c.stock_id)
+              & (Ranking.as_of == latest_subq.c.max_as_of))
+        .where(Stock.active.is_(True))
+        .where(Ranking.rs_score.isnot(None))
+    )
+    if market:
+        stmt = stmt.where(Stock.market == market.upper())
+    rows = list(session.execute(stmt).all())
+    if not rows:
+        return {"as_of": str(date.today()), "sectors": []}
+
+    as_of = str(max(row[1].as_of for row in rows))
+
+    # ── RS from 5–7 days ago for momentum ────────────────────────────────────
+    pivot = date.today() - timedelta(days=7)
+    past_subq = (
+        select(Ranking.stock_id, func.max(Ranking.as_of).label("past_as_of"))
+        .where(Ranking.as_of >= pivot)
+        .where(Ranking.as_of < date.today() - timedelta(days=3))
+        .group_by(Ranking.stock_id)
+        .subquery()
+    )
+    past_stmt = (
+        select(Ranking.stock_id, Ranking.rs_score)
+        .join(past_subq,
+              (Ranking.stock_id == past_subq.c.stock_id)
+              & (Ranking.as_of == past_subq.c.past_as_of))
+        .where(Ranking.rs_score.isnot(None))
+    )
+    past_rs: dict[int, float] = {
+        sid: rs for sid, rs in session.execute(past_stmt).all() if rs is not None
+    }
+
+    # ── Group by sector ───────────────────────────────────────────────────────
+    by_sector: dict[str, list[dict]] = defaultdict(list)
+    for stock, ranking in rows:
+        sector = stock.sector or "Unknown"
+        by_sector[sector].append({
+            "symbol":     stock.symbol,
+            "name":       stock.name,
+            "rs_score":   ranking.rs_score,
+            "kscore":     ranking.score,
+            "past_rs":    past_rs.get(stock.id),
+        })
+
+    sectors = []
+    for sector, stocks in by_sector.items():
+        rs_vals   = [s["rs_score"] for s in stocks if s["rs_score"] is not None]
+        past_vals = [s["past_rs"]  for s in stocks if s["past_rs"]  is not None]
+        if not rs_vals:
+            continue
+        avg_rs   = round(sum(rs_vals)   / len(rs_vals),   1)
+        avg_past = round(sum(past_vals) / len(past_vals), 1) if past_vals else None
+        rs_change = round(avg_rs - avg_past, 1) if avg_past is not None else None
+
+        leading = sum(1 for v in rs_vals if v >= 60)
+        lagging = sum(1 for v in rs_vals if v < 40)
+
+        top = sorted(stocks, key=lambda x: x["rs_score"] or 0, reverse=True)[:5]
+        bot = sorted(stocks, key=lambda x: x["rs_score"] or 0)[:3]
+
+        sectors.append({
+            "sector":       sector,
+            "etf":          _SECTOR_ETF.get(sector, _US_FALLBACK),
+            "avg_rs":       avg_rs,
+            "rs_change":    rs_change,
+            "stock_count":  len(stocks),
+            "leading":      leading,
+            "lagging":      lagging,
+            "leading_pct":  round(leading / len(rs_vals) * 100),
+            "top_stocks":   top,
+            "bottom_stocks": bot,
+        })
+
+    sectors.sort(key=lambda s: s["avg_rs"], reverse=True)
+    return {"as_of": as_of, "sectors": sectors}
+
+
 @router.get("/{symbol}")
 def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -430,14 +535,14 @@ def _persist_rankings(stock_ids: list[int]) -> None:
                 {
                     "stock_id": sid,
                     "as_of": today,
-                    "score": c.score,
-                    "technical": c.technical,
-                    "momentum": c.momentum,
-                    "value": c.value,
-                    "growth": c.growth,
-                    "volatility": c.volatility,
-                    "fair_price": c.fair_price,
-                    "rs_score": c.relative_strength,
+                    "score":     _clean(c.score),
+                    "technical": _clean(c.technical),
+                    "momentum":  _clean(c.momentum),
+                    "value":     _clean(c.value),
+                    "growth":    _clean(c.growth),
+                    "volatility":_clean(c.volatility),
+                    "fair_price":_clean(c.fair_price),
+                    "rs_score":  _clean(c.relative_strength),
                 }
             )
         if rows:

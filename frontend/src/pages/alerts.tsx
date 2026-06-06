@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
 import { api, type PriceAlert, type SignalAlertItem, type Stock, type SignalSummary } from '@/lib/api';
+import { getSignalStyle } from '@/lib/settings';
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -259,7 +260,7 @@ function PriceAlertsTab() {
 function SignalAlertsTab() {
   const { data: stocks } = useSWR<Stock[]>('stocks-all', () => api.listStocks());
   const { data: signalAlerts, mutate } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { refreshInterval: 30000 });
-  const { data: allSignals } = useSWR<SignalSummary[]>('all-signals', () => api.allSignals(), { refreshInterval: 120000 });
+  const { data: allSignals } = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()), { refreshInterval: 120000 });
 
   const [addSymbol, setAddSymbol] = useState('');
   const [email, setEmail]         = useState('');

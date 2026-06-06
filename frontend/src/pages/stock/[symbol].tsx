@@ -30,13 +30,14 @@
  * max_tokens=2048 (default).
  */
 import { useRouter } from 'next/router';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import useSWR from 'swr';
 import dynamic from 'next/dynamic';
 import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
+import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData } from '@/lib/api';
+import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -143,7 +144,7 @@ export default function StockDetail() {
         stage: 'planning',
         game_plan: gamePlan as unknown as Record<string, unknown>,
         entry_price: gamePlan.entries[0]?.price ?? null,
-        stop_loss: gamePlan.stop_loss.price,
+        stop_loss: gamePlan.stop_loss?.price ?? null,
         take_profit: gamePlan.take_profit?.price ?? null,
         source: 'gameplan',
       });
@@ -159,13 +160,13 @@ export default function StockDetail() {
       `📋 ${symbol} — ${gamePlan.title}`,
       '',
       'ENTRY STRATEGY',
-      ...gamePlan.entries.map((e: GamePlanEntry) => `  ${e.label}: $${e.price.toFixed(2)} — ${e.rationale}`),
+      ...(gamePlan.entries ?? []).map((e: GamePlanEntry) => `  ${e.label}: $${e.price.toFixed(2)} — ${e.rationale}`),
       '',
-      `STOP LOSS: $${gamePlan.stop_loss.price.toFixed(2)} — ${gamePlan.stop_loss.rationale}`,
+      gamePlan.stop_loss ? `STOP LOSS: $${gamePlan.stop_loss.price.toFixed(2)} — ${gamePlan.stop_loss.rationale}` : '',
       gamePlan.take_profit ? `TAKE PROFIT: $${gamePlan.take_profit.price.toFixed(2)} — ${gamePlan.take_profit.rationale}` : '',
       '',
       'CATALYSTS',
-      ...gamePlan.catalysts.map((c: string) => `  › ${c}`),
+      ...(gamePlan.catalysts ?? []).map((c: string) => `  › ${c}`),
       '',
       `KEY RISK: ${gamePlan.risk}`,
     ].filter(l => l !== undefined);
@@ -199,6 +200,20 @@ export default function StockDetail() {
     () => api.getInstitutional(symbol),
     { revalidateOnFocus: false },
   );
+
+  const { data: atrData } = useSWR(
+    symbol ? `atr-${symbol}` : null,
+    () => api.stockAtr(symbol),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: allRankings } = useSWR(
+    'rankings-all',
+    () => api.rankings(),
+    { revalidateOnFocus: false },
+  );
+
+  const [compareOpen, setCompareOpen] = useState(false);
 
   // Alert form state
   const [alertOpen, setAlertOpen] = useState<boolean>(false);
@@ -352,6 +367,37 @@ export default function StockDetail() {
     const fund = data.fundamentals;
     const levels = data.levels;
 
+    const tradeStyle = (sig?.horizon ?? 'SWING').toUpperCase() as 'SHORT' | 'SWING' | 'LONG';
+    const styleLabels: Record<string, string> = {
+      SHORT: 'Short-Term (1–5 Days)',
+      SWING: 'Swing (5–30 Days)',
+      LONG: 'Position (1–12 Months)',
+    };
+    const styleRules: Record<string, string> = {
+      SHORT: `TRADING STYLE: SHORT-TERM (1–5 days)
+- Entry 1: 0.5% below current — tight entry for quick momentum trade
+- Entry 2: 1.5% below current — secondary entry on minor intraday dip
+- Breakout entry: 1% above current
+- Stop loss: 3% below current — tight stop, this is a momentum play
+- Take profit: 5% above current or nearest resistance (whichever is closer)
+- Prioritise speed of execution over perfect fill; note this is a momentum trade`,
+      SWING: `TRADING STYLE: SWING (5–30 days)
+- Entry 1: at or just above the nearest strong support below current price (typically 1.5–2% below)
+- Entry 2: at a deeper support or fibonacci level for averaging down (typically 3.5–4% below)
+- Breakout entry: above the nearest resistance level — take 50% size
+- Stop loss: just below the lowest entry support — a close below invalidates the setup (typically 5.5% below)
+- Take profit: analyst target or +12% from current`,
+      LONG: `TRADING STYLE: POSITION / LONG (1–12 months)
+- Entry 1: 2% below current — build initial position, patient entry
+- Entry 2: 5% below current — add on deeper pullback to accumulate over days/weeks
+- Breakout entry: 3% above current — only if fundamental thesis strengthens
+- Stop loss: 10% below current — wide stop allows for normal volatility; weekly close below invalidates thesis
+- Take profit: analyst mean/high target or +25% from current (position trade requires large reward/risk)
+- Note this is a multi-month hold; size for volatility and manage around earnings`,
+    };
+    const planLabel = styleLabels[tradeStyle] ?? tradeStyle;
+    const styleInstruction = styleRules[tradeStyle] ?? styleRules['SWING'];
+
     // Sort supports/resistances by distance from current price
     const supports = (levels?.support_resistance ?? [])
       .filter(l => currentPrice == null || l.price < currentPrice)
@@ -399,24 +445,21 @@ TECHNICAL INDICATORS:
   News sentiment (7d): ${reasons.news_sentiment != null ? `${Number(reasons.news_sentiment).toFixed(0)}/100` : 'N/A'}${reasons.news_sentiment_flag ? ` — ${String(reasons.news_sentiment_flag).replace(/_/g, ' ')}` : ''}
   Market regime: ${reasons.market_regime ?? 'unknown'}`;
 
-    const systemPrompt = `You are a professional swing trader generating a concrete 10-day trade plan for a stock that has just received a BUY AI signal.
+    const systemPrompt = `You are a professional trader generating a concrete trade plan for a stock that has just received a BUY AI signal.
 
-RULES:
+${styleInstruction}
+
+ADDITIONAL RULES:
 - Use the exact support/resistance/fibonacci levels provided — pick the most relevant ones for entry and stop placement
-- Entry 1 (50% position): at or just above the nearest strong support below current price
-- Entry 2 (50% position): at a deeper support or fibonacci level for averaging down
-- Breakout entry: above the nearest resistance level if the above limits don't fill — take 50% size
-- Stop loss: just below the lowest entry support — a close below this invalidates the setup
 - Take profit: choose the BEST of these — in order of preference: (1) analyst mean or high target if labelled "valid take-profit candidate" and meaningfully above current price (>3%); (2) K-Score fair value if labelled "valid take-profit candidate"; (3) nearest resistance above current price. NEVER use any target labelled "BELOW CURRENT PRICE"
 - Catalysts: 3 bullets, each ≤12 words, specific (mention earnings date, sector, analyst coverage)
 - Risk: single sentence naming the biggest concrete threat (earnings, macro, overbought, etc.)
 - Use the same currency as the stock (check CURRENCY field)
-- If no support/resistance data is available, estimate levels at -2%/-4% below current for entries and -6% for stop
 - CRITICAL PRICE CONSTRAINTS: entry prices MUST be below current price; stop loss MUST be below all entry prices; take profit MUST be above current price — violating any of these makes the plan unusable
 
 Return ONLY valid JSON — no markdown, no prose:
 {
-  "title": "10-Day Game Plan for SYMBOL",
+  "title": "Game Plan — ${planLabel} — SYMBOL",
   "entries": [
     { "label": "Limit buy — 50%", "price": 0.00, "rationale": "..." },
     { "label": "Limit buy — 50%", "price": 0.00, "rationale": "..." },
@@ -500,7 +543,7 @@ Return ONLY valid JSON — no markdown, no prose:
       const systemCtx = [
         `You are a financial analyst assistant for the stock ${symbol} (${(data as Overview & { price?: { name?: string } })?.price?.name ?? symbol}).`,
         `Current price: ${data?.price ? JSON.stringify(data.price) : 'N/A'}`,
-        data?.signal ? `Signal: ${data.signal.signal} (${(data.signal.bullish_probability * 100).toFixed(0)}% bullish, ${data.signal.confidence.toFixed(0)}% confidence)` : '',
+        data?.signal ? `Signal: ${data.signal.signal} (${((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}% bullish, ${(data.signal.confidence ?? 0).toFixed(0)}% confidence)` : '',
         data?.ranking ? `K-Score: ${data.ranking.score?.toFixed(0)}, Fair Value: $${data.ranking.fair_price?.toFixed(2)}` : '',
         `Recent headlines: ${(news ?? []).slice(0, 5).map(n => n.title).join(' | ')}`,
         'Be concise, data-driven, and reference the above context in your answers.',
@@ -515,6 +558,43 @@ Return ONLY valid JSON — no markdown, no prose:
     }
   }
 
+  const priceMap = useMemo(() => {
+    const m: Record<string, LatestPrice> = {};
+    for (const p of allPrices ?? []) m[p.symbol] = p;
+    return m;
+  }, [allPrices]);
+
+  const currentSector: string | null = data?.price?.sector ?? null;
+  const currentMarket: string | null = data?.price?.market ?? null;
+
+  const sectorPeers = useMemo((): RankingRow[] => {
+    if (!allRankings || !currentSector) return [];
+    return allRankings.rankings
+      .filter((r: RankingRow) => r.symbol !== symbol && r.sector === currentSector && (!currentMarket || r.market === currentMarket))
+      .sort((a: RankingRow, b: RankingRow) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, 3);
+  }, [allRankings, currentSector, currentMarket, symbol]);
+
+  const compareRows = useMemo((): RankingRow[] => {
+    const _ranking = data?.ranking;
+    if (!_ranking) return sectorPeers;
+    const currentRow: RankingRow = {
+      symbol: symbol as string,
+      name: data?.price?.name ?? (symbol as string),
+      name_zh: data?.price?.name_zh ?? null,
+      market: currentMarket ?? '',
+      sector: currentSector ?? null,
+      score: _ranking.score,
+      technical: _ranking.technical,
+      momentum: _ranking.momentum,
+      value: _ranking.value,
+      growth: _ranking.growth,
+      volatility: _ranking.volatility,
+      fair_price: _ranking.fair_price ?? null,
+      relative_strength: _ranking.relative_strength ?? null,
+    };
+    return [currentRow, ...sectorPeers];
+  }, [data?.ranking, sectorPeers, symbol, data?.price, currentMarket, currentSector]);
 
   if (isLoading) return <div className="text-slate-400 p-4">Loading…</div>;
   if (error || !data) return <div className="text-slate-300 p-4">Error loading {symbol}.</div>;
@@ -616,7 +696,7 @@ Return ONLY valid JSON — no markdown, no prose:
               <div className={`rounded-md border px-4 py-2 text-center ${borderCls}`}>
                 <div className={`text-xs font-medium mb-0.5 ${labelCls}`}>AI Signal</div>
                 <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
-                <div className="text-xs text-slate-500 mt-0.5">{(data.signal.bullish_probability * 100).toFixed(0)}% bullish</div>
+                <div className="text-xs text-slate-500 mt-0.5">{((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}% bullish</div>
               </div>
             );
           })()}
@@ -924,6 +1004,63 @@ Return ONLY valid JSON — no markdown, no prose:
             </div>
           )}
 
+          {/* Sector Peers comparison */}
+          {sectorPeers.length > 0 && (
+            <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-300">Sector Peers</h3>
+                  {currentSector && <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>{currentSector}</div>}
+                </div>
+                {ranking && (
+                  <button
+                    onClick={() => setCompareOpen(true)}
+                    style={{
+                      padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                      border: '1px solid #6366f1', background: 'rgba(99,102,241,0.12)',
+                      color: '#818cf8', cursor: 'pointer',
+                    }}
+                  >
+                    Compare
+                  </button>
+                )}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {sectorPeers.map(peer => {
+                  const pp = priceMap[peer.symbol];
+                  const chg = pp?.change_pct;
+                  return (
+                    <a
+                      key={peer.symbol}
+                      href={`/stock/${peer.symbol}`}
+                      style={{
+                        display: 'flex', flexDirection: 'column', alignItems: 'center',
+                        padding: '8px 14px', borderRadius: 8,
+                        border: '1px solid #1e293b', background: 'rgba(255,255,255,0.02)',
+                        textDecoration: 'none', minWidth: 90,
+                      }}
+                    >
+                      <span style={{ fontSize: 13, fontWeight: 700, color: '#818cf8' }}>{peer.symbol}</span>
+                      {peer.score != null && (
+                        <span style={{ fontSize: 10, color: peer.score >= 70 ? '#4ade80' : peer.score >= 50 ? '#facc15' : '#f87171', marginTop: 2 }}>
+                          K {peer.score.toFixed(0)}
+                        </span>
+                      )}
+                      {pp?.price != null && (
+                        <span style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>${pp.price.toFixed(2)}</span>
+                      )}
+                      {chg != null && (
+                        <span style={{ fontSize: 10, color: chg >= 0 ? '#4ade80' : '#f87171' }}>
+                          {chg >= 0 ? '+' : ''}{chg.toFixed(2)}%
+                        </span>
+                      )}
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* ML Prediction — full width of left column */}
           <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -1043,7 +1180,7 @@ Return ONLY valid JSON — no markdown, no prose:
                     {data.patterns.patterns.map((p, i) => (
                       <div key={i} className="flex items-center justify-between text-xs">
                         <span className="text-slate-300">{p.name}</span>
-                        <span className="text-slate-500">{(p.confidence * 100).toFixed(0)}%</span>
+                        <span className="text-slate-500">{((p.confidence ?? 0) * 100).toFixed(0)}%</span>
                       </div>
                     ))}
                   </div>
@@ -1187,6 +1324,8 @@ Return ONLY valid JSON — no markdown, no prose:
               <PositionSizer
                 symbol={symbol as string}
                 entryPrice={curPx}
+                atrStop={atrData?.stop_loss_2atr ?? null}
+                atr={atrData?.atr ?? null}
                 stopLoss={nearestSupport}
                 takeProfit={data.fundamentals?.target_price ?? undefined}
               />
@@ -1327,7 +1466,7 @@ Return ONLY valid JSON — no markdown, no prose:
                       <div>
                         <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '7px' }}>Entry Strategy</div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                          {gamePlan.entries.map((e, i) => {
+                          {(gamePlan.entries ?? []).map((e, i) => {
                             const isBreakout = e.label.toLowerCase().includes('breakout');
                             return (
                               <div key={i} style={{ padding: '8px 10px', borderRadius: '6px', border: `1px solid ${isBreakout ? 'rgba(251,191,36,0.25)' : 'rgba(34,197,94,0.2)'}`, background: isBreakout ? 'rgba(251,191,36,0.05)' : 'rgba(34,197,94,0.05)' }}>
@@ -1346,8 +1485,8 @@ Return ONLY valid JSON — no markdown, no prose:
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
                         <div style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid rgba(248,113,113,0.25)', background: 'rgba(248,113,113,0.05)' }}>
                           <div style={{ fontSize: '10px', fontWeight: 700, color: '#f87171', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>Stop Loss</div>
-                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#f87171', fontFamily: 'monospace' }}>${gamePlan.stop_loss.price.toFixed(2)}</div>
-                          <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', lineHeight: 1.3 }}>{gamePlan.stop_loss.rationale}</div>
+                          <div style={{ fontSize: '14px', fontWeight: 800, color: '#f87171', fontFamily: 'monospace' }}>${(gamePlan.stop_loss?.price ?? 0).toFixed(2)}</div>
+                          <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', lineHeight: 1.3 }}>{gamePlan.stop_loss?.rationale ?? ''}</div>
                         </div>
                         {gamePlan.take_profit && (
                           <div style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid rgba(99,102,241,0.25)', background: 'rgba(99,102,241,0.05)' }}>
@@ -1362,7 +1501,7 @@ Return ONLY valid JSON — no markdown, no prose:
                       <div>
                         <div style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '7px' }}>Catalysts in the Window</div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                          {gamePlan.catalysts.map((c, i) => (
+                          {(gamePlan.catalysts ?? []).map((c, i) => (
                             <div key={i} style={{ display: 'flex', gap: '7px', fontSize: '11px', color: '#94a3b8', lineHeight: 1.4 }}>
                               <span style={{ color: '#4ade80', flexShrink: 0 }}>›</span>
                               <span>{c}</span>
@@ -2474,6 +2613,14 @@ Return ONLY valid JSON — no markdown, no prose:
       </div>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+      {compareOpen && compareRows.length >= 2 && (
+        <PeerCompareDrawer
+          rows={compareRows}
+          prices={priceMap}
+          onClose={() => setCompareOpen(false)}
+        />
+      )}
     </div>
   );
 }

@@ -22,7 +22,7 @@ Accuracy improvements (v3):
 Accuracy improvements (v4):
   - ML probability soft-cap [0.05, 0.95]: prevents XGBoost overconfidence (e.g. 100%)
     from dominating the fused signal when TA tells a different story
-  - ML-TA disagreement dampening: when |ml_prob - ta_prob| > 0.35, ML weight is
+  - ML-TA disagreement dampening: when |ml_prob - ta_prob| > 0.25, ML weight is
     scaled back so strong TA evidence isn't simply overridden
   - ADX choppy market compression: ADX < 20 (directionless market) compresses
     the signal 10% toward neutral, reducing false BUY/SELL in range-bound stocks
@@ -36,10 +36,21 @@ Accuracy improvements (v5):
     additionally compressed 10% toward neutral. A BUY signal in a market where
     most stocks are below their 200MA carries much higher false-positive risk
     regardless of the S&P 500 price. Breadth stored in reasons as breadth_pct.
+
+Signal accuracy improvements (SA-1 through SA-7):
+  SA-1: ML/TA disagreement dampening band lowered (0.25–0.35 = 25% weight cut)
+  SA-2: Style-aware ML precision targets (SHORT=70%, SWING=60%, LONG=50%)
+  SA-3: 4 macro regime boolean features added to ML feature set
+  SA-4: Weekly alignment min bars 26→15 with partial confidence scaling
+  SA-5: Data-driven TA weights via ta_weights.json (POST /signals/calibrate_ta_weights)
+  SA-6: Filter interaction audit endpoint (GET /signals/filter_audit)
+  SA-7: Regime-aware earnings compression — consistent EPS beaters get 20% relief
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -50,6 +61,49 @@ from common.logging import get_logger
 
 log = get_logger("signal-generator")
 _settings = get_settings()
+
+# ── TA component weights (SA-5) ───────────────────────────────────────────────
+# Defaults are the hand-tuned values used since launch.
+# Run POST /signals/calibrate_ta_weights to compute logistic-regression-derived
+# weights from your actual price history and save them here.
+# Convention: penalty keys end in "_penalty" and store positive magnitudes.
+# The score section subtracts penalty weights; normalisation excludes them.
+_TA_WEIGHTS_DEFAULT: dict[str, float] = {
+    "above_sma50":              0.15,
+    "sma50_above_sma200":       0.10,
+    "golden_cross_event":       0.10,
+    "death_cross_penalty":      0.10,
+    "rsi_sweet_spot":           0.15,
+    "rsi_mild_oversold":        0.08,
+    "rsi_mild_overbought":      0.06,
+    "stoch_oversold":           0.10,
+    "stoch_overbought_penalty": 0.08,
+    "stoch_cross_up":           0.05,
+    "rsi_divergence_bearish_penalty": 0.10,
+    "rsi_divergence_bullish":   0.08,
+    "macd_strong":              0.15,
+    "macd_positive":            0.08,
+    "macd_zero_cross_up":       0.05,
+    "bb_mid_zone":              0.10,
+    "price_above_vwap":         0.08,
+    "price_below_vwap_penalty": 0.05,
+    "bullish_trend":            0.10,
+    "obv_bullish":              0.10,
+    "volume_surge":             0.05,
+}
+_TA_WEIGHTS_PATH = Path(_settings.model_dir) / "ta_weights.json"
+
+def _load_ta_weights() -> dict[str, float]:
+    """Load calibrated TA weights from disk, falling back to defaults."""
+    try:
+        if _TA_WEIGHTS_PATH.exists():
+            with open(_TA_WEIGHTS_PATH) as f:
+                saved = json.load(f)
+            # Merge: saved values override defaults; new keys in defaults keep their value
+            return {**_TA_WEIGHTS_DEFAULT, **saved}
+    except Exception:
+        pass
+    return dict(_TA_WEIGHTS_DEFAULT)
 
 
 @dataclass
@@ -162,6 +216,26 @@ def _fetch_earnings_proximity(symbol: str) -> int | None:
     return None
 
 
+def _fetch_earnings_beat_rate(symbol: str) -> float | None:
+    """Return historical EPS beat rate (0-1) from market-data fundamentals.
+
+    The market-data service computes eps_beat_rate from the last 8 quarters of
+    earnings surprises and caches it. This avoids needing yfinance in signal-engine.
+
+    Returns None on failure (treated as neutral — no beat-rate compression adjustment).
+    """
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/fundamentals"
+        with httpx.Client(timeout=8) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                val = r.json().get("eps_beat_rate")
+                return float(val) if val is not None else None
+    except Exception:
+        pass
+    return None
+
+
 def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
     """Return (rs_score 0-100, rs_rank) vs the stock's sector ETF.
 
@@ -199,8 +273,9 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
 
         stock_ret = float(stock_hist["Close"].iloc[-1] / stock_hist["Close"].iloc[-21] - 1)
         etf_ret   = float(etf_hist["Close"].iloc[-1] / etf_hist["Close"].iloc[-21] - 1)
-        denom = 1 + etf_ret if abs(etf_ret + 1) > 1e-6 else 1e-6
-        rs_rank = (1 + stock_ret) / denom
+        if abs(1 + etf_ret) < 0.01:
+            return None, None
+        rs_rank = (1 + stock_ret) / (1 + etf_ret)
         rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
         return round(rs_score, 1), round(rs_rank, 4)
     except Exception:
@@ -208,30 +283,22 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
 
 
 def _fetch_news_sentiment(symbol: str) -> float | None:
-    """Return a 7-day news sentiment score (0–100, 50 = neutral).
+    """Return aggregate news sentiment score (0-100, 50=neutral).
 
-    Uses the sentiment field already computed by the market-data news endpoint
-    (yfinance VADER scores, range −1 to +1). Maps to 0–100 and averages the
-    last 10 articles (yfinance typically returns 7–10 recent items).
-    Returns None if no news available or endpoint unreachable.
+    Calls the dedicated /news/sentiment endpoint which uses Claude Haiku
+    (when ANTHROPIC_API_KEY is configured in market-data) or enhanced VADER
+    with financial-domain lexicon corrections as fallback.
     """
     try:
-        url = f"{_settings.market_data_url}/stocks/{symbol}/news?sources=yfinance&limit=10"
-        with httpx.Client(timeout=8) as c:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/news/sentiment"
+        with httpx.Client(timeout=10) as c:
             r = c.get(url)
-            if r.status_code != 200:
-                return None
-        articles = r.json()
-        if not articles:
-            return None
-        scores = [
-            float(a["sentiment"]) * 50 + 50  # map −1..+1 → 0..100
-            for a in articles
-            if isinstance(a.get("sentiment"), (int, float))
-        ]
-        return round(sum(scores) / len(scores), 1) if scores else None
+            if r.status_code == 200:
+                val = r.json().get("score")
+                return float(val) if val is not None else None
     except Exception:
-        return None
+        pass
+    return None
 
 
 def _fetch_options_flow(symbol: str) -> tuple[str | None, float | None]:
@@ -337,15 +404,37 @@ def _resample_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
         }).dropna(subset=["close"])
         weekly = weekly.reset_index()
         weekly.rename(columns={"ts": "ts"}, inplace=True)
+        # Drop the current (latest) week if it started within the past 4 days —
+        # a partial week bar has too few sessions to be a reliable signal.
+        if not weekly.empty:
+            from datetime import date as _date, timedelta as _td
+            latest_week_start = pd.to_datetime(weekly["ts"].iloc[-1]).date()
+            if (_date.today() - latest_week_start) < _td(days=4):
+                weekly = weekly.iloc[:-1]
         return weekly if len(weekly) >= 10 else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
 
-def _weekly_ta_score(df: pd.DataFrame) -> float:
-    """Simplified weekly TA score for multi-timeframe confirmation. Returns 0-1."""
-    if df.empty or len(df) < 26:
-        return 0.5
+def _weekly_technicals(df: pd.DataFrame) -> dict:
+    """Weekly TA indicators for multi-timeframe confirmation.
+
+    Returns dict with weekly_rsi (float|None), weekly_trend ('up'|'down'|'neutral'),
+    weekly_macd_bull (bool), and weekly_score (float 0-1 composite).
+    Uses 10-week SMA for trend (vs 20-week previously) — more responsive to medium-term turns.
+    """
+    _neutral: dict = {
+        "weekly_rsi": None,
+        "weekly_trend": "neutral",
+        "weekly_macd_bull": False,
+        "weekly_score": 0.5,
+        "weekly_confidence": 0.0,  # 0.0 = no weekly data; alignment filter is skipped
+    }
+    if df.empty or len(df) < 15:
+        return _neutral
+    # Partial confidence for 15–25 bars (3–6 months): scales from 0.70→1.0 linearly.
+    # Full confidence (1.0) requires 26+ bars (6 months).
+    weekly_confidence = min(1.0, 0.70 + (len(df) - 15) / (26 - 15) * 0.30) if len(df) < 26 else 1.0
     close = df["close"].astype(float)
 
     d = close.diff()
@@ -354,13 +443,20 @@ def _weekly_ta_score(df: pd.DataFrame) -> float:
     rsi = 100 - 100 / (1 + g / l.replace(0, np.nan))
     rsi_val = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None
 
-    sma20 = close.rolling(20).mean()
-    above_sma20 = bool(close.iloc[-1] > sma20.iloc[-1]) if not pd.isna(sma20.iloc[-1]) else False
+    sma10 = close.rolling(10).mean()
+    weekly_trend = "neutral"
+    if not pd.isna(sma10.iloc[-1]):
+        pct = (close.iloc[-1] - float(sma10.iloc[-1])) / float(sma10.iloc[-1])
+        if pct > 0.01:
+            weekly_trend = "up"
+        elif pct < -0.01:
+            weekly_trend = "down"
 
     macd_line = close.ewm(span=12).mean() - close.ewm(span=26).mean()
     hist = macd_line - macd_line.ewm(span=9).mean()
     macd_positive = bool(hist.iloc[-1] > 0)
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
+    weekly_macd_bull = macd_positive and macd_rising
 
     score = 0.35
     if rsi_val is not None:
@@ -368,14 +464,86 @@ def _weekly_ta_score(df: pd.DataFrame) -> float:
             score += 0.20
         elif rsi_val <= 40:
             score += 0.10
-    if above_sma20:
+    if weekly_trend == "up":
         score += 0.25
     if macd_positive and macd_rising:
         score += 0.20
     elif macd_positive:
         score += 0.10
 
-    return float(np.clip(score, 0, 1))
+    return {
+        "weekly_rsi": round(rsi_val, 1) if rsi_val is not None else None,
+        "weekly_trend": weekly_trend,
+        "weekly_macd_bull": weekly_macd_bull,
+        "weekly_score": float(np.clip(score, 0, 1)),
+        "weekly_confidence": weekly_confidence,
+    }
+
+
+def _sr_context(df: pd.DataFrame) -> dict:
+    """Detect price position relative to key support/resistance levels.
+
+    Uses swing high/low pivots from the last 60 bars plus 52-week high/low.
+    Returns sr_context: 'breakout' | 'at_resistance' | 'at_support' | 'neutral'.
+    """
+    close = df["close"].astype(float)
+    high  = df["high"].astype(float)
+    low   = df["low"].astype(float)
+    current = float(close.iloc[-1])
+    prev    = float(close.iloc[-2]) if len(close) >= 2 else current
+
+    # 52-week high/low from historical bars (excluding today to avoid look-ahead)
+    hist_len = min(252, len(close) - 1)
+    hist_high = float(high.iloc[-hist_len - 1:-1].max()) if hist_len > 0 else float(high.max())
+    hist_low  = float(low.iloc[-hist_len - 1:-1].min())  if hist_len > 0 else float(low.min())
+
+    # Swing pivot detection on last 60 bars (local max/min with 3-bar window each side)
+    n = min(60, len(high))
+    pw = 3
+    r_h = high.iloc[-n:].reset_index(drop=True)
+    r_l = low.iloc[-n:].reset_index(drop=True)
+
+    resistances: list[float] = [hist_high]
+    supports: list[float] = []
+    for i in range(pw, len(r_h) - pw):
+        val = float(r_h.iloc[i])
+        if all(val >= float(r_h.iloc[i + j]) for j in range(-pw, pw + 1) if j != 0):
+            resistances.append(val)
+    for i in range(pw, len(r_l) - pw):
+        val = float(r_l.iloc[i])
+        if all(val <= float(r_l.iloc[i + j]) for j in range(-pw, pw + 1) if j != 0):
+            supports.append(val)
+
+    nearest_res = min((r for r in resistances if r > current), default=None)
+    nearest_sup = max((s for s in supports if s < current), default=None)
+
+    thr = 0.015  # 1.5% proximity threshold
+    sr_context = "neutral"
+
+    if nearest_res is not None:
+        if current >= nearest_res:
+            # Price already cleared the level — always a breakout
+            sr_context = "breakout"
+        else:
+            dist = (nearest_res - current) / nearest_res
+            if dist <= thr:
+                # Approaching resistance: breakout if prev bar was clearly below
+                if prev < nearest_res * (1.0 - thr):
+                    sr_context = "breakout"
+                else:
+                    sr_context = "at_resistance"
+    if sr_context == "neutral" and nearest_sup is not None:
+        dist = (current - nearest_sup) / current
+        if dist <= thr:
+            sr_context = "at_support"
+
+    return {
+        "sr_context": sr_context,
+        "sr_nearest_resistance": round(nearest_res, 2) if nearest_res is not None else None,
+        "sr_nearest_support": round(nearest_sup, 2) if nearest_sup is not None else None,
+        "sr_52w_high": round(hist_high, 2),
+        "sr_52w_low": round(hist_low, 2),
+    }
 
 
 def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float, list[str]]:
@@ -515,66 +683,388 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     vol_z = (volume.iloc[-1] - volume.rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0
     reasons["volume_z"] = float(vol_z) if not pd.isna(vol_z) else None
 
-    # ── Score ─────────────────────────────────────────────────────────────
+    # ── Score (data-driven weights via ta_weights.json, SA-5) ─────────────
+    w = _load_ta_weights()
     score = 0.0
 
-    if above_sma50:         score += 0.15
-    if sma50_above_sma200:  score += 0.10
-    if golden_cross_event:  score += 0.10
-    if death_cross_event:   score -= 0.10
+    if above_sma50:         score += w["above_sma50"]
+    if sma50_above_sma200:  score += w["sma50_above_sma200"]
+    if golden_cross_event:  score += w["golden_cross_event"]
+    if death_cross_event:   score -= w["death_cross_penalty"]
 
     if rsi_val is not None:
-        if 45 < rsi_val < 65:    score += 0.15
-        elif 35 < rsi_val <= 45: score += 0.08
-        elif 65 <= rsi_val < 72: score += 0.06
+        if 45 < rsi_val < 65:    score += w["rsi_sweet_spot"]
+        elif 35 < rsi_val <= 45: score += w["rsi_mild_oversold"]
+        elif 65 <= rsi_val < 72: score += w["rsi_mild_overbought"]
 
-    if stoch_oversold:      score += 0.10
-    elif stoch_overbought:  score -= 0.08
-    if stoch_cross_up:      score += 0.05
+    if stoch_oversold:      score += w["stoch_oversold"]
+    elif stoch_overbought:  score -= w["stoch_overbought_penalty"]
+    if stoch_cross_up:      score += w["stoch_cross_up"]
 
-    if rsi_divergence == "bearish":   score -= 0.10
-    elif rsi_divergence == "bullish": score += 0.08
+    if rsi_divergence == "bearish":   score -= w["rsi_divergence_bearish_penalty"]
+    elif rsi_divergence == "bullish": score += w["rsi_divergence_bullish"]
 
-    if macd_hist > 0 and macd_rising:  score += 0.15
-    elif macd_hist > 0:                score += 0.08
-    if macd_zero_cross_up:             score += 0.05
+    if macd_hist > 0 and macd_rising:  score += w["macd_strong"]
+    elif macd_hist > 0:                score += w["macd_positive"]
+    if macd_zero_cross_up:             score += w["macd_zero_cross_up"]
 
-    if 0.2 < bb_pct_b < 0.8:   score += 0.10
+    if 0.2 < bb_pct_b < 0.8:   score += w["bb_mid_zone"]
 
-    if price_above_vwap is True:   score += 0.08
-    elif price_above_vwap is False: score -= 0.05
+    if price_above_vwap is True:    score += w["price_above_vwap"]
+    elif price_above_vwap is False: score -= w["price_below_vwap_penalty"]
 
-    if bullish_trend:                                       score += 0.10
-    if obv_bullish:                                         score += 0.10
-    if reasons["volume_z"] and reasons["volume_z"] > 0.5:  score += 0.05
+    if bullish_trend:                                       score += w["bullish_trend"]
+    if obv_bullish:                                         score += w["obv_bullish"]
+    if reasons["volume_z"] and reasons["volume_z"] > 0.5:  score += w["volume_surge"]
 
-    # Normalise by theoretical max (1.36) so the score is a true [0,1] probability.
-    # Without normalisation, stocks triggering all bullish conditions would saturate
-    # at 1.0 before clipping, losing the relative differentiation from ML fusion.
-    _TA_MAX_SCORE = 1.36
+    # Normalise by sum of all positive weights so score stays in [0,1].
+    _TA_MAX_SCORE = sum(v for k, v in w.items() if not k.endswith("_penalty"))
+    if _TA_MAX_SCORE <= 0:
+        return 0.5, reasons  # degenerate calibration; return neutral
     return float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0)), reasons
 
 
-def _decide(fused_prob: float, market_regime: str) -> tuple[str, str]:
-    """Map fused probability to a signal label.
+# ── Trading Style Profiles ────────────────────────────────────────────────────
+# Each profile controls how filters, weights, and thresholds behave for that
+# trading horizon. All compression multipliers follow the same convention as the
+# rest of this file: fused = 0.5 + (fused - 0.5) × multiplier.
+#
+# Key design decisions per style:
+#   SHORT  — Pure momentum. Earnings = potential catalyst, not risk. No news noise.
+#            ML weight capped low (ML targets 20-day returns, not 1-5 day moves).
+#            Needs a confirmed trend (ADX > 25) but lighter macro filters.
+#   SWING  — Balanced. Fixed: earnings compression was 0.25× (impossible to BUY
+#            with earnings in ≤2 days). Now 0.50× — still strong but achievable.
+#            Stacked filters capped at 45% total compression.
+#   LONG   — Fundamentals (K-Score) boost the signal. Ignores short-term noise
+#            (earnings in 10 days, daily news sentiment). Weekly alignment is the
+#            most important filter. ML weight capped (20d-trained, less useful).
+_STYLE_PROFILES: dict[str, dict] = {
+    "SHORT": {
+        "ml_weight_cap": 0.30,
+        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.62},
+        "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.52, "unknown": 0.47},
+        "adx_min": 25, "adx_compression": 0.85,
+        "high_vol_compression": 0.92,
+        "breadth_compression": None,
+        "weekly_boost": 1.08, "weekly_compress": 0.93,
+        "earnings_compression": None,
+        "news_compression": None,
+        "rs_compression": 0.90,
+        "kscore_boost": False,
+        "max_compress_ratio": 0.70,
+    },
+    "SWING": {
+        "ml_weight_cap": 0.75,
+        "buy_threshold":  {"bull": 0.62, "high_vol": 0.67, "bear": 0.70, "unknown": 0.62},
+        "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
+        "adx_min": 15, "adx_compression": 0.90,
+        "high_vol_compression": 0.85,
+        "breadth_compression": 0.90,
+        "weekly_boost": 1.12, "weekly_compress": 0.85,
+        # Fixed: was {2: 0.25, 5: 0.55, 10: 0.80}. The 0.25× meant a stock needed
+        # fused_prob ≈ 1.10 to fire a BUY with earnings in ≤2 days — impossible.
+        "earnings_compression": {2: 0.50, 5: 0.75, 10: 0.90},
+        "news_compression": {25: 0.75, 35: 0.85},
+        "rs_compression": 0.85,
+        "kscore_boost": False,
+        "max_compress_ratio": 0.55,
+    },
+    "LONG": {
+        "ml_weight_cap": 0.45,
+        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.70, "unknown": 0.62},
+        "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.54, "unknown": 0.46},
+        "adx_min": None, "adx_compression": None,
+        "high_vol_compression": 0.90,
+        "breadth_compression": 0.92,
+        "weekly_boost": 1.18, "weekly_compress": 0.80,
+        "earnings_compression": None,
+        "news_compression": None,
+        "rs_compression": 0.80,
+        "kscore_boost": True,
+        "max_compress_ratio": 0.65,
+    },
+}
 
-    Thresholds are tightened in bear and high-volatility regimes to reduce
-    false entries when the broad market is under stress.
+
+def _fetch_kscore(symbol: str) -> float | None:
+    """Fetch the latest K-Score (0-100) from the ranking engine, or None on failure."""
+    try:
+        with httpx.Client(timeout=8) as c:
+            r = c.get(f"{_settings.ranking_engine_url}/rankings/{symbol}")
+            if r.status_code == 200:
+                return r.json().get("score")
+    except Exception:
+        pass
+    return None
+
+
+def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str]:
+    """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds."""
+    p = _STYLE_PROFILES[style_key]
+    reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "unknown"
+    buy_t  = p["buy_threshold"][reg]
+    hold_t = p["hold_threshold"][reg]
+    if fused_prob > buy_t:   return "BUY",  style_key
+    if fused_prob > hold_t:  return "HOLD", style_key
+    if fused_prob >= 0.35:   return "WAIT", style_key
+    return "SELL", style_key
+
+
+def _apply_style_signal(
+    ta_prob: float,
+    ml_prob: float | None,
+    ml_test_auc: float,
+    style_key: str,
+    market_regime: str,
+    adx_val: float,
+    weekly_tech: dict,
+    pattern_adj: float,
+    days_to_earnings: int | None,
+    news_sentiment: float | None,
+    rs_rank: float | None,
+    options_sentiment: str | None,
+    cp_ratio: float | None,
+    kscore: float | None,
+    is_stale: bool,
+    base_reasons: dict,
+    earnings_beat_rate: float | None = None,
+) -> "AIConfidence":
+    """Apply style-specific fusion and filters from shared base values.
+
+    All expensive data fetching has already been done. This function takes the
+    shared pre-computed values and applies the profile-specific weights,
+    compression multipliers, and thresholds for the given trading style.
     """
-    if market_regime == "bear":
-        buy_threshold  = 0.73
-        hold_threshold = 0.56
-    elif market_regime == "high_vol":
-        buy_threshold  = 0.70
-        hold_threshold = 0.54
-    else:
-        buy_threshold  = 0.65
-        hold_threshold = 0.50
+    p = _STYLE_PROFILES[style_key]
+    reasons = dict(base_reasons)
 
-    if fused_prob > buy_threshold:   return "BUY",  "SWING"
-    if fused_prob > hold_threshold:  return "HOLD", "SWING"
-    if fused_prob >= 0.35:           return "WAIT", "SWING"
-    return "SELL", "SWING"
+    # ── ML / TA fusion with style-specific ML weight cap ─────────────────────
+    if ml_prob is not None:
+        ml_prob_c = float(np.clip(ml_prob, 0.05, 0.95))
+        if ml_test_auc < 0.52:
+            # Near-random model (AUC < 0.52) — fall back to TA-only to avoid corrupting fused signal
+            raw_w = 0.0
+        else:
+            raw_w = float(np.clip(0.40 + (ml_test_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
+        ml_w  = min(raw_w, p["ml_weight_cap"])
+        gap = abs(ml_prob_c - ta_prob)
+        if gap > 0.35:
+            # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).
+            # Continues monotonically from the intermediate band instead of restarting at 0%.
+            extra = 0.25 * min((gap - 0.35) / 0.30, 1.0)
+            ml_w *= (0.75 - extra)
+            reasons["ml_ta_conflict"] = True
+        elif gap > 0.25:
+            ml_w *= 0.75  # flat 25% cut for intermediate disagreement
+            reasons["ml_ta_conflict"] = True
+        else:
+            reasons["ml_ta_conflict"] = False
+        fused = ml_w * ml_prob_c + (1.0 - ml_w) * ta_prob
+        reasons["ml_weight"] = round(ml_w, 2)
+    else:
+        fused = ta_prob
+        reasons["ml_ta_conflict"] = False
+        reasons["ml_weight"] = 0.0
+
+    fused = float(np.clip(fused, 0.0, 1.0))
+    fused_before_filters = fused  # snapshot before compression — used for cap enforcement
+
+    # ── Weekly multi-timeframe alignment ──────────────────────────────────────
+    weekly_score = weekly_tech.get("weekly_score", 0.5)
+    weekly_rsi   = weekly_tech.get("weekly_rsi")
+    weekly_trend = weekly_tech.get("weekly_trend", "neutral")
+    daily_dir  = fused - 0.5
+    weekly_dir = weekly_score - 0.5
+    # Only apply alignment boost/compress when weekly data is actually available.
+    # weekly_rsi is None when < 15 weekly bars exist. For 15–25 bars a partial
+    # confidence factor (0.70–1.0) scales the boost/compress toward neutral so
+    # data-sparse stocks get a softer nudge rather than the full filter weight.
+    weekly_confidence = weekly_tech.get("weekly_confidence", 1.0)
+    reasons["weekly_confidence"] = round(weekly_confidence, 3)
+    if weekly_rsi is None:
+        # No weekly history — skip alignment filter entirely, treat as neutral
+        reasons["weekly_alignment"] = None
+    elif daily_dir * weekly_dir > 0:
+        boosted = float(np.clip(0.5 + daily_dir * p["weekly_boost"], 0.0, 1.0))
+        fused = fused * (1.0 - weekly_confidence) + boosted * weekly_confidence
+        reasons["weekly_alignment"] = True
+    else:
+        compressed = float(np.clip(0.5 + daily_dir * p["weekly_compress"], 0.0, 1.0))
+        fused = fused * (1.0 - weekly_confidence) + compressed * weekly_confidence
+        reasons["weekly_alignment"] = False
+
+    # ── ADX choppy-market compression ────────────────────────────────────────
+    adx_min  = p.get("adx_min")
+    adx_comp = p.get("adx_compression")
+    if adx_min is not None and adx_comp is not None and adx_val < adx_min:
+        fused = 0.5 + (fused - 0.5) * adx_comp
+    reasons["adx_compression"] = (adx_min is not None and adx_val < (adx_min or 0))
+
+    # ── High-volatility regime compression ───────────────────────────────────
+    hv_comp = p.get("high_vol_compression")
+    if hv_comp is not None and market_regime == "high_vol":
+        fused = 0.5 + (fused - 0.5) * hv_comp
+    reasons["high_vol_compression"] = (hv_comp is not None and market_regime == "high_vol")
+
+    # ── Market breadth compression ────────────────────────────────────────────
+    breadth_pct = base_reasons.get("breadth_pct")
+    bc = p.get("breadth_compression")
+    breadth_fired = False
+    if bc is not None and breadth_pct is not None and breadth_pct < 40:
+        fused = 0.5 + (fused - 0.5) * bc
+        breadth_fired = True
+    reasons["breadth_compression"] = breadth_fired
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Chart pattern adjustment ──────────────────────────────────────────────
+    fused = float(np.clip(fused + pattern_adj, 0.0, 1.0))
+
+    # ── Earnings proximity (style-specific) ───────────────────────────────────
+    ec = p.get("earnings_compression")
+    if ec is not None and days_to_earnings is not None:
+        # SA-7: regime-aware earnings compression — consistent beaters get 20% relief
+        # on compression (beat_rate ≥ 0.75 = reliable beater; ≤ 0.25 = miss-prone).
+        # beat_scale: 1.0 = full compression (unknown history), >1.0 = looser for beaters.
+        if earnings_beat_rate is not None:
+            beat_scale = float(np.clip(1.0 + 0.20 * (earnings_beat_rate - 0.50) / 0.50, 0.80, 1.20))
+        else:
+            beat_scale = 1.0
+        reasons["earnings_beat_rate"] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None
+
+        if 0 <= days_to_earnings <= 2:
+            raw_mult = ec[2]
+            adj_mult = float(np.clip(raw_mult * beat_scale, 0.0, 1.0))
+            fused = 0.5 + (fused - 0.5) * adj_mult
+            reasons["earnings_warning"] = "caution"
+        elif days_to_earnings <= 5:
+            raw_mult = ec[5]
+            adj_mult = float(np.clip(raw_mult * beat_scale, 0.0, 1.0))
+            fused = 0.5 + (fused - 0.5) * adj_mult
+            reasons["earnings_warning"] = "note"
+        elif days_to_earnings <= 10:
+            raw_mult = ec[10]
+            adj_mult = float(np.clip(raw_mult * beat_scale, 0.0, 1.0))
+            fused = 0.5 + (fused - 0.5) * adj_mult
+            reasons["earnings_warning"] = "watch"
+        else:
+            reasons.setdefault("earnings_warning", None)
+    else:
+        reasons["earnings_beat_rate"] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None
+        reasons.setdefault("earnings_warning", None)
+
+    # ── News sentiment compression (style-specific) ───────────────────────────
+    nc = p.get("news_compression")
+    if nc is not None and news_sentiment is not None:
+        if news_sentiment < 25:
+            fused = 0.5 + (fused - 0.5) * nc[25]
+            reasons["news_sentiment_flag"] = "strongly_negative"
+        elif news_sentiment < 35:
+            fused = 0.5 + (fused - 0.5) * nc[35]
+            reasons["news_sentiment_flag"] = "negative"
+        else:
+            reasons["news_sentiment_flag"] = "neutral_or_positive"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Relative strength vs sector ───────────────────────────────────────────
+    rs_comp = p.get("rs_compression")
+    if rs_comp is not None and rs_rank is not None and rs_rank < 0.8:
+        fused = 0.5 + (fused - 0.5) * rs_comp
+        reasons["rs_flag"] = "lagging_sector"
+    elif rs_rank is not None:
+        reasons["rs_flag"] = "in_line_or_leading"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Options flow ──────────────────────────────────────────────────────────
+    if options_sentiment == "strongly_bullish":
+        fused = float(np.clip(fused + 0.04, 0.0, 1.0))
+        reasons["options_flag"] = "unusual_call_activity"
+    elif options_sentiment == "bullish":
+        fused = float(np.clip(fused + 0.02, 0.0, 1.0))
+        reasons["options_flag"] = "elevated_call_volume"
+    elif options_sentiment == "bearish":
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))
+        reasons["options_flag"] = "elevated_put_volume"
+    elif options_sentiment == "slightly_bearish":
+        fused = float(np.clip(0.5 + (fused - 0.5) * 0.96, 0.0, 1.0))
+        reasons["options_flag"] = "slightly_elevated_puts"
+    elif options_sentiment is not None:
+        reasons["options_flag"] = "neutral"
+    else:
+        reasons["options_flag"] = "no_data"
+
+    # ── S/R zone context ──────────────────────────────────────────────────────
+    sr_ctx = base_reasons.get("sr_context", "neutral")
+    if sr_ctx == "at_resistance":
+        fused = 0.5 + (fused - 0.5) * 0.85   # compress 15% — price stalling at ceiling
+        reasons["sr_flag"] = "at_resistance"
+    elif sr_ctx == "breakout":
+        fused = float(np.clip(fused + 0.05, 0.0, 1.0))  # boost — confirmed level break
+        reasons["sr_flag"] = "breakout_confirmed"
+    elif sr_ctx == "at_support":
+        fused = float(np.clip(fused + 0.03, 0.0, 1.0))  # small boost — near demand zone
+        reasons["sr_flag"] = "at_support"
+    else:
+        reasons["sr_flag"] = "neutral"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── K-Score fundamental boost (LONG only) ────────────────────────────────
+    if p.get("kscore_boost") and kscore is not None:
+        if kscore >= 70:
+            fused = float(np.clip(fused + 0.08, 0.0, 1.0))
+        elif kscore >= 55:
+            fused = float(np.clip(fused + 0.04, 0.0, 1.0))
+        elif kscore < 35:
+            fused = float(np.clip(fused - 0.06, 0.0, 1.0))
+        reasons["kscore_used"] = kscore
+
+    # ── Stale price penalty ───────────────────────────────────────────────────
+    if is_stale:
+        fused = 0.5 + (fused - 0.5) * 0.6
+        reasons["stale_price_warning"] = True
+
+    # ── Insufficient history penalty ──────────────────────────────────────────
+    # < 50 bars means SMA200, ADX, and RSI are unreliable; compress toward neutral.
+    if base_reasons.get("insufficient_history"):
+        fused = 0.5 + (fused - 0.5) * 0.5
+        reasons["insufficient_history_warning"] = True
+
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── Compression cap ───────────────────────────────────────────────────────
+    # Stacked filters can over-suppress signals when multiple risks coexist.
+    # If the cumulative compression has squeezed the signal below the max_compress_ratio
+    # floor, restore it so a genuinely bullish base signal can still fire a BUY.
+    max_ratio = p.get("max_compress_ratio", 0.50)
+    orig_dist = fused_before_filters - 0.5
+    curr_dist = fused - 0.5
+    if orig_dist != 0 and abs(curr_dist) < abs(orig_dist) * max_ratio:
+        fused = 0.5 + float(np.sign(orig_dist)) * abs(orig_dist) * max_ratio
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["compression_cap_applied"] = True
+    else:
+        reasons["compression_cap_applied"] = False
+
+    # ── Weekly BUY gate — applied AFTER compression cap so it cannot be overridden ──
+    # Bearish weekly structure (RSI < 40 AND trend down) is a confirmed downtrend, not a dip.
+    # The 0.40× compression is intentionally exempt from max_compress_ratio so a SWING/LONG
+    # BUY truly cannot fire in this condition without an overwhelming daily signal (≥0.90+).
+    if style_key in ("SWING", "LONG") and weekly_rsi is not None and weekly_rsi < 40 and weekly_trend == "down":
+        fused = 0.5 + (fused - 0.5) * 0.40
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["weekly_gate_fired"] = True
+    else:
+        reasons["weekly_gate_fired"] = False
+
+    signal, horizon = _decide_style(fused, style_key, market_regime)
+    confidence = round(abs(fused - 0.5) * 200, 2)
+    return AIConfidence(
+        signal=signal,
+        horizon=horizon,
+        confidence=confidence,
+        bullish_probability=round(fused, 4),
+        reasons=reasons,
+    )
 
 
 def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
@@ -601,192 +1091,91 @@ def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
     return False
 
 
-def generate_signal(symbol: str) -> AIConfidence:
+def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
+    """Generate SHORT, SWING, and LONG signals in a single data-fetch pass.
+
+    Returns a dict keyed by horizon string: {'SHORT': ..., 'SWING': ..., 'LONG': ...}.
+    All expensive I/O (prices, ML, market regime, etc.) happens once; each style
+    then applies its own profile to the shared base values.
+    """
     df = _fetch_prices(symbol)
     if df.empty:
         raise ValueError(f"No price data for {symbol}")
 
-    is_stale = _check_price_staleness(df, symbol)
+    # Fewer than 50 bars means SMA200, ADX, and RSI are all unreliable.
+    # Flag the signal as low-confidence rather than silently serving defaults.
+    insufficient_history = len(df) < 50
 
+    is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df)
+    sr_data = _sr_context(df)
     ml_prob, ml_test_auc = _fetch_ml_data(symbol)
     market_regime, fg_score = _fetch_market_regime()
     breadth_pct = _fetch_market_breadth()
-    reasons["market_regime"] = market_regime
-    reasons["fear_greed_score"] = fg_score
-    reasons["breadth_pct"] = breadth_pct
-
-    # Dynamic fusion: ML weight scales with held-out test AUC (unbiased).
-    # AUC 0.50 (random) → 40% ML; AUC 0.70+ (excellent) → 75% ML.
-    # This prevents a poorly-fit symbol model from overriding the TA rules.
-    if ml_prob is not None:
-        # v4: soft-cap ML probability to [0.05, 0.95] — XGBoost frequently
-        # outputs 0.0 or 1.0 when a few features pattern-match strongly, but
-        # these extremes overstate certainty. The cap preserves the signal
-        # direction while allowing TA to have meaningful influence.
-        ml_prob = float(np.clip(ml_prob, 0.05, 0.95))
-
-        ml_weight = float(np.clip(0.40 + (ml_test_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
-
-        # v4: disagreement dampening — when ML and TA strongly disagree,
-        # reduce the ML weight so clear TA signals aren't simply overridden.
-        # |gap| > 0.35 → scale ML weight down by up to 25%.
-        ml_ta_gap = abs(ml_prob - ta_prob)
-        if ml_ta_gap > 0.35:
-            dampen = 1.0 - 0.25 * min((ml_ta_gap - 0.35) / 0.30, 1.0)
-            ml_weight = ml_weight * dampen
-            reasons["ml_ta_conflict"] = True
-        else:
-            reasons["ml_ta_conflict"] = False
-
-        ta_weight = 1.0 - ml_weight
-        fused = ml_weight * ml_prob + ta_weight * ta_prob
-        reasons["ml_probability"] = ml_prob
-        reasons["ml_weight"] = round(ml_weight, 2)
-    else:
-        fused = ta_prob
-        reasons["ml_probability"] = None
-        reasons["ml_weight"] = 0.0
-        reasons["ml_ta_conflict"] = False
-    reasons["ta_score"] = ta_prob
-
-    # ── Multi-timeframe confirmation (weekly) ─────────────────────────────
-    # Resample daily bars to weekly rather than fetching from DB — weekly bars
-    # are not stored in the prices table (only D1 and M5 exist). Resampling
-    # here is free since we already hold the daily DataFrame in memory.
-    df_weekly = _resample_to_weekly(df)
-    weekly_score = _weekly_ta_score(df_weekly)
-    reasons["weekly_ta_score"] = round(weekly_score, 3)
-
-    daily_direction  = fused - 0.5
-    weekly_direction = weekly_score - 0.5
-    if daily_direction * weekly_direction > 0:
-        # Both timeframes agree → amplify signal by 12%
-        fused = 0.5 + daily_direction * 1.12
-    else:
-        # Timeframes conflict → compress signal toward neutral by 15%
-        fused = 0.5 + daily_direction * 0.85
-    fused = float(np.clip(fused, 0.0, 1.0))
-    reasons["weekly_alignment"] = (daily_direction * weekly_direction) > 0
-
-    # ── ADX choppy market compression ─────────────────────────────────────
-    # When ADX < 20 the market is directionless — both BUY and SELL signals
-    # are less reliable because there is no confirmed trend to follow.
-    adx_val = reasons.get("adx") or 0.0
-    if adx_val < 20:
-        fused = 0.5 + (fused - 0.5) * 0.90
-        reasons["adx_compression"] = True
-    else:
-        reasons["adx_compression"] = False
-
-    # ── High-volatility regime compression ────────────────────────────────
-    # In high-vol regimes (bull price but fear & greed < 30) the market is
-    # unstable — compress all signals 15% to avoid entries into whipsaws.
-    if market_regime == "high_vol":
-        fused = 0.5 + (fused - 0.5) * 0.85
-        reasons["high_vol_compression"] = True
-    else:
-        reasons["high_vol_compression"] = False
-
-    # ── Market breadth compression (v5) ───────────────────────────────────
-    # When < 40% of US stocks are above their 200-day SMA, the broad market
-    # is in internal decline even if the S&P 500 price hasn't broken down yet.
-    # Only apply in bull/high_vol — bear regime already has raised thresholds.
-    if breadth_pct is not None and breadth_pct < 40 and market_regime in ("bull", "high_vol", "unknown"):
-        fused = 0.5 + (fused - 0.5) * 0.90
-        reasons["breadth_compression"] = True
-    else:
-        reasons["breadth_compression"] = False
-
-    fused = float(np.clip(fused, 0.0, 1.0))
-
-    # ── Chart pattern fusion ───────────────────────────────────────────────
+    days_to_earnings = _fetch_earnings_proximity(symbol)
+    earnings_beat_rate = _fetch_earnings_beat_rate(symbol)
+    news_sentiment = _fetch_news_sentiment(symbol)
+    rs_score, rs_rank = _fetch_relative_strength(symbol)
+    options_sentiment, cp_ratio = _fetch_options_flow(symbol)
     patterns = _fetch_patterns_from_ta(symbol)
     pattern_adj, active_patterns = _pattern_score_adjustment(patterns, len(df))
-    fused = float(np.clip(fused + pattern_adj, 0.0, 1.0))
-    reasons["active_patterns"] = active_patterns
+    df_weekly = _resample_to_weekly(df)
+    weekly_tech = _weekly_technicals(df_weekly)
+    weekly_score = weekly_tech["weekly_score"]
+    kscore = _fetch_kscore(symbol)
+
+    # Populate shared base reasons (written into every style's output)
+    reasons["market_regime"]      = market_regime
+    reasons["fear_greed_score"]   = fg_score
+    reasons["breadth_pct"]        = breadth_pct
+    reasons["ta_score"]           = ta_prob
+    reasons["ml_probability"]     = ml_prob
+    reasons["ml_test_auc"]        = ml_test_auc
+    reasons["weekly_ta_score"]    = round(weekly_score, 3)
+    reasons["weekly_rsi"]         = weekly_tech["weekly_rsi"]
+    reasons["weekly_trend"]       = weekly_tech["weekly_trend"]
+    reasons["weekly_macd_bull"]   = weekly_tech["weekly_macd_bull"]
+    reasons["active_patterns"]    = active_patterns
     reasons["pattern_adjustment"] = round(pattern_adj, 3)
+    reasons["days_to_earnings"]   = days_to_earnings
+    reasons["news_sentiment"]     = news_sentiment
+    reasons["rs_score"]           = rs_score
+    reasons["rs_rank"]            = rs_rank
+    reasons["options_sentiment"]  = options_sentiment
+    reasons["options_cp_ratio"]   = round(cp_ratio, 2) if cp_ratio is not None else None
+    reasons["kscore"]             = kscore
+    reasons["insufficient_history"] = insufficient_history
+    reasons["bar_count"]          = len(df)
+    reasons["sr_context"]           = sr_data["sr_context"]
+    reasons["sr_nearest_resistance"] = sr_data["sr_nearest_resistance"]
+    reasons["sr_nearest_support"]   = sr_data["sr_nearest_support"]
+    reasons["sr_52w_high"]          = sr_data["sr_52w_high"]
+    reasons["sr_52w_low"]           = sr_data["sr_52w_low"]
 
-    # ── Earnings proximity penalty ─────────────────────────────────────────
-    days_to_earnings = _fetch_earnings_proximity(symbol)
-    reasons["days_to_earnings"] = days_to_earnings
-    if days_to_earnings is not None:
-        if 0 <= days_to_earnings <= 2:
-            # Earnings in 0-2 days: extreme uncertainty, compress hard toward 0.5
-            fused = 0.5 + (fused - 0.5) * 0.25
-            reasons["earnings_warning"] = "critical"
-        elif days_to_earnings <= 5:
-            fused = 0.5 + (fused - 0.5) * 0.55
-            reasons["earnings_warning"] = "caution"
-        elif days_to_earnings <= 10:
-            fused = 0.5 + (fused - 0.5) * 0.80
-            reasons["earnings_warning"] = "note"
+    return {
+        style_key: _apply_style_signal(
+            ta_prob=ta_prob,
+            ml_prob=ml_prob,
+            ml_test_auc=ml_test_auc,
+            style_key=style_key,
+            market_regime=market_regime,
+            adx_val=float(reasons.get("adx") or 0.0),
+            weekly_tech=weekly_tech,
+            pattern_adj=pattern_adj,
+            days_to_earnings=days_to_earnings,
+            news_sentiment=news_sentiment,
+            rs_rank=rs_rank,
+            options_sentiment=options_sentiment,
+            cp_ratio=cp_ratio,
+            kscore=kscore,
+            is_stale=is_stale,
+            base_reasons=reasons,
+            earnings_beat_rate=earnings_beat_rate,
+        )
+        for style_key in ("SHORT", "SWING", "LONG")
+    }
 
-    # ── News sentiment filter ──────────────────────────────────────────────
-    # Persistently negative news (score < 30) compresses the signal toward
-    # neutral. This suppresses BUY signals ahead of regulatory action,
-    # leadership crises, or product recalls that technicals won't catch yet.
-    news_sentiment = _fetch_news_sentiment(symbol)
-    reasons["news_sentiment"] = news_sentiment
-    if news_sentiment is not None:
-        if news_sentiment < 25:
-            fused = 0.5 + (fused - 0.5) * 0.70  # strongly negative — compress 30%
-            reasons["news_sentiment_flag"] = "strongly_negative"
-        elif news_sentiment < 35:
-            fused = 0.5 + (fused - 0.5) * 0.80  # moderately negative — compress 20%
-            reasons["news_sentiment_flag"] = "negative"
-        else:
-            reasons["news_sentiment_flag"] = "neutral_or_positive"
-    fused = float(np.clip(fused, 0.0, 1.0))
 
-    # ── Relative strength vs sector ETF ───────────────────────────────────
-    rs_score, rs_rank = _fetch_relative_strength(symbol)
-    reasons["rs_score"] = rs_score
-    reasons["rs_rank"] = rs_rank
-    if rs_rank is not None and rs_rank < 0.8:
-        # Stock lagging its sector by >20% over 20 days — reduce BUY confidence
-        fused = 0.5 + (fused - 0.5) * 0.85
-        reasons["rs_flag"] = "lagging_sector"
-    elif rs_rank is not None:
-        reasons["rs_flag"] = "in_line_or_leading"
-    fused = float(np.clip(fused, 0.0, 1.0))
-
-    # ── Options flow ──────────────────────────────────────────────────────────
-    # Unusual call volume is a leading indicator — institutions often position
-    # in options before moving the underlying. Strongly bullish flow boosts
-    # the signal; bearish flow compresses it. Only available for US stocks.
-    options_sentiment, cp_ratio = _fetch_options_flow(symbol)
-    reasons["options_sentiment"] = options_sentiment
-    reasons["options_cp_ratio"] = round(cp_ratio, 2) if cp_ratio is not None else None
-    if options_sentiment == "strongly_bullish":
-        fused = float(np.clip(fused + 0.07, 0.0, 1.0))   # +7% boost
-        reasons["options_flag"] = "unusual_call_activity"
-    elif options_sentiment == "bullish":
-        fused = float(np.clip(fused + 0.03, 0.0, 1.0))   # +3% nudge
-        reasons["options_flag"] = "elevated_call_volume"
-    elif options_sentiment == "bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.85, 0.0, 1.0))  # -15% compress
-        reasons["options_flag"] = "elevated_put_volume"
-    elif options_sentiment == "slightly_bearish":
-        fused = float(np.clip(0.5 + (fused - 0.5) * 0.92, 0.0, 1.0))  # -8% compress
-        reasons["options_flag"] = "slightly_elevated_puts"
-    elif options_sentiment is not None:
-        reasons["options_flag"] = "neutral"
-    fused = float(np.clip(fused, 0.0, 1.0))
-
-    # Stale price data: compress signal 40% toward neutral so outdated bars
-    # don't generate high-confidence signals. The ingest gap is flagged in reasons.
-    if is_stale:
-        fused = 0.5 + (fused - 0.5) * 0.6
-        reasons["stale_price_warning"] = True
-
-    signal, horizon = _decide(fused, market_regime)
-    confidence = round(abs(fused - 0.5) * 200, 2)
-
-    return AIConfidence(
-        signal=signal,
-        horizon=horizon,
-        confidence=confidence,
-        bullish_probability=round(fused, 4),
-        reasons=reasons,
-    )
+def generate_signal(symbol: str) -> AIConfidence:
+    """Generate the SWING signal for a symbol — backwards-compatible wrapper."""
+    return generate_all_signals(symbol)["SWING"]

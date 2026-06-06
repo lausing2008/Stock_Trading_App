@@ -79,7 +79,14 @@ def ingest_symbol(
             log.info("ingest.force_delete", symbol=symbol, tf=timeframe)
 
         head = None if force else _last_bar_ts(session, stock.id, tf)
-        start = (head.date() + timedelta(days=1)) if head else (date.today() - timedelta(days=lookback_days))
+        if head:
+            # For daily bars, look back 7 extra days so that any stock split in the
+            # last week causes the retroactively-adjusted prices to overwrite the
+            # stale unadjusted bars already in the DB (via on_conflict_do_update below).
+            overlap = timedelta(days=7) if timeframe == "1d" else timedelta(days=0)
+            start = head.date() - overlap + timedelta(days=1)
+        else:
+            start = date.today() - timedelta(days=lookback_days)
         # yfinance only serves intraday bars within the last 60 days
         if timeframe in ("1m", "5m", "15m", "1h"):
             start = max(start, date.today() - timedelta(days=59))
@@ -139,7 +146,17 @@ def ingest_symbol(
         ]
 
         stmt = pg_insert(Price).values(rows)
-        stmt = stmt.on_conflict_do_nothing(index_elements=["stock_id", "ts", "timeframe"])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["stock_id", "ts", "timeframe"],
+            set_={
+                "open": stmt.excluded.open,
+                "high": stmt.excluded.high,
+                "low": stmt.excluded.low,
+                "close": stmt.excluded.close,
+                "volume": stmt.excluded.volume,
+                "adj_close": stmt.excluded.adj_close,
+            },
+        )
         result = session.execute(stmt)
         session.commit()
 

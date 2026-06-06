@@ -35,6 +35,13 @@ export type AppSettings = {
   claudeModel: string;
   deepseekApiKey: string;
   deepseekModel: string;
+
+  // Trading Style — determines which AI Signal horizon to display globally
+  tradingStyle: 'SHORT' | 'SWING' | 'LONG';
+
+  // Position Sizing — used for ATR-based stop-loss and size calculations
+  accountSize: number;
+  riskPctPerTrade: number;
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -61,6 +68,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   claudeModel: 'claude-sonnet-4-6',
   deepseekApiKey: '',
   deepseekModel: 'deepseek-chat',
+
+  tradingStyle: 'SWING',
+
+  accountSize: 0,
+  riskPctPerTrade: 1,
 };
 
 export function loadSettings(): AppSettings {
@@ -76,6 +88,12 @@ export function saveSettings(s: Partial<AppSettings>): AppSettings {
   storage.setItem(SETTINGS_KEY, JSON.stringify(merged));
   window.dispatchEvent(new CustomEvent('stockai:settings', { detail: merged }));
   return merged;
+}
+
+/** Return the user's preferred trading style (SHORT/SWING/LONG), safe for SSR. */
+export function getSignalStyle(): string {
+  if (typeof window === 'undefined') return 'SWING';
+  return loadSettings().tradingStyle ?? 'SWING';
 }
 
 /** Returns the comma-separated news source string for API requests. */

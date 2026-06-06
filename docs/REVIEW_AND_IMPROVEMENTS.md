@@ -1,15 +1,15 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-05-31  
+**Last updated:** 2026-06-05 (SA-8 accuracy improvements + audit bug fixes)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 7.5 / 10 *(was 6.5 — 9 improvements shipped 2026-05-31)*
+**Overall rating:** 8.5 / 10 *(was 8.3 — SA-8 ML overhaul + signal_outcomes tracking + audit fixes 2026-06-05)*
 
 ---
 
 ## Executive Summary
 
-StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are now shipped (9 improvements total — 2026-05-31). Remaining priorities are sector-relative fundamental scoring, adj_close consistency, and the walk-forward backtest engine.
+StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are shipped. All Tier 2 items are shipped. First Tier 3 feature (sector rotation dashboard) shipped 2026-06-04. Remaining roadmap items are further Tier 3 features.
 
 This document is the single source of truth for everything that was found, why it matters, and how to fix it.
 
@@ -28,6 +28,37 @@ This document is the single source of truth for everything that was found, why i
 | 2026-05-31 | Look-ahead bias guard | ml-prediction/trainer.py | ✅ Done |
 | 2026-05-31 | Symbol sanitisation (prompt injection) | research-engine/routes.py | ✅ Done |
 | 2026-05-31 | Admin-only Improvements tab | frontend/_app.tsx | ✅ Done |
+| 2026-06-01/02 | Factor exposure analysis | signal-engine/routes.py, frontend/signal-accuracy.tsx | ✅ Done |
+| 2026-06-01/02 | ML weight validation chart | signal-engine/routes.py, frontend/signal-accuracy.tsx | ✅ Done |
+| 2026-06-01/02 | ML test AUC formula fix | signal-engine/signals.py | ✅ Done |
+| 2026-06-01/02 | Options flow integration | market-data/routes.py, signal-engine/signals.py, frontend/stock/[symbol].tsx | ✅ Done |
+| 2026-06-01/02 | Trade board exit P&L | shared/db/models.py, frontend/board.tsx | ✅ Done |
+| 2026-06-01/02 | Backtest engine (equity curve + Sharpe + drawdown) | signal-engine/routes.py, frontend/trade-performance.tsx | ✅ Done |
+| 2026-06-04 | adj_close consistency (split-adjust upsert) | market-data/ingestion.py | ✅ Done |
+| 2026-06-04 | Frontend strategy weight normalisation | frontend/opportunities.tsx | ✅ Done |
+| 2026-06-04 | Research engine cache quality flag (banner) | frontend/research/[symbol].tsx | ✅ Done |
+| 2026-06-04 | Sector-relative fundamental scoring | research-engine/routes.py | ✅ Done |
+| 2026-06-04 | Sector rotation dashboard | ranking-engine/routes.py, frontend/sector-rotation.tsx, _app.tsx, api.ts | ✅ Done |
+| 2026-06-05 | Signal alert auto-subscribe on watchlist add | market-data/watchlist.py, DB migration | ✅ Done |
+| 2026-06-05 | Bulk-subscribe all watchlist stocks | DB (signal_alerts) | ✅ Done |
+| 2026-06-05 | Fix watchlists.trading_style missing DB column | DB migration | ✅ Done |
+| 2026-06-05 | Notify All / Mute All: Promise.all → Promise.allSettled | frontend/watchlist.tsx | ✅ Done |
+| 2026-06-05 | Signal tier framework documented | docs/TRADING_WORKFLOW.md | ✅ Done |
+| 2026-06-05 | **SA-8: SWING buy_threshold lowered** 0.65→0.62 (bull), 0.70→0.67 (high_vol), 0.73→0.70 (bear) | signal-engine/signals.py | ✅ Done |
+| 2026-06-05 | **SA-8: SWING adx_min lowered** 20→15 (capture early-trend entries before ADX peaks) | signal-engine/signals.py | ✅ Done |
+| 2026-06-05 | **SA-8: AUC floor** — ml_weight=0 when model AUC < 0.52 (near-random model falls back to TA-only) | signal-engine/signals.py | ✅ Done |
+| 2026-06-05 | **SA-8: 4 new ML features** momentum_12_1, sma_200_gap, dist_52w_high, dist_52w_low (30→34 features) | ml-prediction/builder.py | ✅ Done |
+| 2026-06-05 | **SA-8: Recency weight ratio** 3.0→5.0 (newest bar = 5× oldest; adapts faster to regime shifts) | ml-prediction/trainer.py, tuner.py | ✅ Done |
+| 2026-06-05 | **SA-8: Horizon alignment** SWING trains on 10d labels, LONG on 20d (was all using 5d) | ml-prediction/routes.py | ✅ Done |
+| 2026-06-05 | **signal_outcomes table** — fixed-window forward tracking for directional accuracy (SHORT=7d, SWING=14d, LONG=28d) | shared/db/models.py + session.py | ✅ Done |
+| 2026-06-05 | **POST /signals/outcomes/evaluate** + **GET /signals/outcomes/summary** endpoints | signal-engine/routes.py | ✅ Done |
+| 2026-06-05 | Scheduler hook: evaluate outcomes after every post-close ML retrain | market-data/scheduler.py | ✅ Done |
+| 2026-06-05 | **Audit fix: ml_test_auc** added to reasons dict → signal_outcomes.ml_auc now populated | signal-engine/signals.py | ✅ Done |
+| 2026-06-05 | **Audit fix: /train and /tune horizon routing** — single-symbol endpoints now derive horizon from style via _HORIZON_BY_STYLE (was always using 5d default) | ml-prediction/routes.py | ✅ Done |
+| 2026-06-05 | **Audit fix: signal_alerts DDL** — last_sent_at column added to CREATE TABLE + ALTER TABLE migration for existing DBs | shared/db/session.py | ✅ Done |
+| 2026-06-05 | **Audit fix: _recency_weights default** updated 3.0→5.0 to match all call sites | ml-prediction/trainer.py | ✅ Done |
+| 2026-06-05 | Docs: SIGNAL_ACCURACY.md created (outcomes table, evaluate/summary endpoints, vectorbt, Optuna tuning workflow) | docs/SIGNAL_ACCURACY.md | ✅ Done |
+| 2026-06-05 | Docs: AI_SIGNAL.md updated (SA-8 thresholds, 34-feature table, style horizons, AUC floor) | docs/AI_SIGNAL.md | ✅ Done |
 
 ---
 
@@ -35,14 +66,14 @@ This document is the single source of truth for everything that was found, why i
 
 | Dimension | Score | Summary |
 |-----------|-------|---------|
-| Data pipeline | 7.8 / 10 | ↑ Zero-vol filter added; split-adjust still pending |
-| ML methodology | 7.5 / 10 | ↑ Calibration already in place; look-ahead guard + macro cache added |
-| Signal logic | 7.0 / 10 | ↑ Stale price guard added; ML weight formula still ad-hoc |
+| Data pipeline | 8.2 / 10 | ↑ Zero-vol filter + split-adjust upsert + 7-day overlap; adj_close now consistent |
+| ML methodology | 8.5 / 10 | ↑ SA-8: 34 features, 5× recency weights, style-specific horizons (5/10/20d), AUC floor, Optuna re-tuned |
+| Signal logic | 8.0 / 10 | ↑ SA-8: SWING thresholds recalibrated, adx_min=15, signal_outcomes tracking live, ml_auc now stored |
 | K-Score ranking | 7.5 / 10 | ↑ Falling knife gate + RSI curve fixed |
-| Research engine | 6.5 / 10 | ↑ Prompt injection fixed; sector-blind thresholds still pending |
-| Frontend / UX | 8.5 / 10 | Best-in-class for a self-built tool |
-| Risk management | 6.0 / 10 | Confluence + position sizing good; no backtested Sharpe |
-| **Overall** | **7.5 / 10** | *(was 6.5 — all Tier 1 done)* |
+| Research engine | 7.5 / 10 | ↑ Sector-relative fundamental scoring + cache quality flag shipped 2026-06-04 |
+| Frontend / UX | 9.0 / 10 | ↑ Signal Filter Monitor, strategy score normalisation, backtest equity curve, sector rotation page |
+| Risk management | 7.5 / 10 | ↑ Backtest engine shipped: equity curve, Sharpe, max drawdown, Calmar, SPY comparison |
+| **Overall** | **8.5 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 — SA-8 ML overhaul + signal accuracy tracking 2026-06-05)* |
 
 ---
 
@@ -219,15 +250,31 @@ A trending stock at RSI 70 now scores ~100 instead of being penalised to 85 unde
 
 ---
 
-### MEDIUM-3: Dividend and Split Adjustment Inconsistency
-**File:** `services/market-data/src/adapters/yfinance_adapter.py`  
+### MEDIUM-3: Dividend and Split Adjustment Inconsistency ✅ IMPLEMENTED 2026-06-04
+**File:** `services/market-data/src/services/ingestion.py`  
 **Severity:** MEDIUM
 
-**What is wrong:**  
-yfinance is called with `auto_adjust=False` in some paths, returning unadjusted prices. Features (momentum, volatility, ATR, SMA crossovers) are computed on whichever prices are in the DB. A 2-for-1 stock split creates an apparent 50% price drop in raw data, making the momentum feature negative on what was actually no change in value.
+**What was wrong:**  
+The incremental ingest always fetched from `last_bar_date + 1 day`. When yfinance retroactively adjusts all historical prices after a stock split, the old pre-split bars in the DB were never updated. `on_conflict_do_nothing` compounded the issue — even on force-refresh, deleted+re-inserted rows were idempotent but adjusted values never overwrote stale ones mid-session.
 
-**Fix:**  
-Standardise on adjusted close (`adj_close`) for all feature computation. The `adj_close` column exists in the canonical OHLCV schema. Update `features.py` to use `adj_close` instead of `close` for momentum, SMA, and volatility calculations, while keeping `close` for support/resistance levels (which are traded prices, not adjusted).
+**Fix (implemented):**  
+Two changes in `ingestion.py`:
+
+1. **7-day lookback overlap for daily bars** — incremental fetches now start 7 days before `head` rather than 1 day after, so any split in the last week triggers a re-download of the affected bars:
+```python
+overlap = timedelta(days=7) if timeframe == "1d" else timedelta(days=0)
+start = head.date() - overlap + timedelta(days=1)
+```
+
+2. **`on_conflict_do_update` instead of `on_conflict_do_nothing`** — re-downloaded bars now overwrite stale OHLCV + adj_close values in the DB:
+```python
+stmt = stmt.on_conflict_do_update(
+    index_elements=["stock_id", "ts", "timeframe"],
+    set_={"open": ..., "high": ..., "low": ..., "close": ..., "volume": ..., "adj_close": ...},
+)
+```
+
+Splits older than 7 days are covered by the existing Sunday full force-reingest (delete + re-fetch 3 years). Together, split-adjusted prices are now corrected within one weekly cycle at most.
 
 ---
 
@@ -258,19 +305,27 @@ Reports are cached in-memory for 24 hours. If a report is generated with bad inp
 
 ---
 
-### MEDIUM-6: Frontend Strategy Weights Don't Normalise
+### MEDIUM-6: Frontend Strategy Weights Don't Normalise ✅ IMPLEMENTED 2026-06-04
 **File:** `frontend/src/pages/opportunities.tsx`  
 **Severity:** MEDIUM
 
-**What is wrong:**  
-The `scoreFor()` function uses weights that do not sum to 100% for most strategies:
-- Swing: 40% + 25% + sigB + 15% = 80% baseline (sigB capped at 20)
-- Short: 50% + 25% + 3×chg + 10% = 85% + unbounded momentum bonus
+**What was wrong:**  
+The `scoreFor()` function had formulas where weights didn't sum to 100:
+- `all`: missing `Math.min(100, ...)` — could return 108 with a BUY signal bonus
+- `aisignal`: `bullish_probability` (0–1) multiplied by 50 while `conf` (0–100) multiplied by 0.70 — raw max was 145 before clamping, so top stocks all clustered at 100 with no differentiation
+- `longterm`: upside bonus capped at 25 pts pushed raw max to 110
 
-This means scores are not comparable across strategies, and a stock ranked #1 in Swing may only score 80 while a stock ranked #1 in Growth scores 100 — implying different confidence levels that aren't real.
+**Fix (implemented):**  
+All formulas now produce genuine 0–100 with verified weight sums:
 
-**Fix:**  
-Normalise each strategy's output to 0–100 after computation by dividing by the theoretical maximum for that formula.
+```typescript
+// aisignal: bullish_probability normalised 0-1→0-100 first
+const bullPct = (sig?.bullish_probability ?? 0) * 100;
+// bullPct*0.45 + conf*0.35 + tech*0.10 + mom*0.10 = max 45+35+10+10 = 100
+case 'aisignal': return Math.min(100, Math.round(bullPct * 0.45 + conf * 0.35 + tech * 0.10 + mom * 0.10));
+```
+
+Additionally, each opportunity card now displays the strategy score colour-coded alongside the K-Score (e.g. `85 · K72`), so users can see why a stock ranks where it does in the selected strategy.
 
 ---
 
@@ -481,6 +536,177 @@ Without factor exposure analysis, you cannot distinguish between genuine alpha a
 
 ---
 
+## Part 3B — Signal Accuracy & ML Improvements (2026-06-05 Audit)
+
+A deep audit of the signal fusion pipeline and ML training identified the following concrete improvements, ranked by impact-to-effort. These are incremental changes to existing files — no architectural overhaul required.
+
+---
+
+### SA-1: Lower ML/TA Disagreement Threshold 0.35 → 0.25
+
+**File:** `services/signal-engine/src/generators/signals.py`, lines 765–767  
+**Effort:** 1 day  
+**Expected gain:** +3–8% accuracy  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+When ML probability and TA score disagree, a dampening factor is applied — but only when the gap exceeds 0.35 (35 percentage points). This is a very high bar. A stock where ML says 0.70 and TA says 0.40 (gap = 0.30) passes through undampened even though the disagreement is substantial.
+
+**Fix:**
+```python
+gap = abs(ml_prob - ta_prob)
+if gap > 0.35:
+    ml_w *= 0.5
+elif gap > 0.25:   # NEW: intermediate dampening band
+    ml_w *= 0.75
+```
+This adds a 25% dampening in the 0.25–0.35 gap range, making the system more conservative when ML and TA are in moderate disagreement — a common early-warning sign of regime transitions.
+
+---
+
+### SA-2: Style-Aware ML Precision Targets
+
+**File:** `services/ml-prediction/src/training/trainer.py`, line 28 + line 82  
+**Effort:** 1 day + retrain  
+**Expected gain:** +1–3% SHORT accuracy (fewer false positives)  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+All three trade horizons (SHORT/SWING/LONG) use the same 60% minimum precision when calibrating the buy threshold. SHORT trades (1–7 day holds) have the least time to recover from false entries — they need tighter precision. LONG trades (90-day holds) have more time to absorb noise and can afford more entries.
+
+**Fix:**
+```python
+_PRECISION_BY_STYLE = {"SHORT": 0.70, "SWING": 0.60, "LONG": 0.50}
+```
+Use the style-specific floor in `_precision_threshold()` instead of the global `_MIN_PRECISION`. SHORT models calibrate to 70%+ precision (fewer signals, more reliable); LONG models accept 50%+ (more entries, wider net).
+
+---
+
+### SA-3: Add 4 Macro Regime Boolean Features to ML
+
+**File:** `services/ml-prediction/src/features/builder.py`, ~lines 242–266  
+**Effort:** 3 days + retrain  
+**Expected gain:** +3–8% AUC in bear markets, +1–2% overall  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+The model receives raw macro values (VIX level, SPY returns, SPY volatility) but no boolean regime flags. The model must implicitly learn that VIX=35 means "fear regime" — but with limited training examples, it under-learns this. Explicit flags give XGBoost a clean decision boundary to split on.
+
+**Fix — add these derived features to the feature builder:**
+```python
+# After fetching SPY/VIX data:
+spy_200d = macro["spy"].rolling(200).mean()
+features["is_bear_market"]       = (macro["spy"] < spy_200d).astype(int)
+features["vix_spiking"]          = (macro["vix"] > macro["vix"].rolling(20).mean() * 1.3).astype(int)
+features["market_breadth_weak"]  = (breadth_pct < 40).astype(int)   # breadth_pct already fetched
+features["high_vol_regime"]      = (macro["spy_vol_20"] > 0.02).astype(int)
+```
+Retrain with `POST /ml/tune_all`. Check feature importance — expect these flags to rank in the top 10 for SWING and LONG horizons.
+
+---
+
+### SA-4: Weekly Alignment — Reduce Minimum Bars 26 → 15
+
+**File:** `services/signal-engine/src/generators/signals.py`, ~line 357  
+**Effort:** 1 day  
+**Expected gain:** +1–3% for recently-added stocks  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+The weekly alignment filter requires 26 weekly bars (6 months of data) before it activates. For stocks added to the watchlist in the last 6 months, the weekly filter is silently bypassed (treated as neutral = no boost/compress). A stock with only 3 months of data can still show a clear weekly downtrend that the filter misses entirely.
+
+**Fix:**
+```python
+MIN_WEEKLY_BARS = 15          # was 26 (6 months → 3 months)
+PARTIAL_WEEKLY_CONFIDENCE = 0.7   # scale boost/compress to 70% for 15–25 bars
+
+if len(weekly_df) >= MIN_WEEKLY_BARS:
+    confidence = 1.0 if len(weekly_df) >= 26 else PARTIAL_WEEKLY_CONFIDENCE
+    # apply weekly boost/compress multiplied by confidence
+```
+Stocks with 15–25 weekly bars get 70% of the full weekly adjustment; stocks with ≥26 bars get 100% as before.
+
+---
+
+### SA-5: Data-Driven TA Component Weights (Logistic Regression Calibration)
+
+**File:** `services/signal-engine/src/generators/signals.py`, lines 497–643 (`_ta_score`)  
+**Effort:** 1 week  
+**Expected gain:** +5–10% accuracy (highest single improvement)  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+Every TA component has a hardcoded point allocation (e.g., `above SMA50 = +0.15`, `MACD positive = +0.10`, `OBV confirming = +0.08`) that was manually tuned. There is no empirical evidence that these weights are optimal for this stock universe. A component that rarely precedes profitable moves still gets the same weight as one that reliably does.
+
+**Fix:**
+1. For each stock in the universe, compute all 22 TA binary/continuous features at each bar for the last 3 years.
+2. Compute the 5-day forward return for each bar.
+3. Run logistic regression (or Lasso with L1 penalty): `P(5d_return > threshold) ~ f(ta_features)`.
+4. The fitted coefficients become the new TA component weights (normalized so they sum to the same theoretical maximum as the current hand-tuned weights).
+5. Validate on held-out 12-month window before applying to production.
+
+This is the highest-impact change but requires careful analysis — don't implement before step 5 validation.
+
+---
+
+### SA-6: Filter Interaction Audit Endpoint
+
+**File:** `services/signal-engine/src/api/routes.py` (new endpoint)  
+**Effort:** 1 week  
+**Expected gain:** +2–5% win rate (reduces over-suppression)  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+When multiple filters stack (e.g., earnings compression + market breadth + news sentiment + ADX choppy), the signal collapses from 0.75 → 0.52 — not even close to the BUY threshold. But there is no data on whether those trades would actually have been bad. They might have been some of the best trades, blocked by over-cautious stacking.
+
+**What to build:**  
+New endpoint `GET /signals/filter_audit?lookback_days=180` that:
+1. Loads all signals from the last N days with their stored `signal_reasons` JSON.
+2. Counts how many compression filters were active per signal (earnings, breadth, news, ADX, weekly, etc.).
+3. Cross-references against actual price outcome at the signal horizon (using price data).
+4. Returns win rate grouped by filter count: `{"filters_0": 62%, "filters_1": 58%, "filters_2": 51%, "filters_3+": 38%}`.
+
+If 3+ filters → win rate drops to 38%, the `max_compress_ratio` floor should be raised from 0.50 to 0.65 (allow more original signal to survive heavy stacking). If win rate is stable, the current floor is correct.
+
+---
+
+### SA-7: Regime-Aware Earnings Compression
+
+**File:** `services/signal-engine/src/generators/signals.py`, lines 827–842  
+**Effort:** 1 week  
+**Expected gain:** +2–5% win rate (reduces false suppressions in strong markets)  
+**Status:** ⏳ Pending
+
+**What is wrong:**  
+Earnings compression is fixed: SWING signals within 2 days of earnings get 50% compressed regardless of market conditions or the stock's earnings history. In a bull market where a sector beats EPS estimates >60% of the time (e.g., technology in 2023–2024), this 50% compression removes many trades that would have gone up on the earnings beat.
+
+**Fix:**
+- Fetch each stock's last 8 quarters of earnings surprise data from `yfinance.Ticker(symbol).earnings_history`.
+- Compute `beat_rate = beats / total_quarters` (0.0–1.0).
+- Scale compression: `effective_compression = base_compression × (1 + (0.5 - beat_rate))`.
+  - Consistent beater (beat_rate=0.80): compression eases to 0.50 × 0.70 = 0.35 (35% — less suppressive)
+  - Consistent misser (beat_rate=0.25): compression tightens to 0.50 × 1.25 = 0.625 (62.5% — more suppressive)
+- Cache beat_rate in Redis with 7-day TTL (updates weekly on fresh earnings data).
+
+---
+
+### Summary Table
+
+| # | Change | File | Effort | Expected Gain | Status |
+|---|--------|------|--------|---------------|--------|
+| SA-1 | Lower ML/TA disagreement threshold 0.35→0.25 | signals.py 765–767 | 1 day | +3–8% accuracy | ⏳ Pending |
+| SA-2 | Style-aware ML precision targets SHORT:70% LONG:50% | trainer.py 28+82 | 1 day + retrain | +1–3% SHORT accuracy | ⏳ Pending |
+| SA-3 | Add 4 macro regime boolean features to ML | builder.py 242–266 | 3 days + retrain | +3–8% bear market AUC | ⏳ Pending |
+| SA-4 | Weekly alignment min bars 26→15, partial confidence | signals.py ~357 | 1 day | +1–3% new stocks | ⏳ Pending |
+| SA-5 | Data-driven TA weights via logistic regression | signals.py 497–643 | 1 week | +5–10% accuracy | ⏳ Pending |
+| SA-6 | Filter interaction audit endpoint | routes.py (new) | 1 week | +2–5% win rate | ⏳ Pending |
+| SA-7 | Regime-aware earnings compression | signals.py 827–842 | 1 week | +2–5% win rate | ⏳ Pending |
+
+**Recommended implementation order:** SA-1 → SA-4 → SA-2 → SA-3 → SA-6 → SA-5 → SA-7  
+(Low-effort quick wins first; data-driven weight changes last, after filter audit validates assumptions.)
+
+---
+
 ## Part 4 — Implementation Priority Matrix
 
 ### Tier 1 — Fix Before Trusting Signals (Do Now)
@@ -497,26 +723,260 @@ Without factor exposure analysis, you cannot distinguish between genuine alpha a
 
 | Fix | File(s) | Effort | Impact | Status |
 |-----|---------|--------|--------|--------|
-| Sector-relative fundamental scoring | research-engine/scoring.py | 3 days | Fixes PE/growth/margin thresholds | ⏳ Pending |
+| Sector-relative fundamental scoring | research-engine/routes.py | 3 days | Fixes PE/growth/margin thresholds | ✅ Done 2026-06-04 |
 | RSI scoring curve fix | ranking-engine/kscore.py | 0.5 days | More accurate trend stock scoring | ✅ Done |
-| adj_close consistency | market-data/adapters | 1 day | Fixes split/dividend distortion | ⏳ Pending |
-| Frontend strategy weight normalisation | opportunities.tsx | 0.5 days | Comparable cross-strategy scores | ⏳ Pending |
+| adj_close consistency | market-data/ingestion.py | 1 day | Fixes split/dividend distortion | ✅ Done 2026-06-04 |
+| Frontend strategy weight normalisation | opportunities.tsx | 0.5 days | Comparable cross-strategy scores | ✅ Done 2026-06-04 |
 | Zero-volume bar filtering | market-data/ingestion.py | 0.5 days | Cleaner volatility calculations | ✅ Done |
 | Stale price guard | signal-engine/signals.py | 0.5 days | Observable pipeline gaps | ✅ Done |
-| Research engine cache quality flag | research-engine/routes.py | 1 day | Prevents serving fallback as real data | ⏳ Pending |
+| Research engine cache quality flag | research-engine/routes.py + frontend/research/[symbol].tsx | 1 day | Prevents serving fallback as real data | ✅ Done 2026-06-04 |
 
 ### Tier 3 — New Features (Roadmap)
 
-| Feature | Effort | Expected Signal Quality Improvement |
-|---------|--------|-------------------------------------|
-| Walk-forward backtest engine | 2 weeks | Validates whether signals generate alpha at all |
-| Options flow integration | 5 days | +15–20% signal accuracy on high-flow events |
-| Earnings surprise model | 4 days | Better earnings event handling |
-| Relative strength vs. sector | 3 days | Filters sector-rotation noise from signals |
-| News sentiment layer | 4 days | Suppresses signals ahead of negative catalysts |
-| Market regime detection (4-state) | 1 week | Better position sizing across market environments |
-| Position P&L feedback loop | 1 week | System learns from its own track record |
-| Factor exposure analysis | 4 days | Distinguishes alpha from factor tilts |
+| Feature | Effort | Expected Signal Quality Improvement | Status |
+|---------|--------|--------------------------------------|--------|
+| Walk-forward backtest engine | 2 weeks | Validates whether signals generate alpha at all | ✅ Done |
+| Options flow integration | 5 days | +15–20% signal accuracy on high-flow events | ✅ Done |
+| Factor exposure analysis | 4 days | Distinguishes alpha from factor tilts | ✅ Done |
+| Relative strength vs. sector | 3 days | Filters sector-rotation noise from signals | ✅ Done 2026-06-04 |
+| Earnings surprise model | 4 days | Better earnings event handling | ⏳ Pending |
+| News sentiment layer | 4 days | Suppresses signals ahead of negative catalysts | ⏳ Pending |
+| Market regime detection (4-state) | 1 week | Better position sizing across market environments | ⏳ Pending |
+| Position P&L feedback loop | 1 week | System learns from its own track record | ⏳ Pending |
+
+### Tier 4 — Signal Accuracy & ML Tuning (2026-06-05 Audit)
+
+| Item | File | Effort | Expected Gain | Status |
+|------|------|--------|---------------|--------|
+| SA-1: ML/TA disagreement threshold 0.35→0.25 | signals.py | 1 day | +3–8% accuracy | ⏳ Pending |
+| SA-2: Style-aware precision targets (SHORT 70%, LONG 50%) | trainer.py | 1 day + retrain | +1–3% SHORT | ⏳ Pending |
+| SA-3: 4 macro regime boolean ML features | builder.py | 3 days + retrain | +3–8% bear AUC | ⏳ Pending |
+| SA-4: Weekly alignment min bars 26→15 | signals.py | 1 day | +1–3% new stocks | ⏳ Pending |
+| SA-5: Data-driven TA weights (logistic regression) | signals.py | 1 week | +5–10% accuracy | ⏳ Pending |
+| SA-6: Filter interaction audit endpoint | routes.py | 1 week | +2–5% win rate | ⏳ Pending |
+| SA-7: Regime-aware earnings compression | signals.py | 1 week | +2–5% win rate | ⏳ Pending |
+
+### Tier 5 — UI/Feature Gaps (2026-06-06 Audit)
+
+Backend fully implemented for all items below. These are frontend exposure gaps only.
+
+| Item | Effort | Priority | Status |
+|------|--------|----------|--------|
+| UI-01: Signal Outcomes Dashboard (confidence band win-rate table) | 1–2 days | High | ⏳ Pending |
+| UI-02: Signal Reasons / Factor Breakdown ("Why BUY?") | 1–2 days | High | ⏳ Pending |
+| UI-03: Options Flow page / stock detail tab | 1 day | Medium | ⏳ Pending |
+| UI-04: Insider Buying Screener (net buy conviction filter) | 1 day | Medium | ⏳ Pending |
+| UI-05: Earnings Surprise History Chart (8-quarter EPS beat/miss) | 1 day | Medium | ⏳ Pending |
+| UI-06: Portfolio Position Heatmap (treemap by $ value, colored by P&L) | 1 day | Medium | ⏳ Pending |
+| UI-07: Real-Time Unrealized P&L on Positions (live price × shares) | 1 day | Medium | ⏳ Pending |
+| UI-08: Walk-Forward Drill-Down (click window → see signal list) | 1–2 days | Low-Medium | ⏳ Pending |
+| UI-09: Data Freshness Indicator (last ingest timestamp in header) | 0.5 days | Low | ⏳ Pending |
+| UI-10: ML Weight Auto-Calibration (apply optimal from validation curve) | 1–2 days | Medium | ⏳ Pending |
+| UI-11: Factor Exposure Chart in Signal Accuracy page | 0.5 days | Low | ⏳ Pending |
+| UI-12: Congressional Trading Page (/congress) | 1 day | Low | ⏳ Pending |
+| Tech Debt: Pagination on /signals/accuracy (10k+ rows) | 1 day | Medium | ⏳ Pending |
+| Tech Debt: N+1 query in trade_performance (group in SQL not Python) | 1 day | Medium | ⏳ Pending |
+| Tech Debt: Redis cache for factor_exposure + walkforward endpoints | 1–2 days | Low | ⏳ Pending |
+
+See **Part 3B** for full specifications and code snippets for each item.
+
+---
+
+## Part 3C — UI/Feature Gaps & Backend Endpoints Without UI (2026-06-06 Audit)
+
+A full audit of all pages, endpoints, and database tables against the frontend identified the following gaps. Backend logic exists for all items — these are primarily UI exposure and feature completeness items.
+
+**Platform stats:** 25 frontend pages, 100+ REST endpoints across 8 microservices. Signal generation → ML prediction → ranking → research pipeline is fully wired. Gaps are concentrated in signal analysis, feedback loops, and data visualization.
+
+---
+
+### UI-01: Signal Outcomes Dashboard *(High Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1–2 days  
+**Impact:** High — closes the feedback loop between signals issued and actual accuracy
+
+The `signal_outcomes` table tracks every BUY/SELL with entry price, exit price, hold days, pct_return, is_correct, confidence band, ML prob, TA score, and market regime. The `GET /signals/outcomes/summary` endpoint returns win-rate grouped by confidence band (0-40, 40-55, 55-70, 70-85, 85+), horizon, and market regime. **Neither is called by the frontend.** No page shows this data.
+
+**What to build:** Add a new section to `/signal-accuracy` (or a new tab) showing:
+- Table: confidence band vs. win rate vs. avg return — confirms or refutes that higher confidence → higher accuracy
+- Table: win rate by horizon (SHORT / SWING / LONG)
+- Table: win rate by market regime (bull / high_vol / bear)
+- Once 500+ outcomes: "Optuna tuning recommended" banner with link to SIGNAL_ACCURACY.md
+
+**API already ready:** `GET /signals/outcomes/summary?horizon=SWING&days=90`
+
+---
+
+### UI-02: Signal Reasons / Factor Breakdown *(High Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1–2 days  
+**Impact:** High — makes signals explainable and debuggable
+
+Every signal stores a full `reasons` JSON containing RSI, ADX, volume_z, ml_probability, ta_score, news_sentiment, RS score, earnings proximity, breadth %, market regime, and 30+ other factors. This data is **never displayed to the user**. The only place any of it appears is the suppressed signals filter breakdown.
+
+**What to build:** On the stock detail page (or signal-accuracy drill-down):
+- "Why BUY?" card: show bulleted list of contributing factors above neutral (RSI < 50, golden_cross, volume surge, etc.)
+- Suppression reason inline: if signal was compressed, show which filter and by how much
+- Link to `/signals/factor-exposure` chart which already exists in the backend
+
+---
+
+### UI-03: Options Flow Page *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — unusual options activity is a leading indicator for smart money positioning
+
+`GET /stocks/{symbol}/options-flow` endpoint exists and returns unusual call/put volume, put/call ratio, and net sentiment. Signal engine uses options_sentiment as a filter. **No standalone page or stock detail section shows this data.**
+
+**What to build:** A tab on the stock detail page showing:
+- Options sentiment gauge (bullish / neutral / bearish)
+- Put/call ratio vs. 30-day average
+- Unusual activity flag
+
+---
+
+### UI-04: Insider Buying Screener *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — cluster insider buying is one of the strongest signals of management confidence
+
+`GET /stocks/insider` and fundamentals endpoint include insider transaction data. The signals page has an insider page but it only shows raw transaction list. **No screener exists to filter "stocks with heavy insider buying this quarter."**
+
+**What to build:** Add filter to the insider page:
+- "Net insider sentiment" column (buy $ vs sell $)
+- Sort by insider conviction score (number of distinct insiders buying)
+- Merge with K-Score ranking to find "high K-Score + insider buying" combo
+
+---
+
+### UI-05: Earnings Surprise History Chart *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — stocks with consistent EPS beats trade differently around earnings
+
+Fundamentals data includes EPS history and beat/miss records. `earnings_beat_rate` is already computed and used in signal compression. **No chart shows the per-stock EPS surprise trend over time.**
+
+**What to build:** Add to the earnings calendar page or stock detail:
+- Bar chart: last 8 quarters EPS estimate vs actual
+- Beat rate badge: "Beats 75% of the time (6/8 quarters)"
+- Flag stocks whose beat_rate > 70% as "earnings quality" candidates
+
+---
+
+### UI-06: Portfolio Position Heatmap *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — treemap view of holdings by $ value and % gain/loss
+
+The positions page shows a table of holdings. **No treemap or visual allocation view exists.**
+
+**What to build:** Add a treemap/grid above the positions table:
+- Each cell = one position, sized by current market value
+- Color = % gain (green) / loss (red)
+- Hover shows: symbol, shares, avg cost, current price, unrealized P&L
+
+---
+
+### UI-07: Real-Time Unrealized P&L on Positions *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — positions page shows avg cost but doesn't show current price delta
+
+The positions page has `avg_cost` but doesn't fetch live prices to compute unrealized P&L. Users have to cross-reference the markets page manually.
+
+**What to build:**
+- On page load, fetch `GET /stocks/latest_prices` for all held symbols
+- Compute unrealized P&L per position and total portfolio
+- Display daily change, total unrealized gain/loss with color coding
+
+---
+
+### UI-08: Walk-Forward Drill-Down *(Low-Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1–2 days  
+**Impact:** Medium — walk-forward exists but you can't see which signals drove each window's return
+
+The walk-forward backtest shows accuracy and return per time window. **Clicking a window doesn't show which signals were in it.**
+
+**What to build:** Expand each walk-forward window row to show:
+- List of signals evaluated in that window
+- Which were correct, which were wrong
+- Avg confidence, which factors were most predictive in that window
+
+---
+
+### UI-09: Data Freshness Indicator *(Low Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 0.5 days  
+**Impact:** Low — prevents acting on stale data without knowing it
+
+If the nightly ingest fails, all prices are stale but no indicator tells the user.
+
+**What to build:**
+- Show "Last updated: 2h ago" label in the site header or market overview
+- Highlight in orange/red if last price update was > 6 hours ago on a trading day
+- Already have `GET /stocks/market_overview` which returns timestamps
+
+---
+
+### UI-10: ML Weight Auto-Calibration *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1–2 days  
+**Impact:** High once signal_outcomes accumulates data
+
+The `/signals/ml-weight-validation` endpoint sweeps all ML weights and finds the empirically optimal blend weight. Currently this is only a visualisation — the system does not actually use the optimal weight. The fusion formula in `signals.py` is hardcoded at 0.40–0.75.
+
+**What to build:**
+- `POST /signals/calibrate_ml_weight` endpoint that reads the optimal weight from the validation curve and writes it to a config table (or updates `signals.py` config)
+- Button in the Signal Accuracy page: "Apply optimal weight (0% ML currently)" with confirmation
+- Automatic weekly recalibration in the scheduler
+
+---
+
+### UI-11: Factor Exposure Chart in Signal Accuracy *(Low Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 0.5 days  
+**Impact:** Medium — endpoint exists, just needs frontend wiring
+
+`GET /signals/factor-exposure?lookback_days=90` returns RSI, ADX, volume_z, ML prob, news sentiment, and TA score averaged across correct vs wrong signals. **This endpoint exists in the backend but is never called by the frontend.** The Signal Accuracy page has a "Factor Analysis" section but it fetches this endpoint separately — verify whether it's actually rendering.
+
+---
+
+### UI-12: Congressional Trading Page *(Low Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Low-Medium — congressional trade disclosures are publicly available and surprisingly predictive
+
+`GET /congress/trades?days=90` endpoint exists. **No dedicated page.**
+
+**What to build:** A simple table page at `/congress`:
+- Politician, stock, transaction type (buy/sell), date, amount range
+- Filter by stock symbol to see "Has any congressman bought/sold AAPL recently?"
+
+---
+
+### Technical Debt Items
+
+| Item | File | Effort | Priority |
+|------|------|--------|----------|
+| **Pagination on /signals/accuracy** — can return 10k+ rows, frontend hangs | signal-engine/routes.py | 1 day | Medium |
+| **N+1 query in trade_performance** — groups trades by symbol in Python instead of SQL | signal-engine/routes.py:857 | 1 day | Medium |
+| **Redis cache for heavy endpoints** — factor_exposure, walkforward, filter_audit re-compute every request | signal-engine/routes.py | 1–2 days | Low |
+| **ML weight range hardcoded** — `current_formula_range: [0.40, 0.75]` in routes.py:507 should read from config | signal-engine/routes.py | 0.5 days | Low |
+| **Hold windows hardcoded** — `_OUTCOME_HOLD_DAYS = {"SHORT": 7, "SWING": 14, "LONG": 28}` should be config | signal-engine/routes.py:1608 | 0.5 days | Low |
+| **WAIT signal handling inconsistent** — trade_performance handles WAIT optionally; signal_accuracy ignores WAIT | signal-engine/routes.py | 0.5 days | Low |
 
 ---
 

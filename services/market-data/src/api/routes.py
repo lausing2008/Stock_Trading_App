@@ -1,5 +1,5 @@
 """/stocks, /stocks/{symbol}/prices — read API for market data."""
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 
 import pandas as pd
@@ -241,7 +241,7 @@ def _latest_prices_from_db(session: Session) -> list[LatestPriceOut]:
     """Fallback: read most recent stored close from Postgres."""
     ranked = (
         select(
-            Price.stock_id, Price.close, Price.ts,
+            Price.stock_id, Price.close, Price.ts, Price.volume,
             func.row_number()
             .over(partition_by=Price.stock_id, order_by=Price.ts.desc())
             .label("rn"),
@@ -362,7 +362,7 @@ def _compute_fear_greed() -> dict:
     ma_score = 75.0 if spx_now > float(ma125) else 25.0
 
     # 3. 20-day momentum
-    r20 = float(spx_close.iloc[-1] / spx_close.iloc[-21] - 1) if len(spx_close) > 21 else 0.0
+    r20 = float(spx_close.iloc[-1] / spx_close.iloc[-21] - 1) if len(spx_close) >= 21 else 0.0
     mom_score = float(min(max(50 + r20 * 300, 0), 100))
 
     # 4. VIX spike vs 20-day avg (spike = fear)
@@ -515,7 +515,7 @@ def market_breadth(session: Session = Depends(get_session)):
         "total": total,
         "label": breadth_label,
         "color": breadth_color,
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
         _get_redis().setex(_MARKET_BREADTH_KEY, _MARKET_BREADTH_TTL, json.dumps(result))
@@ -1241,7 +1241,7 @@ def relative_performance(
 ):
     """Return base-100 normalized daily close series for multiple symbols."""
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()][:8]
-    cutoff = datetime.utcnow() - timedelta(days=days + 5)  # +5 for alignment buffer
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days + 5)  # +5 for alignment buffer
     result: dict[str, list] = {}
 
     for symbol in sym_list:
@@ -1342,15 +1342,19 @@ def get_options_flow(symbol: str):
             result = {"symbol": sym, "available": False, "reason": "no_volume"}
             return result
 
-        cp_ratio = round(total_call_vol / max(total_put_vol, 1), 2)
+        # Cap ratio at 10 to prevent unbounded values when put volume is near-zero.
+        # Also require at least 100 put contracts before declaring strongly_bullish —
+        # zero or tiny put volume usually means illiquid options, not extreme bullishness.
+        cp_ratio = round(min(total_call_vol / max(total_put_vol, 1), 10.0), 2)
+        sufficient_put_vol = total_put_vol >= 100
 
-        if cp_ratio >= 2.0:
+        if cp_ratio >= 2.0 and sufficient_put_vol:
             sentiment = "strongly_bullish"
-        elif cp_ratio >= 1.3:
+        elif cp_ratio >= 1.3 and sufficient_put_vol:
             sentiment = "bullish"
-        elif cp_ratio <= 0.5:
+        elif cp_ratio <= 0.5 and sufficient_put_vol:
             sentiment = "bearish"
-        elif cp_ratio <= 0.8:
+        elif cp_ratio <= 0.8 and sufficient_put_vol:
             sentiment = "slightly_bearish"
         else:
             sentiment = "neutral"
@@ -1492,6 +1496,70 @@ def get_institutional(symbol: str):
                 "major_holders": {}, "institutional_holders": [], "error": str(e)}
 
 
+@router.get("/conviction")
+def conviction_status():
+    """Return latest conviction gate check result per symbol:style from Redis."""
+    import json as _json
+    r = _get_redis()
+    keys = r.keys("conv_gate:*")
+    result: dict = {}
+    for key in keys:
+        parts = key.split(":", 2)
+        if len(parts) == 3:
+            _, sym, style = parts
+            raw = r.get(key)
+            if raw:
+                result[f"{sym}:{style}"] = _json.loads(raw)
+    return result
+
+
+@router.get("/{symbol}/atr")
+def stock_atr(
+    symbol: str,
+    period: int = Query(14, ge=5, le=50),
+    session: Session = Depends(get_session),
+):
+    """Wilder ATR(period) for position sizing. Returns ATR, current close, and 2×ATR stop-loss."""
+    import numpy as np
+
+    stock = session.execute(select(Stock).where(Stock.symbol == symbol.upper())).scalar_one_or_none()
+    if not stock:
+        raise HTTPException(404, f"Unknown symbol: {symbol}")
+
+    rows = session.execute(
+        select(Price.high, Price.low, Price.close)
+        .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1)
+        .order_by(Price.ts.desc())
+        .limit(period * 4)
+    ).all()
+    if len(rows) < period + 2:
+        raise HTTPException(422, "Insufficient price history for ATR")
+
+    rows = list(reversed(rows))
+    h = [float(r.high)  for r in rows]
+    l = [float(r.low)   for r in rows]
+    c = [float(r.close) for r in rows]
+
+    # True Range
+    tr = [max(h[i] - l[i], abs(h[i] - c[i-1]), abs(l[i] - c[i-1])) for i in range(1, len(c))]
+
+    # Wilder smoothing: seed with SMA of first `period` TRs, then EMA
+    if len(tr) < period:
+        raise HTTPException(422, "Insufficient price history for ATR")
+    atr = sum(tr[:period]) / period
+    for t in tr[period:]:
+        atr = (atr * (period - 1) + t) / period
+
+    close_now = c[-1]
+    return {
+        "symbol": symbol.upper(),
+        "atr": round(atr, 4),
+        "close": round(close_now, 4),
+        "stop_loss_2atr": round(close_now - 2 * atr, 4),
+        "period": period,
+    }
+
+
 @router.get("/{symbol}", response_model=StockOut)
 def get_stock(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -1512,6 +1580,10 @@ def get_prices(
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
     if not stock:
         raise HTTPException(404, f"Unknown symbol: {symbol}")
+    try:
+        tf = TimeFrame(timeframe)
+    except ValueError:
+        raise HTTPException(400, f"Invalid timeframe '{timeframe}'. Valid values: {[v.value for v in TimeFrame]}")
     if not end:
         end = date.today()
 
@@ -1519,7 +1591,7 @@ def get_prices(
         select(Price)
         .where(
             Price.stock_id == stock.id,
-            Price.timeframe == TimeFrame(timeframe),
+            Price.timeframe == tf,
             *(Price.ts >= start,) if start else (),
             Price.ts <= end,
         )
