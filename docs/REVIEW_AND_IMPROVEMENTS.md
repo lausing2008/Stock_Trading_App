@@ -756,7 +756,227 @@ Earnings compression is fixed: SWING signals within 2 days of earnings get 50% c
 | SA-6: Filter interaction audit endpoint | routes.py | 1 week | +2–5% win rate | ⏳ Pending |
 | SA-7: Regime-aware earnings compression | signals.py | 1 week | +2–5% win rate | ⏳ Pending |
 
+### Tier 5 — UI/Feature Gaps (2026-06-06 Audit)
+
+Backend fully implemented for all items below. These are frontend exposure gaps only.
+
+| Item | Effort | Priority | Status |
+|------|--------|----------|--------|
+| UI-01: Signal Outcomes Dashboard (confidence band win-rate table) | 1–2 days | High | ⏳ Pending |
+| UI-02: Signal Reasons / Factor Breakdown ("Why BUY?") | 1–2 days | High | ⏳ Pending |
+| UI-03: Options Flow page / stock detail tab | 1 day | Medium | ⏳ Pending |
+| UI-04: Insider Buying Screener (net buy conviction filter) | 1 day | Medium | ⏳ Pending |
+| UI-05: Earnings Surprise History Chart (8-quarter EPS beat/miss) | 1 day | Medium | ⏳ Pending |
+| UI-06: Portfolio Position Heatmap (treemap by $ value, colored by P&L) | 1 day | Medium | ⏳ Pending |
+| UI-07: Real-Time Unrealized P&L on Positions (live price × shares) | 1 day | Medium | ⏳ Pending |
+| UI-08: Walk-Forward Drill-Down (click window → see signal list) | 1–2 days | Low-Medium | ⏳ Pending |
+| UI-09: Data Freshness Indicator (last ingest timestamp in header) | 0.5 days | Low | ⏳ Pending |
+| UI-10: ML Weight Auto-Calibration (apply optimal from validation curve) | 1–2 days | Medium | ⏳ Pending |
+| UI-11: Factor Exposure Chart in Signal Accuracy page | 0.5 days | Low | ⏳ Pending |
+| UI-12: Congressional Trading Page (/congress) | 1 day | Low | ⏳ Pending |
+| Tech Debt: Pagination on /signals/accuracy (10k+ rows) | 1 day | Medium | ⏳ Pending |
+| Tech Debt: N+1 query in trade_performance (group in SQL not Python) | 1 day | Medium | ⏳ Pending |
+| Tech Debt: Redis cache for factor_exposure + walkforward endpoints | 1–2 days | Low | ⏳ Pending |
+
 See **Part 3B** for full specifications and code snippets for each item.
+
+---
+
+## Part 3C — UI/Feature Gaps & Backend Endpoints Without UI (2026-06-06 Audit)
+
+A full audit of all pages, endpoints, and database tables against the frontend identified the following gaps. Backend logic exists for all items — these are primarily UI exposure and feature completeness items.
+
+**Platform stats:** 25 frontend pages, 100+ REST endpoints across 8 microservices. Signal generation → ML prediction → ranking → research pipeline is fully wired. Gaps are concentrated in signal analysis, feedback loops, and data visualization.
+
+---
+
+### UI-01: Signal Outcomes Dashboard *(High Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1–2 days  
+**Impact:** High — closes the feedback loop between signals issued and actual accuracy
+
+The `signal_outcomes` table tracks every BUY/SELL with entry price, exit price, hold days, pct_return, is_correct, confidence band, ML prob, TA score, and market regime. The `GET /signals/outcomes/summary` endpoint returns win-rate grouped by confidence band (0-40, 40-55, 55-70, 70-85, 85+), horizon, and market regime. **Neither is called by the frontend.** No page shows this data.
+
+**What to build:** Add a new section to `/signal-accuracy` (or a new tab) showing:
+- Table: confidence band vs. win rate vs. avg return — confirms or refutes that higher confidence → higher accuracy
+- Table: win rate by horizon (SHORT / SWING / LONG)
+- Table: win rate by market regime (bull / high_vol / bear)
+- Once 500+ outcomes: "Optuna tuning recommended" banner with link to SIGNAL_ACCURACY.md
+
+**API already ready:** `GET /signals/outcomes/summary?horizon=SWING&days=90`
+
+---
+
+### UI-02: Signal Reasons / Factor Breakdown *(High Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1–2 days  
+**Impact:** High — makes signals explainable and debuggable
+
+Every signal stores a full `reasons` JSON containing RSI, ADX, volume_z, ml_probability, ta_score, news_sentiment, RS score, earnings proximity, breadth %, market regime, and 30+ other factors. This data is **never displayed to the user**. The only place any of it appears is the suppressed signals filter breakdown.
+
+**What to build:** On the stock detail page (or signal-accuracy drill-down):
+- "Why BUY?" card: show bulleted list of contributing factors above neutral (RSI < 50, golden_cross, volume surge, etc.)
+- Suppression reason inline: if signal was compressed, show which filter and by how much
+- Link to `/signals/factor-exposure` chart which already exists in the backend
+
+---
+
+### UI-03: Options Flow Page *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — unusual options activity is a leading indicator for smart money positioning
+
+`GET /stocks/{symbol}/options-flow` endpoint exists and returns unusual call/put volume, put/call ratio, and net sentiment. Signal engine uses options_sentiment as a filter. **No standalone page or stock detail section shows this data.**
+
+**What to build:** A tab on the stock detail page showing:
+- Options sentiment gauge (bullish / neutral / bearish)
+- Put/call ratio vs. 30-day average
+- Unusual activity flag
+
+---
+
+### UI-04: Insider Buying Screener *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — cluster insider buying is one of the strongest signals of management confidence
+
+`GET /stocks/insider` and fundamentals endpoint include insider transaction data. The signals page has an insider page but it only shows raw transaction list. **No screener exists to filter "stocks with heavy insider buying this quarter."**
+
+**What to build:** Add filter to the insider page:
+- "Net insider sentiment" column (buy $ vs sell $)
+- Sort by insider conviction score (number of distinct insiders buying)
+- Merge with K-Score ranking to find "high K-Score + insider buying" combo
+
+---
+
+### UI-05: Earnings Surprise History Chart *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — stocks with consistent EPS beats trade differently around earnings
+
+Fundamentals data includes EPS history and beat/miss records. `earnings_beat_rate` is already computed and used in signal compression. **No chart shows the per-stock EPS surprise trend over time.**
+
+**What to build:** Add to the earnings calendar page or stock detail:
+- Bar chart: last 8 quarters EPS estimate vs actual
+- Beat rate badge: "Beats 75% of the time (6/8 quarters)"
+- Flag stocks whose beat_rate > 70% as "earnings quality" candidates
+
+---
+
+### UI-06: Portfolio Position Heatmap *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — treemap view of holdings by $ value and % gain/loss
+
+The positions page shows a table of holdings. **No treemap or visual allocation view exists.**
+
+**What to build:** Add a treemap/grid above the positions table:
+- Each cell = one position, sized by current market value
+- Color = % gain (green) / loss (red)
+- Hover shows: symbol, shares, avg cost, current price, unrealized P&L
+
+---
+
+### UI-07: Real-Time Unrealized P&L on Positions *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Medium — positions page shows avg cost but doesn't show current price delta
+
+The positions page has `avg_cost` but doesn't fetch live prices to compute unrealized P&L. Users have to cross-reference the markets page manually.
+
+**What to build:**
+- On page load, fetch `GET /stocks/latest_prices` for all held symbols
+- Compute unrealized P&L per position and total portfolio
+- Display daily change, total unrealized gain/loss with color coding
+
+---
+
+### UI-08: Walk-Forward Drill-Down *(Low-Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1–2 days  
+**Impact:** Medium — walk-forward exists but you can't see which signals drove each window's return
+
+The walk-forward backtest shows accuracy and return per time window. **Clicking a window doesn't show which signals were in it.**
+
+**What to build:** Expand each walk-forward window row to show:
+- List of signals evaluated in that window
+- Which were correct, which were wrong
+- Avg confidence, which factors were most predictive in that window
+
+---
+
+### UI-09: Data Freshness Indicator *(Low Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 0.5 days  
+**Impact:** Low — prevents acting on stale data without knowing it
+
+If the nightly ingest fails, all prices are stale but no indicator tells the user.
+
+**What to build:**
+- Show "Last updated: 2h ago" label in the site header or market overview
+- Highlight in orange/red if last price update was > 6 hours ago on a trading day
+- Already have `GET /stocks/market_overview` which returns timestamps
+
+---
+
+### UI-10: ML Weight Auto-Calibration *(Medium Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1–2 days  
+**Impact:** High once signal_outcomes accumulates data
+
+The `/signals/ml-weight-validation` endpoint sweeps all ML weights and finds the empirically optimal blend weight. Currently this is only a visualisation — the system does not actually use the optimal weight. The fusion formula in `signals.py` is hardcoded at 0.40–0.75.
+
+**What to build:**
+- `POST /signals/calibrate_ml_weight` endpoint that reads the optimal weight from the validation curve and writes it to a config table (or updates `signals.py` config)
+- Button in the Signal Accuracy page: "Apply optimal weight (0% ML currently)" with confirmation
+- Automatic weekly recalibration in the scheduler
+
+---
+
+### UI-11: Factor Exposure Chart in Signal Accuracy *(Low Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 0.5 days  
+**Impact:** Medium — endpoint exists, just needs frontend wiring
+
+`GET /signals/factor-exposure?lookback_days=90` returns RSI, ADX, volume_z, ML prob, news sentiment, and TA score averaged across correct vs wrong signals. **This endpoint exists in the backend but is never called by the frontend.** The Signal Accuracy page has a "Factor Analysis" section but it fetches this endpoint separately — verify whether it's actually rendering.
+
+---
+
+### UI-12: Congressional Trading Page *(Low Priority)*
+
+**Status:** ⏳ Pending  
+**Effort:** 1 day  
+**Impact:** Low-Medium — congressional trade disclosures are publicly available and surprisingly predictive
+
+`GET /congress/trades?days=90` endpoint exists. **No dedicated page.**
+
+**What to build:** A simple table page at `/congress`:
+- Politician, stock, transaction type (buy/sell), date, amount range
+- Filter by stock symbol to see "Has any congressman bought/sold AAPL recently?"
+
+---
+
+### Technical Debt Items
+
+| Item | File | Effort | Priority |
+|------|------|--------|----------|
+| **Pagination on /signals/accuracy** — can return 10k+ rows, frontend hangs | signal-engine/routes.py | 1 day | Medium |
+| **N+1 query in trade_performance** — groups trades by symbol in Python instead of SQL | signal-engine/routes.py:857 | 1 day | Medium |
+| **Redis cache for heavy endpoints** — factor_exposure, walkforward, filter_audit re-compute every request | signal-engine/routes.py | 1–2 days | Low |
+| **ML weight range hardcoded** — `current_formula_range: [0.40, 0.75]` in routes.py:507 should read from config | signal-engine/routes.py | 0.5 days | Low |
+| **Hold windows hardcoded** — `_OUTCOME_HOLD_DAYS = {"SHORT": 7, "SWING": 14, "LONG": 28}` should be config | signal-engine/routes.py:1608 | 0.5 days | Low |
+| **WAIT signal handling inconsistent** — trade_performance handles WAIT optionally; signal_accuracy ignores WAIT | signal-engine/routes.py | 0.5 days | Low |
 
 ---
 
