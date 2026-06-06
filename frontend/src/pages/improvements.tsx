@@ -11,7 +11,7 @@ import { useState, useEffect } from 'react';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3;
+type Tier     = 1 | 2 | 3 | 4 | 5;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -400,6 +400,254 @@ const ITEMS: Item[] = [
     what: 'Current fair value uses a trailing PE × sector PE multiple heuristic. This systematically misprices: growth stocks (no PE), cyclicals at peak earnings, and companies with negative earnings. A DCF model is the industry standard for intrinsic value — and the data is already available (EPS, growth rates, FCF from yfinance fundamentals).',
     fix: 'Implement simplified 2-stage DCF in research engine: Stage 1: project FCF for 5 years using analyst growth rate (or trailing 3y CAGR if no estimate). Stage 2: terminal value using Gordon Growth Model (terminal growth 3%, WACC 10% default). Discount to PV. Compare DCF fair value vs current price to compute margin of safety %. Show on stock detail page alongside existing K-Score fair value. If DCF and K-Score fair values agree within 15%, show "High conviction" badge. API: add dcf_fair_value, dcf_margin_of_safety to GET /research/{symbol} response.',
   },
+
+  // ── Tier 4 — Signal Accuracy & ML Tuning (SA-8 batch, 2026-06-05) ─────────
+  {
+    id: 'sa8-bundle',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-05 — (1) SWING buy_threshold: bull 0.65→0.62, high_vol 0.70→0.67, bear 0.73→0.70. (2) SWING adx_min: 20→15 (capture early-trend before ADX peaks). (3) AUC floor: ml_weight=0 when model AUC<0.52 (near-random model falls back to TA-only). (4) 4 new ML features: momentum_12_1, sma_200_gap, dist_52w_high, dist_52w_low (30→34 features). (5) Recency weights ratio 3.0→5.0 in trainer + tuner. (6) Style-specific training horizons: SHORT=5d, SWING=10d, LONG=20d.',
+    tier: 4, severity: 'feature',
+    title: 'SA-8: Signal accuracy batch — thresholds, AUC floor, 4 new ML features, horizon alignment',
+    file: 'signal-engine/signals.py + ml-prediction/builder.py + trainer.py + tuner.py + routes.py',
+    effort: 'Done',
+    impact: 'Comprehensive accuracy overhaul: ML models now trained on correct horizon, near-random models suppressed, momentum and range features added, SWING threshold recalibrated from empirical data',
+    what: '6 independent improvements bundled: (1) SWING thresholds were too conservative based on analysis of 180d of signal data. (2) adx_min=20 was filtering out early-trend entries; lowering to 15 captures moves before ADX fully peaks. (3) ML models with AUC<0.52 were corrupting signals instead of helping. (4) Missing price-range and momentum features. (5) Recency ratio 3× was too slow to adapt to regime shifts. (6) All styles were using 5-day training labels even for SWING (10-day hold) and LONG (20-day hold).',
+    fix: 'All six changes shipped in one commit. Optuna re-tuned 108/123 symbols with new 34-feature set and correct SWING 10d horizon. signal_outcomes table created to track fixed-window directional accuracy for future Optuna tuning of signal parameters.',
+  },
+  {
+    id: 'signal-outcomes-tracking',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-05 — signal_outcomes table: UNIQUE signal_id, entry/exit price, hold_days, pct_return, is_correct, confidence, fused_prob, ta_score, ml_prob, ml_auc, market_regime. POST /signals/outcomes/evaluate runs post-close. GET /signals/outcomes/summary returns win_rate by confidence band (0-40/40-55/55-70/70-85/85+), horizon, and market_regime. Scheduler hook runs evaluate after each post-close ML retrain.',
+    tier: 4, severity: 'feature',
+    title: 'signal_outcomes forward-tracking table — fixed-window directional accuracy',
+    file: 'shared/db/models.py + session.py + signal-engine/routes.py + market-data/scheduler.py',
+    effort: 'Done',
+    impact: 'Closes the feedback loop: every BUY/SELL signal is evaluated at its natural hold horizon (SHORT=7d, SWING=14d, LONG=28d) and stored permanently for Optuna tuning of signal parameters',
+    what: 'The existing trade_performance endpoint measures P&L from BUY→WAIT/SELL transitions (actual exits). signal_outcomes is orthogonal: it uses fixed calendar windows regardless of actual exit, isolating directional accuracy. This is the ground truth needed to tune buy_threshold, adx_min, weekly_compress, and earnings_compression via Optuna once 500+ outcomes accumulate (~8 weeks).',
+    fix: 'Two complementary measurements: (1) trade_performance = "how much did you make following the signals?" (2) signal_outcomes = "was the direction correct at the target horizon?" Once 500+ SWING outcomes exist, run Optuna on signal parameters using precision-weighted F-score as objective. See SIGNAL_ACCURACY.md for full tuning workflow.',
+  },
+  {
+    id: 'sa1-ml-ta-threshold',
+    tier: 4, severity: 'medium',
+    title: 'SA-1: Lower ML/TA disagreement dampening threshold 0.35 → 0.25',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1 day',
+    impact: '+3–8% accuracy — adds intermediate dampening band for moderate ML/TA disagreements',
+    what: 'When ML probability and TA score diverge, dampening is applied only when the gap > 0.35 (35 percentage points). A stock where ML says 0.70 and TA says 0.40 (gap = 0.30) passes through undampened even though the disagreement is substantial — a common early-warning sign of regime transitions.',
+    fix: 'Add intermediate band: gap > 0.25 → ml_w *= 0.75 (25% cut). gap > 0.35 → ml_w *= 0.5 (50% cut, existing). Makes the system more conservative when ML and TA moderately disagree. The current code already handles gap > 0.35; just add the 0.25–0.35 elif clause.',
+  },
+  {
+    id: 'sa2-style-precision',
+    tier: 4, severity: 'medium',
+    title: 'SA-2: Style-aware ML precision targets (SHORT 70%, LONG 50%)',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '1 day + retrain',
+    impact: '+1–3% SHORT accuracy — SHORT trades need tighter precision since there is less time to recover false entries',
+    what: 'All three trade horizons use the same 60% minimum precision for calibrating the buy threshold. SHORT trades (1–7 day holds) have the least time to recover from false entries and need tighter precision. LONG trades (90-day holds) can afford more entries.',
+    fix: 'Add _PRECISION_BY_STYLE = {"SHORT": 0.70, "SWING": 0.60, "LONG": 0.50}. Pass style parameter through to _precision_threshold() and use the style-specific floor instead of the global _MIN_PRECISION constant.',
+  },
+  {
+    id: 'sa3-macro-regime-features',
+    tier: 4, severity: 'medium',
+    title: 'SA-3: Add 4 macro regime boolean ML features',
+    file: 'services/ml-prediction/src/features/builder.py',
+    effort: '3 days + retrain',
+    impact: '+3–8% AUC in bear markets — boolean flags give XGBoost a clean decision boundary for regime states',
+    what: 'The ML model receives raw macro values (VIX level, SPY returns) but no boolean regime flags. The model must implicitly learn that VIX=35 means "fear regime" — with limited training data it under-learns this. Explicit boolean features give XGBoost a clean split boundary.',
+    fix: 'Add 4 derived boolean features to builder.py: (1) is_spy_above_200d (SPY > 200-day SMA), (2) is_vix_elevated (VIX > 20), (3) is_spy_trending_up (SPY 20d return > 2%), (4) is_breadth_strong (% stocks above 200d SMA > 55%). These are already computed for signal generation — expose them to the ML model as binary inputs.',
+  },
+  {
+    id: 'sa4-weekly-min-bars',
+    tier: 4, severity: 'low',
+    title: 'SA-4: Weekly alignment gate min bars 26 → 15',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1 day',
+    impact: '+1–3% accuracy on newer stocks — 26-bar requirement filters out stocks with 6 months of history',
+    what: 'Weekly trend confirmation requires at least 26 weekly bars (6 months of data). Stocks listed within the last 6 months skip the weekly gate entirely, missing an important quality check. 15 bars (3.5 months) is sufficient for reliable weekly RSI and SMA computation.',
+    fix: 'In _weekly_technicals(), change the minimum bar count from 26 to 15. Already have a fallback when weekly bars < threshold; just lower the threshold.',
+  },
+  {
+    id: 'sa5-data-driven-ta-weights',
+    tier: 4, severity: 'medium',
+    title: 'SA-5: Data-driven TA sub-score weights (logistic regression)',
+    file: 'services/signal-engine/src/generators/signals.py + signal-engine/routes.py',
+    effort: '1 week',
+    impact: '+5–10% accuracy — replaces hand-tuned TA weights with empirically fitted weights from actual signal outcomes',
+    what: 'TA sub-score weights (RSI 15%, momentum 15%, trend 20%, etc.) are manually tuned. There is no empirical validation that these weights maximise prediction accuracy. The calibrate_ta_weights endpoint already exists but is not run on a schedule and its output is not automatically applied.',
+    fix: 'Wire POST /signals/calibrate_ta_weights into the weekly scheduler (runs on Sundays after Optuna). The endpoint already fits a logistic regression on TA features vs is_correct from signal history. Apply the fitted coefficients as TA weights in the next signal generation cycle. Store weights in DB config table so they persist across restarts.',
+  },
+  {
+    id: 'sa6-filter-interaction',
+    tier: 4, severity: 'medium',
+    title: 'SA-6: Filter interaction audit — identify redundant or harmful filters',
+    file: 'services/signal-engine/src/api/routes.py',
+    effort: '1 week',
+    impact: '+2–5% win rate — some filter combinations may be net-negative (e.g. ADX gate already captures weak trend; adding weekly gate may double-suppress good signals)',
+    what: 'The signal engine has 8+ suppression filters (ADX gate, weekly alignment, earnings compression, breadth compression, high-vol compression, ML/TA conflict, news sentiment, options sentiment). No analysis exists of which filter combinations produce the best outcomes or whether some filters conflict and double-suppress good signals.',
+    fix: 'Use GET /signals/filter_audit (already implemented) to analyse win rate by number of active suppression filters. Extend it to show win rate by specific filter combination (e.g. "ADX gate only" vs "ADX gate + weekly misalignment"). Identify any filter that consistently reduces win rate when applied — and disable or invert it. Once signal_outcomes has 500+ rows, run this analysis on real outcomes.',
+  },
+  {
+    id: 'sa7-regime-earnings-compression',
+    tier: 4, severity: 'medium',
+    title: 'SA-7: Regime-aware earnings compression',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1 week',
+    impact: '+2–5% win rate — earnings compression is too aggressive in bull markets where beat surprises push stocks up',
+    what: 'Earnings compression applies the same penalty regardless of market regime. In a bull market, stocks that beat earnings often gap up 5–15% — the opposite of what the compression assumes. In a bear market, even earnings beats often fade. One-size-fits-all compression is wrong in half the cases.',
+    fix: 'Apply earnings compression differentially by market regime and earnings beat rate: (1) Bear/high_vol + beat_rate < 50%: keep current 50% compression. (2) Bull + beat_rate > 70%: remove or invert compression (slight boost before earnings). (3) Bull + beat_rate 50-70%: neutral (no compression). The beat_rate is already computed and stored in signal reasons.',
+  },
+
+  // ── Tier 5 — UI / Feature Gaps (2026-06-06 audit) ────────────────────────
+  {
+    id: 'ui01-signal-outcomes-dashboard',
+    tier: 5, severity: 'feature',
+    title: 'UI-01: Signal Outcomes Dashboard — confidence band win-rate table',
+    file: 'frontend/src/pages/signal-accuracy.tsx + lib/api.ts',
+    effort: '1–2 days',
+    impact: 'High — closes the feedback loop; GET /signals/outcomes/summary is implemented but never called by the frontend',
+    what: 'The signal_outcomes table tracks every BUY/SELL with win_rate by confidence band (0-40, 40-55, 55-70, 70-85, 85+), horizon, and market regime. The backend endpoint is live. No frontend page displays this data — users cannot see whether confidence 70-85 signals actually win 70% of the time.',
+    fix: 'Add a new "Outcomes" tab on /signal-accuracy. Call GET /signals/outcomes/summary?horizon=SWING&days=90. Show: (1) Table: confidence band → count, win rate, avg return — confirms or refutes confidence calibration. (2) Table: win rate by horizon (SHORT/SWING/LONG). (3) Table: win rate by market regime. Add "Tuning available" banner when outcomes > 500 pointing to SIGNAL_ACCURACY.md Optuna workflow.',
+  },
+  {
+    id: 'ui02-signal-reasons',
+    tier: 5, severity: 'feature',
+    title: 'UI-02: Signal Reasons / "Why BUY?" factor breakdown',
+    file: 'frontend/src/pages/stock/[symbol].tsx + frontend/src/components/SignalCard.tsx',
+    effort: '1–2 days',
+    impact: 'High — every signal stores 30+ factors in reasons JSON (RSI, ADX, ML prob, news, earnings, breadth) but none is shown to the user',
+    what: 'Signal.reasons JSON contains a full factor dump: RSI, ADX, volume_z, ml_probability, ta_score, news_sentiment, RS score, earnings proximity, market regime, breadth %, suppression flags, and 20+ more. This data is fetched but never rendered. Users see only the final confidence number — not why it was generated.',
+    fix: 'Expand the SignalCard component to show a collapsible "Factors" section: (1) Green badges for factors above neutral (RSI < 50, golden_cross=true, volume_z > 1, news_sentiment > 55, rs_rank > 1.0). (2) Orange/red badges for suppression factors (weekly_alignment=false, earnings_compression, breadth_compression). (3) Show ml_weight and whether AUC floor was applied. Reuse existing Signal response — no backend change needed.',
+  },
+  {
+    id: 'ui03-options-flow-page',
+    tier: 5, severity: 'feature',
+    title: 'UI-03: Options flow tab on stock detail page',
+    file: 'frontend/src/pages/stock/[symbol].tsx',
+    effort: '1 day',
+    impact: 'Medium — GET /stocks/{symbol}/options-flow is implemented and used in signals, but never displayed to the user',
+    what: 'The options flow endpoint returns put/call ratio, options sentiment (bullish/bearish), and unusual contract activity. The signal engine uses it as a filter (strongly_bullish C/P ≥ 2.0 → +7% boost, bearish C/P ≤ 0.5 → 15% compress). Users never see this data — they cannot verify why a signal was boosted or compressed by options.',
+    fix: 'Add an "Options Flow" section to the stock detail page (below the signal card): (1) Put/call ratio gauge with 30-day average reference. (2) Sentiment badge (Strongly Bullish / Bullish / Neutral / Bearish). (3) Table of unusual contracts (expiry, strike, volume, OI, volume/OI ratio). Call GET /stocks/{symbol}/options-flow — no backend change needed.',
+  },
+  {
+    id: 'ui04-insider-screener',
+    tier: 5, severity: 'feature',
+    title: 'UI-04: Insider buying conviction screener',
+    file: 'frontend/src/pages/insider.tsx',
+    effort: '1 day',
+    impact: 'Medium — cluster insider buying is one of the strongest signals of management confidence; raw data exists but no screener',
+    what: 'The insider page shows raw transaction list. No way to screen for "stocks with heavy net insider buying this quarter" or sort by conviction (number of distinct insiders buying vs selling). Users must manually scan hundreds of rows.',
+    fix: 'Add a conviction score column: net_buy_$ = sum(buy_transactions) - sum(sell_transactions) over trailing 90 days. Add distinct_buyers count. Add sort/filter: "Net buyers only", sort by conviction score descending. Merge with K-Score to show "High K-Score + insider buying" combo — the highest-quality intersection. No backend change needed; recompute from existing transaction data client-side.',
+  },
+  {
+    id: 'ui05-earnings-surprise-chart',
+    tier: 5, severity: 'feature',
+    title: 'UI-05: Earnings surprise history chart (8-quarter EPS beat/miss)',
+    file: 'frontend/src/pages/stock/[symbol].tsx + earnings.tsx',
+    effort: '1 day',
+    impact: 'Medium — eps_beat_rate is already computed and used in signal compression; it is never shown to users as a per-stock trend',
+    what: 'Fundamentals endpoint already returns eps_history (last 8 quarters), eps_beat_rate, eps_avg_surprise_pct, and eps_surprise_trend. The research engine uses beat_rate for signal compression. No chart shows the per-stock EPS surprise trend over time — users cannot see whether AAPL beats consistently or misses randomly.',
+    fix: 'Add to the stock detail page (earnings tab or fundamentals section): (1) Bar chart — last 8 quarters showing estimate vs actual EPS (green bar = beat, red = miss). (2) Beat rate badge: "Beats 75% of the time (6/8 quarters)". (3) Highlight stocks with beat_rate > 70% as "earnings quality" candidates in the earnings calendar. Data already in API response — frontend change only.',
+  },
+  {
+    id: 'ui06-position-heatmap',
+    tier: 5, severity: 'feature',
+    title: 'UI-06: Portfolio position heatmap (treemap by value, colored by P&L)',
+    file: 'frontend/src/pages/positions.tsx',
+    effort: '1 day',
+    impact: 'Medium — positions page shows a table; no visual allocation view to spot concentration or P&L at a glance',
+    what: 'Users cannot quickly see "I have 60% of my portfolio in 2 stocks and both are down" — they have to read a table row by row. A treemap makes allocation and P&L visible instantly.',
+    fix: 'Add a treemap/grid above the positions table: each cell = one position, sized by current market value (shares × current price), colored by % P&L (green = profit, red = loss, intensity = magnitude). Hover shows: symbol, shares, avg cost, current price, unrealized P&L. Fetch current prices via GET /stocks/latest_prices — already called elsewhere on the page.',
+  },
+  {
+    id: 'ui07-unrealized-pnl',
+    tier: 5, severity: 'feature',
+    title: 'UI-07: Real-time unrealized P&L on positions page',
+    file: 'frontend/src/pages/positions.tsx',
+    effort: '1 day',
+    impact: 'Medium — positions page stores avg_cost but does not compute unrealized P&L; users cross-reference manually with the markets page',
+    what: 'The positions table shows avg_cost and shares, but not the current price or unrealized gain/loss. Users have to go to the markets page to find current prices and do the math themselves.',
+    fix: 'On page load, fetch GET /stocks/latest_prices for all held symbols. Compute per-position unrealized P&L: (current_price - avg_cost) × shares. Show in table: Current Price, Unrealized $, Unrealized %, color-coded. Add portfolio total row: sum of all unrealized + total cost basis + total current value. All data is available — frontend math only.',
+  },
+  {
+    id: 'ui08-walkforward-drilldown',
+    tier: 5, severity: 'feature',
+    title: 'UI-08: Walk-forward window drill-down (click window → see signals)',
+    file: 'frontend/src/pages/signal-accuracy.tsx',
+    effort: '1–2 days',
+    impact: 'Low-Medium — walk-forward shows per-window accuracy % but clicking a window shows nothing; users cannot see which signals drove the result',
+    what: 'The walk-forward tab shows a heatmap of windows (e.g. "May 1–30: 62% accuracy"). Clicking a window does nothing. Users cannot investigate why a specific window performed well or badly — they cannot see which signals were evaluated, which were correct, or what factors differentiated the winners.',
+    fix: 'Make each walk-forward window row/cell clickable. On click, fetch /signals/accuracy with the window\'s date range and show: list of signals evaluated in that window, which were correct (green) and wrong (red), avg confidence, top and bottom factors. Modal or slide-out panel. Reuse existing signal accuracy endpoint with date range params.',
+  },
+  {
+    id: 'ui09-data-freshness',
+    tier: 5, severity: 'low',
+    title: 'UI-09: Data freshness indicator in site header',
+    file: 'frontend/src/pages/_app.tsx',
+    effort: '0.5 days',
+    impact: 'Low — if nightly ingest fails, all prices are stale with no visible warning; users trade on yesterday\'s data',
+    what: 'If the nightly data ingest fails (yfinance outage, EC2 issue), all prices and signals are stale. The UI gives no indication of this. Users may see a BUY signal generated on 2-day-old data and act on it.',
+    fix: 'Add a small status chip to the header: "Last updated: 2h ago" (green). Turn orange if last update > 6h on a weekday, red if > 24h. Fetch GET /stocks/market_overview which already returns a timestamp. If stale, show a banner: "⚠ Price data may be outdated — last refresh {timestamp}".',
+  },
+  {
+    id: 'ui10-ml-weight-autocalibrate',
+    tier: 5, severity: 'medium',
+    title: 'UI-10: ML weight auto-calibration from empirical validation curve',
+    file: 'frontend/src/pages/signal-accuracy.tsx + signal-engine/routes.py',
+    effort: '1–2 days',
+    impact: 'Medium — the validation curve already finds the optimal ML weight; currently just a visualisation; not applied to the running system',
+    what: 'GET /signals/ml-weight-validation sweeps all ML weight values and identifies the empirically optimal blend. Currently shows "Optimal: 0% ML" but the system still uses the hardcoded 40–75% formula. The insight is never acted upon.',
+    fix: 'Add POST /signals/calibrate_ml_weight endpoint: reads optimal_weight from the validation curve, writes it to a config table, signals.py reads it on next run. Add "Apply optimal weight" button on Signal Accuracy page (admin only) with confirmation dialog showing current vs proposed weight and expected accuracy change. Warn if optimal is 0% (ML models need retraining before applying).',
+  },
+  {
+    id: 'ui11-factor-exposure-chart',
+    tier: 5, severity: 'low',
+    title: 'UI-11: Verify factor exposure chart is rendering correctly',
+    file: 'frontend/src/pages/signal-accuracy.tsx',
+    effort: '0.5 days',
+    impact: 'Low — GET /signals/factor-exposure endpoint exists; frontend may or may not be calling it correctly',
+    what: 'The Signal Accuracy page has a Factor Analysis section. The backend endpoint GET /signals/factor-exposure returns RSI, ADX, Volume Z, ML Probability, News Sentiment, and TA Score averaged across correct vs wrong signals. Verify the endpoint is being called and the chart is rendering with real data (not empty bars).',
+    fix: 'Check the /signal-accuracy page network tab: is /signals/factor-exposure returning data? If bars are empty, it may be a lookback_days mismatch or the endpoint requiring more evaluated signals than exist. If the chart IS rendering, confirm bars show meaningful differences between correct and wrong signals — the key insight is which factors most distinguish good signals from bad ones.',
+  },
+  {
+    id: 'ui12-congressional-page',
+    tier: 5, severity: 'low',
+    title: 'UI-12: Congressional trading page (/congress)',
+    file: 'frontend/src/pages/ (new page)',
+    effort: '1 day',
+    impact: 'Low-Medium — congressional trade disclosures are public data and surprisingly predictive; endpoint already exists',
+    what: 'GET /congress/trades?days=90 returns congressional buy/sell disclosures. The data exists and the endpoint is implemented. There is no dedicated page — users cannot see whether congresspeople have been buying or selling the stocks they are tracking.',
+    fix: 'Create /congress page with: (1) Table: politician, stock, transaction type, date, amount range. (2) Filter by symbol — "Has any congressman bought AAPL recently?". (3) "Conviction" score = net $ bought by congress across all politicians for a stock. (4) Merge with watchlist — highlight any watchlist stock with recent congressional buying. Add Congress link to Markets navigation dropdown.',
+  },
+  {
+    id: 'tech-pagination',
+    tier: 5, severity: 'medium',
+    title: 'Tech Debt: Pagination on /signals/accuracy (10k+ row response)',
+    file: 'services/signal-engine/src/api/routes.py',
+    effort: '1 day',
+    impact: 'Medium — with 123 stocks × 5 signals/week × 90 days the response can exceed 50k rows; frontend hangs parsing the JSON',
+    what: 'GET /signals/accuracy returns the entire signal history in one response. With 123 stocks generating signals daily for 90 days, this can be 10k+ rows of JSON. The frontend signal table renders all rows at once with no virtualisation.',
+    fix: 'Add page and page_size query params to /signals/accuracy (default page_size=200). Return total_count and has_more in response. Frontend: load first page on mount, add "Load more" button or infinite scroll. Alternatively add server-side filtering by symbol so the response is always bounded.',
+  },
+  {
+    id: 'tech-n1-query',
+    tier: 5, severity: 'medium',
+    title: 'Tech Debt: N+1 query in trade_performance — group in SQL not Python',
+    file: 'services/signal-engine/src/api/routes.py',
+    effort: '1 day',
+    impact: 'Medium — trade_performance groups by symbol in Python after loading all signals; with 100+ stocks this is 10× slower than a single GROUP BY query',
+    what: 'The trade_performance endpoint loads all signals matching the filter, then loops through them in Python to group by symbol and compute per-symbol stats. This is the N+1 pattern: one query loads everything, then Python does the aggregation work that a single SQL GROUP BY would do more efficiently.',
+    fix: 'Rewrite the per-symbol aggregation as a SQL subquery or window function. GROUP BY symbol at the DB level and return pre-aggregated win_rate, avg_return, trade_count per symbol. Only load individual trade records when a user drills into a specific symbol.',
+  },
+  {
+    id: 'tech-redis-cache',
+    tier: 5, severity: 'low',
+    title: 'Tech Debt: Redis cache for expensive signal-engine endpoints',
+    file: 'services/signal-engine/src/api/routes.py',
+    effort: '1–2 days',
+    impact: 'Low — factor_exposure, walkforward, and filter_audit re-compute from scratch on every request; with 180d lookback these take 2–5s each',
+    what: 'Three endpoints — /signals/factor-exposure, /signals/walkforward, and /signals/filter_audit — load 6 months of signal history and compute aggregations on every HTTP request. They change at most once per day (after the post-close signal refresh). There is no caching.',
+    fix: 'Add a simple Redis cache with TTL=3600s (1 hour). Use a cache key incorporating the query params (lookback_days, horizon, style). On hit: return cached JSON immediately. On miss: compute, cache result, return. Redis is already deployed in the stack (used for macro features and market regime). Pattern already exists in ml-prediction/builder.py _redis_save_macro().',
+  },
 ];
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -408,12 +656,16 @@ const TIER_LABEL: Record<Tier, string> = {
   1: 'Tier 1 — Fix Before Trusting Signals',
   2: 'Tier 2 — Analytical Improvements',
   3: 'Tier 3 — New Features',
+  4: 'Tier 4 — Signal Accuracy & ML Tuning',
+  5: 'Tier 5 — UI Gaps & Tech Debt',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
   1: '#f87171',
   2: '#fbbf24',
   3: '#818cf8',
+  4: '#34d399',
+  5: '#67e8f9',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -474,7 +726,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -490,7 +742,7 @@ export default function ImprovementsPage() {
           <h1 style={{ fontSize: 22, fontWeight: 800, color: '#e2e8f0', margin: 0 }}>
             Improvement Tracker
           </h1>
-          <span style={{ fontSize: 12, color: '#475569' }}>Expert review — 2026-05-31 · Updated 2026-06-02</span>
+          <span style={{ fontSize: 12, color: '#475569' }}>Expert review — 2026-05-31 · Updated 2026-06-06</span>
         </div>
         <p style={{ fontSize: 13, color: '#64748b', margin: 0, maxWidth: 680 }}>
           All findings from the data analyst & stock expert review. Click any item to expand details and fix guidance.
@@ -521,7 +773,7 @@ export default function ImprovementsPage() {
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>
-          {([0, 1, 2, 3] as const).map(t => (
+          {([0, 1, 2, 3, 4, 5] as const).map(t => (
             <button key={t} onClick={() => setFilterTier(t as Tier | 0)}
               style={{ padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
                 borderColor: filterTier === t ? TIER_COLOR[t as Tier] ?? '#6366f1' : '#1e293b',
@@ -668,18 +920,18 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current → Target (after 8 new items shipped)
+          Current (2026-06-06) → Target after Tier 4 &amp; 5
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
-            { label: 'Data pipeline',   score: 8.0, target: 8.5, note: '↑ Multi-TF bars next' },
-            { label: 'ML methodology',  score: 8.0, target: 8.5, note: '↑ Drift detection pending' },
-            { label: 'Signal logic',    score: 7.5, target: 8.5, note: '↑ VWAP + weekly gate next' },
-            { label: 'K-Score ranking', score: 8.0, target: 8.5, note: '↑ Peer comparison next' },
-            { label: 'Research engine', score: 7.0, target: 8.5, note: '↑ DCF fair value next' },
-            { label: 'Frontend / UX',   score: 9.0, target: 9.0, note: 'Best-in-class ✓' },
-            { label: 'Risk management', score: 7.0, target: 9.0, note: '↑ Position size + VaR next' },
-            { label: 'Overall',         score: 7.9, target: 8.7, note: '7 new items → 8.5–9 range' },
+            { label: 'Data pipeline',   score: 8.2, target: 8.5, note: '↑ Data freshness UI next' },
+            { label: 'ML methodology',  score: 8.5, target: 9.0, note: '↑ SA-2/3/5 pending' },
+            { label: 'Signal logic',    score: 8.0, target: 9.0, note: '↑ SA-1/6/7 + outcomes UI' },
+            { label: 'K-Score ranking', score: 8.0, target: 8.5, note: '↑ Insider screener next' },
+            { label: 'Research engine', score: 7.5, target: 8.5, note: '↑ Earnings chart next' },
+            { label: 'Frontend / UX',   score: 9.0, target: 9.5, note: '↑ Outcomes UI + heatmap' },
+            { label: 'Risk management', score: 7.5, target: 8.5, note: '↑ Unrealized P&L + heatmap' },
+            { label: 'Overall',         score: 8.5, target: 9.0, note: 'Tier 4+5 → 9.0 range' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -694,12 +946,11 @@ export default function ImprovementsPage() {
           ))}
         </div>
         <p style={{ fontSize: 12, color: '#64748b', margin: 0, lineHeight: 1.6 }}>
-          All 19 original items are shipped. Eight new items target the three weakest dimensions:
-          <strong style={{ color: '#94a3b8' }}> risk management</strong> (position sizing + portfolio VaR, 6.0 → 9.0),
-          <strong style={{ color: '#94a3b8' }}> signal logic</strong> (weekly alignment gate + VWAP/S&R, 7.0 → 8.5),
-          and <strong style={{ color: '#94a3b8' }}> research engine</strong> (DCF fair value, 6.5 → 8.5).
-          Shipping all seven takes the overall from <strong style={{ color: '#fbbf24' }}>7.9</strong> to the <strong style={{ color: '#4ade80' }}>8.5–9.0</strong> range.
-          The highest-leverage single item is the <strong style={{ color: '#94a3b8' }}>position sizing engine</strong> — it transforms signals into actionable trade instructions with stop-loss and R:R ratio.
+          All Tier 1–3 items are shipped. SA-8 (Tier 4) shipped 2026-06-05: 34 ML features, style-specific horizons, AUC floor, recalibrated SWING thresholds, signal_outcomes tracking.
+          SA-1 through SA-7 remain pending — once signal_outcomes accumulates 500+ SWING outcomes (~8 weeks), run Optuna on signal parameters before implementing SA-5/6.
+          Tier 5 items are all backend-ready — each is a frontend-only change exposing an existing endpoint.
+          The highest-leverage next items are <strong style={{ color: '#94a3b8' }}>UI-01 (signal outcomes dashboard)</strong> and <strong style={{ color: '#94a3b8' }}>UI-02 (signal reasons breakdown)</strong> — they close the feedback loop and make signals explainable.
+          Overall: <strong style={{ color: '#4ade80' }}>8.5 / 10</strong> — target 9.0 after Tier 4+5 completion.
         </p>
       </div>
     </div>
