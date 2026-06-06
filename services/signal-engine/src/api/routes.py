@@ -1677,9 +1677,9 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         entry_price = entry_row.close
         exit_target = entry_date + timedelta(days=hold_days)
 
-        if exit_target > today:
+        if exit_target >= today:
             skipped_open += 1
-            continue  # Hold window not closed yet
+            continue  # Hold window not closed yet (need tomorrow's price at minimum)
 
         # Exit: first D1 close on or after exit target date
         exit_row = session.execute(
