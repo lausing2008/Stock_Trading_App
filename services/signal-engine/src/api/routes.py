@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Price, Signal, SignalHorizon, SignalType, Stock, TimeFrame, get_session
+from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, get_session
 
 _settings = get_settings()
 
@@ -1599,5 +1599,245 @@ def signal_for(
     return {
         "symbol": symbol,
         "signals": {k: asdict(v) for k, v in all_sig.items()},
+    }
+
+
+# ── Signal outcome tracking ────────────────────────────────────────────────────
+
+# Hold window in calendar days per horizon. Approximates actual trading days held.
+_OUTCOME_HOLD_DAYS: dict[str, int] = {
+    "SHORT": 7,    # ~5 trading days
+    "SWING": 14,   # ~10 trading days
+    "LONG":  28,   # ~20 trading days
+}
+
+
+@router.post("/outcomes/evaluate")
+def evaluate_signal_outcomes(session: Session = Depends(get_session)):
+    """Evaluate closed signal outcomes and persist them to signal_outcomes.
+
+    For each BUY/SELL signal whose hold window has expired:
+    - Entry price = first D1 close on or after signal date
+    - Exit price  = first D1 close on or after entry_date + hold_window_days
+    - pct_return  = (exit - entry) / entry
+    - is_correct  = price went up for BUY, down for SELL
+
+    Safe to re-run — already-evaluated signals (by UNIQUE signal_id) are skipped.
+    Called automatically by the scheduler post-close.
+    """
+    from datetime import time as _time
+
+    today = date.today()
+    min_hold = min(_OUTCOME_HOLD_DAYS.values())
+    cutoff = today - timedelta(days=min_hold)
+
+    # IDs already in signal_outcomes — skip re-evaluation
+    evaluated_ids: set[int] = set(session.execute(
+        select(SignalOutcome.signal_id)
+    ).scalars().all())
+
+    # BUY and SELL signals old enough that at least SHORT window could be closed
+    pending_signals = session.execute(
+        select(Signal, Stock.symbol)
+        .join(Stock, Stock.id == Signal.stock_id)
+        .where(
+            Signal.signal.in_([SignalType.BUY, SignalType.SELL]),
+            Signal.ts <= datetime.combine(cutoff, _time.max),
+        )
+        .order_by(Signal.ts)
+    ).all()
+
+    evaluated, skipped_open, skipped_no_price = 0, 0, 0
+
+    for sig, symbol in pending_signals:
+        if sig.id in evaluated_ids:
+            continue
+
+        horizon = sig.horizon.value
+        hold_days = _OUTCOME_HOLD_DAYS[horizon]
+        signal_date = sig.ts.date()
+
+        # Entry: first D1 close on or after signal date
+        entry_row = session.execute(
+            select(Price.ts, Price.close)
+            .where(
+                Price.stock_id == sig.stock_id,
+                Price.timeframe == TimeFrame.D1,
+                Price.ts >= datetime.combine(signal_date, _time.min),
+            )
+            .order_by(Price.ts)
+            .limit(1)
+        ).first()
+
+        if entry_row is None:
+            skipped_no_price += 1
+            continue
+
+        entry_date = entry_row.ts.date()
+        entry_price = entry_row.close
+        exit_target = entry_date + timedelta(days=hold_days)
+
+        if exit_target > today:
+            skipped_open += 1
+            continue  # Hold window not closed yet
+
+        # Exit: first D1 close on or after exit target date
+        exit_row = session.execute(
+            select(Price.ts, Price.close)
+            .where(
+                Price.stock_id == sig.stock_id,
+                Price.timeframe == TimeFrame.D1,
+                Price.ts >= datetime.combine(exit_target, _time.min),
+            )
+            .order_by(Price.ts)
+            .limit(1)
+        ).first()
+
+        if exit_row is None:
+            skipped_open += 1
+            continue
+
+        exit_date = exit_row.ts.date()
+        exit_price = exit_row.close
+        pct_return = (exit_price - entry_price) / entry_price
+        hold_days_actual = (exit_date - entry_date).days
+        is_correct = pct_return > 0 if sig.signal == SignalType.BUY else pct_return < 0
+
+        reasons = sig.reasons or {}
+        outcome = SignalOutcome(
+            signal_id=sig.id,
+            stock_id=sig.stock_id,
+            symbol=symbol,
+            horizon=sig.horizon,
+            signal_direction=sig.signal.value,
+            signal_date=signal_date,
+            confidence=sig.confidence,
+            fused_prob=sig.bullish_probability,
+            ta_score=reasons.get("ta_score"),
+            ml_prob=reasons.get("ml_probability"),
+            ml_auc=reasons.get("ml_test_auc"),
+            market_regime=reasons.get("market_regime"),
+            entry_date=entry_date,
+            entry_price=entry_price,
+            exit_date=exit_date,
+            exit_price=exit_price,
+            hold_days=hold_days_actual,
+            pct_return=pct_return,
+            is_correct=is_correct,
+        )
+        session.add(outcome)
+        evaluated_ids.add(sig.id)
+        evaluated += 1
+
+    session.commit()
+    log.info(
+        "outcomes.evaluate_done",
+        evaluated=evaluated,
+        skipped_open=skipped_open,
+        skipped_no_price=skipped_no_price,
+    )
+    return {"evaluated": evaluated, "skipped_open": skipped_open, "skipped_no_price": skipped_no_price}
+
+
+@router.get("/outcomes/summary")
+def outcomes_summary(
+    horizon: str | None = Query(None, description="SHORT | SWING | LONG"),
+    days: int = Query(90, description="Look-back window in calendar days"),
+    session: Session = Depends(get_session),
+):
+    """Return win-rate and return stats from the signal_outcomes table.
+
+    Groups results by confidence band (0-40, 40-55, 55-70, 70-85, 85+) so you
+    can verify that higher-confidence signals actually win more often.
+    """
+    import statistics
+
+    cutoff = date.today() - timedelta(days=days)
+
+    q = select(SignalOutcome).where(
+        SignalOutcome.signal_date >= cutoff,
+        SignalOutcome.is_correct.is_not(None),
+    )
+    if horizon:
+        try:
+            q = q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))
+        except ValueError:
+            raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    outcomes = session.execute(q).scalars().all()
+
+    if not outcomes:
+        return {"total": 0, "message": "No evaluated outcomes yet in this window"}
+
+    # Overall stats
+    wins = [o for o in outcomes if o.is_correct]
+    returns = [o.pct_return for o in outcomes if o.pct_return is not None]
+
+    # By confidence band
+    bands = [
+        (0, 40, "0-40"),
+        (40, 55, "40-55"),
+        (55, 70, "55-70"),
+        (70, 85, "70-85"),
+        (85, 101, "85+"),
+    ]
+    band_stats = []
+    for lo, hi, label in bands:
+        bucket = [o for o in outcomes if lo <= o.confidence < hi]
+        if not bucket:
+            continue
+        bucket_wins = sum(1 for o in bucket if o.is_correct)
+        bucket_returns = [o.pct_return for o in bucket if o.pct_return is not None]
+        band_stats.append({
+            "band": label,
+            "count": len(bucket),
+            "win_rate": round(bucket_wins / len(bucket), 3),
+            "avg_return_pct": round(statistics.mean(bucket_returns) * 100, 2) if bucket_returns else None,
+        })
+
+    # By horizon (if not filtered)
+    horizon_stats = {}
+    for h in ("SHORT", "SWING", "LONG"):
+        hbucket = [o for o in outcomes if o.horizon.value == h]
+        if not hbucket:
+            continue
+        hreturns = [o.pct_return for o in hbucket if o.pct_return is not None]
+        horizon_stats[h] = {
+            "count": len(hbucket),
+            "win_rate": round(sum(1 for o in hbucket if o.is_correct) / len(hbucket), 3),
+            "avg_return_pct": round(statistics.mean(hreturns) * 100, 2) if hreturns else None,
+        }
+
+    # By market regime
+    regime_stats = {}
+    for o in outcomes:
+        reg = o.market_regime or "unknown"
+        if reg not in regime_stats:
+            regime_stats[reg] = {"count": 0, "wins": 0, "returns": []}
+        regime_stats[reg]["count"] += 1
+        if o.is_correct:
+            regime_stats[reg]["wins"] += 1
+        if o.pct_return is not None:
+            regime_stats[reg]["returns"].append(o.pct_return)
+    regime_summary = {
+        reg: {
+            "count": v["count"],
+            "win_rate": round(v["wins"] / v["count"], 3),
+            "avg_return_pct": round(statistics.mean(v["returns"]) * 100, 2) if v["returns"] else None,
+        }
+        for reg, v in regime_stats.items()
+    }
+
+    return {
+        "total": len(outcomes),
+        "days_lookback": days,
+        "overall": {
+            "win_rate": round(len(wins) / len(outcomes), 3),
+            "avg_return_pct": round(statistics.mean(returns) * 100, 2) if returns else None,
+            "median_return_pct": round(statistics.median(returns) * 100, 2) if returns else None,
+        },
+        "by_confidence_band": band_stats,
+        "by_horizon": horizon_stats,
+        "by_market_regime": regime_summary,
     }
 

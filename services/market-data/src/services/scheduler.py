@@ -170,6 +170,9 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
 
     if post_close:
         _post(f"{_settings.ml_prediction_url}/ml/train_all")
+        # Evaluate any BUY/SELL signals whose hold window has now expired and
+        # persist their outcomes to signal_outcomes for accuracy tracking.
+        _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
 
     check_signal_alerts()
     check_technical_alerts()

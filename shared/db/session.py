@@ -177,6 +177,47 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE watchlists ADD COLUMN IF NOT EXISTS trading_style VARCHAR(16)"
         ))
+        # ── Signal outcome tracking ────────────────────────────────────────────
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS signal_outcomes (
+                id               BIGSERIAL PRIMARY KEY,
+                signal_id        BIGINT NOT NULL UNIQUE REFERENCES signals(id) ON DELETE CASCADE,
+                stock_id         INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
+                symbol           VARCHAR(32) NOT NULL,
+                horizon          signalhorizon NOT NULL,
+                signal_direction VARCHAR(8) NOT NULL,
+                signal_date      DATE NOT NULL,
+                confidence       FLOAT NOT NULL,
+                fused_prob       FLOAT,
+                ta_score         FLOAT,
+                ml_prob          FLOAT,
+                ml_auc           FLOAT,
+                market_regime    VARCHAR(16),
+                entry_date       DATE,
+                entry_price      FLOAT,
+                exit_date        DATE,
+                exit_price       FLOAT,
+                hold_days        INTEGER,
+                pct_return       FLOAT,
+                is_correct       BOOLEAN,
+                ts_evaluated     TIMESTAMP NOT NULL DEFAULT now()
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_signal_outcomes_stock ON signal_outcomes (stock_id)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_signal_outcomes_symbol ON signal_outcomes (symbol)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_signal_outcomes_horizon ON signal_outcomes (horizon)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_signal_outcomes_signal_date ON signal_outcomes (signal_date)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_signal_outcomes_horizon_correct ON signal_outcomes (horizon, is_correct)"
+        ))
 
 
 def _seed_admin() -> None:
