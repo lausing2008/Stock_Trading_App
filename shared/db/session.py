@@ -153,6 +153,7 @@ def _run_migrations() -> None:  # noqa: C901
                 symbol       VARCHAR(32) NOT NULL,
                 email        VARCHAR(256),
                 last_signal  VARCHAR(16),
+                last_sent_at TIMESTAMP,
                 created_at   TIMESTAMP NOT NULL DEFAULT now(),
                 UNIQUE(user_id, symbol)
             )
@@ -162,6 +163,9 @@ def _run_migrations() -> None:  # noqa: C901
         ))
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_signal_alerts_symbol ON signal_alerts (symbol)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE signal_alerts ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMP"
         ))
         # ── Trade plan fill tracking ───────────────────────────────────────────
         conn.execute(text(

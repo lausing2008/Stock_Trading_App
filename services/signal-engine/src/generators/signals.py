@@ -1130,6 +1130,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["breadth_pct"]        = breadth_pct
     reasons["ta_score"]           = ta_prob
     reasons["ml_probability"]     = ml_prob
+    reasons["ml_test_auc"]        = ml_test_auc
     reasons["weekly_ta_score"]    = round(weekly_score, 3)
     reasons["weekly_rsi"]         = weekly_tech["weekly_rsi"]
     reasons["weekly_trend"]       = weekly_tech["weekly_trend"]

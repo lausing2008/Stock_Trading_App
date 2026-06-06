@@ -45,8 +45,9 @@ def models():
 def train(req: TrainRequest, tasks: BackgroundTasks):
     if req.model not in list_models():
         raise HTTPException(400, f"Unknown model: {req.model}")
-    tasks.add_task(train_model, req.symbol, req.model, req.horizon, style=req.style)
-    return {"status": "scheduled", "symbol": req.symbol, "model": req.model, "style": req.style}
+    horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
+    tasks.add_task(train_model, req.symbol, req.model, horizon, style=req.style)
+    return {"status": "scheduled", "symbol": req.symbol, "model": req.model, "style": req.style, "horizon": horizon}
 
 
 @router.post("/train_all")
@@ -73,8 +74,9 @@ def train_all(tasks: BackgroundTasks, style: str = "SWING"):
 @router.post("/tune")
 def tune(req: TuneRequest, tasks: BackgroundTasks):
     """Run Optuna hyperparameter search for one symbol, then retrain with best params."""
-    tasks.add_task(tune_symbol, req.symbol, req.n_trials, req.horizon, req.style)
-    return {"status": "scheduled", "symbol": req.symbol, "n_trials": req.n_trials, "style": req.style}
+    horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
+    tasks.add_task(tune_symbol, req.symbol, req.n_trials, horizon, req.style)
+    return {"status": "scheduled", "symbol": req.symbol, "n_trials": req.n_trials, "style": req.style, "horizon": horizon}
 
 
 @router.post("/tune_all")

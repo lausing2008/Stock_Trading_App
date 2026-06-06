@@ -134,7 +134,7 @@ def _precision_threshold(
     return 0.5
 
 
-def _recency_weights(n: int, newest_to_oldest_ratio: float = 3.0) -> np.ndarray:
+def _recency_weights(n: int, newest_to_oldest_ratio: float = 5.0) -> np.ndarray:
     """Exponential weights so most-recent bar has ~ratio× the weight of oldest.
 
     Normalised so the mean weight equals 1 (total weight ≈ n, consistent with

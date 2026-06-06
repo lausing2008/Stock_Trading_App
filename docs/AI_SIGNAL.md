@@ -3,7 +3,7 @@
 Source: [`services/signal-engine/src/generators/signals.py`](../services/signal-engine/src/generators/signals.py)
 ML training: [`services/ml-prediction/src/training/trainer.py`](../services/ml-prediction/src/training/trainer.py)
 
-Last updated: 2026-06-02 (post deep-audit)
+Last updated: 2026-06-06 (SA-8 accuracy improvements)
 
 ---
 
@@ -33,12 +33,12 @@ Every stock carries three signals simultaneously — one per trading style (SHOR
 | Parameter | SHORT | SWING | LONG |
 |-----------|-------|-------|------|
 | **ML weight cap** | 30% | 75% | 45% |
-| **BUY threshold — bull market** | 0.60 | 0.65 | 0.60 |
-| **BUY threshold — high-vol** | 0.65 | 0.70 | 0.65 |
-| **BUY threshold — bear market** | 0.68 | 0.73 | 0.70 |
+| **BUY threshold — bull market** | 0.60 | **0.62** | 0.60 |
+| **BUY threshold — high-vol** | 0.65 | **0.67** | 0.65 |
+| **BUY threshold — bear market** | 0.68 | **0.70** | 0.70 |
 | **HOLD threshold — bull** | 0.46 | 0.50 | 0.46 |
 | **HOLD threshold — bear** | 0.52 | 0.56 | 0.54 |
-| **ADX filter (min trending)** | 25 | 20 | off |
+| **ADX filter (min trending)** | 25 | **15** | off |
 | **ADX compression** | 0.85× | 0.90× | — |
 | **High-vol compression** | 0.92× | 0.85× | 0.90× |
 | **Breadth compression** | off | 0.90× | 0.92× |
@@ -146,7 +146,7 @@ Detected over a 10-bar lookback. Only computed when ≥ 50 bars of history exist
 | ADX > threshold AND DI+ ≤ DI− | 0 | Strong trend, but downward |
 | ADX ≤ threshold | 0 (compressed) | Ranging — signals less reliable |
 
-ADX threshold: 25 for SHORT, 20 for SWING, off entirely for LONG.
+ADX threshold: 25 for SHORT, **15 for SWING** (captures early-trend entries), off entirely for LONG.
 
 ### 8. OBV (up to +0.10)
 
@@ -168,26 +168,38 @@ The ML layer uses a per-symbol **XGBoost + Random Forest ensemble** trained on t
 
 ### What it predicts
 
-The target label is: **did the stock's close price rise by more than its volatility-adjusted threshold within the next 5 days?**
+The target label is: **did the stock's close price rise by more than its volatility-adjusted threshold within the hold horizon?**
+
+The horizon varies by trading style — predictions are trained on data that matches how the signal will actually be used:
+
+| Style | Training horizon | Rationale |
+|-------|-----------------|-----------|
+| SHORT | 5 trading days | Matches the 1–5 day intended hold |
+| SWING | 10 trading days | Matches the 1–4 week intended hold |
+| LONG | 20 trading days | Matches the 1–3 month intended hold |
 
 ```
-label = 1  if forward_return_5d > threshold
-label = 0  if forward_return_5d < −threshold
+label = 1  if forward_return_N > threshold
+label = 0  if forward_return_N < −threshold
 (dead-zone rows where |return| < threshold are dropped from training)
 ```
 
-The threshold is roughly `0.5 × daily_vol × √5`, clipped to [0.5%, 3%]. This removes noise from tiny moves that are indistinguishable from random fluctuation.
+The threshold is roughly `0.5 × daily_vol × √N`, clipped to [0.5%, 3%]. This removes noise from tiny moves that are indistinguishable from random fluctuation.
 
-### 22 input features
+### 34 input features
 
 | Category | Features |
 |----------|----------|
-| Momentum | 1d, 5d, 10d, 20d, 60d returns |
-| Volatility | 20-day rolling vol, 20d/5d vol ratio |
-| Technical | RSI, MACD histogram, Bollinger %B, Stochastic RSI |
-| Trend | ATR(14), price/SMA50 ratio, SMA50/SMA200 ratio |
-| Volume | Volume Z-score, OBV momentum |
-| Macro | SPY 5d & 20d returns, VIX level, VIX 5d change |
+| Momentum | 1d, 5d, 10d, 20d, 60d returns; `momentum_12_1` (12m−1m return, avoids short-term reversal) |
+| Volatility | 20d and 60d rolling vol, ATR(14) as % of price, ATR vs its 20d avg |
+| Trend | Price/SMA(20), /SMA(50), /SMA(100), /SMA(200) gap ratios |
+| Range | 20-day high/low position; `dist_52w_high` (breakout proximity); `dist_52w_low` (support proximity) |
+| Oscillators | RSI(14), MACD, MACD signal, MACD histogram (all normalised by price), Bollinger %B, Stochastic K |
+| Volume | Volume Z-score vs 20d avg; OBV 20d change Z-score; CMF(20) |
+| Macro — raw | SPY 1d & 5d returns; VIX level; SPY 20d realised vol |
+| Macro — regime | `is_bear_market`, `vix_spiking`, `high_vol_regime`, `market_stress` (binary flags) |
+
+The four macro regime flags (`is_bear_market` etc.) were silently always-zero prior to SA-3 due to a pandas index alignment bug — they are now correctly computed.
 
 ### Training pipeline
 
@@ -213,18 +225,22 @@ Each model's weight (`w_xgb`, `w_rf`) is proportional to its test-set AUC. The h
 The weight given to the ML probability in the overall signal depends on how good the model is:
 
 ```
-ml_weight = clip(0.40 + (test_auc − 0.50) / 0.20 × 0.35, 0.40, 0.75)
+if test_auc < 0.52:
+    ml_weight = 0.0   # near-random model — fall back to TA only
+else:
+    ml_weight = clip(0.40 + (test_auc − 0.50) / 0.20 × 0.35, 0.40, 0.75)
 ```
 
 | Model test AUC | ML weight | Interpretation |
 |---------------|-----------|---------------|
-| 0.50 (coin flip) | 40% | Model barely beats random — TA gets 60% |
+| < 0.52 | **0%** | Near-random — TA-only fallback |
+| 0.52 | 40% | Just above floor |
 | 0.55 | 49% | Weak model |
 | 0.60 | 58% | Decent model |
 | 0.65 | 66% | Good model |
 | 0.70+ | 75% (capped) | Strong model — ML dominates |
 
-This weight is further capped by the style's `ml_weight_cap` (e.g. SHORT caps at 30%).
+This weight is further capped by the style's `ml_weight_cap` (e.g. SHORT caps at 30%). When `ml_weight = 0`, the signal is TA-only and `reasons["ml_weight"]` will be `0.0` in the response.
 
 ### ML/TA conflict dampening
 
@@ -396,10 +412,10 @@ Regime-specific thresholds are applied to the final `fused` value:
 
 | Regime | BUY threshold | HOLD threshold | WAIT threshold | SELL threshold |
 |--------|--------------|----------------|----------------|----------------|
-| bull | 0.65 | 0.50 | 0.46 | 0.35 |
-| high_vol | 0.70 | 0.54 | 0.50 | 0.30 |
-| bear | 0.73 | 0.56 | 0.52 | 0.27 |
-| unknown | 0.65 | 0.50 | 0.46 | 0.35 |
+| bull | **0.62** | 0.50 | 0.46 | 0.35 |
+| high_vol | **0.67** | 0.54 | 0.50 | 0.30 |
+| bear | **0.70** | 0.56 | 0.52 | 0.27 |
+| unknown | **0.62** | 0.50 | 0.46 | 0.35 |
 
 *(Values shown for SWING. SHORT and LONG have different thresholds — see style profile table.)*
 
@@ -611,8 +627,10 @@ All SHORT conditions, plus:
 - **New stocks** (`bar_count < 50`): Signal is now compressed 50% toward neutral and flagged with `insufficient_history_warning`. SMA200, ADX, and RSI are unreliable with fewer bars.
 - **Illiquid options**: Options boost now requires ≥ 100 put contracts before declaring `strongly_bullish`. Zero put volume = illiquid options market, not extreme bullishness.
 - **ML cold start**: A newly added stock has no trained model. Signal is 100% TA until **Train All** is clicked. Visible when `ml_probability = null` in the reasons panel.
-- **Hardcoded boost values**: The K-Score boost (+0.08), options boost (+0.07), and some compression multipliers are hand-tuned from domain knowledge. They have not been empirically validated via ablation study. The ML weight formula (AUC-driven) is the only component with empirical grounding.
+- **Hardcoded boost values**: The K-Score boost (+0.08), options boost (+0.07), and some compression multipliers are hand-tuned from domain knowledge. They will be empirically validated via Optuna once sufficient signal outcomes accumulate — see [SIGNAL_ACCURACY.md](SIGNAL_ACCURACY.md).
 
 ---
 
 For how to combine AI Signal with K-Score, analyst ratings, insider activity, and earnings timing, see [SCORING.md](SCORING.md).
+
+For how signal accuracy is measured over time and how parameters are tuned using real outcomes, see [SIGNAL_ACCURACY.md](SIGNAL_ACCURACY.md).
