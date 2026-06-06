@@ -1,9 +1,9 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-05  
+**Last updated:** 2026-06-05 (SA-8 accuracy improvements + audit bug fixes)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 8.3 / 10 *(was 8.2 — signal alert infrastructure fixed 2026-06-05)*
+**Overall rating:** 8.5 / 10 *(was 8.3 — SA-8 ML overhaul + signal_outcomes tracking + audit fixes 2026-06-05)*
 
 ---
 
@@ -44,6 +44,21 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-05 | Fix watchlists.trading_style missing DB column | DB migration | ✅ Done |
 | 2026-06-05 | Notify All / Mute All: Promise.all → Promise.allSettled | frontend/watchlist.tsx | ✅ Done |
 | 2026-06-05 | Signal tier framework documented | docs/TRADING_WORKFLOW.md | ✅ Done |
+| 2026-06-05 | **SA-8: SWING buy_threshold lowered** 0.65→0.62 (bull), 0.70→0.67 (high_vol), 0.73→0.70 (bear) | signal-engine/signals.py | ✅ Done |
+| 2026-06-05 | **SA-8: SWING adx_min lowered** 20→15 (capture early-trend entries before ADX peaks) | signal-engine/signals.py | ✅ Done |
+| 2026-06-05 | **SA-8: AUC floor** — ml_weight=0 when model AUC < 0.52 (near-random model falls back to TA-only) | signal-engine/signals.py | ✅ Done |
+| 2026-06-05 | **SA-8: 4 new ML features** momentum_12_1, sma_200_gap, dist_52w_high, dist_52w_low (30→34 features) | ml-prediction/builder.py | ✅ Done |
+| 2026-06-05 | **SA-8: Recency weight ratio** 3.0→5.0 (newest bar = 5× oldest; adapts faster to regime shifts) | ml-prediction/trainer.py, tuner.py | ✅ Done |
+| 2026-06-05 | **SA-8: Horizon alignment** SWING trains on 10d labels, LONG on 20d (was all using 5d) | ml-prediction/routes.py | ✅ Done |
+| 2026-06-05 | **signal_outcomes table** — fixed-window forward tracking for directional accuracy (SHORT=7d, SWING=14d, LONG=28d) | shared/db/models.py + session.py | ✅ Done |
+| 2026-06-05 | **POST /signals/outcomes/evaluate** + **GET /signals/outcomes/summary** endpoints | signal-engine/routes.py | ✅ Done |
+| 2026-06-05 | Scheduler hook: evaluate outcomes after every post-close ML retrain | market-data/scheduler.py | ✅ Done |
+| 2026-06-05 | **Audit fix: ml_test_auc** added to reasons dict → signal_outcomes.ml_auc now populated | signal-engine/signals.py | ✅ Done |
+| 2026-06-05 | **Audit fix: /train and /tune horizon routing** — single-symbol endpoints now derive horizon from style via _HORIZON_BY_STYLE (was always using 5d default) | ml-prediction/routes.py | ✅ Done |
+| 2026-06-05 | **Audit fix: signal_alerts DDL** — last_sent_at column added to CREATE TABLE + ALTER TABLE migration for existing DBs | shared/db/session.py | ✅ Done |
+| 2026-06-05 | **Audit fix: _recency_weights default** updated 3.0→5.0 to match all call sites | ml-prediction/trainer.py | ✅ Done |
+| 2026-06-05 | Docs: SIGNAL_ACCURACY.md created (outcomes table, evaluate/summary endpoints, vectorbt, Optuna tuning workflow) | docs/SIGNAL_ACCURACY.md | ✅ Done |
+| 2026-06-05 | Docs: AI_SIGNAL.md updated (SA-8 thresholds, 34-feature table, style horizons, AUC floor) | docs/AI_SIGNAL.md | ✅ Done |
 
 ---
 
@@ -52,13 +67,13 @@ This document is the single source of truth for everything that was found, why i
 | Dimension | Score | Summary |
 |-----------|-------|---------|
 | Data pipeline | 8.2 / 10 | ↑ Zero-vol filter + split-adjust upsert + 7-day overlap; adj_close now consistent |
-| ML methodology | 7.8 / 10 | ↑ Test AUC formula fixed; ML weight validation chart live; look-ahead guard + macro cache |
-| Signal logic | 7.5 / 10 | ↑ Options flow integrated; stale price guard; ML weight formula validated |
+| ML methodology | 8.5 / 10 | ↑ SA-8: 34 features, 5× recency weights, style-specific horizons (5/10/20d), AUC floor, Optuna re-tuned |
+| Signal logic | 8.0 / 10 | ↑ SA-8: SWING thresholds recalibrated, adx_min=15, signal_outcomes tracking live, ml_auc now stored |
 | K-Score ranking | 7.5 / 10 | ↑ Falling knife gate + RSI curve fixed |
 | Research engine | 7.5 / 10 | ↑ Sector-relative fundamental scoring + cache quality flag shipped 2026-06-04 |
 | Frontend / UX | 9.0 / 10 | ↑ Signal Filter Monitor, strategy score normalisation, backtest equity curve, sector rotation page |
 | Risk management | 7.5 / 10 | ↑ Backtest engine shipped: equity curve, Sharpe, max drawdown, Calmar, SPY comparison |
-| **Overall** | **8.3 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 — Tier 3 sector rotation dashboard shipped 2026-06-04)* |
+| **Overall** | **8.5 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 — SA-8 ML overhaul + signal accuracy tracking 2026-06-05)* |
 
 ---
 
