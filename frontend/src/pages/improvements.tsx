@@ -619,6 +619,16 @@ const ITEMS: Item[] = [
     fix: 'Create /congress page with: (1) Table: politician, stock, transaction type, date, amount range. (2) Filter by symbol — "Has any congressman bought AAPL recently?". (3) "Conviction" score = net $ bought by congress across all politicians for a stock. (4) Merge with watchlist — highlight any watchlist stock with recent congressional buying. Add Congress link to Markets navigation dropdown.',
   },
   {
+    id: 'tech-research-cache-quality',
+    tier: 5, severity: 'medium',
+    title: 'Research Engine Cache Poisoning (Bad Report Served for 24h)',
+    file: 'services/research-engine/src/api/routes.py',
+    effort: '1–2 days',
+    impact: 'Medium — if yfinance fails or AI returns fallback scores (50/50/50), that bad report is cached for 24h with no warning banner; users trust stale/wrong data',
+    what: 'Research reports are cached in-memory for 24h. If a report is generated during a yfinance outage, AI timeout, or price staleness window, the fallback report (hardcoded 50/50/50 scores) is served to all users for 24h with no indication it is low-quality. There is no cache-quality metadata stored alongside the cached result.',
+    fix: 'Store a data_quality flag with each cached report: "full" | "partial" | "fallback". Display a yellow warning banner in the UI when quality is partial or fallback. Add a forced cache-bust endpoint: DELETE /research/{symbol}/cache. Auto-invalidate the cache for a symbol whenever a new price bar is ingested for it.',
+  },
+  {
     id: 'tech-pagination',
     tier: 5, severity: 'medium',
     title: 'Tech Debt: Pagination on /signals/accuracy (10k+ row response)',
