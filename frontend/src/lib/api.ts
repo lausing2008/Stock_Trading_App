@@ -145,9 +145,11 @@ export const api = {
   },
 
   // Signal accuracy tracker
-  signalAccuracy: (lookbackDays = 90, symbol?: string) => {
+  signalAccuracy: (lookbackDays = 90, symbol?: string, fromDate?: string, toDate?: string) => {
     const params = new URLSearchParams({ lookback_days: String(lookbackDays) });
     if (symbol) params.set('symbol', symbol);
+    if (fromDate) params.set('from_date', fromDate);
+    if (toDate) params.set('to_date', toDate);
     return request<SignalAccuracyReport>(`/signals/accuracy?${params}`);
   },
   resetSignals: () => request<{ status: string; deleted: number; repersisting: number }>('/signals/reset', { method: 'POST' }),

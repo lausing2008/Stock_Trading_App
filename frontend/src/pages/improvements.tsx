@@ -603,6 +603,8 @@ const ITEMS: Item[] = [
     impact: 'Low-Medium — walk-forward shows per-window accuracy % but clicking a window shows nothing; users cannot see which signals drove the result',
     what: 'The walk-forward tab shows a heatmap of windows (e.g. "May 1–30: 62% accuracy"). Clicking a window does nothing. Users cannot investigate why a specific window performed well or badly — they cannot see which signals were evaluated, which were correct, or what factors differentiated the winners.',
     fix: 'Make each walk-forward window row/cell clickable. On click, fetch /signals/accuracy with the window\'s date range and show: list of signals evaluated in that window, which were correct (green) and wrong (red), avg confidence, top and bottom factors. Modal or slide-out panel. Reuse existing signal accuracy endpoint with date range params.',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-06-07 — signal-accuracy.tsx: selectedWindow state; clicking a heatmap cell fetches api.signalAccuracy(90, undefined, w.start, w.end) via useSWR; indigo-bordered drill-down panel shows signal table (symbol, date, type, conf%, entry, exit, return%, correct/wrong badge) sorted by outcome. Backend: from_date/to_date params added to GET /signals/accuracy.',
   },
   {
     id: 'ui09-data-freshness',
@@ -645,6 +647,8 @@ const ITEMS: Item[] = [
     impact: 'Low-Medium — congressional trade disclosures are public data and surprisingly predictive; endpoint already exists',
     what: 'GET /congress/trades?days=90 returns congressional buy/sell disclosures. The data exists and the endpoint is implemented. There is no dedicated page — users cannot see whether congresspeople have been buying or selling the stocks they are tracking.',
     fix: 'Create /congress page with: (1) Table: politician, stock, transaction type, date, amount range. (2) Filter by symbol — "Has any congressman bought AAPL recently?". (3) "Conviction" score = net $ bought by congress across all politicians for a stock. (4) Merge with watchlist — highlight any watchlist stock with recent congressional buying. Add Congress link to Markets navigation dropdown.',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-06-07 — congress.tsx: stock conviction screener (net buy $, distinct politician buyers, conviction bar); top-8 most active buyers; summary stats (buy/sell counts, volumes, unique politicians/tickers); full filterable table (days/type/party/sort/symbol/politician search); party badges, tx badges, days-ago chips; handles no-API-key state with Settings link. Nav updated: "Insider / Congress" split into "Insider Trading" + "Congress Trades".',
   },
   {
     id: 'tech-research-cache-quality',
@@ -985,7 +989,7 @@ export default function ImprovementsPage() {
         </div>
         <p style={{ fontSize: 12, color: '#64748b', margin: 0, lineHeight: 1.6 }}>
           All Tier 1–4 shipped as of 2026-06-07. SA-1/2/3/4/5/6/7/8 all done. SA-3 was already live (4 boolean flags in builder.py). SA-5 wired to Sunday scheduler. SA-7 regime-aware earnings compression implemented (bull+beater≥70%: +3% boost; bull+50-70%: halved compression; bear/hv: tightened).
-          Tier 5: UI-01 to UI-07 + UI-09 all shipped. Remaining (low priority): UI-08 (walkforward drill-down), UI-10 (ML weight calibrate), UI-12 (congress page).
+          Tier 5: UI-01 to UI-09 + UI-12 all shipped. Remaining (low priority): UI-10 (ML weight auto-apply), UI-11 (factor chart verify).
           No remaining high-leverage items — all Tier 1–4 improvements are live.
           Overall: <strong style={{ color: '#4ade80' }}>9.0 / 10</strong> — target reached.
         </p>
