@@ -50,7 +50,7 @@ function daysChip(d: string) {
 
 export default function CongressPage() {
   const settings = typeof window !== 'undefined' ? loadSettings() : null;
-  const hasKey = !!(settings?.quiver_api_key);
+  const hasKey = !!(settings?.quiverApiKey);
 
   const [days, setDays] = useState(90);
   const [txFilter, setTxFilter] = useState<'all' | 'buy' | 'sell'>('all');
@@ -146,8 +146,6 @@ export default function CongressPage() {
   }, [trades]);
 
   const maxNetBuy = tickerConviction.length ? Math.max(...tickerConviction.map(r => Math.abs(r.netBuy)), 1) : 1;
-
-  const p = '$';
 
   // ── No API key state ──────────────────────────────────────────────────────
   if (!hasKey) {
