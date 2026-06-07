@@ -27,7 +27,7 @@ Include trades from:
 - Tommy Tuberville (R-AL)
 - Any other congress members particularly active in 2024-2025
 
-Include both Purchases and Sales. Include the largest/most notable trades. Return at least 60 trades total across all politicians.
+Include both Purchases and Sales. Include the largest/most notable trades. Return at least 40 trades total across all politicians.
 
 Return ONLY the JSON array.`;
 
@@ -108,7 +108,7 @@ export default function CongressPage() {
     setAiError('');
     setUsingAi(true);
     try {
-      const raw = await askAI([{ role: 'user', content: AI_PROMPT_USER }], AI_PROMPT_SYSTEM, 4096);
+      const raw = await askAI([{ role: 'user', content: AI_PROMPT_USER }], AI_PROMPT_SYSTEM, 8192, 0);
       const stripped = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
       const match = stripped.match(/\[[\s\S]*\]/);
       if (!match) throw new Error('AI response did not contain a JSON array.');
