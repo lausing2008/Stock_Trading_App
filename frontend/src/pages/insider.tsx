@@ -162,6 +162,7 @@ export default function InsiderPage() {
   const [filterTx, setFilterTx]                 = useState<'all' | 'buy' | 'sell'>('all');
   const [days, setDays]                         = useState(365);
   const [sortBy, setSortBy]                     = useState<'date' | 'amount' | 'politician'>('date');
+  const [showNetBuyersOnly, setShowNetBuyersOnly] = useState(false);
 
   const filtered = useMemo(() => {
     if (!trades) return [];
@@ -199,6 +200,33 @@ export default function InsiderPage() {
       return [f.key, { total: rows.length, buys: buys.length, recentBuys, topTicker }];
     }));
   }, [trades]);
+
+  // Conviction screener: net buy $ per ticker, distinct buyers
+  const convictionScores = useMemo(() => {
+    if (!trades) return [];
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const byTicker: Record<string, { netBuy: number; buyers: Set<string>; sellers: Set<string>; buyCount: number; sellCount: number }> = {};
+    trades.filter(t => new Date(t.Date).getTime() >= cutoff).forEach(t => {
+      const tk = (t.Ticker || '').toUpperCase();
+      if (!tk) return;
+      if (!byTicker[tk]) byTicker[tk] = { netBuy: 0, buyers: new Set(), sellers: new Set(), buyCount: 0, sellCount: 0 };
+      const amt = ((t.Min ?? 0) + (t.Max ?? 0)) / 2;
+      if (/purchase|buy/i.test(t.Transaction)) {
+        byTicker[tk].netBuy += amt;
+        byTicker[tk].buyers.add(t.Politician || '?');
+        byTicker[tk].buyCount++;
+      } else {
+        byTicker[tk].netBuy -= amt;
+        byTicker[tk].sellers.add(t.Politician || '?');
+        byTicker[tk].sellCount++;
+      }
+    });
+    return Object.entries(byTicker)
+      .map(([ticker, v]) => ({ ticker, netBuy: v.netBuy, distinctBuyers: v.buyers.size, distinctSellers: v.sellers.size, buyCount: v.buyCount, sellCount: v.sellCount }))
+      .filter(r => showNetBuyersOnly ? r.netBuy > 0 : true)
+      .sort((a, b) => b.netBuy - a.netBuy)
+      .slice(0, 15);
+  }, [trades, days, showNetBuyersOnly]);
 
   // Sudden activity: tickers bought 2+ times across politicians
   const suddenActivity = useMemo(() => {
@@ -373,6 +401,57 @@ export default function InsiderPage() {
               );
             })}
           </div>
+
+          {/* ── Conviction Screener ─────────────────────────────────────── */}
+          {convictionScores.length > 0 && (
+            <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '14px 16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  Conviction Screener — net buy $ by stock ({days}d)
+                </div>
+                <button onClick={() => setShowNetBuyersOnly(v => !v)}
+                  style={{ fontSize: '11px', padding: '3px 10px', borderRadius: '5px', border: `1px solid ${showNetBuyersOnly ? '#4ade80' : '#1e293b'}`, background: showNetBuyersOnly ? 'rgba(74,222,128,0.1)' : 'transparent', color: showNetBuyersOnly ? '#4ade80' : '#475569', cursor: 'pointer' }}>
+                  Net buyers only
+                </button>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                <thead>
+                  <tr style={{ color: '#475569', textAlign: 'left' }}>
+                    <th style={{ padding: '3px 8px' }}>Ticker</th>
+                    <th style={{ padding: '3px 8px', textAlign: 'right' }}>Net Buy $</th>
+                    <th style={{ padding: '3px 8px', textAlign: 'right' }}>Buyers</th>
+                    <th style={{ padding: '3px 8px', textAlign: 'right' }}>Buys</th>
+                    <th style={{ padding: '3px 8px', textAlign: 'right' }}>Sells</th>
+                    <th style={{ padding: '3px 8px' }}>Conviction</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {convictionScores.map(r => {
+                    const isNet = r.netBuy > 0;
+                    const barW = Math.min(100, Math.abs(r.netBuy) / 500_000 * 100);
+                    return (
+                      <tr key={r.ticker} style={{ borderTop: '1px solid #1e293b' }}>
+                        <td style={{ padding: '5px 8px' }}>
+                          <Link href={`/stock/${r.ticker}`} style={{ fontWeight: 800, color: '#e2e8f0', fontFamily: 'monospace', fontSize: '13px', textDecoration: 'none' }}>{r.ticker}</Link>
+                        </td>
+                        <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: isNet ? '#4ade80' : '#f87171' }}>
+                          {isNet ? '+' : '-'}${Math.abs(r.netBuy / 1000).toFixed(0)}k
+                        </td>
+                        <td style={{ padding: '5px 8px', textAlign: 'right', color: '#94a3b8' }}>{r.distinctBuyers}</td>
+                        <td style={{ padding: '5px 8px', textAlign: 'right', color: '#4ade80' }}>{r.buyCount}</td>
+                        <td style={{ padding: '5px 8px', textAlign: 'right', color: r.sellCount > 0 ? '#f87171' : '#334155' }}>{r.sellCount}</td>
+                        <td style={{ padding: '5px 8px' }}>
+                          <div style={{ height: 8, background: '#1e293b', borderRadius: 4, overflow: 'hidden', width: 80 }}>
+                            <div style={{ height: '100%', width: `${barW}%`, background: isNet ? '#4ade80' : '#f87171', borderRadius: 4 }} />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {/* ── Sudden / clustered activity ────────────────────────────── */}
           {suddenActivity.length > 0 && (

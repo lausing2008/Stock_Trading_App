@@ -318,6 +318,41 @@ export default function Positions() {
               </div>
             </div>
 
+            {/* P&L Heatmap */}
+            {activeRows.length > 1 && (() => {
+              const totalMktVal = activeRows.reduce((s, r) => s + (r.mktVal ?? r.cost), 0);
+              return (
+                <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '14px 16px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>
+                    P&L Heatmap — sized by market value
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                    {[...activeRows].sort((a, b) => (b.mktVal ?? b.cost) - (a.mktVal ?? a.cost)).map(r => {
+                      const val = r.mktVal ?? r.cost;
+                      const pct = val / totalMktVal;
+                      const widthPct = Math.max(pct * 100, 4);
+                      const pp = r.pnlPct ?? 0;
+                      const intensity = Math.min(Math.abs(pp) / 15, 1); // 15% = max saturation
+                      const bg = pp > 0
+                        ? `rgba(74,222,128,${0.08 + intensity * 0.3})`
+                        : pp < 0
+                          ? `rgba(248,113,113,${0.08 + intensity * 0.3})`
+                          : 'rgba(100,116,139,0.1)';
+                      const border = pp > 0 ? `rgba(74,222,128,${0.2 + intensity * 0.4})` : pp < 0 ? `rgba(248,113,113,${0.2 + intensity * 0.4})` : '#1e293b';
+                      const textColor = pp > 0 ? '#4ade80' : pp < 0 ? '#f87171' : '#94a3b8';
+                      return (
+                        <div key={r.symbol} title={`${r.symbol}: ${pp >= 0 ? '+' : ''}${pp.toFixed(2)}% · ${p}${fmt(r.pnl ?? 0)}`}
+                          style={{ width: `calc(${widthPct}% - 4px)`, minWidth: 44, padding: '6px 8px', borderRadius: '6px', background: bg, border: `1px solid ${border}`, cursor: 'default', boxSizing: 'border-box' }}>
+                          <div style={{ fontSize: '11px', fontWeight: 800, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.symbol}</div>
+                          <div style={{ fontSize: '10px', fontWeight: 700, color: textColor, marginTop: '1px' }}>{pp >= 0 ? '+' : ''}{pp.toFixed(1)}%</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Chart + highlights */}
             {activeRows.length > 1 && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>

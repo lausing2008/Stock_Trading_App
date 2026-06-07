@@ -169,6 +169,8 @@ export const api = {
     request<{ window: number; lookback_days: number; series: { date: string; accuracy: number; signal_count: number }[]; drift_warning: boolean; latest_accuracy: number | null }>(`/signals/rolling_accuracy?window=${window}&lookback_days=${lookbackDays}`),
   walkForward: (testDays = 30, holdDays = 5, lookbackDays = 365) =>
     request<WalkForwardReport>(`/signals/walkforward?test_days=${testDays}&hold_days=${holdDays}&lookback_days=${lookbackDays}`),
+  dataFreshness: () =>
+    request<{ last_bar_ts: string | null; hours_ago: number | null; status: string }>(`/stocks/data_freshness`),
   outcomesSummary: (horizon?: string, days = 90) => {
     const params = new URLSearchParams({ days: String(days) });
     if (horizon) params.set('horizon', horizon);
