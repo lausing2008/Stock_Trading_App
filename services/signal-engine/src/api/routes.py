@@ -1324,6 +1324,7 @@ def calibrate_ta_weights(
     new_weights = dict(_TA_WEIGHTS_DEFAULT)
     new_weights.update(fitted_scaled)
 
+    Path(_TA_WEIGHTS_PATH).parent.mkdir(parents=True, exist_ok=True)
     Path(_TA_WEIGHTS_PATH).write_text(json.dumps(new_weights, indent=2))
     log.info("calibrate_ta_weights: wrote %s (accuracy=%.3f, n=%d)", _TA_WEIGHTS_PATH, accuracy, len(X_rows))
 
