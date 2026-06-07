@@ -4,6 +4,13 @@ import useSWR from 'swr';
 import { api, type CongressTrade } from '@/lib/api';
 import { loadSettings } from '@/lib/settings';
 
+// Source label shown in header — reflects whether Quiver key is configured
+function sourceLabel(hasQuiver: boolean) {
+  return hasQuiver
+    ? 'Quiver Quantitative (paid)'
+    : 'House + Senate Stock Watcher (free · official STOCK Act filings)';
+}
+
 const PARTY_COLOR: Record<string, string> = { D: '#60a5fa', R: '#f87171', I: '#4ade80' };
 
 function partyBadge(party: string | null) {
@@ -60,8 +67,9 @@ export default function CongressPage() {
   const [sortBy, setSortBy] = useState<'date' | 'amount' | 'politician'>('date');
   const [netBuyersOnly, setNetBuyersOnly] = useState(false);
 
+  // Always fetch — backend uses free House/Senate APIs by default; Quiver if key configured
   const { data: trades, isLoading, error } = useSWR<CongressTrade[]>(
-    hasKey ? ['congress-trades', days] : null,
+    ['congress-trades', days],
     () => api.congressTrades(days),
     { revalidateOnFocus: false },
   );
@@ -147,37 +155,18 @@ export default function CongressPage() {
 
   const maxNetBuy = tickerConviction.length ? Math.max(...tickerConviction.map(r => Math.abs(r.netBuy)), 1) : 1;
 
-  // ── No API key state ──────────────────────────────────────────────────────
-  if (!hasKey) {
-    return (
-      <div style={{ padding: '48px 32px', maxWidth: 520, margin: '0 auto', textAlign: 'center' }}>
-        <div style={{ fontSize: 32, marginBottom: 12 }}>🏛️</div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: '#e2e8f0', marginBottom: 8 }}>Congressional Trading</div>
-        <div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.7, marginBottom: 24 }}>
-          Congressional stock disclosures (STOCK Act filings) are fetched from{' '}
-          <strong style={{ color: '#94a3b8' }}>Quiver Quantitative</strong>. Add your API key in Settings to enable live data.
-        </div>
-        <Link href="/settings" style={{
-          display: 'inline-block', padding: '10px 24px', borderRadius: 8,
-          background: 'rgba(99,102,241,0.15)', border: '1px solid #6366f1',
-          color: '#818cf8', fontWeight: 600, fontSize: 13, textDecoration: 'none',
-        }}>
-          Go to Settings → Data Sources
-        </Link>
-        <div style={{ marginTop: 20, fontSize: 11, color: '#334155' }}>
-          Free plan at quiverquant.com · ~$10/mo for full congressional data
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div style={{ padding: '24px 20px', maxWidth: 1200, margin: '0 auto' }}>
       {/* Header */}
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 22, fontWeight: 800, color: '#e2e8f0' }}>🏛️ Congressional Trading</div>
         <div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>
-          STOCK Act disclosure filings via Quiver Quantitative · Last {days} days
+          {sourceLabel(hasKey)} · Last {days} days
+          {!hasKey && (
+            <span style={{ marginLeft: 10, fontSize: 11, color: '#334155' }}>
+              · <Link href="/settings" style={{ color: '#475569', textDecoration: 'underline' }}>Add Quiver key</Link> for richer metadata
+            </span>
+          )}
         </div>
       </div>
 
