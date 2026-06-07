@@ -549,6 +549,8 @@ const ITEMS: Item[] = [
     impact: 'Medium — cluster insider buying is one of the strongest signals of management confidence; raw data exists but no screener',
     what: 'The insider page shows raw transaction list. No way to screen for "stocks with heavy net insider buying this quarter" or sort by conviction (number of distinct insiders buying vs selling). Users must manually scan hundreds of rows.',
     fix: 'Add a conviction score column: net_buy_$ = sum(buy_transactions) - sum(sell_transactions) over trailing 90 days. Add distinct_buyers count. Add sort/filter: "Net buyers only", sort by conviction score descending. Merge with K-Score to show "High K-Score + insider buying" combo — the highest-quality intersection. No backend change needed; recompute from existing transaction data client-side.',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-06-07 — insider.tsx: convictionScores useMemo groups trades by ticker (net buy $, distinct buyers/sellers, buy/sell counts). Conviction Screener table above Sudden Activity section; "Net buyers only" toggle; linked tickers; green conviction bars sized by net buy $.',
   },
   {
     id: 'ui05-earnings-surprise-chart',
@@ -571,6 +573,8 @@ const ITEMS: Item[] = [
     impact: 'Medium — positions page shows a table; no visual allocation view to spot concentration or P&L at a glance',
     what: 'Users cannot quickly see "I have 60% of my portfolio in 2 stocks and both are down" — they have to read a table row by row. A treemap makes allocation and P&L visible instantly.',
     fix: 'Add a treemap/grid above the positions table: each cell = one position, sized by current market value (shares × current price), colored by % P&L (green = profit, red = loss, intensity = magnitude). Hover shows: symbol, shares, avg cost, current price, unrealized P&L. Fetch current prices via GET /stocks/latest_prices — already called elsewhere on the page.',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-06-07 — positions.tsx: flexbox P&L heatmap grid between summary stats and chart section. Cells sized proportionally by market value (min 4%), colored by P&L % intensity (green profit / red loss, alpha 0.08–0.38). Tooltip shows symbol, P&L%, and dollar P&L.',
   },
   {
     id: 'ui07-unrealized-pnl',
@@ -603,6 +607,8 @@ const ITEMS: Item[] = [
     impact: 'Low — if nightly ingest fails, all prices are stale with no visible warning; users trade on yesterday\'s data',
     what: 'If the nightly data ingest fails (yfinance outage, EC2 issue), all prices and signals are stale. The UI gives no indication of this. Users may see a BUY signal generated on 2-day-old data and act on it.',
     fix: 'Add a small status chip to the header: "Last updated: 2h ago" (green). Turn orange if last update > 6h on a weekday, red if > 24h. Fetch GET /stocks/market_overview which already returns a timestamp. If stale, show a banner: "⚠ Price data may be outdated — last refresh {timestamp}".',
+    defaultStatus: 'done',
+    implementedNote: 'Shipped 2026-06-07 — _app.tsx: freshness chip polls GET /stocks/data_freshness every 5 min; shows "Xh ago" next to notification bell. Green <8h, yellow 8–30h, red >30h. Backend: new GET /stocks/data_freshness endpoint in market-data/routes.py returns last_bar_ts, hours_ago, status from MAX(Price.ts).',
   },
   {
     id: 'ui10-ml-weight-autocalibrate',
@@ -946,18 +952,18 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current (2026-06-06) → Target after remaining Tier 4 &amp; 5
+          Current (2026-06-07) → Target after remaining Tier 4 &amp; 5
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
-            { label: 'Data pipeline',   score: 8.2, target: 8.5, note: '↑ Data freshness indicator (UI-09)' },
+            { label: 'Data pipeline',   score: 8.5, target: 8.8, note: '↑ Data freshness chip shipped (UI-09)' },
             { label: 'ML methodology',  score: 8.5, target: 9.0, note: '↑ SA-3 macro boolean features pending' },
             { label: 'Signal logic',    score: 8.5, target: 9.0, note: '↑ SA-6/7 filter audit pending; SA-1/2/4 done' },
-            { label: 'K-Score ranking', score: 8.0, target: 8.5, note: '↑ Insider conviction screener (UI-04)' },
+            { label: 'K-Score ranking', score: 8.2, target: 8.5, note: '↑ Conviction screener shipped (UI-04)' },
             { label: 'Research engine', score: 7.5, target: 8.5, note: '↑ Cache quality flag (tech-research-cache-quality)' },
-            { label: 'Frontend / UX',   score: 9.2, target: 9.5, note: '↑ Outcomes tab done; heatmap + congress page pending' },
-            { label: 'Risk management', score: 8.5, target: 9.0, note: '↑ Unrealized P&L done; heatmap (UI-06) next' },
-            { label: 'Overall',         score: 8.7, target: 9.0, note: 'SA-1/2/4 + UI-01/02/03/05/07 shipped' },
+            { label: 'Frontend / UX',   score: 9.3, target: 9.5, note: '↑ P&L heatmap + conviction screener shipped' },
+            { label: 'Risk management', score: 8.5, target: 9.0, note: '↑ Portfolio risk + P&L heatmap (UI-06) done' },
+            { label: 'Overall',         score: 8.8, target: 9.0, note: 'SA-1/2/4 + UI-01–07 + UI-09 shipped' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -973,9 +979,9 @@ export default function ImprovementsPage() {
         </div>
         <p style={{ fontSize: 12, color: '#64748b', margin: 0, lineHeight: 1.6 }}>
           All Tier 1–3 shipped. Tier 4: SA-8 + SA-1 + SA-2 + SA-4 done (2026-06-05/06). Remaining: SA-3 (macro boolean ML features), SA-5 (data-driven TA weights), SA-6 (filter audit), SA-7 (regime earnings compression).
-          Tier 5: UI-01 (Outcomes tab), UI-02 (SignalCard factors), UI-03 (options flow), UI-05 (EPS chart), UI-07 (P&L) all shipped. Pending: UI-04 (insider screener), UI-06 (position heatmap), UI-08 (walkforward drill-down), UI-09 (data freshness), UI-10 (ML weight calibrate), UI-12 (congress page).
-          Next highest-leverage item: <strong style={{ color: '#94a3b8' }}>UI-09 (data freshness indicator)</strong> — 0.5 days, catches stale data silently. Then <strong style={{ color: '#94a3b8' }}>SA-3 (macro boolean ML features)</strong> — +3–8% bear market AUC.
-          Overall: <strong style={{ color: '#4ade80' }}>8.7 / 10</strong> — target 9.0 after SA-3 + remaining Tier 5.
+          Tier 5: UI-01 (Outcomes tab), UI-02 (SignalCard factors), UI-03 (options flow), UI-04 (conviction screener), UI-05 (EPS chart), UI-06 (position heatmap), UI-07 (P&L), UI-09 (data freshness chip) all shipped (2026-06-07). Pending: UI-08 (walkforward drill-down), UI-10 (ML weight calibrate), UI-12 (congress page).
+          Next highest-leverage items: <strong style={{ color: '#94a3b8' }}>SA-3 (macro boolean ML features)</strong> — +3–8% bear market AUC, then SA-5/6/7 filter refinements.
+          Overall: <strong style={{ color: '#4ade80' }}>8.8 / 10</strong> — target 9.0 after SA-3 + remaining Tier 4.
         </p>
       </div>
     </div>
