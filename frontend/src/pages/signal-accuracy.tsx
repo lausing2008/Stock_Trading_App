@@ -46,7 +46,7 @@
 import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow } from '@/lib/api';
+import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary } from '@/lib/api';
 
 type RollingPoint = { date: string; accuracy: number; signal_count: number };
 
@@ -453,7 +453,7 @@ function WalkForwardSection() {
 }
 
 export default function SignalAccuracyPage() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward' | 'outcomes'>('overview');
   const [lookback, setLookback] = useState(90);
   const [filterSymbol, setFilterSymbol] = useState('');
   const [signalFilter, setSignalFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
@@ -477,6 +477,12 @@ export default function SignalAccuracyPage() {
   const { data: mlWeight } = useSWR(
     'ml-weight-validation',
     () => api.mlWeightValidation(180),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: outcomesData } = useSWR<OutcomesSummary>(
+    ['outcomes-summary', lookback],
+    () => api.outcomesSummary(undefined, lookback),
     { revalidateOnFocus: false },
   );
 
@@ -547,7 +553,7 @@ export default function SignalAccuracyPage() {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #1e293b', paddingBottom: 0 }}>
-        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward']] as const).map(([tab, label]) => (
+        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward'], ['outcomes', 'Outcomes']] as const).map(([tab, label]) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             style={{ padding: '7px 18px', borderRadius: '6px 6px 0 0', fontSize: 13, fontWeight: 500, cursor: 'pointer',
               border: '1px solid', borderBottom: activeTab === tab ? '1px solid #0f172a' : '1px solid transparent',
@@ -561,6 +567,144 @@ export default function SignalAccuracyPage() {
       </div>
 
       {activeTab === 'walkforward' && <WalkForwardSection />}
+
+      {activeTab === 'outcomes' && (
+        <div>
+          {!outcomesData || outcomesData.total === 0 ? (
+            <div style={{ textAlign: 'center', padding: '60px 0', color: '#475569' }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>📊</div>
+              <div>No evaluated outcomes yet.</div>
+              <div style={{ fontSize: 12, marginTop: 4, color: '#334155' }}>
+                signal_outcomes are recorded when a BUY/SELL signal matures past its hold window (SHORT=7d, SWING=14d, LONG=28d).
+                Data accumulates automatically — check back after ~2 weeks of daily signal runs.
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Overall */}
+              {outcomesData.overall && (
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>
+                    Overall — {outcomesData.total} evaluated signals ({outcomesData.days_lookback}d window)
+                  </div>
+                  <div style={{ display: 'flex', gap: 24 }}>
+                    <div>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: outcomesData.overall.win_rate >= 0.55 ? '#4ade80' : outcomesData.overall.win_rate >= 0.50 ? '#facc15' : '#f87171' }}>
+                        {(outcomesData.overall.win_rate * 100).toFixed(1)}%
+                      </div>
+                      <div style={{ fontSize: 11, color: '#475569' }}>Win rate</div>
+                    </div>
+                    {outcomesData.overall.avg_return_pct != null && (
+                      <div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: outcomesData.overall.avg_return_pct >= 0 ? '#4ade80' : '#f87171' }}>
+                          {outcomesData.overall.avg_return_pct >= 0 ? '+' : ''}{outcomesData.overall.avg_return_pct.toFixed(2)}%
+                        </div>
+                        <div style={{ fontSize: 11, color: '#475569' }}>Avg return</div>
+                      </div>
+                    )}
+                    {outcomesData.overall.median_return_pct != null && (
+                      <div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: outcomesData.overall.median_return_pct >= 0 ? '#4ade80' : '#f87171' }}>
+                          {outcomesData.overall.median_return_pct >= 0 ? '+' : ''}{outcomesData.overall.median_return_pct.toFixed(2)}%
+                        </div>
+                        <div style={{ fontSize: 11, color: '#475569' }}>Median return</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Confidence band table */}
+              {outcomesData.by_confidence_band && outcomesData.by_confidence_band.length > 0 && (
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>
+                    Win Rate by Confidence Band — confirms confidence % is calibrated
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ color: '#475569', textAlign: 'left' }}>
+                        <th style={{ padding: '4px 8px' }}>Confidence</th>
+                        <th style={{ padding: '4px 8px', textAlign: 'right' }}>Signals</th>
+                        <th style={{ padding: '4px 8px', textAlign: 'right' }}>Win Rate</th>
+                        <th style={{ padding: '4px 8px', textAlign: 'right' }}>Avg Return</th>
+                        <th style={{ padding: '4px 8px' }}>Calibration</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {outcomesData.by_confidence_band.map(b => {
+                        const wr = b.win_rate * 100;
+                        const wrColor = wr >= 60 ? '#4ade80' : wr >= 50 ? '#facc15' : '#f87171';
+                        const barW = Math.min(100, wr * 2);
+                        return (
+                          <tr key={b.band} style={{ borderTop: '1px solid #1e293b' }}>
+                            <td style={{ padding: '6px 8px', color: '#e2e8f0', fontWeight: 600 }}>{b.band}%</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right', color: '#94a3b8' }}>{b.count}</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right', color: wrColor, fontWeight: 700 }}>{wr.toFixed(1)}%</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right', color: b.avg_return_pct != null ? (b.avg_return_pct >= 0 ? '#4ade80' : '#f87171') : '#475569' }}>
+                              {b.avg_return_pct != null ? `${b.avg_return_pct >= 0 ? '+' : ''}${b.avg_return_pct.toFixed(2)}%` : '—'}
+                            </td>
+                            <td style={{ padding: '6px 8px' }}>
+                              <div style={{ height: 8, background: '#1e293b', borderRadius: 4, overflow: 'hidden', width: 80 }}>
+                                <div style={{ height: '100%', width: `${barW}%`, background: wrColor, borderRadius: 4 }} />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <div style={{ fontSize: 10, color: '#334155', marginTop: 8 }}>
+                    Goal: higher confidence bands should show higher win rates. Flat bars = confidence not calibrated — trigger SA-5/SA-6 Optuna tuning.
+                  </div>
+                </div>
+              )}
+
+              {/* By horizon and regime in 2-col grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                {outcomesData.by_horizon && Object.keys(outcomesData.by_horizon).length > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Win Rate by Horizon</div>
+                    {Object.entries(outcomesData.by_horizon).map(([h, v]) => (
+                      <div key={h} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderTop: '1px solid #1e293b', fontSize: 12 }}>
+                        <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{h}</span>
+                        <span style={{ color: '#94a3b8' }}>{v.count} signals</span>
+                        <span style={{ color: v.win_rate >= 0.55 ? '#4ade80' : v.win_rate >= 0.50 ? '#facc15' : '#f87171', fontWeight: 700 }}>
+                          {(v.win_rate * 100).toFixed(1)}%
+                        </span>
+                        <span style={{ color: v.avg_return_pct != null ? (v.avg_return_pct >= 0 ? '#4ade80' : '#f87171') : '#475569', fontSize: 11 }}>
+                          {v.avg_return_pct != null ? `${v.avg_return_pct >= 0 ? '+' : ''}${v.avg_return_pct.toFixed(2)}%` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {outcomesData.by_market_regime && Object.keys(outcomesData.by_market_regime).length > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Win Rate by Market Regime</div>
+                    {Object.entries(outcomesData.by_market_regime).map(([r, v]) => (
+                      <div key={r} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderTop: '1px solid #1e293b', fontSize: 12 }}>
+                        <span style={{ color: '#e2e8f0', fontWeight: 600, textTransform: 'capitalize' }}>{r.replace(/_/g, ' ')}</span>
+                        <span style={{ color: '#94a3b8' }}>{v.count}</span>
+                        <span style={{ color: v.win_rate >= 0.55 ? '#4ade80' : v.win_rate >= 0.50 ? '#facc15' : '#f87171', fontWeight: 700 }}>
+                          {(v.win_rate * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    ))}
+                    <div style={{ fontSize: 10, color: '#334155', marginTop: 8 }}>
+                      Bear market win rate should be lower — if not, check signal compression is working.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+                ℹ️ Outcomes use fixed hold windows: SHORT=7d, SWING=14d, LONG=28d. Entry = first close ≥ signal date. Exit = first close ≥ entry + hold days.
+                Once SWING outcomes exceed 500, run Optuna on signal parameters — see SIGNAL_ACCURACY.md for the tuning workflow.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {activeTab === 'overview' && <>
       {/* Controls */}
