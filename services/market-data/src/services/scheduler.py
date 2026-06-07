@@ -56,6 +56,7 @@ Detailed times (all times local to the market timezone; DST handled automaticall
   Weekly (America/Los_Angeles):
     Sunday 14:00                            full force re-ingest all stocks
     Sunday ~14:10–14:20 (after ingest)      Optuna tune_all (~2–4 h, background)
+    Sunday ~14:10–14:20 (after ingest)      calibrate_ta_weights (SA-5, ~30s)
 
 yfinance rate-limit notes
 ─────────────────────────
@@ -908,6 +909,12 @@ def _weekly_full_refresh() -> None:
     # Best params are saved per-symbol JSON and used by all subsequent daily retrains.
     log.info("scheduler.tune_all_start")
     _post(f"{_settings.ml_prediction_url}/ml/tune_all")
+
+    # SA-5: calibrate TA weights from signal outcome history.
+    # Fits logistic regression on TA features vs is_correct; writes ta_weights.json.
+    # Runs after tune_all kick-off (both are fire-and-forget; no ordering dependency).
+    log.info("scheduler.calibrate_ta_weights_start")
+    _post(f"{_settings.signal_engine_url}/signals/calibrate_ta_weights")
 
 
 def _refresh_5m(market: str) -> None:

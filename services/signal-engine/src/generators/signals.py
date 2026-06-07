@@ -44,7 +44,7 @@ Signal accuracy improvements (SA-1 through SA-7):
   SA-4: Weekly alignment min bars 26→15 with partial confidence scaling
   SA-5: Data-driven TA weights via ta_weights.json (POST /signals/calibrate_ta_weights)
   SA-6: Filter interaction audit endpoint (GET /signals/filter_audit)
-  SA-7: Regime-aware earnings compression — consistent EPS beaters get 20% relief
+  SA-7: Regime-aware earnings compression — bull+beater≥70%: skip, +3% boost; bull+50-70%: halve; bear/hv: tighten×0.85
 """
 from __future__ import annotations
 
@@ -920,35 +920,45 @@ def _apply_style_signal(
     # ── Chart pattern adjustment ──────────────────────────────────────────────
     fused = float(np.clip(fused + pattern_adj, 0.0, 1.0))
 
-    # ── Earnings proximity (style-specific) ───────────────────────────────────
+    # ── Earnings proximity (style-specific, SA-7 regime-aware) ───────────────
+    # Bull + reliable beater (≥70%): skip compression, +3% boost — earnings
+    #   beats in bull markets tend to gap up; compression hurts win rate.
+    # Bull + moderate beater (50–70%): halve compression (beat_scale = 2.0).
+    # Bear / high_vol: tighten compression (beat_scale = 0.75–1.0 based on rate).
+    # Unknown / no history: original ±20% beat_rate adjustment.
     ec = p.get("earnings_compression")
     if ec is not None and days_to_earnings is not None:
-        # SA-7: regime-aware earnings compression — consistent beaters get 20% relief
-        # on compression (beat_rate ≥ 0.75 = reliable beater; ≤ 0.25 = miss-prone).
-        # beat_scale: 1.0 = full compression (unknown history), >1.0 = looser for beaters.
-        if earnings_beat_rate is not None:
-            beat_scale = float(np.clip(1.0 + 0.20 * (earnings_beat_rate - 0.50) / 0.50, 0.80, 1.20))
-        else:
-            beat_scale = 1.0
-        reasons["earnings_beat_rate"] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None
+        ebr = earnings_beat_rate
+        reasons["earnings_beat_rate"] = round(ebr, 2) if ebr is not None else None
 
-        if 0 <= days_to_earnings <= 2:
-            raw_mult = ec[2]
-            adj_mult = float(np.clip(raw_mult * beat_scale, 0.0, 1.0))
-            fused = 0.5 + (fused - 0.5) * adj_mult
-            reasons["earnings_warning"] = "caution"
-        elif days_to_earnings <= 5:
-            raw_mult = ec[5]
-            adj_mult = float(np.clip(raw_mult * beat_scale, 0.0, 1.0))
-            fused = 0.5 + (fused - 0.5) * adj_mult
-            reasons["earnings_warning"] = "note"
-        elif days_to_earnings <= 10:
-            raw_mult = ec[10]
-            adj_mult = float(np.clip(raw_mult * beat_scale, 0.0, 1.0))
-            fused = 0.5 + (fused - 0.5) * adj_mult
-            reasons["earnings_warning"] = "watch"
+        if market_regime == "bull" and ebr is not None and ebr >= 0.70:
+            # Reliable beater in bull: remove compression, small conviction boost
+            fused = float(np.clip(fused + 0.03, 0.0, 1.0))
+            reasons["earnings_warning"] = "bull_beater"
         else:
-            reasons.setdefault("earnings_warning", None)
+            if market_regime == "bull" and ebr is not None and ebr >= 0.50:
+                beat_scale = 2.0  # halve compression for moderate bull beater
+            elif market_regime in ("bear", "high_vol"):
+                # Tighten: low beat_rate → stronger compression; clamp [0.75, 1.0]
+                beat_scale = 0.85 if ebr is None else float(np.clip(0.75 + 0.25 * ebr, 0.75, 1.0))
+            else:
+                # Unknown/default: original ±20% beat_rate adjustment
+                beat_scale = 1.0 if ebr is None else float(np.clip(1.0 + 0.20 * (ebr - 0.50) / 0.50, 0.80, 1.20))
+
+            if 0 <= days_to_earnings <= 2:
+                adj_mult = float(np.clip(ec[2] * beat_scale, 0.0, 1.0))
+                fused = 0.5 + (fused - 0.5) * adj_mult
+                reasons["earnings_warning"] = "caution"
+            elif days_to_earnings <= 5:
+                adj_mult = float(np.clip(ec[5] * beat_scale, 0.0, 1.0))
+                fused = 0.5 + (fused - 0.5) * adj_mult
+                reasons["earnings_warning"] = "note"
+            elif days_to_earnings <= 10:
+                adj_mult = float(np.clip(ec[10] * beat_scale, 0.0, 1.0))
+                fused = 0.5 + (fused - 0.5) * adj_mult
+                reasons["earnings_warning"] = "watch"
+            else:
+                reasons.setdefault("earnings_warning", None)
     else:
         reasons["earnings_beat_rate"] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None
         reasons.setdefault("earnings_warning", None)
