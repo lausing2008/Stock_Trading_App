@@ -116,7 +116,10 @@ export default function CongressPage() {
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('AI returned an empty dataset.');
       setAiTrades(parsed);
     } catch (e: unknown) {
-      setAiError(e instanceof Error ? e.message : 'AI request failed.');
+      const msg = e instanceof Error ? e.message : 'AI request failed.';
+      setAiError(msg.toLowerCase().includes('networkerror') || msg.toLowerCase().includes('failed to fetch')
+        ? 'AI request failed — go to Settings → AI Assistant and enter your API key.'
+        : msg);
       setUsingAi(false);
     } finally {
       setAiLoading(false);
