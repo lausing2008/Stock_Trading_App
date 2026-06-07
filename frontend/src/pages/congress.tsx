@@ -3,13 +3,33 @@ import Link from 'next/link';
 import useSWR from 'swr';
 import { api, type CongressTrade } from '@/lib/api';
 import { loadSettings } from '@/lib/settings';
+import { askAI, isAiConfigured } from '@/lib/ai';
 
-// Source label shown in header — reflects whether Quiver key is configured
-function sourceLabel(hasQuiver: boolean) {
-  return hasQuiver
-    ? 'Quiver Quantitative (paid)'
-    : 'House + Senate Stock Watcher (free · official STOCK Act filings)';
-}
+const AI_PROMPT_SYSTEM = `You output ONLY raw JSON arrays. No markdown fences, no prose, no explanation — just the [ ... ] array starting on the very first character of your response.
+
+Each element must have exactly these fields (use null for unknown numeric fields):
+{"Ticker":"NVDA","Date":"2024-11-15","Politician":"Pelosi, Nancy","Transaction":"Purchase","Min":1000000,"Max":5000000,"Party":"D","State":"CA","Chamber":"House","ReportDate":"2024-11-30"}
+
+Rules:
+- Transaction is exactly "Purchase" or "Sale"
+- Date and ReportDate are YYYY-MM-DD strings
+- Min/Max are integers in USD (can be null)
+- Your entire response must be parseable by JSON.parse()`;
+
+const AI_PROMPT_USER = `List all known congressional stock trades from 2023 onwards.
+
+Include trades from:
+- Nancy Pelosi (D-CA) — known very active trader
+- Mark Green (R-TN)
+- Austin Scott (R-GA)
+- Josh Gottheimer (D-NJ)
+- Dan Crenshaw (R-TX)
+- Tommy Tuberville (R-AL)
+- Any other congress members particularly active in 2024-2025
+
+Include both Purchases and Sales. Include the largest/most notable trades. Return at least 60 trades total across all politicians.
+
+Return ONLY the JSON array.`;
 
 const PARTY_COLOR: Record<string, string> = { D: '#60a5fa', R: '#f87171', I: '#4ade80' };
 
@@ -56,8 +76,8 @@ function daysChip(d: string) {
 }
 
 export default function CongressPage() {
-  const settings = typeof window !== 'undefined' ? loadSettings() : null;
-  const hasKey = !!(settings?.quiverApiKey);
+  const hasKey = typeof window !== 'undefined' ? !!loadSettings().quiverApiKey : false;
+  const aiAvailable = isAiConfigured();
 
   const [days, setDays] = useState(90);
   const [txFilter, setTxFilter] = useState<'all' | 'buy' | 'sell'>('all');
@@ -67,12 +87,41 @@ export default function CongressPage() {
   const [sortBy, setSortBy] = useState<'date' | 'amount' | 'politician'>('date');
   const [netBuyersOnly, setNetBuyersOnly] = useState(false);
 
-  // Always fetch — backend uses free House/Senate APIs by default; Quiver if key configured
-  const { data: trades, isLoading, error } = useSWR<CongressTrade[]>(
-    ['congress-trades', days],
+  // Live data via Quiver (paid) — only when key is configured
+  const { data: liveTrades, isLoading: liveLoading } = useSWR<CongressTrade[]>(
+    hasKey ? ['congress-trades', days] : null,
     () => api.congressTrades(days),
     { revalidateOnFocus: false },
   );
+
+  // AI fallback state
+  const [aiTrades, setAiTrades] = useState<CongressTrade[] | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [usingAi, setUsingAi] = useState(false);
+
+  const trades = liveTrades ?? aiTrades ?? null;
+  const isLoading = liveLoading || aiLoading;
+
+  async function loadWithAi() {
+    setAiLoading(true);
+    setAiError('');
+    setUsingAi(true);
+    try {
+      const raw = await askAI([{ role: 'user', content: AI_PROMPT_USER }], AI_PROMPT_SYSTEM, 4096);
+      const stripped = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
+      const match = stripped.match(/\[[\s\S]*\]/);
+      if (!match) throw new Error('AI response did not contain a JSON array.');
+      const parsed = JSON.parse(match[0]) as CongressTrade[];
+      if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('AI returned an empty dataset.');
+      setAiTrades(parsed);
+    } catch (e: unknown) {
+      setAiError(e instanceof Error ? e.message : 'AI request failed.');
+      setUsingAi(false);
+    } finally {
+      setAiLoading(false);
+    }
+  }
 
   // ── Filtered trades ──────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
@@ -161,10 +210,11 @@ export default function CongressPage() {
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 22, fontWeight: 800, color: '#e2e8f0' }}>🏛️ Congressional Trading</div>
         <div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>
-          {sourceLabel(hasKey)} · Last {days} days
+          {hasKey ? 'Quiver Quantitative (live STOCK Act filings)' : usingAi ? 'AI training data — approximate, not live filings' : 'STOCK Act disclosures'}
+          {' · '} Last {days} days
           {!hasKey && (
             <span style={{ marginLeft: 10, fontSize: 11, color: '#334155' }}>
-              · <Link href="/settings" style={{ color: '#475569', textDecoration: 'underline' }}>Add Quiver key</Link> for richer metadata
+              · <Link href="/settings" style={{ color: '#475569', textDecoration: 'underline' }}>Add Quiver key</Link> for live data
             </span>
           )}
         </div>
@@ -186,6 +236,55 @@ export default function CongressPage() {
               <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>{s.label}</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* AI load button — shown when no Quiver key and no data yet */}
+      {!hasKey && !trades && !aiLoading && (
+        <div style={{ marginBottom: 20, padding: '16px 20px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 10, display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8' }}>No live data source configured</div>
+            <div style={{ fontSize: 12, color: '#475569', marginTop: 3 }}>
+              {aiAvailable
+                ? 'Use AI to generate approximate congressional trades from training data (2023–2025). Data may not reflect recent filings.'
+                : 'Add a Quiver API key in Settings for live STOCK Act filings, or configure an AI assistant for approximate historical data.'}
+            </div>
+          </div>
+          {aiAvailable && (
+            <button onClick={loadWithAi}
+              style={{ padding: '8px 18px', borderRadius: 8, background: 'rgba(99,102,241,0.15)', border: '1px solid #6366f1',
+                color: '#818cf8', fontWeight: 600, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              Ask AI for data
+            </button>
+          )}
+          {!aiAvailable && (
+            <Link href="/settings" style={{ padding: '8px 18px', borderRadius: 8, background: 'rgba(99,102,241,0.15)', border: '1px solid #6366f1',
+              color: '#818cf8', fontWeight: 600, fontSize: 12, textDecoration: 'none', whiteSpace: 'nowrap' }}>
+              Go to Settings
+            </Link>
+          )}
+        </div>
+      )}
+
+      {/* AI loading */}
+      {aiLoading && (
+        <div style={{ marginBottom: 20, padding: '14px 20px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 10, color: '#64748b', fontSize: 13 }}>
+          Asking AI for congressional trading data…
+        </div>
+      )}
+
+      {/* AI disclaimer banner */}
+      {usingAi && trades && (
+        <div style={{ marginBottom: 16, padding: '10px 14px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: 8, fontSize: 12, color: '#fbbf24' }}>
+          ⚠ Data sourced from AI training data — approximate figures from 2023–2025. Not live STOCK Act filings.
+          Add a <Link href="/settings" style={{ color: '#fbbf24' }}>Quiver API key</Link> for real-time disclosures.
+        </div>
+      )}
+
+      {/* AI error */}
+      {aiError && (
+        <div style={{ marginBottom: 16, padding: '10px 14px', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 8, fontSize: 12, color: '#f87171' }}>
+          {aiError}
         </div>
       )}
 
@@ -316,12 +415,7 @@ export default function CongressPage() {
 
       {/* Table */}
       {isLoading && <div style={{ color: '#475569', textAlign: 'center', padding: 48 }}>Loading congressional trades…</div>}
-      {error && (
-        <div style={{ color: '#f87171', padding: 16, background: 'rgba(248,113,113,0.08)', borderRadius: 8, border: '1px solid rgba(248,113,113,0.2)' }}>
-          {String(error?.message ?? error)}
-        </div>
-      )}
-      {!isLoading && !error && sorted.length === 0 && (
+      {!isLoading && trades && sorted.length === 0 && (
         <div style={{ color: '#475569', textAlign: 'center', padding: 48 }}>No trades match the current filters.</div>
       )}
       {!isLoading && sorted.length > 0 && (
