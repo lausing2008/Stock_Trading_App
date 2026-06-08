@@ -769,6 +769,247 @@ const ITEMS: Item[] = [
     what: 'Scheduled jobs (weekly full refresh, tune_all, calibrate_ta_weights, nightly ML retrain) log start/end to stdout but have no persistent status record. There is no way to check from the frontend "did last Sunday\'s refresh run?" or "when did the ML model last retrain?" A failed weekend job means Monday trading uses week-old data silently.',
     fix: 'Add a scheduler status store in Redis: after each job completes (or fails), write a key scheduler:job:{name} with {last_run, status, duration_s, error}. TTL = 14 days. (2) Add GET /admin/scheduler-status endpoint that reads all job keys and returns a summary. (3) Add a "System Health" card to the improvements page (or a dedicated /admin/health page) that shows last-run timestamps and pass/fail for: weekly_refresh, tune_all, calibrate_ta_weights, us_post_close (ML retrain), hk_post_close. (4) If any job has not run within its expected window (e.g., weekly_refresh not run in >8 days), send an admin alert email. This makes silent failures immediately visible.',
   },
+
+  // ── Signal Accuracy ───────────────────────────────────────────────────────
+
+  {
+    id: 'sa8-ensemble-model',
+    tier: 2, severity: 'medium',
+    title: 'SA-8: Ensemble ML — XGBoost + LightGBM + Random Forest majority vote',
+    file: 'services/ml-prediction/src/models/trainer.py · predictor.py',
+    effort: '3–5 days',
+    impact: 'High — single-model predictions are brittle; ensemble reduces variance and improves out-of-sample accuracy by 3–8% in practice. Each model has different failure modes: XGBoost overfits noise, RF handles outliers better, LightGBM generalises well on sparse features.',
+    what: 'The system uses a single XGBoost model per symbol. A single model is sensitive to the specific training window and random seed. When the model is wrong, there is no second opinion. Ensembles are the standard approach in production quant systems for exactly this reason.',
+    fix: 'Train 3 models per symbol: XGBoost (current), LightGBM (faster, handles categoricals natively), RandomForest (high bias, low variance — stabilises noisy predictions). Final probability = weighted average: XGBoost 40%, LightGBM 35%, RF 25% (weights tunable via Optuna). If all 3 agree direction, boost confidence by 10%. If they disagree, flag as "conflicted signal" and reduce confidence by 15%. Store model-level probabilities in Signal.reasons so the conflict is visible in the UI. Adds ~30s to weekly tune_all runtime.',
+  },
+
+  {
+    id: 'sa9-true-walkforward',
+    tier: 2, severity: 'medium',
+    title: 'SA-9: True out-of-sample walk-forward validation — detect overfitting before it hurts',
+    file: 'services/ml-prediction/src/models/trainer.py · services/signal-engine/src/api/routes.py',
+    effort: '2–3 days',
+    impact: 'High — current in-sample accuracy (reported by calibrate_ta_weights: 67.99%) is meaningless for predicting live performance. Out-of-sample IC tells you whether the model actually generalises or is memorising noise.',
+    what: 'ML models are trained and evaluated on the same data window (in-sample). calibrate_ta_weights reports 67.99% in-sample accuracy — but this includes the training samples. Out-of-sample accuracy on truly unseen future periods could be much lower. There is no walk-forward out-of-sample validation in the training pipeline.',
+    fix: 'Implement TimeSeriesSplit (sklearn) with 5 folds: for each fold, train on months 1–N, evaluate on month N+1. Report mean OOS accuracy, OOS precision, OOS recall, and OOS Information Coefficient (rank correlation between predicted probability and actual return). Store these metrics per symbol in Redis after each weekly tune_all. Surface on the /signal-accuracy page as "OOS Accuracy" vs "In-Sample Accuracy" — a large gap (>10%) flags overfitting. Automatically suppress signals for symbols where OOS accuracy < 52% (coin flip).',
+  },
+
+  {
+    id: 'sa10-signal-stability',
+    tier: 2, severity: 'medium',
+    title: 'SA-10: Signal stability score — persistent BUY signals are more reliable than flickering ones',
+    file: 'services/signal-engine/src/generators/signals.py · services/signal-engine/src/api/routes.py',
+    effort: '1–2 days',
+    impact: 'Medium — a BUY that has held for 5 consecutive days has much stronger empirical backing than one that appeared today. This filters out noise and reduces false entries on unstable signals.',
+    what: 'Every signal refresh re-computes the signal from scratch. A stock can flip BUY → SELL → BUY within 3 days. Currently there is no score for signal persistence — a brand-new BUY and a BUY that has been stable for 2 weeks carry identical weight in the conviction gate.',
+    fix: 'Count consecutive days the current signal has held using Signal history in the DB. Add stability_days to Signal.reasons. In the conviction score formula, apply a stability multiplier: 1–2 days = 0.85×, 3–5 days = 1.0×, 6–10 days = 1.10×, >10 days = 1.15×. Show stability_days as a chip on the SignalCard ("BUY · 8d stable"). In the email alert, include "Signal has held BUY for X days." Use stability < 3 days as a soft disqualifier on the conviction gate (add to failed list with warning rather than hard block).',
+  },
+
+  {
+    id: 'sa11-breadth-suppression',
+    tier: 2, severity: 'medium',
+    title: 'SA-11: Market breadth filter — suppress BUY signals when fewer than 40% of stocks are advancing',
+    file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/services/scheduler.py',
+    effort: '2–3 days',
+    impact: 'Medium — buying individual stocks when the broad market is in internal distribution (most stocks falling despite flat index) is a known trap. Breadth filters cut false BUYs by 15–20% during early bear phases.',
+    what: 'The system tracks macro regime (bear/bull via SPY vs 200d SMA) but not internal market breadth — the percentage of stocks in the universe actually trading above their own 50d or 200d SMA. A market can look "bull" on SPY while 60% of stocks are already in downtrends (the index is propped up by 5 mega-caps). This is the most common trap in late-bull-market environments.',
+    fix: 'Every post-close refresh: compute breadth_pct_above_50sma and breadth_pct_above_200sma across the full US universe. Store in Redis with key market:breadth. In generate_signal(): if breadth_pct_above_50sma < 40%, apply a 0.85× fused-score multiplier and add "breadth_warning: weak" to reasons. If < 30%, treat as bear regime regardless of SPY. Show breadth % as a macro stat chip on the Rankings and Opportunities pages alongside VIX and regime badge.',
+  },
+
+  {
+    id: 'sa12-adaptive-thresholds',
+    tier: 2, severity: 'medium',
+    title: 'SA-12: Adaptive confidence thresholds — raise the BUY bar in volatile/bear regimes',
+    file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/services/scheduler.py',
+    effort: '1–2 days',
+    impact: 'Medium — a 65% confidence signal in a bull market has very different expected value than 65% in a bear market. Fixed thresholds treat them identically. Regime-aware thresholds improve precision at the cost of recall (fewer but higher-quality BUY signals).',
+    what: 'The conviction gate uses fixed thresholds: ML probability > 70%, confluence ≥ 75, confidence ≥ 60%. These were tuned for average market conditions. In bear regimes or high-VIX environments, false-positive rates rise significantly. The same threshold that works in a bull market lets through too many noise signals during corrections.',
+    fix: 'Define regime-specific threshold tables: bull+low_vol: ML>0.65, confluence≥70, confidence≥58. neutral: ML>0.70, confluence≥75, confidence≥60 (current). bear or high_vol: ML>0.78, confluence≥82, confidence≥68. vix_spiking: add "minimum 3 consecutive days above threshold" stability requirement. Read current regime from Redis (already stored by macro features). Apply threshold table in check_signal_alerts() and in generate_signal() for the BUY/SELL classification boundary. Log which threshold tier was applied in Signal.reasons.',
+  },
+
+  // ── Stock Research ────────────────────────────────────────────────────────
+
+  {
+    id: 'res1-short-interest',
+    tier: 3, severity: 'feature',
+    title: 'RES-1: Short interest tracker — squeeze potential and crowded-short warning',
+    file: 'services/market-data/src/api/routes.py · frontend/src/pages/stock/[symbol].tsx',
+    effort: '2–3 days',
+    impact: 'Medium — short interest > 20% of float with rising price is a classic short-squeeze setup. Conversely, rising short interest on a BUY signal is a major red flag that smart money disagrees.',
+    what: 'Short interest data (% of float sold short, days-to-cover) is not tracked or displayed anywhere. High short interest can either be a bearish signal (informed shorts) or a squeeze catalyst (forced covering). Without this data, users miss both setups.',
+    fix: 'Fetch short interest from yfinance (ticker.info: shortRatio, shortPercentOfFloat, sharesShort). Store in fundamentals cache alongside existing data. On the stock detail page: add a "Short Interest" chip showing % float short and days-to-cover. In signal generation: if short_pct_float > 25% and signal is BUY, add "high_short_interest" to reasons with a 10% confidence boost (squeeze potential). If short is rising week-over-week and signal is BUY, add "rising_short_warning" as a soft red flag. Add short interest column to Rankings page.',
+  },
+
+  {
+    id: 'res2-analyst-momentum',
+    tier: 3, severity: 'feature',
+    title: 'RES-2: Analyst upgrade/downgrade momentum — recent rating changes as signal catalyst',
+    file: 'services/market-data/src/api/routes.py · services/signal-engine/src/generators/signals.py',
+    effort: '2–3 days',
+    impact: 'Medium — an analyst upgrade in the last 7 days is a strong near-term catalyst. A downgrade while holding is a major exit warning. Currently only the consensus rating is used, not the direction or recency of changes.',
+    what: 'The system uses recommendationMean (consensus) from yfinance but does not track rating changes over time. An upgrade from Neutral to Buy (direction) that happened 2 days ago is far more actionable than a stable Buy rating that has been unchanged for 6 months.',
+    fix: 'Fetch upgradesDowngrades history from yfinance (ticker.upgrades_downgrades). Store last 30 days of changes. Compute: upgrades_7d (count), downgrades_7d (count), net_analyst_momentum = upgrades - downgrades. In signal generation: if upgrades_7d >= 2 and net_momentum > 0, add 5% confidence boost and "analyst_upgrade_momentum" reason. If downgrades_7d >= 2, add "analyst_downgrade_warning" reason and 8% confidence penalty. Show recent changes on stock detail page as a timeline: "Goldman: Neutral → Buy (3d ago)", "MS: Hold → Sell (1d ago)".',
+  },
+
+  {
+    id: 'res3-pattern-recognition',
+    tier: 3, severity: 'feature',
+    title: 'RES-3: Technical pattern recognition — cup-and-handle, breakout, consolidation, flag',
+    file: 'services/technical-analysis/src/calculators/ · services/signal-engine/src/generators/signals.py',
+    effort: '3–5 days',
+    impact: 'Medium — chart patterns are the primary language of technical traders. Detecting a confirmed breakout from a 6-week consolidation base algorithmically, and adding it as a signal booster, aligns the system with how practitioners actually think.',
+    what: 'The system computes indicators (RSI, MACD, BB, ADX) but does not detect price patterns. A cup-and-handle forming over 8 weeks with a handle near the rim is a high-probability breakout setup that indicators alone cannot capture. Pattern recognition is missing from signal generation.',
+    fix: 'Implement pattern detectors using price history: (1) Consolidation base: price range (max-min)/avg < 8% over 15+ days — "tight base forming." (2) Breakout: today\'s close > 4-week high AND volume > 1.5× avg — "confirmed breakout." (3) Flag/pennant: sharp move up followed by low-volatility drift down for 5–10 days. (4) Cup-and-handle: U-shaped recovery to prior high with handle < 15% depth. Each pattern adds to reasons JSON and contributes 5–10% to the fused signal score. Show detected patterns as chips on the stock detail page ("📊 Breakout detected · 3d ago") and include in the game plan context.',
+  },
+
+  {
+    id: 'res4-sector-rotation',
+    tier: 3, severity: 'feature',
+    title: 'RES-4: Sector rotation heat map — surface stocks in leading sectors, avoid lagging ones',
+    file: 'frontend/src/pages/rankings.tsx · services/ranking-engine/src/scoring/kscore.py',
+    effort: '2–3 days',
+    impact: 'Medium — 80% of a stock\'s move comes from sector/market direction. Being in the right sector at the right time is more important than stock selection. A visual sector rotation map helps users immediately see where institutional money is flowing.',
+    what: 'The Rankings page shows individual stocks but gives no macro context about which sectors are leading vs lagging the market. A user might pick a great stock in a sector that is being rotated out of, fighting a strong headwind. There is no sector-level performance dashboard.',
+    fix: 'Add a "Sector Rotation" panel to the Rankings page: (1) For each sector (XLK, XLV, XLF, XLE, XLI, XLY, XLP, XLU, XLRE, XLC, XLB — and HSI/H-shares for HK): compute 1w, 1m, 3m returns from yfinance. (2) Render as a colour-coded heat map grid: dark green = leading (>+3% 1m vs SPY), green = in-line, yellow = lagging, red = distributing (<−2%). (3) In signal generation: if stock\'s sector is "distributing" (3m return < SPY − 5%), apply 10% confidence penalty and add "sector_headwind" reason. If sector is leading, add 5% boost. (4) Show the stock\'s sector performance on the stock detail page.',
+  },
+
+  // ── Screener ──────────────────────────────────────────────────────────────
+
+  {
+    id: 'scr1-custom-screener',
+    tier: 3, severity: 'feature',
+    title: 'SCR-1: Multi-factor custom screener — user-defined filter combinations',
+    file: 'frontend/src/pages/screener.tsx (new) · services/ranking-engine/src/api/routes.py',
+    effort: '3–5 days',
+    impact: 'High — the current Opportunities page applies a fixed filter (BUY signal + top K-Score). Users cannot express "show me high K-Score stocks with upcoming earnings in tech sector where insiders are buying." A flexible screener is the core of every professional trading tool.',
+    what: 'The Opportunities page is a fixed-formula screener: BUY signal + style match + K-Score threshold. There is no way to combine multiple filters arbitrarily. Users with specific strategies (e.g., GARP — growth at a reasonable price, or momentum-quality combo) cannot express their criteria.',
+    fix: 'Build a /screener page with filter blocks: (1) Signal filters: signal type (BUY/HOLD/WAIT/SELL), confidence range, stability days. (2) K-Score filters: overall K-Score range, sub-score floors (momentum, value, quality, technical, RS). (3) Fundamental filters: market cap range, PE ratio, revenue growth %, EPS beat rate. (4) Technical filters: RSI range, above/below SMA50/SMA200, ADX > N, pattern detected. (5) Event filters: earnings in next N days, recent analyst upgrade, insider buying last 30d, congressional buying last 90d. (6) Portfolio filters: not already on Trade Board, not in watchlist. Results sortable by any column. Save/load filter presets. Backend: add GET /rankings/screen endpoint that accepts filter params and returns matching stocks.',
+  },
+
+  {
+    id: 'scr2-pre-earnings-screener',
+    tier: 3, severity: 'feature',
+    title: 'SCR-2: Pre-earnings screener — surface BUY candidates with upcoming earnings catalysts',
+    file: 'frontend/src/pages/opportunities.tsx · services/ranking-engine/src/api/routes.py',
+    effort: '1–2 days',
+    impact: 'Medium — earnings are the single largest individual stock catalyst. A pre-earnings screener combining historical beat rate, earnings compression factor, and current signal helps identify whether to enter before (for high beat-rate stocks in bull market) or wait (for uncertain earnings in bear regime).',
+    what: 'There is no dedicated view for stocks with earnings in the next 7–14 days. Earnings are shown per-stock on the detail page, but there is no way to scan across the universe for upcoming earnings with buy/sell context.',
+    fix: 'Add an "Earnings This Week" panel to the Opportunities page: filter universe for earnings_date within next 14 days; sort by (beat_rate × K-Score × signal_confidence). Show: symbol, days to earnings, historical beat rate %, earnings compression factor, current signal, regime-adjusted recommendation (enter / wait / avoid). For each: use the SA-7 regime-aware logic to show whether the system recommends entering before earnings or waiting for the print. Add a "Pre-Earnings" filter toggle on the Opportunities page.',
+  },
+
+  {
+    id: 'scr3-ai-natural-language',
+    tier: 3, severity: 'feature',
+    title: 'SCR-3: AI natural language screener — "find tech stocks with improving momentum and insider buying"',
+    file: 'frontend/src/pages/screener.tsx · services/api-gateway/src/api/ai_proxy.py',
+    effort: '2–3 days',
+    impact: 'Medium — removes the learning curve of filter configuration. Users who know what they want but not how to encode it in filter UI can describe it in plain English and get results immediately.',
+    what: 'The custom screener (SCR-1) requires users to know which filters to set. Experienced traders think in natural language: "find undervalued mid-caps with strong earnings momentum and recent analyst upgrades." Translating that intuition into filter widgets is friction.',
+    fix: 'Add a natural language input box to the screener: user types a query. System sends to Claude with: the full list of available filter dimensions + current universe data. Claude returns a structured filter spec (JSON). System applies the filters and shows results. Example: "defensive dividend stocks with low volatility in a bear market" → {sector: [XLP, XLU, XLRE], dividend_yield: >2%, atr_pct: <2%, signal: [BUY, HOLD], regime: bear-safe}. Include a "Explain these results" button that calls Claude to narrate why each stock matched. Require AI provider configured in Settings.',
+  },
+
+  // ── Automated Self-Learning ───────────────────────────────────────────────
+
+  {
+    id: 'al1-rl-agent',
+    tier: 3, severity: 'feature',
+    title: 'AL-1: Reinforcement Learning agent — system learns buy/hold/sell policy to maximise Sharpe ratio',
+    file: 'services/ml-prediction/src/models/ · services/market-data (new rl_agent.py)',
+    effort: '3–4 weeks',
+    impact: 'Very High — supervised learning predicts direction; RL learns when to act. The key insight: knowing a stock will go up 5% is not enough — you need to know when to enter, how long to hold, and when to exit to maximise risk-adjusted return. RL optimises the full decision sequence, not just the next-day direction.',
+    what: 'The current ML model is a supervised classifier: predict up/down over a fixed horizon. It does not learn position sizing, entry timing, or exit discipline. A Reinforcement Learning agent treats trading as a sequential decision problem: at each timestep, observe market state → choose action (buy/hold/sell) → receive reward (P&L) → update policy. RL has produced state-of-the-art results in quantitative trading (e.g., DeepMind AlphaPortfolio).',
+    fix: 'Implement a DQN (Deep Q-Network) or PPO (Proximal Policy Optimisation) agent using stable-baselines3: (1) State: 30-feature vector (all existing TA + ML features + macro regime + position state). (2) Actions: Buy / Hold / Sell / Increase / Decrease. (3) Reward: daily P&L with Sharpe penalty for volatility. (4) Training environment: gym-style wrapper over historical price data (3 years backtest). (5) Evaluation: OOS Sharpe ratio, max drawdown, win rate vs benchmark. Train weekly alongside tune_all. Run RL agent alongside the XGBoost model — when both agree: +10% confidence boost. Show RL action recommendation on stock detail page. Initially paper-trade only.',
+  },
+
+  {
+    id: 'al2-strategy-ab-testing',
+    tier: 3, severity: 'feature',
+    title: 'AL-2: Multi-strategy A/B testing — run variants in parallel, auto-promote the winner',
+    file: 'services/market-data · frontend/src/pages/paper-portfolio.tsx',
+    effort: '1–2 weeks',
+    impact: 'High — removes guesswork from parameter tuning. Instead of manually deciding whether to raise the conviction threshold from 60% to 68%, run both in parallel on paper portfolios for 30 days and let the data decide.',
+    what: 'When making changes to signal logic, conviction thresholds, or position sizing rules, there is no way to compare the new approach vs the old approach empirically without deploying to production. Changes are made based on intuition and backtest, not live A/B evidence.',
+    fix: 'Extend the paper trading engine (WF-2) to support multiple concurrent strategy variants: (1) Define Strategy A (current production params) and Strategy B (experimental params) as config objects. (2) Both run simultaneously on the same signals — identical universe, different entry/exit/sizing rules. (3) After 30 trading days: compute Sharpe, max drawdown, win rate, total return for each. (4) Auto-promote Strategy B to production if: Sharpe_B > Sharpe_A × 1.1 AND drawdown_B ≤ drawdown_A × 1.2. (5) Show A/B results on the paper-portfolio page with a "Promote to Live" button. This creates a continuous improvement loop: always evolving the strategy with empirical evidence.',
+  },
+
+  {
+    id: 'al3-self-improving-conviction',
+    tier: 3, severity: 'feature',
+    title: 'AL-3: Self-improving conviction gate — learn which layers actually predict success',
+    file: 'services/market-data/src/services/scheduler.py · services/signal-engine/src/api/routes.py',
+    effort: '2–3 days',
+    impact: 'High — the conviction gate has 5 layers (K-Score, uptrend structure, entry timing, MACD, ADX, ML, OBV). Their relative importance is currently fixed by hand. Empirically, some layers may add zero predictive value while others are strongly predictive. Auto-calibrating their weights improves signal quality continuously.',
+    what: 'The 5-layer conviction gate uses fixed pass/fail logic for each layer. There is no tracking of which layers predicted correctly on past BUY signals vs which were present on false BUYs. A layer that appears on both winning and losing trades equally provides no edge and should be weighted down or removed.',
+    fix: 'After each post-close evaluation of signal outcomes: for each closed BUY signal, record which conviction layers were satisfied at entry time (already in Signal.reasons). Compute layer_accuracy[layer] = wins_where_layer_passed / total_signals_where_layer_passed. Layers with accuracy < 52% are flagged as "noise layers." Weekly: re-fit a logistic regression on layer combinations → win/loss. Output a layer_weights.json (similar to ta_weights.json). Apply layer weights in the conviction gate: instead of hard pass/fail, compute a weighted conviction score. A strong MACD zero-cross (historically 68% accurate) counts more than a marginal ADX reading (historically 54% accurate). Surface layer accuracy stats on the /signal-accuracy page.',
+  },
+
+  {
+    id: 'al4-param-auto-optimise',
+    tier: 3, severity: 'feature',
+    title: 'AL-4: Optuna-driven trading parameter optimisation — stop %, target %, hold duration',
+    file: 'services/ml-prediction/src/api/routes.py · services/market-data/src/services/scheduler.py',
+    effort: '3–5 days',
+    impact: 'High — Optuna already tunes XGBoost hyperparams. The same framework can optimise trading parameters (stop loss %, take profit %, max hold days) which have an equally large impact on final P&L. Currently these are fixed by style (SHORT/SWING/LONG) with no empirical validation.',
+    what: 'Trading parameters (stop_pct: -5.5% for SWING, default_tp_pct: +12%) are fixed constants defined in _STYLE_PARAMS. These were set by intuition. The optimal stop/target depends on the volatility profile of the universe, the holding period, and the market regime. They should be discovered empirically, not guessed.',
+    fix: 'Add a trade_param_tuning Optuna study: objective = Sharpe ratio on 2-year paper backtest. Params to tune per style: stop_pct (range −3% to −10%), tp_pct (+5% to +30%), breakout_pct (+0.5% to +3%), hold_days (3 to 40), entry1_pct (−0.3% to −2%). Run 100 trials per style on Sunday after tune_all. Save best params to trade_params.json in /data/models/. Signal engine reads these at startup. Show current optimised params on the improvements page scorecard. This closes the loop: Optuna already tunes the model, now it tunes the strategy rules that sit on top of the model.',
+  },
+
+  // ── Performance Metrics & Testing ─────────────────────────────────────────
+
+  {
+    id: 'tm1-portfolio-metrics',
+    tier: 3, severity: 'feature',
+    title: 'TM-1: Professional portfolio metrics — Sharpe, Calmar, max drawdown, benchmark comparison',
+    file: 'frontend/src/pages/paper-portfolio.tsx · frontend/src/pages/positions.tsx',
+    effort: '2–3 days',
+    impact: 'High — without risk-adjusted metrics, a 20% return that came with 40% drawdown looks identical to a 20% return with 8% drawdown. Sharpe ratio and max drawdown are the two metrics every professional uses to compare strategies.',
+    what: 'The Trade Board tracks P&L per position but shows no aggregate portfolio metrics. There is no Sharpe ratio, no maximum drawdown, no benchmark comparison, no Calmar ratio. Users cannot tell whether their trading results are good relative to simply buying SPY.',
+    fix: 'Compute on the paper portfolio and the real Trade Board: (1) Equity curve: daily portfolio value = sum(position market values) + cash. (2) Sharpe ratio = (annualised_return − 0.05) / annualised_std_dev (risk-free rate = 5%). (3) Max drawdown = max(peak − trough) / peak, over the full history. (4) Calmar ratio = annualised_return / max_drawdown. (5) Win rate = closed_winning_trades / total_closed_trades. (6) Avg winner / Avg loser ratio. (7) Benchmark: fetch SPY return over same period; show alpha = portfolio_return − spy_return. Display on a /performance page as a professional dashboard. Update daily after close.',
+  },
+
+  {
+    id: 'tm2-signal-decay',
+    tier: 3, severity: 'feature',
+    title: 'TM-2: Signal decay analysis — how long does the alpha last after a BUY signal?',
+    file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
+    effort: '2–3 days',
+    impact: 'High — this tells you the optimal hold duration for each style. If alpha decays to zero by day 8, there is no point holding for 30 days. Knowing when to exit is as valuable as knowing when to enter.',
+    what: 'Signal accuracy is tracked as a single binary outcome (correct/wrong at the hold horizon). But there is no analysis of the return profile over time: on day 1, day 3, day 5, day 10, day 20 after a BUY signal, what is the average return? If the average return peaks at day 6 and then decays, the optimal hold is 6 days — not the default 10. This is called signal alpha decay and is a standard quant research tool.',
+    fix: 'For all closed BUY signals in signal_outcomes: fetch daily closing prices from entry to exit. Compute the average cumulative return at days 1, 2, 3, 5, 7, 10, 15, 20, 30 after signal. Plot as a line chart: "Average Cumulative Return After BUY Signal." Break down by: SHORT vs SWING vs LONG style, bull vs bear regime, high vs low confidence (>80% vs 60–80%). Add to /signal-accuracy as a new "Alpha Decay" tab. The peak of the curve is the empirically optimal hold period — surface this as a recommendation: "Based on 1,809 signals, optimal hold = 7 days (peak α = +3.2%)."',
+  },
+
+  {
+    id: 'tm3-information-coefficient',
+    tier: 3, severity: 'feature',
+    title: 'TM-3: Information Coefficient (IC) tracking — the gold standard signal quality metric',
+    file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
+    effort: '2–3 days',
+    impact: 'High — IC is used by every professional quant fund to measure signal quality. An IC of 0.05 is considered excellent in practice. Unlike accuracy (binary), IC measures rank-correlation — a signal that correctly ranks stocks is valuable even if it doesn\'t perfectly predict direction.',
+    what: 'Signal quality is measured only as accuracy (% correct direction). This is a crude metric. Two signals can both have 55% accuracy but one consistently ranks the best stocks at the top (IC = 0.08, very valuable) while the other gets the right direction but wrong magnitude (IC = 0.02, mediocre). Professional quant funds use IC as the primary signal quality metric.',
+    fix: 'For each signal period: rank all stocks by predicted probability (highest = rank 1). After hold period: rank all stocks by actual return (highest = rank 1). IC = Spearman rank correlation between predicted rank and actual rank. Compute monthly IC series: IC_mean (>0.05 is good), IC_std, IC_IR = IC_mean / IC_std (>0.5 is excellent). Add IC metrics to /signal-accuracy Outcomes tab. Breakdown by: horizon, regime, style. IC < 0.02 for 3 consecutive months should trigger an automatic re-tuning alert.',
+  },
+
+  {
+    id: 'tm4-factor-attribution',
+    tier: 3, severity: 'feature',
+    title: 'TM-4: Factor attribution report — which signal components drove wins vs losses?',
+    file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
+    effort: '2–3 days',
+    impact: 'High — tells you exactly which indicators are earning their place in the model and which are noise. If OBV is present in 60% of winners and 58% of losers, it has near-zero edge and should be removed. This drives continuous signal improvement.',
+    what: 'The system generates 20+ reasons per signal (RSI, MACD, ADX, OBV, ML probability, earnings, regime, etc.) but never analyses which reasons correlate with winning trades vs losing trades in aggregate. There is no report answering "which indicators most strongly predicted successful BUY signals over the last 12 months?"',
+    fix: 'For all closed BUY signals in signal_outcomes: extract the reasons JSON at entry time. For each boolean reason flag, compute: presence_in_winners (%) and presence_in_losers (%). Edge = presence_in_winners − presence_in_losers. Sort by edge descending. Render as a horizontal bar chart on /signal-accuracy → "Factor Attribution" tab: green bars = positive edge (more common in winners), red bars = negative edge (more common in losers). Show the top 5 "most valuable" factors and bottom 5 "noise/harmful" factors. Run this analysis broken down by market regime. Feed results back into SA-13 (self-improving conviction gate weights).',
+  },
+
+  {
+    id: 'tm5-live-vs-backtest',
+    tier: 3, severity: 'feature',
+    title: 'TM-5: Live vs backtest comparison — detect overfitting and model drift in production',
+    file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
+    effort: '2–3 days',
+    impact: 'High — the #1 failure mode of ML trading systems is overfitting: the backtest shows 70% accuracy but live performance is 54%. Without explicitly tracking the gap, this degradation is invisible until significant losses occur.',
+    what: 'The system has both a backtest engine and live signal tracking, but they are never compared. Backtest accuracy is computed on historical data. Live accuracy comes from signal_outcomes. There is no dashboard showing whether live performance is tracking backtest expectations or has diverged significantly.',
+    fix: 'Add a "Live vs Backtest" panel to /signal-accuracy: (1) Backtest accuracy: run the accuracy calculation on the 2-year historical training period (before the model went live). (2) Live accuracy: last 90 days from signal_outcomes. (3) Show both as a side-by-side bar chart per horizon (SHORT/SWING/LONG). (4) Alert if live accuracy < backtest × 0.85 for any horizon — this is a 15% degradation threshold that flags probable overfitting or regime change. (5) Track this gap monthly and plot a trend line — a widening gap over 3 months triggers an automatic re-tune request. (6) Include model version number so accuracy is correctly attributed to the model that generated it (not polluted by a retrained model mid-period).',
+  },
 ];
 
 // ── Constants ─────────────────────────────────────────────────────────────────
