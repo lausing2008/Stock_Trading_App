@@ -542,10 +542,14 @@ export default function SignalAccuracyPage() {
   const [sortBy, setSortBy] = useState<'date' | 'confidence' | 'pct_change'>('date');
   const [resetting, setResetting] = useState(false);
   const [resetMsg, setResetMsg] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+
+  const useDateRange = fromDate !== '' && toDate !== '';
 
   const { data, isLoading, error, mutate } = useSWR(
-    ['signal-accuracy', lookback],
-    () => api.signalAccuracy(lookback),
+    ['signal-accuracy', lookback, fromDate, toDate],
+    () => api.signalAccuracy(lookback, undefined, fromDate || undefined, toDate || undefined),
     { revalidateOnFocus: false },
   );
 
@@ -792,14 +796,28 @@ export default function SignalAccuracyPage() {
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 4 }}>
           {LOOKBACK_OPTIONS.map(o => (
-            <button key={o.value} onClick={() => setLookback(o.value)}
+            <button key={o.value} onClick={() => { setLookback(o.value); setFromDate(''); setToDate(''); }}
               style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
-                borderColor: lookback === o.value ? '#6366f1' : '#1e293b',
-                background: lookback === o.value ? 'rgba(99,102,241,0.15)' : 'transparent',
-                color: lookback === o.value ? '#818cf8' : '#64748b' }}>
+                borderColor: lookback === o.value && !useDateRange ? '#6366f1' : '#1e293b',
+                background: lookback === o.value && !useDateRange ? 'rgba(99,102,241,0.15)' : 'transparent',
+                color: lookback === o.value && !useDateRange ? '#818cf8' : '#64748b' }}>
               {o.label}
             </button>
           ))}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 11, color: '#475569' }}>From</span>
+          <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
+            style={{ padding: '3px 8px', borderRadius: 6, border: `1px solid ${useDateRange ? '#6366f1' : '#1e293b'}`, background: '#0f172a', color: '#e2e8f0', fontSize: 12 }} />
+          <span style={{ fontSize: 11, color: '#475569' }}>To</span>
+          <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
+            style={{ padding: '3px 8px', borderRadius: 6, border: `1px solid ${useDateRange ? '#6366f1' : '#1e293b'}`, background: '#0f172a', color: '#e2e8f0', fontSize: 12 }} />
+          {useDateRange && (
+            <button onClick={() => { setFromDate(''); setToDate(''); }}
+              style={{ padding: '3px 8px', borderRadius: 6, fontSize: 11, border: '1px solid #334155', background: 'transparent', color: '#64748b', cursor: 'pointer' }}>
+              ✕ Clear
+            </button>
+          )}
         </div>
         <input
           value={filterSymbol} onChange={e => setFilterSymbol(e.target.value)}

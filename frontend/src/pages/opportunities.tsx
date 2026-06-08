@@ -26,7 +26,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type Overview } from '@/lib/api';
+import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type Overview, type TradePlan, type EarningsItem } from '@/lib/api';
 import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 import { askAI, isAiConfigured } from '@/lib/ai';
 import { getSignalStyle } from '@/lib/settings';
@@ -397,6 +397,7 @@ const STRATEGY_FILTER: Record<Strategy, (r: RankingRow, sig?: SignalSummary) => 
 export default function Opportunities() {
   const [strategy, setStrategy] = useState<Strategy>('all');
   const [market, setMarket] = useState<Market>('all');
+  const [earningsSoon, setEarningsSoon] = useState(false);
 
   // Alert suggestion panel state
   const [alertPanel, setAlertPanel] = useState<string | null>(null);
@@ -447,8 +448,12 @@ export default function Opportunities() {
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData } = useSWR('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
   const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: boardData } = useSWR<TradePlan[]>('board', () => api.listBoard());
+  const { data: earningsData } = useSWR<EarningsItem[]>('earnings-14d', () => api.earningsCalendar(14));
 
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
+  const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage !== 'closed').map(p => p.symbol) ?? []), [boardData]);
+  const earningsSet = useMemo(() => new Set(earningsData?.map(e => e.symbol) ?? []), [earningsData]);
 
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
@@ -470,6 +475,7 @@ export default function Opportunities() {
       .filter(r => market === 'all' || r.market === market)
       .filter(r => (r.score ?? 0) > 0)
       .filter(r => filter(r, signalMap[r.symbol]))
+      .filter(r => !earningsSoon || earningsSet.has(r.symbol))
       .map(r => ({
         row: r,
         lp: priceMap[r.symbol],
@@ -478,7 +484,7 @@ export default function Opportunities() {
       }))
       .sort((a, b) => b.stratScore - a.stratScore)
       .slice(0, 20);
-  }, [rankData, priceMap, signalMap, strategy, market, watchedSet]);
+  }, [rankData, priceMap, signalMap, strategy, market, watchedSet, earningsSoon, earningsSet]);
 
   async function generateOutlook() {
     if (!isAiConfigured()) {
@@ -888,8 +894,20 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
           <p style={{ fontSize: '12px', color: '#64748b', margin: 0 }}>{active.desc}</p>
         </div>
 
-        {/* Market filter */}
-        <div style={{ display: 'flex', borderRadius: '8px', border: '1px solid #1e293b', overflow: 'hidden', fontSize: '12px', fontWeight: 600, alignSelf: 'center' }}>
+        {/* Market filter + Earnings toggle */}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', alignSelf: 'center' }}>
+          <button
+            onClick={() => setEarningsSoon(e => !e)}
+            style={{
+              padding: '8px 14px', borderRadius: '8px', border: `1px solid ${earningsSoon ? 'rgba(251,146,60,0.5)' : '#1e293b'}`,
+              background: earningsSoon ? 'rgba(251,146,60,0.12)' : 'transparent',
+              color: earningsSoon ? '#fb923c' : '#64748b',
+              fontSize: '12px', fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
+            }}
+          >
+            📅 Earnings ≤14d
+          </button>
+        <div style={{ display: 'flex', borderRadius: '8px', border: '1px solid #1e293b', overflow: 'hidden', fontSize: '12px', fontWeight: 600 }}>
           {(['all', 'US', 'HK'] as Market[]).map(m => (
             <button
               key={m}
@@ -903,6 +921,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
               {m === 'all' ? 'All Markets' : m}
             </button>
           ))}
+        </div>
         </div>
       </div>
 
@@ -979,6 +998,16 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                       {sig && (
                         <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px', color: sc.color, background: sc.bg, border: `1px solid ${sc.border}` }}>
                           {sig.signal}
+                        </span>
+                      )}
+                      {boardSet.has(r.symbol) && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: '#34d399', background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.3)' }}>
+                          ✓ On Board
+                        </span>
+                      )}
+                      {earningsSet.has(r.symbol) && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: '#fb923c', background: 'rgba(251,146,60,0.1)', border: '1px solid rgba(251,146,60,0.25)' }}>
+                          Earnings ≤14d
                         </span>
                       )}
                     </div>
