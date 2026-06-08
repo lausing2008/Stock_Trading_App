@@ -690,6 +690,85 @@ const ITEMS: Item[] = [
     what: 'Three endpoints — /signals/factor-exposure, /signals/walkforward, and /signals/filter_audit — load 6 months of signal history and compute aggregations on every HTTP request. They change at most once per day (after the post-close signal refresh). There is no caching.',
     fix: 'Add a simple Redis cache with TTL=3600s (1 hour). Use a cache key incorporating the query params (lookback_days, horizon, style). On hit: return cached JSON immediately. On miss: compute, cache result, return. Redis is already deployed in the stack (used for macro features and market regime). Pattern already exists in ml-prediction/builder.py _redis_save_macro().',
   },
+
+  // ── New Suggestions 2026-06-07 ────────────────────────────────────────────
+
+  {
+    id: 'workflow-signal-lifecycle',
+    tier: 3, severity: 'feature',
+    title: 'WF-1: BUY → HOLD/WAIT → SELL coherent workflow with actionable guidance',
+    file: 'frontend/src/pages/trade-board.tsx · services/signal-engine/src/generators/signals.py',
+    effort: '3–5 days',
+    impact: 'High — currently signal transitions have no prescribed action. Users see "WAIT" but don\'t know whether to hold, reduce size, or set alerts. Bridges the gap between signal and execution.',
+    what: 'The signal lifecycle (BUY → HOLD → WAIT → SELL) emits transitions but gives no actionable guidance per state. HOLD should mean "stay in position, trail your stop." WAIT should mean "reduce to half size or move stop to breakeven." SELL should show exact exit reasoning. There is no UI that walks the user through these states for a specific position they hold.',
+    fix: 'Add a "Position Lifecycle" panel to the Trade Board card: (1) BUY state — show game plan (entry zones, stop, target) already generated. (2) HOLD state — show trailing stop recommendation (entry + ATR×2), time-in-trade counter, P&L %. (3) WAIT state — show "yellow flag" checklist: move stop to breakeven, reduce to 50% size, conditions needed to re-confirm BUY (RSI recovery, MACD turn, price > VWAP). (4) SELL state — show exit trigger (which indicator flipped), recommended exit price range, P&L at current price. Each state card auto-updates when the signal refreshes. Backend: signal-engine should emit a lifecycle_action field alongside each signal.',
+  },
+
+  {
+    id: 'auto-paper-portfolio',
+    tier: 3, severity: 'feature',
+    title: 'WF-2: Autonomous paper-trading portfolio — allocate capital, auto buy/sell, track returns',
+    file: 'services/market-data · services/signal-engine · frontend/src/pages/paper-portfolio.tsx (new)',
+    effort: '2–3 weeks',
+    impact: 'Very High — transforms the app from a signal dashboard into a full autonomous trading system. Provides empirical proof-of-value: did following the signals actually make money? Enables the ML feedback loop to learn from simulated outcomes.',
+    what: 'There is no end-to-end paper trading engine. Users cannot give the system a starting capital amount and let it autonomously allocate, buy, hold, and sell positions based on signals — then measure the return. Without this, the system\'s actual edge over buy-and-hold is unknown.',
+    fix: 'Build a paper-trading engine: (1) User sets starting capital (e.g. $50,000) and risk parameters (max position size %, max positions). (2) Every post-close refresh: engine scans BUY signals with confidence ≥70% + K-Score ≥55; allocates capital using ATR-based position sizing (already in position-sizing-engine); creates a virtual "paper trade" record. (3) Every refresh: engine checks open paper positions against current signal — if SELL or stop breached, closes the position and logs exit price + P&L. (4) ML feedback: closed trade outcomes feed back into signal_outcomes table, improving future XGBoost training. (5) /paper-portfolio page: equity curve chart vs SPY benchmark, win rate, avg return, Sharpe ratio, drawdown, open positions table, closed trades log. Backend: new paper_trades table (symbol, entry_price, shares, entry_date, exit_price, exit_date, pnl, strategy). Scheduler: run paper-trade engine step every post-close alongside ML retrain.',
+  },
+
+  {
+    id: 'ui-date-range-picker',
+    tier: 3, severity: 'feature',
+    title: 'UI-13: Date range picker for backtest results, signal accuracy, and walk-forward analysis',
+    file: 'frontend/src/pages/signal-accuracy.tsx · frontend/src/pages/backtest.tsx',
+    effort: '1–2 days',
+    impact: 'Medium — current fixed lookback windows (30d / 60d / 90d) cannot answer "how did signals perform during the Oct 2024 correction?" Custom date ranges make the accuracy tracker and backtest pages research tools rather than dashboards.',
+    what: 'Signal accuracy, walk-forward heatmap, and backtest result pages use fixed radio-button lookback periods (30/60/90/180 days). There is no way to specify an arbitrary date range — e.g., "show accuracy only during bear market regime" or "backtest the last earnings season." The walk-forward drill-down already accepts from_date/to_date API params but only via clicking heatmap cells.',
+    fix: 'Add a date range picker component (two date inputs: From / To) to: (1) /signal-accuracy — replaces the "90 days" radio buttons; passes from_date/to_date to the existing /signals/accuracy endpoint. (2) /backtest — lets users re-run a backtest for a custom window instead of the default full history. (3) Walk-forward heatmap — add a manual date range input alongside the heatmap cell click. Use a lightweight inline component (two <input type="date"> fields + Apply button) — no third-party calendar library needed. Persist the selected range to sessionStorage so it survives page navigations.',
+  },
+
+  {
+    id: 'workflow-hold-sell-guidance',
+    tier: 3, severity: 'feature',
+    title: 'WF-3: In-position guidance — when to hold vs exit as price moves after entry',
+    file: 'frontend/src/pages/trade-board.tsx · services/signal-engine/src/api/routes.py',
+    effort: '2–3 days',
+    impact: 'High — the hardest part of trading is not knowing when to cut a losing trade or lock in a winning one. Adding rules-based trailing-stop and target-hit guidance reduces emotional decision-making.',
+    what: 'After a stock is bought and added to the Trade Board, there is no ongoing guidance about when to exit. The game plan sets a static stop and target at entry, but does not adapt as: (1) price rises toward the target, (2) price pulls back to the stop, (3) the signal downgrades from BUY to HOLD/WAIT, or (4) a macro regime shift (bull → bear) increases exit urgency. Users must manually monitor and decide.',
+    fix: 'Add a "Live Position Monitor" to each Trade Board card: (1) Trail stop — once price rises 3% from entry, move stop to breakeven automatically; once +5%, trail at ATR×1.5 below current price. Show the current trailing stop level on the card. (2) Target proximity — when price is within 2% of take-profit, show "Consider scaling out 50% now" alert. (3) Signal degradation — when signal drops from BUY to WAIT, show "Signal weakening — tighten stop or reduce size" banner. (4) Regime override — if market regime flips to bear while holding, show "Bear regime active — exits take priority over entries." (5) Time stop — if price has not moved ±5% in 20 trading days, flag "Dead money — consider redeploying capital." Backend: new GET /signals/{symbol}/position-check?entry_price=X&entry_date=Y returns current recommendation (hold/trail/reduce/exit) with reasoning.',
+  },
+
+  {
+    id: 'ui-board-added-badge',
+    tier: 4, severity: 'low',
+    title: 'UI-14: Show "Added" badge in Screener/Rankings when stock is already on Trade Board',
+    file: 'frontend/src/pages/opportunities.tsx · frontend/src/pages/rankings.tsx',
+    effort: '< 1 day',
+    impact: 'Low — prevents confusion when scanning the screener; users currently cannot tell at a glance which BUY signals they have already acted on.',
+    what: 'The Opportunities screener and Rankings page both show an "Add to Board" button per stock. If the stock is already on the Trade Board, the button still shows "Add" — there is no visual indicator that the position already exists. A user scanning the screener after adding 5 positions cannot tell which ones they have already added without navigating to the Trade Board.',
+    fix: 'Fetch the list of Trade Board symbols at page load (already available via GET /positions). In the Opportunities and Rankings tables, compare each row\'s symbol against the board set. If present: replace the "Add" button with a green "✓ On Board" badge (non-clickable, or clicking navigates to /trade-board). No backend change needed — data is already available. Implementation: add a boardSymbols Set derived from useSWR on /positions; in the row render, check boardSymbols.has(symbol) before rendering the button.',
+  },
+
+  {
+    id: 'tech-testing-framework',
+    tier: 5, severity: 'low',
+    title: 'Tech Debt: Full testing framework — API integration tests, frontend E2E, ML validation',
+    file: 'tests/ (new directory at repo root)',
+    effort: '1–2 weeks',
+    impact: 'High long-term — currently there are zero automated tests. Every deployment is manually validated. A regression in signal logic, K-Score calculation, or API routing could go undetected until a user reports it. As the system grows, manual validation becomes impossible.',
+    what: 'The codebase has no automated test suite. pytest is in requirements.txt for the signal-engine but no test files exist. There are no frontend component tests, no API integration tests, no ML accuracy regression tests, and no scheduler validation. Every code change is deployed blindly.',
+    fix: 'Build a layered test suite: (1) Backend unit tests (pytest): K-Score formula correctness, signal logic boundary conditions (RSI thresholds, earnings compression multipliers, conviction gate pass/fail), calibrate_ta_weights with synthetic data. (2) API integration tests: spin up a test DB + all services via docker compose -f docker-compose.test.yml; test every major endpoint (ingest → rankings → signals → accuracy). (3) ML validation: after each retrain, assert accuracy > 0.55 on a held-out validation set; fail the post-close job if accuracy drops below threshold. (4) Frontend E2E (Playwright): login, add a stock to watchlist, navigate to stock detail, generate signal, add to Trade Board — full happy path. (5) Scheduler smoke test: trigger a manual _weekly_full_refresh() call, assert all downstream services responded 200. Run on every git push via GitHub Actions CI.',
+  },
+
+  {
+    id: 'tech-scheduler-monitor',
+    tier: 4, severity: 'low',
+    title: 'Tech Debt: Scheduler health monitor — verify weekend processes ran, alert on failure',
+    file: 'services/market-data/src/services/scheduler.py · frontend/src/pages/improvements.tsx',
+    effort: '1–2 days',
+    impact: 'Medium — the weekly full refresh, tune_all, calibrate_ta_weights, and ML retrain are all fire-and-forget. If any silently fail (e.g., yfinance outage, out-of-memory), Monday signals use stale data with no warning.',
+    what: 'Scheduled jobs (weekly full refresh, tune_all, calibrate_ta_weights, nightly ML retrain) log start/end to stdout but have no persistent status record. There is no way to check from the frontend "did last Sunday\'s refresh run?" or "when did the ML model last retrain?" A failed weekend job means Monday trading uses week-old data silently.',
+    fix: 'Add a scheduler status store in Redis: after each job completes (or fails), write a key scheduler:job:{name} with {last_run, status, duration_s, error}. TTL = 14 days. (2) Add GET /admin/scheduler-status endpoint that reads all job keys and returns a summary. (3) Add a "System Health" card to the improvements page (or a dedicated /admin/health page) that shows last-run timestamps and pass/fail for: weekly_refresh, tune_all, calibrate_ta_weights, us_post_close (ML retrain), hk_post_close. (4) If any job has not run within its expected window (e.g., weekly_refresh not run in >8 days), send an admin alert email. This makes silent failures immediately visible.',
+  },
 ];
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -991,7 +1070,7 @@ export default function ImprovementsPage() {
           All Tier 1–4 shipped as of 2026-06-07. SA-1/2/3/4/5/6/7/8 all done. SA-3 was already live (4 boolean flags in builder.py). SA-5 wired to Sunday scheduler. SA-7 regime-aware earnings compression implemented (bull+beater≥70%: +3% boost; bull+50-70%: halved compression; bear/hv: tightened).
           Tier 5: UI-01 to UI-09 + UI-12 all shipped. Remaining (low priority): UI-10 (ML weight auto-apply), UI-11 (factor chart verify).
           No remaining high-leverage items — all Tier 1–4 improvements are live.
-          Overall: <strong style={{ color: '#4ade80' }}>9.0 / 10</strong> — target reached.
+          Overall: <strong style={{ color: '#4ade80' }}>9.0 / 10</strong> — 7 new improvement suggestions added 2026-06-07: WF-1 (signal lifecycle), WF-2 (paper portfolio), WF-3 (hold/sell guidance), UI-13 (date picker), UI-14 (board badge), testing framework, scheduler monitor.
         </p>
       </div>
     </div>
