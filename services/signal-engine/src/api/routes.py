@@ -18,6 +18,24 @@ log = get_logger("signals")
 router = APIRouter(prefix="/signals", tags=["signals"])
 
 
+def _compute_stability(session: Session, stock_id: int, horizon: SignalHorizon, current_signal: str, limit: int = 30) -> int:
+    """Count consecutive past days the given signal has been persisted in the DB."""
+    from sqlalchemy import desc
+    sigs = session.execute(
+        select(Signal.signal)
+        .where(Signal.stock_id == stock_id, Signal.horizon == horizon)
+        .order_by(desc(Signal.ts))
+        .limit(limit)
+    ).scalars().all()
+    count = 0
+    for sig in sigs:
+        if sig.value == current_signal:
+            count += 1
+        else:
+            break
+    return max(count, 1)
+
+
 @router.get("")
 def all_latest_signals(
     style: str | None = Query(None, description="Filter by trading style: SHORT, SWING, LONG"),
@@ -36,18 +54,50 @@ def all_latest_signals(
         .subquery()
     )
     q = (
-        select(Stock.symbol, Signal.signal, Signal.horizon, Signal.confidence, Signal.bullish_probability, Signal.ts)
+        select(Stock.symbol, Signal.stock_id, Signal.signal, Signal.horizon, Signal.confidence, Signal.bullish_probability, Signal.ts)
         .join(Signal, Stock.id == Signal.stock_id)
         .join(latest_subq, (Signal.stock_id == latest_subq.c.stock_id)
               & (Signal.horizon == latest_subq.c.horizon)
               & (Signal.ts == latest_subq.c.max_ts))
         .where(Stock.active.is_(True))
     )
+    horizon_enum = None
     try:
-        q = q.where(Signal.horizon == SignalHorizon(horizon_filter))
+        horizon_enum = SignalHorizon(horizon_filter)
+        q = q.where(Signal.horizon == horizon_enum)
     except ValueError:
         pass  # unknown style — return all
     rows = session.execute(q).all()
+
+    # Batch stability: one extra query for all stock_ids at this horizon
+    stability_map: dict[int, int] = {}
+    if rows and horizon_enum is not None:
+        from collections import defaultdict
+        stock_ids = list({row.stock_id for row in rows})
+        cutoff = datetime.now(timezone.utc) - timedelta(days=35)
+        recent = session.execute(
+            select(Signal.stock_id, Signal.signal)
+            .where(
+                Signal.stock_id.in_(stock_ids),
+                Signal.horizon == horizon_enum,
+                Signal.ts >= cutoff,
+            )
+            .order_by(Signal.stock_id, Signal.ts.desc())
+        ).all()
+        by_stock: dict[int, list[str]] = defaultdict(list)
+        for r in recent:
+            by_stock[r.stock_id].append(r.signal.value)
+        latest_sig_map = {row.stock_id: row.signal.value for row in rows}
+        for sid, sigs in by_stock.items():
+            cur = latest_sig_map.get(sid, "")
+            count = 0
+            for s in sigs:
+                if s == cur:
+                    count += 1
+                else:
+                    break
+            stability_map[sid] = max(count, 1)
+
     return [
         {
             "symbol": row.symbol,
@@ -56,6 +106,7 @@ def all_latest_signals(
             "confidence": row.confidence,
             "bullish_probability": row.bullish_probability,
             "ts": row.ts.isoformat() if row.ts else None,
+            "stability_days": stability_map.get(row.stock_id, 1),
         }
         for row in rows
     ]
@@ -1585,20 +1636,28 @@ def signal_for(
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
 
-    if persist:
-        from sqlalchemy import desc
-        stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
-        if stock:
-            for ai in all_sig.values():
-                session.add(Signal(
-                    stock_id=stock.id,
-                    signal=SignalType(ai.signal),
-                    horizon=SignalHorizon(ai.horizon),
-                    confidence=ai.confidence,
-                    bullish_probability=ai.bullish_probability,
-                    reasons=ai.reasons,
-                ))
-            session.commit()
+    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+
+    if persist and stock:
+        for ai in all_sig.values():
+            session.add(Signal(
+                stock_id=stock.id,
+                signal=SignalType(ai.signal),
+                horizon=SignalHorizon(ai.horizon),
+                confidence=ai.confidence,
+                bullish_probability=ai.bullish_probability,
+                reasons=ai.reasons,
+            ))
+        session.commit()
+
+    # Inject stability_days into each signal's reasons dict
+    if stock:
+        for ai in all_sig.values():
+            try:
+                horiz = SignalHorizon(ai.horizon)
+            except ValueError:
+                continue
+            ai.reasons["stability_days"] = _compute_stability(session, stock.id, horiz, ai.signal)
 
     if style:
         style_key = style.upper()

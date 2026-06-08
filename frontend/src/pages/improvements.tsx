@@ -796,7 +796,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa10-signal-stability',
-    tier: 2, severity: 'medium',
+    tier: 2, severity: 'medium', done: true,
     title: 'SA-10: Signal stability score — persistent BUY signals are more reliable than flickering ones',
     file: 'services/signal-engine/src/generators/signals.py · services/signal-engine/src/api/routes.py',
     effort: '1–2 days',
