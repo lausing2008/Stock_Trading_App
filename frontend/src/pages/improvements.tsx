@@ -796,8 +796,9 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa10-signal-stability',
-    tier: 2, severity: 'medium', done: true,
+    tier: 2, severity: 'medium',
     title: 'SA-10: Signal stability score — persistent BUY signals are more reliable than flickering ones',
+    defaultStatus: 'done',
     file: 'services/signal-engine/src/generators/signals.py · services/signal-engine/src/api/routes.py',
     effort: '1–2 days',
     impact: 'Medium — a BUY that has held for 5 consecutive days has much stronger empirical backing than one that appeared today. This filters out noise and reduces false entries on unstable signals.',
