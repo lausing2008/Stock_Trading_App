@@ -145,9 +145,11 @@ export const api = {
   },
 
   // Signal accuracy tracker
-  signalAccuracy: (lookbackDays = 90, symbol?: string) => {
+  signalAccuracy: (lookbackDays = 90, symbol?: string, fromDate?: string, toDate?: string) => {
     const params = new URLSearchParams({ lookback_days: String(lookbackDays) });
     if (symbol) params.set('symbol', symbol);
+    if (fromDate) params.set('from_date', fromDate);
+    if (toDate) params.set('to_date', toDate);
     return request<SignalAccuracyReport>(`/signals/accuracy?${params}`);
   },
   resetSignals: () => request<{ status: string; deleted: number; repersisting: number }>('/signals/reset', { method: 'POST' }),
@@ -169,6 +171,13 @@ export const api = {
     request<{ window: number; lookback_days: number; series: { date: string; accuracy: number; signal_count: number }[]; drift_warning: boolean; latest_accuracy: number | null }>(`/signals/rolling_accuracy?window=${window}&lookback_days=${lookbackDays}`),
   walkForward: (testDays = 30, holdDays = 5, lookbackDays = 365) =>
     request<WalkForwardReport>(`/signals/walkforward?test_days=${testDays}&hold_days=${holdDays}&lookback_days=${lookbackDays}`),
+  dataFreshness: () =>
+    request<{ last_bar_ts: string | null; hours_ago: number | null; status: string }>(`/stocks/data_freshness`),
+  outcomesSummary: (horizon?: string, days = 90) => {
+    const params = new URLSearchParams({ days: String(days) });
+    if (horizon) params.set('horizon', horizon);
+    return request<OutcomesSummary>(`/signals/outcomes/summary?${params}`);
+  },
   stockAtr: (symbol: string, period = 14) =>
     request<{ symbol: string; atr: number; close: number; stop_loss_2atr: number; period: number }>(`/stocks/${symbol}/atr?period=${period}`),
   portfolioRisk: (symbols: string[], weights?: number[]) => {
@@ -389,6 +398,16 @@ export type FactorRow = { key: string; label: string; baseline: number; scale: n
 export type FactorExposureReport = { lookback_days: number; signal_count: number; factors: FactorRow[] };
 export type MLWeightCurvePoint = { weight: number; accuracy: number | null; avg_return_pct: number | null };
 export type WalkForwardWindow = { start: string; end: string; n_signals: number; n_correct: number; accuracy: number; avg_return_pct: number; equity: number };
+export type OutcomesBand = { band: string; count: number; win_rate: number; avg_return_pct: number | null };
+export type OutcomesSummary = {
+  total: number;
+  days_lookback: number;
+  message?: string;
+  overall?: { win_rate: number; avg_return_pct: number | null; median_return_pct: number | null };
+  by_confidence_band?: OutcomesBand[];
+  by_horizon?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
+  by_market_regime?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
+};
 export type WalkForwardReport = {
   train_days: number; test_days: number; lookback_days: number; hold_days: number;
   windows: WalkForwardWindow[];

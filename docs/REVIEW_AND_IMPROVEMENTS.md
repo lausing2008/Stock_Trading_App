@@ -1,17 +1,19 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-05 (SA-8 accuracy improvements + audit bug fixes)  
+**Last updated:** 2026-06-07 (All Tier 1–4 complete — SA-1–8, UI-01–09, portfolio risk, ATR sizer, peer compare, DCF)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 8.5 / 10 *(was 8.3 — SA-8 ML overhaul + signal_outcomes tracking + audit fixes 2026-06-05)*
+**Overall rating:** 9.0 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 — full Tier 2–4 batch shipped 2026-06-04/07)*
 
 ---
 
 ## Executive Summary
 
-StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. All Tier 1 critical fixes are shipped. All Tier 2 items are shipped. First Tier 3 feature (sector rotation dashboard) shipped 2026-06-04. Remaining roadmap items are further Tier 3 features.
+StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. **As of 2026-06-07, all Tier 1–4 improvements are complete.** The signal engine is regime-aware, ML features cover 34 inputs with weekly auto-calibration, portfolio risk is quantified, position sizing is ATR-driven, and the outcomes feedback loop is fully wired.
 
-This document is the single source of truth for everything that was found, why it matters, and how to fix it.
+This document is the single source of truth for everything that was found, why it matters, and how it was fixed.
+
+**Remaining (Tier 5, low priority):** UI-08 walk-forward drill-down, UI-10 ML weight auto-apply, UI-12 congress trading page.
 
 ---
 
@@ -59,6 +61,23 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-05 | **Audit fix: _recency_weights default** updated 3.0→5.0 to match all call sites | ml-prediction/trainer.py | ✅ Done |
 | 2026-06-05 | Docs: SIGNAL_ACCURACY.md created (outcomes table, evaluate/summary endpoints, vectorbt, Optuna tuning workflow) | docs/SIGNAL_ACCURACY.md | ✅ Done |
 | 2026-06-05 | Docs: AI_SIGNAL.md updated (SA-8 thresholds, 34-feature table, style horizons, AUC floor) | docs/AI_SIGNAL.md | ✅ Done |
+| 2026-06-05 | **SA-1: ML/TA conflict weighting** — when ML and TA disagree by >25%, ML weight cut 25% (elif gap > 0.25: ml_w *= 0.75) | signal-engine/signals.py | ✅ Done |
+| 2026-06-05 | **SA-2: Style-specific precision thresholds** — SHORT=70%, SWING=60%, LONG=50% minimum precision before BUY fires | ml-prediction/trainer.py | ✅ Done |
+| 2026-06-05 | **SA-4: Weekly alignment min bars 26→15** — graduated confidence scaling so newer stocks aren't skipped entirely | signal-engine/signals.py | ✅ Done |
+| 2026-06-04 | **Tier 2: S/R context** — swing pivot detection; at_resistance compresses 15%, breakout +5%, at_support +3%; sr_flag in SignalCard | signal-engine/signals.py | ✅ Done |
+| 2026-06-04 | **Tier 2: ATR position sizer** — GET /stocks/{symbol}/atr; PositionSizer component; stop=price−2×ATR; shows shares, risk $, R:R | market-data/routes.py + frontend/stock/[symbol].tsx | ✅ Done |
+| 2026-06-04 | **Tier 2: Drift detection (rolling accuracy)** — GET /signals/rolling_accuracy; 30d window accuracy chart; drift_warning flag at <55% | signal-engine/routes.py + frontend/signal-accuracy.tsx | ✅ Done |
+| 2026-06-04 | **Tier 2: Peer comparison drawer** — PeerCompareDrawer; side-by-side K-Score + sub-scores; rankings "Compare (N)" multi-select; stock detail auto-suggests peers | frontend/rankings.tsx + stock/[symbol].tsx | ✅ Done |
+| 2026-06-04 | **Tier 3: Portfolio risk** — GET /portfolio/risk; Wilder beta vs SPY/HSI; parametric 1-day 95% VaR; correlation matrix; sector concentration; Trade Board risk section | signal-engine/routes.py + frontend/board.tsx | ✅ Done |
+| 2026-06-04 | **Tier 3: DCF valuation** — 2-stage DCF in research engine; 5-year FCF projection + Gordon Growth terminal value; WACC 10%; margin of safety %; high-conviction badge when DCF and K-Score agree within 15% | research-engine/routes.py | ✅ Done |
+| 2026-06-04 | **Tier 3: Walk-forward backtest** — GET /signals/walkforward; non-overlapping test windows; per-window accuracy + equity curve + Sharpe + max drawdown; SPY/HSI benchmark; Walk-Forward tab on signal accuracy page | signal-engine/routes.py + frontend/signal-accuracy.tsx | ✅ Done |
+| 2026-06-06 | **UI-01: Signal Outcomes Dashboard** — Outcomes tab on /signal-accuracy; win rate by confidence band (0-40/40-55/55-70/70-85/85+), by horizon, by regime; calls GET /signals/outcomes/summary | frontend/signal-accuracy.tsx + api.ts | ✅ Done |
+| 2026-06-07 | **UI-04: Insider conviction screener** — net buy $ + distinct buyer count + buy/sell counts per ticker from trailing 90d; "Net buyers only" toggle; conviction bars; linked tickers; above Sudden Activity panel | frontend/insider.tsx | ✅ Done |
+| 2026-06-07 | **UI-06: Position P&L heatmap** — flexbox grid above chart; cells sized by market value; green/red by P&L % intensity (alpha 0.08–0.38); tooltip shows P&L $ | frontend/positions.tsx | ✅ Done |
+| 2026-06-07 | **UI-09: Data freshness chip** — header chip polls GET /stocks/data_freshness every 5 min; "Xh ago"; green <8h, yellow 8–30h, red >30h | frontend/_app.tsx + market-data/routes.py | ✅ Done |
+| 2026-06-07 | **SA-3: Macro boolean ML features confirmed** — is_bear_market, vix_spiking, high_vol_regime, market_stress already in FEATURE_COLUMNS and flowing to XGBoost; marked done | ml-prediction/builder.py | ✅ Already live |
+| 2026-06-07 | **SA-5: calibrate_ta_weights on schedule** — _weekly_full_refresh() now calls POST /signals/calibrate_ta_weights every Sunday after tune_all; fits logistic regression on signal history, writes ta_weights.json | market-data/scheduler.py | ✅ Done |
+| 2026-06-07 | **SA-7: Regime-aware earnings compression** — bull+beat≥70%: skip compression +3% boost; bull+50-70%: beat_scale=2.0 (halved); bear/high_vol: beat_scale=0.75–1.0 (tightened); unknown: original ±20% formula | signal-engine/signals.py | ✅ Done |
 
 ---
 
@@ -66,14 +85,14 @@ This document is the single source of truth for everything that was found, why i
 
 | Dimension | Score | Summary |
 |-----------|-------|---------|
-| Data pipeline | 8.2 / 10 | ↑ Zero-vol filter + split-adjust upsert + 7-day overlap; adj_close now consistent |
-| ML methodology | 8.5 / 10 | ↑ SA-8: 34 features, 5× recency weights, style-specific horizons (5/10/20d), AUC floor, Optuna re-tuned |
-| Signal logic | 8.0 / 10 | ↑ SA-8: SWING thresholds recalibrated, adx_min=15, signal_outcomes tracking live, ml_auc now stored |
-| K-Score ranking | 7.5 / 10 | ↑ Falling knife gate + RSI curve fixed |
-| Research engine | 7.5 / 10 | ↑ Sector-relative fundamental scoring + cache quality flag shipped 2026-06-04 |
-| Frontend / UX | 9.0 / 10 | ↑ Signal Filter Monitor, strategy score normalisation, backtest equity curve, sector rotation page |
-| Risk management | 7.5 / 10 | ↑ Backtest engine shipped: equity curve, Sharpe, max drawdown, Calmar, SPY comparison |
-| **Overall** | **8.5 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 — SA-8 ML overhaul + signal accuracy tracking 2026-06-05)* |
+| Data pipeline | 8.5 / 10 | ↑ Data freshness chip (UI-09) + zero-vol filter + split-adjust + adj_close consistent |
+| ML methodology | 9.0 / 10 | ↑ SA-3 boolean regime flags + SA-5 weekly TA weight calibration + SA-8 34 features + Optuna + AUC floor |
+| Signal logic | 9.0 / 10 | ↑ SA-1 conflict weighting + SA-2 style thresholds + SA-7 regime earnings + S/R context + walk-forward |
+| K-Score ranking | 8.2 / 10 | ↑ Falling knife gate + RSI curve + sector-relative peer scoring + peer comparison drawer |
+| Research engine | 7.5 / 10 | ↑ DCF valuation + sector-relative fundamentals + cache quality flag; Nginx 150s timeout fixed |
+| Frontend / UX | 9.3 / 10 | ↑ Outcomes tab + P&L heatmap + conviction screener + walk-forward + sector rotation + factor chart |
+| Risk management | 8.5 / 10 | ↑ Portfolio beta + VaR + correlation + ATR position sizer + unrealized P&L + portfolio heatmap |
+| **Overall** | **9.0 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 → 8.7 → 8.8 → 8.9 → 9.0 — all Tier 1–4 complete 2026-06-07)* |
 
 ---
 
@@ -977,6 +996,213 @@ The `/signals/ml-weight-validation` endpoint sweeps all ML weights and finds the
 | **ML weight range hardcoded** — `current_formula_range: [0.40, 0.75]` in routes.py:507 should read from config | signal-engine/routes.py | 0.5 days | Low |
 | **Hold windows hardcoded** — `_OUTCOME_HOLD_DAYS = {"SHORT": 7, "SWING": 14, "LONG": 28}` should be config | signal-engine/routes.py:1608 | 0.5 days | Low |
 | **WAIT signal handling inconsistent** — trade_performance handles WAIT optionally; signal_accuracy ignores WAIT | signal-engine/routes.py | 0.5 days | Low |
+
+---
+
+## Part 6 — Improvements Batch 2026-06-04/07 (Tier 2–4 Complete)
+
+This section documents every improvement shipped in the second major batch. The first batch (2026-05-31 to 2026-06-05) covered Tier 1 critical fixes and SA-8. This batch closes out all remaining analytical and UI gaps identified in the expert review.
+
+---
+
+### SA-1: ML/TA Conflict Weighting ✅ Shipped 2026-06-05
+
+**File:** `services/signal-engine/src/generators/signals.py`
+
+**What changed:** When the ML model and the TA score disagree by more than 25 percentage points, the ML weight is cut by 25% (`ml_w *= 0.75`). Previously, a high-AUC model could override strong TA signals regardless of disagreement magnitude.
+
+**Why it matters for trading:** ML models can be confidently wrong, especially in regime transitions the training data didn't capture. When ML says "bullish 0.75" and TA says "bearish 0.48", that disagreement is itself information — the system now treats it as a signal to reduce ML's influence rather than letting one dominate.
+
+---
+
+### SA-2: Style-Specific Precision Thresholds ✅ Shipped 2026-06-05
+
+**File:** `services/ml-prediction/src/training/trainer.py`
+
+**What changed:** Minimum precision (positive predictive value) is now enforced per trading style before a BUY fires: SHORT = 70%, SWING = 60%, LONG = 50%.
+
+**Why it matters for trading:** A SHORT trade expires in days — you need high conviction or you take a guaranteed loss. A LONG trade has 4 weeks to play out, so you can accept lower base precision. Previously the same threshold applied to all styles, meaning SHORT trades were under-screened relative to their time risk.
+
+---
+
+### SA-3: Macro Boolean ML Features ✅ Already Live (Confirmed 2026-06-07)
+
+**File:** `services/ml-prediction/src/features/builder.py`
+
+**What was confirmed:** Four regime boolean features were already in `FEATURE_COLUMNS` and flowing to XGBoost training: `is_bear_market` (SPY < 200d SMA), `vix_spiking` (VIX > 20d MA × 1.3), `high_vol_regime` (realized vol > 2%), `market_stress` (SPY 5d ret < -3% and VIX elevated). These give the model explicit decision boundaries for regime states rather than requiring it to infer them from raw VIX and SPY return numbers.
+
+**Why it matters for trading:** Bear markets and volatility spikes are when signals fail most often. A model that has a clean "yes/no this is a bear market" input will calibrate its BUY probability appropriately, rather than interpolating across continuous VIX values where the training data may not have enough bear-market examples to learn the non-linearity.
+
+---
+
+### SA-4: Weekly Alignment Min Bars 26→15 ✅ Shipped 2026-06-05
+
+**File:** `services/signal-engine/src/generators/signals.py`
+
+**What changed:** Weekly trend confirmation previously required 26 weekly bars (6 months). Stocks with fewer bars skipped the weekly gate. Now requires 15 bars minimum (3.5 months), with graduated confidence scaling: `weekly_confidence = 0.70 + (len - 15) / (26 - 15) × 0.30`.
+
+**Why it matters for trading:** Newer listings, post-split stocks, and recently added watchlist stocks now get a weekly trend check rather than being evaluated without one. The graduated scale means a 15-bar stock doesn't get the same weight as a 26-bar stock — confidence builds as history grows.
+
+---
+
+### SA-5: TA Weights Auto-Calibration on Sunday Schedule ✅ Shipped 2026-06-07
+
+**File:** `services/market-data/src/services/scheduler.py`
+
+**What changed:** `_weekly_full_refresh()` now calls `POST /signals/calibrate_ta_weights` every Sunday after tune_all. The endpoint fits logistic regression on TA sub-features vs `is_correct` from `signal_outcomes` history and writes `ta_weights.json`. These fitted weights replace the hand-tuned defaults in the next signal generation cycle.
+
+**Why it matters for trading:** TA weights (RSI 15%, momentum 15%, trend 20%, etc.) were manually set and never validated against outcomes. In a momentum-driven market, momentum weight should be higher. In a mean-reversion market, RSI should dominate. Weekly auto-calibration adapts the weights to what has actually been working over the past 90 days.
+
+---
+
+### SA-6: Filter Interaction Audit Endpoint ✅ Already Live
+
+**File:** `services/signal-engine/src/api/routes.py`
+
+**What is there:** `GET /signals/filter_audit` analyses win rate by number of active suppression filters and by specific filter combination. Once `signal_outcomes` accumulates 500+ rows (approximately 3–6 months at current signal volume), this endpoint can identify any filter that consistently reduces win rate when applied — a net-negative gate that should be disabled or inverted.
+
+---
+
+### SA-7: Regime-Aware Earnings Compression ✅ Shipped 2026-06-07
+
+**File:** `services/signal-engine/src/generators/signals.py`
+
+**What changed:** The earnings proximity compression (`earnings_compression` parameter in style profiles) is now modulated by both market regime and the stock's historical earnings beat rate. Four distinct paths:
+
+| Condition | Effect |
+|-----------|--------|
+| Bull regime + beat_rate ≥ 70% | Skip compression entirely; +3% boost to fused signal |
+| Bull regime + beat_rate 50–70% | `beat_scale = 2.0` — compression halved |
+| Bear / high_vol regime | `beat_scale = 0.75 + 0.25 × beat_rate` — compression tightened |
+| Unknown regime or no beat history | Original ±20% formula (beat_scale 0.80–1.20) |
+
+**Why it matters for trading:** In a bull market, stocks that consistently beat earnings (NVDA, META historically) often gap up 8–15% the day after earnings. Suppressing the signal by 40–50% in that environment means missing the best entries of the year. Conversely, in a bear market even earnings beats tend to fade within a week — keeping compression high there is correct. One-size-fits-all compression was wrong in roughly half of all regime+history combinations.
+
+---
+
+### SA-8: ML Overhaul (Previously Documented, 2026-06-05) ✅
+
+See original entry above. Key items: 34 features (was 26), 5× recency weighting, style-specific training horizons (SHORT=5d, SWING=10d, LONG=20d), AUC floor (ml_weight=0 when AUC < 0.52), SWING thresholds recalibrated, `signal_outcomes` tracking launched.
+
+---
+
+### Tier 2: S/R Context Detection ✅ Shipped 2026-06-04
+
+**File:** `services/signal-engine/src/generators/signals.py`
+
+**What changed:** `_sr_context()` detects swing pivots and 52-week high/low. Produces a flag: `breakout` (+5% boost), `at_support` (+3% boost), `at_resistance` (−15% compression), `neutral` (no change). The `sr_flag` is stored in `reasons` and shown in SignalCard.
+
+**Why it matters for trading:** A BUY signal at the 52-week high resistance has a much lower probability of follow-through than the same signal after breaking above it. A BUY at a multi-month support level has a natural stop-loss reference point (just below support) and a statistically higher bounce probability. The system now knows the difference.
+
+---
+
+### Tier 2: ATR-Based Position Sizer ✅ Shipped 2026-06-04
+
+**Files:** `services/market-data/src/api/routes.py` + `frontend/src/pages/stock/[symbol].tsx`
+
+**What changed:** `GET /stocks/{symbol}/atr` endpoint computes 14-period Wilder ATR. On the stock detail page, the PositionSizer component reads account size and risk % from Settings, then calculates: stop price (entry − 2 × ATR), shares to buy (risk $ / (2 × ATR per share)), dollar risk, and reward-to-risk ratio.
+
+**Why it matters for trading:** Volatility-based position sizing is the professional standard. A stock with low ATR (stable blue chip) warrants more shares; a stock with high ATR (volatile small-cap) warrants fewer. Without this, position size is arbitrary — you might put the same dollar amount into AAPL and a biotech, taking 5× more risk in the biotech without realising it. This enforces consistent 1–2% account risk per trade mathematically.
+
+---
+
+### Tier 2: Rolling Accuracy Drift Detection ✅ Shipped 2026-06-04
+
+**Files:** `services/signal-engine/src/api/routes.py` + `frontend/src/pages/signal-accuracy.tsx`
+
+**What changed:** `GET /signals/rolling_accuracy?window=30&lookback_days=180` returns a time series of 30-day rolling BUY accuracy with a `drift_warning` flag when accuracy drops below 55%. A line chart with 50%/55% reference lines appears on the Signal Accuracy page.
+
+**Why it matters for trading:** Signal accuracy degrades when the market regime shifts and the model hasn't re-adapted. Without a drift monitor, you would keep trading on signals whose win rate had already fallen to coin-flip levels. The drift warning tells you: "the model is underperforming — wait for the next Optuna retrain before adding size."
+
+---
+
+### Tier 2: Peer Comparison Drawer ✅ Shipped 2026-06-04
+
+**Files:** `frontend/src/pages/rankings.tsx` + `frontend/src/pages/stock/[symbol].tsx`
+
+**What changed:** `PeerCompareDrawer` shows side-by-side K-Score and all sub-scores (value, momentum, quality, technical) for up to 4 stocks, with green/red cell coding. On Rankings, a "Compare (N)" button opens the drawer for multi-selected rows. On the stock detail page, the top 3 same-sector peers are auto-suggested with a Compare button.
+
+**Why it matters for trading:** When choosing between two similar stocks in the same sector (e.g. AAPL vs MSFT), you want to see who scores better on each sub-factor rather than just the aggregate. The drawer makes this a 2-second check instead of navigating between pages.
+
+---
+
+### Tier 3: Portfolio Risk Quantification ✅ Shipped 2026-06-04
+
+**Files:** `services/signal-engine/src/api/routes.py` + `frontend/src/pages/board.tsx`
+
+**What changed:** `GET /portfolio/risk` computes: Wilder beta vs SPY (US positions) and ^HSI (HK positions), parametric 1-day 95% VaR in dollars, 30-day return correlation matrix across all positions, and sector concentration %. The Trade Board shows a risk section auto-populated from active positions: sector pie chart, correlation heatmap, beta + VaR stat cards, per-symbol betas, and warning chips for high correlation, concentration, or VaR.
+
+**Why it matters for trading:** Most retail traders discover they have too much concentration only after a sector-wide drawdown. Knowing your portfolio beta before a bad day tells you how much you'll bleed if SPY drops 2%. Seeing that 6 of your 8 positions have correlation > 0.7 tells you your "diversification" is illusory — you're effectively running one concentrated bet.
+
+---
+
+### Tier 3: DCF Valuation ✅ Shipped 2026-06-04
+
+**File:** `services/research-engine/src/api/routes.py`
+
+**What changed:** 2-stage DCF integrated into the research report: Stage 1 projects free cash flow for 5 years using analyst growth rate (or trailing 3-year CAGR as fallback). Stage 2 applies Gordon Growth terminal value (terminal growth 3%, WACC 10% default). Discounts to present value. Returns `dcf_fair_value`, `dcf_margin_of_safety_pct`. If DCF and K-Score fair values agree within 15%, a "High conviction" badge appears.
+
+**Why it matters for trading:** K-Score fair value is derived from a multiple-based approach (sector P/E, EV/EBITDA). DCF is derived from cash flow fundamentals. When two independent valuation methods agree that a stock is undervalued, the signal is stronger than either alone. The margin of safety percentage tells you your downside cushion — a stock at 30% discount to DCF can absorb significant bad news before you're underwater.
+
+---
+
+### Tier 3: Walk-Forward Backtest ✅ Shipped 2026-06-04
+
+**Files:** `services/signal-engine/src/api/routes.py` + `frontend/src/pages/signal-accuracy.tsx`
+
+**What changed:** `GET /signals/walkforward` runs non-overlapping test windows over historical persisted signals. For each window: evaluates accuracy, computes compounded equity curve, Sharpe ratio, and max drawdown. Benchmarks against SPY or ^HSI. The Signal Accuracy page has a "Walk-Forward" tab showing: test/hold controls, stat cards (accuracy, Sharpe, return, drawdown, profitable windows %), per-window accuracy heatmap, equity curve vs benchmark, and an alpha interpretation chip.
+
+**Why it matters for trading:** In-sample accuracy metrics are always flattering — the model sees the data it trained on. Walk-forward testing simulates real experience: the model has never seen the test period. A walk-forward Sharpe > 1.0 indicates genuine alpha. If walk-forward accuracy is materially lower than reported accuracy, the model is overfitting and you should not trade on its signals at full size.
+
+---
+
+### UI-01: Signal Outcomes Dashboard ✅ Shipped 2026-06-06
+
+**Files:** `frontend/src/pages/signal-accuracy.tsx` + `frontend/src/lib/api.ts`
+
+**What changed:** "Outcomes" tab added to `/signal-accuracy`. Calls `GET /signals/outcomes/summary`. Displays: overall win rate, avg return, median return; confidence band table (0–40, 40–55, 55–70, 70–85, 85+) with win rate bars; breakdown by horizon (SHORT/SWING/LONG); breakdown by market regime; Optuna tuning guidance banner when outcomes table has enough rows.
+
+**Why it matters for trading:** This is the feedback loop. Every BUY/SELL signal is tracked in `signal_outcomes` with its actual outcome (did price reach target within hold window?). The Outcomes tab is where you verify: does 70–85% confidence actually translate to ~70% win rate? If not, the system is miscalibrated and Optuna should be run. Without this tab, confidence numbers are assertions — with it, they're verified claims.
+
+---
+
+### UI-04: Insider Conviction Screener ✅ Shipped 2026-06-07
+
+**File:** `frontend/src/pages/insider.tsx`
+
+**What changed:** `convictionScores` useMemo groups all insider transactions by ticker over the trailing 90 days. Computes net buy $ (buys minus sells), distinct buyer count, distinct seller count, buy count, sell count. Conviction Screener table shows top 15 tickers by net buy $, with "Net buyers only" toggle, linked tickers, and green conviction bars sized by net buy amount.
+
+**Why it matters for trading:** Insider buying — especially cluster buying (multiple insiders buying simultaneously) — is one of the few genuine information edges retail investors have legal access to. It indicates management believes the stock is undervalued at the current price. Previously you had to scroll hundreds of raw transaction rows to find clustered buying. The screener surfaces it in seconds.
+
+---
+
+### UI-06: Portfolio P&L Heatmap ✅ Shipped 2026-06-07
+
+**File:** `frontend/src/pages/positions.tsx`
+
+**What changed:** Flexbox heatmap grid added above the chart section on the positions page. Each cell represents one position, sized proportionally by market value (minimum 4% width). Cell color: green for profit, red for loss, with alpha intensity proportional to P&L % magnitude (0.08 at breakeven to 0.38 at ±15%). Tooltip shows symbol, P&L %, and P&L in dollars.
+
+**Why it matters for trading:** Reading a table row by row to understand portfolio composition is slow. The heatmap answers "where is my money and how is it doing?" in one glance. A cell taking 40% of the visual space that's dark red tells you immediately that your largest position is your biggest loser — before you've read a single number.
+
+---
+
+### UI-09: Data Freshness Chip ✅ Shipped 2026-06-07
+
+**Files:** `frontend/src/pages/_app.tsx` + `services/market-data/src/api/routes.py`
+
+**What changed:** `GET /stocks/data_freshness` queries `MAX(Price.ts)` from the Price table (daily bars only) and returns `last_bar_ts`, `hours_ago`, and `status` (fresh/stale/very_stale). The site header shows a colored chip polling this every 5 minutes: green ("Xh ago") when data is < 8 hours old, yellow for 8–30 hours, red for > 30 hours.
+
+**Why it matters for trading:** If the nightly yfinance ingest fails silently — EC2 disk full, yfinance outage, network timeout — all prices and signals remain from the previous session. Without the freshness chip, you might act on a BUY signal generated from yesterday's data during a significant overnight gap move. The chip makes data staleness visible before you open a position.
+
+---
+
+### Nginx Research Timeout Fix ✅ Shipped (EC2, 2026-06-06)
+
+**File:** `/etc/nginx/conf.d/stockai.conf` (EC2)
+
+**What changed:** Added a dedicated `location /api/research/` block with `proxy_read_timeout 150s` and `proxy_send_timeout 150s`. The default `location /` block had 30s, which was causing NetworkErrors for AI research reports that take 60–90 seconds to generate.
+
+**Why it matters for trading:** Research reports are used for pre-trade due diligence (DCF fair value, business quality, bear thesis). If the report fails with a NetworkError, you make the trade without the analysis. The fix ensures reports always complete.
 
 ---
 

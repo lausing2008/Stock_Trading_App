@@ -46,7 +46,7 @@
 import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow } from '@/lib/api';
+import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type SignalAccuracyReport } from '@/lib/api';
 
 type RollingPoint = { date: string; accuracy: number; signal_count: number };
 
@@ -261,10 +261,17 @@ function FactorChart({ factors }: { factors: FactorRow[] }) {
 function WalkForwardSection() {
   const [testDays, setTestDays] = useState(30);
   const [holdDays, setHoldDays] = useState(5);
+  const [selectedWindow, setSelectedWindow] = useState<WalkForwardWindow | null>(null);
 
   const { data, isLoading, error } = useSWR<WalkForwardReport>(
     ['walkforward', testDays, holdDays],
     () => api.walkForward(testDays, holdDays, 365),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: drillData, isLoading: drillLoading } = useSWR<SignalAccuracyReport>(
+    selectedWindow ? ['wf-drill', selectedWindow.start, selectedWindow.end] : null,
+    () => api.signalAccuracy(90, undefined, selectedWindow!.start, selectedWindow!.end),
     { revalidateOnFocus: false },
   );
 
@@ -377,18 +384,24 @@ function WalkForwardSection() {
 
       {/* Per-window heatmap */}
       <div style={{ marginBottom: 24 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 8 }}>Per-window accuracy heatmap</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 8 }}>Per-window accuracy heatmap <span style={{ fontSize: 10, fontWeight: 400, color: '#475569' }}>— click a cell to inspect signals</span></div>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {(data.windows as WalkForwardWindow[]).map((w, i) => (
-            <div key={i} title={`${w.start} – ${w.end}\n${w.n_signals} signals · ${w.accuracy}% · avg ${w.avg_return_pct > 0 ? '+' : ''}${w.avg_return_pct.toFixed(1)}%`}
-              style={{ background: windowColor(w.accuracy), borderRadius: 6, padding: '6px 10px', minWidth: 52, textAlign: 'center', cursor: 'default' }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: windowTextColor(w.accuracy) }}>{w.accuracy.toFixed(0)}%</div>
-              <div style={{ fontSize: 9, color: '#475569', marginTop: 1 }}>{w.start.slice(5)}</div>
-              <div style={{ fontSize: 9, color: w.avg_return_pct > 0 ? '#4ade80' : '#f87171', marginTop: 1 }}>
-                {w.avg_return_pct > 0 ? '+' : ''}{w.avg_return_pct.toFixed(1)}%
+          {(data.windows as WalkForwardWindow[]).map((w, i) => {
+            const isSelected = selectedWindow?.start === w.start;
+            return (
+              <div key={i}
+                onClick={() => setSelectedWindow(isSelected ? null : w)}
+                title={`${w.start} – ${w.end}\n${w.n_signals} signals · ${w.accuracy}% · avg ${w.avg_return_pct > 0 ? '+' : ''}${w.avg_return_pct.toFixed(1)}%`}
+                style={{ background: windowColor(w.accuracy), borderRadius: 6, padding: '6px 10px', minWidth: 52, textAlign: 'center', cursor: 'pointer',
+                  outline: isSelected ? '2px solid #818cf8' : 'none', outlineOffset: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: windowTextColor(w.accuracy) }}>{w.accuracy.toFixed(0)}%</div>
+                <div style={{ fontSize: 9, color: '#475569', marginTop: 1 }}>{w.start.slice(5)}</div>
+                <div style={{ fontSize: 9, color: w.avg_return_pct > 0 ? '#4ade80' : '#f87171', marginTop: 1 }}>
+                  {w.avg_return_pct > 0 ? '+' : ''}{w.avg_return_pct.toFixed(1)}%
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 10, color: '#475569' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ display: 'inline-block', width: 10, height: 10, background: '#15803d', borderRadius: 2 }} /> ≥65%</span>
@@ -397,6 +410,74 @@ function WalkForwardSection() {
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ display: 'inline-block', width: 10, height: 10, background: '#7f1d1d', borderRadius: 2 }} /> &lt;50%</span>
         </div>
       </div>
+
+      {/* Drill-down panel */}
+      {selectedWindow && (
+        <div style={{ marginBottom: 24, border: '1px solid #312e81', borderRadius: 10, background: '#0f0f2a', padding: '16px 18px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#818cf8' }}>
+                Window {selectedWindow.start} – {selectedWindow.end}
+              </div>
+              <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>
+                {selectedWindow.n_signals} signals · {selectedWindow.accuracy.toFixed(0)}% accuracy · avg {selectedWindow.avg_return_pct > 0 ? '+' : ''}{selectedWindow.avg_return_pct.toFixed(1)}%
+              </div>
+            </div>
+            <button onClick={() => setSelectedWindow(null)}
+              style={{ background: 'none', border: '1px solid #1e293b', borderRadius: 6, color: '#475569', padding: '3px 10px', cursor: 'pointer', fontSize: 12 }}>
+              ✕ Close
+            </button>
+          </div>
+          {drillLoading && <div style={{ color: '#475569', fontSize: 12, padding: '12px 0' }}>Loading signals…</div>}
+          {!drillLoading && drillData && drillData.signals.length === 0 && (
+            <div style={{ color: '#475569', fontSize: 12 }}>No evaluated signals found for this window.</div>
+          )}
+          {!drillLoading && drillData && drillData.signals.length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                    {['Symbol', 'Date', 'Signal', 'Conf%', 'Entry', 'Exit', 'Return', 'Result'].map(h => (
+                      <th key={h} style={{ textAlign: 'left', padding: '4px 8px', color: '#475569', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...drillData.signals].sort((a, b) => Number(b.correct) - Number(a.correct)).map((s, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid #0f172a' }}>
+                      <td style={{ padding: '5px 8px', fontWeight: 700, color: '#e2e8f0' }}>
+                        <Link href={`/stock/${s.symbol}`} style={{ color: '#e2e8f0', textDecoration: 'none' }}>{s.symbol}</Link>
+                      </td>
+                      <td style={{ padding: '5px 8px', color: '#64748b' }}>{s.signal_date}</td>
+                      <td style={{ padding: '5px 8px' }}>
+                        <span style={{ fontWeight: 700, color: s.signal === 'BUY' ? '#4ade80' : '#f87171' }}>{s.signal}</span>
+                      </td>
+                      <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{s.confidence != null ? `${(s.confidence * 100).toFixed(0)}%` : '—'}</td>
+                      <td style={{ padding: '5px 8px', color: '#64748b' }}>{s.entry_price.toFixed(2)}</td>
+                      <td style={{ padding: '5px 8px', color: '#64748b' }}>{s.exit_price.toFixed(2)}</td>
+                      <td style={{ padding: '5px 8px', fontWeight: 600, color: s.pct_change > 0 ? '#4ade80' : '#f87171' }}>
+                        {s.pct_change > 0 ? '+' : ''}{s.pct_change.toFixed(1)}%
+                      </td>
+                      <td style={{ padding: '5px 8px' }}>
+                        <span style={{ padding: '2px 7px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+                          background: s.correct ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)',
+                          color: s.correct ? '#4ade80' : '#f87171',
+                          border: `1px solid ${s.correct ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
+                          {s.correct ? '✓ Correct' : '✗ Wrong'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ marginTop: 8, fontSize: 11, color: '#475569' }}>
+                Correct: {drillData.signals.filter(s => s.correct).length} / {drillData.signals.length}
+                {drillData.overall_accuracy != null && <> · Window accuracy: <span style={{ color: drillData.overall_accuracy >= 60 ? '#4ade80' : drillData.overall_accuracy >= 50 ? '#fbbf24' : '#f87171' }}>{drillData.overall_accuracy.toFixed(1)}%</span></>}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Equity curve */}
       {hasEquity && (
@@ -453,7 +534,7 @@ function WalkForwardSection() {
 }
 
 export default function SignalAccuracyPage() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward' | 'outcomes'>('overview');
   const [lookback, setLookback] = useState(90);
   const [filterSymbol, setFilterSymbol] = useState('');
   const [signalFilter, setSignalFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
@@ -461,10 +542,14 @@ export default function SignalAccuracyPage() {
   const [sortBy, setSortBy] = useState<'date' | 'confidence' | 'pct_change'>('date');
   const [resetting, setResetting] = useState(false);
   const [resetMsg, setResetMsg] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+
+  const useDateRange = fromDate !== '' && toDate !== '';
 
   const { data, isLoading, error, mutate } = useSWR(
-    ['signal-accuracy', lookback],
-    () => api.signalAccuracy(lookback),
+    ['signal-accuracy', lookback, fromDate, toDate],
+    () => api.signalAccuracy(lookback, undefined, fromDate || undefined, toDate || undefined),
     { revalidateOnFocus: false },
   );
 
@@ -477,6 +562,12 @@ export default function SignalAccuracyPage() {
   const { data: mlWeight } = useSWR(
     'ml-weight-validation',
     () => api.mlWeightValidation(180),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: outcomesData } = useSWR<OutcomesSummary>(
+    ['outcomes-summary', lookback],
+    () => api.outcomesSummary(undefined, lookback),
     { revalidateOnFocus: false },
   );
 
@@ -547,7 +638,7 @@ export default function SignalAccuracyPage() {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #1e293b', paddingBottom: 0 }}>
-        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward']] as const).map(([tab, label]) => (
+        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward'], ['outcomes', 'Outcomes']] as const).map(([tab, label]) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             style={{ padding: '7px 18px', borderRadius: '6px 6px 0 0', fontSize: 13, fontWeight: 500, cursor: 'pointer',
               border: '1px solid', borderBottom: activeTab === tab ? '1px solid #0f172a' : '1px solid transparent',
@@ -562,19 +653,171 @@ export default function SignalAccuracyPage() {
 
       {activeTab === 'walkforward' && <WalkForwardSection />}
 
+      {activeTab === 'outcomes' && (
+        <div>
+          {!outcomesData || outcomesData.total === 0 ? (
+            <div style={{ textAlign: 'center', padding: '60px 0', color: '#475569' }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>📊</div>
+              <div>No evaluated outcomes yet.</div>
+              <div style={{ fontSize: 12, marginTop: 4, color: '#334155' }}>
+                signal_outcomes are recorded when a BUY/SELL signal matures past its hold window (SHORT=7d, SWING=14d, LONG=28d).
+                Data accumulates automatically — check back after ~2 weeks of daily signal runs.
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Overall */}
+              {outcomesData.overall && (
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>
+                    Overall — {outcomesData.total} evaluated signals ({outcomesData.days_lookback}d window)
+                  </div>
+                  <div style={{ display: 'flex', gap: 24 }}>
+                    <div>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: outcomesData.overall.win_rate >= 0.55 ? '#4ade80' : outcomesData.overall.win_rate >= 0.50 ? '#facc15' : '#f87171' }}>
+                        {(outcomesData.overall.win_rate * 100).toFixed(1)}%
+                      </div>
+                      <div style={{ fontSize: 11, color: '#475569' }}>Win rate</div>
+                    </div>
+                    {outcomesData.overall.avg_return_pct != null && (
+                      <div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: outcomesData.overall.avg_return_pct >= 0 ? '#4ade80' : '#f87171' }}>
+                          {outcomesData.overall.avg_return_pct >= 0 ? '+' : ''}{outcomesData.overall.avg_return_pct.toFixed(2)}%
+                        </div>
+                        <div style={{ fontSize: 11, color: '#475569' }}>Avg return</div>
+                      </div>
+                    )}
+                    {outcomesData.overall.median_return_pct != null && (
+                      <div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: outcomesData.overall.median_return_pct >= 0 ? '#4ade80' : '#f87171' }}>
+                          {outcomesData.overall.median_return_pct >= 0 ? '+' : ''}{outcomesData.overall.median_return_pct.toFixed(2)}%
+                        </div>
+                        <div style={{ fontSize: 11, color: '#475569' }}>Median return</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Confidence band table */}
+              {outcomesData.by_confidence_band && outcomesData.by_confidence_band.length > 0 && (
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>
+                    Win Rate by Confidence Band — confirms confidence % is calibrated
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ color: '#475569', textAlign: 'left' }}>
+                        <th style={{ padding: '4px 8px' }}>Confidence</th>
+                        <th style={{ padding: '4px 8px', textAlign: 'right' }}>Signals</th>
+                        <th style={{ padding: '4px 8px', textAlign: 'right' }}>Win Rate</th>
+                        <th style={{ padding: '4px 8px', textAlign: 'right' }}>Avg Return</th>
+                        <th style={{ padding: '4px 8px' }}>Calibration</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {outcomesData.by_confidence_band.map(b => {
+                        const wr = b.win_rate * 100;
+                        const wrColor = wr >= 60 ? '#4ade80' : wr >= 50 ? '#facc15' : '#f87171';
+                        const barW = Math.min(100, wr * 2);
+                        return (
+                          <tr key={b.band} style={{ borderTop: '1px solid #1e293b' }}>
+                            <td style={{ padding: '6px 8px', color: '#e2e8f0', fontWeight: 600 }}>{b.band}%</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right', color: '#94a3b8' }}>{b.count}</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right', color: wrColor, fontWeight: 700 }}>{wr.toFixed(1)}%</td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right', color: b.avg_return_pct != null ? (b.avg_return_pct >= 0 ? '#4ade80' : '#f87171') : '#475569' }}>
+                              {b.avg_return_pct != null ? `${b.avg_return_pct >= 0 ? '+' : ''}${b.avg_return_pct.toFixed(2)}%` : '—'}
+                            </td>
+                            <td style={{ padding: '6px 8px' }}>
+                              <div style={{ height: 8, background: '#1e293b', borderRadius: 4, overflow: 'hidden', width: 80 }}>
+                                <div style={{ height: '100%', width: `${barW}%`, background: wrColor, borderRadius: 4 }} />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <div style={{ fontSize: 10, color: '#334155', marginTop: 8 }}>
+                    Goal: higher confidence bands should show higher win rates. Flat bars = confidence not calibrated — trigger SA-5/SA-6 Optuna tuning.
+                  </div>
+                </div>
+              )}
+
+              {/* By horizon and regime in 2-col grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                {outcomesData.by_horizon && Object.keys(outcomesData.by_horizon).length > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Win Rate by Horizon</div>
+                    {Object.entries(outcomesData.by_horizon).map(([h, v]) => (
+                      <div key={h} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderTop: '1px solid #1e293b', fontSize: 12 }}>
+                        <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{h}</span>
+                        <span style={{ color: '#94a3b8' }}>{v.count} signals</span>
+                        <span style={{ color: v.win_rate >= 0.55 ? '#4ade80' : v.win_rate >= 0.50 ? '#facc15' : '#f87171', fontWeight: 700 }}>
+                          {(v.win_rate * 100).toFixed(1)}%
+                        </span>
+                        <span style={{ color: v.avg_return_pct != null ? (v.avg_return_pct >= 0 ? '#4ade80' : '#f87171') : '#475569', fontSize: 11 }}>
+                          {v.avg_return_pct != null ? `${v.avg_return_pct >= 0 ? '+' : ''}${v.avg_return_pct.toFixed(2)}%` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {outcomesData.by_market_regime && Object.keys(outcomesData.by_market_regime).length > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Win Rate by Market Regime</div>
+                    {Object.entries(outcomesData.by_market_regime).map(([r, v]) => (
+                      <div key={r} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderTop: '1px solid #1e293b', fontSize: 12 }}>
+                        <span style={{ color: '#e2e8f0', fontWeight: 600, textTransform: 'capitalize' }}>{r.replace(/_/g, ' ')}</span>
+                        <span style={{ color: '#94a3b8' }}>{v.count}</span>
+                        <span style={{ color: v.win_rate >= 0.55 ? '#4ade80' : v.win_rate >= 0.50 ? '#facc15' : '#f87171', fontWeight: 700 }}>
+                          {(v.win_rate * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    ))}
+                    <div style={{ fontSize: 10, color: '#334155', marginTop: 8 }}>
+                      Bear market win rate should be lower — if not, check signal compression is working.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+                ℹ️ Outcomes use fixed hold windows: SHORT=7d, SWING=14d, LONG=28d. Entry = first close ≥ signal date. Exit = first close ≥ entry + hold days.
+                Once SWING outcomes exceed 500, run Optuna on signal parameters — see SIGNAL_ACCURACY.md for the tuning workflow.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {activeTab === 'overview' && <>
       {/* Controls */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 4 }}>
           {LOOKBACK_OPTIONS.map(o => (
-            <button key={o.value} onClick={() => setLookback(o.value)}
+            <button key={o.value} onClick={() => { setLookback(o.value); setFromDate(''); setToDate(''); }}
               style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
-                borderColor: lookback === o.value ? '#6366f1' : '#1e293b',
-                background: lookback === o.value ? 'rgba(99,102,241,0.15)' : 'transparent',
-                color: lookback === o.value ? '#818cf8' : '#64748b' }}>
+                borderColor: lookback === o.value && !useDateRange ? '#6366f1' : '#1e293b',
+                background: lookback === o.value && !useDateRange ? 'rgba(99,102,241,0.15)' : 'transparent',
+                color: lookback === o.value && !useDateRange ? '#818cf8' : '#64748b' }}>
               {o.label}
             </button>
           ))}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 11, color: '#475569' }}>From</span>
+          <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
+            style={{ padding: '3px 8px', borderRadius: 6, border: `1px solid ${useDateRange ? '#6366f1' : '#1e293b'}`, background: '#0f172a', color: '#e2e8f0', fontSize: 12 }} />
+          <span style={{ fontSize: 11, color: '#475569' }}>To</span>
+          <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
+            style={{ padding: '3px 8px', borderRadius: 6, border: `1px solid ${useDateRange ? '#6366f1' : '#1e293b'}`, background: '#0f172a', color: '#e2e8f0', fontSize: 12 }} />
+          {useDateRange && (
+            <button onClick={() => { setFromDate(''); setToDate(''); }}
+              style={{ padding: '3px 8px', borderRadius: 6, fontSize: 11, border: '1px solid #334155', background: 'transparent', color: '#64748b', cursor: 'pointer' }}>
+              ✕ Clear
+            </button>
+          )}
         </div>
         <input
           value={filterSymbol} onChange={e => setFilterSymbol(e.target.value)}

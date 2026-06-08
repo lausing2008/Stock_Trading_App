@@ -35,6 +35,7 @@ _ROUTES = {
     "positions": _settings.market_data_url,
     "app-notifications": _settings.market_data_url,
     "board": _settings.market_data_url,
+    "congress": _settings.market_data_url,
 }
 
 

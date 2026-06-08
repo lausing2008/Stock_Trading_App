@@ -125,6 +125,8 @@ def _bulk_persist(symbols: list[str]) -> None:
 def signal_accuracy(
     lookback_days: int = Query(90, ge=2, le=365),
     symbol: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
     session: Session = Depends(get_session),
 ):
     """Historical accuracy of BUY/SELL signals vs actual price outcomes.
@@ -134,11 +136,18 @@ def signal_accuracy(
     A BUY is 'correct' if price rose; a SELL is 'correct' if it fell.
     Signals need at least 1 day of price history after the signal date to be evaluated.
     Uses bulk price queries + bisect matching instead of per-signal queries.
+
+    Optional from_date / to_date (ISO strings, e.g. "2026-03-01") narrow the
+    signal window for walk-forward drill-down without affecting lookback_days.
     """
     import bisect
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+    if from_date and to_date:
+        cutoff = datetime.fromisoformat(from_date).replace(tzinfo=timezone.utc)
+        outcome_cutoff = datetime.fromisoformat(to_date).replace(tzinfo=timezone.utc).replace(hour=23, minute=59, second=59)
+    else:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
 
     q = (
         select(Signal, Stock.symbol, Stock.name)
@@ -1315,6 +1324,7 @@ def calibrate_ta_weights(
     new_weights = dict(_TA_WEIGHTS_DEFAULT)
     new_weights.update(fitted_scaled)
 
+    Path(_TA_WEIGHTS_PATH).parent.mkdir(parents=True, exist_ok=True)
     Path(_TA_WEIGHTS_PATH).write_text(json.dumps(new_weights, indent=2))
     log.info("calibrate_ta_weights: wrote %s (accuracy=%.3f, n=%d)", _TA_WEIGHTS_PATH, accuracy, len(X_rows))
 

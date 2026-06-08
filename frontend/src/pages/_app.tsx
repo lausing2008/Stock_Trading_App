@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { AppProps } from 'next/app';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
@@ -63,7 +63,8 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Signal Accuracy',    href: '/signal-accuracy',    color: '#a78bfa' },
       { label: 'Signal Filters',     href: '/signal-filters',     color: '#f97316' },
       { label: 'Trade Performance',  href: '/trade-performance',  color: '#34d399' },
-      { label: 'Insider / Congress', href: '/insider',      color: '#fb923c' },
+      { label: 'Insider Trading',    href: '/insider',      color: '#fb923c' },
+      { label: 'Congress Trades',   href: '/congress',     color: '#f97316' },
       { label: 'Improvements',       href: '/improvements', color: '#f59e0b', tag: 'new', adminOnly: true },
     ],
   },
@@ -189,6 +190,17 @@ export default function App({ Component, pageProps }: AppProps) {
   const [checked, setChecked] = useState(false);
   const [impersonating, setImpersonating] = useState<string | null>(null);
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [freshness, setFreshness] = useState<{ hours_ago: number | null; status: string } | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    function poll() {
+      api.dataFreshness().then(f => { if (mounted) setFreshness(f); }).catch(() => {});
+    }
+    poll();
+    const t = setInterval(poll, 5 * 60 * 1000); // refresh every 5 min
+    return () => { mounted = false; clearInterval(t); };
+  }, []);
 
   useEffect(() => {
     if (PUBLIC_PATHS.includes(router.pathname)) {
@@ -367,6 +379,17 @@ export default function App({ Component, pageProps }: AppProps) {
 
           {/* Right side controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+            {freshness && freshness.hours_ago != null && (
+              <span title={`Last price ingest: ${freshness.hours_ago}h ago`} style={{
+                fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px',
+                background: freshness.status === 'fresh' ? 'rgba(74,222,128,0.1)' : freshness.status === 'stale' ? 'rgba(251,191,36,0.1)' : 'rgba(248,113,113,0.1)',
+                border: `1px solid ${freshness.status === 'fresh' ? 'rgba(74,222,128,0.3)' : freshness.status === 'stale' ? 'rgba(251,191,36,0.3)' : 'rgba(248,113,113,0.3)'}`,
+                color: freshness.status === 'fresh' ? '#4ade80' : freshness.status === 'stale' ? '#fbbf24' : '#f87171',
+                cursor: 'default', letterSpacing: '0.02em',
+              }}>
+                {freshness.hours_ago < 1 ? '<1h' : `${freshness.hours_ago.toFixed(0)}h`} ago
+              </span>
+            )}
             <NotificationBell />
             <div style={{ width: '1px', height: '20px', background: '#1e293b' }} />
             <span style={{ fontSize: '12px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '5px' }}>
