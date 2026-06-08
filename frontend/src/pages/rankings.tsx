@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import RankingsTable from '@/components/RankingsTable';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
-import { api, type Stock, type WatchlistItem, type LatestPrice, type RankingRow, type SignalSummary } from '@/lib/api';
+import { api, type Stock, type WatchlistItem, type LatestPrice, type RankingRow, type SignalSummary, type TradePlan } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
 
 export default function RankingsPage() {
@@ -27,6 +27,8 @@ export default function RankingsPage() {
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalList } = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()), { refreshInterval: 300_000 });
+  const { data: boardData } = useSWR<TradePlan[]>('board', () => api.listBoard());
+  const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage !== 'closed').map(p => p.symbol) ?? []), [boardData]);
 
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
@@ -124,6 +126,7 @@ export default function RankingsPage() {
           signals={signalMap}
           selectedSymbols={compareSymbols}
           onToggleCompare={toggleCompare}
+          boardSet={boardSet}
         />
       )}
       {compareOpen && compareRows.length >= 2 && (

@@ -17,12 +17,14 @@ export default function RankingsTable({
   signals,
   selectedSymbols,
   onToggleCompare,
+  boardSet,
 }: {
   rows: RankingRow[];
   prices?: PriceMap;
   signals?: Record<string, SignalSummary>;
   selectedSymbols?: Set<string>;
   onToggleCompare?: (symbol: string) => void;
+  boardSet?: Set<string>;
 }) {
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
@@ -81,7 +83,14 @@ export default function RankingsTable({
                 )}
                 <td className="px-3 py-2 text-slate-500">{pending ? '—' : i + 1}</td>
                 <td className="px-3 py-2 font-medium">
-                  <a href={`/stock/${r.symbol}`} className="text-indigo-400 hover:underline">{r.symbol}</a>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <a href={`/stock/${r.symbol}`} className="text-indigo-400 hover:underline">{r.symbol}</a>
+                    {boardSet?.has(r.symbol) && (
+                      <span style={{ fontSize: '9px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', color: '#34d399', background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.3)', whiteSpace: 'nowrap' }}>
+                        ✓ On Board
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-3 py-2">
                   <div>{r.name}</div>
