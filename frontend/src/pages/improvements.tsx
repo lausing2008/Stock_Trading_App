@@ -819,7 +819,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa12-adaptive-thresholds',
-    tier: 2, severity: 'medium',
+    tier: 2, severity: 'medium', defaultStatus: 'done',
     title: 'SA-12: Adaptive confidence thresholds — raise the BUY bar in volatile/bear regimes',
     file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/services/scheduler.py',
     effort: '1–2 days',

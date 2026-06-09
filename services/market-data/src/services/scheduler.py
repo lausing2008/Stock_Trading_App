@@ -196,8 +196,36 @@ _BULLISH_ANALYST = {"buy", "strong_buy", "strongbuy", "outperform"}
 
 # Conviction thresholds — ALL five layers must clear for a BUY email to fire.
 # Bearish/exit alerts bypass these — you always want the exit warning.
-_MIN_CONFIDENCE  = 60.0   # AI signal confidence %
-_MIN_CONFLUENCE  = 75     # combined 5-factor confluence score
+# SA-12: regime-adaptive thresholds — tighten the gate in bear/high-vol markets.
+_REGIME_THRESHOLDS: dict[str, dict] = {
+    "bull":     {"ml": 0.65, "confluence": 70, "confidence": 58, "tier": "bull"},
+    "neutral":  {"ml": 0.70, "confluence": 75, "confidence": 60, "tier": "neutral"},
+    "high_vol": {"ml": 0.78, "confluence": 82, "confidence": 68, "tier": "high_vol"},
+    "bear":     {"ml": 0.78, "confluence": 82, "confidence": 68, "tier": "bear"},
+    "unknown":  {"ml": 0.70, "confluence": 75, "confidence": 60, "tier": "neutral"},
+}
+# Legacy fallbacks (used outside conviction gate — keep for non-BUY path)
+_MIN_CONFIDENCE  = 60.0
+_MIN_CONFLUENCE  = 75
+
+
+def _get_current_regime() -> str:
+    """Read the cached market regime from Redis. Returns 'bull', 'bear', 'high_vol', or 'unknown'."""
+    try:
+        data = _get_redis().get("stockai:fear_greed")
+        if data:
+            d = json.loads(data)
+            sp500 = d.get("sp500_regime", "unknown")
+            fg = d.get("score")
+            if sp500 == "bear":
+                return "bear"
+            if fg is not None and float(fg) < 30:
+                return "high_vol"
+            if sp500 == "bull":
+                return "bull"
+    except Exception:
+        pass
+    return "unknown"
 
 
 def _confluence_score_full(
@@ -225,7 +253,7 @@ def _confluence_score_full(
     )
 
 
-def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[bool, list[str], list[str]]:
+def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str = "unknown") -> tuple[bool, list[str], list[str]]:
     """Check all conviction layers for a BUY signal across all 4 framework layers.
 
     Returns (all_passed, passed_layers, failed_layers).
@@ -303,17 +331,17 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None) -> tuple[
         adx = reasons.get("adx", 0)
         failed.append(f"ADX {float(adx):.0f} < 25: market choppy, signals unreliable")
 
-    # Layer 5 — ML model agrees with TA
-    # If ml_probability is None the model has not been trained for this stock yet.
-    # Treat as a soft warning rather than a hard block — the TA evidence (layers 4a-4e)
-    # is sufficient on its own for stocks without ML coverage.
+    # Layer 5 — ML model agrees with TA (regime-adaptive threshold — SA-12)
+    thresholds = _REGIME_THRESHOLDS.get(regime, _REGIME_THRESHOLDS["unknown"])
+    ml_threshold = thresholds["ml"]
+    tier_label = thresholds["tier"]
     ml_prob = reasons.get("ml_probability")
     if ml_prob is None:
-        passed.append("ML: no model trained yet — TA-only signal (soft pass)")
-    elif float(ml_prob) > 0.70:
-        passed.append(f"ML: {float(ml_prob) * 100:.0f}% bullish probability")
+        passed.append(f"ML: no model trained yet — TA-only signal (soft pass) [{tier_label} regime]")
+    elif float(ml_prob) > ml_threshold:
+        passed.append(f"ML: {float(ml_prob) * 100:.0f}% bullish probability (threshold {ml_threshold * 100:.0f}% for {tier_label} regime)")
     else:
-        failed.append(f"ML probability {float(ml_prob) * 100:.0f}% below 70% threshold")
+        failed.append(f"ML probability {float(ml_prob) * 100:.0f}% below {ml_threshold * 100:.0f}% threshold ({tier_label} regime)")
 
     # Disqualifiers — false-BUY flags that block regardless of layer scores
     if reasons.get("rsi_divergence") == "bearish":
@@ -557,6 +585,10 @@ def check_signal_alerts() -> None:
             except Exception:
                 pass
 
+            # SA-12: read regime once for the entire alert run
+            current_regime = _get_current_regime()
+            regime_thresholds = _REGIME_THRESHOLDS.get(current_regime, _REGIME_THRESHOLDS["unknown"])
+
             fired = 0
             for alert in alerts:
                 style = symbol_user_style.get((alert.user_id, alert.symbol), "SWING")
@@ -574,7 +606,7 @@ def check_signal_alerts() -> None:
                     if current == "BUY":
                         sig_data = signal_details.get(key) or {}
                         all_pass, passed, failed = _is_conviction_buy(
-                            sig_data, kscore=kscores.get(alert.symbol)
+                            sig_data, kscore=kscores.get(alert.symbol), regime=current_regime
                         )
                         # Use DB-persisted sent_at as fallback so Redis restarts don't lose the timestamp.
                         db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
@@ -603,25 +635,27 @@ def check_signal_alerts() -> None:
                     if current == "BUY":
                         # Full 4-layer conviction gate
                         all_pass, passed, failed = _is_conviction_buy(
-                            sig_data, kscore=kscores.get(alert.symbol)
+                            sig_data, kscore=kscores.get(alert.symbol), regime=current_regime
                         )
                         if not all_pass:
                             log.info(
                                 "signal_alert.skipped", symbol=alert.symbol,
                                 reason="conviction_layers_failed", failed=failed,
+                                regime=current_regime,
                             )
                             _store_conviction(alert.symbol, style, False, passed, failed, current)
                             continue  # last_signal NOT updated — retried next run
                         conviction_passed = passed
                         log.info(
                             "signal_alert.conviction_met", symbol=alert.symbol,
-                            passed=passed,
+                            passed=passed, regime=current_regime,
                         )
                     else:
                         # Non-BUY bullish improvement (e.g. WAIT→HOLD) — lighter gate:
-                        # analyst bullish + minimum confidence
+                        # analyst bullish + regime-aware minimum confidence (SA-12)
                         analyst_ok = analyst_ratings.get(alert.symbol, "") in _BULLISH_ANALYST
-                        if not analyst_ok or confidence < _MIN_CONFIDENCE:
+                        min_conf = regime_thresholds["confidence"]
+                        if not analyst_ok or confidence < min_conf:
                             log.info(
                                 "signal_alert.skipped", symbol=alert.symbol,
                                 reason="analyst_or_confidence",

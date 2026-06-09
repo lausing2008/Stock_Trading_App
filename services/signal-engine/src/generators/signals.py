@@ -756,7 +756,9 @@ _STYLE_PROFILES: dict[str, dict] = {
     },
     "SWING": {
         "ml_weight_cap": 0.75,
-        "buy_threshold":  {"bull": 0.62, "high_vol": 0.67, "bear": 0.70, "unknown": 0.62},
+        # SA-12: tightened from {bull:0.62, high_vol:0.67, bear:0.70} to match regime thresholds.
+        # fused_prob ≈ 0.75×ml + 0.25×ta; bull 0.65, bear/high_vol 0.72 ≈ ML>0.78 target.
+        "buy_threshold":  {"bull": 0.65, "high_vol": 0.72, "bear": 0.72, "unknown": 0.65},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
         "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
@@ -799,16 +801,20 @@ def _fetch_kscore(symbol: str) -> float | None:
     return None
 
 
-def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str]:
-    """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds."""
+def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str, str]:
+    """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds.
+
+    Returns (signal, style_key, threshold_tier).
+    """
     p = _STYLE_PROFILES[style_key]
     reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "unknown"
     buy_t  = p["buy_threshold"][reg]
     hold_t = p["hold_threshold"][reg]
-    if fused_prob > buy_t:   return "BUY",  style_key
-    if fused_prob > hold_t:  return "HOLD", style_key
-    if fused_prob >= 0.35:   return "WAIT", style_key
-    return "SELL", style_key
+    tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")
+    if fused_prob > buy_t:   return "BUY",  style_key, tier
+    if fused_prob > hold_t:  return "HOLD", style_key, tier
+    if fused_prob >= 0.35:   return "WAIT", style_key, tier
+    return "SELL", style_key, tier
 
 
 def _apply_style_signal(
@@ -1066,7 +1072,8 @@ def _apply_style_signal(
     else:
         reasons["weekly_gate_fired"] = False
 
-    signal, horizon = _decide_style(fused, style_key, market_regime)
+    signal, horizon, threshold_tier = _decide_style(fused, style_key, market_regime)
+    reasons["threshold_tier"] = threshold_tier  # SA-12: log which regime threshold was applied
     confidence = round(abs(fused - 0.5) * 200, 2)
     return AIConfidence(
         signal=signal,
