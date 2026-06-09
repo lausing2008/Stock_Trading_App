@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import useSWR from 'swr';
+import { getSession } from '@/lib/auth';
 import {
   api,
   type PaperPortfolioSummary,
@@ -243,12 +244,9 @@ export default function PaperPortfolioPage() {
   const [decPage, setDecPage] = useState(1);
 
   useEffect(() => {
-    const session = localStorage.getItem('session');
-    if (!session) { router.replace('/'); return; }
-    try {
-      const s = JSON.parse(session);
-      if (s.role === 'admin') setIsAdmin(true);
-    } catch { router.replace('/'); }
+    const session = getSession();
+    if (!session) { router.replace('/login'); return; }
+    if (session.role === 'admin') setIsAdmin(true);
   }, [router]);
 
   const { data: summary, mutate: mutateSummary } = useSWR(
