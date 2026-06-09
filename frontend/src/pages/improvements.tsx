@@ -1038,13 +1038,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa16-sector-etf-trend',
-    tier: 4, severity: 'medium',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
     title: 'SA-16: Sector ETF trend filter — compress signals when the stock\'s own sector is in downtrend',
     file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/api/routes.py',
     effort: '2 days',
     impact: 'Medium — relative strength vs sector is already computed, but sector ETF direction is not. A stock outperforming a collapsing sector still has headwind. 0.85× compression when sector ETF < SMA50.',
     what: 'The RS rank measures stock vs sector ETF performance. But if the sector ETF itself is below its SMA50 (downtrending), even a market-beating stock faces a strong macro headwind. Currently this is invisible to the signal engine.',
     fix: 'In _fetch_relative_strength(): also return sector_etf_above_sma50 bool. In _apply_style_signal(): if sector_etf_above_sma50 is False and style is SWING/LONG, apply 0.85× compression and add "sector_headwind" to reasons. Skip for SHORT and GROWTH (momentum styles tolerate sector weakness).',
+    implementedNote: 'Implemented 2026-06-08 — _fetch_relative_strength now returns 3-tuple; sector_headwind added to SWING/LONG reasons',
   },
 
   {

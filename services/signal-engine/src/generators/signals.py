@@ -243,12 +243,13 @@ def _fetch_earnings_beat_rate(symbol: str) -> float | None:
     return None
 
 
-def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
-    """Return (rs_score 0-100, rs_rank) vs the stock's sector ETF.
+def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None, bool | None]:
+    """Return (rs_score 0-100, rs_rank, sector_etf_above_sma50) vs the stock's sector ETF.
 
     Fetches the stock's sector from market-data, maps to the matching SPDR ETF
-    (or ^HSI for HK stocks), then computes the 20-day return ratio.
-    Returns (None, None) on any failure.
+    (or ^HSI for HK stocks), then computes the 20-day return ratio and whether
+    the ETF is currently above its 50-day SMA (SA-16 sector trend filter).
+    Returns (None, None, None) on any failure.
     """
     _SECTOR_ETF = {
         "Technology": "XLK", "Health Care": "XLV", "Healthcare": "XLV",
@@ -265,28 +266,36 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
         with httpx.Client(timeout=8) as c:
             r = c.get(url)
             if r.status_code != 200:
-                return None, None
+                return None, None, None
         info = r.json()
         market = info.get("market", "US")
         sector = info.get("sector") or ""
         etf_ticker = "^HSI" if str(market).upper() == "HK" else _SECTOR_ETF.get(sector, "SPY")
 
-        stock_hist = yf.Ticker(symbol).history(period="2mo")
-        etf_hist   = yf.Ticker(etf_ticker).history(period="2mo")
+        stock_hist = yf.Ticker(symbol).history(period="3mo")
+        etf_hist   = yf.Ticker(etf_ticker).history(period="3mo")
         if stock_hist.empty or len(stock_hist) < 21:
-            return None, None
+            return None, None, None
         if etf_hist.empty or len(etf_hist) < 21:
-            return None, None
+            return None, None, None
 
         stock_ret = float(stock_hist["Close"].iloc[-1] / stock_hist["Close"].iloc[-21] - 1)
         etf_ret   = float(etf_hist["Close"].iloc[-1] / etf_hist["Close"].iloc[-21] - 1)
         if abs(1 + etf_ret) < 0.01:
-            return None, None
+            return None, None, None
         rs_rank = (1 + stock_ret) / (1 + etf_ret)
         rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
-        return round(rs_score, 1), round(rs_rank, 4)
+
+        # SA-16: sector ETF trend — above 50-day SMA means sector is in an uptrend
+        etf_close = etf_hist["Close"]
+        etf_sma50 = etf_close.rolling(50).mean().iloc[-1] if len(etf_close) >= 50 else None
+        sector_etf_above_sma50: bool | None = None
+        if etf_sma50 is not None and not pd.isna(etf_sma50):
+            sector_etf_above_sma50 = bool(etf_close.iloc[-1] > etf_sma50)
+
+        return round(rs_score, 1), round(rs_rank, 4), sector_etf_above_sma50
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def _fetch_news_sentiment(symbol: str) -> float | None:
@@ -968,6 +977,7 @@ def _apply_style_signal(
     is_stale: bool,
     base_reasons: dict,
     earnings_beat_rate: float | None = None,
+    sector_etf_above_sma50: bool | None = None,
 ) -> "AIConfidence":
     """Apply style-specific fusion and filters from shared base values.
 
@@ -1124,6 +1134,19 @@ def _apply_style_signal(
         reasons["rs_flag"] = "in_line_or_leading"
     fused = float(np.clip(fused, 0.0, 1.0))
 
+    # ── SA-16: Sector ETF trend filter (SWING/LONG only) ──────────────────────
+    # When the stock's sector ETF is below its 50-day SMA the whole sector is
+    # in a structural downtrend. A stock bucking that trend alone faces higher
+    # mean-reversion risk, so we compress the signal 15% toward neutral.
+    # GROWTH and SHORT are exempt: growth names lead their sector, and SHORT is
+    # purely momentum-driven and unaffected by sector-level trend.
+    if style_key in ("SWING", "LONG") and sector_etf_above_sma50 is False:
+        fused = 0.5 + (fused - 0.5) * 0.85
+        reasons["sector_headwind"] = True
+    else:
+        reasons["sector_headwind"] = False
+    fused = float(np.clip(fused, 0.0, 1.0))
+
     # ── Options flow ──────────────────────────────────────────────────────────
     if options_sentiment == "strongly_bullish":
         fused = float(np.clip(fused + 0.04, 0.0, 1.0))
@@ -1266,7 +1289,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     days_to_earnings = _fetch_earnings_proximity(symbol)
     earnings_beat_rate = _fetch_earnings_beat_rate(symbol)
     news_sentiment = _fetch_news_sentiment(symbol)
-    rs_score, rs_rank = _fetch_relative_strength(symbol)
+    rs_score, rs_rank, sector_etf_above_sma50 = _fetch_relative_strength(symbol)
     options_sentiment, cp_ratio = _fetch_options_flow(symbol)
     patterns = _fetch_patterns_from_ta(symbol)
     pattern_adj, active_patterns = _pattern_score_adjustment(patterns, len(df))
@@ -1293,8 +1316,9 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["pattern_adjustment"] = round(pattern_adj, 3)
     reasons["days_to_earnings"]   = days_to_earnings
     reasons["news_sentiment"]     = news_sentiment
-    reasons["rs_score"]           = rs_score
-    reasons["rs_rank"]            = rs_rank
+    reasons["rs_score"]                = rs_score
+    reasons["rs_rank"]                 = rs_rank
+    reasons["sector_etf_above_sma50"]  = sector_etf_above_sma50
     reasons["options_sentiment"]  = options_sentiment
     reasons["options_cp_ratio"]   = round(cp_ratio, 2) if cp_ratio is not None else None
     reasons["kscore"]             = kscore
@@ -1330,6 +1354,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             is_stale=is_stale,
             base_reasons=reasons,
             earnings_beat_rate=earnings_beat_rate,
+            sector_etf_above_sma50=sector_etf_above_sma50,
         )
 
     return {k: _make_signal(k) for k in ("SHORT", "SWING", "LONG", "GROWTH")}
