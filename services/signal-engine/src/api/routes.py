@@ -705,7 +705,7 @@ def factor_exposure(
 def trade_performance(
     lookback_days: int = Query(180, ge=7, le=730),
     symbol: str | None = None,
-    horizon: str = Query("SWING", regex="^(SHORT|SWING|LONG)$"),
+    horizon: str = Query("SWING", regex="^(SHORT|SWING|LONG|GROWTH)$"),
     wait_exits: bool = Query(False, description="Treat same-horizon WAIT as exit (exits when momentum fades)"),
     max_hold_days: int | None = Query(None, ge=1, le=365, description="Force-close after N days. Defaults: SHORT=7, SWING=25, LONG=90"),
     min_confidence: float = Query(0.0, ge=0, le=100, description="Only include BUY signals with confidence >= this value"),
@@ -1129,7 +1129,7 @@ def suppressed_signals(
 @router.get("/filter_audit")
 def filter_audit(
     lookback_days: int = Query(180, ge=30, le=730),
-    style: str = Query("SWING", regex="^(SHORT|SWING|LONG)$"),
+    style: str = Query("SWING", regex="^(SHORT|SWING|LONG|GROWTH)$"),
     hold_days: int = Query(10, ge=1, le=60, description="Days after signal to measure outcome"),
     session: Session = Depends(get_session),
 ):
@@ -1624,7 +1624,7 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
 def signal_for(
     symbol: str,
     persist: bool = False,
-    style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG. Returns all 3 if omitted."),
+    style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG, GROWTH. Returns all if omitted."),
     session: Session = Depends(get_session),
 ):
     """Generate (and optionally persist) fresh signals for the given symbol.
@@ -1664,7 +1664,7 @@ def signal_for(
         ai = all_sig.get(style_key) or all_sig["SWING"]
         return {"symbol": symbol, **asdict(ai)}
 
-    # Return all 3 styles
+    # Return all styles (SHORT, SWING, LONG, GROWTH)
     return {
         "symbol": symbol,
         "signals": {k: asdict(v) for k, v in all_sig.items()},
@@ -1675,9 +1675,10 @@ def signal_for(
 
 # Hold window in calendar days per horizon. Approximates actual trading days held.
 _OUTCOME_HOLD_DAYS: dict[str, int] = {
-    "SHORT": 7,    # ~5 trading days
-    "SWING": 14,   # ~10 trading days
-    "LONG":  28,   # ~20 trading days
+    "SHORT":  7,    # ~5 trading days
+    "SWING":  14,   # ~10 trading days
+    "LONG":   28,   # ~20 trading days
+    "GROWTH": 14,   # same window as SWING; growth trades are momentum-based
 }
 
 
@@ -1869,7 +1870,7 @@ def outcomes_summary(
 
     # By horizon (if not filtered)
     horizon_stats = {}
-    for h in ("SHORT", "SWING", "LONG"):
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
         hbucket = [o for o in outcomes if o.horizon.value == h]
         if not hbucket:
             continue

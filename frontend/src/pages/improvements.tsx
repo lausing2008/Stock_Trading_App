@@ -828,6 +828,17 @@ const ITEMS: Item[] = [
     fix: 'Define regime-specific threshold tables: bull+low_vol: ML>0.65, confluence≥70, confidence≥58. neutral: ML>0.70, confluence≥75, confidence≥60 (current). bear or high_vol: ML>0.78, confluence≥82, confidence≥68. vix_spiking: add "minimum 3 consecutive days above threshold" stability requirement. Read current regime from Redis (already stored by macro features). Apply threshold table in check_signal_alerts() and in generate_signal() for the BUY/SELL classification boundary. Log which threshold tier was applied in Signal.reasons.',
   },
 
+  {
+    id: 'sa13-growth-momentum-style',
+    tier: 2, severity: 'feature', defaultStatus: 'done',
+    title: 'SA-13: Growth/Momentum signal style — relaxed thresholds for high-volatility AI/tech stocks',
+    file: 'services/signal-engine/src/generators/signals.py · services/signal-engine/src/api/routes.py · frontend/src/pages/stock/[symbol].tsx',
+    effort: '1–2 days',
+    impact: 'High — high-volatility growth stocks (NVDA, TSLA, PLTR, AI sector) rarely pass the SWING conviction gate because they lack SMA50>SMA200 (they consolidate below the 200MA for months) and run RSI 70+ as normal. This means users never receive BUY signals for the highest-return names in bull markets. A separate GROWTH style with de-penalised momentum criteria gives signal coverage for these stocks without degrading SWING quality.',
+    what: 'The SWING signal uses SMA50>SMA200 (golden cross) as a key structural requirement and penalises RSI above 65 as "overbought." For high-growth momentum stocks this is wrong: NVDA spent most of 2023–2024 with RSI 70–85 and SMA50 below SMA200 while rallying 300%. The current system would have labeled these stocks WAIT/HOLD throughout the entire move.',
+    fix: 'Added a new GROWTH style to _STYLE_PROFILES in signals.py with: (1) SMA20>SMA50 substituted for SMA50>SMA200, (2) RSI 38–80 treated as valid entry range, (3) ML threshold 0.60 (vs 0.65 SWING bull), (4) ADX minimum lowered to 18, (5) no relative-strength compression (growth stocks often lag their sector before breaking out), (6) weekly BUY gate disabled (growth stocks have abnormal weekly RSI patterns). Added _growth_ta_adjustment() helper that gives bonus scores for SMA20>SMA50 (+0.06) and high RSI (+0.02–0.04). Added GROWTH to SignalHorizon DB enum with migration. Stock detail page shows a separate purple GROWTH signal card below the main SWING card.',
+  },
+
   // ── Stock Research ────────────────────────────────────────────────────────
 
   {

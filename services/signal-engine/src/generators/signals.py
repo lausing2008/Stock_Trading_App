@@ -793,7 +793,52 @@ _STYLE_PROFILES: dict[str, dict] = {
         "kscore_boost": True,
         "max_compress_ratio": 0.65,
     },
+    # SA-13: Growth/Momentum style for high-volatility, high-return stocks (AI, tech hypergrowth).
+    # Key differences from SWING:
+    #   - No SMA50>SMA200 requirement: growth stocks consolidate below 200MA for months
+    #   - Wider RSI window (38-80): momentum names run "overbought" by traditional standards
+    #   - Lower ML bar (0.60 bull): higher-variance names need ML confidence, not structural perfection
+    #   - No RS compression: growth stocks often lag their sector before explosive moves
+    #   - No weekly BUY gate: weekly RSI can be high without being a sell signal for growth names
+    "GROWTH": {
+        "ml_weight_cap": 0.70,
+        "buy_threshold":  {"bull": 0.60, "high_vol": 0.68, "bear": 0.70, "unknown": 0.60},
+        "hold_threshold": {"bull": 0.48, "high_vol": 0.52, "bear": 0.54, "unknown": 0.48},
+        "adx_min": 18, "adx_compression": 0.92,
+        "high_vol_compression": 0.88,
+        "breadth_compression": 0.95,
+        "weekly_boost": 1.08, "weekly_compress": 0.92,
+        "earnings_compression": {2: 0.60, 5: 0.80, 10: 0.92},
+        "news_compression": {25: 0.80, 35: 0.90},
+        "rs_compression": None,
+        "kscore_boost": False,
+        "max_compress_ratio": 0.60,
+        "skip_weekly_gate": True,
+    },
 }
+
+
+def _growth_ta_adjustment(df: pd.DataFrame, base_reasons: dict) -> float:
+    """Additive delta on top of the base TA score for the GROWTH style.
+
+    Growth/momentum stocks are penalised by the base score for having RSI in
+    momentum territory (>65) and for lacking the SMA50>SMA200 golden-cross setup.
+    This function corrects for those biases so high-growth names are not
+    systematically ranked below their true signal strength.
+    """
+    close = df["close"].astype(float)
+    delta = 0.0
+    sma20 = close.rolling(20).mean().iloc[-1]
+    sma50 = close.rolling(50).mean().iloc[-1]
+    if not pd.isna(sma20) and not pd.isna(sma50) and sma20 > sma50:
+        delta += 0.06  # short-term uptrend replaces the SMA50>SMA200 structural check
+    rsi_val = base_reasons.get("rsi")
+    if rsi_val is not None:
+        if 72 <= rsi_val <= 85:
+            delta += 0.04  # momentum territory — valid for growth, not overbought
+        elif 65 <= rsi_val < 72:
+            delta += 0.02  # base gives mild credit here; small extra for growth
+    return float(np.clip(delta, -0.10, 0.10))
 
 
 def _fetch_kscore(symbol: str) -> float | None:
@@ -1072,7 +1117,8 @@ def _apply_style_signal(
     # Bearish weekly structure (RSI < 40 AND trend down) is a confirmed downtrend, not a dip.
     # The 0.40× compression is intentionally exempt from max_compress_ratio so a SWING/LONG
     # BUY truly cannot fire in this condition without an overwhelming daily signal (≥0.90+).
-    if style_key in ("SWING", "LONG") and weekly_rsi is not None and weekly_rsi < 40 and weekly_trend == "down":
+    # GROWTH style skips this gate: growth names often have abnormal weekly RSI readings.
+    if style_key in ("SWING", "LONG") and not p.get("skip_weekly_gate") and weekly_rsi is not None and weekly_rsi < 40 and weekly_trend == "down":
         fused = 0.5 + (fused - 0.5) * 0.40
         fused = float(np.clip(fused, 0.0, 1.0))
         reasons["weekly_gate_fired"] = True
@@ -1179,9 +1225,14 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["sr_52w_high"]          = sr_data["sr_52w_high"]
     reasons["sr_52w_low"]           = sr_data["sr_52w_low"]
 
-    return {
-        style_key: _apply_style_signal(
-            ta_prob=ta_prob,
+    # SA-13: GROWTH style uses an adjusted TA score that de-penalises momentum RSI and
+    # substitutes SMA20>SMA50 for the SMA50>SMA200 structural requirement.
+    ta_prob_growth = float(np.clip(ta_prob + _growth_ta_adjustment(df, reasons), 0.0, 1.0))
+
+    def _make_signal(style_key: str) -> "AIConfidence":
+        tp = ta_prob_growth if style_key == "GROWTH" else ta_prob
+        return _apply_style_signal(
+            ta_prob=tp,
             ml_prob=ml_prob,
             ml_test_auc=ml_test_auc,
             style_key=style_key,
@@ -1199,8 +1250,8 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             base_reasons=reasons,
             earnings_beat_rate=earnings_beat_rate,
         )
-        for style_key in ("SHORT", "SWING", "LONG")
-    }
+
+    return {k: _make_signal(k) for k in ("SHORT", "SWING", "LONG", "GROWTH")}
 
 
 def generate_signal(symbol: str) -> AIConfidence:

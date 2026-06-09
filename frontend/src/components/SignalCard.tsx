@@ -13,7 +13,7 @@
  *   signal            BUY | SELL | HOLD | WAIT
  *   confidence        0–100 composite TA score (higher = stronger conviction)
  *   bullish_probability  0–1 XGBoost ML output (displayed as %)
- *   horizon           SWING (days–weeks) | POSITION (weeks–months)
+ *   horizon           SWING (days–weeks) | POSITION (weeks–months) | GROWTH (momentum)
  *   reasons           Detailed breakdown object (see Reasons type below)
  *
  * Reasons breakdown (buildReasons)

@@ -125,6 +125,8 @@ def _run_migrations() -> None:  # noqa: C901
         # We only add values here for existing AWS DBs that were created before new conditions were added.
         for _val in ('CROSS_ABOVE_EMA', 'CROSS_BELOW_EMA', 'NEW_52WK_HIGH', 'NEW_52WK_LOW', 'GOLDEN_CROSS', 'DEATH_CROSS'):
             conn.execute(text(f"ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS '{_val}'"))
+        # SA-13: add GROWTH horizon to the signalhorizon enum (idempotent on existing DBs)
+        conn.execute(text("ALTER TYPE signalhorizon ADD VALUE IF NOT EXISTS 'GROWTH'"))
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS price_alerts (
                 id           SERIAL PRIMARY KEY,
