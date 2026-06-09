@@ -553,6 +553,70 @@ def _sr_context(df: pd.DataFrame) -> dict:
     }
 
 
+def _pullback_recovery(df: pd.DataFrame) -> tuple[float, dict]:
+    """SA-14: Detect healthy pullback + recovery patterns.
+
+    A bullish pullback-recovery requires:
+      1. Price pulled back 5–25 % below its 20-day high (healthy dip, not broken).
+      2. At least 2 consecutive green closes (recovery momentum confirmed).
+      3. Volume on the most recent bar ≥ 110 % of 20-day average (conviction).
+
+    Returns (score_delta, reasons_dict). Delta is 0.04–0.07 added to the
+    normalised TA score when all conditions are met.
+    """
+    close  = df["close"].astype(float)
+    volume = df["volume"].astype(float)
+    reasons: dict = {}
+
+    if len(close) < 22:
+        reasons["pullback_recovery"] = None
+        return 0.0, reasons
+
+    # Use yesterday's rolling high to avoid look-ahead on today's bar
+    high_20d = close.iloc[:-1].rolling(20).max().iloc[-1]
+    current  = close.iloc[-1]
+
+    if pd.isna(high_20d) or high_20d <= 0:
+        reasons["pullback_recovery"] = None
+        return 0.0, reasons
+
+    pullback_pct = float((high_20d - current) / high_20d)
+    reasons["pullback_depth_pct"] = round(pullback_pct * 100, 1)
+
+    # Condition 1: meaningful pullback (5–25 %)
+    if not (0.05 <= pullback_pct <= 0.25):
+        reasons["pullback_recovery"] = None
+        return 0.0, reasons
+
+    # Condition 2: 2+ consecutive green closes
+    consecutive_green = 0
+    for i in range(-1, -5, -1):
+        try:
+            if close.iloc[i] > close.iloc[i - 1]:
+                consecutive_green += 1
+            else:
+                break
+        except IndexError:
+            break
+
+    reasons["pullback_green_days"] = consecutive_green
+
+    if consecutive_green < 2:
+        reasons["pullback_recovery"] = "no_recovery_yet"
+        return 0.0, reasons
+
+    # Condition 3: volume expansion on recovery
+    vol_avg = volume.rolling(20).mean().iloc[-1]
+    vol_confirms = bool(
+        not pd.isna(vol_avg) and vol_avg > 0 and volume.iloc[-1] > vol_avg * 1.10
+    )
+    reasons["pullback_vol_confirms"] = vol_confirms
+
+    delta = 0.07 if vol_confirms else 0.04
+    reasons["pullback_recovery"] = "confirmed_vol" if vol_confirms else "confirmed"
+    return delta, reasons
+
+
 def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float, list[str]]:
     """Returns (probability adjustment, list of active pattern names).
 
@@ -728,7 +792,13 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     _TA_MAX_SCORE = sum(v for k, v in w.items() if not k.endswith("_penalty"))
     if _TA_MAX_SCORE <= 0:
         return 0.5, reasons  # degenerate calibration; return neutral
-    return float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0)), reasons
+    base = float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0))
+
+    # SA-14: pullback + recovery boost applied after normalisation
+    pr_delta, pr_reasons = _pullback_recovery(df)
+    reasons.update(pr_reasons)
+
+    return float(np.clip(base + pr_delta, 0.0, 1.0)), reasons
 
 
 # ── Trading Style Profiles ────────────────────────────────────────────────────

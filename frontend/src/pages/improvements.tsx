@@ -1012,6 +1012,230 @@ const ITEMS: Item[] = [
     fix: 'For all closed BUY signals in signal_outcomes: extract the reasons JSON at entry time. For each boolean reason flag, compute: presence_in_winners (%) and presence_in_losers (%). Edge = presence_in_winners − presence_in_losers. Sort by edge descending. Render as a horizontal bar chart on /signal-accuracy → "Factor Attribution" tab: green bars = positive edge (more common in winners), red bars = negative edge (more common in losers). Show the top 5 "most valuable" factors and bottom 5 "noise/harmful" factors. Run this analysis broken down by market regime. Feed results back into SA-13 (self-improving conviction gate weights).',
   },
 
+  // ── Tier 4 — Signal Accuracy & ML Fixes (2026-06-08 Deep Audit) ─────────────
+
+  {
+    id: 'sa14-pullback-recovery',
+    tier: 4, severity: 'feature', defaultStatus: 'done',
+    title: 'SA-14: Pullback-recovery detector — BUY signal when stock dips 5–25 % then recovers with volume',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1 day',
+    impact: 'High — catches entries at inflection points rather than mid-rally. Stocks that pull back to support and reverse with volume are the highest-probability SWING entries.',
+    what: 'The signal engine generates BUY only once TA indicators have fully recovered (RSI climbs, MACD crosses). This means entries are caught mid-way through recoveries, not at the bottom. High-quality pullback setups (stock drops 10 %, then 2 consecutive green days on elevated volume) went unrecognised.',
+    fix: 'Added _pullback_recovery() in signals.py. Conditions: (1) Price 5–25 % below 20-day rolling high (healthy dip, not broken stock). (2) 2+ consecutive green closes. (3) Recovery day volume ≥ 110 % of 20-day average. Delta: +0.07 to TA score with volume confirmation, +0.04 without. Applied after normalisation so it adds cleanly to the [0,1] range.',
+  },
+
+  {
+    id: 'sa15-volume-confirmation',
+    tier: 4, severity: 'medium',
+    title: 'SA-15: Volume confirmation for divergences and reversals — filter false signals on light volume',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1 day',
+    impact: 'Medium — bearish RSI divergence on declining volume is much less reliable than the same divergence on heavy volume. Filters ~15 % of false reversals.',
+    what: 'The engine detects RSI divergence and golden/death crosses but does not validate them with volume. A golden cross on shrinking volume is a known false signal; professional traders require at least average volume for confirmation.',
+    fix: 'In _ta_score(): after divergence detection, check volume_z > 0.5 for bullish divergences to boost credit; check volume_z > 1.0 before adding the golden_cross_event bonus. Bearish divergence on volume_z < -0.3 (declining volume) should have 50 % reduced penalty.',
+  },
+
+  {
+    id: 'sa16-sector-etf-trend',
+    tier: 4, severity: 'medium',
+    title: 'SA-16: Sector ETF trend filter — compress signals when the stock\'s own sector is in downtrend',
+    file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/api/routes.py',
+    effort: '2 days',
+    impact: 'Medium — relative strength vs sector is already computed, but sector ETF direction is not. A stock outperforming a collapsing sector still has headwind. 0.85× compression when sector ETF < SMA50.',
+    what: 'The RS rank measures stock vs sector ETF performance. But if the sector ETF itself is below its SMA50 (downtrending), even a market-beating stock faces a strong macro headwind. Currently this is invisible to the signal engine.',
+    fix: 'In _fetch_relative_strength(): also return sector_etf_above_sma50 bool. In _apply_style_signal(): if sector_etf_above_sma50 is False and style is SWING/LONG, apply 0.85× compression and add "sector_headwind" to reasons. Skip for SHORT and GROWTH (momentum styles tolerate sector weakness).',
+  },
+
+  {
+    id: 'sa17-macd-trend-filter',
+    tier: 4, severity: 'low',
+    title: 'SA-17: MACD zero-line crossover trend filter — require price above SMA50 for full credit',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '0.5 days',
+    impact: 'Low-medium — MACD zero-cross-up in a downtrend (price below SMA50) has low reliability. Splitting the credit halves false positives from this indicator in bear phases.',
+    what: 'Line 716: macd_zero_cross_up earns full weight regardless of whether price is above or below SMA50. A zero-cross-up while price is below its SMA50 (stock in downtrend) is frequently a dead-cat bounce, not a trend reversal.',
+    fix: 'In score calculation: if macd_zero_cross_up and above_sma50: score += w["macd_zero_cross_up"]. If macd_zero_cross_up and not above_sma50: score += w["macd_zero_cross_up"] * 0.4 (partial credit only).',
+  },
+
+  {
+    id: 'sa18-weekly-ta-fused',
+    tier: 4, severity: 'medium',
+    title: 'SA-18: Incorporate weekly TA score into fused probability — not just as a compression flag',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1 day',
+    impact: 'Medium — weekly TA score (0–1) is computed but only used as a binary alignment gate. Treating it as a continuous factor could add 2–3 % accuracy.',
+    what: 'weekly_tech returns a weekly_score value (0–1) that captures weekly momentum quality. Currently this is read but only its direction (up/down) is used as a boost/compress multiplier. The actual score value is stored in reasons but never blended into the fused probability.',
+    fix: 'In _apply_style_signal(): extract weekly_score from weekly_tech. Blend it: fused = fused * 0.85 + weekly_score * 0.15 for SWING/LONG styles (where weekly alignment matters most). Cap the blend contribution to ±0.05 of the pre-blend fused value to avoid over-weighting.',
+  },
+
+  {
+    id: 'ml-lgb-sample-weight',
+    tier: 4, severity: 'critical',
+    title: 'ML-FIX-1: LightGBM ignores sample_weight — recency weighting silently dropped',
+    file: 'services/ml-prediction/src/models/lgb.py',
+    effort: '0.5 days',
+    impact: 'High — LightGBM trains on all bars equally. XGBoost and RF correctly weight recent bars 5× more. LGB predictions are regime-blind compared to the other ensemble members.',
+    what: 'lgb.py fit() pops callbacks kwarg but ignores sample_weight. Trainer passes sample_weight=train_weights at line 241 which is silently dropped. LGB never receives the recency bias that XGBoost and RandomForest benefit from.',
+    fix: 'In lgb.py fit(): self.clf.fit(X, y, sample_weight=kwargs.get("sample_weight"), **{k:v for k,v in kwargs.items() if k != "callbacks"}). One-line fix with significant impact on LGB prediction quality.',
+  },
+
+  {
+    id: 'ml-class-imbalance',
+    tier: 4, severity: 'medium',
+    title: 'ML-FIX-2: No class imbalance handling — bear-market data biases models toward majority class',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '1 day',
+    impact: 'Medium — in bear markets where 70 % of returns are negative, models overfit to the majority class. Recall on BUY signals drops significantly.',
+    what: 'No class_weight, scale_pos_weight, or SMOTE is applied after dead-zone filtering. If macro events cause class skew, all three models overfit to the dominant direction without warning.',
+    fix: 'After dead-zone filtering: compute class weights via sklearn compute_sample_weight("balanced", y_train). Blend with recency weights: final_weight = recency_weight * class_weight (normalised). Apply to all three models. Log class ratio (n_up / n_down) in training metrics.',
+  },
+
+  {
+    id: 'ml-optuna-pruning',
+    tier: 4, severity: 'medium',
+    title: 'ML-FIX-3: Optuna tuning has no pruning — tune_all takes 3–5 hours unnecessarily',
+    file: 'services/ml-prediction/src/training/tuner.py',
+    effort: '0.5 days',
+    impact: 'Medium — MedianPruner cuts ~50 % of tuning time by killing unpromising trials early. tune_all drops from 3–5 hours to 1.5–2.5 hours.',
+    what: 'study.optimize() runs all 60 trials to completion (5 CV folds each = 300 CV fits per symbol). No early stopping of unpromising trials. With 123 symbols this is ~36,900 full model trains.',
+    fix: 'study = optuna.create_study(direction="minimize", sampler=TPESampler(), pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=2)). Also add trial.report() inside the CV loop and trial.should_prune() check.',
+  },
+
+  {
+    id: 'ml-overfitting-detection',
+    tier: 4, severity: 'medium',
+    title: 'ML-FIX-4: No overfitting detection — models with CV-AUC 0.70 but test-AUC 0.50 ship silently',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '0.5 days',
+    impact: 'Medium — catches overfitted models before they generate live signals. A >10 % CV-test AUC gap means the model memorised training data.',
+    what: 'CV AUC is monitored and a warning fires if <0.55. But there is no check for train-test divergence. An overfitted model with CV AUC=0.70 but test AUC=0.50 ships without any warning.',
+    fix: 'After computing metrics: if cv_auc_mean and test_auc and (cv_auc_mean - test_auc) > 0.10: log.warning("train.overfitting_detected", ...). Optionally reject the model and keep the previous version if the gap exceeds 0.15.',
+  },
+
+  // ── Tier 5 — UI Gaps & Tech Debt (2026-06-08 Deep Audit) ─────────────────
+
+  {
+    id: 'ui-market-closed-banner',
+    tier: 5, severity: 'low',
+    title: 'UI-1: Market closed banner — show last-update time when market is not trading',
+    file: 'frontend/src/pages/watchlist.tsx · frontend/src/pages/rankings.tsx',
+    effort: '0.5 days',
+    impact: 'Low-medium — traders viewing prices at 8 PM ET may not realise the data is from 4 PM. A simple "Market closed · last update: 4:00 PM ET" banner prevents acting on stale prices.',
+    what: 'No page shows a warning when the market is closed. Prices displayed outside market hours (before 9:30 AM or after 4:00 PM ET, weekends) are stale by definition.',
+    fix: 'Add a MarketStatusBanner component: compute isMarketOpen from current time + timezone. If closed: show "Market closed · Last update: {timestamp}" bar at top. Reuse the last-price timestamp from /stocks/latest-prices response.',
+  },
+
+  {
+    id: 'ui-watchlist-notes-backend',
+    tier: 5, severity: 'medium',
+    title: 'UI-2: Watchlist notes — sync to backend instead of localStorage-only',
+    file: 'frontend/src/pages/watchlist.tsx · services/market-data/src/api/routes.py',
+    effort: '2 days',
+    impact: 'Medium — notes are lost when the user switches browser or device. A user\'s research notes ("price target $165, catalyst: AI chip demand") should persist across sessions.',
+    what: 'Notes are stored in localStorage only. Switching browser or device loses all notes. There is no save confirmation and no backend persistence.',
+    fix: 'Add notes column to watchlist_items table (migration). Add PATCH /watchlist/{list_id}/{symbol}/notes endpoint. On note modal save, call API and show "Note saved ✓" toast. Load notes from API on watchlist fetch (include in WatchlistItem response).',
+  },
+
+  {
+    id: 'ui-bulk-export',
+    tier: 5, severity: 'low',
+    title: 'UI-3: Bulk CSV export — watchlist and signal filters export to file',
+    file: 'frontend/src/pages/watchlist.tsx · frontend/src/pages/signal-filters.tsx',
+    effort: '1 day',
+    impact: 'Low-medium — traders managing 50+ stocks need to export lists for external analysis, share with co-traders, or import into other tools.',
+    what: 'No export functionality anywhere. Watchlist cards and signal filter tables cannot be downloaded as CSV.',
+    fix: 'Add "Export CSV" button on watchlist header and signal filters header. Client-side: build CSV string from current data (symbols, prices, signals, suppression flags). Use Blob download. No backend changes needed.',
+  },
+
+  {
+    id: 'ui-board-stop-visible',
+    tier: 5, severity: 'medium',
+    title: 'UI-4: Trade board — show stop-loss distance always visible without expanding card',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '1 day',
+    impact: 'Medium — a trader with 10 active positions should see at a glance how close each is to being stopped out, without clicking each card individually.',
+    what: 'Stop-loss distance (% to stop) is only shown when a card is expanded. In collapsed view, the user sees entry price and current price but not their risk.',
+    fix: 'Add a mini always-visible row to the collapsed card: "Entry $X · Stop $Y · Current $Z (±N% to stop)". Color the stop-distance text red if within 2 % of stop, yellow within 5 %.',
+  },
+
+  {
+    id: 'ui-board-close-confirm',
+    tier: 5, severity: 'medium',
+    title: 'UI-5: Trade board — drag-to-close confirmation to prevent accidental position closure',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '0.5 days',
+    impact: 'Medium — a user can accidentally drag an Active trade to Closed without recording an exit price, causing silent data loss.',
+    what: 'Drag-and-drop moves cards between stages with no confirmation. Moving to Closed stage loses the position permanently if the exit price is not set.',
+    fix: 'In onDragEnd handler: if destination stage is "closed" and plan.exit_price is null, intercept with a modal: "Record exit price before closing?" with Cancel / Record / Close Anyway buttons.',
+  },
+
+  {
+    id: 'ui-alert-granularity',
+    tier: 5, severity: 'low',
+    title: 'UI-6: Signal alert granularity — alert only on specific transitions (e.g., HOLD→BUY)',
+    file: 'frontend/src/pages/watchlist.tsx · services/market-data/src/services/scheduler.py',
+    effort: '1.5 days',
+    impact: 'Low-medium — reduces alert fatigue. Traders only need alerts when actionable transitions happen, not every time a signal is checked.',
+    what: 'Signal alerts fire on any signal change. A WAIT→HOLD transition is not actionable but still sends an email. Users who subscribe to many stocks receive excessive emails.',
+    fix: 'Add alert_on_transitions field to signal_alerts table (e.g., ["BUY", "SELL"] = only alert on transitions to those states). Add checkboxes in the alert modal: "Alert me when signal becomes: [✓] BUY [ ] HOLD [ ] WAIT [✓] SELL". Backend: check transition target against user preference before sending.',
+  },
+
+  {
+    id: 'ui-suppression-days-active',
+    tier: 5, severity: 'low',
+    title: 'UI-7: Signal filter "days active" — show how long each suppression condition has been blocking',
+    file: 'frontend/src/pages/signal-filters.tsx · services/signal-engine/src/api/routes.py',
+    effort: '1 day',
+    impact: 'Low — surfaces stocks stuck in suppression for days or weeks, helping traders understand persistent blocks vs transient ones.',
+    what: 'The signal filter table shows current suppression state only. A stock blocked by weekly gate for 5 days looks identical to one blocked for 5 hours.',
+    fix: 'Add first_suppressed_at timestamp to the suppressed-signal query (earliest date the current condition was true in consecutive signal history). Show "Days active" column computed as NOW() - first_suppressed_at. Sort descending by default.',
+  },
+
+  {
+    id: 'dp-alert-infinite-retry',
+    tier: 5, severity: 'critical',
+    title: 'DP-1: Signal alert infinite retry — failed email sends loop forever without max-retry cap',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '0.5 days',
+    impact: 'High — a broken email configuration causes the same alert to be attempted every minute indefinitely, flooding logs and never resolving.',
+    what: 'If email_send fails (email_ok = False), the DB is not updated so last_signal stays stale. The next minute, check_signal_alerts() sees the same transition and tries again. After 100 minutes, the user has received 0 emails but the scheduler has made 100 failed SMTP attempts.',
+    fix: 'Add retry_count column to signal_alerts. Increment on each failed send. If retry_count >= 5: mark as error state and skip until user re-enables. Log a prominent warning when the retry cap is hit.',
+  },
+
+  {
+    id: 'dp-hk-holiday-calendar',
+    tier: 5, severity: 'medium',
+    title: 'DP-2: HK holiday calendar — scheduler fires on Chinese New Year and other HK market holidays',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '1 day',
+    impact: 'Medium — wasted API calls and empty bar ingestion on HK holidays. Approximately 12 additional holidays per year vs US calendar.',
+    what: 'CronTrigger uses day_of_week="mon-fri" globally, which assumes standard weekday trading. HK has additional holidays (Chinese New Year, Mid-Autumn Festival, etc.) that do not align with US holidays.',
+    fix: 'Add HK_HOLIDAYS set of date strings (populate from HKEX official calendar). In the HK ingest job: if today in HK_HOLIDAYS: skip. Update annually. Alternatively use the exchange_calendars library (supports XHKG).',
+  },
+
+  {
+    id: 'dp-staleness-before-alert',
+    tier: 5, severity: 'medium',
+    title: 'DP-3: Staleness check before firing conviction alerts — prevent alerts based on yesterday\'s prices',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '0.5 days',
+    impact: 'Medium — if market-data ingestion fails, signals are computed on stale prices. Conviction alerts then fire based on incorrect data.',
+    what: 'The conviction gate fires BUY alerts using whatever signal is in the DB. If data ingestion failed post-close, the signal uses yesterday\'s prices. No staleness check before sending.',
+    fix: 'In check_signal_alerts(): before firing any alert, fetch the last bar timestamp for the symbol. If last_bar_ts < today - 2 trading days: skip alert and log "skipped stale data". Only fire on fresh prices.',
+  },
+
+  {
+    id: 'dp-scheduler-http-retry',
+    tier: 5, severity: 'medium',
+    title: 'DP-4: Scheduler HTTP retry logic — fire-and-forget posts silently fail with no retry or escalation',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '1 day',
+    impact: 'Medium — a single service outage during post-close refresh silently produces stale rankings/signals for hours without any notification.',
+    what: '_post() catches ALL exceptions but only logs at warning level. If ranking-engine or signal-engine crashes during the post-close cycle, the scheduler proceeds as if it succeeded. No retry, no circuit breaker, no escalation.',
+    fix: 'Add exponential backoff retry (3 attempts, 5s/15s/45s delays) inside _post(). After 3 failures: log at ERROR level and set a Redis flag market:refresh_failed. Read this flag in check_signal_alerts() to suppress alerts until the next successful refresh.',
+  },
+
   {
     id: 'tm5-live-vs-backtest',
     tier: 3, severity: 'feature',
