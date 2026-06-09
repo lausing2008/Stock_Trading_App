@@ -300,9 +300,11 @@ def train_model(
             note="model is near-random; predictions will carry low weight in signal fusion",
         )
 
+    test_auc_val = float(roc_auc_score(y_test, preds)) if len(np.unique(y_test)) > 1 else None
+    overfit_gap_val = round(cv_auc_mean - test_auc_val, 4) if (cv_auc_mean is not None and test_auc_val is not None) else None
     metrics = {
         "accuracy": float(accuracy_score(y_test, y_pred)),
-        "auc": float(roc_auc_score(y_test, preds)) if len(np.unique(y_test)) > 1 else None,
+        "auc": test_auc_val,
         "precision": float(precision_score(y_test, y_pred, zero_division=0)),
         "recall": float(recall_score(y_test, y_pred, zero_division=0)),
         "f1": float(f1_score(y_test, y_pred, zero_division=0)),
@@ -310,12 +312,26 @@ def train_model(
         "cv_auc_mean": cv_auc_mean,
         "cv_auc_std": float(np.std(cv_aucs)) if cv_aucs else None,
         "cv_acc_mean": float(np.mean(cv_accs)) if cv_accs else None,
+        "overfit_gap": overfit_gap_val,
         "n_train": int(len(X_train)),
         "n_cal": int(len(X_cal)),
         "n_test": int(len(X_test)),
         "n_features": len(FEATURE_COLUMNS),
         "label_threshold": label_threshold,
     }
+
+    # ML-FIX-4: overfitting detection — CV-AUC is measured on in-distribution folds;
+    # test-AUC is the final held-out split. A gap > 0.10 means the model memorised
+    # training patterns that don't generalise to unseen data.
+    if overfit_gap_val is not None and overfit_gap_val > 0.10:
+        log.warning(
+            "train.overfit_detected",
+            symbol=symbol,
+            cv_auc=round(cv_auc_mean, 4),
+            test_auc=round(test_auc_val, 4),
+            gap=overfit_gap_val,
+            note="CV-AUC vs test-AUC gap >0.10; consider reducing max_depth or increasing min_child_weight",
+        )
 
     path = _artifact_path(symbol, model_name)
     path.parent.mkdir(parents=True, exist_ok=True)

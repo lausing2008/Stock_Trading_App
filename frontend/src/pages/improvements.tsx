@@ -1096,24 +1096,26 @@ const ITEMS: Item[] = [
 
   {
     id: 'ml-optuna-pruning',
-    tier: 4, severity: 'medium',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
     title: 'ML-FIX-3: Optuna tuning has no pruning — tune_all takes 3–5 hours unnecessarily',
     file: 'services/ml-prediction/src/training/tuner.py',
     effort: '0.5 days',
     impact: 'Medium — MedianPruner cuts ~50 % of tuning time by killing unpromising trials early. tune_all drops from 3–5 hours to 1.5–2.5 hours.',
     what: 'study.optimize() runs all 60 trials to completion (5 CV folds each = 300 CV fits per symbol). No early stopping of unpromising trials. With 123 symbols this is ~36,900 full model trains.',
     fix: 'study = optuna.create_study(direction="minimize", sampler=TPESampler(), pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=2)). Also add trial.report() inside the CV loop and trial.should_prune() check.',
+    implementedNote: 'Implemented 2026-06-08 — MedianPruner(10, 2) added; trial.report() per fold; also applies _blend_weights in tuner CV loop for consistency with ML-FIX-2',
   },
 
   {
     id: 'ml-overfitting-detection',
-    tier: 4, severity: 'medium',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
     title: 'ML-FIX-4: No overfitting detection — models with CV-AUC 0.70 but test-AUC 0.50 ship silently',
     file: 'services/ml-prediction/src/training/trainer.py',
     effort: '0.5 days',
     impact: 'Medium — catches overfitted models before they generate live signals. A >10 % CV-test AUC gap means the model memorised training data.',
     what: 'CV AUC is monitored and a warning fires if <0.55. But there is no check for train-test divergence. An overfitted model with CV AUC=0.70 but test AUC=0.50 ships without any warning.',
     fix: 'After computing metrics: if cv_auc_mean and test_auc and (cv_auc_mean - test_auc) > 0.10: log.warning("train.overfitting_detected", ...). Optionally reject the model and keep the previous version if the gap exceeds 0.15.',
+    implementedNote: 'Implemented 2026-06-08 — overfit_gap logged as warning when >0.10; exposed in metrics dict for API visibility',
   },
 
   // ── Tier 5 — UI Gaps & Tech Debt (2026-06-08 Deep Audit) ─────────────────
