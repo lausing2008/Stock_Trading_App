@@ -37,7 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -210,6 +210,13 @@ export default function StockDetail() {
   const { data: allRankings } = useSWR(
     'rankings-all',
     () => api.rankings(),
+    { revalidateOnFocus: false },
+  );
+
+  // SA-13: Growth signal for high-volatility momentum stocks
+  const { data: growthSignal } = useSWR<Signal>(
+    symbol ? `growth-signal-${symbol}` : null,
+    () => api.signal(symbol, 'GROWTH'),
     { revalidateOnFocus: false },
   );
 
@@ -1194,8 +1201,21 @@ Return ONLY valid JSON — no markdown, no prose:
 
         {/* Sidebar */}
         <div className="space-y-3">
-          {/* AI Signal */}
+          {/* AI Signal (SWING) */}
           {data.signal && <SignalCard signal={data.signal} />}
+
+          {/* SA-13: GROWTH signal for momentum/high-volatility stocks */}
+          {growthSignal && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)', padding: '2px 8px', borderRadius: 4, letterSpacing: '0.05em' }}>
+                  GROWTH / MOMENTUM
+                </span>
+                <span style={{ fontSize: 10, color: '#64748b' }}>Relaxed thresholds for high-volatility stocks</span>
+              </div>
+              <SignalCard signal={growthSignal} />
+            </div>
+          )}
 
           {/* Fair Value */}
           {ranking?.fair_price != null && (() => {

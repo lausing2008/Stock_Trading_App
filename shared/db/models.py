@@ -69,6 +69,7 @@ class SignalHorizon(str, enum.Enum):
     SHORT = "SHORT"
     SWING = "SWING"
     LONG = "LONG"
+    GROWTH = "GROWTH"
 
 
 class User(Base):
