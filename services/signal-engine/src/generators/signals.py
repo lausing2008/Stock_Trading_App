@@ -756,9 +756,9 @@ _STYLE_PROFILES: dict[str, dict] = {
     },
     "SWING": {
         "ml_weight_cap": 0.75,
-        # SA-12: tightened from {bull:0.62, high_vol:0.67, bear:0.70} to match regime thresholds.
-        # fused_prob ≈ 0.75×ml + 0.25×ta; bull 0.65, bear/high_vol 0.72 ≈ ML>0.78 target.
-        "buy_threshold":  {"bull": 0.65, "high_vol": 0.72, "bear": 0.72, "unknown": 0.65},
+        # SA-12: keep bull/neutral thresholds unchanged; only tighten bear/high_vol.
+        # fused_prob ≈ 0.75×ml + 0.25×ta; 0.72 ≈ ML>0.78 target for stressed regimes.
+        "buy_threshold":  {"bull": 0.62, "high_vol": 0.72, "bear": 0.72, "unknown": 0.62},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
         "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
