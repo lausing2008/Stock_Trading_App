@@ -738,6 +738,74 @@ const ITEMS: Item[] = [
   },
 
   {
+    id: 'tb1-trailing-stop',
+    tier: 3, severity: 'feature',
+    title: 'TB-1: Trailing stop-loss — auto-raise stop as price rises in your favour',
+    file: 'frontend/src/pages/board.tsx · services/signal-engine/src/api/routes.py',
+    effort: '2–3 days',
+    impact: 'High — prevents giving back large gains; the #1 cause of a winning trade turning into a loss is a static stop set at entry',
+    what: 'The game plan sets a fixed stop at entry. Once price rises 5–10%, the original stop no longer reflects risk — a pullback to entry is now breakeven, not a loss. There is no mechanism to automatically raise the stop as the position moves in favour.',
+    fix: 'Add a trailing stop calculator to each Trade Board card: (1) Once price rises ≥3% from entry, display "Move stop to breakeven" suggestion. (2) Once ≥5%, trail at ATR×1.5 below the highest close reached since entry. (3) Show the current trailing stop level as a chip on the card (distinct from the static game plan stop). Backend: new GET /signals/{symbol}/trail?entry_price=X&entry_date=Y returns trail_stop, trail_level (breakeven/trailing), highest_close. Frontend: fetch on card expand, show coloured chip.',
+  },
+
+  {
+    id: 'tb2-time-stop',
+    tier: 3, severity: 'feature',
+    title: 'TB-2: Time-stop — flag dead-money trades that have stalled for N days',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '1 day',
+    impact: 'Medium — capital sitting in a flat position has opportunity cost; automatic flagging prompts the user to act before the trade decays further',
+    what: 'A trade can stall for weeks with price oscillating ±2% around entry — technically still active but generating no return. There is no mechanism to surface these "dead money" positions. Users often hold stalled trades waiting for momentum that never returns.',
+    fix: 'Compute days_in_trade on each Trade Board card. If price has moved < ±3% from entry AND days_in_trade > 15 (active) or > 20 (watch/planning), show a "⏱ Stalled" warning badge on the card. Clicking opens a tooltip: "No meaningful progress in N days — consider redeploying capital or tightening the stop." No backend change needed — entry_date and current price already in the card data.',
+  },
+
+  {
+    id: 'tb3-stop-breach-alert',
+    tier: 3, severity: 'feature',
+    title: 'TB-3: Live stop-loss breach indicator — visual alert when price crosses below stop',
+    file: 'frontend/src/pages/board.tsx · frontend/src/lib/api.ts',
+    effort: '1–2 days',
+    impact: 'High — without a real-time breach indicator, users may miss a stop being hit during the trading day and hold losing positions beyond their own risk rules',
+    what: 'The Trade Board shows the stop-loss price but makes no comparison to the current live price. If a stock drops below its stop, the card shows nothing different — the user must manually notice the price has fallen through the stop.',
+    fix: 'On card render: compare current_price (already in board data) against game_plan.stop_loss. If current_price < stop_loss and stage is "active": highlight the stop chip in red, show "⚠ Stop breached" banner at top of card. If current_price < stop_loss × 1.02 (within 2%): show "Near stop" in amber. This is a pure frontend change — no backend call needed. Optionally fire a push notification (POST /notifications) when breach is detected on next refresh.',
+  },
+
+  {
+    id: 'tb4-dollar-risk-pnl',
+    tier: 3, severity: 'feature',
+    title: 'TB-4: Dollar-risk P&L — show position $ risk alongside % P&L',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '1 day',
+    impact: 'Medium — % P&L is abstract; "down $340 on a $2,000 position (ATR stop = $280 max risk)" is concrete and helps users compare positions on equal footing',
+    what: 'The Trade Board shows % P&L from entry but no dollar amounts. Users cannot quickly see which position is bleeding the most capital or how their actual loss compares to their planned max risk (stop distance × shares). Comparing -4% on a $500 position vs -1% on a $5,000 position requires mental arithmetic.',
+    fix: 'If shares and entry_price are stored in game_plan (they are — PositionSizer data is saved), compute: position_size = shares × entry_price, unrealised_pnl = (current_price - entry_price) × shares, max_risk = (entry_price - stop_loss) × shares. Display as "$+340 | Risk: $180" below the % P&L chip. Show max_risk in grey and unrealised_pnl in green/red. No backend change.',
+  },
+
+  {
+    id: 'tb5-portfolio-risk-dashboard',
+    tier: 3, severity: 'feature',
+    title: 'TB-5: Portfolio heat-at-risk summary — total capital at risk across all active trades',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '1–2 days',
+    impact: 'High — users may unknowingly have 40% of their capital at risk across 8 small positions; a single summary number surfaces over-leveraging before it becomes a problem',
+    what: 'There is no summary of total risk exposure across the Trade Board. A user with 8 active positions could have stop-losses implying a total portfolio drawdown of 25%+ without realising it. The board shows individual card risk but no aggregate.',
+    fix: 'Add a sticky risk summary bar at the top of the board (above the columns): "Active positions: 8 | Total at risk: $1,840 (3.7% of $50k) | Unrealised P&L: +$420". Computed client-side from all active cards. Show in amber if total at risk > 10% of total position value, red if > 20%. Include a sparkline of daily P&L change if historical data is available. No backend change — derived from card data.',
+  },
+
+  {
+    id: 'sl1-admin-signal-log',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-08 — GET /admin/signal-log (admin auth): joins Signal→Stock→SignalOutcome; paginated, filterable by symbol/signal_type/horizon/days_back. New /admin-signals page (admin-only redirect guard): stat strip, colour-coded BUY/SELL badges, confidence bar, outcome ✓/✗ once hold window closes, CSV export. Signal Log link added to Tools nav (adminOnly). Foundation for WF-2 paper trading engine.',
+    tier: 3, severity: 'feature',
+    title: 'SL-1: Admin signal log — all system BUY/SELL signals with outcomes, admin-only tab',
+    file: 'services/market-data/src/api/admin.py · frontend/src/pages/admin-signals.tsx (new)',
+    effort: '2–3 days',
+    impact: 'Very High — the system cannot improve without a feedback loop. Logging every BUY/SELL signal and linking it to actual price outcome creates the ground truth needed to tune thresholds, measure system edge, and validate changes empirically.',
+    what: 'There is no admin view of the raw system signal log. The Signal table stores every signal generated, and SignalOutcome fills in outcomes, but no admin UI surfaces this data. Admins cannot see "the system fired 23 BUY signals last week — which were correct, which were not?" without querying the DB directly.',
+    fix: 'Backend: GET /admin/signal-log (admin auth required) — joins Signal → Stock → SignalOutcome; returns paginated list with symbol, name, signal type, confidence, horizon, generated_at, outcome_pct (when available), is_correct. Filters: symbol, signal_type, days_back, horizon. Frontend: new /admin-signals page (admin-only, redirects non-admin). Table with colour-coded BUY/SELL badges, confidence bar, outcome ✓/✗ when resolved, CSV export. Nav link in Tools group (adminOnly). Prerequisite for WF-2 paper trading engine.',
+  },
+
+  {
     id: 'ui-board-added-badge',
     tier: 4, severity: 'low',
     title: 'UI-14: Show "Added" badge in Screener/Rankings when stock is already on Trade Board',
@@ -1551,8 +1619,8 @@ export default function ImprovementsPage() {
         <p style={{ fontSize: 12, color: '#64748b', margin: 0, lineHeight: 1.6 }}>
           All Tier 1–4 shipped as of 2026-06-07. SA-1/2/3/4/5/6/7/8 all done. SA-3 was already live (4 boolean flags in builder.py). SA-5 wired to Sunday scheduler. SA-7 regime-aware earnings compression implemented (bull+beater≥70%: +3% boost; bull+50-70%: halved compression; bear/hv: tightened).
           Tier 5: UI-01 to UI-09 + UI-12 all shipped. Remaining (low priority): UI-10 (ML weight auto-apply), UI-11 (factor chart verify).
-          No remaining high-leverage items — all Tier 1–4 improvements are live.
-          Overall: <strong style={{ color: '#4ade80' }}>9.0 / 10</strong> — 7 new improvement suggestions added 2026-06-07: WF-1 (signal lifecycle), WF-2 (paper portfolio), WF-3 (hold/sell guidance), UI-13 (date picker), UI-14 (board badge), testing framework, scheduler monitor.
+          Tier 3 new items (2026-06-08): TB-1 (trailing stop), TB-2 (time-stop), TB-3 (stop breach alert), TB-4 (dollar P&amp;L), TB-5 (portfolio heat-at-risk), SL-1 (admin signal log). SL-1 is implemented and live.
+          Overall: <strong style={{ color: '#4ade80' }}>9.0 / 10</strong> — 13 new improvement suggestions since 2026-06-07: WF-1/2/3, UI-13/14, TB-1–5, SL-1, testing framework, scheduler monitor.
         </p>
       </div>
     </div>

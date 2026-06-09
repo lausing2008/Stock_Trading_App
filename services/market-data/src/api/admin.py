@@ -1,13 +1,14 @@
 """Admin endpoints: trigger ingestion + seed universe + add individual stock."""
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, desc
+from sqlalchemy.orm import Session
 import yfinance as yf
 import redis as redis_lib
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Exchange, Market, SessionLocal, Stock, init_db
+from db import Exchange, Market, SessionLocal, Stock, Signal, SignalOutcome, init_db, get_session
 
 from ..adapters.registry import set_runtime_key
 from ..services.ingestion import ingest_symbol, ingest_universe
@@ -188,3 +189,78 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks):
     market_val = "HK" if symbol.endswith(".HK") else "US"
     tasks.add_task(ingest_symbol, symbol, market_val)
     return {"status": "added", "symbol": symbol, "name": name, "sector": sector}
+
+
+# ── SL-1: Admin signal log ────────────────────────────────────────────────────
+
+@router.get("/signal-log")
+def admin_signal_log(
+    symbol: str | None = Query(None),
+    signal_type: str | None = Query(None, description="BUY, SELL, HOLD, WAIT"),
+    horizon: str | None = Query(None, description="SHORT, SWING, LONG, GROWTH"),
+    days_back: int = Query(90, ge=1, le=365),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+):
+    """SL-1: Paginated system signal log with outcomes. Admin-only."""
+    from datetime import datetime, timedelta
+
+    cutoff = datetime.utcnow() - timedelta(days=days_back)
+
+    q = (
+        select(Signal, Stock, SignalOutcome)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .outerjoin(SignalOutcome, SignalOutcome.signal_id == Signal.id)
+        .where(Signal.ts >= cutoff)
+    )
+
+    if symbol:
+        q = q.where(Stock.symbol == symbol.upper())
+    if signal_type:
+        q = q.where(Signal.signal == signal_type.upper())
+    if horizon:
+        q = q.where(Signal.horizon == horizon.upper())
+
+    q = q.order_by(desc(Signal.ts))
+
+    total = session.execute(
+        select(Signal.id)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .where(Signal.ts >= cutoff)
+    ).all()
+    total_count = len(total)
+
+    offset = (page - 1) * limit
+    rows = session.execute(q.offset(offset).limit(limit)).all()
+
+    results = []
+    for sig, stock, outcome in rows:
+        results.append({
+            "id": sig.id,
+            "symbol": stock.symbol,
+            "name": stock.name,
+            "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
+            "signal": sig.signal.value if hasattr(sig.signal, "value") else str(sig.signal),
+            "horizon": sig.horizon.value if hasattr(sig.horizon, "value") else str(sig.horizon),
+            "confidence": sig.confidence,
+            "bullish_probability": sig.bullish_probability,
+            "reasons": sig.reasons,
+            "source": sig.source,
+            "generated_at": sig.ts.isoformat(),
+            # Outcome fields (null until hold window closes)
+            "outcome_pct": outcome.pct_return if outcome else None,
+            "is_correct": outcome.is_correct if outcome else None,
+            "entry_price": outcome.entry_price if outcome else None,
+            "exit_price": outcome.exit_price if outcome else None,
+            "exit_date": outcome.exit_date.isoformat() if (outcome and outcome.exit_date) else None,
+        })
+
+    return {
+        "total": total_count,
+        "page": page,
+        "limit": limit,
+        "pages": max(1, (total_count + limit - 1) // limit),
+        "items": results,
+    }

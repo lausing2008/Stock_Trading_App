@@ -131,6 +131,20 @@ export const api = {
     claude_model?: string; deepseek_model?: string;
   }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
 
+  getAdminSignalLog: (params?: {
+    symbol?: string; signal_type?: string; horizon?: string;
+    days_back?: number; page?: number; limit?: number;
+  }) => {
+    const p = new URLSearchParams();
+    if (params?.symbol) p.set('symbol', params.symbol);
+    if (params?.signal_type) p.set('signal_type', params.signal_type);
+    if (params?.horizon) p.set('horizon', params.horizon);
+    if (params?.days_back != null) p.set('days_back', String(params.days_back));
+    if (params?.page != null) p.set('page', String(params.page));
+    if (params?.limit != null) p.set('limit', String(params.limit));
+    return request<AdminSignalLogResponse>(`/admin/signal-log?${p.toString()}`);
+  },
+
   // Broad stock scan (arbitrary tickers via yfinance)
   quickScan: (symbols: string[], priceMin?: number, priceMax?: number) =>
     request<QuickScanResult[]>(`/stocks/quick_scan`, {
@@ -768,4 +782,31 @@ export type ResearchReport = {
   short_float_pct: number | null;
   next_earnings: string | null;
   days_to_earnings: number | null;
+};
+
+export type AdminSignalLogItem = {
+  id: number;
+  symbol: string;
+  name: string;
+  market: string;
+  signal: string;
+  horizon: string;
+  confidence: number;
+  bullish_probability: number | null;
+  reasons: Record<string, unknown> | null;
+  source: string;
+  generated_at: string;
+  outcome_pct: number | null;
+  is_correct: boolean | null;
+  entry_price: number | null;
+  exit_price: number | null;
+  exit_date: string | null;
+};
+
+export type AdminSignalLogResponse = {
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+  items: AdminSignalLogItem[];
 };
