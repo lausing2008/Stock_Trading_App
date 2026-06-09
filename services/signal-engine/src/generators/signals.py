@@ -702,15 +702,26 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     reasons["stoch_rsi_overbought"] = stoch_overbought
     reasons["stoch_rsi_cross_up"]   = stoch_cross_up
 
-    # ── RSI divergence (10-bar lookback) ─────────────────────────────────
+    # ── RSI divergence (peak-to-peak, 20-bar window) ─────────────────────
+    # Use peak comparison rather than raw point-in-time levels so that stocks
+    # in sustained uptrends with mean-reverting RSI don't falsely trigger bearish divergence.
     rsi_divergence = "none"
-    if len(rsi.dropna()) >= 11 and len(close) >= 11:
-        price_higher = bool(close.iloc[-1] > close.iloc[-11])
-        rsi_higher   = bool(rsi.iloc[-1]   > rsi.iloc[-11])
-        if price_higher and not rsi_higher:
-            rsi_divergence = "bearish"
-        elif not price_higher and rsi_higher:
-            rsi_divergence = "bullish"
+    _div_window = 20
+    if len(rsi.dropna()) >= _div_window and len(close) >= _div_window:
+        _price_w = close.iloc[-_div_window:]
+        _rsi_w   = rsi.iloc[-_div_window:]
+        _price_peak_idx = int(_price_w.argmax())
+        _rsi_peak_idx   = int(_rsi_w.argmax())
+        # Bearish divergence: price peaks later (or same) while RSI peaked earlier
+        # Only fire if peaks are meaningfully separated (≥5 bars) to avoid noise
+        if _price_peak_idx > _rsi_peak_idx + 4:
+            # Price still making new highs after RSI has turned — momentum fading
+            if _price_w.iloc[-1] >= _price_w.iloc[_price_peak_idx] * 0.98:
+                rsi_divergence = "bearish"
+        elif _rsi_peak_idx > _price_peak_idx + 4:
+            # RSI recovers while price still low — hidden bullish divergence
+            if _rsi_w.iloc[-1] >= _rsi_w.iloc[_rsi_peak_idx] * 0.90:
+                rsi_divergence = "bullish"
     reasons["rsi_divergence"] = rsi_divergence
 
     # ── MACD histogram + zero-line crossover ──────────────────────────────
@@ -787,10 +798,11 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 
     # SA-15: divergence weighted by volume confirmation
     if rsi_divergence == "bearish":
-        # declining volume makes bearish divergence less reliable
-        score -= w["rsi_divergence_bearish_penalty"] * (0.5 if _vz < -0.3 else 1.0)
+        # High volume on a divergence day CONFIRMS price move, making bearish divergence LESS reliable
+        # Low/declining volume = divergence is more meaningful → full penalty
+        score -= w["rsi_divergence_bearish_penalty"] * (0.5 if _vz > 0.3 else 1.0)
     elif rsi_divergence == "bullish":
-        # bullish divergence requires volume to be credible
+        # Bullish divergence requires volume to be credible
         score += w["rsi_divergence_bullish"] * (1.0 if _vz > 0.3 else 0.5)
 
     if macd_hist > 0 and macd_rising:  score += w["macd_strong"]
@@ -892,9 +904,9 @@ _STYLE_PROFILES: dict[str, dict] = {
     #   - No weekly BUY gate: weekly RSI can be high without being a sell signal for growth names
     "GROWTH": {
         "ml_weight_cap": 0.70,
-        "buy_threshold":  {"bull": 0.60, "high_vol": 0.68, "bear": 0.70, "unknown": 0.60},
-        "hold_threshold": {"bull": 0.48, "high_vol": 0.52, "bear": 0.54, "unknown": 0.48},
-        "adx_min": 18, "adx_compression": 0.92,
+        "buy_threshold":  {"bull": 0.57, "high_vol": 0.65, "bear": 0.68, "unknown": 0.57},
+        "hold_threshold": {"bull": 0.45, "high_vol": 0.50, "bear": 0.52, "unknown": 0.45},
+        "adx_min": 12, "adx_compression": 0.92,
         "high_vol_compression": 0.88,
         "breadth_compression": 0.95,
         "weekly_boost": 1.08, "weekly_compress": 0.92,
@@ -921,7 +933,7 @@ def _growth_ta_adjustment(df: pd.DataFrame, base_reasons: dict) -> float:
     sma20 = close.rolling(20).mean().iloc[-1]
     sma50 = close.rolling(50).mean().iloc[-1]
     if not pd.isna(sma20) and not pd.isna(sma50) and sma20 > sma50:
-        delta += 0.06  # short-term uptrend replaces the SMA50>SMA200 structural check
+        delta += 0.10  # replaces SMA50>SMA200 at equal weight — growth names live above SMA20>SMA50
     rsi_val = base_reasons.get("rsi")
     if rsi_val is not None:
         if 72 <= rsi_val <= 85:
@@ -991,11 +1003,15 @@ def _apply_style_signal(
     # ── ML / TA fusion with style-specific ML weight cap ─────────────────────
     if ml_prob is not None:
         ml_prob_c = float(np.clip(ml_prob, 0.05, 0.95))
-        if ml_test_auc < 0.52:
-            # Near-random model (AUC < 0.52) — fall back to TA-only to avoid corrupting fused signal
+        if ml_test_auc < 0.50:
+            # Truly random or inverse model — zero weight
             raw_w = 0.0
+        elif ml_test_auc < 0.55:
+            # Ramp from 0 at AUC=0.50 to 0.20 at AUC=0.55 — weak model gets low influence
+            raw_w = float((ml_test_auc - 0.50) / 0.05 * 0.20)
         else:
-            raw_w = float(np.clip(0.40 + (ml_test_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
+            # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
+            raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
         ml_w  = min(raw_w, p["ml_weight_cap"])
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
