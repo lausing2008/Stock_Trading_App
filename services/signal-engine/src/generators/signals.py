@@ -758,10 +758,14 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     w = _load_ta_weights()
     score = 0.0
 
-    if above_sma50:         score += w["above_sma50"]
-    if sma50_above_sma200:  score += w["sma50_above_sma200"]
-    if golden_cross_event:  score += w["golden_cross_event"]
-    if death_cross_event:   score -= w["death_cross_penalty"]
+    # SA-15: volume_z used for confirmation weighting (safe float)
+    _vz = float(reasons.get("volume_z") or 0.0)
+
+    if above_sma50:        score += w["above_sma50"]
+    if sma50_above_sma200: score += w["sma50_above_sma200"]
+    # SA-15: golden cross on shrinking volume is unreliable — half credit
+    if golden_cross_event: score += w["golden_cross_event"] * (1.0 if _vz > 0.5 else 0.5)
+    if death_cross_event:  score -= w["death_cross_penalty"]
 
     if rsi_val is not None:
         if 45 < rsi_val < 65:    score += w["rsi_sweet_spot"]
@@ -772,12 +776,19 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     elif stoch_overbought:  score -= w["stoch_overbought_penalty"]
     if stoch_cross_up:      score += w["stoch_cross_up"]
 
-    if rsi_divergence == "bearish":   score -= w["rsi_divergence_bearish_penalty"]
-    elif rsi_divergence == "bullish": score += w["rsi_divergence_bullish"]
+    # SA-15: divergence weighted by volume confirmation
+    if rsi_divergence == "bearish":
+        # declining volume makes bearish divergence less reliable
+        score -= w["rsi_divergence_bearish_penalty"] * (0.5 if _vz < -0.3 else 1.0)
+    elif rsi_divergence == "bullish":
+        # bullish divergence requires volume to be credible
+        score += w["rsi_divergence_bullish"] * (1.0 if _vz > 0.3 else 0.5)
 
     if macd_hist > 0 and macd_rising:  score += w["macd_strong"]
     elif macd_hist > 0:                score += w["macd_positive"]
-    if macd_zero_cross_up:             score += w["macd_zero_cross_up"]
+    # SA-17: MACD zero-cross gets full credit only when price is above SMA50
+    if macd_zero_cross_up:
+        score += w["macd_zero_cross_up"] * (1.0 if above_sma50 else 0.4)
 
     if 0.2 < bb_pct_b < 0.8:   score += w["bb_mid_zone"]
 

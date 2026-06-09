@@ -1027,7 +1027,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa15-volume-confirmation',
-    tier: 4, severity: 'medium',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
     title: 'SA-15: Volume confirmation for divergences and reversals — filter false signals on light volume',
     file: 'services/signal-engine/src/generators/signals.py',
     effort: '1 day',
@@ -1049,7 +1049,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa17-macd-trend-filter',
-    tier: 4, severity: 'low',
+    tier: 4, severity: 'low', defaultStatus: 'done',
     title: 'SA-17: MACD zero-line crossover trend filter — require price above SMA50 for full credit',
     file: 'services/signal-engine/src/generators/signals.py',
     effort: '0.5 days',
@@ -1071,7 +1071,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'ml-lgb-sample-weight',
-    tier: 4, severity: 'critical',
+    tier: 4, severity: 'critical', defaultStatus: 'done',
     title: 'ML-FIX-1: LightGBM ignores sample_weight — recency weighting silently dropped',
     file: 'services/ml-prediction/src/models/lgb.py',
     effort: '0.5 days',
@@ -1194,7 +1194,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'dp-alert-infinite-retry',
-    tier: 5, severity: 'critical',
+    tier: 5, severity: 'critical', defaultStatus: 'done',
     title: 'DP-1: Signal alert infinite retry — failed email sends loop forever without max-retry cap',
     file: 'services/market-data/src/services/scheduler.py',
     effort: '0.5 days',

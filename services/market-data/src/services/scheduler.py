@@ -507,6 +507,10 @@ def _round_step(price: float) -> float:
     return 0.01
 
 
+# DP-1: track consecutive email failures per alert to prevent infinite retry loops
+_alert_fail_counts: dict[int, int] = {}
+
+
 def check_signal_alerts() -> None:
     """Fire conviction BUY alerts when all 5 layers align; fire exit warnings unconditionally.
 
@@ -697,9 +701,21 @@ def check_signal_alerts() -> None:
                     now_utc = datetime.now(timezone.utc)
                     alert.last_sent_at = now_utc   # persist so Redis restarts don't lose sent_at
                     fired += 1
+                    _alert_fail_counts.pop(alert.id, None)  # reset failure counter
                     log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
                     _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current,
                                       sent_at=now_utc.isoformat())
+                else:
+                    # DP-1: cap retries to prevent infinite loop on broken email config
+                    _alert_fail_counts[alert.id] = _alert_fail_counts.get(alert.id, 0) + 1
+                    if _alert_fail_counts[alert.id] >= 5:
+                        log.error(
+                            "signal_alert.email_retry_limit",
+                            symbol=alert.symbol, retries=5,
+                            note="advancing state to stop retry loop; check SMTP config",
+                        )
+                        alert.last_signal = current  # force-advance so next run sees new state
+                        _alert_fail_counts.pop(alert.id, None)
 
             session.commit()
             if fired:
