@@ -28,6 +28,9 @@ from .models import (
     TimeFrame,
     SignalType,
     SignalHorizon,
+    PaperPortfolio,
+    PaperTrade,
+    PaperEquityCurve,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -61,6 +64,9 @@ __all__ = [
     "TimeFrame",
     "SignalType",
     "SignalHorizon",
+    "PaperPortfolio",
+    "PaperTrade",
+    "PaperEquityCurve",
     "SessionLocal",
     "engine",
     "get_session",

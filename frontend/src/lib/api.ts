@@ -267,6 +267,31 @@ export const api = {
   clearResearch: (symbol: string) => request(`/research/${symbol}`, { method: 'DELETE' }),
   chatResearch: (symbol: string, messages: {role: string; content: string}[], api_key: string, model: string, provider: string) =>
     request<{role: string; content: string}>(`/research/${symbol}/chat`, { method: 'POST', body: JSON.stringify({ messages, api_key, model, provider }) }, 60_000),
+
+  // WF-2 Paper Portfolio
+  paperSummary: () => request<PaperPortfolioSummary>('/paper-portfolio/summary'),
+  paperPositions: () => request<PaperPosition[]>('/paper-portfolio/positions'),
+  paperTrades: (params?: { page?: number; limit?: number; symbol?: string; exit_reason?: string }) => {
+    const p = new URLSearchParams();
+    if (params?.page) p.set('page', String(params.page));
+    if (params?.limit) p.set('limit', String(params.limit));
+    if (params?.symbol) p.set('symbol', params.symbol);
+    if (params?.exit_reason) p.set('exit_reason', params.exit_reason);
+    return request<PaperTradesResponse>(`/paper-portfolio/trades?${p}`);
+  },
+  paperEquityCurve: (days = 180) => request<PaperEquityPoint[]>(`/paper-portfolio/equity-curve?days=${days}`),
+  paperDecisions: (params?: { page?: number; limit?: number; symbol?: string; days_back?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.page) p.set('page', String(params.page));
+    if (params?.limit) p.set('limit', String(params.limit));
+    if (params?.symbol) p.set('symbol', params.symbol);
+    if (params?.days_back) p.set('days_back', String(params.days_back));
+    return request<PaperDecisionsResponse>(`/paper-portfolio/decisions?${p}`);
+  },
+  paperConfigure: (body: Partial<PaperPortfolioConfig>) =>
+    request<{ ok: boolean; config: PaperPortfolioConfig }>('/paper-portfolio/configure', { method: 'POST', body: JSON.stringify(body) }),
+  paperReset: () =>
+    request<{ ok: boolean; positions_closed: number; cash_reset_to: number }>('/paper-portfolio/reset', { method: 'POST' }),
 };
 
 export type SuppressedSignalConditions = {
@@ -809,4 +834,136 @@ export type AdminSignalLogResponse = {
   limit: number;
   pages: number;
   items: AdminSignalLogItem[];
+};
+
+// ── WF-2 Paper Portfolio types ────────────────────────────────────────────────
+
+export type PaperPortfolioConfig = {
+  trading_style: string;
+  max_positions: number;
+  max_sector_pct: number;
+  risk_per_trade_pct: number;
+  max_position_pct: number;
+  min_confidence: number;
+  min_kscore: number;
+  min_rr_ratio: number;
+  min_entry_score: number;
+  max_hold_days: number;
+  trail_atr_mult: number;
+  trail_trigger_pct: number;
+  breakeven_trigger_pct: number;
+  wait_exit_days: number;
+  enabled: boolean;
+};
+
+export type PaperPortfolioSummary = {
+  portfolio_id: number;
+  name: string;
+  trading_style: string;
+  initial_capital: number;
+  current_equity: number;
+  current_cash: number;
+  open_positions_value: number;
+  total_return_pct: number;
+  total_realized_pnl: number;
+  total_unrealized_pnl: number;
+  open_positions: number;
+  closed_trades: number;
+  win_rate_pct: number;
+  avg_win_pct: number;
+  avg_loss_pct: number;
+  spy_close: number | null;
+  qqq_close: number | null;
+  config: PaperPortfolioConfig;
+  created_at: string | null;
+};
+
+export type PaperPosition = {
+  id: number;
+  symbol: string;
+  trading_style: string;
+  entry_date: string | null;
+  entry_price: number;
+  current_price: number | null;
+  shares: number;
+  position_value: number;
+  stop_loss: number;
+  current_stop: number;
+  take_profit: number | null;
+  highest_price: number | null;
+  hold_days: number;
+  unrealized_pnl: number;
+  unrealized_pct: number;
+  rr_ratio_at_entry: number | null;
+  entry_score: number | null;
+  confidence_at_entry: number | null;
+  kscore_at_entry: number | null;
+  market_regime_at_entry: string | null;
+};
+
+export type PaperTrade = {
+  id: number;
+  symbol: string;
+  trading_style: string;
+  entry_date: string | null;
+  entry_time: string | null;
+  entry_price: number;
+  exit_time: string | null;
+  exit_price: number | null;
+  exit_reason: string | null;
+  shares: number;
+  pnl: number | null;
+  pct_return: number | null;
+  hold_days: number;
+  stop_loss: number;
+  take_profit: number | null;
+  rr_ratio_at_entry: number | null;
+  entry_score: number | null;
+  confidence_at_entry: number | null;
+  kscore_at_entry: number | null;
+};
+
+export type PaperTradesResponse = {
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+  items: PaperTrade[];
+};
+
+export type PaperEquityPoint = {
+  date: string;
+  equity: number;
+  cash: number;
+  open_positions_value: number;
+  open_positions_count: number;
+  spy_close: number | null;
+  qqq_close: number | null;
+  hsi_close: number | null;
+};
+
+export type PaperDecisionItem = {
+  id: number;
+  symbol: string;
+  decision: string;
+  entry_time: string | null;
+  entry_price: number;
+  entry_score: number | null;
+  decision_notes: string[];
+  confidence_at_entry: number | null;
+  kscore_at_entry: number | null;
+  rr_ratio_at_entry: number | null;
+  market_regime_at_entry: string | null;
+  stage: string;
+  exit_reason: string | null;
+  pnl: number | null;
+  pct_return: number | null;
+};
+
+export type PaperDecisionsResponse = {
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+  items: PaperDecisionItem[];
 };

@@ -83,6 +83,7 @@ from db import AlertCondition, Price, PriceAlert, SignalAlert, SessionLocal, Sto
 
 from .ingestion import ingest_universe
 from .email_service import send_price_alert_email, send_signal_alert_email
+from .paper_trading_engine import paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
 
 log = get_logger("scheduler")
 _settings = get_settings()
@@ -177,6 +178,20 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
 
     check_signal_alerts()
     check_technical_alerts()
+
+    # WF-2: paper trading engine — runs after signals are fresh.
+    # Only for US market (GROWTH watchlist is US stocks only).
+    if market == "US":
+        try:
+            paper_trading_step()
+        except Exception as _pte:
+            log.error("scheduler.paper_trading_step_failed", error=str(_pte), exc_info=True)
+        if post_close:
+            try:
+                snapshot_equity_curve()
+            except Exception as _sec:
+                log.error("scheduler.snapshot_equity_curve_failed", error=str(_sec), exc_info=True)
+
     log.info("scheduler.refresh_done", market=market, post_close=post_close)
 
 
@@ -391,6 +406,22 @@ _STYLE_PARAMS: dict[str, dict] = {
         "stop_label":   "wide stop allows normal volatility; weekly close below invalidates thesis",
         "tp_fallback":  "+25% medium-term target (position trade)",
         "horizon_note": "Position trade (1–12 months) — manage around earnings; size for volatility",
+    },
+    # GROWTH: 30–90 day momentum/hypergrowth trade — wide stop, large target.
+    # These stocks move big: NVDA, PLTR, IONQ, CRWD, NET, DDOG etc.
+    # RSI 70–85 is momentum confirmation, NOT overbought for growth names.
+    # No SMA50>SMA200 requirement — growth stocks consolidate below 200MA.
+    "GROWTH": {
+        "entry1_pct":   0.975,   # -2.5% — momentum pullback entry
+        "entry2_pct":   0.940,   # -6.0% — deeper dip / scale-in level
+        "breakout_pct": 1.035,   # +3.5% — breakout from base/consolidation
+        "stop_pct":     0.880,   # -12%  — wide stop; growth stocks are volatile
+        "default_tp_pct": 1.35,  # +35% default target (growth names move)
+        "entry1_label": "momentum pullback — growth stocks dip before continuation",
+        "entry2_label": "deeper pullback entry — scale in; strong hands accumulating",
+        "stop_label":   "wide stop accommodates normal growth-stock volatility (12%)",
+        "tp_fallback":  "+35% growth target — AI/tech/momentum name; hold for the move",
+        "horizon_note": "Growth/momentum trade (30–90 days) — hold through volatility; trail stop on gains",
     },
 }
 
@@ -1134,6 +1165,12 @@ def start_scheduler() -> None:
         id="signal_alert_startup",
         replace_existing=True,
     )
+
+    # WF-2: ensure the default GROWTH paper portfolio exists on startup.
+    try:
+        ensure_portfolio_exists()
+    except Exception as _ppe:
+        log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
     log.info("scheduler.started", jobs=12)
