@@ -534,11 +534,11 @@ export default function Watchlist() {
   useEffect(() => {
     const local = loadNotes();
     const api_notes: Record<string, string> = {};
-    for (const item of items ?? []) {
+    for (const item of data ?? []) {
       if (item.note) api_notes[item.symbol] = item.note;
     }
     setNotes({ ...local, ...api_notes });
-  }, [items]);
+  }, [data]);
 
   const alertMap = useMemo(() => {
     const m: Record<string, PriceAlert[]> = {};
