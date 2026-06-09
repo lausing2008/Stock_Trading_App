@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .base import BaseModel
 from .gbm import GradientBoostingModel
+from .lgb import LightGBMModel
 from .lstm import LSTMModel
 from .rf import RandomForestModel
 from .xgb import XGBModel
@@ -9,6 +10,7 @@ from .xgb import XGBModel
 _MODELS: dict[str, type[BaseModel]] = {
     "random_forest": RandomForestModel,
     "xgboost": XGBModel,
+    "lightgbm": LightGBMModel,
     "gradient_boosting": GradientBoostingModel,
     "lstm": LSTMModel,
 }

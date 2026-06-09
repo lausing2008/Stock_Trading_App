@@ -136,33 +136,40 @@ def _fetch_weekly_prices(symbol: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _fetch_ml_data(symbol: str) -> tuple[float | None, float]:
-    """Return (bullish_probability, test_auc).
+def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
+    """Return (bullish_probability, test_auc, ml_meta).
 
-    Tries the XGBoost+RF ensemble first; falls back to XGBoost-only.
-    test_auc (held-out test set AUC, not CV AUC) drives the dynamic ML/TA
-    fusion weight — a high-quality model (AUC 0.70) earns up to 75% weight;
-    a near-random model (AUC 0.50) gets only 40% so the hand-tuned TA rules
-    compensate. Falls back to cv_auc_mean for models trained before this fix.
+    SA-8: tries the 3-model ensemble (XGBoost+LightGBM+RF) first, then 2-model,
+    then XGBoost-only. ml_meta carries per-model probabilities and agreement status
+    for storage in Signal.reasons.
+
+    test_auc drives the dynamic ML/TA fusion weight — a high-quality model (AUC 0.70)
+    earns up to 75% weight; a near-random model (AUC < 0.52) gets 0% weight.
     """
     payload = {"symbol": symbol}
-    for endpoint in ("/ml/predict_ensemble", "/ml/predict"):
+    endpoints = [
+        ("/ml/predict_ensemble_three", payload),
+        ("/ml/predict_ensemble",       payload),
+        ("/ml/predict",                {**payload, "model": "xgboost"}),
+    ]
+    for endpoint, body in endpoints:
         try:
             with httpx.Client(timeout=10) as c:
-                r = c.post(
-                    f"{_settings.ml_prediction_url}{endpoint}",
-                    json=payload if endpoint == "/ml/predict_ensemble" else {**payload, "model": "xgboost"},
-                )
+                r = c.post(f"{_settings.ml_prediction_url}{endpoint}", json=body)
                 if r.status_code == 200:
                     data = r.json()
                     prob = float(data.get("bullish_probability", 0.5))
                     m = data.get("metrics") or {}
-                    # Prefer unbiased held-out test AUC; fall back to CV AUC for older bundles
                     test_auc = float(m.get("test_auc_mean") or m.get("auc") or m.get("cv_auc_mean") or 0.55)
-                    return prob, test_auc
+                    ml_meta = {
+                        "ml_model": data.get("model", "xgboost"),
+                        "ml_agreement": data.get("ensemble_agreement"),
+                        "ml_model_probs": data.get("model_probabilities"),
+                    }
+                    return prob, test_auc, ml_meta
         except Exception as exc:
             log.warning("ml.fetch_failed", symbol=symbol, endpoint=endpoint, error=str(exc))
-    return None, 0.55
+    return None, 0.55, {}
 
 
 def _fetch_market_regime() -> tuple[str, float | None]:
@@ -1126,7 +1133,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df)
     sr_data = _sr_context(df)
-    ml_prob, ml_test_auc = _fetch_ml_data(symbol)
+    ml_prob, ml_test_auc, ml_meta = _fetch_ml_data(symbol)
     market_regime, fg_score = _fetch_market_regime()
     breadth_pct = _fetch_market_breadth()
     days_to_earnings = _fetch_earnings_proximity(symbol)
@@ -1148,6 +1155,9 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["ta_score"]           = ta_prob
     reasons["ml_probability"]     = ml_prob
     reasons["ml_test_auc"]        = ml_test_auc
+    reasons["ml_model"]           = ml_meta.get("ml_model")
+    reasons["ml_agreement"]       = ml_meta.get("ml_agreement")
+    reasons["ml_model_probs"]     = ml_meta.get("ml_model_probs")
     reasons["weekly_ta_score"]    = round(weekly_score, 3)
     reasons["weekly_rsi"]         = weekly_tech["weekly_rsi"]
     reasons["weekly_trend"]       = weekly_tech["weekly_trend"]

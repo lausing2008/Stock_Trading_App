@@ -774,7 +774,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa8-ensemble-model',
-    tier: 2, severity: 'medium',
+    tier: 2, severity: 'medium', defaultStatus: 'done',
     title: 'SA-8: Ensemble ML — XGBoost + LightGBM + Random Forest majority vote',
     file: 'services/ml-prediction/src/models/trainer.py · predictor.py',
     effort: '3–5 days',

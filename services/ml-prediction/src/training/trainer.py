@@ -425,3 +425,107 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
             "buy_threshold": buy_threshold,
         },
     }
+
+
+def predict_latest_ensemble_three(symbol: str, horizon: int = 5) -> dict:
+    """XGBoost (40%) + LightGBM (35%) + RandomForest (25%) weighted ensemble.
+
+    Agreement logic (SA-8):
+    - Unanimous (all 3 same direction): nudge probability 0.05 toward that direction.
+    - Split (2-1): compress 0.05 toward 0.5 to reflect the disagreement.
+    Per-model probabilities and agreement status are stored in the response for
+    inclusion in Signal.reasons.
+
+    Falls back gracefully: if LightGBM or RF is not trained, falls back to
+    predict_latest_ensemble (XGBoost + RF), then to XGBoost-only.
+    """
+    xgb = predict_latest(symbol, "xgboost", horizon)
+
+    lgb_path = _artifact_path(symbol, "lightgbm")
+    rf_path  = _artifact_path(symbol, "random_forest")
+
+    lgb_res = None
+    if lgb_path.exists():
+        try:
+            lgb_res = predict_latest(symbol, "lightgbm", horizon)
+        except Exception:
+            lgb_res = None
+
+    rf_res = None
+    if rf_path.exists():
+        try:
+            rf_res = predict_latest(symbol, "random_forest", horizon)
+        except Exception:
+            rf_res = None
+
+    # Determine which models are available and blend accordingly
+    available = [(xgb, 0.40)]
+    if lgb_res is not None:
+        available.append((lgb_res, 0.35))
+    if rf_res is not None:
+        available.append((rf_res, 0.25))
+
+    if len(available) == 1:
+        # Only XGBoost — no ensemble
+        return {**xgb, "ensemble": False, "model": "xgboost",
+                "model_probabilities": {"xgboost": round(xgb["bullish_probability"], 4)},
+                "ensemble_agreement": "single_model"}
+
+    # Renormalize weights to sum to 1.0 for whatever subset is available
+    total_w = sum(w for _, w in available)
+    prob = sum(m["bullish_probability"] * w / total_w for m, w in available)
+
+    # Agreement: bullish if prob > 0.5 per model
+    probs = [m["bullish_probability"] for m, _ in available]
+    directions = [p > 0.5 for p in probs]
+    n_bull = sum(directions)
+    n_models = len(probs)
+
+    if n_bull == n_models:
+        agreement = "unanimous_bull"
+        prob = min(0.95, prob + 0.05)
+    elif n_bull == 0:
+        agreement = "unanimous_bear"
+        prob = max(0.05, prob - 0.05)
+    else:
+        agreement = "majority_bull" if n_bull > n_models / 2 else "majority_bear"
+        # Slight compression toward 0.5 for disagreement
+        prob = prob + (0.5 - prob) * 0.05
+
+    prob = float(prob)
+
+    model_probs = {"xgboost": round(xgb["bullish_probability"], 4)}
+    if lgb_res is not None:
+        model_probs["lightgbm"] = round(lgb_res["bullish_probability"], 4)
+    if rf_res is not None:
+        model_probs["random_forest"] = round(rf_res["bullish_probability"], 4)
+
+    model_name = f"ensemble_xgb{'_lgb' if lgb_res else ''}{'_rf' if rf_res else ''}"
+
+    # Use XGBoost buy_threshold as the ensemble threshold (primary model)
+    buy_threshold = float((xgb.get("metrics") or {}).get("buy_threshold") or 0.5)
+
+    xgb_auc = float((xgb.get("metrics") or {}).get("auc") or (xgb.get("metrics") or {}).get("cv_auc_mean") or 0.55)
+    auc_vals = [xgb_auc]
+    if lgb_res:
+        auc_vals.append(float((lgb_res.get("metrics") or {}).get("auc") or 0.55))
+    if rf_res:
+        auc_vals.append(float((rf_res.get("metrics") or {}).get("auc") or 0.55))
+    mean_auc = sum(auc_vals) / len(auc_vals)
+
+    return {
+        "symbol": symbol,
+        "model": model_name,
+        "bullish_probability": prob,
+        "direction": "up" if prob > buy_threshold else "down",
+        "confidence": round(abs(prob - 0.5) * 200, 2),
+        "horizon_days": horizon,
+        "ensemble": True,
+        "model_probabilities": model_probs,
+        "ensemble_agreement": agreement,
+        "metrics": {
+            "test_auc_mean": round(mean_auc, 4),
+            "cv_auc_mean": round(mean_auc, 4),
+            "buy_threshold": buy_threshold,
+        },
+    }
