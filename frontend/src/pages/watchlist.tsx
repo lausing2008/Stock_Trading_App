@@ -918,7 +918,7 @@ export default function Watchlist() {
 
                 {/* Top row: symbol + price */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
-                  <Link href={`/stock/${item.symbol}`} style={{ fontWeight: 700, fontSize: '17px', letterSpacing: '-0.01em', color: '#f1f5f9' }}>{item.symbol}</Link>
+                  <Link href={`/stock/${item.symbol}${activeList?.trading_style ? `?style=${activeList.trading_style}` : ''}`} style={{ fontWeight: 700, fontSize: '17px', letterSpacing: '-0.01em', color: '#f1f5f9' }}>{item.symbol}</Link>
                   <div style={{ textAlign: 'right' }}>
                     {lp ? (<>
                       <div style={{ fontWeight: 600, fontSize: '14px', color: '#f1f5f9' }}>
