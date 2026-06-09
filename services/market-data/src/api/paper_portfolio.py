@@ -282,7 +282,7 @@ def configure_portfolio(
         "max_positions", "max_sector_pct", "risk_per_trade_pct", "max_position_pct",
         "min_confidence", "min_kscore", "min_rr_ratio", "min_entry_score",
         "max_hold_days", "trail_atr_mult", "trail_trigger_pct", "breakeven_trigger_pct",
-        "wait_exit_days", "enabled",
+        "wait_exit_days", "enabled", "paused",
     }
     updated = {k: v for k, v in body.items() if k in allowed_keys}
     p.config = {**p.config, **updated}
@@ -322,3 +322,71 @@ def reset_portfolio(
         "positions_closed": len(open_trades),
         "cash_reset_to": p.initial_capital,
     }
+
+
+# ── Admin: set capital ────────────────────────────────────────────────────────
+
+@router.post("/capital")
+def set_capital(
+    body: dict,
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Update initial_capital and/or current_cash (admin only).
+
+    Body: { initial_capital?: number, current_cash?: number }
+    Setting current_cash lets you add/withdraw cash without a full reset.
+    """
+    p = _get_active_portfolio(session)
+
+    new_initial = body.get("initial_capital")
+    new_cash = body.get("current_cash")
+
+    if new_initial is not None:
+        val = float(new_initial)
+        if val <= 0:
+            raise HTTPException(status_code=400, detail="initial_capital must be > 0")
+        p.initial_capital = round(val, 2)
+
+    if new_cash is not None:
+        val = float(new_cash)
+        if val < 0:
+            raise HTTPException(status_code=400, detail="current_cash cannot be negative")
+        p.current_cash = round(val, 2)
+
+    session.commit()
+    return {
+        "ok": True,
+        "initial_capital": p.initial_capital,
+        "current_cash": p.current_cash,
+    }
+
+
+# ── Admin: engine state ───────────────────────────────────────────────────────
+
+@router.post("/engine")
+def set_engine_state(
+    body: dict,
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Set engine state: { state: 'running' | 'paused' | 'stopped' }
+
+    running — monitor + scan for new entries (full operation)
+    paused  — monitor open positions only, no new entries
+    stopped — do nothing (engine completely halted)
+    """
+    state = body.get("state", "").lower()
+    if state not in ("running", "paused", "stopped"):
+        raise HTTPException(status_code=400, detail="state must be 'running', 'paused', or 'stopped'")
+
+    p = _get_active_portfolio(session)
+    if state == "running":
+        p.config = {**p.config, "enabled": True, "paused": False}
+    elif state == "paused":
+        p.config = {**p.config, "enabled": True, "paused": True}
+    else:  # stopped
+        p.config = {**p.config, "enabled": False, "paused": False}
+
+    session.commit()
+    return {"ok": True, "state": state, "config": p.config}

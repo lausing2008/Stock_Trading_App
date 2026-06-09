@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import Link from 'next/link';
 import useSWR from 'swr';
 import { api, type AdminSignalLogItem } from '@/lib/api';
+import { getSession } from '@/lib/auth';
 
 // ── Static config ─────────────────────────────────────────────────────────────
 
@@ -98,15 +99,13 @@ function OutcomeCell({ pct, correct }: { pct: number | null; correct: boolean | 
 export default function AdminSignalsPage() {
   const router = useRouter();
 
-  // Admin gate — read session from localStorage
+  // Admin gate — decode role from JWT
   const [userRole, setUserRole] = useState<string | null>(null);
   useEffect(() => {
-    try {
-      const s = localStorage.getItem('session');
-      const parsed = s ? JSON.parse(s) : null;
-      setUserRole(parsed?.role ?? null);
-      if (parsed && parsed.role !== 'admin') router.replace('/');
-    } catch { router.replace('/'); }
+    const session = getSession();
+    if (!session) { router.replace('/login'); return; }
+    setUserRole(session.role);
+    if (session.role !== 'admin') router.replace('/');
   }, [router]);
 
   // Filters

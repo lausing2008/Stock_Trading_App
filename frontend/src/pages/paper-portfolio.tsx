@@ -160,6 +160,151 @@ function EquityChart({ data, initialCapital }: { data: PaperEquityPoint[]; initi
   return <div ref={ref} style={{ width: '100%' }} />;
 }
 
+// ── Engine state badge (visible to all) ───────────────────────────────────────
+
+function EngineStateBadge({ config }: { config: PaperPortfolioConfig }) {
+  const enabled = config.enabled !== false;
+  const paused = config.paused === true;
+  const state = !enabled ? 'stopped' : paused ? 'paused' : 'running';
+  const meta = {
+    running: { label: '● Running', color: '#22c55e', bg: '#14532d33' },
+    paused:  { label: '⏸ Paused',  color: '#f59e0b', bg: '#78350f33' },
+    stopped: { label: '■ Stopped', color: '#ef4444', bg: '#7f1d1d33' },
+  }[state];
+  return (
+    <span style={{
+      fontSize: 12, fontWeight: 700, color: meta.color,
+      background: meta.bg, border: `1px solid ${meta.color}44`,
+      borderRadius: 5, padding: '4px 10px',
+    }}>{meta.label}</span>
+  );
+}
+
+// ── Engine controls (admin only) ──────────────────────────────────────────────
+
+function EngineControls({ config, onDone }: { config: PaperPortfolioConfig; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const enabled = config.enabled !== false;
+  const paused = config.paused === true;
+
+  async function setState(state: 'running' | 'paused' | 'stopped') {
+    setBusy(true);
+    try { await api.paperSetEngine(state); onDone(); }
+    catch { /* swallow — summary will stay current */ }
+    finally { setBusy(false); }
+  }
+
+  const btnBase: React.CSSProperties = {
+    border: 'none', borderRadius: 6, padding: '5px 13px',
+    fontSize: 12, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer',
+    opacity: busy ? 0.6 : 1, transition: 'opacity 0.15s',
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 6 }}>
+      {/* Start */}
+      <button
+        disabled={busy || (enabled && !paused)}
+        onClick={() => setState('running')}
+        title="Start — engine scans for new entries"
+        style={{ ...btnBase, background: (enabled && !paused) ? '#166534' : '#22c55e', color: '#fff' }}
+      >▶ Start</button>
+
+      {/* Pause */}
+      <button
+        disabled={busy || !enabled || paused}
+        onClick={() => setState('paused')}
+        title="Pause — monitors open positions but stops new entries"
+        style={{ ...btnBase, background: (!enabled || paused) ? '#78350f' : '#d97706', color: '#fff' }}
+      >⏸ Pause</button>
+
+      {/* Stop */}
+      <button
+        disabled={busy || !enabled}
+        onClick={() => setState('stopped')}
+        title="Stop — engine completely halted"
+        style={{ ...btnBase, background: !enabled ? '#7f1d1d' : '#ef4444', color: '#fff' }}
+      >■ Stop</button>
+    </div>
+  );
+}
+
+// ── Capital Panel (admin only) ────────────────────────────────────────────────
+
+function CapitalPanel({
+  initialCapital, currentCash, onSave,
+}: { initialCapital: number; currentCash: number; onSave: () => void }) {
+  const [newInitial, setNewInitial] = useState('');
+  const [newCash, setNewCash] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  async function save() {
+    const body: { initial_capital?: number; current_cash?: number } = {};
+    if (newInitial) body.initial_capital = parseFloat(newInitial);
+    if (newCash)    body.current_cash    = parseFloat(newCash);
+    if (!Object.keys(body).length) return;
+    setSaving(true); setMsg('');
+    try {
+      const r = await api.paperSetCapital(body);
+      setMsg(`Saved — capital $${r.initial_capital.toLocaleString()}, cash $${r.current_cash.toLocaleString()}`);
+      setNewInitial(''); setNewCash('');
+      onSave();
+    } catch { setMsg('Error saving'); }
+    finally { setSaving(false); }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    background: '#0f172a', border: '1px solid #334155', borderRadius: 5,
+    color: '#f1f5f9', padding: '6px 10px', fontSize: 13, width: 140,
+  };
+
+  return (
+    <div style={{ background: '#1e293b', borderRadius: 10, padding: 20, border: '1px solid #334155' }}>
+      <div style={{ fontWeight: 600, marginBottom: 14, color: '#f1f5f9' }}>Capital Settings (admin)</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, alignItems: 'flex-end' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>
+            Initial Capital (benchmark) — current: ${initialCapital.toLocaleString()}
+          </span>
+          <input
+            type="number" min="1000" step="1000"
+            placeholder={`$${initialCapital.toLocaleString()}`}
+            value={newInitial}
+            onChange={e => setNewInitial(e.target.value)}
+            style={inputStyle}
+          />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>
+            Available Cash — current: ${currentCash.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          </span>
+          <input
+            type="number" min="0" step="1000"
+            placeholder={`$${currentCash.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+            value={newCash}
+            onChange={e => setNewCash(e.target.value)}
+            style={inputStyle}
+          />
+        </label>
+        <button
+          onClick={save}
+          disabled={saving || (!newInitial && !newCash)}
+          style={{
+            background: '#3b82f6', color: '#fff', border: 'none',
+            borderRadius: 6, padding: '7px 18px', cursor: 'pointer',
+            fontWeight: 600, fontSize: 13, opacity: saving ? 0.6 : 1,
+          }}
+        >{saving ? 'Saving…' : 'Set Capital'}</button>
+        {msg && <span style={{ color: msg.startsWith('Err') ? '#ef4444' : '#22c55e', fontSize: 12, alignSelf: 'center' }}>{msg}</span>}
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', marginTop: 10 }}>
+        Initial Capital sets the return % baseline. Available Cash adjusts spendable funds without closing positions.
+      </div>
+    </div>
+  );
+}
+
 // ── Config Panel ──────────────────────────────────────────────────────────────
 
 function ConfigPanel({ config, onSave }: { config: PaperPortfolioConfig; onSave: () => void }) {
@@ -285,16 +430,18 @@ export default function PaperPortfolioPage() {
       <div style={{ maxWidth: 1200, margin: '0 auto' }}>
 
         {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
           <div>
             <div style={{ fontSize: 22, fontWeight: 700 }}>Paper Portfolio</div>
             <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 3 }}>
               {summary.trading_style} style · autonomous paper trading engine (WF-2)
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <EngineStateBadge config={summary.config} />
+            {isAdmin && <EngineControls config={summary.config} onDone={mutateSummary} />}
             <span style={{ fontSize: 12, color: '#64748b', background: '#1e293b', border: '1px solid #334155', borderRadius: 5, padding: '4px 10px' }}>
-              Live prices · 60s refresh
+              Live · 60s refresh
             </span>
             <Link href="/" style={{ fontSize: 12, color: '#64748b', textDecoration: 'none' }}>← Home</Link>
           </div>
@@ -499,9 +646,14 @@ export default function PaperPortfolioPage() {
           </div>
         )}
 
-        {/* Admin config panel (bottom) */}
+        {/* Admin panels (bottom) */}
         {isAdmin && (
-          <div style={{ marginTop: 32 }}>
+          <div style={{ marginTop: 32, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <CapitalPanel
+              initialCapital={summary.initial_capital}
+              currentCash={summary.current_cash}
+              onSave={mutateSummary}
+            />
             <ConfigPanel config={summary.config} onSave={mutateSummary} />
           </div>
         )}

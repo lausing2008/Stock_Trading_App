@@ -869,10 +869,12 @@ def paper_trading_step() -> None:
             live_prices = _fetch_live_prices(all_symbols) if all_symbols else {}
 
             for portfolio in portfolios:
-                if not portfolio.config.get("enabled", True):
-                    continue
+                cfg = portfolio.config or {}
+                if not cfg.get("enabled", True):
+                    continue  # fully stopped — do nothing
                 _monitor_positions(session, portfolio, live_prices)
-                _scan_for_entries(session, portfolio, live_prices)
+                if not cfg.get("paused", False):
+                    _scan_for_entries(session, portfolio, live_prices)
                 session.commit()
 
     except Exception as exc:

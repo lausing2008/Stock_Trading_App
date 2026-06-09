@@ -292,6 +292,10 @@ export const api = {
     request<{ ok: boolean; config: PaperPortfolioConfig }>('/paper-portfolio/configure', { method: 'POST', body: JSON.stringify(body) }),
   paperReset: () =>
     request<{ ok: boolean; positions_closed: number; cash_reset_to: number }>('/paper-portfolio/reset', { method: 'POST' }),
+  paperSetCapital: (body: { initial_capital?: number; current_cash?: number }) =>
+    request<{ ok: boolean; initial_capital: number; current_cash: number }>('/paper-portfolio/capital', { method: 'POST', body: JSON.stringify(body) }),
+  paperSetEngine: (state: 'running' | 'paused' | 'stopped') =>
+    request<{ ok: boolean; state: string; config: PaperPortfolioConfig }>('/paper-portfolio/engine', { method: 'POST', body: JSON.stringify({ state }) }),
 };
 
 export type SuppressedSignalConditions = {
@@ -854,6 +858,7 @@ export type PaperPortfolioConfig = {
   breakeven_trigger_pct: number;
   wait_exit_days: number;
   enabled: boolean;
+  paused?: boolean;
 };
 
 export type PaperPortfolioSummary = {
