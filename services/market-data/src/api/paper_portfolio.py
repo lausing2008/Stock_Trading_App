@@ -284,7 +284,7 @@ def configure_portfolio(
         "max_hold_days", "trail_atr_mult", "trail_trigger_pct", "breakeven_trigger_pct",
         "wait_exit_days", "enabled", "paused",
     }
-    updated = {k: v for k, v in body.items() if k in allowed_keys}
+    updated = {k: v for k, v in body.items() if k in allowed_keys and v is not None}
     p.config = {**p.config, **updated}
     session.commit()
     return {"ok": True, "config": p.config}

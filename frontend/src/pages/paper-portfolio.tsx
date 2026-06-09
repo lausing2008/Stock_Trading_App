@@ -320,7 +320,7 @@ function ConfigPanel({ config, onSave }: { config: PaperPortfolioConfig; onSave:
         <input
           type="number" step={step}
           value={String(cur)}
-          onChange={e => setDraft(d => ({ ...d, [key]: parseFloat(e.target.value) }))}
+          onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) setDraft(d => ({ ...d, [key]: v })); }}
           style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 5, color: '#f1f5f9', padding: '5px 8px', fontSize: 13, width: 120 }}
         />
       </label>
@@ -385,6 +385,7 @@ export default function PaperPortfolioPage() {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('Positions');
   const [isAdmin, setIsAdmin] = useState(false);
+  const [authed, setAuthed] = useState(false);
   const [tradesPage, setTradesPage] = useState(1);
   const [decPage, setDecPage] = useState(1);
 
@@ -392,32 +393,33 @@ export default function PaperPortfolioPage() {
     const session = getSession();
     if (!session) { router.replace('/login'); return; }
     if (session.role === 'admin') setIsAdmin(true);
+    setAuthed(true);
   }, [router]);
 
   const { data: summary, mutate: mutateSummary } = useSWR(
-    'paper-summary', () => api.paperSummary(), { refreshInterval: 60_000 }
+    authed ? 'paper-summary' : null, () => api.paperSummary(), { refreshInterval: 60_000 }
   );
   const { data: positions } = useSWR(
-    tab === 'Positions' ? 'paper-positions' : null,
+    authed && tab === 'Positions' ? 'paper-positions' : null,
     () => api.paperPositions(), { refreshInterval: 60_000 }
   );
   const { data: trades } = useSWR(
-    tab === 'Closed Trades' ? ['paper-trades', tradesPage] : null,
+    authed && tab === 'Closed Trades' ? ['paper-trades', tradesPage] : null,
     () => api.paperTrades({ page: tradesPage, limit: 50 })
   );
   const { data: curve } = useSWR(
-    tab === 'Equity Curve' ? 'paper-curve' : null,
+    authed && tab === 'Equity Curve' ? 'paper-curve' : null,
     () => api.paperEquityCurve(180)
   );
   const { data: decisions } = useSWR(
-    tab === 'Decisions' ? ['paper-decisions', decPage] : null,
+    authed && tab === 'Decisions' ? ['paper-decisions', decPage] : null,
     () => api.paperDecisions({ page: decPage, limit: 50, days_back: 90 })
   );
 
-  if (!summary) {
+  if (!authed || !summary) {
     return (
       <main style={{ minHeight: '100vh', background: '#0f172a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ color: '#94a3b8' }}>Loading paper portfolio…</div>
+        <div style={{ color: '#94a3b8' }}>{!authed ? 'Authenticating…' : 'Loading paper portfolio…'}</div>
       </main>
     );
   }

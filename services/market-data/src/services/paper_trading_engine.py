@@ -207,13 +207,16 @@ def _should_enter(
     if rsi is not None:
         rsi = float(rsi)
         if style == "GROWTH":
-            # For GROWTH, RSI 55-85 is momentum territory — good, not overbought
-            if 55 <= rsi <= 85:
+            # Tighter range checked first — elif order matters here
+            if 72 <= rsi <= 85:
+                score += 2
+                notes.append(f"RSI {rsi:.0f} — strong momentum (growth names run hot)")
+            elif 55 <= rsi < 72:
                 score += 1
                 notes.append(f"RSI {rsi:.0f} — momentum territory (valid for growth)")
-            elif 72 <= rsi <= 85:
-                score += 2  # extra credit: strong momentum
-                notes.append(f"RSI {rsi:.0f} — strong momentum (growth names run hot)")
+            elif 85 < rsi <= 88:
+                score += 1  # elevated but within tolerance for growth names
+                notes.append(f"RSI {rsi:.0f} — elevated, within growth tolerance")
             elif rsi > 88:
                 score -= 2
                 notes.append(f"RSI {rsi:.0f} — potential exhaustion above 88")
@@ -389,6 +392,10 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
     now = datetime.utcnow()
 
     for trade in open_trades:
+        # Always update hold_days — doesn't require live price
+        days_held = (date.today() - trade.entry_date).days
+        trade.hold_days = days_held
+
         live_price = live_prices.get(trade.symbol)
         if not live_price:
             continue
@@ -443,23 +450,27 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         # ── WAIT decay exit ───────────────────────────────────────────────────
 
         elif sig_type == "WAIT":
-            # Count consecutive WAIT signals
-            wait_count = session.execute(
-                select(func.count())
-                .select_from(Signal)
+            # Check if last non-WAIT signal is older than wait_exit_days — true consecutive decay
+            last_non_wait_ts = session.execute(
+                select(func.max(Signal.ts))
                 .join(Stock, Signal.stock_id == Stock.id)
                 .where(
                     Stock.symbol == trade.symbol,
                     Signal.horizon == style,
-                    Signal.signal == "WAIT",
-                    Signal.ts >= now - timedelta(days=cfg.get("wait_exit_days", 5) + 1),
+                    Signal.signal != "WAIT",
                 )
-            ).scalar() or 0
+            ).scalar()
 
-            if wait_count >= cfg.get("wait_exit_days", 5):
+            wait_days = cfg.get("wait_exit_days", 5)
+            still_waiting = (
+                last_non_wait_ts is None or
+                last_non_wait_ts < now - timedelta(days=wait_days)
+            )
+
+            if still_waiting:
                 exit_reason = "momentum_exit"
                 exit_notes = {
-                    "message": f"Signal stuck in WAIT for {wait_count} days — momentum lost",
+                    "message": f"No non-WAIT signal in {wait_days} days — momentum lost",
                     "pnl_pct": round(pnl_pct * 100, 2),
                 }
             else:
@@ -496,12 +507,20 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             if atr:
                 mult = cfg.get("trail_atr_mult", 2.0)
                 new_trail = (trade.highest_price or live_price) - atr * mult
-                if new_trail > trade.current_stop:
+                # Never let trail fall below initial stop_loss
+                floored_trail = max(new_trail, trade.stop_loss)
+                if floored_trail > trade.current_stop:
                     old = trade.current_stop
-                    trade.current_stop = round(new_trail, 4)
-                    log.info("paper.trail_stop_raised",
-                             symbol=trade.symbol, old=round(old, 2), new=round(new_trail, 2),
-                             profit_pct=round(pnl_pct * 100, 1))
+                    trade.current_stop = round(floored_trail, 4)
+                    if new_trail < trade.stop_loss:
+                        log.warning("paper.trail_below_initial_stop",
+                                    symbol=trade.symbol,
+                                    atr_trail=round(new_trail, 2),
+                                    floored_to=round(trade.stop_loss, 2))
+                    else:
+                        log.info("paper.trail_stop_raised",
+                                 symbol=trade.symbol, old=round(old, 2), new=round(floored_trail, 2),
+                                 profit_pct=round(pnl_pct * 100, 1))
         elif pnl_pct >= be_trigger and trade.current_stop < entry:
             trade.current_stop = entry
             log.info("paper.stop_to_breakeven",
@@ -544,7 +563,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         ).all()
     )
 
-    # Get GROWTH watchlist stock IDs
+    # Get GROWTH watchlist stock IDs — abort if watchlist is empty (safety guard)
     growth_stock_ids: set[int] = set(
         r[0] for r in session.execute(
             select(WatchlistItem.stock_id)
@@ -552,6 +571,10 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             .where(Watchlist.trading_style == style)
         ).all()
     )
+    if not growth_stock_ids:
+        log.warning("paper.entry_scan_skip", reason="growth_watchlist_empty",
+                    style=style, note="Add stocks to the GROWTH watchlist to enable entries")
+        return
 
     # Latest BUY signals for the style, updated recently
     buy_signals = session.execute(
@@ -560,9 +583,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         .outerjoin(
             Ranking,
             (Ranking.stock_id == Stock.id) &
-            (Ranking.as_of == session.execute(
-                select(func.max(Ranking.as_of)).where(Ranking.stock_id == Stock.id)
-            ).scalar_subquery()),
+            (Ranking.as_of == (
+                select(func.max(Ranking.as_of))
+                .where(Ranking.stock_id == Stock.id)
+                .correlate(Stock)
+                .scalar_subquery()
+            )),
         )
         .where(
             Signal.signal == "BUY",
@@ -596,7 +622,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # Sector concentration check
         if stock.sector:
             sector_value = _sector_value(session, portfolio, stock.sector, live_prices)
-            if (sector_value + live_price * 100) / max(equity, 1) > cfg["max_sector_pct"]:
+            max_new_pos = equity * cfg["max_position_pct"]
+            if (sector_value + max_new_pos) / max(equity, 1) > cfg["max_sector_pct"]:
                 log.info("paper.skip_sector_cap", symbol=stock.symbol, sector=stock.sector)
                 continue
 
@@ -678,6 +705,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         session.add(trade)
         open_symbols.add(stock.symbol)
         entries_made += 1
+        # Recalculate equity after each entry so successive entries in this cycle
+        # use the updated cash/position value rather than the stale snapshot
+        equity = _compute_equity(session, portfolio, live_prices)
 
         log.info("paper.entry",
                  symbol=stock.symbol, price=live_price,
@@ -873,6 +903,7 @@ def paper_trading_step() -> None:
                 if not cfg.get("enabled", True):
                     continue  # fully stopped — do nothing
                 _monitor_positions(session, portfolio, live_prices)
+                session.flush()  # push cash/stage mutations before scanning for entries
                 if not cfg.get("paused", False):
                     _scan_for_entries(session, portfolio, live_prices)
                 session.commit()
