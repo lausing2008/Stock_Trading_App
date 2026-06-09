@@ -530,7 +530,15 @@ export default function Watchlist() {
     { revalidateOnFocus: false },
   );
 
-  useEffect(() => { setNotes(loadNotes()); }, []);
+  // UI-2: seed notes from API response (backend is source of truth; localStorage is a cache)
+  useEffect(() => {
+    const local = loadNotes();
+    const api_notes: Record<string, string> = {};
+    for (const item of items ?? []) {
+      if (item.note) api_notes[item.symbol] = item.note;
+    }
+    setNotes({ ...local, ...api_notes });
+  }, [items]);
 
   const alertMap = useMemo(() => {
     const m: Record<string, PriceAlert[]> = {};
@@ -604,7 +612,10 @@ export default function Watchlist() {
   function saveNote(symbol: string, val: string) {
     const next = { ...notes, [symbol]: val };
     if (!val) delete next[symbol];
-    setNotes(next); saveNotes(next);
+    setNotes(next);
+    saveNotes(next); // optimistic localStorage cache
+    // UI-2: persist to backend (fire-and-forget; localStorage keeps it usable immediately)
+    api.updateWatchlistNote(symbol, val || null, activeListId ?? undefined).catch(() => {});
   }
   async function handleAddAlert(symbol: string, target: number, dir: 'above' | 'below') {
     try {
@@ -739,10 +750,33 @@ export default function Watchlist() {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
         <h1 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>Watchlist</h1>
-        <button onClick={handleRefresh} disabled={refreshing} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: refreshing ? '#818cf8' : '#64748b', cursor: 'pointer', fontSize: '13px' }}>
-          <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {/* UI-3: CSV export */}
+          <button
+            onClick={() => {
+              const rows = visible;
+              if (!rows.length) return;
+              const headers = ['Symbol', 'Name', 'Sector', 'Market', 'Exchange', 'Note', 'Added'];
+              const lines = [headers.join(','), ...rows.map(item => [
+                item.symbol, `"${(item.name ?? '').replace(/"/g, '""')}"`,
+                item.sector ?? '', item.market, item.exchange,
+                `"${(notes[item.symbol] ?? '').replace(/"/g, '""')}"`,
+                item.added_at.slice(0, 10),
+              ].join(','))];
+              const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+              const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+              a.download = `watchlist-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+            }}
+            style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '7px 12px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: '#64748b', cursor: 'pointer', fontSize: '12px' }}
+            title="Export CSV"
+          >
+            ↓ CSV
+          </button>
+          <button onClick={handleRefresh} disabled={refreshing} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: refreshing ? '#818cf8' : '#64748b', cursor: 'pointer', fontSize: '13px' }}>
+            <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* Watchlist tabs */}

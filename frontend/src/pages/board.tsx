@@ -471,10 +471,15 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
               <span style={{ color: plan.actual_entry_price != null ? '#334155' : '#818cf8', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.entry_price)}</span>
             </div>
           )}
-          {plan.stop_loss != null && (
+          {(plan.stop_loss != null || gp?.stop_loss?.price != null) && (
             <div style={{ fontSize: '11px' }}>
               <span style={{ color: '#475569' }}>Stop </span>
-              <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.stop_loss)}</span>
+              <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>
+                {fmt(plan.stop_loss ?? gp!.stop_loss!.price)}
+              </span>
+              {plan.stop_loss == null && gp?.stop_loss?.price != null && (
+                <span style={{ fontSize: '9px', color: '#334155', marginLeft: '3px' }}>gp</span>
+              )}
             </div>
           )}
           {plan.take_profit != null && (
@@ -717,6 +722,7 @@ export default function BoardPage() {
   const [dragOverStage, setDragOverStage] = useState<Stage | null>(null);
   type FillTarget = { id: number; defaultPrice: number | null };
   const [fillTarget, setFillTarget] = useState<FillTarget | null>(null);
+  const [closeConfirmId, setCloseConfirmId] = useState<number | null>(null);
 
   // Fetch live prices for board symbols only, refresh every 60 s
   const boardSymbols = useMemo(() => [...new Set((data ?? []).map(p => p.symbol))], [data]);
@@ -753,7 +759,19 @@ export default function BoardPage() {
       setFillTarget({ id, defaultPrice: livePriceMap[plan?.symbol ?? '']?.price ?? plan?.entry_price ?? null });
       return;
     }
+    // UI-5: confirm before marking a trade closed (irreversible PnL record)
+    if (stage === 'closed') {
+      setCloseConfirmId(id);
+      return;
+    }
     await api.updateBoardPlan(id, { stage });
+    mutate();
+  }
+
+  async function handleCloseConfirmed() {
+    if (closeConfirmId == null) return;
+    await api.updateBoardPlan(closeConfirmId, { stage: 'closed' });
+    setCloseConfirmId(null);
     mutate();
   }
 
@@ -916,6 +934,33 @@ export default function BoardPage() {
           onSkip={handleFillSkip}
         />
       )}
+
+      {/* UI-5: close confirmation modal */}
+      {closeConfirmId != null && (() => {
+        const closePlan = (data ?? []).find(p => p.id === closeConfirmId);
+        return (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+            <div onClick={() => setCloseConfirmId(null)} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(6px)' }} />
+            <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '360px', borderRadius: '14px', background: 'linear-gradient(160deg,#0d1424 0%,#090e1a 100%)', border: '1px solid rgba(239,68,68,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.6)', padding: '24px 24px 20px' }}>
+              <div style={{ height: '3px', background: 'linear-gradient(90deg,#ef4444,#f87171)', borderRadius: '2px', marginBottom: '18px' }} />
+              <div style={{ fontSize: '15px', fontWeight: 700, color: '#f1f5f9', marginBottom: '8px' }}>
+                Close trade{closePlan ? ` · ${closePlan.symbol}` : ''}?
+              </div>
+              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '20px', lineHeight: 1.5 }}>
+                This will move the trade to <span style={{ color: '#94a3b8' }}>Closed</span>. Record an exit price on the card afterwards to log your P&amp;L.
+              </div>
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                <button onClick={() => setCloseConfirmId(null)} style={{ padding: '7px 16px', borderRadius: '6px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', fontSize: '12px', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+                <button onClick={handleCloseConfirmed} style={{ padding: '7px 18px', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.4)', background: 'rgba(239,68,68,0.12)', color: '#f87171', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>
+                  Close trade
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {isLoading && <div style={{ color: '#475569', fontSize: '13px', padding: '40px 0', textAlign: 'center' }}>Loading board…</div>}
 

@@ -1133,7 +1133,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'ui-watchlist-notes-backend',
-    tier: 5, severity: 'medium',
+    tier: 5, severity: 'medium', defaultStatus: 'done',
     title: 'UI-2: Watchlist notes — sync to backend instead of localStorage-only',
     file: 'frontend/src/pages/watchlist.tsx · services/market-data/src/api/routes.py',
     effort: '2 days',
@@ -1144,7 +1144,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'ui-bulk-export',
-    tier: 5, severity: 'low',
+    tier: 5, severity: 'low', defaultStatus: 'done',
     title: 'UI-3: Bulk CSV export — watchlist and signal filters export to file',
     file: 'frontend/src/pages/watchlist.tsx · frontend/src/pages/signal-filters.tsx',
     effort: '1 day',
@@ -1155,7 +1155,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'ui-board-stop-visible',
-    tier: 5, severity: 'medium',
+    tier: 5, severity: 'medium', defaultStatus: 'done',
     title: 'UI-4: Trade board — show stop-loss distance always visible without expanding card',
     file: 'frontend/src/pages/board.tsx',
     effort: '1 day',
@@ -1166,7 +1166,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'ui-board-close-confirm',
-    tier: 5, severity: 'medium',
+    tier: 5, severity: 'medium', defaultStatus: 'done',
     title: 'UI-5: Trade board — drag-to-close confirmation to prevent accidental position closure',
     file: 'frontend/src/pages/board.tsx',
     effort: '0.5 days',

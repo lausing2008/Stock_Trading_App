@@ -274,6 +274,7 @@ class WatchlistItem(Base):
         ForeignKey("watchlists.id", ondelete="CASCADE"), nullable=True, index=True
     )
     added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped["User | None"] = relationship(back_populates="watchlist_items")
     watchlist: Mapped["Watchlist | None"] = relationship(back_populates="items")
