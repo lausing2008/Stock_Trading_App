@@ -1122,7 +1122,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'ui-market-closed-banner',
-    tier: 5, severity: 'low',
+    tier: 5, severity: 'low', defaultStatus: 'done',
     title: 'UI-1: Market closed banner — show last-update time when market is not trading',
     file: 'frontend/src/pages/watchlist.tsx · frontend/src/pages/rankings.tsx',
     effort: '0.5 days',

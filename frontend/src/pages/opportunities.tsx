@@ -30,6 +30,7 @@ import { api, type RankingRow, type LatestPrice, type SignalSummary, type Watchl
 import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 import { askAI, isAiConfigured } from '@/lib/ai';
 import { getSignalStyle } from '@/lib/settings';
+import MarketClosedBanner from '@/components/MarketClosedBanner';
 
 type Strategy = 'all' | 'swing' | 'short' | 'longterm' | 'growth' | 'aisignal' | 'confluence';
 type Market = 'all' | 'US' | 'HK';
@@ -615,6 +616,7 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <MarketClosedBanner />
 
       {/* Page header */}
       <div>

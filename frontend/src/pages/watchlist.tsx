@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import MarketClosedBanner from '@/components/MarketClosedBanner';
 import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem } from '@/lib/api';
 import { storage } from '@/lib/storage';
 import { getSignalStyle } from '@/lib/settings';
@@ -726,6 +727,7 @@ export default function Watchlist() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <MarketClosedBanner />
 
       {/* Alert toast */}
       {alertToast && (
