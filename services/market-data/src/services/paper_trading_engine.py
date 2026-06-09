@@ -17,19 +17,19 @@ Style differences baked in per trading_style config:
 """
 from __future__ import annotations
 
-import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
 
+from common.logging import get_logger
 from db import (
     PaperEquityCurve, PaperPortfolio, PaperTrade,
     Ranking, SessionLocal, Signal, Stock, Watchlist, WatchlistItem,
 )
 from sqlalchemy import desc, func, select
 
-log = logging.getLogger("paper_trading_engine")
+log = get_logger("paper_trading_engine")
 
 # ── Default portfolio config ──────────────────────────────────────────────────
 
