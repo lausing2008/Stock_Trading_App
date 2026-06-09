@@ -1017,6 +1017,24 @@ def _apply_style_signal(
         reasons["ml_weight"] = 0.0
 
     fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── SA-18: Blend weekly TA score into fused probability (SWING/LONG only) ─
+    # Daily signals can fire on short-term noise that contradicts the medium-term
+    # weekly picture. For SWING/LONG, shift 15% weight to the weekly TA composite
+    # score so the fused probability always reflects both timeframes.
+    # weekly_score of 0.5 = neutral; the blend gently pulls toward weekly bias.
+    # GROWTH and SHORT are excluded: SHORT is pure daily momentum; GROWTH uses
+    # a different weekly gate (skip_weekly_gate=True).
+    weekly_score_blend = weekly_tech.get("weekly_score", 0.5)
+    if style_key in ("SWING", "LONG") and weekly_tech.get("weekly_rsi") is not None:
+        wc = weekly_tech.get("weekly_confidence", 1.0)
+        blend_weight = 0.15 * wc  # scale blend by data confidence (SA-4 convention)
+        fused = fused * (1.0 - blend_weight) + weekly_score_blend * blend_weight
+        reasons["weekly_blend_applied"] = True
+    else:
+        reasons["weekly_blend_applied"] = False
+    fused = float(np.clip(fused, 0.0, 1.0))
+
     fused_before_filters = fused  # snapshot before compression — used for cap enforcement
 
     # ── Weekly multi-timeframe alignment ──────────────────────────────────────

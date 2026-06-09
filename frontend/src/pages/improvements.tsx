@@ -1061,13 +1061,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa18-weekly-ta-fused',
-    tier: 4, severity: 'medium',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
     title: 'SA-18: Incorporate weekly TA score into fused probability — not just as a compression flag',
     file: 'services/signal-engine/src/generators/signals.py',
     effort: '1 day',
     impact: 'Medium — weekly TA score (0–1) is computed but only used as a binary alignment gate. Treating it as a continuous factor could add 2–3 % accuracy.',
     what: 'weekly_tech returns a weekly_score value (0–1) that captures weekly momentum quality. Currently this is read but only its direction (up/down) is used as a boost/compress multiplier. The actual score value is stored in reasons but never blended into the fused probability.',
     fix: 'In _apply_style_signal(): extract weekly_score from weekly_tech. Blend it: fused = fused * 0.85 + weekly_score * 0.15 for SWING/LONG styles (where weekly alignment matters most). Cap the blend contribution to ±0.05 of the pre-blend fused value to avoid over-weighting.',
+    implementedNote: 'Implemented 2026-06-08 — 15% blend weight applied before filters; scaled by weekly_confidence; weekly_blend_applied in reasons',
   },
 
   {
