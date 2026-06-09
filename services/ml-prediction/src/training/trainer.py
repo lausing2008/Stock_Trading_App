@@ -13,6 +13,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_sample_weight
 from sqlalchemy import select
 
 from common.config import get_settings
@@ -144,6 +145,22 @@ def _recency_weights(n: int, newest_to_oldest_ratio: float = 5.0) -> np.ndarray:
     return w / w.mean()
 
 
+def _blend_weights(y: np.ndarray, recency_w: np.ndarray) -> np.ndarray:
+    """ML-FIX-2: Blend recency weights with balanced class weights.
+
+    Combines two sources of importance:
+      - Recency: recent bars reflect current regime better than old bars.
+      - Class balance: minority-class samples (typically bullish) should not
+        be drowned out by the majority class in imbalanced datasets.
+
+    Element-wise product then renormalise to mean=1 so total effective sample
+    size is preserved (consistent with the rest of the training pipeline).
+    """
+    class_w = compute_sample_weight("balanced", y)
+    combined = recency_w * class_w
+    return combined / combined.mean()
+
+
 def train_model(
     symbol: str,
     model_name: str = "xgboost",
@@ -198,8 +215,9 @@ def train_model(
         X_cv_tr_s = sc.fit_transform(X_cv_tr)
         X_cv_val_s = sc.transform(X_cv_val)
 
-        # Recency-weighted training: recent bars matter more (5× ratio adapts faster to regime shifts)
-        cv_weights = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
+        # ML-FIX-2: recency + balanced class weights combined
+        cv_recency = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
+        cv_weights = _blend_weights(y_cv_tr, cv_recency)
         cv_model = get_model(model_name, **(hyperparams or {}))
         cv_model.fit(X_cv_tr_s, y_cv_tr, sample_weight=cv_weights)
 
@@ -230,8 +248,9 @@ def train_model(
     X_cal_s   = scaler.transform(X_cal.values)
     X_test_s  = scaler.transform(X_test.values)
 
-    # Recency weights for final training (5× ratio adapts faster to regime shifts)
-    train_weights = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
+    # ML-FIX-2: recency + balanced class weights blended for final training
+    _recency_w = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
+    train_weights = _blend_weights(y_train.values, _recency_w)
 
     # XGBoost early stopping on calibration set (separate from threshold eval set)
     model = get_model(model_name, early_stopping_rounds=50, **(hyperparams or {}))

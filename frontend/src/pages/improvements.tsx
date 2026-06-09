@@ -1084,13 +1084,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'ml-class-imbalance',
-    tier: 4, severity: 'medium',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
     title: 'ML-FIX-2: No class imbalance handling — bear-market data biases models toward majority class',
     file: 'services/ml-prediction/src/training/trainer.py',
     effort: '1 day',
     impact: 'Medium — in bear markets where 70 % of returns are negative, models overfit to the majority class. Recall on BUY signals drops significantly.',
     what: 'No class_weight, scale_pos_weight, or SMOTE is applied after dead-zone filtering. If macro events cause class skew, all three models overfit to the dominant direction without warning.',
     fix: 'After dead-zone filtering: compute class weights via sklearn compute_sample_weight("balanced", y_train). Blend with recency weights: final_weight = recency_weight * class_weight (normalised). Apply to all three models. Log class ratio (n_up / n_down) in training metrics.',
+    implementedNote: 'Implemented 2026-06-08 — _blend_weights() multiplies recency × class_weight and renormalises; applied in CV loop and final training',
   },
 
   {
