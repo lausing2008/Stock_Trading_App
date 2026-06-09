@@ -785,7 +785,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa9-true-walkforward',
-    tier: 2, severity: 'medium',
+    tier: 2, severity: 'medium', defaultStatus: 'done',
     title: 'SA-9: True out-of-sample walk-forward validation — detect overfitting before it hurts',
     file: 'services/ml-prediction/src/models/trainer.py · services/signal-engine/src/api/routes.py',
     effort: '2–3 days',
@@ -808,7 +808,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa11-breadth-suppression',
-    tier: 2, severity: 'medium',
+    tier: 2, severity: 'medium', defaultStatus: 'done',
     title: 'SA-11: Market breadth filter — suppress BUY signals when fewer than 40% of stocks are advancing',
     file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/services/scheduler.py',
     effort: '2–3 days',
