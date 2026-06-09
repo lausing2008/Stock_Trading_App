@@ -5,7 +5,7 @@ import { api, type SuppressedSignalRow } from '@/lib/api';
 
 // ── Static config ─────────────────────────────────────────────────────────────
 
-const STYLES = ['SHORT', 'SWING', 'LONG'] as const;
+const STYLES = ['SHORT', 'SWING', 'LONG', 'GROWTH'] as const;
 const SIGNAL_OPTS = ['ALL', 'BUY', 'HOLD', 'WAIT', 'SELL'] as const;
 
 type CondKey = keyof SuppressedSignalRow['conditions'];

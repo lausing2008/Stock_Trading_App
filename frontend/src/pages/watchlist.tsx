@@ -154,10 +154,11 @@ function AlertModal({ symbol, price, existingAlerts, hasEmail, onAdd, onDelete, 
 
 /* ── Create watchlist modal ─────────────────────────────── */
 const STYLE_OPTS = [
-  { value: null,    label: 'Global default', desc: 'Follows your Settings → Trading Style', color: '#475569' },
-  { value: 'SHORT', label: 'Short Term',      desc: '1–5 days · pure TA',                   color: '#f87171' },
-  { value: 'SWING', label: 'Swing Trade',     desc: '5–20 days · balanced',                 color: '#818cf8' },
-  { value: 'LONG',  label: 'Long Term',       desc: '30–90 days · fundamentals',            color: '#4ade80' },
+  { value: null,     label: 'Global default',    desc: 'Follows your Settings → Trading Style', color: '#475569' },
+  { value: 'SHORT',  label: 'Short Term',         desc: '1–5 days · pure TA',                   color: '#f87171' },
+  { value: 'SWING',  label: 'Swing Trade',        desc: '5–20 days · balanced',                 color: '#818cf8' },
+  { value: 'LONG',   label: 'Long Term',          desc: '30–90 days · fundamentals',            color: '#4ade80' },
+  { value: 'GROWTH', label: 'Growth / Momentum',  desc: 'Relaxed thresholds for high-vol AI/tech stocks', color: '#a78bfa' },
 ] as const;
 
 function CreateWatchlistModal({ onSave, onClose }: { onSave: (name: string, style: string | null) => Promise<void>; onClose: () => void }) {
@@ -748,7 +749,7 @@ export default function Watchlist() {
           const isActive = list.id === resolvedListId;
           const styleOpt = STYLE_OPTS.find(o => o.value === list.trading_style);
           const styleColor = styleOpt?.color ?? '#334155';
-          const CYCLE = [null, 'SHORT', 'SWING', 'LONG'] as const;
+          const CYCLE = [null, 'SHORT', 'SWING', 'LONG', 'GROWTH'] as const;
           async function cycleStyle() {
             const idx = CYCLE.indexOf(list.trading_style as typeof CYCLE[number]);
             const next = CYCLE[(idx + 1) % CYCLE.length];

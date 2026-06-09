@@ -811,8 +811,8 @@ export default function BoardPage() {
     const worst = Math.min(...returns);
 
     // Per-style breakdown
-    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80' };
-    const styleBreakdown = (['SHORT', 'SWING', 'LONG'] as const)
+    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa' };
+    const styleBreakdown = (['SHORT', 'SWING', 'LONG', 'GROWTH'] as const)
       .map(style => {
         const group = closed.filter(p => p.trading_style === style);
         if (group.length === 0) return null;
