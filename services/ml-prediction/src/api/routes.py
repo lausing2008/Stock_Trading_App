@@ -3,7 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from ..models import list_models
-from ..training import predict_latest, predict_latest_ensemble, train_model, tune_symbol
+from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, train_model, tune_symbol
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
@@ -137,6 +137,49 @@ def predict_ensemble(req: PredictRequest):
         return predict_latest_ensemble(req.symbol, req.horizon)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/predict_ensemble_three")
+def predict_ensemble_three(req: PredictRequest):
+    """XGBoost (40%) + LightGBM (35%) + RandomForest (25%) ensemble with agreement detection.
+
+    Falls back gracefully if LightGBM or RF haven't been trained yet.
+    Train all three with POST /ml/train_all_ensemble_three.
+    """
+    try:
+        return predict_latest_ensemble_three(req.symbol, req.horizon)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/train_all_ensemble_three")
+def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING"):
+    """Train XGBoost + LightGBM + RandomForest for every active symbol.
+
+    Enables 3-model ensemble predictions via POST /ml/predict_ensemble_three.
+    """
+    from sqlalchemy import select
+    from db import Stock, SessionLocal
+
+    with SessionLocal() as session:
+        symbols = list(session.execute(
+            select(Stock.symbol).where(Stock.active.is_(True))
+        ).scalars())
+
+    horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
+    for sym in symbols:
+        tasks.add_task(train_model, sym, "xgboost", horizon, style=style)
+        tasks.add_task(train_model, sym, "lightgbm", horizon, style=style)
+        tasks.add_task(train_model, sym, "random_forest", horizon, style=style)
+
+    return {
+        "status": "scheduled",
+        "count": len(symbols),
+        "models": ["xgboost", "lightgbm", "random_forest"],
+        "style": style,
+        "horizon": horizon,
+        "note": "After completion, use POST /ml/predict_ensemble_three for 3-model predictions.",
+    }
 
 
 @router.post("/train_all_ensemble")

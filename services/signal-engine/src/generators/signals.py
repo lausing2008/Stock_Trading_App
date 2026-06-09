@@ -136,33 +136,40 @@ def _fetch_weekly_prices(symbol: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _fetch_ml_data(symbol: str) -> tuple[float | None, float]:
-    """Return (bullish_probability, test_auc).
+def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
+    """Return (bullish_probability, test_auc, ml_meta).
 
-    Tries the XGBoost+RF ensemble first; falls back to XGBoost-only.
-    test_auc (held-out test set AUC, not CV AUC) drives the dynamic ML/TA
-    fusion weight — a high-quality model (AUC 0.70) earns up to 75% weight;
-    a near-random model (AUC 0.50) gets only 40% so the hand-tuned TA rules
-    compensate. Falls back to cv_auc_mean for models trained before this fix.
+    SA-8: tries the 3-model ensemble (XGBoost+LightGBM+RF) first, then 2-model,
+    then XGBoost-only. ml_meta carries per-model probabilities and agreement status
+    for storage in Signal.reasons.
+
+    test_auc drives the dynamic ML/TA fusion weight — a high-quality model (AUC 0.70)
+    earns up to 75% weight; a near-random model (AUC < 0.52) gets 0% weight.
     """
     payload = {"symbol": symbol}
-    for endpoint in ("/ml/predict_ensemble", "/ml/predict"):
+    endpoints = [
+        ("/ml/predict_ensemble_three", payload),
+        ("/ml/predict_ensemble",       payload),
+        ("/ml/predict",                {**payload, "model": "xgboost"}),
+    ]
+    for endpoint, body in endpoints:
         try:
             with httpx.Client(timeout=10) as c:
-                r = c.post(
-                    f"{_settings.ml_prediction_url}{endpoint}",
-                    json=payload if endpoint == "/ml/predict_ensemble" else {**payload, "model": "xgboost"},
-                )
+                r = c.post(f"{_settings.ml_prediction_url}{endpoint}", json=body)
                 if r.status_code == 200:
                     data = r.json()
                     prob = float(data.get("bullish_probability", 0.5))
                     m = data.get("metrics") or {}
-                    # Prefer unbiased held-out test AUC; fall back to CV AUC for older bundles
                     test_auc = float(m.get("test_auc_mean") or m.get("auc") or m.get("cv_auc_mean") or 0.55)
-                    return prob, test_auc
+                    ml_meta = {
+                        "ml_model": data.get("model", "xgboost"),
+                        "ml_agreement": data.get("ensemble_agreement"),
+                        "ml_model_probs": data.get("model_probabilities"),
+                    }
+                    return prob, test_auc, ml_meta
         except Exception as exc:
             log.warning("ml.fetch_failed", symbol=symbol, endpoint=endpoint, error=str(exc))
-    return None, 0.55
+    return None, 0.55, {}
 
 
 def _fetch_market_regime() -> tuple[str, float | None]:
@@ -756,7 +763,9 @@ _STYLE_PROFILES: dict[str, dict] = {
     },
     "SWING": {
         "ml_weight_cap": 0.75,
-        "buy_threshold":  {"bull": 0.62, "high_vol": 0.67, "bear": 0.70, "unknown": 0.62},
+        # SA-12: keep bull/neutral thresholds unchanged; only tighten bear/high_vol.
+        # fused_prob ≈ 0.75×ml + 0.25×ta; 0.72 ≈ ML>0.78 target for stressed regimes.
+        "buy_threshold":  {"bull": 0.62, "high_vol": 0.72, "bear": 0.72, "unknown": 0.62},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
         "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
@@ -799,16 +808,20 @@ def _fetch_kscore(symbol: str) -> float | None:
     return None
 
 
-def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str]:
-    """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds."""
+def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str, str]:
+    """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds.
+
+    Returns (signal, style_key, threshold_tier).
+    """
     p = _STYLE_PROFILES[style_key]
     reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "unknown"
     buy_t  = p["buy_threshold"][reg]
     hold_t = p["hold_threshold"][reg]
-    if fused_prob > buy_t:   return "BUY",  style_key
-    if fused_prob > hold_t:  return "HOLD", style_key
-    if fused_prob >= 0.35:   return "WAIT", style_key
-    return "SELL", style_key
+    tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")
+    if fused_prob > buy_t:   return "BUY",  style_key, tier
+    if fused_prob > hold_t:  return "HOLD", style_key, tier
+    if fused_prob >= 0.35:   return "WAIT", style_key, tier
+    return "SELL", style_key, tier
 
 
 def _apply_style_signal(
@@ -1066,7 +1079,8 @@ def _apply_style_signal(
     else:
         reasons["weekly_gate_fired"] = False
 
-    signal, horizon = _decide_style(fused, style_key, market_regime)
+    signal, horizon, threshold_tier = _decide_style(fused, style_key, market_regime)
+    reasons["threshold_tier"] = threshold_tier  # SA-12: log which regime threshold was applied
     confidence = round(abs(fused - 0.5) * 200, 2)
     return AIConfidence(
         signal=signal,
@@ -1119,7 +1133,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df)
     sr_data = _sr_context(df)
-    ml_prob, ml_test_auc = _fetch_ml_data(symbol)
+    ml_prob, ml_test_auc, ml_meta = _fetch_ml_data(symbol)
     market_regime, fg_score = _fetch_market_regime()
     breadth_pct = _fetch_market_breadth()
     days_to_earnings = _fetch_earnings_proximity(symbol)
@@ -1141,6 +1155,9 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["ta_score"]           = ta_prob
     reasons["ml_probability"]     = ml_prob
     reasons["ml_test_auc"]        = ml_test_auc
+    reasons["ml_model"]           = ml_meta.get("ml_model")
+    reasons["ml_agreement"]       = ml_meta.get("ml_agreement")
+    reasons["ml_model_probs"]     = ml_meta.get("ml_model_probs")
     reasons["weekly_ta_score"]    = round(weekly_score, 3)
     reasons["weekly_rsi"]         = weekly_tech["weekly_rsi"]
     reasons["weekly_trend"]       = weekly_tech["weekly_trend"]

@@ -97,6 +97,10 @@ type Reasons = {
   sr_nearest_resistance?: number | null;
   sr_nearest_support?: number | null;
   sr_52w_high?: number | null;
+  // SA-10: signal stability
+  stability_days?: number | null;
+  // SA-12: regime threshold tier applied
+  threshold_tier?: string | null;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
@@ -375,6 +379,16 @@ export default function SignalCard({ signal }: { signal: Signal }) {
           {regime === 'bear' && (
             <span style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', padding: '1px 6px', borderRadius: '4px' }}>
               BEAR MKT
+            </span>
+          )}
+          {reasons?.threshold_tier === 'bear' && (
+            <span title="Bear/high-vol regime: tighter BUY threshold applied (0.72 vs 0.65 bull)" style={{ fontSize: '9px', fontWeight: 700, color: '#f97316', background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              TIGHT
+            </span>
+          )}
+          {reasons?.stability_days != null && reasons.stability_days > 0 && (
+            <span title={`Signal unchanged for ${reasons.stability_days} consecutive day${reasons.stability_days === 1 ? '' : 's'}`} style={{ fontSize: '9px', fontWeight: 700, color: '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.2)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              {reasons.stability_days}d stable
             </span>
           )}
           <span className={`rounded px-2.5 py-0.5 text-sm font-bold text-white ${SIGNAL_COLOR[signal.signal]}`}>

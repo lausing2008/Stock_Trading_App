@@ -774,7 +774,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa8-ensemble-model',
-    tier: 2, severity: 'medium',
+    tier: 2, severity: 'medium', defaultStatus: 'done',
     title: 'SA-8: Ensemble ML — XGBoost + LightGBM + Random Forest majority vote',
     file: 'services/ml-prediction/src/models/trainer.py · predictor.py',
     effort: '3–5 days',
@@ -798,6 +798,7 @@ const ITEMS: Item[] = [
     id: 'sa10-signal-stability',
     tier: 2, severity: 'medium',
     title: 'SA-10: Signal stability score — persistent BUY signals are more reliable than flickering ones',
+    defaultStatus: 'done',
     file: 'services/signal-engine/src/generators/signals.py · services/signal-engine/src/api/routes.py',
     effort: '1–2 days',
     impact: 'Medium — a BUY that has held for 5 consecutive days has much stronger empirical backing than one that appeared today. This filters out noise and reduces false entries on unstable signals.',
@@ -818,7 +819,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa12-adaptive-thresholds',
-    tier: 2, severity: 'medium',
+    tier: 2, severity: 'medium', defaultStatus: 'done',
     title: 'SA-12: Adaptive confidence thresholds — raise the BUY bar in volatile/bear regimes',
     file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/services/scheduler.py',
     effort: '1–2 days',
