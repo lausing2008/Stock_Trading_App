@@ -695,6 +695,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'workflow-signal-lifecycle',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — WF-1: Signal state chip (BUY/HOLD/WAIT/SELL) shown on active Trade Board cards using last_signal from signal alert subscription. Trading style chip (SWING/LONG/SHORT/GROWTH) also shown on active cards for lifecycle context.',
     tier: 3, severity: 'feature',
     title: 'WF-1: BUY → HOLD/WAIT → SELL coherent workflow with actionable guidance',
     file: 'frontend/src/pages/trade-board.tsx · services/signal-engine/src/generators/signals.py',
@@ -706,6 +708,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'auto-paper-portfolio',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Full GROWTH-style autonomous paper trading engine: paper_trading_engine.py runs every 5–10 min via scheduler; GROWTH style params (buy_threshold 0.60, stop −12%, target +35%, max_hold 60d, trail ATR×2); position sizing via risk_per_trade_pct × equity / stop_distance; trailing stop with floor against initial stop; WAIT-exit after N consecutive WAIT signals; /paper-portfolio page with equity curve vs SPY/QQQ, positions table, decisions log, admin engine controls (start/pause/stop), capital editor. 11 audit bugs fixed (C-1 critical: engine never traded due to correlated subquery bug; H-1 RSI dead code; H-2 WAIT exit; H-7 sector cap; H-8 flush; H-9 trail floor; H-11 SWR auth; H-12 null strip; M-8 equity recalc; M-9 empty watchlist guard; M-10 hold_days).',
     tier: 3, severity: 'feature',
     title: 'WF-2: Autonomous paper-trading portfolio — allocate capital, auto buy/sell, track returns',
     file: 'services/market-data · services/signal-engine · frontend/src/pages/paper-portfolio.tsx (new)',
@@ -728,6 +732,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'workflow-hold-sell-guidance',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — WF-3: Live Position Monitor on active Trade Board cards: near-target alert (within 2% → "Consider scaling out 50%"), near-stop warning (within 2% above stop → amber), trail recommendations (+3% → breakeven, +5% → trail to 3% below current), dollar P&L + risk, and stalled warning after 15d with <3% move.',
     tier: 3, severity: 'feature',
     title: 'WF-3: In-position guidance — when to hold vs exit as price moves after entry',
     file: 'frontend/src/pages/trade-board.tsx · services/signal-engine/src/api/routes.py',
@@ -739,6 +745,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'tb1-trailing-stop',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-1: Trail stop chip on active cards: +3% from entry → "Move stop to breakeven ($X.XX)"; +5% → "Trail stop to $X.XX" (3% below current). Pure frontend, uses live price from 60s board refresh.',
     tier: 3, severity: 'feature',
     title: 'TB-1: Trailing stop-loss — auto-raise stop as price rises in your favour',
     file: 'frontend/src/pages/board.tsx · services/signal-engine/src/api/routes.py',
@@ -750,6 +758,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'tb2-time-stop',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-2: Stalled warning on active cards: days_in_trade > 15 AND |P&L%| < 3% → "⏱ Stalled Nd — consider exiting if thesis not playing out".',
     tier: 3, severity: 'feature',
     title: 'TB-2: Time-stop — flag dead-money trades that have stalled for N days',
     file: 'frontend/src/pages/board.tsx',
@@ -761,6 +771,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'tb3-stop-breach-alert',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-3: Red "⚠ STOP BREACHED" banner when live price < stop; amber "Near stop" chip within 2% above stop. Live prices refresh every 60s via existing board SWR.',
     tier: 3, severity: 'feature',
     title: 'TB-3: Live stop-loss breach indicator — visual alert when price crosses below stop',
     file: 'frontend/src/pages/board.tsx · frontend/src/lib/api.ts',
@@ -772,6 +784,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'tb4-dollar-risk-pnl',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-4: Dollar P&L (shares × price Δ from entry, green/red) and dollar risk (shares × entry−stop distance, red) shown in the position monitor row on active cards. Requires shares to be set.',
     tier: 3, severity: 'feature',
     title: 'TB-4: Dollar-risk P&L — show position $ risk alongside % P&L',
     file: 'frontend/src/pages/board.tsx',
@@ -783,6 +797,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'tb5-portfolio-risk-dashboard',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-5: Active positions summary bar above the kanban board: total unrealized P&L, total dollar risk, stop-breach count, near-target count. Computed client-side from active cards + 60s live prices.',
     tier: 3, severity: 'feature',
     title: 'TB-5: Portfolio heat-at-risk summary — total capital at risk across all active trades',
     file: 'frontend/src/pages/board.tsx',
@@ -1619,8 +1635,8 @@ export default function ImprovementsPage() {
         <p style={{ fontSize: 12, color: '#64748b', margin: 0, lineHeight: 1.6 }}>
           All Tier 1–4 shipped as of 2026-06-07. SA-1/2/3/4/5/6/7/8 all done. SA-3 was already live (4 boolean flags in builder.py). SA-5 wired to Sunday scheduler. SA-7 regime-aware earnings compression implemented (bull+beater≥70%: +3% boost; bull+50-70%: halved compression; bear/hv: tightened).
           Tier 5: UI-01 to UI-09 + UI-12 all shipped. Remaining (low priority): UI-10 (ML weight auto-apply), UI-11 (factor chart verify).
-          Tier 3 new items (2026-06-08): TB-1 (trailing stop), TB-2 (time-stop), TB-3 (stop breach alert), TB-4 (dollar P&amp;L), TB-5 (portfolio heat-at-risk), SL-1 (admin signal log). SL-1 is implemented and live.
-          Overall: <strong style={{ color: '#4ade80' }}>9.0 / 10</strong> — 13 new improvement suggestions since 2026-06-07: WF-1/2/3, UI-13/14, TB-1–5, SL-1, testing framework, scheduler monitor.
+          Tier 3 new items (2026-06-08): TB-1 (trailing stop), TB-2 (time-stop), TB-3 (stop breach alert), TB-4 (dollar P&amp;L), TB-5 (portfolio heat-at-risk), SL-1 (admin signal log). SL-1 implemented 2026-06-08.
+          Overall: <strong style={{ color: '#4ade80' }}>9.5 / 10</strong> — WF-2 (autonomous paper trading engine) shipped 2026-06-09, 11 audit fixes, signal pipeline 5-bug audit. Trade Board Position Lifecycle shipped 2026-06-09: WF-1 (signal state chip), WF-3 (live position monitor — trail stop, near target, near stop, stalled warning), TB-1 (trail recommendations), TB-2 (time-stop badge), TB-3 (stop breach banner), TB-4 (dollar P&amp;L + risk), TB-5 (active positions summary bar). Pending: UI-13/14, scheduler monitor.
         </p>
       </div>
     </div>
