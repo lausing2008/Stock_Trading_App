@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type SchedulerJob } from '@/lib/api';
+import { api, type SchedulerJob, type MlModelMetric } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string }> = {
@@ -76,6 +76,27 @@ function JobCard({ job }: { job: SchedulerJob }) {
   );
 }
 
+function MlRow({ m }: { m: MlModelMetric }) {
+  const auc = m.test_auc ?? 0;
+  const aucColor = auc >= 0.65 ? '#4ade80' : auc >= 0.55 ? '#fbbf24' : '#f87171';
+  const overfit = (m.overfit_gap ?? 0) > 0.1;
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      padding: '6px 10px', borderRadius: '6px',
+      background: overfit ? 'rgba(239,68,68,0.04)' : '#080f1e',
+      border: `1px solid ${overfit ? 'rgba(239,68,68,0.2)' : '#1e293b'}`,
+    }}>
+      <span style={{ fontSize: '12px', fontWeight: 600, color: '#cbd5e1' }}>{m.symbol}</span>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <span style={{ fontSize: '11px', fontWeight: 700, color: aucColor }}>AUC {auc.toFixed(3)}</span>
+        {m.cv_auc != null && <span style={{ fontSize: '10px', color: '#475569' }}>CV {m.cv_auc.toFixed(3)}</span>}
+        {overfit && <span style={{ fontSize: '10px', color: '#f87171' }}>⚠ overfit</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function AdminHealthPage() {
   const router = useRouter();
   const [authed, setAuthed] = useState(false);
@@ -91,6 +112,12 @@ export default function AdminHealthPage() {
     authed ? 'scheduler-status' : null,
     () => api.schedulerStatus(),
     { revalidateOnFocus: false, refreshInterval: 30_000 },
+  );
+
+  const { data: mlData } = useSWR(
+    authed ? 'ml-metrics-all' : null,
+    () => api.mlMetrics('xgboost'),
+    { revalidateOnFocus: false },
   );
 
   const jobs = data?.jobs ?? [];
@@ -171,6 +198,55 @@ export default function AdminHealthPage() {
             ))}
           </div>
         </>
+      )}
+
+      {/* ML Model Metrics */}
+      {mlData && mlData.count > 0 && (
+        <div style={{ marginTop: '32px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <div>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginBottom: '4px' }}>ML MODEL ACCURACY</div>
+              <div style={{ fontSize: '11px', color: '#334155' }}>{mlData.count} trained XGBoost models — sorted by test AUC</div>
+            </div>
+          </div>
+
+          {/* Bottom 5 — worst AUC */}
+          {(() => {
+            const all = mlData.symbols.filter((m: MlModelMetric) => m.test_auc != null);
+            const top5 = all.slice(0, 5);
+            const bot5 = [...all].reverse().slice(0, 5);
+            const avgAuc = all.reduce((s: number, m: MlModelMetric) => s + (m.test_auc ?? 0), 0) / (all.length || 1);
+            const overfit = all.filter((m: MlModelMetric) => (m.overfit_gap ?? 0) > 0.1);
+            return (
+              <>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                  <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#94a3b8', background: '#0d1424', border: '1px solid #1e293b' }}>
+                    Avg AUC: {avgAuc.toFixed(3)}
+                  </span>
+                  {overfit.length > 0 && (
+                    <span style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                      ⚠ {overfit.length} overfitting (gap &gt;0.10)
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                  <div>
+                    <div style={{ fontSize: '10px', color: '#4ade80', fontWeight: 700, marginBottom: '6px', letterSpacing: '0.04em' }}>TOP 5 — Highest AUC</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {top5.map((m: MlModelMetric) => <MlRow key={m.symbol} m={m} />)}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '10px', color: '#f87171', fontWeight: 700, marginBottom: '6px', letterSpacing: '0.04em' }}>BOTTOM 5 — Lowest AUC</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {bot5.map((m: MlModelMetric) => <MlRow key={m.symbol} m={m} />)}
+                    </div>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
+        </div>
       )}
     </div>
   );

@@ -902,11 +902,14 @@ def paper_trading_step() -> None:
                 cfg = portfolio.config or {}
                 if not cfg.get("enabled", True):
                     continue  # fully stopped — do nothing
+
+                # Monitor + commit first so cash mutations are durable before scanning
                 _monitor_positions(session, portfolio, live_prices)
-                session.flush()  # push cash/stage mutations before scanning for entries
+                session.commit()
+
                 if not cfg.get("paused", False):
                     _scan_for_entries(session, portfolio, live_prices)
-                session.commit()
+                    session.commit()
 
     except Exception as exc:
         log.error("paper.step_failed", error=str(exc), exc_info=True)
