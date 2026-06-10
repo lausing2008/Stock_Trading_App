@@ -996,6 +996,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'scr2-pre-earnings-screener',
+    defaultStatus: 'done',
+    implementedNote: 'Added "Earnings This Week" collapsible panel on Opportunities page — shows stocks reporting in ≤7d with signal, price change, EPS growth estimate. Sorted by days_to_earnings.',
     tier: 3, severity: 'feature',
     title: 'SCR-2: Pre-earnings screener — surface BUY candidates with upcoming earnings catalysts',
     file: 'frontend/src/pages/opportunities.tsx · services/ranking-engine/src/api/routes.py',
