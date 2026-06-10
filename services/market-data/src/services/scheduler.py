@@ -164,7 +164,7 @@ def _post(url: str, **kwargs) -> None:
     After all retries fail, logs at ERROR and sets the market:refresh_failed
     Redis flag so that check_signal_alerts() can suppress stale-data alerts.
     """
-    delays = [5, 15, 45]
+    delays = [3, 8, 20]  # kept short — scheduler thread pool has limited slots
     last_exc: Exception | None = None
     for attempt, delay in enumerate(delays, start=1):
         try:
@@ -649,6 +649,14 @@ def check_signal_alerts() -> None:
             except Exception as exc:
                 log.warning("signal_alert.freshness_check_failed", error=str(exc))
                 fresh_symbols = set(symbols)  # fall through on DB error
+
+            # If freshness check returned nothing (empty DB / no prices yet), allow all symbols
+            # through rather than silently suppressing every alert.
+            if not fresh_symbols and symbols:
+                log.warning("signal_alert.freshness_no_prices",
+                            note="No price bars found for any alert symbol — assuming fresh to avoid silent blackout",
+                            symbol_count=len(symbols))
+                fresh_symbols = set(symbols)
 
             # Build (user_id, symbol) → trading_style map from watchlists with a style override
             symbol_user_style: dict[tuple[int, str], str] = {}
