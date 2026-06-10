@@ -160,8 +160,8 @@ export const api = {
   },
 
   // Signal accuracy tracker
-  signalAccuracy: (lookbackDays = 90, symbol?: string, fromDate?: string, toDate?: string) => {
-    const params = new URLSearchParams({ lookback_days: String(lookbackDays) });
+  signalAccuracy: (lookbackDays = 90, symbol?: string, fromDate?: string, toDate?: string, page = 1, pageSize = 200) => {
+    const params = new URLSearchParams({ lookback_days: String(lookbackDays), page: String(page), page_size: String(pageSize) });
     if (symbol) params.set('symbol', symbol);
     if (fromDate) params.set('from_date', fromDate);
     if (toDate) params.set('to_date', toDate);
@@ -435,7 +435,7 @@ export type SignalAlertItem = { id: number; symbol: string; email: string | null
 export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; exit_price: number | null; actual_entry_price: number | null; shares: number | null; trading_style: string | null; closed_at: string | null; created_at: string; updated_at: string };
 export type CongressTrade = { Ticker: string; Date: string; Politician: string; Transaction: string; Min: number | null; Max: number | null; Party: string | null; State: string | null; Chamber: string | null; ReportDate: string | null };
 export type SignalAccuracyRow = { symbol: string; name: string; signal: 'BUY' | 'SELL'; confidence: number; bullish_probability: number | null; signal_date: string; entry_price: number; exit_price: number; pct_change: number; correct: boolean; days_held: number };
-export type SignalAccuracyReport = { lookback_days: number; total_signals: number; buy_count: number; sell_count: number; buy_accuracy: number | null; sell_accuracy: number | null; overall_accuracy: number | null; avg_buy_return_pct: number | null; avg_sell_return_pct: number | null; profit_factor: number | null; signals: SignalAccuracyRow[] };
+export type SignalAccuracyReport = { lookback_days: number; total_signals: number; buy_count: number; sell_count: number; buy_accuracy: number | null; sell_accuracy: number | null; overall_accuracy: number | null; avg_buy_return_pct: number | null; avg_sell_return_pct: number | null; profit_factor: number | null; page: number; page_size: number; has_more: boolean; signals: SignalAccuracyRow[] };
 export type TradePair = { symbol: string; name: string; status: 'closed' | 'open'; entry_date: string; exit_date: string; entry_price: number; exit_price: number; pct_return: number; hold_days: number; win: boolean; exit_signal: string; entry_confidence: number };
 export type EquityPoint = { date: string; equity: number };
 export type TradePerformanceReport = { lookback_days: number; closed_trades: number; open_trades: number; win_rate: number | null; avg_return_pct: number | null; avg_win_pct: number | null; avg_loss_pct: number | null; profit_factor: number | null; avg_hold_days: number | null; total_return: number | null; sharpe: number | null; max_drawdown: number | null; calmar: number | null; spy_return: number | null; equity_curve: EquityPoint[]; by_symbol: { symbol: string; trades: number; win_rate: number; avg_return: number; avg_hold_days: number }[]; trades: TradePair[] };
