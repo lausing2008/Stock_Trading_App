@@ -20,8 +20,8 @@ function hasGateCookie() {
 
 // ── Nav group definitions ─────────────────────────────────────────────────────
 
-type NavItem = { label: string; href: string; color?: string; tag?: string; adminOnly?: boolean };
-type NavGroupDef = { label: string; items: NavItem[] };
+type NavItem = { label: string; href: string; color?: string; tag?: string };
+type NavGroupDef = { label: string; items: NavItem[]; adminOnly?: boolean };
 
 const NAV_GROUPS: NavGroupDef[] = [
   {
@@ -65,9 +65,15 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Trade Performance',  href: '/trade-performance',  color: '#34d399' },
       { label: 'Insider Trading',    href: '/insider',      color: '#fb923c' },
       { label: 'Congress Trades',   href: '/congress',     color: '#f97316' },
-      { label: 'Paper Portfolio',     href: '/paper-portfolio', color: '#22c55e' },
-      { label: 'Signal Log',          href: '/admin-signals', color: '#f87171', adminOnly: true },
-      { label: 'Improvements',       href: '/improvements', color: '#f59e0b', tag: 'new', adminOnly: true },
+    ],
+  },
+  {
+    label: 'Admin',
+    adminOnly: true,
+    items: [
+      { label: 'Paper Portfolio',  href: '/paper-portfolio', color: '#22c55e' },
+      { label: 'Signal Log',       href: '/admin-signals',   color: '#f87171' },
+      { label: 'Improvements',     href: '/improvements',    color: '#f59e0b', tag: 'new' },
     ],
   },
 ];
@@ -75,7 +81,7 @@ const NAV_GROUPS: NavGroupDef[] = [
 // ── NavGroup component ────────────────────────────────────────────────────────
 
 function NavGroup({ group, currentPath, userRole }: { group: NavGroupDef; currentPath: string; userRole: string | null }) {
-  const items = group.items.filter(item => !item.adminOnly || userRole === 'admin');
+  const items = group.items;
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -374,7 +380,7 @@ export default function App({ Component, pageProps }: AppProps) {
 
           {/* Group nav */}
           <nav style={{ display: 'flex', alignItems: 'center', gap: '2px', flex: 1 }}>
-            {NAV_GROUPS.map(group => (
+            {NAV_GROUPS.filter(g => !g.adminOnly || role === 'admin').map(group => (
               <NavGroup key={group.label} group={group} currentPath={router.pathname} userRole={role} />
             ))}
           </nav>
