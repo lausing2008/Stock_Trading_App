@@ -1773,6 +1773,51 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
         return None
 
 
+@router.get("/{symbol}/history")
+def signal_history(
+    symbol: str,
+    style: str = Query("SWING", description="Trading style: SHORT, SWING, LONG, GROWTH"),
+    days: int = Query(60, ge=7, le=365),
+    session: Session = Depends(get_session),
+):
+    """Historical signal confidence trend for a single symbol.
+
+    Returns up to `days` days of stored signals ordered oldest → newest.
+    Used by the stock detail page sparkline.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    try:
+        horizon = SignalHorizon(style.upper())
+    except ValueError:
+        horizon = SignalHorizon.SWING
+
+    stock = session.execute(
+        select(Stock).where(Stock.symbol == symbol.upper())
+    ).scalar_one_or_none()
+    if not stock:
+        raise HTTPException(404, f"Symbol {symbol} not found")
+
+    rows = session.execute(
+        select(Signal.ts, Signal.signal, Signal.confidence, Signal.bullish_probability)
+        .where(
+            Signal.stock_id == stock.id,
+            Signal.horizon == horizon,
+            Signal.ts >= cutoff,
+        )
+        .order_by(Signal.ts.asc())
+    ).all()
+
+    return [
+        {
+            "ts": r.ts.isoformat() if r.ts else None,
+            "signal": r.signal.value,
+            "confidence": round(r.confidence, 1),
+            "bullish_probability": round(r.bullish_probability, 4) if r.bullish_probability else None,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/{symbol}")
 def signal_for(
     symbol: str,

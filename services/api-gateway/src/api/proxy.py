@@ -48,6 +48,18 @@ def _upstream(path: str) -> str | None:
     return _ROUTES.get(head)
 
 
+_BLACKLIST_PREFIX = "auth:blacklist:"
+
+
+def _is_blacklisted(jti: str) -> bool:
+    try:
+        import redis as redis_lib
+        r = redis_lib.from_url(_settings.redis_url, decode_responses=True, socket_connect_timeout=1)
+        return bool(r.exists(f"{_BLACKLIST_PREFIX}{jti}"))
+    except Exception:
+        return False
+
+
 def _require_auth(full_path: str, request: Request) -> None:
     """Raise HTTP 401 for protected routes that have no valid JWT."""
     prefix = full_path.strip("/").split("/", 1)[0]
@@ -60,7 +72,12 @@ def _require_auth(full_path: str, request: Request) -> None:
     if not token:
         raise HTTPException(401, "Not authenticated")
     try:
-        jwt.decode(token, _settings.jwt_secret, algorithms=["HS256"])
+        payload = jwt.decode(token, _settings.jwt_secret, algorithms=["HS256"])
+        jti: str = payload.get("jti", "")
+        if jti and _is_blacklisted(jti):
+            raise HTTPException(401, "Token has been revoked")
+    except HTTPException:
+        raise
     except JWTError:
         raise HTTPException(401, "Invalid or expired token")
 
