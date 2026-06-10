@@ -37,7 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -65,6 +65,66 @@ function RefreshButton({ onClick, loading }: { onClick: () => void; loading: boo
 }
 
 const PriceChart = dynamic(() => import('@/components/PriceChart'), { ssr: false });
+
+const SIGNAL_DOT: Record<string, string> = { BUY: '#4ade80', HOLD: '#38bdf8', WAIT: '#fbbf24', SELL: '#f87171' };
+
+function ConfidenceTrend({ history }: { history: SignalHistoryPoint[] }) {
+  if (!history || history.length < 2) return null;
+  const W = 260, H = 56, PAD = 4;
+  const vals = history.map(h => h.confidence);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const range = max - min || 1;
+  const pts = history.map((h, i) => {
+    const x = PAD + (i / (history.length - 1)) * (W - PAD * 2);
+    const y = H - PAD - ((h.confidence - min) / range) * (H - PAD * 2);
+    return { x, y, signal: h.signal, conf: h.confidence };
+  });
+  const polyline = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1];
+  const prev = pts[pts.length - 2];
+  const trend = last.conf - prev.conf;
+
+  return (
+    <div style={{ background: '#0a0f1e', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Confidence Trend ({history.length}d)</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: trend >= 0 ? '#4ade80' : '#f87171' }}>
+          {trend >= 0 ? '↑' : '↓'} {last.conf.toFixed(0)}%
+        </span>
+      </div>
+      <svg width={W} height={H} style={{ display: 'block', overflow: 'visible' }}>
+        {/* Reference lines */}
+        <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="#1e293b" strokeWidth="1" />
+        <line x1={PAD} y1={PAD} x2={W - PAD} y2={PAD} stroke="#1e293b" strokeWidth="1" strokeDasharray="3,3" />
+        {/* Area fill */}
+        <polygon
+          points={`${pts[0].x},${H - PAD} ${polyline} ${pts[pts.length - 1].x},${H - PAD}`}
+          fill="rgba(99,102,241,0.08)"
+        />
+        {/* Line */}
+        <polyline points={polyline} fill="none" stroke="rgba(99,102,241,0.6)" strokeWidth="1.5" strokeLinejoin="round" />
+        {/* Signal transition dots — only show on signal changes */}
+        {pts.map((p, i) => {
+          if (i === 0) return null;
+          const prev = pts[i - 1];
+          const changed = history[i].signal !== history[i - 1].signal;
+          if (!changed && i !== pts.length - 1) return null;
+          return (
+            <circle key={i} cx={p.x} cy={p.y} r={i === pts.length - 1 ? 4 : 3}
+              fill={SIGNAL_DOT[p.signal] ?? '#818cf8'}
+              stroke="#0a0f1e" strokeWidth="1.5"
+            />
+          );
+        })}
+        {/* Min/max labels */}
+        <text x={PAD} y={H - 1} fontSize="9" fill="#334155">{min.toFixed(0)}%</text>
+        <text x={PAD} y={PAD + 8} fontSize="9" fill="#334155">{max.toFixed(0)}%</text>
+      </svg>
+    </div>
+  );
+}
+
 
 export default function StockDetail() {
   const r = useRouter();
@@ -228,6 +288,12 @@ export default function StockDetail() {
   const { data: growthSignal } = useSWR<Signal>(
     symbol && pageStyle === 'GROWTH' ? `growth-signal-${symbol}` : null,
     () => api.signal(symbol, 'GROWTH'),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: signalHistory } = useSWR<SignalHistoryPoint[]>(
+    symbol ? `signal-history-${symbol}-${pageStyle || 'SWING'}` : null,
+    () => api.signalHistory(symbol, pageStyle || 'SWING', 60),
     { revalidateOnFocus: false },
   );
 
@@ -1227,6 +1293,9 @@ Return ONLY valid JSON — no markdown, no prose:
             </div>
           )}
           {(!pageStyle || pageStyle === 'SWING') && data.signal && <SignalCard signal={data.signal} />}
+          {signalHistory && signalHistory.length >= 2 && (
+            <ConfidenceTrend history={signalHistory} />
+          )}
 
           {/* Fair Value */}
           {ranking?.fair_price != null && (() => {

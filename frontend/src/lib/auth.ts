@@ -33,6 +33,14 @@ export async function login(username: string, password: string): Promise<boolean
 }
 
 export function logout(): void {
+  const token = localStorage.getItem(JWT_KEY);
+  if (token) {
+    // Fire-and-forget: revoke the token server-side. Don't await — local logout is instant.
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => {});
+  }
   localStorage.removeItem(JWT_KEY);
   localStorage.removeItem(JWT_ADMIN_KEY);
 }

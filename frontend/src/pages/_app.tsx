@@ -2,13 +2,14 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { AppProps } from 'next/app';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
+import useSWR from 'swr';
 import '@/styles/globals.css';
 import { getSession, logout, getImpersonatedUser, exitImpersonation } from '@/lib/auth';
 import { checkAlerts, playNotificationSound } from '@/lib/alerts';
 import { confluenceScore } from '@/lib/confluence';
 import { loadSettings, getSignalStyle } from '@/lib/settings';
 import NotificationBell from '@/components/NotificationBell';
-import { api } from '@/lib/api';
+import { api, type Stock } from '@/lib/api';
 
 const PUBLIC_PATHS = ['/login', '/gate'];
 const GATE_COOKIE  = 'stockai_gate';
@@ -78,6 +79,129 @@ const NAV_GROUPS: NavGroupDef[] = [
     ],
   },
 ];
+
+// ── GlobalSearch component ────────────────────────────────────────────────────
+
+function GlobalSearch() {
+  const router = useRouter();
+  const { data: stocks } = useSWR<Stock[]>('stocks-all', () => api.listStocks(), { revalidateOnFocus: false });
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const q = query.trim().toUpperCase();
+  const results = q.length < 1 ? [] : (stocks ?? []).filter(s =>
+    s.symbol.startsWith(q) || s.symbol.includes(q) || s.name.toUpperCase().includes(q)
+  ).slice(0, 8);
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || e.key === '/') {
+        // Only open on '/' when not in an input/textarea
+        if (e.key === '/' && document.activeElement?.tagName.match(/^(INPUT|TEXTAREA|SELECT)$/)) return;
+        e.preventDefault();
+        inputRef.current?.focus();
+        setOpen(true);
+      }
+      if (e.key === 'Escape') { setOpen(false); setQuery(''); inputRef.current?.blur(); }
+    }
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, []);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  function select(symbol: string) {
+    setQuery('');
+    setOpen(false);
+    inputRef.current?.blur();
+    router.push(`/stock/${symbol}`);
+  }
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '6px',
+        background: focused ? 'rgba(99,102,241,0.08)' : '#0f172a',
+        border: `1px solid ${focused ? 'rgba(99,102,241,0.4)' : '#1e293b'}`,
+        borderRadius: '8px', padding: '5px 10px',
+        transition: 'all 0.15s', width: focused ? '220px' : '160px',
+      }}>
+        <span style={{ color: '#475569', fontSize: '13px', flexShrink: 0 }}>⌕</span>
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={e => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => { setFocused(true); setOpen(true); }}
+          onBlur={() => setFocused(false)}
+          placeholder="Search stocks…"
+          style={{
+            background: 'none', border: 'none', outline: 'none',
+            color: '#e2e8f0', fontSize: '12px', width: '100%', minWidth: 0,
+          }}
+        />
+        {!focused && (
+          <span style={{ fontSize: '10px', color: '#334155', flexShrink: 0, fontFamily: 'monospace' }}>⌘K</span>
+        )}
+        {query && (
+          <button onClick={() => { setQuery(''); setOpen(false); }} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', padding: '0 2px', fontSize: '12px' }}>✕</button>
+        )}
+      </div>
+
+      {open && results.length > 0 && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+          minWidth: '260px', background: '#0d1424',
+          border: '1px solid #1e293b', borderRadius: '10px',
+          boxShadow: '0 16px 40px rgba(0,0,0,0.6)',
+          overflow: 'hidden', zIndex: 9999,
+        }}>
+          {results.map((s, i) => (
+            <button
+              key={s.symbol}
+              onMouseDown={() => select(s.symbol)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                width: '100%', padding: '9px 14px', background: 'none',
+                border: 'none', borderBottom: i < results.length - 1 ? '1px solid #0f172a' : 'none',
+                cursor: 'pointer', textAlign: 'left',
+                transition: 'background 0.1s',
+              }}
+              className="search-result-row"
+            >
+              <span style={{ fontFamily: 'monospace', fontSize: '13px', fontWeight: 800, color: '#818cf8', minWidth: '52px' }}>{s.symbol}</span>
+              <span style={{ fontSize: '12px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.name}</span>
+              <span style={{ fontSize: '10px', color: '#334155', flexShrink: 0 }}>{s.market}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {open && q.length > 0 && results.length === 0 && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+          minWidth: '200px', background: '#0d1424',
+          border: '1px solid #1e293b', borderRadius: '10px',
+          padding: '12px 16px', zIndex: 9999,
+          fontSize: '12px', color: '#475569',
+          boxShadow: '0 16px 40px rgba(0,0,0,0.6)',
+        }}>
+          No stocks found for &ldquo;{query}&rdquo;
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // ── NavGroup component ────────────────────────────────────────────────────────
 
@@ -386,6 +510,9 @@ export default function App({ Component, pageProps }: AppProps) {
             ))}
           </nav>
 
+          {/* Global search */}
+          <GlobalSearch />
+
           {/* Right side controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
             {freshness && freshness.hours_ago != null && (
@@ -434,6 +561,7 @@ export default function App({ Component, pageProps }: AppProps) {
           to   { opacity: 1; transform: translateX(-50%) translateY(0); }
         }
         .nav-dd-item:hover { background: rgba(255,255,255,0.05) !important; }
+        .search-result-row:hover { background: rgba(99,102,241,0.08) !important; }
       `}</style>
     </div>
   );

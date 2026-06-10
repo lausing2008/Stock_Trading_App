@@ -1,8 +1,10 @@
 """Auth routes — JWT login, user management (admin), password change."""
 from datetime import datetime, timedelta, timezone
+import uuid
 
 import bcrypt as _bcrypt
-from fastapi import APIRouter, Depends, HTTPException
+import redis as redis_lib
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -16,6 +18,28 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 _settings = get_settings()
 _security = HTTPBearer(auto_error=False)
+
+_BLACKLIST_PREFIX = "auth:blacklist:"
+
+
+def _get_redis() -> redis_lib.Redis:
+    return redis_lib.from_url(_settings.redis_url, decode_responses=True)
+
+
+def _blacklist_jti(jti: str, exp: int) -> None:
+    """Store a token JTI in the Redis blacklist until it expires."""
+    try:
+        ttl = max(1, exp - int(datetime.now(timezone.utc).timestamp()))
+        _get_redis().setex(f"{_BLACKLIST_PREFIX}{jti}", ttl, "1")
+    except Exception:
+        pass
+
+
+def _is_blacklisted(jti: str) -> bool:
+    try:
+        return bool(_get_redis().exists(f"{_BLACKLIST_PREFIX}{jti}"))
+    except Exception:
+        return False  # fail-open: Redis down → don't block requests
 
 
 def _hash_password(password: str) -> str:
@@ -36,7 +60,7 @@ ALGORITHM = "HS256"
 def _make_token(username: str, role: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(days=_settings.jwt_expire_days)
     return jwt.encode(
-        {"sub": username, "role": role.lower(), "exp": expire},
+        {"sub": username, "role": role.lower(), "exp": expire, "jti": str(uuid.uuid4())},
         _settings.jwt_secret,
         algorithm=ALGORITHM,
     )
@@ -51,8 +75,11 @@ def get_current_user(
     try:
         payload = jwt.decode(creds.credentials, _settings.jwt_secret, algorithms=[ALGORITHM])
         username: str = payload.get("sub", "")
+        jti: str = payload.get("jti", "")
     except JWTError:
         raise HTTPException(401, "Invalid or expired token")
+    if jti and _is_blacklisted(jti):
+        raise HTTPException(401, "Token has been revoked")
     user = session.execute(
         select(User).where(User.username == username)
     ).scalar_one_or_none()
@@ -122,6 +149,22 @@ def login(body: LoginRequest, session: Session = Depends(get_session)):
         raise HTTPException(401, "Incorrect username or password")
     token = _make_token(user.username, user.role.value)
     return {"token": token, "username": user.username, "role": user.role.value.lower()}
+
+
+@router.post("/logout")
+def logout(creds: HTTPAuthorizationCredentials | None = Depends(_security)):
+    """Revoke the caller's JWT by adding its JTI to the Redis blacklist."""
+    if not creds:
+        return {"status": "ok"}
+    try:
+        payload = jwt.decode(creds.credentials, _settings.jwt_secret, algorithms=[ALGORITHM])
+        jti = payload.get("jti", "")
+        exp = payload.get("exp", 0)
+        if jti:
+            _blacklist_jti(jti, exp)
+    except JWTError:
+        pass  # expired/invalid token — nothing to revoke
+    return {"status": "ok"}
 
 
 @router.post("/reset-password")
