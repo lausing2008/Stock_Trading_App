@@ -297,6 +297,7 @@ export const api = {
   paperSetEngine: (state: 'running' | 'paused' | 'stopped') =>
     request<{ ok: boolean; state: string; config: PaperPortfolioConfig }>('/paper-portfolio/engine', { method: 'POST', body: JSON.stringify({ state }) }),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
+  mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
 };
 
 export type SuppressedSignalConditions = {
@@ -980,4 +981,21 @@ export type SchedulerJob = {
   last_run: string;
   duration_s: number;
   error: string | null;
+};
+
+export type MlModelMetric = {
+  symbol: string;
+  model: string;
+  test_auc: number | null;
+  cv_auc: number | null;
+  accuracy: number | null;
+  overfit_gap: number | null;
+  buy_threshold: number | null;
+  error?: string;
+};
+
+export type MlMetricsList = {
+  model: string;
+  count: number;
+  symbols: MlModelMetric[];
 };

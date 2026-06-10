@@ -134,8 +134,8 @@ def reset_password_public(body: ResetPasswordRequest, session: Session = Depends
         raise HTTPException(404, "User not found")
     if not _verify_password(body.old_password, user.password_hash):
         raise HTTPException(401, "Current password is incorrect")
-    if len(body.new_password) < 4:
-        raise HTTPException(400, "New password must be at least 4 characters")
+    if len(body.new_password) < 8:
+        raise HTTPException(400, "New password must be at least 8 characters")
     user.password_hash = _hash_password(body.new_password)
     session.commit()
     return {"status": "ok"}
@@ -179,8 +179,8 @@ def change_password(
     user = session.get(User, current.id)
     if not _verify_password(body.old_password, user.password_hash):
         raise HTTPException(401, "Current password is incorrect")
-    if len(body.new_password) < 4:
-        raise HTTPException(400, "New password must be at least 4 characters")
+    if len(body.new_password) < 8:
+        raise HTTPException(400, "New password must be at least 8 characters")
     user.password_hash = _hash_password(body.new_password)
     session.commit()
     return {"status": "ok"}
@@ -206,8 +206,8 @@ def create_user(
     admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
-    if len(body.password) < 4:
-        raise HTTPException(400, "Password must be at least 4 characters")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
     existing = session.execute(
         select(User).where(User.username == body.username.lower())
     ).scalar_one_or_none()
@@ -254,8 +254,8 @@ def admin_reset_password(
     admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
-    if len(body.new_password) < 4:
-        raise HTTPException(400, "New password must be at least 4 characters")
+    if len(body.new_password) < 8:
+        raise HTTPException(400, "New password must be at least 8 characters")
     user = session.execute(
         select(User).where(User.username == username.lower())
     ).scalar_one_or_none()

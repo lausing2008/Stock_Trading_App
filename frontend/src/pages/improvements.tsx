@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -1341,6 +1341,161 @@ const ITEMS: Item[] = [
     fix: 'Add exponential backoff retry (3 attempts, 5s/15s/45s delays) inside _post(). After 3 failures: log at ERROR level and set a Redis flag market:refresh_failed. Read this flag in check_signal_alerts() to suppress alerts until the next successful refresh.',
   },
 
+  // ── Tier 6 — Security & Reliability Audit 2026-06-09 ─────────────────────
+  {
+    id: 'audit-frontend-admin-auth',
+    tier: 6, severity: 'critical', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — signal-accuracy, signal-filters, trade-performance, improvements, paper-portfolio all now check getSession() + role==="admin", redirect to / if not admin, gate all SWR calls on authed state.',
+    title: 'AUDIT-SEC-1: Frontend admin pages had no auth guard — non-admins could load them by URL',
+    file: 'frontend/src/pages/signal-accuracy.tsx · signal-filters.tsx · trade-performance.tsx · improvements.tsx · paper-portfolio.tsx',
+    effort: 'Done',
+    impact: 'CRITICAL — any logged-in non-admin could access admin analytics pages directly via URL',
+    what: 'All 5 admin pages were protected only via the nav group filter in _app.tsx. That hides the links but does not block direct URL access. Any authenticated non-admin could navigate to /signal-accuracy, /signal-filters, etc.',
+    fix: 'Added useEffect auth check (getSession + role guard + router.replace) and gated all useSWR keys on authed state.',
+  },
+  {
+    id: 'audit-backend-admin-auth',
+    tier: 6, severity: 'critical', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Depends(get_admin_user) added to run_seed, run_ingest, delete_stock, add_stock in services/market-data/src/api/admin.py.',
+    title: 'AUDIT-SEC-2: Four /admin/* routes unauthenticated — seed, ingest, delete, add_stock',
+    file: 'services/market-data/src/api/admin.py:109,115,136,150',
+    effort: 'Done',
+    impact: 'HIGH — any unauthenticated HTTP call could run DB seed, ingest all stocks, or delete stocks',
+    what: 'POST /admin/seed, POST /admin/ingest, DELETE /admin/stocks/{symbol}, POST /admin/add_stock had no auth dependency while other admin routes had Depends(get_admin_user).',
+    fix: 'Added _: User = Depends(get_admin_user) to all four endpoints.',
+  },
+  {
+    id: 'audit-service-auth',
+    tier: 6, severity: 'critical', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Depends(get_current_username) from shared common.jwt_auth added to: all ML train/tune endpoints, signal reset/refresh/calibrate_ta_weights, research generate/clear/chat, portfolio optimize.',
+    title: 'AUDIT-SEC-3: ML training, signal mutating, research, portfolio endpoints unauthenticated',
+    file: 'services/ml-prediction · signal-engine · research-engine · portfolio-optimizer',
+    effort: 'Done',
+    impact: 'HIGH — any anonymous caller could trigger expensive ML retraining or wipe all signals',
+    what: 'POST /ml/train, /ml/train_all, /ml/tune, /ml/tune_all, /ml/train_all_ensemble*, /signals/reset, /signals/refresh, /signals/calibrate_ta_weights, /research/{symbol}, /research/{symbol}/chat, DELETE /research/{symbol}, POST /portfolio/optimize were all fully open.',
+    fix: 'Added Depends(get_current_username) (shared jwt_auth module) to all endpoints in each service.',
+  },
+  {
+    id: 'audit-jwt-weak-default',
+    tier: 6, severity: 'critical', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — model_post_init() in Settings raises RuntimeError if env=="production" and jwt_secret is the known placeholder. Dev still has the fallback default.',
+    title: 'AUDIT-SEC-4: Hardcoded default JWT secret — services start with known-weak key if JWT_SECRET unset',
+    file: 'shared/common/config.py:24',
+    effort: 'Done',
+    impact: 'CRITICAL — attacker could forge valid JWTs for any user if .env is absent in production',
+    what: 'jwt_secret had default="stockai-change-me-in-production-secret-key". Any service that started without JWT_SECRET in the environment would accept tokens signed with this public string.',
+    fix: 'Added model_post_init() that raises RuntimeError at startup if env=="production" and secret matches the placeholder.',
+  },
+  {
+    id: 'audit-n1-signal-engine',
+    tier: 6, severity: 'critical', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — bulk-load all D1 prices for involved stock_ids before the loop in both calibrate_ta_weights and evaluate_signal_outcomes; bisect_left for in-memory lookup. Reduced from 2×N queries to 1 bulk query.',
+    title: 'AUDIT-PERF-1: N+1 queries in calibrate_ta_weights and evaluate_signal_outcomes',
+    file: 'services/signal-engine/src/api/routes.py:1362-1384 and 1773-1807',
+    effort: 'Done',
+    impact: 'HIGH — with 500 signals × 2 queries = 1000 sequential DB round trips per calibration run',
+    what: 'Both endpoints looped over signals and fired 2 per-row session.execute() calls inside the loop for entry/exit prices.',
+    fix: 'Pre-fetch all D1 prices for involved stock_ids + date range in one bulk query. Build a per-stock sorted (date, close) list, then use bisect for O(log n) lookups.',
+  },
+  {
+    id: 'audit-gbm-double-slice',
+    tier: 6, severity: 'critical', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — removed [:, 1] from GradientBoostingModel.predict_proba(). The caller (trainer.py) already slices [:, 1]; the double-slice was returning a scalar float which caused IndexError in CV loops.',
+    title: 'AUDIT-ML-1: GBM predict_proba double [:, 1] slice — crashed training with IndexError',
+    file: 'services/ml-prediction/src/models/gbm.py:24',
+    effort: 'Done',
+    impact: 'CRITICAL — GradientBoosting model silently failed to train; CV loops crashed on any symbol using GBM',
+    what: 'GradientBoostingModel.predict_proba returned a 1D array (already sliced [:, 1]). The trainer always applied [:, 1] again on top, turning 1D into a scalar that caused IndexError at lines 232, 287, 294.',
+    fix: 'Removed the [:, 1] slice from gbm.py so it returns the full 2D array like every other model.',
+  },
+  {
+    id: 'audit-misc-fixes',
+    tier: 6, severity: 'medium', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — (1) Signal horizon composite index ix_signals_stock_horizon_ts added to models.py + created CONCURRENTLY on EC2. (2) Redis signals:cache:* flushed on /signals/refresh and /signals/reset. (3) datetime.utcnow() → datetime.now(timezone.utc) in paper_trading_engine.py. (4) refreshSignals() API contract fixed: return type {status, count} and market sent as query param not body.',
+    title: 'AUDIT-MISC: Missing horizon index, stale cache after refresh, deprecated datetime, wrong API types',
+    file: 'shared/db/models.py · signal-engine/routes.py · paper_trading_engine.py · frontend/src/lib/api.ts',
+    effort: 'Done',
+    impact: 'MEDIUM — query slowness, stale analytical data up to 1h after signal refresh, timezone-aware comparison bugs',
+    what: 'Four separate medium-severity findings batched: (1) No index on Signal.horizon used in 10+ heavy queries. (2) factor_exposure and filter_audit Redis cache not flushed when signals regenerated. (3) deprecated datetime.utcnow() returns naive datetime. (4) refreshSignals sent market in body but backend reads query param.',
+    fix: 'Each fixed independently.',
+  },
+
+  // Remaining audit findings — not yet implemented
+  {
+    id: 'audit-api-gateway-auth',
+    tier: 6, severity: 'critical',
+    title: 'AUDIT-SEC-5: API gateway has no JWT validation — services are the only auth layer',
+    file: 'services/api-gateway/src/api/proxy.py:48-80',
+    effort: '1 day',
+    impact: 'HIGH — any caller who bypasses the gateway can hit upstream services without auth',
+    what: 'The reverse_proxy function forwards all requests to upstream services without validating any JWT itself. The gateway adds no Authorization check before forwarding; it strips malformed Bearer headers but does not verify them.',
+    fix: 'Add a shared JWT validation dependency at the gateway level for all non-public prefixes (/auth, /health). At minimum verify that a valid JWT is present before forwarding. This creates a defence-in-depth layer even if individual services are directly reachable.',
+  },
+  {
+    id: 'audit-ai-chat-auth',
+    tier: 6, severity: 'critical',
+    title: 'AUDIT-SEC-6: /ai/chat endpoint unauthenticated — anyone can use the shared AI key',
+    file: 'services/api-gateway/src/api/ai_proxy.py:54',
+    effort: '0.5 days',
+    impact: 'HIGH — anonymous callers can burn the shared Claude/DeepSeek API key budget',
+    what: 'POST /ai/chat has no auth dependency. When no api_key is provided by the caller, the endpoint falls back to the admin-configured shared key from Redis. There is no authentication check before allowing use of the shared key.',
+    fix: 'Add Depends(get_current_user) from the shared jwt_auth module to the ai_chat route. Only authenticated users should be allowed to use the shared key fallback.',
+  },
+  {
+    id: 'audit-paper-trading-tx',
+    tier: 6, severity: 'medium', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — _monitor_positions() now commits before _scan_for_entries(). Each phase is its own transaction; no flush() needed. Exception in scan cannot dirty the monitor commit.',
+    title: 'AUDIT-REL-1: paper_trading_step — single session flush mid-cycle risks partial commit on exception',
+    file: 'services/market-data/src/services/paper_trading_engine.py:866-912',
+    effort: '0.5 days',
+    impact: 'MEDIUM — exception after flush() but before commit() leaves cash mutations in memory, not rolled back',
+    what: 'paper_trading_step() opens one SessionLocal context for all portfolios and calls _monitor_positions() then session.flush() then _scan_for_entries() then session.commit(). The flush pushes closed-position cash updates to the DB identity map before the next step is safe.',
+    fix: 'Commit after _monitor_positions (separate monitor and scan into two transactions) before scanning for entries. This ensures closed-position cash is committed before new entries are evaluated.',
+  },
+  {
+    id: 'audit-ml-startup-check',
+    tier: 6, severity: 'medium', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — main.py startup scans model_dir/xgboost/*.joblib and logs warning if empty. GET /ml/status returns total_artifacts and by_model counts.',
+    title: 'AUDIT-REL-2: ML service — no model file check on startup, 404/500 on first predict',
+    file: 'services/ml-prediction/src/training/trainer.py:399-401 · src/api/routes.py:119-124',
+    effort: '0.5 days',
+    impact: 'MEDIUM — fresh EC2 deploy with no trained models returns confusing 500 errors with no diagnostics',
+    what: 'There is no startup event that scans model_dir. When no .joblib artifact exists, predict_latest raises FileNotFoundError at line 401. The /ml/health endpoint does not check for model existence.',
+    fix: 'Add a startup event in main.py that scans model_dir and logs a warning listing symbols without trained models. Add model_count to the /ml/health response.',
+  },
+  {
+    id: 'audit-ml-metrics-api',
+    tier: 6, severity: 'medium', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — GET /ml/metrics returns all symbol metrics sorted by test AUC. GET /ml/metrics/{symbol} returns single-symbol detail. System Health page now shows top-5 / bottom-5 AUC table with overfit warning badges.',
+    title: 'AUDIT-REL-3: ML model metrics invisible — no API to read accuracy/AUC after retrain',
+    file: 'services/ml-prediction/src/api/routes.py · src/training/trainer.py:372-382',
+    effort: '1 day',
+    impact: 'MEDIUM — model performance after retrain is visible only in container logs, not in the UI',
+    what: 'After each retrain, a rich metrics dict is serialised into the .joblib bundle (accuracy, AUC, precision, recall, F1, CV AUC, OOS IC, overfit gap, buy_threshold). These are also returned by train_model() — but only in the background task response, invisible to the UI.',
+    fix: 'Add GET /ml/metrics/{symbol} that loads the .joblib bundle and returns bundle["metrics"]. Surface on System Health page as a model accuracy widget showing the top-5 and bottom-5 symbols by AUC.',
+  },
+  {
+    id: 'audit-password-min',
+    tier: 6, severity: 'medium', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — all 4 password validation checks in auth.py raised to 8 characters minimum.',
+    title: 'AUDIT-SEC-7: Minimum password length is 4 characters',
+    file: 'services/market-data/src/api/auth.py:137,182,209,257',
+    effort: '0.5 days',
+    impact: 'MEDIUM — allows trivially weak passwords for all users',
+    what: 'All password creation and change flows enforce a minimum of 4 characters in reset_password_public, change_password, admin_reset_password, and create_user.',
+    fix: 'Raise the minimum to 8 characters in all four password validation locations. Consider adding rate limiting on /auth/login.',
+  },
+  {
+    id: 'audit-jwt-expiry',
+    tier: 6, severity: 'medium',
+    title: 'AUDIT-SEC-8: 30-day JWT expiry with no revocation mechanism',
+    file: 'shared/common/config.py:25 · services/market-data/src/api/auth.py:36-42',
+    effort: '2 days',
+    impact: 'MEDIUM — stolen tokens remain valid for up to 30 days with no way to revoke them',
+    what: 'Tokens are valid for 30 days. There is no token blacklist or refresh token mechanism. If a token is compromised, it cannot be invalidated until expiry.',
+    fix: 'Reduce token expiry to 1 day (or 8 hours). Implement a Redis-backed token blacklist checked in get_current_user. Add a POST /auth/logout endpoint that adds the token JTI to the blacklist.',
+  },
+
   {
     id: 'tm5-live-vs-backtest',
     tier: 3, severity: 'feature',
@@ -1361,6 +1516,7 @@ const TIER_LABEL: Record<Tier, string> = {
   3: 'Tier 3 — New Features',
   4: 'Tier 4 — Signal Accuracy & ML Tuning',
   5: 'Tier 5 — UI Gaps & Tech Debt',
+  6: 'Tier 6 — Security & Reliability Audit (2026-06-09)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -1369,6 +1525,7 @@ const TIER_COLOR: Record<Tier, string> = {
   3: '#818cf8',
   4: '#34d399',
   5: '#67e8f9',
+  6: '#f97316',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

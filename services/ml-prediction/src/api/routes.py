@@ -43,6 +43,28 @@ def models():
     return {"models": list_models()}
 
 
+@router.get("/status")
+def ml_status():
+    """Return model counts per type — a quick health check for the ML service."""
+    from pathlib import Path
+    from common.config import get_settings
+
+    settings = get_settings()
+    model_dir = Path(settings.model_dir)
+    counts = {}
+    for model_name in list_models():
+        mdir = model_dir / model_name
+        counts[model_name] = len(list(mdir.glob("*.joblib"))) if mdir.exists() else 0
+
+    total = sum(counts.values())
+    return {
+        "status": "ok" if total > 0 else "no_models",
+        "total_artifacts": total,
+        "by_model": counts,
+        "model_dir": str(model_dir),
+    }
+
+
 @router.post("/train")
 def train(req: TrainRequest, tasks: BackgroundTasks, _: str = Depends(get_current_username)):
     if req.model not in list_models():
@@ -212,3 +234,59 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = De
         "horizon": horizon,
         "note": "After completion, use POST /ml/predict_ensemble for ensemble predictions.",
     }
+
+
+@router.get("/metrics/{symbol}")
+def get_metrics(symbol: str, model: str = "xgboost"):
+    """Return the training metrics stored in the .joblib bundle for a given symbol."""
+    from ..training.trainer import _artifact_path
+    import joblib
+
+    path = _artifact_path(symbol.upper(), model)
+    if not path.exists():
+        raise HTTPException(404, f"No trained {model} model for {symbol.upper()}")
+    try:
+        bundle = joblib.load(path)
+        return {
+            "symbol": symbol.upper(),
+            "model": model,
+            "metrics": bundle.get("metrics", {}),
+            "buy_threshold": bundle.get("buy_threshold"),
+            "feature_columns": bundle.get("feature_columns", []),
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to load model bundle: {exc}") from exc
+
+
+@router.get("/metrics")
+def list_all_metrics(model: str = "xgboost"):
+    """Return training metrics for every symbol that has a trained model."""
+    from pathlib import Path
+    from common.config import get_settings
+    import joblib
+
+    settings = get_settings()
+    model_dir = Path(settings.model_dir) / model
+    if not model_dir.exists():
+        return {"model": model, "symbols": []}
+
+    results = []
+    for artifact in sorted(model_dir.glob("*.joblib")):
+        sym = artifact.stem
+        try:
+            bundle = joblib.load(artifact)
+            m = bundle.get("metrics", {})
+            results.append({
+                "symbol": sym,
+                "model": model,
+                "test_auc": m.get("test_auc"),
+                "cv_auc": m.get("cv_auc"),
+                "accuracy": m.get("accuracy"),
+                "overfit_gap": m.get("overfit_gap"),
+                "buy_threshold": bundle.get("buy_threshold"),
+            })
+        except Exception:
+            results.append({"symbol": sym, "model": model, "error": "failed to load"})
+
+    results.sort(key=lambda x: (x.get("test_auc") or 0), reverse=True)
+    return {"model": model, "count": len(results), "symbols": results}
