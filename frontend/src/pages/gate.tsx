@@ -19,7 +19,8 @@ export default function GatePage() {
         body: JSON.stringify({ password }),
       });
       if (res.ok) {
-        const next = (router.query.next as string) || '/';
+        const raw = router.query.next as string | undefined;
+        const next = raw && raw.startsWith('/') && raw !== '/login' && raw !== '/gate' ? raw : '/';
         router.replace(next);
       } else {
         setError('Incorrect password. Please try again.');

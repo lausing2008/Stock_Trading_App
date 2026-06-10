@@ -24,8 +24,12 @@ export async function login(username: string, password: string): Promise<boolean
       body: JSON.stringify({ username, password }),
     });
     if (!res.ok) return false;
-    const { token } = await res.json();
+    const data = await res.json();
+    const token: string | undefined = data.token;
+    if (!token || typeof token !== 'string') return false;
     localStorage.setItem(JWT_KEY, token);
+    // Verify the token is actually decodable before reporting success
+    if (!decodeJWT(token)) return false;
     return true;
   } catch {
     return false;
