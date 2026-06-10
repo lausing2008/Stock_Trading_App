@@ -14,8 +14,11 @@ export default function LoginPage() {
   const [resetMsg, setResetMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
-    if (getSession()) router.replace('/');
-  }, []);
+    if (getSession()) {
+      const next = (router.query.next as string) || '/';
+      router.replace(next);
+    }
+  }, [router.isReady]);
 
   async function handleLogin(e: FormEvent) {
     e.preventDefault();
@@ -23,7 +26,8 @@ export default function LoginPage() {
     setLoginError('');
     const ok = await login(username, password);
     if (ok) {
-      window.location.href = '/';
+      const next = (router.query.next as string) || '/';
+      window.location.href = next;
     } else {
       setLoginError('Incorrect username or password.');
       setLoginLoading(false);
