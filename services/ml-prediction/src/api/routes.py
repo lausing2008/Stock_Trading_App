@@ -1,6 +1,8 @@
 """ML endpoints: list, train, tune, predict."""
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
+
+from common.jwt_auth import get_current_username
 
 from ..models import list_models
 from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, train_model, tune_symbol
@@ -42,7 +44,7 @@ def models():
 
 
 @router.post("/train")
-def train(req: TrainRequest, tasks: BackgroundTasks):
+def train(req: TrainRequest, tasks: BackgroundTasks, _: str = Depends(get_current_username)):
     if req.model not in list_models():
         raise HTTPException(400, f"Unknown model: {req.model}")
     horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
@@ -51,7 +53,7 @@ def train(req: TrainRequest, tasks: BackgroundTasks):
 
 
 @router.post("/train_all")
-def train_all(tasks: BackgroundTasks, style: str = "SWING"):
+def train_all(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get_current_username)):
     """Schedule xgboost training for every active stock (uses tuned params if available).
 
     Horizon is derived from style: SHORT=5d, SWING=10d, LONG=20d.
@@ -72,7 +74,7 @@ def train_all(tasks: BackgroundTasks, style: str = "SWING"):
 
 
 @router.post("/tune")
-def tune(req: TuneRequest, tasks: BackgroundTasks):
+def tune(req: TuneRequest, tasks: BackgroundTasks, _: str = Depends(get_current_username)):
     """Run Optuna hyperparameter search for one symbol, then retrain with best params."""
     horizon = _HORIZON_BY_STYLE.get(req.style.upper(), req.horizon)
     tasks.add_task(tune_symbol, req.symbol, req.n_trials, horizon, req.style)
@@ -80,7 +82,7 @@ def tune(req: TuneRequest, tasks: BackgroundTasks):
 
 
 @router.post("/tune_all")
-def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING"):
+def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _: str = Depends(get_current_username)):
     """Run Optuna tuning sequentially for every active stock (weekend job).
 
     Each symbol gets `n_trials` Optuna trials then a full retrain. Runs in background.
@@ -153,7 +155,7 @@ def predict_ensemble_three(req: PredictRequest):
 
 
 @router.post("/train_all_ensemble_three")
-def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING"):
+def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get_current_username)):
     """Train XGBoost + LightGBM + RandomForest for every active symbol.
 
     Enables 3-model ensemble predictions via POST /ml/predict_ensemble_three.
@@ -183,7 +185,7 @@ def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING"):
 
 
 @router.post("/train_all_ensemble")
-def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING"):
+def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get_current_username)):
     """Train XGBoost AND RandomForest for every active symbol.
 
     Enables ensemble predictions via POST /ml/predict_ensemble.

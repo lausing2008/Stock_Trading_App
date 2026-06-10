@@ -1,7 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type SuppressedSignalRow } from '@/lib/api';
+import { getSession } from '@/lib/auth';
 
 // ── Static config ─────────────────────────────────────────────────────────────
 
@@ -186,6 +188,16 @@ function SummaryBar({ rows }: { rows: SuppressedSignalRow[] }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SignalFiltersPage() {
+  const router = useRouter();
+  const [authed, setAuthed] = useState(false);
+
+  useEffect(() => {
+    const s = getSession();
+    if (!s) { router.replace('/login'); return; }
+    if (s.role !== 'admin') { router.replace('/'); return; }
+    setAuthed(true);
+  }, [router]);
+
   const [style, setStyle] = useState<string>('SWING');
   const [sigFilter, setSigFilter] = useState<string>('ALL');
   const [condFilters, setCondFilters] = useState<Set<CondKey>>(new Set());
@@ -195,7 +207,7 @@ export default function SignalFiltersPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   const { data, isLoading, error, mutate } = useSWR(
-    ['suppressed', style],
+    authed ? ['suppressed', style] : null,
     () => api.suppressedSignals(style),
     { revalidateOnFocus: false },
   );
@@ -250,6 +262,8 @@ export default function SignalFiltersPage() {
   const buyCount = data?.filter(r => r.signal === 'BUY').length ?? 0;
   const gateCount = data?.filter(r => r.conditions.weekly_gate).length ?? 0;
   const suppCount = data?.filter(r => r.suppression_count > 0).length ?? 0;
+
+  if (!authed) return null;
 
   return (
     <div style={{ padding: '24px 28px', maxWidth: 1700, margin: '0 auto' }}>

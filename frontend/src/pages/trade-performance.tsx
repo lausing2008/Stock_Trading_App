@@ -48,10 +48,12 @@
  * Trade Performance measures actual trade P&L using realistic BUY→SELL pairs.
  * Trade Performance is the harder, more honest number.
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type TradePair, type EquityPoint } from '@/lib/api';
+import { getSession } from '@/lib/auth';
 
 const LOOKBACK_OPTIONS = [
   { label: '90d',  value: 90 },
@@ -169,6 +171,16 @@ const HORIZON_OPTIONS = [
 const MAX_HOLD_DEFAULTS: Record<string, number> = { SHORT: 7, SWING: 25, LONG: 90 };
 
 export default function TradePerformancePage() {
+  const router = useRouter();
+  const [authed, setAuthed] = useState(false);
+
+  useEffect(() => {
+    const s = getSession();
+    if (!s) { router.replace('/login'); return; }
+    if (s.role !== 'admin') { router.replace('/'); return; }
+    setAuthed(true);
+  }, [router]);
+
   const [lookback, setLookback]           = useState(180);
   const [horizon, setHorizon]             = useState<'SHORT' | 'SWING' | 'LONG'>('SWING');
   const [waitExits, setWaitExits]         = useState(false);
@@ -181,7 +193,7 @@ export default function TradePerformancePage() {
   const [sortBy, setSortBy]               = useState<'date' | 'return' | 'hold'>('date');
 
   const { data, isLoading, error } = useSWR(
-    ['trade-performance', lookback, horizon, waitExits, useMaxHold, maxHoldDays, minConfidence],
+    authed ? ['trade-performance', lookback, horizon, waitExits, useMaxHold, maxHoldDays, minConfidence] : null,
     () => api.tradePerformance(lookback, undefined, horizon, {
       waitExits,
       maxHoldDays: useMaxHold ? maxHoldDays : undefined,
@@ -211,6 +223,8 @@ export default function TradePerformancePage() {
     : data.win_rate >= 55 ? '#4ade80'
     : data.win_rate >= 45 ? '#facc15'
     : '#f87171';
+
+  if (!authed) return null;
 
   return (
     <div style={{ padding: '24px 0' }}>
