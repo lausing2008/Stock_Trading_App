@@ -1089,7 +1089,7 @@ def suppressed_signals(
     q = (
         select(
             Stock.symbol, Stock.name,
-            Signal.signal, Signal.horizon, Signal.confidence,
+            Signal.stock_id, Signal.signal, Signal.horizon, Signal.confidence,
             Signal.bullish_probability, Signal.ts, Signal.reasons,
         )
         .join(Signal, Stock.id == Signal.stock_id)
@@ -1170,6 +1170,82 @@ def suppressed_signals(
             "rs_score":            r.get("rs_score"),
             "conviction":          conv,
         })
+
+    # Compute days_active per condition — how many consecutive days each flag has been True.
+    # Bulk-load the last 90 days of signals for all stocks in the result set.
+    stock_ids = [row.stock_id for row in rows]
+    cutoff_90 = datetime.now(timezone.utc) - timedelta(days=90)
+    try:
+        _horizon_enum = SignalHorizon(horizon_filter)
+        hist_rows = session.execute(
+            select(Signal.stock_id, Signal.ts, Signal.reasons)
+            .where(
+                Signal.stock_id.in_(stock_ids),
+                Signal.horizon == _horizon_enum,
+                Signal.ts >= cutoff_90,
+            )
+            .order_by(Signal.stock_id, Signal.ts.desc())
+        ).all() if rows else []
+    except ValueError:
+        hist_rows = []
+
+    # Group history by stock_id
+    from collections import defaultdict
+    hist_by_stock: dict[int, list] = defaultdict(list)
+    for h in hist_rows:
+        hist_by_stock[h.stock_id].append(h)
+
+    _CONDITION_KEYS = [
+        "weekly_gate", "weekly_misalignment", "adx_choppy", "high_vol_regime",
+        "low_breadth", "earnings_caution", "negative_news", "rs_lagging",
+        "bearish_options", "stale_data", "insufficient_history", "compression_cap",
+    ]
+
+    def _extract_conditions(reasons: dict) -> dict[str, bool]:
+        return {
+            "weekly_gate":          bool(reasons.get("weekly_gate_fired", False)),
+            "weekly_misalignment":  reasons.get("weekly_alignment") is False,
+            "adx_choppy":           bool(reasons.get("adx_compression", False)),
+            "high_vol_regime":      bool(reasons.get("high_vol_compression", False)),
+            "low_breadth":          bool(reasons.get("breadth_compression", False)),
+            "earnings_caution":     reasons.get("earnings_warning") in ("caution", "note", "watch"),
+            "negative_news":        reasons.get("news_sentiment_flag") in ("strongly_negative", "negative"),
+            "rs_lagging":           reasons.get("rs_flag") == "lagging_sector",
+            "bearish_options":      reasons.get("options_flag") in ("elevated_put_volume", "slightly_elevated_puts"),
+            "stale_data":           bool(reasons.get("stale_price_warning", False)),
+            "insufficient_history": bool(reasons.get("insufficient_history_warning", False)),
+            "compression_cap":      bool(reasons.get("compression_cap_applied", False)),
+        }
+
+    def _days_active(stock_id: int) -> dict[str, int]:
+        """Walk back through signal history; count consecutive days each condition is True."""
+        history = hist_by_stock.get(stock_id, [])
+        streak: dict[str, int] = {k: 0 for k in _CONDITION_KEYS}
+        if not history:
+            return streak
+        # history is ordered ts desc; walk from most recent, stop streak when condition flips to False
+        active: dict[str, bool] = {k: True for k in _CONDITION_KEYS}
+        prev_ts: datetime | None = None
+        for h in history:
+            conds = _extract_conditions(h.reasons or {})
+            ts = h.ts.replace(tzinfo=timezone.utc) if h.ts.tzinfo is None else h.ts
+            for k in _CONDITION_KEYS:
+                if not active[k]:
+                    continue
+                if conds.get(k, False):
+                    # Each distinct signal bar counts as one day
+                    streak[k] += 1
+                else:
+                    active[k] = False
+        return streak
+
+    # Attach days_active to each result
+    days_active_by_symbol: dict[str, dict[str, int]] = {}
+    for row in rows:
+        days_active_by_symbol[row.symbol] = _days_active(row.stock_id)
+
+    for item in results:
+        item["days_active"] = days_active_by_symbol.get(item["symbol"], {})
 
     results.sort(key=lambda x: (-x["suppression_count"], -(x["bullish_probability"] or 0)))
     return results

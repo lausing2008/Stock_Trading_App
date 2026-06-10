@@ -133,14 +133,25 @@ function SortTh({
   );
 }
 
-function CondDot({ fired, color, tip }: { fired: boolean; color: string; tip: string }) {
+function CondDot({ fired, color, tip, daysActive }: { fired: boolean; color: string; tip: string; daysActive?: number }) {
+  const fullTip = fired && daysActive && daysActive > 1
+    ? `${tip}\nActive for ${daysActive} signal bars`
+    : tip;
   return (
-    <span title={tip} style={{
-      display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
-      background: fired ? color : '#1e293b',
-      border: `1px solid ${fired ? color : '#334155'}`,
-      cursor: 'help',
-    }} />
+    <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+      <span title={fullTip} style={{
+        display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
+        background: fired ? color : '#1e293b',
+        border: `1px solid ${fired ? color : '#334155'}`,
+        cursor: 'help',
+      }} />
+      {fired && daysActive != null && daysActive > 0 && (
+        <span title={fullTip} style={{
+          fontSize: 9, fontWeight: 700, color: daysActive >= 10 ? color : '#64748b',
+          lineHeight: 1, cursor: 'help',
+        }}>{daysActive}d</span>
+      )}
+    </span>
   );
 }
 
@@ -557,8 +568,13 @@ export default function SignalFiltersPage() {
 
                     {/* Condition dots */}
                     {CONDITIONS.map(c => (
-                      <td key={c.key} style={{ ...TD, textAlign: 'center', padding: '7px 6px' }}>
-                        <CondDot fired={row.conditions[c.key] === true} color={c.color} tip={c.tip} />
+                      <td key={c.key} style={{ ...TD, textAlign: 'center', padding: '7px 6px', verticalAlign: 'middle' }}>
+                        <CondDot
+                          fired={row.conditions[c.key] === true}
+                          color={c.color}
+                          tip={c.tip}
+                          daysActive={row.days_active?.[c.key]}
+                        />
                       </td>
                     ))}
 

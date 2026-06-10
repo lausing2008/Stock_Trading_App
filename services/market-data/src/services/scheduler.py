@@ -145,6 +145,54 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
         pass
 
 
+# ── HK Public Holiday Calendar (HKEX market closure dates) ──────────────────
+# Source: HKEX official holiday list. Extend each year before January.
+# Format: frozenset of (year, month, day) tuples.
+_HK_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset([
+    # 2025
+    (2025, 1, 1),   # New Year's Day
+    (2025, 1, 29),  # Lunar New Year's Eve
+    (2025, 1, 30),  # Lunar New Year Day 1
+    (2025, 1, 31),  # Lunar New Year Day 2
+    (2025, 2, 3),   # Lunar New Year Day 4 (make-up, day after Sat)
+    (2025, 4, 4),   # Ching Ming Festival
+    (2025, 4, 18),  # Good Friday
+    (2025, 4, 21),  # Easter Monday
+    (2025, 5, 1),   # Labour Day
+    (2025, 5, 5),   # Buddha's Birthday
+    (2025, 6, 2),   # Tuen Ng Festival
+    (2025, 7, 1),   # HKSAR Establishment Day
+    (2025, 10, 1),  # National Day
+    (2025, 10, 7),  # Chung Yeung Festival
+    (2025, 12, 25), # Christmas Day
+    (2025, 12, 26), # Boxing Day
+    # 2026
+    (2026, 1, 1),   # New Year's Day
+    (2026, 2, 17),  # Lunar New Year Day 1
+    (2026, 2, 18),  # Lunar New Year Day 2
+    (2026, 2, 19),  # Lunar New Year Day 3
+    (2026, 2, 20),  # Lunar New Year Day 4 (make-up)
+    (2026, 4, 3),   # Ching Ming Festival
+    (2026, 4, 6),   # Easter Monday (Good Friday + Easter Mon TBD—placeholder)
+    (2026, 5, 1),   # Labour Day
+    (2026, 5, 25),  # Buddha's Birthday
+    (2026, 6, 19),  # Tuen Ng Festival
+    (2026, 7, 1),   # HKSAR Establishment Day
+    (2026, 10, 1),  # National Day
+    (2026, 10, 26), # Chung Yeung Festival
+    (2026, 12, 25), # Christmas Day
+    (2026, 12, 28), # Boxing Day observed (Mon after Sat+Sun Christmas)
+])
+
+
+def _is_hk_holiday(dt: datetime | None = None) -> bool:
+    """Return True if today is a HKEX public holiday (market is closed)."""
+    d = (dt or datetime.now(timezone.utc)).astimezone(
+        __import__("zoneinfo").ZoneInfo("Asia/Hong_Kong")
+    )
+    return (d.year, d.month, d.day) in _HK_HOLIDAYS
+
+
 def _symbols_for(market: str) -> list[str]:
     """Return all active stock symbols for the given market ('US' or 'HK')."""
     with SessionLocal() as session:
@@ -197,6 +245,10 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     Called by every scheduled job (open burst, regular, close burst, post-close).
     post_close=True is only set by the 16:30 job after the final bar has settled.
     """
+    if market == "HK" and _is_hk_holiday():
+        log.info("scheduler.skip", market="HK", reason="hk_public_holiday")
+        return
+
     symbols = _symbols_for(market)
     if not symbols:
         log.info("scheduler.skip", market=market, reason="no_symbols")
@@ -753,6 +805,11 @@ def check_signal_alerts() -> None:
                 is_bullish = (prev, current) in _BULLISH_TRANSITIONS or (prev is None and current == "BUY")
                 is_bearish = (prev, current) in _BEARISH_TRANSITIONS
 
+                # "buy_only" mode: only notify on transitions directly to/from BUY
+                if getattr(alert, "alert_mode", "all") == "buy_only":
+                    is_bullish = is_bullish and current == "BUY"
+                    is_bearish = is_bearish and prev == "BUY"
+
                 if not is_bullish and not is_bearish:
                     # Neutral or unrecognised transition — just advance the stored state.
                     alert.last_signal = current
@@ -1112,6 +1169,8 @@ def _refresh_5m(market: str) -> None:
     since the last stored bar — incremental, not a full re-download.
     Rankings and signals are NOT updated (they use daily bars only).
     """
+    if market == "HK" and _is_hk_holiday():
+        return
     symbols = _symbols_for(market)
     if not symbols:
         return
