@@ -622,6 +622,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'ui10-ml-weight-autocalibrate',
+    defaultStatus: 'done',
+    implementedNote: 'POST /signals/calibrate_ml_weight endpoint runs weight sweep, saves optimal cap to ml_weight_override.json, updates in-process global. "Apply optimal weight" button on signal accuracy page shows result with accuracy %.',
     tier: 5, severity: 'medium',
     title: 'UI-10: ML weight auto-calibration from empirical validation curve',
     file: 'frontend/src/pages/signal-accuracy.tsx + signal-engine/routes.py',
@@ -939,6 +941,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'res1-short-interest',
+    defaultStatus: 'done',
+    implementedNote: 'Added "Short Interest & Ownership" row in Company Financials on stock detail page (short % of float, days to cover, institutional/insider %). Signal engine now applies a +2–4% confidence boost for SWING/GROWTH when short % ≥ 20% and signal is bullish (squeeze potential).',
     tier: 3, severity: 'feature',
     title: 'RES-1: Short interest tracker — squeeze potential and crowded-short warning',
     file: 'services/market-data/src/api/routes.py · frontend/src/pages/stock/[symbol].tsx',
@@ -996,6 +1000,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'scr2-pre-earnings-screener',
+    defaultStatus: 'done',
+    implementedNote: 'Added "Earnings This Week" collapsible panel on Opportunities page — shows stocks reporting in ≤7d with signal, price change, EPS growth estimate. Sorted by days_to_earnings.',
     tier: 3, severity: 'feature',
     title: 'SCR-2: Pre-earnings screener — surface BUY candidates with upcoming earnings catalysts',
     file: 'frontend/src/pages/opportunities.tsx · services/ranking-engine/src/api/routes.py',
@@ -1521,7 +1527,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'audit-jwt-expiry',
-    tier: 6, severity: 'medium',
+    tier: 6, severity: 'medium', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — POST /auth/logout blacklists JTI in Redis (TTL = remaining token lifetime). get_current_user and shared jwt_auth check blacklist on every request. Expiry reduced 30d → 7d in config.py. Frontend logout fires fire-and-forget revocation call before clearing localStorage.',
     title: 'AUDIT-SEC-8: 30-day JWT expiry with no revocation mechanism',
     file: 'shared/common/config.py:25 · services/market-data/src/api/auth.py:36-42',
     effort: '2 days',
@@ -1532,7 +1539,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'tm5-live-vs-backtest',
-    tier: 3, severity: 'feature',
+    tier: 3, severity: 'feature', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Added Live vs Backtest comparison panel to /signal-accuracy overview tab. Fetches walk-forward data (30d test, 5d hold, 365d training) via SWR alongside live signalAccuracy. Side-by-side grid shows live accuracy, walk-forward accuracy, and delta (+/-) with colour coding. Interpretation banner explains alignment vs divergence.',
     title: 'TM-5: Live vs backtest comparison — detect overfitting and model drift in production',
     file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
     effort: '2–3 days',

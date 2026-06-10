@@ -92,6 +92,44 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "volume_surge":             0.05,
 }
 _TA_WEIGHTS_PATH = Path(_settings.model_dir) / "ta_weights.json"
+_ML_WEIGHT_OVERRIDE_PATH = Path(_settings.model_dir) / "ml_weight_override.json"
+
+# Global ML weight cap override: None means use the per-style profile default.
+# Set by calibrate_ml_weight(); loaded at import time from disk if present.
+_ml_weight_global_cap: float | None = None
+
+
+def _load_ml_weight_override() -> float | None:
+    """Load calibrated ML weight cap from disk, or return None (use profile default)."""
+    try:
+        if _ML_WEIGHT_OVERRIDE_PATH.exists():
+            with open(_ML_WEIGHT_OVERRIDE_PATH) as f:
+                d = json.load(f)
+            v = d.get("ml_weight_cap")
+            if isinstance(v, (int, float)) and 0.0 <= v <= 1.0:
+                return float(v)
+    except Exception:
+        pass
+    return None
+
+
+def set_ml_weight_global_cap(cap: float | None) -> None:
+    """Update the in-process ML weight cap override and persist to disk."""
+    global _ml_weight_global_cap
+    _ml_weight_global_cap = cap
+    try:
+        Path(_ML_WEIGHT_OVERRIDE_PATH).parent.mkdir(parents=True, exist_ok=True)
+        if cap is None:
+            Path(_ML_WEIGHT_OVERRIDE_PATH).unlink(missing_ok=True)
+        else:
+            Path(_ML_WEIGHT_OVERRIDE_PATH).write_text(json.dumps({"ml_weight_cap": cap}, indent=2))
+    except Exception:
+        pass
+
+
+# Load on module import
+_ml_weight_global_cap = _load_ml_weight_override()
+
 
 def _load_ta_weights() -> dict[str, float]:
     """Load calibrated TA weights from disk, falling back to defaults."""
@@ -955,6 +993,22 @@ def _fetch_kscore(symbol: str) -> float | None:
     return None
 
 
+def _fetch_short_interest(symbol: str) -> tuple[float | None, float | None]:
+    """Return (short_percent_of_float, short_ratio) from market-data fundamentals, or (None, None)."""
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/fundamentals"
+        with httpx.Client(timeout=6) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                d = r.json()
+                spf = d.get("short_percent_of_float")
+                sr = d.get("short_ratio")
+                return spf, sr
+    except Exception:
+        pass
+    return None, None
+
+
 def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str, str]:
     """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds.
 
@@ -990,6 +1044,7 @@ def _apply_style_signal(
     base_reasons: dict,
     earnings_beat_rate: float | None = None,
     sector_etf_above_sma50: bool | None = None,
+    short_pct_float: float | None = None,
 ) -> "AIConfidence":
     """Apply style-specific fusion and filters from shared base values.
 
@@ -1012,7 +1067,8 @@ def _apply_style_signal(
         else:
             # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
             raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
-        ml_w  = min(raw_w, p["ml_weight_cap"])
+        eff_cap = _ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"]
+        ml_w  = min(raw_w, eff_cap)
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
             # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).
@@ -1214,6 +1270,23 @@ def _apply_style_signal(
         reasons["sr_flag"] = "neutral"
     fused = float(np.clip(fused, 0.0, 1.0))
 
+    # ── Short interest: squeeze potential boost (SWING/GROWTH) ───────────────
+    # High short interest (≥20%) heading into a bullish signal raises squeeze
+    # risk for shorts — a small confidence boost for BUY direction.
+    # Applies to SWING and GROWTH only; LONG ignores short-term positioning.
+    if style_key in ("SWING", "GROWTH") and short_pct_float is not None:
+        if short_pct_float >= 0.30 and fused > 0.5:
+            fused = float(np.clip(fused + 0.04, 0.0, 1.0))
+            reasons["short_interest_flag"] = "very_high_squeeze_potential"
+        elif short_pct_float >= 0.20 and fused > 0.5:
+            fused = float(np.clip(fused + 0.02, 0.0, 1.0))
+            reasons["short_interest_flag"] = "elevated_short_interest"
+        else:
+            reasons["short_interest_flag"] = "normal"
+    else:
+        reasons["short_interest_flag"] = "no_data" if short_pct_float is None else "normal"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
     # ── K-Score fundamental boost (LONG only) ────────────────────────────────
     if p.get("kscore_boost") and kscore is not None:
         if kscore >= 70:
@@ -1331,6 +1404,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     weekly_tech = _weekly_technicals(df_weekly)
     weekly_score = weekly_tech["weekly_score"]
     kscore = _fetch_kscore(symbol)
+    short_pct_float, short_ratio = _fetch_short_interest(symbol)
 
     # Populate shared base reasons (written into every style's output)
     reasons["market_regime"]      = market_regime
@@ -1356,6 +1430,8 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["options_sentiment"]  = options_sentiment
     reasons["options_cp_ratio"]   = round(cp_ratio, 2) if cp_ratio is not None else None
     reasons["kscore"]             = kscore
+    reasons["short_pct_float"]    = round(short_pct_float * 100, 1) if short_pct_float is not None else None
+    reasons["short_ratio"]        = round(short_ratio, 1) if short_ratio is not None else None
     reasons["insufficient_history"] = insufficient_history
     reasons["bar_count"]          = len(df)
     reasons["sr_context"]           = sr_data["sr_context"]
@@ -1389,6 +1465,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             base_reasons=reasons,
             earnings_beat_rate=earnings_beat_rate,
             sector_etf_above_sma50=sector_etf_above_sma50,
+            short_pct_float=short_pct_float,
         )
 
     return {k: _make_signal(k) for k in ("SHORT", "SWING", "LONG", "GROWTH")}
