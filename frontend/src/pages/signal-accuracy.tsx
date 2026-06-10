@@ -544,12 +544,13 @@ export default function SignalAccuracyPage() {
   const [resetMsg, setResetMsg] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [page, setPage] = useState(1);
 
   const useDateRange = fromDate !== '' && toDate !== '';
 
   const { data, isLoading, error, mutate } = useSWR(
-    ['signal-accuracy', lookback, fromDate, toDate],
-    () => api.signalAccuracy(lookback, undefined, fromDate || undefined, toDate || undefined),
+    ['signal-accuracy', lookback, fromDate, toDate, page],
+    () => api.signalAccuracy(lookback, undefined, fromDate || undefined, toDate || undefined, page),
     { revalidateOnFocus: false },
   );
 
@@ -796,7 +797,7 @@ export default function SignalAccuracyPage() {
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 4 }}>
           {LOOKBACK_OPTIONS.map(o => (
-            <button key={o.value} onClick={() => { setLookback(o.value); setFromDate(''); setToDate(''); }}
+            <button key={o.value} onClick={() => { setLookback(o.value); setFromDate(''); setToDate(''); setPage(1); }}
               style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
                 borderColor: lookback === o.value && !useDateRange ? '#6366f1' : '#1e293b',
                 background: lookback === o.value && !useDateRange ? 'rgba(99,102,241,0.15)' : 'transparent',
@@ -982,6 +983,16 @@ export default function SignalAccuracyPage() {
               </tbody>
             </table>
           </div>
+          {data?.has_more && (
+            <div style={{ textAlign: 'center', marginTop: 12 }}>
+              <button
+                onClick={() => setPage(p => p + 1)}
+                style={{ padding: '6px 20px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', border: '1px solid #334155', background: 'transparent', color: '#94a3b8' }}
+              >
+                Load more ({data.total_signals - (data.page * data.page_size)} remaining)
+              </button>
+            </div>
+          )}
         </div>
       )}
 

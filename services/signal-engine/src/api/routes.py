@@ -1,5 +1,6 @@
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
+import json
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -10,6 +11,25 @@ from common.logging import get_logger
 from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, get_session
 
 _settings = get_settings()
+
+# ── Redis cache helper ────────────────────────────────────────────────────────
+
+def _get_redis():
+    import redis as redis_lib
+    return redis_lib.from_url(_settings.redis_url, decode_responses=True)
+
+def _cache_get(key: str):
+    try:
+        val = _get_redis().get(key)
+        return json.loads(val) if val else None
+    except Exception:
+        return None
+
+def _cache_set(key: str, value, ttl: int = 3600) -> None:
+    try:
+        _get_redis().setex(key, ttl, json.dumps(value))
+    except Exception:
+        pass
 
 from ..generators import generate_signal, generate_all_signals
 
@@ -178,6 +198,8 @@ def signal_accuracy(
     symbol: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(200, ge=10, le=500),
     session: Session = Depends(get_session),
 ):
     """Historical accuracy of BUY/SELL signals vs actual price outcomes.
@@ -320,6 +342,9 @@ def signal_accuracy(
         losses = sum(abs(i["pct_change"]) for i in items if not i["correct"])
         return round(wins / losses, 2) if losses > 0 else None
 
+    offset = (page - 1) * page_size
+    page_signals = results[offset: offset + page_size]
+
     return {
         "lookback_days": lookback_days,
         "total_signals": len(results),
@@ -331,7 +356,10 @@ def signal_accuracy(
         "avg_buy_return_pct": _avg_return(buy_r),
         "avg_sell_return_pct": _avg_return(sell_r),
         "profit_factor": _profit_factor(results),
-        "signals": results,
+        "page": page,
+        "page_size": page_size,
+        "has_more": offset + page_size < len(results),
+        "signals": page_signals,
     }
 
 
@@ -583,6 +611,11 @@ def factor_exposure(
     """
     import bisect
 
+    cache_key = f"signals:cache:factor_exposure:{lookback_days}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
 
@@ -698,7 +731,9 @@ def factor_exposure(
             "wrong_count": len(wrong_vals[fname]),
         })
 
-    return {"lookback_days": lookback_days, "signal_count": total, "factors": factors}
+    result = {"lookback_days": lookback_days, "signal_count": total, "factors": factors}
+    _cache_set(cache_key, result)
+    return result
 
 
 @router.get("/trade_performance")
@@ -1140,6 +1175,11 @@ def filter_audit(
     actual price return hold_days later.  Returns win-rate breakdown by filter
     count so you can see whether heavily-filtered signals genuinely perform worse.
     """
+    cache_key = f"signals:cache:filter_audit:{lookback_days}:{style}:{hold_days}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     since = date.today() - timedelta(days=lookback_days)
     try:
         horizon_enum = SignalHorizon(style.upper())
@@ -1233,7 +1273,7 @@ def filter_audit(
     n_signals = len(rows)
     n_with_returns = len(per_trade)
     overall_wr = round(sum(1 for t in per_trade if t["win"]) / n_with_returns * 100, 1) if n_with_returns else None
-    return {
+    result = {
         "lookback_days":          lookback_days,
         "style":                  style,
         "hold_days":              hold_days,
@@ -1244,6 +1284,8 @@ def filter_audit(
         "by_filter_count":        summary,
         "trades":                 per_trade,
     }
+    _cache_set(cache_key, result)
+    return result
 
 
 @router.post("/calibrate_ta_weights")
