@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import httpx
 import redis as redis_lib
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from common.config import get_settings
+from common.jwt_auth import get_current_username
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -68,7 +69,7 @@ class AiChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=AiChatResponse)
-async def ai_chat(req: AiChatRequest) -> AiChatResponse:
+async def ai_chat(req: AiChatRequest, _: str = Depends(get_current_username)) -> AiChatResponse:
     api_key = req.api_key.strip() or _admin_key(req.provider)
     if not api_key:
         raise HTTPException(
