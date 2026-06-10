@@ -662,6 +662,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'tech-pagination',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — /signals/accuracy now accepts page + page_size params (default 200). Summary stats computed on all rows; paginated signals array returned with has_more + total_signals. Frontend: page state added to SWR key; "Load more (N remaining)" button renders when has_more=true. Filter/lookback changes reset page to 1.',
     tier: 5, severity: 'medium',
     title: 'Tech Debt: Pagination on /signals/accuracy (10k+ row response)',
     file: 'services/signal-engine/src/api/routes.py',
@@ -672,6 +674,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'tech-n1-query',
+    defaultStatus: 'done',
+    implementedNote: 'Audited 2026-06-09 — trade_performance already does 3 bulk queries (BUY signals, exit signals, price data) then aggregates by_symbol in Python over already-loaded data. No per-symbol queries exist. Pattern is already optimal.',
     tier: 5, severity: 'medium',
     title: 'Tech Debt: N+1 query in trade_performance — group in SQL not Python',
     file: 'services/signal-engine/src/api/routes.py',
@@ -682,6 +686,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'tech-redis-cache',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Added _cache_get/_cache_set helpers in routes.py using redis_url from common config. factor_exposure cached at signals:cache:factor_exposure:{lookback_days} (TTL 1h). filter_audit cached at signals:cache:filter_audit:{lookback}:{style}:{hold_days} (TTL 1h). Cache hit returns immediately; miss computes then stores.',
     tier: 5, severity: 'low',
     title: 'Tech Debt: Redis cache for expensive signal-engine endpoints',
     file: 'services/signal-engine/src/api/routes.py',
