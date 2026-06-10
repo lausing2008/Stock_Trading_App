@@ -400,6 +400,8 @@ export default function Opportunities() {
   const [market, setMarket] = useState<Market>('all');
   const [earningsSoon, setEarningsSoon] = useState(false);
 
+  const [earningsCollapsed, setEarningsCollapsed] = useState(false);
+
   // Alert suggestion panel state
   const [alertPanel, setAlertPanel] = useState<string | null>(null);
   const [alertEmail, setAlertEmail] = useState('');
@@ -467,6 +469,14 @@ export default function Opportunities() {
     for (const s of signalsData ?? []) m[s.symbol] = s;
     return m;
   }, [signalsData]);
+
+  const earningsThisWeek = useMemo(() => {
+    if (!earningsData) return [];
+    return earningsData
+      .filter(e => e.days_to_earnings >= 0 && e.days_to_earnings <= 7)
+      .map(e => ({ ...e, sig: signalMap[e.symbol], lp: priceMap[e.symbol] }))
+      .sort((a, b) => a.days_to_earnings - b.days_to_earnings);
+  }, [earningsData, signalMap, priceMap]);
 
   const opportunities = useMemo(() => {
     const all = rankData?.rankings ?? [];
@@ -860,6 +870,94 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
         )}
       </div>
       {/* ── End Near-Term Outlook ────────────────────────────────────── */}
+
+      {/* ── Earnings This Week ──────────────────────────────────────── */}
+      {earningsThisWeek.length > 0 && (
+        <div style={{
+          borderRadius: '14px', border: '1px solid rgba(251,146,60,0.25)',
+          background: 'linear-gradient(135deg, rgba(251,146,60,0.04) 0%, rgba(15,23,42,0.95) 100%)',
+          overflow: 'hidden',
+        }}>
+          <div
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', cursor: 'pointer' }}
+            onClick={() => setEarningsCollapsed(c => !c)}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{
+                width: '32px', height: '32px', borderRadius: '8px',
+                background: 'rgba(251,146,60,0.15)', border: '1px solid rgba(251,146,60,0.3)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px',
+              }}>📅</div>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#fdba74' }}>Earnings This Week</div>
+                <div style={{ fontSize: '11px', color: '#475569' }}>
+                  {earningsThisWeek.length} stock{earningsThisWeek.length !== 1 ? 's' : ''} reporting in ≤7 days — potential catalyst moves
+                </div>
+              </div>
+            </div>
+            <span style={{ color: '#475569', fontSize: '12px' }}>{earningsCollapsed ? '▶' : '▼'}</span>
+          </div>
+          {!earningsCollapsed && (
+            <div style={{ padding: '0 18px 14px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '8px' }}>
+                {earningsThisWeek.map(e => {
+                  const sigColor = e.sig?.signal === 'BUY' ? '#4ade80' : e.sig?.signal === 'SELL' ? '#f87171' : e.sig?.signal === 'WAIT' ? '#fbbf24' : '#38bdf8';
+                  const daysLabel = e.days_to_earnings === 0 ? 'Today' : e.days_to_earnings === 1 ? 'Tomorrow' : `${e.days_to_earnings}d`;
+                  const chg = e.lp?.change_pct;
+                  return (
+                    <a key={e.symbol} href={`/stock/${e.symbol}`} style={{ textDecoration: 'none' }}>
+                      <div style={{
+                        borderRadius: '10px', border: '1px solid rgba(251,146,60,0.15)',
+                        background: 'rgba(255,255,255,0.02)', padding: '10px 12px',
+                        display: 'flex', alignItems: 'center', gap: '10px',
+                        transition: 'border-color 0.15s', cursor: 'pointer',
+                      }}
+                        onMouseEnter={ev => (ev.currentTarget.style.borderColor = 'rgba(251,146,60,0.4)')}
+                        onMouseLeave={ev => (ev.currentTarget.style.borderColor = 'rgba(251,146,60,0.15)')}
+                      >
+                        {/* Days badge */}
+                        <div style={{
+                          minWidth: '48px', textAlign: 'center', borderRadius: '6px', padding: '4px 6px',
+                          background: e.days_to_earnings === 0 ? 'rgba(248,113,113,0.15)' : 'rgba(251,146,60,0.12)',
+                          border: `1px solid ${e.days_to_earnings === 0 ? 'rgba(248,113,113,0.3)' : 'rgba(251,146,60,0.25)'}`,
+                          color: e.days_to_earnings === 0 ? '#f87171' : '#fb923c',
+                          fontSize: '11px', fontWeight: 700,
+                        }}>{daysLabel}</div>
+                        {/* Symbol + name */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9' }}>{e.symbol}</div>
+                          <div style={{ fontSize: '11px', color: '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {e.name}
+                          </div>
+                        </div>
+                        {/* Signal + price */}
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
+                          {e.sig?.signal && (
+                            <div style={{ fontSize: '11px', fontWeight: 700, color: sigColor, background: `${sigColor}18`, borderRadius: '4px', padding: '2px 6px' }}>
+                              {e.sig.signal}
+                            </div>
+                          )}
+                          {chg != null && (
+                            <div style={{ fontSize: '11px', color: chg >= 0 ? '#4ade80' : '#f87171' }}>
+                              {chg >= 0 ? '+' : ''}{chg.toFixed(2)}%
+                            </div>
+                          )}
+                          {e.earnings_growth != null && (
+                            <div style={{ fontSize: '10px', color: '#475569' }}>
+                              EPS growth: {e.earnings_growth >= 0 ? '+' : ''}{e.earnings_growth.toFixed(0)}%
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {/* ── End Earnings This Week ───────────────────────────────────── */}
 
       {/* Strategy selector */}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>

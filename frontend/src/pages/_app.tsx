@@ -374,7 +374,8 @@ export default function App({ Component, pageProps }: AppProps) {
         }
       }
 
-      router.replace('/login');
+      const next = router.pathname === '/login' ? '/' : router.pathname;
+      router.replace(`/login?next=${encodeURIComponent(next)}`);
       setChecked(true);
     }
 
