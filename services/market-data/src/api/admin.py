@@ -3,6 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
+import json
 import yfinance as yf
 import redis as redis_lib
 
@@ -264,3 +265,19 @@ def admin_signal_log(
         "pages": max(1, (total_count + limit - 1) // limit),
         "items": results,
     }
+
+
+@router.get("/scheduler-status")
+def scheduler_status(_: User = Depends(get_admin_user)):
+    """Return last-run status for all tracked scheduler jobs (from Redis)."""
+    r = _get_redis()
+    keys = sorted(r.keys("scheduler:job:*"))
+    jobs = []
+    for key in keys:
+        val = r.get(key)
+        if val:
+            try:
+                jobs.append(json.loads(val))
+            except Exception:
+                pass
+    return {"jobs": jobs}
