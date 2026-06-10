@@ -1788,7 +1788,28 @@ Return ONLY valid JSON — no markdown, no prose:
                 )}
               </div>
 
-              {/* Row 5 — EPS Surprise History */}
+              {/* Row 5 — Short Interest + Ownership */}
+              {(f.short_percent_of_float != null || f.held_percent_institutions != null) && (
+                <div>
+                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#ef4444', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Short Interest &amp; Ownership</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
+                    {f.short_percent_of_float != null && (() => {
+                      const pct = f.short_percent_of_float! * 100;
+                      const color = pct >= 20 ? '#f87171' : pct >= 10 ? '#fbbf24' : '#4ade80';
+                      const label = pct >= 20 ? 'High — squeeze risk' : pct >= 10 ? 'Elevated' : 'Low';
+                      return card('Short % of Float', `${pct.toFixed(1)}%`, label, color);
+                    })()}
+                    {f.short_ratio != null && (() => {
+                      const color = f.short_ratio >= 5 ? '#f87171' : f.short_ratio >= 3 ? '#fbbf24' : '#94a3b8';
+                      return card('Days to Cover', `${f.short_ratio.toFixed(1)}d`, 'short ratio', color);
+                    })()}
+                    {f.held_percent_institutions != null && card('Institutional', `${(f.held_percent_institutions * 100).toFixed(1)}%`, 'of float held')}
+                    {f.held_percent_insiders != null && card('Insider Hold', `${(f.held_percent_insiders * 100).toFixed(1)}%`, 'of float held')}
+                  </div>
+                </div>
+              )}
+
+              {/* Row 6 — EPS Surprise History */}
               {f.eps_history && f.eps_history.length > 0 && (
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>

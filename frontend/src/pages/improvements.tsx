@@ -939,6 +939,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'res1-short-interest',
+    defaultStatus: 'done',
+    implementedNote: 'Added "Short Interest & Ownership" row in Company Financials on stock detail page (short % of float, days to cover, institutional/insider %). Signal engine now applies a +2–4% confidence boost for SWING/GROWTH when short % ≥ 20% and signal is bullish (squeeze potential).',
     tier: 3, severity: 'feature',
     title: 'RES-1: Short interest tracker — squeeze potential and crowded-short warning',
     file: 'services/market-data/src/api/routes.py · frontend/src/pages/stock/[symbol].tsx',

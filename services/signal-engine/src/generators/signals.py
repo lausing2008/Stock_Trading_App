@@ -955,6 +955,22 @@ def _fetch_kscore(symbol: str) -> float | None:
     return None
 
 
+def _fetch_short_interest(symbol: str) -> tuple[float | None, float | None]:
+    """Return (short_percent_of_float, short_ratio) from market-data fundamentals, or (None, None)."""
+    try:
+        url = f"{_settings.market_data_url}/stocks/{symbol}/fundamentals"
+        with httpx.Client(timeout=6) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                d = r.json()
+                spf = d.get("short_percent_of_float")
+                sr = d.get("short_ratio")
+                return spf, sr
+    except Exception:
+        pass
+    return None, None
+
+
 def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str, str]:
     """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds.
 
@@ -990,6 +1006,7 @@ def _apply_style_signal(
     base_reasons: dict,
     earnings_beat_rate: float | None = None,
     sector_etf_above_sma50: bool | None = None,
+    short_pct_float: float | None = None,
 ) -> "AIConfidence":
     """Apply style-specific fusion and filters from shared base values.
 
@@ -1214,6 +1231,23 @@ def _apply_style_signal(
         reasons["sr_flag"] = "neutral"
     fused = float(np.clip(fused, 0.0, 1.0))
 
+    # ── Short interest: squeeze potential boost (SWING/GROWTH) ───────────────
+    # High short interest (≥20%) heading into a bullish signal raises squeeze
+    # risk for shorts — a small confidence boost for BUY direction.
+    # Applies to SWING and GROWTH only; LONG ignores short-term positioning.
+    if style_key in ("SWING", "GROWTH") and short_pct_float is not None:
+        if short_pct_float >= 0.30 and fused > 0.5:
+            fused = float(np.clip(fused + 0.04, 0.0, 1.0))
+            reasons["short_interest_flag"] = "very_high_squeeze_potential"
+        elif short_pct_float >= 0.20 and fused > 0.5:
+            fused = float(np.clip(fused + 0.02, 0.0, 1.0))
+            reasons["short_interest_flag"] = "elevated_short_interest"
+        else:
+            reasons["short_interest_flag"] = "normal"
+    else:
+        reasons["short_interest_flag"] = "no_data" if short_pct_float is None else "normal"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
     # ── K-Score fundamental boost (LONG only) ────────────────────────────────
     if p.get("kscore_boost") and kscore is not None:
         if kscore >= 70:
@@ -1331,6 +1365,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     weekly_tech = _weekly_technicals(df_weekly)
     weekly_score = weekly_tech["weekly_score"]
     kscore = _fetch_kscore(symbol)
+    short_pct_float, short_ratio = _fetch_short_interest(symbol)
 
     # Populate shared base reasons (written into every style's output)
     reasons["market_regime"]      = market_regime
@@ -1356,6 +1391,8 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["options_sentiment"]  = options_sentiment
     reasons["options_cp_ratio"]   = round(cp_ratio, 2) if cp_ratio is not None else None
     reasons["kscore"]             = kscore
+    reasons["short_pct_float"]    = round(short_pct_float * 100, 1) if short_pct_float is not None else None
+    reasons["short_ratio"]        = round(short_ratio, 1) if short_ratio is not None else None
     reasons["insufficient_history"] = insufficient_history
     reasons["bar_count"]          = len(df)
     reasons["sr_context"]           = sr_data["sr_context"]
@@ -1389,6 +1426,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             base_reasons=reasons,
             earnings_beat_rate=earnings_beat_rate,
             sector_etf_above_sma50=sector_etf_above_sma50,
+            short_pct_float=short_pct_float,
         )
 
     return {k: _make_signal(k) for k in ("SHORT", "SWING", "LONG", "GROWTH")}
