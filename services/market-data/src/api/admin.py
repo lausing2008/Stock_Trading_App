@@ -107,13 +107,13 @@ class AddStockRequest(BaseModel):
 
 
 @router.post("/seed")
-def run_seed():
+def run_seed(_: User = Depends(get_admin_user)):
     count = seed()
     return {"status": "ok", "inserted": count}
 
 
 @router.post("/ingest")
-def run_ingest(req: IngestRequest, tasks: BackgroundTasks):
+def run_ingest(req: IngestRequest, tasks: BackgroundTasks, _: User = Depends(get_admin_user)):
     """Single-symbol: synchronous. Multi-symbol: background task to avoid timeouts."""
     if len(req.symbols) == 1:
         try:
@@ -134,7 +134,7 @@ def run_ingest(req: IngestRequest, tasks: BackgroundTasks):
 
 
 @router.delete("/stocks/{symbol}")
-def delete_stock(symbol: str):
+def delete_stock(symbol: str, _: User = Depends(get_admin_user)):
     """Soft-delete (deactivate) a stock — sets active=False, preserves price history."""
     sym = symbol.upper().strip()
     with SessionLocal() as session:
@@ -148,7 +148,7 @@ def delete_stock(symbol: str):
 
 
 @router.post("/add_stock")
-def add_stock(req: AddStockRequest, tasks: BackgroundTasks):
+def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(get_admin_user)):
     symbol = req.symbol.upper().strip()
     log.info("add_stock.start", symbol=symbol)
 

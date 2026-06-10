@@ -7,6 +7,8 @@
  */
 'use client';
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/router';
+import { getSession } from '@/lib/auth';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1387,12 +1389,22 @@ const STORAGE_KEY = 'stockai:improvements:v2';
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ImprovementsPage() {
+  const router = useRouter();
+  const [authed, setAuthed] = useState(false);
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [filterTier, setFilterTier] = useState<Tier | 0>(0);
   const [filterStatus, setFilterStatus] = useState<Status | 'all'>('all');
 
   useEffect(() => {
+    const s = getSession();
+    if (!s) { router.replace('/login'); return; }
+    if (s.role !== 'admin') { router.replace('/'); return; }
+    setAuthed(true);
+  }, [router]);
+
+  useEffect(() => {
+    if (!authed) return;
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
       // Force-seed all items with defaultStatus: 'done' — implemented items are
@@ -1407,7 +1419,7 @@ export default function ImprovementsPage() {
       setStatuses(merged);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
     } catch { /* ignore */ }
-  }, []);
+  }, [authed]);
 
   function setStatus(id: string, s: Status) {
     const next = { ...statuses, [id]: s };
@@ -1434,6 +1446,8 @@ export default function ImprovementsPage() {
   const done = ITEMS.filter(i => (statuses[i.id] ?? 'todo') === 'done').length;
   const inProgress = ITEMS.filter(i => (statuses[i.id] ?? 'todo') === 'in-progress').length;
   const critical = ITEMS.filter(i => i.tier === 1 && (statuses[i.id] ?? 'todo') !== 'done').length;
+
+  if (!authed) return null;
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px 0' }}>

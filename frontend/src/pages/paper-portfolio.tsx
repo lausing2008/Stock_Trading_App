@@ -392,11 +392,12 @@ export default function PaperPortfolioPage() {
   useEffect(() => {
     const session = getSession();
     if (!session) { router.replace('/login'); return; }
-    if (session.role === 'admin') setIsAdmin(true);
+    if (session.role !== 'admin') { router.replace('/'); return; }
+    setIsAdmin(true);
     setAuthed(true);
   }, [router]);
 
-  const { data: summary, mutate: mutateSummary } = useSWR(
+  const { data: summary, mutate: mutateSummary, error: summaryError } = useSWR(
     authed ? 'paper-summary' : null, () => api.paperSummary(), { refreshInterval: 60_000 }
   );
   const { data: positions } = useSWR(
@@ -416,10 +417,20 @@ export default function PaperPortfolioPage() {
     () => api.paperDecisions({ page: decPage, limit: 50, days_back: 90 })
   );
 
-  if (!authed || !summary) {
+  if (!authed) return null;
+
+  if (summaryError) {
     return (
       <main style={{ minHeight: '100vh', background: '#0f172a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ color: '#94a3b8' }}>{!authed ? 'Authenticating…' : 'Loading paper portfolio…'}</div>
+        <div style={{ color: '#f87171' }}>Failed to load paper portfolio data.</div>
+      </main>
+    );
+  }
+
+  if (!summary) {
+    return (
+      <main style={{ minHeight: '100vh', background: '#0f172a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ color: '#94a3b8' }}>Loading paper portfolio…</div>
       </main>
     );
   }

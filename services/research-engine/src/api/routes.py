@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 import httpx
 import pandas as pd
 import yfinance as yf
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from common.jwt_auth import get_current_username
 from pydantic import BaseModel
 
 from common.config import get_settings
@@ -1228,7 +1230,7 @@ async def get_research(symbol: str):
 
 
 @router.delete("/{symbol}")
-async def clear_research(symbol: str):
+async def clear_research(symbol: str, _: str = Depends(get_current_username)):
     """Clear cached report to force regeneration."""
     try:
         sym = _sanitise_symbol(symbol)
@@ -1239,7 +1241,7 @@ async def clear_research(symbol: str):
 
 
 @router.post("/{symbol}")
-async def generate_research(symbol: str, req: ResearchRequest):
+async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(get_current_username)):
     """Generate a full Planning Stage Research Report for the given symbol."""
     try:
         sym = _sanitise_symbol(symbol)
@@ -1415,7 +1417,7 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/{symbol}/chat")
-async def chat_research(symbol: str, req: ChatRequest):
+async def chat_research(symbol: str, req: ChatRequest, _: str = Depends(get_current_username)):
     """Answer questions about the cached research report using AI."""
     try:
         sym = _sanitise_symbol(symbol)
