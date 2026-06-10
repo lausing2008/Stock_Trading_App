@@ -721,6 +721,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'ui-date-range-picker',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Two date inputs (From / To) added to /signal-accuracy overview tab alongside the radio buttons. When both dates are set they override lookback_days; border highlights in indigo while active. Clear button resets to radio mode. API already supported from_date/to_date params.',
     tier: 3, severity: 'feature',
     title: 'UI-13: Date range picker for backtest results, signal accuracy, and walk-forward analysis',
     file: 'frontend/src/pages/signal-accuracy.tsx · frontend/src/pages/backtest.tsx',
@@ -845,6 +847,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'tech-scheduler-monitor',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Redis keys scheduler:job:{name} written after each job (14d TTL) with {job, status, last_run, duration_s, error}. GET /admin/scheduler-status reads all keys. New /admin-health page with JobCard components, stale thresholds per job, error/stale summary bar, 30s auto-refresh.',
     tier: 4, severity: 'low',
     title: 'Tech Debt: Scheduler health monitor — verify weekend processes ran, alert on failure',
     file: 'services/market-data/src/services/scheduler.py · frontend/src/pages/improvements.tsx',
@@ -1305,6 +1309,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'dp-staleness-before-alert',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — check_signal_alerts() now queries latest Price.ts per symbol before the loop. Symbols with last bar older than now−2d are skipped with a log warning. Also checks for market:refresh_failed Redis flag (set by DP-4) and suppresses all alerts if a recent HTTP failure is present.',
     tier: 5, severity: 'medium',
     title: 'DP-3: Staleness check before firing conviction alerts — prevent alerts based on yesterday\'s prices',
     file: 'services/market-data/src/services/scheduler.py',
@@ -1316,6 +1322,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'dp-scheduler-http-retry',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — _post() retries 3× with 5s/15s/45s backoff. On all-3-fail: logs ERROR and sets market:refresh_failed Redis key (6h TTL) containing the failing URL. Successful _refresh_market() run clears the flag via Redis DELETE. check_signal_alerts() checks flag first and returns early if set.',
     tier: 5, severity: 'medium',
     title: 'DP-4: Scheduler HTTP retry logic — fire-and-forget posts silently fail with no retry or escalation',
     file: 'services/market-data/src/services/scheduler.py',
