@@ -60,20 +60,20 @@ const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { label: 'Strategies',      href: '/strategies' },
       { label: 'Alerts',          href: '/alerts' },
-      { label: 'Signal Accuracy',    href: '/signal-accuracy',    color: '#a78bfa' },
-      { label: 'Signal Filters',     href: '/signal-filters',     color: '#f97316' },
-      { label: 'Trade Performance',  href: '/trade-performance',  color: '#34d399' },
-      { label: 'Insider Trading',    href: '/insider',      color: '#fb923c' },
-      { label: 'Congress Trades',   href: '/congress',     color: '#f97316' },
+      { label: 'Insider Trading', href: '/insider',  color: '#fb923c' },
+      { label: 'Congress Trades', href: '/congress', color: '#f97316' },
     ],
   },
   {
     label: 'Admin',
     adminOnly: true,
     items: [
-      { label: 'Paper Portfolio',  href: '/paper-portfolio', color: '#22c55e' },
-      { label: 'Signal Log',       href: '/admin-signals',   color: '#f87171' },
-      { label: 'Improvements',     href: '/improvements',    color: '#f59e0b', tag: 'new' },
+      { label: 'Paper Portfolio',  href: '/paper-portfolio',  color: '#22c55e' },
+      { label: 'Signal Accuracy',  href: '/signal-accuracy',  color: '#a78bfa' },
+      { label: 'Signal Filters',   href: '/signal-filters',   color: '#f97316' },
+      { label: 'Trade Performance', href: '/trade-performance', color: '#34d399' },
+      { label: 'Signal Log',       href: '/admin-signals',    color: '#f87171' },
+      { label: 'Improvements',     href: '/improvements',     color: '#f59e0b', tag: 'new' },
     ],
   },
 ];
