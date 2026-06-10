@@ -73,6 +73,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Signal Filters',   href: '/signal-filters',   color: '#f97316' },
       { label: 'Trade Performance', href: '/trade-performance', color: '#34d399' },
       { label: 'Signal Log',       href: '/admin-signals',    color: '#f87171' },
+      { label: 'System Health',    href: '/admin-health',     color: '#38bdf8' },
       { label: 'Improvements',     href: '/improvements',     color: '#f59e0b', tag: 'new' },
     ],
   },

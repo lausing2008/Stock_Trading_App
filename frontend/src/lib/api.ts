@@ -296,6 +296,7 @@ export const api = {
     request<{ ok: boolean; initial_capital: number; current_cash: number }>('/paper-portfolio/capital', { method: 'POST', body: JSON.stringify(body) }),
   paperSetEngine: (state: 'running' | 'paused' | 'stopped') =>
     request<{ ok: boolean; state: string; config: PaperPortfolioConfig }>('/paper-portfolio/engine', { method: 'POST', body: JSON.stringify({ state }) }),
+  schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
 };
 
 export type SuppressedSignalConditions = {
@@ -971,4 +972,12 @@ export type PaperDecisionsResponse = {
   limit: number;
   pages: number;
   items: PaperDecisionItem[];
+};
+
+export type SchedulerJob = {
+  job: string;
+  status: 'ok' | 'error' | 'skipped';
+  last_run: string;
+  duration_s: number;
+  error: string | null;
 };

@@ -70,6 +70,7 @@ from __future__ import annotations
 import httpx
 import json
 import redis as redis_lib
+import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
@@ -96,6 +97,24 @@ def _get_redis() -> redis_lib.Redis:
     if _redis is None:
         _redis = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
     return _redis
+
+
+def _record_job_status(job_name: str, status: str, duration_s: float, error: str | None = None) -> None:
+    """Write job completion status to Redis for the admin health monitor (TTL 14 days)."""
+    try:
+        _get_redis().setex(
+            f"scheduler:job:{job_name}",
+            86400 * 14,
+            json.dumps({
+                "job": job_name,
+                "status": status,
+                "last_run": datetime.now(timezone.utc).isoformat(),
+                "duration_s": round(duration_s, 1),
+                "error": error,
+            }),
+        )
+    except Exception:
+        pass
 
 
 def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None) -> None:
@@ -136,13 +155,33 @@ def _symbols_for(market: str) -> list[str]:
         )
 
 
+_REDIS_REFRESH_FAILED_KEY = "market:refresh_failed"
+
 def _post(url: str, **kwargs) -> None:
-    """Fire-and-forget POST to an internal service.  Logs but never raises on failure."""
+    """Fire-and-forget POST to an internal service.
+
+    DP-4: Retries up to 3 times with exponential backoff (5s / 15s / 45s).
+    After all retries fail, logs at ERROR and sets the market:refresh_failed
+    Redis flag so that check_signal_alerts() can suppress stale-data alerts.
+    """
+    delays = [5, 15, 45]
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            with httpx.Client(timeout=15) as client:
+                client.post(url, **kwargs)
+            return  # success
+        except Exception as exc:
+            last_exc = exc
+            if attempt < len(delays):
+                log.warning("scheduler.http_retry", url=url, attempt=attempt, error=str(exc))
+                time.sleep(delay)
+
+    log.error("scheduler.http_failed", url=url, attempts=len(delays), error=str(last_exc))
     try:
-        with httpx.Client(timeout=15) as client:
-            client.post(url, **kwargs)
-    except Exception as exc:
-        log.warning("scheduler.http_error", url=url, error=str(exc))
+        _get_redis().setex(_REDIS_REFRESH_FAILED_KEY, 3600 * 6, url)
+    except Exception:
+        pass
 
 
 def _refresh_market(market: str, *, post_close: bool = False) -> None:
@@ -164,35 +203,50 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
         return
 
     log.info("scheduler.refresh_start", market=market, count=len(symbols), post_close=post_close)
+    _t0 = time.monotonic()
+    _job_key = f"{market.lower()}_post_close" if post_close else f"{market.lower()}_refresh"
 
-    ingest_universe(symbols, "1d")
+    try:
+        ingest_universe(symbols, "1d")
 
-    _post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": market})
-    _post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": market})
+        _post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": market})
+        _post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": market})
 
-    if post_close:
-        _post(f"{_settings.ml_prediction_url}/ml/train_all")
-        # Evaluate any BUY/SELL signals whose hold window has now expired and
-        # persist their outcomes to signal_outcomes for accuracy tracking.
-        _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
-
-    check_signal_alerts()
-    check_technical_alerts()
-
-    # WF-2: paper trading engine — runs after signals are fresh.
-    # Only for US market (GROWTH watchlist is US stocks only).
-    if market == "US":
-        try:
-            paper_trading_step()
-        except Exception as _pte:
-            log.error("scheduler.paper_trading_step_failed", error=str(_pte), exc_info=True)
         if post_close:
-            try:
-                snapshot_equity_curve()
-            except Exception as _sec:
-                log.error("scheduler.snapshot_equity_curve_failed", error=str(_sec), exc_info=True)
+            _post(f"{_settings.ml_prediction_url}/ml/train_all")
+            # Evaluate any BUY/SELL signals whose hold window has now expired and
+            # persist their outcomes to signal_outcomes for accuracy tracking.
+            _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
 
-    log.info("scheduler.refresh_done", market=market, post_close=post_close)
+        check_signal_alerts()
+        check_technical_alerts()
+
+        # WF-2: paper trading engine — runs after signals are fresh.
+        # Only for US market (GROWTH watchlist is US stocks only).
+        if market == "US":
+            _pt0 = time.monotonic()
+            try:
+                paper_trading_step()
+                _record_job_status("paper_trading", "ok", time.monotonic() - _pt0)
+            except Exception as _pte:
+                log.error("scheduler.paper_trading_step_failed", error=str(_pte), exc_info=True)
+                _record_job_status("paper_trading", "error", time.monotonic() - _pt0, str(_pte))
+            if post_close:
+                try:
+                    snapshot_equity_curve()
+                except Exception as _sec:
+                    log.error("scheduler.snapshot_equity_curve_failed", error=str(_sec), exc_info=True)
+
+        _record_job_status(_job_key, "ok", time.monotonic() - _t0)
+        # DP-4: clear the refresh-failed flag so alerts can resume
+        try:
+            _get_redis().delete(_REDIS_REFRESH_FAILED_KEY)
+        except Exception:
+            pass
+        log.info("scheduler.refresh_done", market=market, post_close=post_close)
+    except Exception as exc:
+        log.error("scheduler.refresh_failed", market=market, post_close=post_close, error=str(exc), exc_info=True)
+        _record_job_status(_job_key, "error", time.monotonic() - _t0, str(exc))
 
 
 _BULLISH_TRANSITIONS = {
@@ -562,6 +616,40 @@ def check_signal_alerts() -> None:
 
             symbols = list({a.symbol for a in alerts})
 
+            # DP-3: Suppress all alerts if a recent HTTP failure flagged stale data.
+            try:
+                if _get_redis().exists(_REDIS_REFRESH_FAILED_KEY):
+                    log.warning("signal_alert.suppressed_refresh_failed",
+                                note="market refresh HTTP failure flag set — skipping alerts until next successful refresh")
+                    return
+            except Exception:
+                pass
+
+            # DP-3: Build per-symbol price freshness map; skip symbols with stale bars (>2 days).
+            fresh_symbols: set[str] = set()
+            stale_cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+            try:
+                price_rows = session.execute(
+                    select(Stock.symbol, Price.ts)
+                    .join(Price, Price.stock_id == Stock.id)
+                    .where(Stock.symbol.in_(symbols))
+                    .order_by(Stock.symbol, Price.ts.desc())
+                ).all()
+                seen: set[str] = set()
+                for sym, ts in price_rows:
+                    if sym in seen:
+                        continue
+                    seen.add(sym)
+                    ts_aware = ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
+                    if ts_aware >= stale_cutoff:
+                        fresh_symbols.add(sym)
+                    else:
+                        log.warning("signal_alert.skipped_stale", symbol=sym,
+                                    last_bar=ts.isoformat(), stale_cutoff=stale_cutoff.isoformat())
+            except Exception as exc:
+                log.warning("signal_alert.freshness_check_failed", error=str(exc))
+                fresh_symbols = set(symbols)  # fall through on DB error
+
             # Build (user_id, symbol) → trading_style map from watchlists with a style override
             symbol_user_style: dict[tuple[int, str], str] = {}
             try:
@@ -626,6 +714,10 @@ def check_signal_alerts() -> None:
 
             fired = 0
             for alert in alerts:
+                # DP-3: skip if price data is stale
+                if alert.symbol not in fresh_symbols:
+                    continue
+
                 style = symbol_user_style.get((alert.user_id, alert.symbol), "SWING")
                 key = (alert.symbol, style)
                 current = signals.get(key)
@@ -975,27 +1067,33 @@ def _weekly_full_refresh() -> None:
     all_symbols = _symbols_for("US") + _symbols_for("HK")
     if not all_symbols:
         log.info("scheduler.weekly_refresh.skip", reason="no_symbols")
+        _record_job_status("weekly_refresh", "skipped", 0.0)
         return
     log.info("scheduler.weekly_refresh_start", count=len(all_symbols))
+    _t0 = time.monotonic()
     try:
         ingest_universe(all_symbols, "1d", force=True)
         _post(f"{_settings.ranking_engine_url}/rankings/refresh")
         _post(f"{_settings.signal_engine_url}/signals/refresh")
+        _record_job_status("weekly_refresh", "ok", time.monotonic() - _t0)
         log.info("scheduler.weekly_refresh_done", count=len(all_symbols))
     except Exception as exc:
         log.error("scheduler.weekly_refresh_failed", error=str(exc))
+        _record_job_status("weekly_refresh", "error", time.monotonic() - _t0, str(exc))
 
     # Kick off Optuna hyperparameter tuning for all symbols.
     # Runs as a background task in ml-prediction — returns immediately, tunes for ~2–4 h.
     # Best params are saved per-symbol JSON and used by all subsequent daily retrains.
     log.info("scheduler.tune_all_start")
     _post(f"{_settings.ml_prediction_url}/ml/tune_all")
+    _record_job_status("tune_all_sent", "ok", 0.0)
 
     # SA-5: calibrate TA weights from signal outcome history.
     # Fits logistic regression on TA features vs is_correct; writes ta_weights.json.
     # Runs after tune_all kick-off (both are fire-and-forget; no ordering dependency).
     log.info("scheduler.calibrate_ta_weights_start")
     _post(f"{_settings.signal_engine_url}/signals/calibrate_ta_weights")
+    _record_job_status("calibrate_ta_weights_sent", "ok", 0.0)
 
 
 def _refresh_5m(market: str) -> None:
