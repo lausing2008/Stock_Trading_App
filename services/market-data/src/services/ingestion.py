@@ -80,11 +80,14 @@ def ingest_symbol(
 
         head = None if force else _last_bar_ts(session, stock.id, tf)
         if head:
-            # For daily bars, look back 7 extra days so that any stock split in the
-            # last week causes the retroactively-adjusted prices to overwrite the
-            # stale unadjusted bars already in the DB (via on_conflict_do_update below).
-            overlap = timedelta(days=7) if timeframe == "1d" else timedelta(days=0)
-            start = head.date() - overlap + timedelta(days=1)
+            if timeframe == "1d":
+                # Look back 7 extra days so split-adjusted prices overwrite stale bars.
+                start = head.date() - timedelta(days=7) + timedelta(days=1)
+            else:
+                # For intraday, re-fetch from the same calendar date as the last bar
+                # so we pick up new bars that arrived after the last stored bar.
+                # on_conflict_do_update handles duplicates safely.
+                start = head.date()
         else:
             start = date.today() - timedelta(days=lookback_days)
         # yfinance only serves intraday bars within the last 60 days
