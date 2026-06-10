@@ -18,9 +18,14 @@ class WatchlistItemOut(BaseModel):
     sector: str | None = None
     currency: str
     added_at: str
+    note: str | None = None
 
     class Config:
         from_attributes = True
+
+
+class UpdateNoteRequest(BaseModel):
+    note: str | None = None
 
 
 class WatchlistOut(BaseModel):
@@ -71,6 +76,7 @@ def _item_out(item: WatchlistItem, stock: Stock) -> WatchlistItemOut:
         symbol=stock.symbol, name=stock.name, name_zh=stock.name_zh,
         market=stock.market, exchange=stock.exchange, sector=stock.sector,
         currency=stock.currency, added_at=item.added_at.isoformat(),
+        note=item.note,
     )
 
 
@@ -246,3 +252,29 @@ def remove_from_watchlist(
         session.delete(item)
         session.commit()
     return {"status": "removed", "symbol": symbol}
+
+
+@router.patch("/{symbol}/note")
+def update_note(
+    symbol: str,
+    body: UpdateNoteRequest,
+    list_id: int | None = Query(None),
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """UI-2: Persist per-item note to the DB (was localStorage-only)."""
+    stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
+    if not stock:
+        raise HTTPException(404, f"Unknown symbol: {symbol}")
+    wl = _resolve(session, list_id, current)
+    item = session.execute(
+        select(WatchlistItem).where(
+            WatchlistItem.stock_id == stock.id,
+            WatchlistItem.watchlist_id == wl.id,
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Stock not in watchlist")
+    item.note = body.note
+    session.commit()
+    return {"status": "ok", "symbol": symbol, "note": item.note}

@@ -37,7 +37,7 @@ export type AppSettings = {
   deepseekModel: string;
 
   // Trading Style — determines which AI Signal horizon to display globally
-  tradingStyle: 'SHORT' | 'SWING' | 'LONG';
+  tradingStyle: 'SHORT' | 'SWING' | 'LONG' | 'GROWTH';
 
   // Position Sizing — used for ATR-based stop-loss and size calculations
   accountSize: number;

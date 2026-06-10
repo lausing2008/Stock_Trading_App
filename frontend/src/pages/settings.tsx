@@ -607,6 +607,13 @@ export default function SettingsPage() {
                 color: '#4ade80',
                 desc: 'Fundamentals-heavy. K-Score boost/penalty applied. Strong weekly alignment required. Filters out noise for position trades.',
               },
+              {
+                value: 'GROWTH' as const,
+                label: 'Growth / Momentum',
+                horizon: 'Momentum · no weekly gate',
+                color: '#a78bfa',
+                desc: 'Relaxed thresholds for high-volatility AI/tech stocks. SMA20>SMA50 replaces SMA50>SMA200. ML bar 0.60. No RS compression. Best for NVDA, PLTR, AI-sector names.',
+              },
             ]).map(opt => (
               <button
                 key={opt.value}

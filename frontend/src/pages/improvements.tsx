@@ -695,6 +695,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'workflow-signal-lifecycle',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — WF-1: Signal state chip (BUY/HOLD/WAIT/SELL) shown on active Trade Board cards using last_signal from signal alert subscription. Trading style chip (SWING/LONG/SHORT/GROWTH) also shown on active cards for lifecycle context.',
     tier: 3, severity: 'feature',
     title: 'WF-1: BUY → HOLD/WAIT → SELL coherent workflow with actionable guidance',
     file: 'frontend/src/pages/trade-board.tsx · services/signal-engine/src/generators/signals.py',
@@ -706,6 +708,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'auto-paper-portfolio',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Full GROWTH-style autonomous paper trading engine: paper_trading_engine.py runs every 5–10 min via scheduler; GROWTH style params (buy_threshold 0.60, stop −12%, target +35%, max_hold 60d, trail ATR×2); position sizing via risk_per_trade_pct × equity / stop_distance; trailing stop with floor against initial stop; WAIT-exit after N consecutive WAIT signals; /paper-portfolio page with equity curve vs SPY/QQQ, positions table, decisions log, admin engine controls (start/pause/stop), capital editor. 11 audit bugs fixed (C-1 critical: engine never traded due to correlated subquery bug; H-1 RSI dead code; H-2 WAIT exit; H-7 sector cap; H-8 flush; H-9 trail floor; H-11 SWR auth; H-12 null strip; M-8 equity recalc; M-9 empty watchlist guard; M-10 hold_days).',
     tier: 3, severity: 'feature',
     title: 'WF-2: Autonomous paper-trading portfolio — allocate capital, auto buy/sell, track returns',
     file: 'services/market-data · services/signal-engine · frontend/src/pages/paper-portfolio.tsx (new)',
@@ -728,6 +732,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'workflow-hold-sell-guidance',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — WF-3: Live Position Monitor on active Trade Board cards: near-target alert (within 2% → "Consider scaling out 50%"), near-stop warning (within 2% above stop → amber), trail recommendations (+3% → breakeven, +5% → trail to 3% below current), dollar P&L + risk, and stalled warning after 15d with <3% move.',
     tier: 3, severity: 'feature',
     title: 'WF-3: In-position guidance — when to hold vs exit as price moves after entry',
     file: 'frontend/src/pages/trade-board.tsx · services/signal-engine/src/api/routes.py',
@@ -735,6 +741,84 @@ const ITEMS: Item[] = [
     impact: 'High — the hardest part of trading is not knowing when to cut a losing trade or lock in a winning one. Adding rules-based trailing-stop and target-hit guidance reduces emotional decision-making.',
     what: 'After a stock is bought and added to the Trade Board, there is no ongoing guidance about when to exit. The game plan sets a static stop and target at entry, but does not adapt as: (1) price rises toward the target, (2) price pulls back to the stop, (3) the signal downgrades from BUY to HOLD/WAIT, or (4) a macro regime shift (bull → bear) increases exit urgency. Users must manually monitor and decide.',
     fix: 'Add a "Live Position Monitor" to each Trade Board card: (1) Trail stop — once price rises 3% from entry, move stop to breakeven automatically; once +5%, trail at ATR×1.5 below current price. Show the current trailing stop level on the card. (2) Target proximity — when price is within 2% of take-profit, show "Consider scaling out 50% now" alert. (3) Signal degradation — when signal drops from BUY to WAIT, show "Signal weakening — tighten stop or reduce size" banner. (4) Regime override — if market regime flips to bear while holding, show "Bear regime active — exits take priority over entries." (5) Time stop — if price has not moved ±5% in 20 trading days, flag "Dead money — consider redeploying capital." Backend: new GET /signals/{symbol}/position-check?entry_price=X&entry_date=Y returns current recommendation (hold/trail/reduce/exit) with reasoning.',
+  },
+
+  {
+    id: 'tb1-trailing-stop',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-1: Trail stop chip on active cards: +3% from entry → "Move stop to breakeven ($X.XX)"; +5% → "Trail stop to $X.XX" (3% below current). Pure frontend, uses live price from 60s board refresh.',
+    tier: 3, severity: 'feature',
+    title: 'TB-1: Trailing stop-loss — auto-raise stop as price rises in your favour',
+    file: 'frontend/src/pages/board.tsx · services/signal-engine/src/api/routes.py',
+    effort: '2–3 days',
+    impact: 'High — prevents giving back large gains; the #1 cause of a winning trade turning into a loss is a static stop set at entry',
+    what: 'The game plan sets a fixed stop at entry. Once price rises 5–10%, the original stop no longer reflects risk — a pullback to entry is now breakeven, not a loss. There is no mechanism to automatically raise the stop as the position moves in favour.',
+    fix: 'Add a trailing stop calculator to each Trade Board card: (1) Once price rises ≥3% from entry, display "Move stop to breakeven" suggestion. (2) Once ≥5%, trail at ATR×1.5 below the highest close reached since entry. (3) Show the current trailing stop level as a chip on the card (distinct from the static game plan stop). Backend: new GET /signals/{symbol}/trail?entry_price=X&entry_date=Y returns trail_stop, trail_level (breakeven/trailing), highest_close. Frontend: fetch on card expand, show coloured chip.',
+  },
+
+  {
+    id: 'tb2-time-stop',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-2: Stalled warning on active cards: days_in_trade > 15 AND |P&L%| < 3% → "⏱ Stalled Nd — consider exiting if thesis not playing out".',
+    tier: 3, severity: 'feature',
+    title: 'TB-2: Time-stop — flag dead-money trades that have stalled for N days',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '1 day',
+    impact: 'Medium — capital sitting in a flat position has opportunity cost; automatic flagging prompts the user to act before the trade decays further',
+    what: 'A trade can stall for weeks with price oscillating ±2% around entry — technically still active but generating no return. There is no mechanism to surface these "dead money" positions. Users often hold stalled trades waiting for momentum that never returns.',
+    fix: 'Compute days_in_trade on each Trade Board card. If price has moved < ±3% from entry AND days_in_trade > 15 (active) or > 20 (watch/planning), show a "⏱ Stalled" warning badge on the card. Clicking opens a tooltip: "No meaningful progress in N days — consider redeploying capital or tightening the stop." No backend change needed — entry_date and current price already in the card data.',
+  },
+
+  {
+    id: 'tb3-stop-breach-alert',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-3: Red "⚠ STOP BREACHED" banner when live price < stop; amber "Near stop" chip within 2% above stop. Live prices refresh every 60s via existing board SWR.',
+    tier: 3, severity: 'feature',
+    title: 'TB-3: Live stop-loss breach indicator — visual alert when price crosses below stop',
+    file: 'frontend/src/pages/board.tsx · frontend/src/lib/api.ts',
+    effort: '1–2 days',
+    impact: 'High — without a real-time breach indicator, users may miss a stop being hit during the trading day and hold losing positions beyond their own risk rules',
+    what: 'The Trade Board shows the stop-loss price but makes no comparison to the current live price. If a stock drops below its stop, the card shows nothing different — the user must manually notice the price has fallen through the stop.',
+    fix: 'On card render: compare current_price (already in board data) against game_plan.stop_loss. If current_price < stop_loss and stage is "active": highlight the stop chip in red, show "⚠ Stop breached" banner at top of card. If current_price < stop_loss × 1.02 (within 2%): show "Near stop" in amber. This is a pure frontend change — no backend call needed. Optionally fire a push notification (POST /notifications) when breach is detected on next refresh.',
+  },
+
+  {
+    id: 'tb4-dollar-risk-pnl',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-4: Dollar P&L (shares × price Δ from entry, green/red) and dollar risk (shares × entry−stop distance, red) shown in the position monitor row on active cards. Requires shares to be set.',
+    tier: 3, severity: 'feature',
+    title: 'TB-4: Dollar-risk P&L — show position $ risk alongside % P&L',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '1 day',
+    impact: 'Medium — % P&L is abstract; "down $340 on a $2,000 position (ATR stop = $280 max risk)" is concrete and helps users compare positions on equal footing',
+    what: 'The Trade Board shows % P&L from entry but no dollar amounts. Users cannot quickly see which position is bleeding the most capital or how their actual loss compares to their planned max risk (stop distance × shares). Comparing -4% on a $500 position vs -1% on a $5,000 position requires mental arithmetic.',
+    fix: 'If shares and entry_price are stored in game_plan (they are — PositionSizer data is saved), compute: position_size = shares × entry_price, unrealised_pnl = (current_price - entry_price) × shares, max_risk = (entry_price - stop_loss) × shares. Display as "$+340 | Risk: $180" below the % P&L chip. Show max_risk in grey and unrealised_pnl in green/red. No backend change.',
+  },
+
+  {
+    id: 'tb5-portfolio-risk-dashboard',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — TB-5: Active positions summary bar above the kanban board: total unrealized P&L, total dollar risk, stop-breach count, near-target count. Computed client-side from active cards + 60s live prices.',
+    tier: 3, severity: 'feature',
+    title: 'TB-5: Portfolio heat-at-risk summary — total capital at risk across all active trades',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '1–2 days',
+    impact: 'High — users may unknowingly have 40% of their capital at risk across 8 small positions; a single summary number surfaces over-leveraging before it becomes a problem',
+    what: 'There is no summary of total risk exposure across the Trade Board. A user with 8 active positions could have stop-losses implying a total portfolio drawdown of 25%+ without realising it. The board shows individual card risk but no aggregate.',
+    fix: 'Add a sticky risk summary bar at the top of the board (above the columns): "Active positions: 8 | Total at risk: $1,840 (3.7% of $50k) | Unrealised P&L: +$420". Computed client-side from all active cards. Show in amber if total at risk > 10% of total position value, red if > 20%. Include a sparkline of daily P&L change if historical data is available. No backend change — derived from card data.',
+  },
+
+  {
+    id: 'sl1-admin-signal-log',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-08 — GET /admin/signal-log (admin auth): joins Signal→Stock→SignalOutcome; paginated, filterable by symbol/signal_type/horizon/days_back. New /admin-signals page (admin-only redirect guard): stat strip, colour-coded BUY/SELL badges, confidence bar, outcome ✓/✗ once hold window closes, CSV export. Signal Log link added to Tools nav (adminOnly). Foundation for WF-2 paper trading engine.',
+    tier: 3, severity: 'feature',
+    title: 'SL-1: Admin signal log — all system BUY/SELL signals with outcomes, admin-only tab',
+    file: 'services/market-data/src/api/admin.py · frontend/src/pages/admin-signals.tsx (new)',
+    effort: '2–3 days',
+    impact: 'Very High — the system cannot improve without a feedback loop. Logging every BUY/SELL signal and linking it to actual price outcome creates the ground truth needed to tune thresholds, measure system edge, and validate changes empirically.',
+    what: 'There is no admin view of the raw system signal log. The Signal table stores every signal generated, and SignalOutcome fills in outcomes, but no admin UI surfaces this data. Admins cannot see "the system fired 23 BUY signals last week — which were correct, which were not?" without querying the DB directly.',
+    fix: 'Backend: GET /admin/signal-log (admin auth required) — joins Signal → Stock → SignalOutcome; returns paginated list with symbol, name, signal type, confidence, horizon, generated_at, outcome_pct (when available), is_correct. Filters: symbol, signal_type, days_back, horizon. Frontend: new /admin-signals page (admin-only, redirects non-admin). Table with colour-coded BUY/SELL badges, confidence bar, outcome ✓/✗ when resolved, CSV export. Nav link in Tools group (adminOnly). Prerequisite for WF-2 paper trading engine.',
   },
 
   {
@@ -785,7 +869,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa9-true-walkforward',
-    tier: 2, severity: 'medium',
+    tier: 2, severity: 'medium', defaultStatus: 'done',
     title: 'SA-9: True out-of-sample walk-forward validation — detect overfitting before it hurts',
     file: 'services/ml-prediction/src/models/trainer.py · services/signal-engine/src/api/routes.py',
     effort: '2–3 days',
@@ -808,7 +892,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa11-breadth-suppression',
-    tier: 2, severity: 'medium',
+    tier: 2, severity: 'medium', defaultStatus: 'done',
     title: 'SA-11: Market breadth filter — suppress BUY signals when fewer than 40% of stocks are advancing',
     file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/services/scheduler.py',
     effort: '2–3 days',
@@ -1010,6 +1094,235 @@ const ITEMS: Item[] = [
     impact: 'High — tells you exactly which indicators are earning their place in the model and which are noise. If OBV is present in 60% of winners and 58% of losers, it has near-zero edge and should be removed. This drives continuous signal improvement.',
     what: 'The system generates 20+ reasons per signal (RSI, MACD, ADX, OBV, ML probability, earnings, regime, etc.) but never analyses which reasons correlate with winning trades vs losing trades in aggregate. There is no report answering "which indicators most strongly predicted successful BUY signals over the last 12 months?"',
     fix: 'For all closed BUY signals in signal_outcomes: extract the reasons JSON at entry time. For each boolean reason flag, compute: presence_in_winners (%) and presence_in_losers (%). Edge = presence_in_winners − presence_in_losers. Sort by edge descending. Render as a horizontal bar chart on /signal-accuracy → "Factor Attribution" tab: green bars = positive edge (more common in winners), red bars = negative edge (more common in losers). Show the top 5 "most valuable" factors and bottom 5 "noise/harmful" factors. Run this analysis broken down by market regime. Feed results back into SA-13 (self-improving conviction gate weights).',
+  },
+
+  // ── Tier 4 — Signal Accuracy & ML Fixes (2026-06-08 Deep Audit) ─────────────
+
+  {
+    id: 'sa14-pullback-recovery',
+    tier: 4, severity: 'feature', defaultStatus: 'done',
+    title: 'SA-14: Pullback-recovery detector — BUY signal when stock dips 5–25 % then recovers with volume',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1 day',
+    impact: 'High — catches entries at inflection points rather than mid-rally. Stocks that pull back to support and reverse with volume are the highest-probability SWING entries.',
+    what: 'The signal engine generates BUY only once TA indicators have fully recovered (RSI climbs, MACD crosses). This means entries are caught mid-way through recoveries, not at the bottom. High-quality pullback setups (stock drops 10 %, then 2 consecutive green days on elevated volume) went unrecognised.',
+    fix: 'Added _pullback_recovery() in signals.py. Conditions: (1) Price 5–25 % below 20-day rolling high (healthy dip, not broken stock). (2) 2+ consecutive green closes. (3) Recovery day volume ≥ 110 % of 20-day average. Delta: +0.07 to TA score with volume confirmation, +0.04 without. Applied after normalisation so it adds cleanly to the [0,1] range.',
+  },
+
+  {
+    id: 'sa15-volume-confirmation',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
+    title: 'SA-15: Volume confirmation for divergences and reversals — filter false signals on light volume',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1 day',
+    impact: 'Medium — bearish RSI divergence on declining volume is much less reliable than the same divergence on heavy volume. Filters ~15 % of false reversals.',
+    what: 'The engine detects RSI divergence and golden/death crosses but does not validate them with volume. A golden cross on shrinking volume is a known false signal; professional traders require at least average volume for confirmation.',
+    fix: 'In _ta_score(): after divergence detection, check volume_z > 0.5 for bullish divergences to boost credit; check volume_z > 1.0 before adding the golden_cross_event bonus. Bearish divergence on volume_z < -0.3 (declining volume) should have 50 % reduced penalty.',
+  },
+
+  {
+    id: 'sa16-sector-etf-trend',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
+    title: 'SA-16: Sector ETF trend filter — compress signals when the stock\'s own sector is in downtrend',
+    file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/api/routes.py',
+    effort: '2 days',
+    impact: 'Medium — relative strength vs sector is already computed, but sector ETF direction is not. A stock outperforming a collapsing sector still has headwind. 0.85× compression when sector ETF < SMA50.',
+    what: 'The RS rank measures stock vs sector ETF performance. But if the sector ETF itself is below its SMA50 (downtrending), even a market-beating stock faces a strong macro headwind. Currently this is invisible to the signal engine.',
+    fix: 'In _fetch_relative_strength(): also return sector_etf_above_sma50 bool. In _apply_style_signal(): if sector_etf_above_sma50 is False and style is SWING/LONG, apply 0.85× compression and add "sector_headwind" to reasons. Skip for SHORT and GROWTH (momentum styles tolerate sector weakness).',
+    implementedNote: 'Implemented 2026-06-08 — _fetch_relative_strength now returns 3-tuple; sector_headwind added to SWING/LONG reasons',
+  },
+
+  {
+    id: 'sa17-macd-trend-filter',
+    tier: 4, severity: 'low', defaultStatus: 'done',
+    title: 'SA-17: MACD zero-line crossover trend filter — require price above SMA50 for full credit',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '0.5 days',
+    impact: 'Low-medium — MACD zero-cross-up in a downtrend (price below SMA50) has low reliability. Splitting the credit halves false positives from this indicator in bear phases.',
+    what: 'Line 716: macd_zero_cross_up earns full weight regardless of whether price is above or below SMA50. A zero-cross-up while price is below its SMA50 (stock in downtrend) is frequently a dead-cat bounce, not a trend reversal.',
+    fix: 'In score calculation: if macd_zero_cross_up and above_sma50: score += w["macd_zero_cross_up"]. If macd_zero_cross_up and not above_sma50: score += w["macd_zero_cross_up"] * 0.4 (partial credit only).',
+  },
+
+  {
+    id: 'sa18-weekly-ta-fused',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
+    title: 'SA-18: Incorporate weekly TA score into fused probability — not just as a compression flag',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1 day',
+    impact: 'Medium — weekly TA score (0–1) is computed but only used as a binary alignment gate. Treating it as a continuous factor could add 2–3 % accuracy.',
+    what: 'weekly_tech returns a weekly_score value (0–1) that captures weekly momentum quality. Currently this is read but only its direction (up/down) is used as a boost/compress multiplier. The actual score value is stored in reasons but never blended into the fused probability.',
+    fix: 'In _apply_style_signal(): extract weekly_score from weekly_tech. Blend it: fused = fused * 0.85 + weekly_score * 0.15 for SWING/LONG styles (where weekly alignment matters most). Cap the blend contribution to ±0.05 of the pre-blend fused value to avoid over-weighting.',
+    implementedNote: 'Implemented 2026-06-08 — 15% blend weight applied before filters; scaled by weekly_confidence; weekly_blend_applied in reasons',
+  },
+
+  {
+    id: 'ml-lgb-sample-weight',
+    tier: 4, severity: 'critical', defaultStatus: 'done',
+    title: 'ML-FIX-1: LightGBM ignores sample_weight — recency weighting silently dropped',
+    file: 'services/ml-prediction/src/models/lgb.py',
+    effort: '0.5 days',
+    impact: 'High — LightGBM trains on all bars equally. XGBoost and RF correctly weight recent bars 5× more. LGB predictions are regime-blind compared to the other ensemble members.',
+    what: 'lgb.py fit() pops callbacks kwarg but ignores sample_weight. Trainer passes sample_weight=train_weights at line 241 which is silently dropped. LGB never receives the recency bias that XGBoost and RandomForest benefit from.',
+    fix: 'In lgb.py fit(): self.clf.fit(X, y, sample_weight=kwargs.get("sample_weight"), **{k:v for k,v in kwargs.items() if k != "callbacks"}). One-line fix with significant impact on LGB prediction quality.',
+  },
+
+  {
+    id: 'ml-class-imbalance',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
+    title: 'ML-FIX-2: No class imbalance handling — bear-market data biases models toward majority class',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '1 day',
+    impact: 'Medium — in bear markets where 70 % of returns are negative, models overfit to the majority class. Recall on BUY signals drops significantly.',
+    what: 'No class_weight, scale_pos_weight, or SMOTE is applied after dead-zone filtering. If macro events cause class skew, all three models overfit to the dominant direction without warning.',
+    fix: 'After dead-zone filtering: compute class weights via sklearn compute_sample_weight("balanced", y_train). Blend with recency weights: final_weight = recency_weight * class_weight (normalised). Apply to all three models. Log class ratio (n_up / n_down) in training metrics.',
+    implementedNote: 'Implemented 2026-06-08 — _blend_weights() multiplies recency × class_weight and renormalises; applied in CV loop and final training',
+  },
+
+  {
+    id: 'ml-optuna-pruning',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
+    title: 'ML-FIX-3: Optuna tuning has no pruning — tune_all takes 3–5 hours unnecessarily',
+    file: 'services/ml-prediction/src/training/tuner.py',
+    effort: '0.5 days',
+    impact: 'Medium — MedianPruner cuts ~50 % of tuning time by killing unpromising trials early. tune_all drops from 3–5 hours to 1.5–2.5 hours.',
+    what: 'study.optimize() runs all 60 trials to completion (5 CV folds each = 300 CV fits per symbol). No early stopping of unpromising trials. With 123 symbols this is ~36,900 full model trains.',
+    fix: 'study = optuna.create_study(direction="minimize", sampler=TPESampler(), pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=2)). Also add trial.report() inside the CV loop and trial.should_prune() check.',
+    implementedNote: 'Implemented 2026-06-08 — MedianPruner(10, 2) added; trial.report() per fold; also applies _blend_weights in tuner CV loop for consistency with ML-FIX-2',
+  },
+
+  {
+    id: 'ml-overfitting-detection',
+    tier: 4, severity: 'medium', defaultStatus: 'done',
+    title: 'ML-FIX-4: No overfitting detection — models with CV-AUC 0.70 but test-AUC 0.50 ship silently',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '0.5 days',
+    impact: 'Medium — catches overfitted models before they generate live signals. A >10 % CV-test AUC gap means the model memorised training data.',
+    what: 'CV AUC is monitored and a warning fires if <0.55. But there is no check for train-test divergence. An overfitted model with CV AUC=0.70 but test AUC=0.50 ships without any warning.',
+    fix: 'After computing metrics: if cv_auc_mean and test_auc and (cv_auc_mean - test_auc) > 0.10: log.warning("train.overfitting_detected", ...). Optionally reject the model and keep the previous version if the gap exceeds 0.15.',
+    implementedNote: 'Implemented 2026-06-08 — overfit_gap logged as warning when >0.10; exposed in metrics dict for API visibility',
+  },
+
+  // ── Tier 5 — UI Gaps & Tech Debt (2026-06-08 Deep Audit) ─────────────────
+
+  {
+    id: 'ui-market-closed-banner',
+    tier: 5, severity: 'low', defaultStatus: 'done',
+    title: 'UI-1: Market closed banner — show last-update time when market is not trading',
+    file: 'frontend/src/pages/watchlist.tsx · frontend/src/pages/rankings.tsx',
+    effort: '0.5 days',
+    impact: 'Low-medium — traders viewing prices at 8 PM ET may not realise the data is from 4 PM. A simple "Market closed · last update: 4:00 PM ET" banner prevents acting on stale prices.',
+    what: 'No page shows a warning when the market is closed. Prices displayed outside market hours (before 9:30 AM or after 4:00 PM ET, weekends) are stale by definition.',
+    fix: 'Add a MarketStatusBanner component: compute isMarketOpen from current time + timezone. If closed: show "Market closed · Last update: {timestamp}" bar at top. Reuse the last-price timestamp from /stocks/latest-prices response.',
+  },
+
+  {
+    id: 'ui-watchlist-notes-backend',
+    tier: 5, severity: 'medium', defaultStatus: 'done',
+    title: 'UI-2: Watchlist notes — sync to backend instead of localStorage-only',
+    file: 'frontend/src/pages/watchlist.tsx · services/market-data/src/api/routes.py',
+    effort: '2 days',
+    impact: 'Medium — notes are lost when the user switches browser or device. A user\'s research notes ("price target $165, catalyst: AI chip demand") should persist across sessions.',
+    what: 'Notes are stored in localStorage only. Switching browser or device loses all notes. There is no save confirmation and no backend persistence.',
+    fix: 'Add notes column to watchlist_items table (migration). Add PATCH /watchlist/{list_id}/{symbol}/notes endpoint. On note modal save, call API and show "Note saved ✓" toast. Load notes from API on watchlist fetch (include in WatchlistItem response).',
+  },
+
+  {
+    id: 'ui-bulk-export',
+    tier: 5, severity: 'low', defaultStatus: 'done',
+    title: 'UI-3: Bulk CSV export — watchlist and signal filters export to file',
+    file: 'frontend/src/pages/watchlist.tsx · frontend/src/pages/signal-filters.tsx',
+    effort: '1 day',
+    impact: 'Low-medium — traders managing 50+ stocks need to export lists for external analysis, share with co-traders, or import into other tools.',
+    what: 'No export functionality anywhere. Watchlist cards and signal filter tables cannot be downloaded as CSV.',
+    fix: 'Add "Export CSV" button on watchlist header and signal filters header. Client-side: build CSV string from current data (symbols, prices, signals, suppression flags). Use Blob download. No backend changes needed.',
+  },
+
+  {
+    id: 'ui-board-stop-visible',
+    tier: 5, severity: 'medium', defaultStatus: 'done',
+    title: 'UI-4: Trade board — show stop-loss distance always visible without expanding card',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '1 day',
+    impact: 'Medium — a trader with 10 active positions should see at a glance how close each is to being stopped out, without clicking each card individually.',
+    what: 'Stop-loss distance (% to stop) is only shown when a card is expanded. In collapsed view, the user sees entry price and current price but not their risk.',
+    fix: 'Add a mini always-visible row to the collapsed card: "Entry $X · Stop $Y · Current $Z (±N% to stop)". Color the stop-distance text red if within 2 % of stop, yellow within 5 %.',
+  },
+
+  {
+    id: 'ui-board-close-confirm',
+    tier: 5, severity: 'medium', defaultStatus: 'done',
+    title: 'UI-5: Trade board — drag-to-close confirmation to prevent accidental position closure',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '0.5 days',
+    impact: 'Medium — a user can accidentally drag an Active trade to Closed without recording an exit price, causing silent data loss.',
+    what: 'Drag-and-drop moves cards between stages with no confirmation. Moving to Closed stage loses the position permanently if the exit price is not set.',
+    fix: 'In onDragEnd handler: if destination stage is "closed" and plan.exit_price is null, intercept with a modal: "Record exit price before closing?" with Cancel / Record / Close Anyway buttons.',
+  },
+
+  {
+    id: 'ui-alert-granularity',
+    tier: 5, severity: 'low',
+    title: 'UI-6: Signal alert granularity — alert only on specific transitions (e.g., HOLD→BUY)',
+    file: 'frontend/src/pages/watchlist.tsx · services/market-data/src/services/scheduler.py',
+    effort: '1.5 days',
+    impact: 'Low-medium — reduces alert fatigue. Traders only need alerts when actionable transitions happen, not every time a signal is checked.',
+    what: 'Signal alerts fire on any signal change. A WAIT→HOLD transition is not actionable but still sends an email. Users who subscribe to many stocks receive excessive emails.',
+    fix: 'Add alert_on_transitions field to signal_alerts table (e.g., ["BUY", "SELL"] = only alert on transitions to those states). Add checkboxes in the alert modal: "Alert me when signal becomes: [✓] BUY [ ] HOLD [ ] WAIT [✓] SELL". Backend: check transition target against user preference before sending.',
+  },
+
+  {
+    id: 'ui-suppression-days-active',
+    tier: 5, severity: 'low',
+    title: 'UI-7: Signal filter "days active" — show how long each suppression condition has been blocking',
+    file: 'frontend/src/pages/signal-filters.tsx · services/signal-engine/src/api/routes.py',
+    effort: '1 day',
+    impact: 'Low — surfaces stocks stuck in suppression for days or weeks, helping traders understand persistent blocks vs transient ones.',
+    what: 'The signal filter table shows current suppression state only. A stock blocked by weekly gate for 5 days looks identical to one blocked for 5 hours.',
+    fix: 'Add first_suppressed_at timestamp to the suppressed-signal query (earliest date the current condition was true in consecutive signal history). Show "Days active" column computed as NOW() - first_suppressed_at. Sort descending by default.',
+  },
+
+  {
+    id: 'dp-alert-infinite-retry',
+    tier: 5, severity: 'critical', defaultStatus: 'done',
+    title: 'DP-1: Signal alert infinite retry — failed email sends loop forever without max-retry cap',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '0.5 days',
+    impact: 'High — a broken email configuration causes the same alert to be attempted every minute indefinitely, flooding logs and never resolving.',
+    what: 'If email_send fails (email_ok = False), the DB is not updated so last_signal stays stale. The next minute, check_signal_alerts() sees the same transition and tries again. After 100 minutes, the user has received 0 emails but the scheduler has made 100 failed SMTP attempts.',
+    fix: 'Add retry_count column to signal_alerts. Increment on each failed send. If retry_count >= 5: mark as error state and skip until user re-enables. Log a prominent warning when the retry cap is hit.',
+  },
+
+  {
+    id: 'dp-hk-holiday-calendar',
+    tier: 5, severity: 'medium',
+    title: 'DP-2: HK holiday calendar — scheduler fires on Chinese New Year and other HK market holidays',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '1 day',
+    impact: 'Medium — wasted API calls and empty bar ingestion on HK holidays. Approximately 12 additional holidays per year vs US calendar.',
+    what: 'CronTrigger uses day_of_week="mon-fri" globally, which assumes standard weekday trading. HK has additional holidays (Chinese New Year, Mid-Autumn Festival, etc.) that do not align with US holidays.',
+    fix: 'Add HK_HOLIDAYS set of date strings (populate from HKEX official calendar). In the HK ingest job: if today in HK_HOLIDAYS: skip. Update annually. Alternatively use the exchange_calendars library (supports XHKG).',
+  },
+
+  {
+    id: 'dp-staleness-before-alert',
+    tier: 5, severity: 'medium',
+    title: 'DP-3: Staleness check before firing conviction alerts — prevent alerts based on yesterday\'s prices',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '0.5 days',
+    impact: 'Medium — if market-data ingestion fails, signals are computed on stale prices. Conviction alerts then fire based on incorrect data.',
+    what: 'The conviction gate fires BUY alerts using whatever signal is in the DB. If data ingestion failed post-close, the signal uses yesterday\'s prices. No staleness check before sending.',
+    fix: 'In check_signal_alerts(): before firing any alert, fetch the last bar timestamp for the symbol. If last_bar_ts < today - 2 trading days: skip alert and log "skipped stale data". Only fire on fresh prices.',
+  },
+
+  {
+    id: 'dp-scheduler-http-retry',
+    tier: 5, severity: 'medium',
+    title: 'DP-4: Scheduler HTTP retry logic — fire-and-forget posts silently fail with no retry or escalation',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '1 day',
+    impact: 'Medium — a single service outage during post-close refresh silently produces stale rankings/signals for hours without any notification.',
+    what: '_post() catches ALL exceptions but only logs at warning level. If ranking-engine or signal-engine crashes during the post-close cycle, the scheduler proceeds as if it succeeded. No retry, no circuit breaker, no escalation.',
+    fix: 'Add exponential backoff retry (3 attempts, 5s/15s/45s delays) inside _post(). After 3 failures: log at ERROR level and set a Redis flag market:refresh_failed. Read this flag in check_signal_alerts() to suppress alerts until the next successful refresh.',
   },
 
   {
@@ -1322,8 +1635,8 @@ export default function ImprovementsPage() {
         <p style={{ fontSize: 12, color: '#64748b', margin: 0, lineHeight: 1.6 }}>
           All Tier 1–4 shipped as of 2026-06-07. SA-1/2/3/4/5/6/7/8 all done. SA-3 was already live (4 boolean flags in builder.py). SA-5 wired to Sunday scheduler. SA-7 regime-aware earnings compression implemented (bull+beater≥70%: +3% boost; bull+50-70%: halved compression; bear/hv: tightened).
           Tier 5: UI-01 to UI-09 + UI-12 all shipped. Remaining (low priority): UI-10 (ML weight auto-apply), UI-11 (factor chart verify).
-          No remaining high-leverage items — all Tier 1–4 improvements are live.
-          Overall: <strong style={{ color: '#4ade80' }}>9.0 / 10</strong> — 7 new improvement suggestions added 2026-06-07: WF-1 (signal lifecycle), WF-2 (paper portfolio), WF-3 (hold/sell guidance), UI-13 (date picker), UI-14 (board badge), testing framework, scheduler monitor.
+          Tier 3 new items (2026-06-08): TB-1 (trailing stop), TB-2 (time-stop), TB-3 (stop breach alert), TB-4 (dollar P&amp;L), TB-5 (portfolio heat-at-risk), SL-1 (admin signal log). SL-1 implemented 2026-06-08.
+          Overall: <strong style={{ color: '#4ade80' }}>9.5 / 10</strong> — WF-2 (autonomous paper trading engine) shipped 2026-06-09, 11 audit fixes, signal pipeline 5-bug audit. Trade Board Position Lifecycle shipped 2026-06-09: WF-1 (signal state chip), WF-3 (live position monitor — trail stop, near target, near stop, stalled warning), TB-1 (trail recommendations), TB-2 (time-stop badge), TB-3 (stop breach banner), TB-4 (dollar P&amp;L + risk), TB-5 (active positions summary bar). Pending: UI-13/14, scheduler monitor.
         </p>
       </div>
     </div>

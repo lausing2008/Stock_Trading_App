@@ -27,7 +27,8 @@ class LightGBMModel(BaseModel):
 
     def fit(self, X: np.ndarray, y: np.ndarray, **kwargs) -> None:
         callbacks = kwargs.pop("callbacks", None)
-        self.clf.fit(X, y)
+        sample_weight = kwargs.pop("sample_weight", None)
+        self.clf.fit(X, y, sample_weight=sample_weight)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         return self.clf.predict_proba(X)

@@ -69,6 +69,7 @@ const PriceChart = dynamic(() => import('@/components/PriceChart'), { ssr: false
 export default function StockDetail() {
   const r = useRouter();
   const symbol = (r.query.symbol as string) ?? '';
+  const pageStyle = ((r.query.style as string) ?? '').toUpperCase() || null;
 
   const { data, error, isLoading, mutate: mutateOverview } = useSWR<Overview>(
     symbol ? `overview-${symbol}` : null,
@@ -213,9 +214,19 @@ export default function StockDetail() {
     { revalidateOnFocus: false },
   );
 
-  // SA-13: Growth signal for high-volatility momentum stocks
+  // Fetch the signal matching the current page style (from watchlist ?style= param)
+  const { data: shortSignal } = useSWR<Signal>(
+    symbol && pageStyle === 'SHORT' ? `short-signal-${symbol}` : null,
+    () => api.signal(symbol, 'SHORT'),
+    { revalidateOnFocus: false },
+  );
+  const { data: longSignal } = useSWR<Signal>(
+    symbol && pageStyle === 'LONG' ? `long-signal-${symbol}` : null,
+    () => api.signal(symbol, 'LONG'),
+    { revalidateOnFocus: false },
+  );
   const { data: growthSignal } = useSWR<Signal>(
-    symbol ? `growth-signal-${symbol}` : null,
+    symbol && pageStyle === 'GROWTH' ? `growth-signal-${symbol}` : null,
     () => api.signal(symbol, 'GROWTH'),
     { revalidateOnFocus: false },
   );
@@ -1201,11 +1212,10 @@ Return ONLY valid JSON — no markdown, no prose:
 
         {/* Sidebar */}
         <div className="space-y-3">
-          {/* AI Signal (SWING) */}
-          {data.signal && <SignalCard signal={data.signal} />}
-
-          {/* SA-13: GROWTH signal for momentum/high-volatility stocks */}
-          {growthSignal && (
+          {/* AI Signal — show only the card matching the watchlist style */}
+          {pageStyle === 'SHORT' && shortSignal && <SignalCard signal={shortSignal} />}
+          {pageStyle === 'LONG'  && longSignal  && <SignalCard signal={longSignal} />}
+          {pageStyle === 'GROWTH' && growthSignal && (
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                 <span style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)', padding: '2px 8px', borderRadius: 4, letterSpacing: '0.05em' }}>
@@ -1216,6 +1226,7 @@ Return ONLY valid JSON — no markdown, no prose:
               <SignalCard signal={growthSignal} />
             </div>
           )}
+          {(!pageStyle || pageStyle === 'SWING') && data.signal && <SignalCard signal={data.signal} />}
 
           {/* Fair Value */}
           {ranking?.fair_price != null && (() => {
