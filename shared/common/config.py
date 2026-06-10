@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # Auth
     jwt_secret: str = "stockai-change-me-in-production-secret-key"
-    jwt_expire_days: int = 30
+    jwt_expire_days: int = 7
 
     def __post_init__(self) -> None:
         pass  # kept for subclass compatibility

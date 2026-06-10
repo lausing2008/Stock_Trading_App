@@ -100,9 +100,11 @@ export default function PortfolioPage() {
   const [minScore, setMinScore] = useState(60);
   const [capital, setCapital] = useState('');
   const [result, setResult] = useState<PortfolioWeights | null>(null);
+  const [sectorWeights, setSectorWeights] = useState<Record<string, number> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [sectorThreshold, setSectorThreshold] = useState(40);
 
   const selectedMeta = METHODS.find(m => m.value === method)!;
   const accentColor = METHOD_COLORS[method] ?? '#818cf8';
@@ -114,6 +116,7 @@ export default function PortfolioPage() {
     setLoading(true);
     setError(null);
     setWarning(null);
+    setSectorWeights(null);
     try {
       const r = await api.optimizePortfolio({
         symbols: syms,
@@ -125,6 +128,12 @@ export default function PortfolioPage() {
         setWarning(`Skipped ${r.dropped_symbols.join(', ')} — insufficient price history for the selected lookback. Optimized with remaining symbols.`);
       }
       setResult(r);
+      // Fetch sector breakdown in background (non-blocking)
+      const finalSyms = Object.keys(r.weights);
+      const finalWeights = finalSyms.map(s => r.weights[s]);
+      api.portfolioRisk(finalSyms, finalWeights)
+        .then(risk => setSectorWeights(risk.sector_weights))
+        .catch(() => {});
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Optimization failed.';
       setError(msg);
@@ -414,6 +423,63 @@ export default function PortfolioPage() {
               </div>
             </div>
           </div>
+
+          {/* Sector Concentration */}
+          {sectorWeights && Object.keys(sectorWeights).length > 0 && (() => {
+            const entries = Object.entries(sectorWeights).sort((a, b) => b[1] - a[1]);
+            const SECTOR_COLORS = ['#818cf8','#60a5fa','#34d399','#fbbf24','#f472b6','#a78bfa','#4ade80','#38bdf8','#fb923c','#e879f9'];
+            const maxPct = Math.max(...entries.map(([, v]) => v * 100));
+            const breached = entries.filter(([, v]) => v * 100 > sectorThreshold);
+            return (
+              <div style={{ padding: '14px 20px', borderTop: '1px solid #1e293b', background: 'rgba(0,0,0,0.15)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Sector Concentration
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 10, color: '#475569' }}>Alert ≥</span>
+                    <input
+                      type="number" min={10} max={100} step={5}
+                      value={sectorThreshold}
+                      onChange={e => setSectorThreshold(Number(e.target.value))}
+                      style={{ width: 44, fontSize: 11, textAlign: 'center', background: '#0f172a', border: '1px solid #334155', borderRadius: 4, color: '#94a3b8', padding: '2px 4px' }}
+                    />
+                    <span style={{ fontSize: 10, color: '#475569' }}>%</span>
+                  </div>
+                </div>
+                {/* Stacked bar */}
+                <div style={{ height: 16, borderRadius: 6, overflow: 'hidden', display: 'flex', marginBottom: 10 }}>
+                  {entries.map(([sector, w], i) => (
+                    <div key={sector} title={`${sector}: ${(w * 100).toFixed(1)}%`}
+                      style={{ width: `${w * 100}%`, background: SECTOR_COLORS[i % SECTOR_COLORS.length], transition: 'width 0.4s' }} />
+                  ))}
+                </div>
+                {/* Legend rows */}
+                {entries.map(([sector, w], i) => {
+                  const pct = w * 100;
+                  const isAlert = pct > sectorThreshold;
+                  return (
+                    <div key={sector} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
+                      <div style={{ width: 8, height: 8, borderRadius: 2, background: SECTOR_COLORS[i % SECTOR_COLORS.length], flexShrink: 0 }} />
+                      <span style={{ flex: 1, fontSize: 12, color: isAlert ? '#fbbf24' : '#94a3b8' }}>{sector}</span>
+                      <div style={{ width: 100, height: 5, background: '#1e293b', borderRadius: 3, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${(pct / Math.max(maxPct, 1)) * 100}%`, background: isAlert ? '#fbbf24' : SECTOR_COLORS[i % SECTOR_COLORS.length], borderRadius: 3 }} />
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: isAlert ? '#fbbf24' : '#e2e8f0', minWidth: 44, textAlign: 'right', fontFamily: 'monospace' }}>
+                        {pct.toFixed(1)}%
+                      </span>
+                      {isAlert && <span style={{ fontSize: 9, color: '#fbbf24' }}>⚠</span>}
+                    </div>
+                  );
+                })}
+                {breached.length > 0 && (
+                  <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 5, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.2)', fontSize: 11, color: '#fbbf24' }}>
+                    Concentration alert: {breached.map(([s, v]) => `${s} (${(v * 100).toFixed(0)}%)`).join(', ')} exceeds {sectorThreshold}% threshold — consider diversifying.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Interpretation */}
           <div style={{ marginTop: '16px', padding: '14px 18px', borderRadius: '10px', background: 'rgba(15,23,42,0.6)', border: '1px solid #1e293b', fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>

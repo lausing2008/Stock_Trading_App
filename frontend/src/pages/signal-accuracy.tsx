@@ -590,6 +590,12 @@ export default function SignalAccuracyPage() {
     { revalidateOnFocus: false },
   );
 
+  const { data: wfOverview } = useSWR<WalkForwardReport>(
+    authed ? 'wf-overview-panel' : null,
+    () => api.walkForward(30, 5, 365),
+    { revalidateOnFocus: false },
+  );
+
   if (!authed) return null;
 
   async function handleReset() {
@@ -887,6 +893,72 @@ export default function SignalAccuracyPage() {
              data.overall_accuracy >= 50 ? 'Near-random — signals slightly better than a coin flip' :
              'Below-random — signals may need recalibration'}
           </div>
+        </div>
+      )}
+
+      {/* Live vs Backtest Comparison */}
+      {data && wfOverview && wfOverview.overall_accuracy != null && (
+        <div style={{ marginBottom: 28, background: '#0a0f1e', border: '1px solid #1e293b', borderRadius: 8, padding: '16px 18px' }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 12 }}>
+            Live vs Walk-Forward Backtest
+            <span style={{ fontSize: 10, fontWeight: 400, color: '#475569', marginLeft: 8 }}>
+              Does live performance match what backtesting predicted?
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 80px', gap: 0 }}>
+            {/* Header */}
+            <div style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '0 0 8px 0' }}>Metric</div>
+            <div style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '0 0 8px 0', textAlign: 'center' }}>Live · {lookback}d</div>
+            <div style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', padding: '0 0 8px 0', textAlign: 'center' }}>WF Backtest</div>
+            {/* Overall */}
+            {[
+              { label: 'Overall Accuracy', live: data.overall_accuracy, bt: wfOverview.overall_accuracy },
+              { label: 'BUY Accuracy', live: data.buy_accuracy, bt: null },
+            ].filter(r => r.live != null).map(r => {
+              const delta = r.bt != null && r.live != null ? r.live - r.bt : null;
+              const deltaColor = delta == null ? '#64748b' : delta >= 2 ? '#4ade80' : delta <= -2 ? '#f87171' : '#facc15';
+              const liveColor = r.live != null && r.live >= 60 ? '#4ade80' : r.live != null && r.live >= 50 ? '#facc15' : '#f87171';
+              const btColor = r.bt != null && r.bt >= 60 ? '#4ade80' : r.bt != null && r.bt >= 50 ? '#facc15' : '#f87171';
+              return (
+                <div key={r.label} style={{ display: 'contents' }}>
+                  <div style={{ fontSize: 12, color: '#cbd5e1', padding: '7px 0', borderTop: '1px solid #1e293b' }}>{r.label}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: liveColor, padding: '7px 0', borderTop: '1px solid #1e293b', textAlign: 'center' }}>
+                    {r.live != null ? `${r.live.toFixed(1)}%` : '—'}
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 700, padding: '7px 0', borderTop: '1px solid #1e293b', textAlign: 'center' }}>
+                    {r.bt != null ? (
+                      <span style={{ color: btColor }}>{r.bt.toFixed(1)}%</span>
+                    ) : (
+                      <span style={{ color: '#334155' }}>—</span>
+                    )}
+                    {delta != null && (
+                      <span style={{ fontSize: 10, color: deltaColor, marginLeft: 4 }}>
+                        {delta >= 0 ? '+' : ''}{delta.toFixed(1)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {/* Signal count row */}
+            <div style={{ fontSize: 12, color: '#cbd5e1', padding: '7px 0', borderTop: '1px solid #1e293b' }}>Signal Count</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', padding: '7px 0', borderTop: '1px solid #1e293b', textAlign: 'center' }}>{data.total_signals}</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', padding: '7px 0', borderTop: '1px solid #1e293b', textAlign: 'center' }}>
+              {wfOverview.windows ? (wfOverview.windows as WalkForwardWindow[]).reduce((s, w) => s + w.n_signals, 0) : '—'}
+            </div>
+          </div>
+          {(() => {
+            const delta = data.overall_accuracy != null && wfOverview.overall_accuracy != null
+              ? data.overall_accuracy - wfOverview.overall_accuracy : null;
+            if (delta == null) return null;
+            const msg = Math.abs(delta) < 2
+              ? 'Live and backtest accuracy are closely aligned — model is stable.'
+              : delta > 0
+              ? 'Live accuracy exceeds backtest — model may be over-optimized or market conditions favor current setup.'
+              : 'Live accuracy lags backtest — potential live-production gap; check data freshness and feature parity.';
+            const msgColor = Math.abs(delta) < 2 ? '#4ade80' : delta > 0 ? '#facc15' : '#f87171';
+            return <div style={{ fontSize: 11, color: msgColor, marginTop: 10, paddingTop: 10, borderTop: '1px solid #1e293b' }}>{msg}</div>;
+          })()}
         </div>
       )}
 
