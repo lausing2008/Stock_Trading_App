@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from jose import JWTError, jwt
 
 from common.config import get_settings
 
 router = APIRouter(tags=["proxy"])
 _settings = get_settings()
+
+# Prefixes that don't require a valid JWT
+_PUBLIC_PREFIXES = {"auth", "health", "docs", "openapi.json", "redoc"}
 
 # Route-prefix → upstream URL
 _ROUTES = {
@@ -45,10 +48,28 @@ def _upstream(path: str) -> str | None:
     return _ROUTES.get(head)
 
 
+def _require_auth(full_path: str, request: Request) -> None:
+    """Raise HTTP 401 for protected routes that have no valid JWT."""
+    prefix = full_path.strip("/").split("/", 1)[0]
+    if prefix in _PUBLIC_PREFIXES:
+        return
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(401, "Not authenticated")
+    token = auth_header.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(401, "Not authenticated")
+    try:
+        jwt.decode(token, _settings.jwt_secret, algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(401, "Invalid or expired token")
+
+
 @router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def reverse_proxy(full_path: str, request: Request):
     if full_path in ("health", "docs", "openapi.json", "redoc"):
         raise HTTPException(404)
+    _require_auth(full_path, request)
     upstream = _upstream(full_path)
     if not upstream:
         raise HTTPException(404, f"No route for /{full_path}")

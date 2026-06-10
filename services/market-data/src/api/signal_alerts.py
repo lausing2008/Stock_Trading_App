@@ -19,6 +19,11 @@ router = APIRouter(prefix="/signal-alerts", tags=["signal-alerts"])
 class SignalAlertCreate(BaseModel):
     symbol: str
     email: str | None = None
+    alert_mode: str = "all"   # "all" or "buy_only"
+
+
+class SignalAlertUpdate(BaseModel):
+    alert_mode: str
 
 
 class SignalAlertOut(BaseModel):
@@ -26,6 +31,7 @@ class SignalAlertOut(BaseModel):
     symbol: str
     email: str | None
     last_signal: str | None
+    alert_mode: str = "all"
     created_at: datetime
 
     class Config:
@@ -49,7 +55,8 @@ def create_signal_alert(
     if existing:
         return existing
 
-    alert = SignalAlert(user_id=user.id, symbol=symbol, email=email)
+    mode = body.alert_mode if body.alert_mode in ("all", "buy_only") else "all"
+    alert = SignalAlert(user_id=user.id, symbol=symbol, email=email, alert_mode=mode)
     session.add(alert)
     session.commit()
     session.refresh(alert)
@@ -68,6 +75,23 @@ def list_signal_alerts(
         .order_by(SignalAlert.created_at.desc())
     ).scalars().all()
     return list(rows)
+
+
+@router.patch("/{alert_id}", response_model=SignalAlertOut)
+def update_signal_alert(
+    alert_id: int,
+    body: SignalAlertUpdate,
+    session: Session = Depends(get_session),
+    user=Depends(get_current_user),
+):
+    alert = session.get(SignalAlert, alert_id)
+    if not alert or alert.user_id != user.id:
+        raise HTTPException(404, "Alert not found")
+    if body.alert_mode in ("all", "buy_only"):
+        alert.alert_mode = body.alert_mode
+    session.commit()
+    session.refresh(alert)
+    return alert
 
 
 @router.delete("/{alert_id}", status_code=204)

@@ -268,6 +268,14 @@ function SignalAlertsTab() {
   const [addError, setAddError]   = useState('');
   const [addOk, setAddOk]         = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [togglingModeId, setTogglingModeId] = useState<number | null>(null);
+
+  async function handleToggleMode(sub: SignalAlertItem) {
+    const next = (sub.alert_mode ?? 'all') === 'all' ? 'buy_only' : 'all';
+    setTogglingModeId(sub.id);
+    try { await api.updateSignalAlert(sub.id, next); await mutate(); } catch {}
+    setTogglingModeId(null);
+  }
 
   useEffect(() => {
     const s = typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null;
@@ -400,7 +408,7 @@ function SignalAlertsTab() {
               return (
                 <div key={sub.id} style={{
                   display: 'grid', alignItems: 'center',
-                  gridTemplateColumns: '90px 1fr 110px 110px 120px 90px 36px',
+                  gridTemplateColumns: '90px 1fr 110px 110px 120px 100px 90px 36px',
                   gap: '12px', padding: '13px 16px', borderRadius: '10px',
                   border: '1px solid #1e293b', background: 'rgba(15,23,42,0.7)',
                   transition: 'border-color 0.15s',
@@ -446,6 +454,23 @@ function SignalAlertsTab() {
                       }}>Last: {sub.last_signal}</span>
                     ) : <span style={{ color: '#334155' }}>Never triggered</span>}
                   </div>
+
+                  {/* Mode toggle */}
+                  <button
+                    onClick={() => handleToggleMode(sub)}
+                    disabled={togglingModeId === sub.id}
+                    title={(sub.alert_mode ?? 'all') === 'buy_only' ? 'BUY transitions only — click for all transitions' : 'All transitions — click for BUY only'}
+                    style={{
+                      padding: '3px 9px', borderRadius: '6px', fontSize: '11px', fontWeight: 700,
+                      cursor: 'pointer', border: '1px solid',
+                      background: (sub.alert_mode ?? 'all') === 'buy_only' ? 'rgba(74,222,128,0.12)' : 'rgba(148,163,184,0.08)',
+                      color: (sub.alert_mode ?? 'all') === 'buy_only' ? '#4ade80' : '#64748b',
+                      borderColor: (sub.alert_mode ?? 'all') === 'buy_only' ? 'rgba(74,222,128,0.3)' : '#1e293b',
+                      opacity: togglingModeId === sub.id ? 0.5 : 1,
+                    }}
+                  >
+                    {togglingModeId === sub.id ? '…' : (sub.alert_mode ?? 'all') === 'buy_only' ? 'BUY only' : 'All'}
+                  </button>
 
                   {/* Added */}
                   <div style={{ fontSize: '11px', color: '#334155' }}>{relTime(sub.created_at)}</div>
