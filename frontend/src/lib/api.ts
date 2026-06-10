@@ -51,7 +51,7 @@ export const api = {
   signal: (symbol: string, style?: string) => request<Signal>(`/signals/${symbol}${style ? `?style=${style}` : ''}`),
   allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
   refreshSignal: (symbol: string) => request<Signal>(`/signals/${symbol}?persist=true`),
-  refreshSignals: (market?: string) => request<{ refreshed: number }>(`/signals/refresh`, { method: 'POST', body: JSON.stringify(market ? { market } : {}) }),
+  refreshSignals: (market?: string) => request<{ status: string; count: number }>(`/signals/refresh${market ? `?market=${encodeURIComponent(market)}` : ''}`, { method: 'POST' }),
   predict: (symbol: string, model = 'xgboost') =>
     request<Prediction>(`/ml/predict`, { method: 'POST', body: JSON.stringify({ symbol, model }) }),
   trainModel: (symbol: string, model = 'xgboost') =>

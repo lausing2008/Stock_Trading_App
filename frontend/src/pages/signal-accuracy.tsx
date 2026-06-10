@@ -43,10 +43,12 @@
  * Outcome    — ALL / CORRECT / WRONG
  * Sort by    — Date (newest first) / Confidence / Return %
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type SignalAccuracyReport } from '@/lib/api';
+import { getSession } from '@/lib/auth';
 
 type RollingPoint = { date: string; accuracy: number; signal_count: number };
 
@@ -534,6 +536,16 @@ function WalkForwardSection() {
 }
 
 export default function SignalAccuracyPage() {
+  const router = useRouter();
+  const [authed, setAuthed] = useState(false);
+
+  useEffect(() => {
+    const s = getSession();
+    if (!s) { router.replace('/login'); return; }
+    if (s.role !== 'admin') { router.replace('/'); return; }
+    setAuthed(true);
+  }, [router]);
+
   const [activeTab, setActiveTab] = useState<'overview' | 'walkforward' | 'outcomes'>('overview');
   const [lookback, setLookback] = useState(90);
   const [filterSymbol, setFilterSymbol] = useState('');
@@ -549,34 +561,36 @@ export default function SignalAccuracyPage() {
   const useDateRange = fromDate !== '' && toDate !== '';
 
   const { data, isLoading, error, mutate } = useSWR(
-    ['signal-accuracy', lookback, fromDate, toDate, page],
+    authed ? ['signal-accuracy', lookback, fromDate, toDate, page] : null,
     () => api.signalAccuracy(lookback, undefined, fromDate || undefined, toDate || undefined, page),
     { revalidateOnFocus: false },
   );
 
   const { data: factorData } = useSWR(
-    ['factor-exposure', lookback],
+    authed ? ['factor-exposure', lookback] : null,
     () => api.factorExposure(lookback),
     { revalidateOnFocus: false },
   );
 
   const { data: mlWeight } = useSWR(
-    'ml-weight-validation',
+    authed ? 'ml-weight-validation' : null,
     () => api.mlWeightValidation(180),
     { revalidateOnFocus: false },
   );
 
   const { data: outcomesData } = useSWR<OutcomesSummary>(
-    ['outcomes-summary', lookback],
+    authed ? ['outcomes-summary', lookback] : null,
     () => api.outcomesSummary(undefined, lookback),
     { revalidateOnFocus: false },
   );
 
   const { data: rollingData } = useSWR(
-    'rolling-accuracy',
+    authed ? 'rolling-accuracy' : null,
     () => api.rollingAccuracy(30, 180),
     { revalidateOnFocus: false },
   );
+
+  if (!authed) return null;
 
   async function handleReset() {
     if (!confirm('Wipe all persisted signals and re-persist fresh ones? This cannot be undone.')) return;

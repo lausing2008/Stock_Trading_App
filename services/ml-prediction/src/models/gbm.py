@@ -21,4 +21,4 @@ class GradientBoostingModel(BaseModel):
         self.clf.fit(X, y)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        return self.clf.predict_proba(X)[:, 1]
+        return self.clf.predict_proba(X)

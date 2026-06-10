@@ -17,7 +17,7 @@ Style differences baked in per trading_style config:
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -389,7 +389,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         if sig:
             latest_signals[sym] = sig
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     for trade in open_trades:
         # Always update hold_days — doesn't require live price
@@ -537,7 +537,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
     style   = cfg["trading_style"]
-    now     = datetime.utcnow()
+    now     = datetime.now(timezone.utc)
     cutoff  = now - timedelta(hours=2)   # only signals updated in last 2 hours
 
     # Current portfolio state

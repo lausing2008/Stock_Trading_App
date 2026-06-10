@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
+from common.jwt_auth import get_current_username
 from common.logging import get_logger
 from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, get_session
 
@@ -137,22 +138,35 @@ def refresh_signals(
     tasks: BackgroundTasks,
     market: str | None = None,
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Recompute and persist signals for all active stocks, optionally filtered by market."""
     q = select(Stock.symbol).where(Stock.active.is_(True))
     if market:
         q = q.where(Stock.market == market.upper())
     symbols = list(session.execute(q).scalars())
+    try:
+        r = _get_redis()
+        for key in r.scan_iter("signals:cache:*"):
+            r.delete(key)
+    except Exception:
+        pass
     tasks.add_task(_bulk_persist, symbols)
     return {"status": "scheduled", "count": len(symbols)}
 
 
 @router.post("/reset")
-def reset_signals(tasks: BackgroundTasks, session: Session = Depends(get_session)):
+def reset_signals(tasks: BackgroundTasks, session: Session = Depends(get_session), _: str = Depends(get_current_username)):
     """Wipe all persisted signals then re-persist fresh ones for every active stock."""
     deleted = session.query(Signal).delete()
     session.commit()
     symbols = list(session.execute(select(Stock.symbol).where(Stock.active.is_(True))).scalars())
+    try:
+        r = _get_redis()
+        for key in r.scan_iter("signals:cache:*"):
+            r.delete(key)
+    except Exception:
+        pass
     tasks.add_task(_bulk_persist, symbols)
     log.info("signals.reset", deleted=deleted, repersisting=len(symbols))
     return {"status": "reset", "deleted": deleted, "repersisting": len(symbols)}
@@ -1293,6 +1307,7 @@ def calibrate_ta_weights(
     lookback_days: int = Query(365, ge=60, le=730),
     hold_days: int = Query(10, ge=3, le=30),
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Fit logistic regression on historical BUY signals to derive data-driven TA weights.
 
@@ -1358,6 +1373,39 @@ def calibrate_ta_weights(
         "volume_surge":           lambda r: (r.get("volume_z") or 0) > 0.5,
     }
 
+    import bisect
+
+    # Bulk-load all D1 prices for involved stocks — avoids N+1 queries in loop
+    stock_ids = list({row.stock_id for row in rows})
+    min_ts = min(row.ts for row in rows)
+    max_ts_needed = datetime.now(timezone.utc) + timedelta(days=hold_days + 10)
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(
+            Price.stock_id.in_(stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= min_ts,
+            Price.ts <= max_ts_needed,
+        )
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+    # Build per-stock sorted list of (ts_naive_date, close)
+    from collections import defaultdict
+    _price_map: dict[int, list[tuple]] = defaultdict(list)
+    for pr in price_rows:
+        ts_date = pr.ts.date() if hasattr(pr.ts, "date") else pr.ts
+        _price_map[pr.stock_id].append((ts_date, float(pr.close)))
+
+    def _lookup_price(stock_id: int, on_or_after: "date") -> "float | None":
+        bucket = _price_map.get(stock_id, [])
+        if not bucket:
+            return None
+        dates = [b[0] for b in bucket]
+        idx = bisect.bisect_left(dates, on_or_after)
+        if idx >= len(bucket):
+            return None
+        return bucket[idx][1]
+
     X_rows, y_rows, skipped = [], [], 0
     for row in rows:
         try:
@@ -1366,28 +1414,15 @@ def calibrate_ta_weights(
             skipped += 1
             continue
 
-        # Look up price return over hold_days
         signal_date = row.ts.date() if hasattr(row.ts, "date") else row.ts
-        entry_price_row = session.execute(
-            select(Price.close)
-            .where(Price.stock_id == row.stock_id, Price.timeframe == TimeFrame.D1,
-                   Price.ts >= signal_date)
-            .order_by(Price.ts)
-            .limit(1)
-        ).scalar_one_or_none()
-        exit_price_row = session.execute(
-            select(Price.close)
-            .where(Price.stock_id == row.stock_id, Price.timeframe == TimeFrame.D1,
-                   Price.ts >= signal_date + timedelta(days=hold_days))
-            .order_by(Price.ts)
-            .limit(1)
-        ).scalar_one_or_none()
+        entry_price_row = _lookup_price(row.stock_id, signal_date)
+        exit_price_row = _lookup_price(row.stock_id, signal_date + timedelta(days=hold_days))
 
         if entry_price_row is None or exit_price_row is None:
             skipped += 1
             continue
 
-        fwd_ret = float(exit_price_row) / float(entry_price_row) - 1
+        fwd_ret = exit_price_row / entry_price_row - 1
         y_rows.append(1 if fwd_ret > 0 else 0)
         X_rows.append([float(REASONS_MAP[f](reasons)) for f in TA_FEATURES])
 
@@ -1759,6 +1794,39 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         .order_by(Signal.ts)
     ).all()
 
+    import bisect
+    from collections import defaultdict
+
+    # Bulk-load all D1 prices for pending signals — avoids N+1 queries in loop
+    pending_stock_ids = list({sig.stock_id for sig, _ in pending_signals})
+    max_hold = max(_OUTCOME_HOLD_DAYS.values())
+    price_min_ts = min((sig.ts for sig, _ in pending_signals), default=datetime.now())
+    price_max_ts = datetime.now() + timedelta(days=max_hold + 10)
+    bulk_prices = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(
+            Price.stock_id.in_(pending_stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= price_min_ts,
+            Price.ts <= price_max_ts,
+        )
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+    _outcome_price_map: dict[int, list[tuple]] = defaultdict(list)
+    for pr in bulk_prices:
+        pr_date = pr.ts.date() if hasattr(pr.ts, "date") else pr.ts
+        _outcome_price_map[pr.stock_id].append((pr_date, float(pr.close)))
+
+    def _lookup_outcome_price(stock_id: int, on_or_after: "date") -> "tuple | None":
+        bucket = _outcome_price_map.get(stock_id, [])
+        if not bucket:
+            return None
+        dates = [b[0] for b in bucket]
+        idx = bisect.bisect_left(dates, on_or_after)
+        if idx >= len(bucket):
+            return None
+        return bucket[idx]
+
     evaluated, skipped_open, skipped_no_price = 0, 0, 0
 
     for sig, symbol in pending_signals:
@@ -1769,48 +1837,24 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         hold_days = _OUTCOME_HOLD_DAYS[horizon]
         signal_date = sig.ts.date()
 
-        # Entry: first D1 close on or after signal date
-        entry_row = session.execute(
-            select(Price.ts, Price.close)
-            .where(
-                Price.stock_id == sig.stock_id,
-                Price.timeframe == TimeFrame.D1,
-                Price.ts >= datetime.combine(signal_date, _time.min),
-            )
-            .order_by(Price.ts)
-            .limit(1)
-        ).first()
-
-        if entry_row is None:
+        entry_result = _lookup_outcome_price(sig.stock_id, signal_date)
+        if entry_result is None:
             skipped_no_price += 1
             continue
 
-        entry_date = entry_row.ts.date()
-        entry_price = entry_row.close
+        entry_date, entry_price = entry_result
         exit_target = entry_date + timedelta(days=hold_days)
 
         if exit_target >= today:
             skipped_open += 1
             continue  # Hold window not closed yet (need tomorrow's price at minimum)
 
-        # Exit: first D1 close on or after exit target date
-        exit_row = session.execute(
-            select(Price.ts, Price.close)
-            .where(
-                Price.stock_id == sig.stock_id,
-                Price.timeframe == TimeFrame.D1,
-                Price.ts >= datetime.combine(exit_target, _time.min),
-            )
-            .order_by(Price.ts)
-            .limit(1)
-        ).first()
-
-        if exit_row is None:
+        exit_result = _lookup_outcome_price(sig.stock_id, exit_target)
+        if exit_result is None:
             skipped_open += 1
             continue
 
-        exit_date = exit_row.ts.date()
-        exit_price = exit_row.close
+        exit_date, exit_price = exit_result
         if entry_price <= 0:
             skipped_no_price += 1
             continue

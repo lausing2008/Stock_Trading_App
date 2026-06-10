@@ -24,6 +24,17 @@ class Settings(BaseSettings):
     jwt_secret: str = "stockai-change-me-in-production-secret-key"
     jwt_expire_days: int = 30
 
+    def __post_init__(self) -> None:
+        pass  # kept for subclass compatibility
+
+    def model_post_init(self, __context) -> None:  # pydantic v2 hook
+        _WEAK = "stockai-change-me-in-production-secret-key"
+        if self.env == "production" and self.jwt_secret == _WEAK:
+            raise RuntimeError(
+                "JWT_SECRET must be set to a strong random value in production. "
+                "The default placeholder is not safe."
+            )
+
     # Providers
     alpha_vantage_api_key: str = ""
     polygon_api_key: str = ""

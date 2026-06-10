@@ -5,7 +5,9 @@ from typing import Literal
 
 import httpx
 import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from common.jwt_auth import get_current_username
 from pydantic import BaseModel
 
 from common.config import get_settings
@@ -74,7 +76,7 @@ def _fetch_scores(symbols: list[str]) -> dict[str, float]:
 
 
 @router.post("/optimize")
-def optimize(req: OptimizeRequest):
+def optimize(req: OptimizeRequest, _: str = Depends(get_current_username)):
     closes, dropped = _fetch_closes(req.symbols, req.lookback_days)
 
     if closes.empty or len(closes) < MIN_ROWS:
