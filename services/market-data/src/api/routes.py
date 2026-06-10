@@ -526,18 +526,26 @@ def market_breadth(session: Session = Depends(get_session)):
 
 @router.get("/data_freshness")
 def data_freshness(session: Session = Depends(get_session)):
-    """Returns the most recent D1 price bar timestamp to indicate data staleness."""
-    last_ts = session.execute(
-        select(func.max(Price.ts)).where(Price.timeframe == TimeFrame.D1)
-    ).scalar()
-    if last_ts is None:
-        return {"last_bar_ts": None, "hours_ago": None, "status": "no_data"}
+    """Returns the most recent price bar timestamp (D1 or 5m) to indicate data staleness."""
     now = datetime.now(timezone.utc)
-    if last_ts.tzinfo is None:
-        last_ts = last_ts.replace(tzinfo=timezone.utc)
-    hours_ago = (now - last_ts).total_seconds() / 3600
+    best_ts = None
+    best_tf = None
+    for tf in (TimeFrame.M5, TimeFrame.D1):
+        ts = session.execute(
+            select(func.max(Price.ts)).where(Price.timeframe == tf)
+        ).scalar()
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if best_ts is None or ts > best_ts:
+            best_ts = ts
+            best_tf = tf.value
+    if best_ts is None:
+        return {"last_bar_ts": None, "hours_ago": None, "status": "no_data"}
+    hours_ago = (now - best_ts).total_seconds() / 3600
     status = "fresh" if hours_ago < 8 else "stale" if hours_ago < 30 else "very_stale"
-    return {"last_bar_ts": last_ts.isoformat(), "hours_ago": round(hours_ago, 1), "status": status}
+    return {"last_bar_ts": best_ts.isoformat(), "hours_ago": round(hours_ago, 1), "status": status, "timeframe": best_tf}
 
 
 @router.get("/latest_prices", response_model=list[LatestPriceOut])

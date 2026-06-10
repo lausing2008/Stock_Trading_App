@@ -1521,7 +1521,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'audit-jwt-expiry',
-    tier: 6, severity: 'medium',
+    tier: 6, severity: 'medium', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — POST /auth/logout blacklists JTI in Redis (TTL = remaining token lifetime). get_current_user and shared jwt_auth check blacklist on every request. Expiry reduced 30d → 7d in config.py. Frontend logout fires fire-and-forget revocation call before clearing localStorage.',
     title: 'AUDIT-SEC-8: 30-day JWT expiry with no revocation mechanism',
     file: 'shared/common/config.py:25 · services/market-data/src/api/auth.py:36-42',
     effort: '2 days',
@@ -1532,7 +1533,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'tm5-live-vs-backtest',
-    tier: 3, severity: 'feature',
+    tier: 3, severity: 'feature', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Added Live vs Backtest comparison panel to /signal-accuracy overview tab. Fetches walk-forward data (30d test, 5d hold, 365d training) via SWR alongside live signalAccuracy. Side-by-side grid shows live accuracy, walk-forward accuracy, and delta (+/-) with colour coding. Interpretation banner explains alignment vs divergence.',
     title: 'TM-5: Live vs backtest comparison — detect overfitting and model drift in production',
     file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
     effort: '2–3 days',

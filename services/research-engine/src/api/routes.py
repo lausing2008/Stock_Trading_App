@@ -39,7 +39,9 @@ def _sanitise_symbol(raw: str) -> str:
 
 # Simple in-memory cache: symbol → (report_dict, timestamp)
 _cache: dict[str, tuple[dict, datetime]] = {}
-CACHE_TTL_SEC = 86_400  # 24 hours
+CACHE_TTL_SEC = 86_400       # 24 h — full quality reports
+CACHE_TTL_PARTIAL_SEC = 1_800  # 30 min — partial (missing services)
+CACHE_TTL_FALLBACK_SEC = 300   # 5 min — fallback (AI timeout/error)
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -1224,8 +1226,12 @@ async def get_research(symbol: str):
     entry = _cache.get(sym)
     if entry:
         report, ts = entry
-        if (datetime.now(timezone.utc) - ts).total_seconds() < CACHE_TTL_SEC:
+        quality = report.get("report_quality", "full")
+        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl:
             return report
+        # Cache expired for this quality level — remove stale entry
+        _cache.pop(sym, None)
     raise HTTPException(404, "No cached research report. POST to /research/{symbol} to generate.")
 
 
@@ -1399,7 +1405,9 @@ async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(
     }
 
     _cache[sym] = (report, datetime.now(timezone.utc))
-    log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation)
+    ttl = CACHE_TTL_FALLBACK_SEC if report_quality == "fallback" else CACHE_TTL_PARTIAL_SEC if report_quality == "partial" else CACHE_TTL_SEC
+    log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation,
+             quality=report_quality, cache_ttl_s=ttl)
     return report
 
 
