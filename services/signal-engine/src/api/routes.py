@@ -611,6 +611,128 @@ def ml_weight_validation(
     }
 
 
+@router.post("/calibrate_ml_weight")
+def calibrate_ml_weight(
+    lookback_days: int = Query(180, ge=30, le=730),
+    session: Session = Depends(get_session),
+):
+    """Find the empirically optimal ML fusion weight and apply it as the global cap.
+
+    Runs the same weight sweep as /ml-weight-validation, picks the weight with the
+    highest BUY accuracy over lookback_days, writes it to ml_weight_override.json,
+    and updates the in-process value so new signals use it immediately.
+    Returns the chosen weight and the full accuracy curve.
+    """
+    from ..generators.signals import set_ml_weight_global_cap, _ml_weight_global_cap as prev_cap
+    import bisect
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    outcome_cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+
+    rows = session.execute(
+        select(Signal, Stock.symbol)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .where(Signal.ts >= cutoff, Signal.ts <= outcome_cutoff)
+        .where(Signal.signal == SignalType.BUY)
+    ).all()
+
+    if not rows:
+        return {"applied": False, "reason": "no_signals", "optimal_weight": None}
+
+    stock_ids = list({sig.stock_id for sig, _ in rows})
+    price_since = (cutoff - timedelta(days=5)).date()
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(Price.stock_id.in_(stock_ids))
+        .where(Price.timeframe == TimeFrame.D1)
+        .where(Price.ts >= price_since)
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    _pts: dict[int, list] = {}
+    _pclose: dict[int, list] = {}
+    for row in price_rows:
+        sid = row.stock_id
+        if sid not in _pts:
+            _pts[sid] = []
+            _pclose[sid] = []
+        d = row.ts.date() if isinstance(row.ts, datetime) else row.ts
+        _pts[sid].append(d)
+        _pclose[sid].append(float(row.close))
+
+    def _first_close_after(sid, after_date):
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, after_date)
+        if idx >= len(ts_list):
+            return None
+        return _pclose[sid][idx]
+
+    observations: list[tuple[float, float, float]] = []
+    seen: set[tuple] = set()
+    for sig, _ in rows:
+        signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
+        key = (sig.stock_id, signal_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        reasons = sig.reasons or {}
+        ml_prob = reasons.get("ml_probability")
+        ta_score = reasons.get("ta_score")
+        if ml_prob is None or ta_score is None:
+            continue
+        ts_list = _pts.get(sig.stock_id)
+        if not ts_list:
+            continue
+        entry = _first_close_after(sig.stock_id, signal_date)
+        if entry is None or entry <= 0:
+            continue
+        exit_p = _pclose[sig.stock_id][-1] if ts_list else None
+        if exit_p is None or ts_list[-1] <= signal_date:
+            continue
+        pct = (exit_p - entry) / entry * 100
+        observations.append((float(ml_prob), float(ta_score), pct))
+
+    if not observations:
+        return {"applied": False, "reason": "no_observations", "optimal_weight": None}
+
+    weights = [round(w / 20, 2) for w in range(21)]
+    best_acc = -1.0
+    optimal_weight = 0.5
+    curve = []
+    for w in weights:
+        correct = fired = 0
+        returns = []
+        for ml_p, ta_s, pct in observations:
+            fused = w * ml_p + (1 - w) * ta_s
+            if fused > 0.5:
+                fired += 1
+                if pct > 0:
+                    correct += 1
+                returns.append(pct)
+        acc = round(correct / fired * 100, 1) if fired else None
+        avg_ret = round(sum(returns) / len(returns), 2) if returns else None
+        curve.append({"weight": w, "accuracy": acc, "avg_return_pct": avg_ret})
+        if acc is not None and acc > best_acc:
+            best_acc = acc
+            optimal_weight = w
+
+    set_ml_weight_global_cap(optimal_weight)
+    log.info("calibrate_ml_weight: applied cap=%.2f (acc=%.1f%%, n=%d, lookback=%dd)",
+             optimal_weight, best_acc, len(observations), lookback_days)
+
+    return {
+        "applied": True,
+        "optimal_weight": optimal_weight,
+        "optimal_accuracy": round(best_acc, 1),
+        "signal_count": len(observations),
+        "lookback_days": lookback_days,
+        "previous_cap": prev_cap,
+        "curve": curve,
+    }
+
+
 @router.get("/factor-exposure")
 def factor_exposure(
     lookback_days: int = Query(90, ge=7, le=365),

@@ -92,6 +92,44 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "volume_surge":             0.05,
 }
 _TA_WEIGHTS_PATH = Path(_settings.model_dir) / "ta_weights.json"
+_ML_WEIGHT_OVERRIDE_PATH = Path(_settings.model_dir) / "ml_weight_override.json"
+
+# Global ML weight cap override: None means use the per-style profile default.
+# Set by calibrate_ml_weight(); loaded at import time from disk if present.
+_ml_weight_global_cap: float | None = None
+
+
+def _load_ml_weight_override() -> float | None:
+    """Load calibrated ML weight cap from disk, or return None (use profile default)."""
+    try:
+        if _ML_WEIGHT_OVERRIDE_PATH.exists():
+            with open(_ML_WEIGHT_OVERRIDE_PATH) as f:
+                d = json.load(f)
+            v = d.get("ml_weight_cap")
+            if isinstance(v, (int, float)) and 0.0 <= v <= 1.0:
+                return float(v)
+    except Exception:
+        pass
+    return None
+
+
+def set_ml_weight_global_cap(cap: float | None) -> None:
+    """Update the in-process ML weight cap override and persist to disk."""
+    global _ml_weight_global_cap
+    _ml_weight_global_cap = cap
+    try:
+        Path(_ML_WEIGHT_OVERRIDE_PATH).parent.mkdir(parents=True, exist_ok=True)
+        if cap is None:
+            Path(_ML_WEIGHT_OVERRIDE_PATH).unlink(missing_ok=True)
+        else:
+            Path(_ML_WEIGHT_OVERRIDE_PATH).write_text(json.dumps({"ml_weight_cap": cap}, indent=2))
+    except Exception:
+        pass
+
+
+# Load on module import
+_ml_weight_global_cap = _load_ml_weight_override()
+
 
 def _load_ta_weights() -> dict[str, float]:
     """Load calibrated TA weights from disk, falling back to defaults."""
@@ -1029,7 +1067,8 @@ def _apply_style_signal(
         else:
             # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
             raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
-        ml_w  = min(raw_w, p["ml_weight_cap"])
+        eff_cap = _ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"]
+        ml_w  = min(raw_w, eff_cap)
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
             # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).

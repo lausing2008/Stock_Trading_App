@@ -622,6 +622,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'ui10-ml-weight-autocalibrate',
+    defaultStatus: 'done',
+    implementedNote: 'POST /signals/calibrate_ml_weight endpoint runs weight sweep, saves optimal cap to ml_weight_override.json, updates in-process global. "Apply optimal weight" button on signal accuracy page shows result with accuracy %.',
     tier: 5, severity: 'medium',
     title: 'UI-10: ML weight auto-calibration from empirical validation curve',
     file: 'frontend/src/pages/signal-accuracy.tsx + signal-engine/routes.py',

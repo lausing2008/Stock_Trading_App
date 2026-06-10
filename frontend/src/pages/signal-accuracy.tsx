@@ -554,6 +554,8 @@ export default function SignalAccuracyPage() {
   const [sortBy, setSortBy] = useState<'date' | 'confidence' | 'pct_change'>('date');
   const [resetting, setResetting] = useState(false);
   const [resetMsg, setResetMsg] = useState('');
+  const [calibrating, setCalibrating] = useState(false);
+  const [calibrateResult, setCalibrateResult] = useState<{ optimal_weight: number | null; optimal_accuracy: number; applied: boolean } | null>(null);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [page, setPage] = useState(1);
@@ -965,7 +967,37 @@ export default function SignalAccuracyPage() {
       {/* ML Weight Validation */}
   {mlWeight && mlWeight.curve.length > 0 && (
     <div style={{ marginBottom: 28 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', marginBottom: 2 }}>ML/TA Fusion Weight — Empirical Validation</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8' }}>ML/TA Fusion Weight — Empirical Validation</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {calibrateResult && (
+            <span style={{ fontSize: '11px', color: calibrateResult.applied ? '#4ade80' : '#f87171' }}>
+              {calibrateResult.applied
+                ? `Applied w=${calibrateResult.optimal_weight?.toFixed(2)} (${calibrateResult.optimal_accuracy?.toFixed(1)}% acc)`
+                : 'Not applied'}
+            </span>
+          )}
+          <button
+            onClick={async () => {
+              setCalibrating(true);
+              setCalibrateResult(null);
+              try {
+                const res = await api.calibrateMlWeight(180);
+                setCalibrateResult(res);
+              } catch { /* ignore */ }
+              setCalibrating(false);
+            }}
+            disabled={calibrating}
+            style={{
+              padding: '5px 12px', borderRadius: '7px', fontSize: '11px', fontWeight: 600, cursor: calibrating ? 'not-allowed' : 'pointer',
+              border: '1px solid rgba(129,140,248,0.4)', background: 'rgba(79,70,229,0.15)',
+              color: calibrating ? '#475569' : '#a5b4fc', transition: 'all 0.15s',
+            }}
+          >
+            {calibrating ? 'Calibrating…' : 'Apply optimal weight'}
+          </button>
+        </div>
+      </div>
       <MLWeightChart
         curve={mlWeight.curve}
         optimalWeight={mlWeight.optimal_weight}
