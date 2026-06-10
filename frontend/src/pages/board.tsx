@@ -471,10 +471,15 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
               <span style={{ color: plan.actual_entry_price != null ? '#334155' : '#818cf8', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.entry_price)}</span>
             </div>
           )}
-          {plan.stop_loss != null && (
+          {(plan.stop_loss != null || gp?.stop_loss?.price != null) && (
             <div style={{ fontSize: '11px' }}>
               <span style={{ color: '#475569' }}>Stop </span>
-              <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.stop_loss)}</span>
+              <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>
+                {fmt(plan.stop_loss ?? gp!.stop_loss!.price)}
+              </span>
+              {plan.stop_loss == null && gp?.stop_loss?.price != null && (
+                <span style={{ fontSize: '9px', color: '#334155', marginLeft: '3px' }}>gp</span>
+              )}
             </div>
           )}
           {plan.take_profit != null && (
@@ -596,6 +601,83 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
           );
         })()}
 
+        {/* Active: position monitor — stop alerts, P&L, trail recommendations */}
+        {plan.stage === 'active' && livePrice && effectiveEntry != null && (() => {
+          const cur = livePrice.price;
+          const stop = plan.stop_loss ?? gp?.stop_loss?.price ?? null;
+          const target = plan.take_profit ?? gp?.take_profit?.price ?? null;
+          const shares = plan.shares;
+          const pnlPct = (cur - effectiveEntry) / effectiveEntry * 100;
+          const dollarPnl = shares != null ? (cur - effectiveEntry) * shares : null;
+          const dollarRisk = shares != null && stop != null ? (effectiveEntry - stop) * shares : null;
+
+          const stopBreached = stop != null && cur < stop;
+          const nearStop = !stopBreached && stop != null && cur <= stop * 1.02;
+          const nearTarget = target != null && cur >= target * 0.98;
+          const daysInTrade = Math.floor((Date.now() - new Date(plan.created_at).getTime()) / 86400000);
+          const stalled = daysInTrade > 15 && Math.abs(pnlPct) < 3;
+
+          const breakEvenSuggestion = pnlPct >= 3 && pnlPct < 5 && stop != null && stop < effectiveEntry;
+          const trailSuggestion = pnlPct >= 5;
+          const suggestedStop = trailSuggestion ? (cur * 0.97).toFixed(2) : null;
+
+          const hasMonitor = stopBreached || nearStop || nearTarget || stalled || dollarPnl != null || breakEvenSuggestion || trailSuggestion;
+          if (!hasMonitor) return null;
+
+          return (
+            <div style={{ marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {stopBreached && stop != null && (
+                <div style={{ padding: '5px 10px', borderRadius: '6px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', color: '#f87171', fontSize: '11px', fontWeight: 700, display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  <span>⚠</span><span>STOP BREACHED — ${cur.toFixed(2)} vs stop ${stop.toFixed(2)}</span>
+                </div>
+              )}
+              {nearStop && stop != null && (
+                <div style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', color: '#fbbf24', fontSize: '10px', fontWeight: 600 }}>
+                  Near stop — {((cur / stop - 1) * 100).toFixed(1)}% above stop loss
+                </div>
+              )}
+              {nearTarget && target != null && (
+                <div style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.25)', color: '#4ade80', fontSize: '10px', fontWeight: 600 }}>
+                  Near target — consider scaling out 50%
+                </div>
+              )}
+              {stalled && (
+                <div style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(148,163,184,0.05)', border: '1px solid rgba(148,163,184,0.12)', color: '#475569', fontSize: '10px', fontWeight: 600 }}>
+                  ⏱ Stalled {daysInTrade}d — consider exiting if thesis not playing out
+                </div>
+              )}
+              {(dollarPnl != null || (dollarRisk != null && dollarRisk > 0) || breakEvenSuggestion || trailSuggestion) && (
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', padding: '5px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', fontSize: '11px', alignItems: 'center' }}>
+                  {dollarPnl != null && (
+                    <div>
+                      <span style={{ color: '#475569' }}>P&amp;L </span>
+                      <span style={{ color: dollarPnl >= 0 ? '#4ade80' : '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>
+                        {dollarPnl >= 0 ? '+' : ''}${Math.abs(dollarPnl).toFixed(0)}
+                      </span>
+                    </div>
+                  )}
+                  {dollarRisk != null && dollarRisk > 0 && (
+                    <div>
+                      <span style={{ color: '#475569' }}>Risk </span>
+                      <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>-${dollarRisk.toFixed(0)}</span>
+                    </div>
+                  )}
+                  {breakEvenSuggestion && (
+                    <span style={{ color: '#fbbf24', fontSize: '10px', fontWeight: 600 }}>
+                      ↑ Move stop to breakeven (${effectiveEntry.toFixed(2)})
+                    </span>
+                  )}
+                  {trailSuggestion && suggestedStop != null && (
+                    <span style={{ color: '#fbbf24', fontSize: '10px', fontWeight: 600 }}>
+                      ↑ Trail stop to ${suggestedStop}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Notes */}
         {plan.notes && (
           <div style={{ fontSize: '11px', color: '#475569', lineHeight: 1.4, marginBottom: '8px', borderLeft: '2px solid #1e293b', paddingLeft: '8px' }}>
@@ -648,6 +730,26 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
               >
                 🔔 {hasAlerts ? `Alerts (${alertCount})` : 'Set Alerts'}
               </button>
+            )}
+            {plan.stage === 'active' && plan.trading_style && (
+              <span style={{
+                fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px', letterSpacing: '0.06em', marginLeft: '2px',
+                color: plan.trading_style === 'SHORT' ? '#f87171' : plan.trading_style === 'LONG' ? '#4ade80' : plan.trading_style === 'GROWTH' ? '#a78bfa' : '#818cf8',
+                background: plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.1)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.1)' : plan.trading_style === 'GROWTH' ? 'rgba(167,139,250,0.1)' : 'rgba(129,140,248,0.1)',
+                border: `1px solid ${plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.25)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.25)' : plan.trading_style === 'GROWTH' ? 'rgba(167,139,250,0.25)' : 'rgba(129,140,248,0.25)'}`,
+              }}>
+                {plan.trading_style}
+              </span>
+            )}
+            {plan.stage === 'active' && signalAlert?.last_signal && (
+              <span style={{
+                fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', letterSpacing: '0.04em', marginLeft: '2px',
+                color: signalAlert.last_signal === 'BUY' ? '#4ade80' : signalAlert.last_signal === 'SELL' ? '#f87171' : signalAlert.last_signal === 'WAIT' ? '#fbbf24' : '#94a3b8',
+                background: signalAlert.last_signal === 'BUY' ? 'rgba(74,222,128,0.1)' : signalAlert.last_signal === 'SELL' ? 'rgba(239,68,68,0.1)' : signalAlert.last_signal === 'WAIT' ? 'rgba(251,191,36,0.1)' : 'rgba(148,163,184,0.08)',
+                border: `1px solid ${signalAlert.last_signal === 'BUY' ? 'rgba(74,222,128,0.3)' : signalAlert.last_signal === 'SELL' ? 'rgba(239,68,68,0.3)' : signalAlert.last_signal === 'WAIT' ? 'rgba(251,191,36,0.3)' : 'rgba(148,163,184,0.15)'}`,
+              }}>
+                {signalAlert.last_signal}
+              </span>
             )}
           </div>
           <span style={{ fontSize: '10px', color: '#334155' }}>{relDate(plan.updated_at)}</span>
@@ -717,6 +819,7 @@ export default function BoardPage() {
   const [dragOverStage, setDragOverStage] = useState<Stage | null>(null);
   type FillTarget = { id: number; defaultPrice: number | null };
   const [fillTarget, setFillTarget] = useState<FillTarget | null>(null);
+  const [closeConfirmId, setCloseConfirmId] = useState<number | null>(null);
 
   // Fetch live prices for board symbols only, refresh every 60 s
   const boardSymbols = useMemo(() => [...new Set((data ?? []).map(p => p.symbol))], [data]);
@@ -753,7 +856,19 @@ export default function BoardPage() {
       setFillTarget({ id, defaultPrice: livePriceMap[plan?.symbol ?? '']?.price ?? plan?.entry_price ?? null });
       return;
     }
+    // UI-5: confirm before marking a trade closed (irreversible PnL record)
+    if (stage === 'closed') {
+      setCloseConfirmId(id);
+      return;
+    }
     await api.updateBoardPlan(id, { stage });
+    mutate();
+  }
+
+  async function handleCloseConfirmed() {
+    if (closeConfirmId == null) return;
+    await api.updateBoardPlan(closeConfirmId, { stage: 'closed' });
+    setCloseConfirmId(null);
     mutate();
   }
 
@@ -811,8 +926,8 @@ export default function BoardPage() {
     const worst = Math.min(...returns);
 
     // Per-style breakdown
-    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80' };
-    const styleBreakdown = (['SHORT', 'SWING', 'LONG'] as const)
+    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa' };
+    const styleBreakdown = (['SHORT', 'SWING', 'LONG', 'GROWTH'] as const)
       .map(style => {
         const group = closed.filter(p => p.trading_style === style);
         if (group.length === 0) return null;
@@ -909,6 +1024,55 @@ export default function BoardPage() {
         ))}
       </div>
 
+      {/* TB-5: Active positions live summary bar */}
+      {byStage.active.length > 0 && (() => {
+        const activeWithEntry = byStage.active.filter(p => (p.actual_entry_price ?? p.entry_price) != null);
+        if (activeWithEntry.length === 0) return null;
+
+        let totalPnl = 0, totalRisk = 0, pnlCount = 0, riskCount = 0, breachCount = 0, nearTargetCount = 0;
+        for (const p of activeWithEntry) {
+          const lp = livePriceMap[p.symbol];
+          const entry = p.actual_entry_price ?? p.entry_price!;
+          const gpj = p.game_plan as StoredGamePlan | null;
+          const stop = p.stop_loss ?? gpj?.stop_loss?.price ?? null;
+          const target = p.take_profit ?? gpj?.take_profit?.price ?? null;
+          if (lp && p.shares) { totalPnl += (lp.price - entry) * p.shares; pnlCount++; }
+          if (stop != null && p.shares) { totalRisk += Math.max(0, (entry - stop) * p.shares); riskCount++; }
+          if (lp && stop != null && lp.price < stop) breachCount++;
+          if (lp && target != null && lp.price >= target * 0.98) nearTargetCount++;
+        }
+
+        return (
+          <div style={{ marginBottom: '16px', padding: '8px 14px', borderRadius: '8px', background: '#080f1e', border: '1px solid #1e293b', display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>ACTIVE {activeWithEntry.length}</span>
+            {pnlCount > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ fontSize: '10px', color: '#475569' }}>Unrealized P&amp;L</span>
+                <span style={{ fontSize: '14px', fontWeight: 800, fontFamily: 'monospace', color: totalPnl >= 0 ? '#4ade80' : '#f87171' }}>
+                  {totalPnl >= 0 ? '+' : ''}${Math.abs(totalPnl).toFixed(0)}
+                </span>
+              </div>
+            )}
+            {riskCount > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ fontSize: '10px', color: '#475569' }}>Total Risk</span>
+                <span style={{ fontSize: '14px', fontWeight: 800, fontFamily: 'monospace', color: '#f87171' }}>-${totalRisk.toFixed(0)}</span>
+              </div>
+            )}
+            {breachCount > 0 && (
+              <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                ⚠ {breachCount} stop breached
+              </span>
+            )}
+            {nearTargetCount > 0 && (
+              <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.25)' }}>
+                ↑ {nearTargetCount} near target
+              </span>
+            )}
+          </div>
+        );
+      })()}
+
       {fillTarget && (
         <FillModal
           defaultPrice={fillTarget.defaultPrice}
@@ -916,6 +1080,33 @@ export default function BoardPage() {
           onSkip={handleFillSkip}
         />
       )}
+
+      {/* UI-5: close confirmation modal */}
+      {closeConfirmId != null && (() => {
+        const closePlan = (data ?? []).find(p => p.id === closeConfirmId);
+        return (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+            <div onClick={() => setCloseConfirmId(null)} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(6px)' }} />
+            <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '360px', borderRadius: '14px', background: 'linear-gradient(160deg,#0d1424 0%,#090e1a 100%)', border: '1px solid rgba(239,68,68,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.6)', padding: '24px 24px 20px' }}>
+              <div style={{ height: '3px', background: 'linear-gradient(90deg,#ef4444,#f87171)', borderRadius: '2px', marginBottom: '18px' }} />
+              <div style={{ fontSize: '15px', fontWeight: 700, color: '#f1f5f9', marginBottom: '8px' }}>
+                Close trade{closePlan ? ` · ${closePlan.symbol}` : ''}?
+              </div>
+              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '20px', lineHeight: 1.5 }}>
+                This will move the trade to <span style={{ color: '#94a3b8' }}>Closed</span>. Record an exit price on the card afterwards to log your P&amp;L.
+              </div>
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                <button onClick={() => setCloseConfirmId(null)} style={{ padding: '7px 16px', borderRadius: '6px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', fontSize: '12px', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+                <button onClick={handleCloseConfirmed} style={{ padding: '7px 18px', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.4)', background: 'rgba(239,68,68,0.12)', color: '#f87171', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>
+                  Close trade
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {isLoading && <div style={{ color: '#475569', fontSize: '13px', padding: '40px 0', textAlign: 'center' }}>Loading board…</div>}
 

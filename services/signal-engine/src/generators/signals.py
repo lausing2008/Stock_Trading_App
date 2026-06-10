@@ -243,12 +243,13 @@ def _fetch_earnings_beat_rate(symbol: str) -> float | None:
     return None
 
 
-def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
-    """Return (rs_score 0-100, rs_rank) vs the stock's sector ETF.
+def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None, bool | None]:
+    """Return (rs_score 0-100, rs_rank, sector_etf_above_sma50) vs the stock's sector ETF.
 
     Fetches the stock's sector from market-data, maps to the matching SPDR ETF
-    (or ^HSI for HK stocks), then computes the 20-day return ratio.
-    Returns (None, None) on any failure.
+    (or ^HSI for HK stocks), then computes the 20-day return ratio and whether
+    the ETF is currently above its 50-day SMA (SA-16 sector trend filter).
+    Returns (None, None, None) on any failure.
     """
     _SECTOR_ETF = {
         "Technology": "XLK", "Health Care": "XLV", "Healthcare": "XLV",
@@ -265,28 +266,36 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None]:
         with httpx.Client(timeout=8) as c:
             r = c.get(url)
             if r.status_code != 200:
-                return None, None
+                return None, None, None
         info = r.json()
         market = info.get("market", "US")
         sector = info.get("sector") or ""
         etf_ticker = "^HSI" if str(market).upper() == "HK" else _SECTOR_ETF.get(sector, "SPY")
 
-        stock_hist = yf.Ticker(symbol).history(period="2mo")
-        etf_hist   = yf.Ticker(etf_ticker).history(period="2mo")
+        stock_hist = yf.Ticker(symbol).history(period="3mo")
+        etf_hist   = yf.Ticker(etf_ticker).history(period="3mo")
         if stock_hist.empty or len(stock_hist) < 21:
-            return None, None
+            return None, None, None
         if etf_hist.empty or len(etf_hist) < 21:
-            return None, None
+            return None, None, None
 
         stock_ret = float(stock_hist["Close"].iloc[-1] / stock_hist["Close"].iloc[-21] - 1)
         etf_ret   = float(etf_hist["Close"].iloc[-1] / etf_hist["Close"].iloc[-21] - 1)
         if abs(1 + etf_ret) < 0.01:
-            return None, None
+            return None, None, None
         rs_rank = (1 + stock_ret) / (1 + etf_ret)
         rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
-        return round(rs_score, 1), round(rs_rank, 4)
+
+        # SA-16: sector ETF trend — above 50-day SMA means sector is in an uptrend
+        etf_close = etf_hist["Close"]
+        etf_sma50 = etf_close.rolling(50).mean().iloc[-1] if len(etf_close) >= 50 else None
+        sector_etf_above_sma50: bool | None = None
+        if etf_sma50 is not None and not pd.isna(etf_sma50):
+            sector_etf_above_sma50 = bool(etf_close.iloc[-1] > etf_sma50)
+
+        return round(rs_score, 1), round(rs_rank, 4), sector_etf_above_sma50
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def _fetch_news_sentiment(symbol: str) -> float | None:
@@ -553,6 +562,70 @@ def _sr_context(df: pd.DataFrame) -> dict:
     }
 
 
+def _pullback_recovery(df: pd.DataFrame) -> tuple[float, dict]:
+    """SA-14: Detect healthy pullback + recovery patterns.
+
+    A bullish pullback-recovery requires:
+      1. Price pulled back 5–25 % below its 20-day high (healthy dip, not broken).
+      2. At least 2 consecutive green closes (recovery momentum confirmed).
+      3. Volume on the most recent bar ≥ 110 % of 20-day average (conviction).
+
+    Returns (score_delta, reasons_dict). Delta is 0.04–0.07 added to the
+    normalised TA score when all conditions are met.
+    """
+    close  = df["close"].astype(float)
+    volume = df["volume"].astype(float)
+    reasons: dict = {}
+
+    if len(close) < 22:
+        reasons["pullback_recovery"] = None
+        return 0.0, reasons
+
+    # Use yesterday's rolling high to avoid look-ahead on today's bar
+    high_20d = close.iloc[:-1].rolling(20).max().iloc[-1]
+    current  = close.iloc[-1]
+
+    if pd.isna(high_20d) or high_20d <= 0:
+        reasons["pullback_recovery"] = None
+        return 0.0, reasons
+
+    pullback_pct = float((high_20d - current) / high_20d)
+    reasons["pullback_depth_pct"] = round(pullback_pct * 100, 1)
+
+    # Condition 1: meaningful pullback (5–25 %)
+    if not (0.05 <= pullback_pct <= 0.25):
+        reasons["pullback_recovery"] = None
+        return 0.0, reasons
+
+    # Condition 2: 2+ consecutive green closes
+    consecutive_green = 0
+    for i in range(-1, -5, -1):
+        try:
+            if close.iloc[i] > close.iloc[i - 1]:
+                consecutive_green += 1
+            else:
+                break
+        except IndexError:
+            break
+
+    reasons["pullback_green_days"] = consecutive_green
+
+    if consecutive_green < 2:
+        reasons["pullback_recovery"] = "no_recovery_yet"
+        return 0.0, reasons
+
+    # Condition 3: volume expansion on recovery
+    vol_avg = volume.rolling(20).mean().iloc[-1]
+    vol_confirms = bool(
+        not pd.isna(vol_avg) and vol_avg > 0 and volume.iloc[-1] > vol_avg * 1.10
+    )
+    reasons["pullback_vol_confirms"] = vol_confirms
+
+    delta = 0.07 if vol_confirms else 0.04
+    reasons["pullback_recovery"] = "confirmed_vol" if vol_confirms else "confirmed"
+    return delta, reasons
+
+
 def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float, list[str]]:
     """Returns (probability adjustment, list of active pattern names).
 
@@ -629,15 +702,26 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     reasons["stoch_rsi_overbought"] = stoch_overbought
     reasons["stoch_rsi_cross_up"]   = stoch_cross_up
 
-    # ── RSI divergence (10-bar lookback) ─────────────────────────────────
+    # ── RSI divergence (peak-to-peak, 20-bar window) ─────────────────────
+    # Use peak comparison rather than raw point-in-time levels so that stocks
+    # in sustained uptrends with mean-reverting RSI don't falsely trigger bearish divergence.
     rsi_divergence = "none"
-    if len(rsi.dropna()) >= 11 and len(close) >= 11:
-        price_higher = bool(close.iloc[-1] > close.iloc[-11])
-        rsi_higher   = bool(rsi.iloc[-1]   > rsi.iloc[-11])
-        if price_higher and not rsi_higher:
-            rsi_divergence = "bearish"
-        elif not price_higher and rsi_higher:
-            rsi_divergence = "bullish"
+    _div_window = 20
+    if len(rsi.dropna()) >= _div_window and len(close) >= _div_window:
+        _price_w = close.iloc[-_div_window:]
+        _rsi_w   = rsi.iloc[-_div_window:]
+        _price_peak_idx = int(_price_w.argmax())
+        _rsi_peak_idx   = int(_rsi_w.argmax())
+        # Bearish divergence: price peaks later (or same) while RSI peaked earlier
+        # Only fire if peaks are meaningfully separated (≥5 bars) to avoid noise
+        if _price_peak_idx > _rsi_peak_idx + 4:
+            # Price still making new highs after RSI has turned — momentum fading
+            if _price_w.iloc[-1] >= _price_w.iloc[_price_peak_idx] * 0.98:
+                rsi_divergence = "bearish"
+        elif _rsi_peak_idx > _price_peak_idx + 4:
+            # RSI recovers while price still low — hidden bullish divergence
+            if _rsi_w.iloc[-1] >= _rsi_w.iloc[_rsi_peak_idx] * 0.90:
+                rsi_divergence = "bullish"
     reasons["rsi_divergence"] = rsi_divergence
 
     # ── MACD histogram + zero-line crossover ──────────────────────────────
@@ -694,10 +778,14 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     w = _load_ta_weights()
     score = 0.0
 
-    if above_sma50:         score += w["above_sma50"]
-    if sma50_above_sma200:  score += w["sma50_above_sma200"]
-    if golden_cross_event:  score += w["golden_cross_event"]
-    if death_cross_event:   score -= w["death_cross_penalty"]
+    # SA-15: volume_z used for confirmation weighting (safe float)
+    _vz = float(reasons.get("volume_z") or 0.0)
+
+    if above_sma50:        score += w["above_sma50"]
+    if sma50_above_sma200: score += w["sma50_above_sma200"]
+    # SA-15: golden cross on shrinking volume is unreliable — half credit
+    if golden_cross_event: score += w["golden_cross_event"] * (1.0 if _vz > 0.5 else 0.5)
+    if death_cross_event:  score -= w["death_cross_penalty"]
 
     if rsi_val is not None:
         if 45 < rsi_val < 65:    score += w["rsi_sweet_spot"]
@@ -708,12 +796,20 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     elif stoch_overbought:  score -= w["stoch_overbought_penalty"]
     if stoch_cross_up:      score += w["stoch_cross_up"]
 
-    if rsi_divergence == "bearish":   score -= w["rsi_divergence_bearish_penalty"]
-    elif rsi_divergence == "bullish": score += w["rsi_divergence_bullish"]
+    # SA-15: divergence weighted by volume confirmation
+    if rsi_divergence == "bearish":
+        # High volume on a divergence day CONFIRMS price move, making bearish divergence LESS reliable
+        # Low/declining volume = divergence is more meaningful → full penalty
+        score -= w["rsi_divergence_bearish_penalty"] * (0.5 if _vz > 0.3 else 1.0)
+    elif rsi_divergence == "bullish":
+        # Bullish divergence requires volume to be credible
+        score += w["rsi_divergence_bullish"] * (1.0 if _vz > 0.3 else 0.5)
 
     if macd_hist > 0 and macd_rising:  score += w["macd_strong"]
     elif macd_hist > 0:                score += w["macd_positive"]
-    if macd_zero_cross_up:             score += w["macd_zero_cross_up"]
+    # SA-17: MACD zero-cross gets full credit only when price is above SMA50
+    if macd_zero_cross_up:
+        score += w["macd_zero_cross_up"] * (1.0 if above_sma50 else 0.4)
 
     if 0.2 < bb_pct_b < 0.8:   score += w["bb_mid_zone"]
 
@@ -728,7 +824,13 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     _TA_MAX_SCORE = sum(v for k, v in w.items() if not k.endswith("_penalty"))
     if _TA_MAX_SCORE <= 0:
         return 0.5, reasons  # degenerate calibration; return neutral
-    return float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0)), reasons
+    base = float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0))
+
+    # SA-14: pullback + recovery boost applied after normalisation
+    pr_delta, pr_reasons = _pullback_recovery(df)
+    reasons.update(pr_reasons)
+
+    return float(np.clip(base + pr_delta, 0.0, 1.0)), reasons
 
 
 # ── Trading Style Profiles ────────────────────────────────────────────────────
@@ -802,9 +904,9 @@ _STYLE_PROFILES: dict[str, dict] = {
     #   - No weekly BUY gate: weekly RSI can be high without being a sell signal for growth names
     "GROWTH": {
         "ml_weight_cap": 0.70,
-        "buy_threshold":  {"bull": 0.60, "high_vol": 0.68, "bear": 0.70, "unknown": 0.60},
-        "hold_threshold": {"bull": 0.48, "high_vol": 0.52, "bear": 0.54, "unknown": 0.48},
-        "adx_min": 18, "adx_compression": 0.92,
+        "buy_threshold":  {"bull": 0.57, "high_vol": 0.65, "bear": 0.68, "unknown": 0.57},
+        "hold_threshold": {"bull": 0.45, "high_vol": 0.50, "bear": 0.52, "unknown": 0.45},
+        "adx_min": 12, "adx_compression": 0.92,
         "high_vol_compression": 0.88,
         "breadth_compression": 0.95,
         "weekly_boost": 1.08, "weekly_compress": 0.92,
@@ -831,7 +933,7 @@ def _growth_ta_adjustment(df: pd.DataFrame, base_reasons: dict) -> float:
     sma20 = close.rolling(20).mean().iloc[-1]
     sma50 = close.rolling(50).mean().iloc[-1]
     if not pd.isna(sma20) and not pd.isna(sma50) and sma20 > sma50:
-        delta += 0.06  # short-term uptrend replaces the SMA50>SMA200 structural check
+        delta += 0.10  # replaces SMA50>SMA200 at equal weight — growth names live above SMA20>SMA50
     rsi_val = base_reasons.get("rsi")
     if rsi_val is not None:
         if 72 <= rsi_val <= 85:
@@ -887,6 +989,7 @@ def _apply_style_signal(
     is_stale: bool,
     base_reasons: dict,
     earnings_beat_rate: float | None = None,
+    sector_etf_above_sma50: bool | None = None,
 ) -> "AIConfidence":
     """Apply style-specific fusion and filters from shared base values.
 
@@ -900,11 +1003,15 @@ def _apply_style_signal(
     # ── ML / TA fusion with style-specific ML weight cap ─────────────────────
     if ml_prob is not None:
         ml_prob_c = float(np.clip(ml_prob, 0.05, 0.95))
-        if ml_test_auc < 0.52:
-            # Near-random model (AUC < 0.52) — fall back to TA-only to avoid corrupting fused signal
+        if ml_test_auc < 0.50:
+            # Truly random or inverse model — zero weight
             raw_w = 0.0
+        elif ml_test_auc < 0.55:
+            # Ramp from 0 at AUC=0.50 to 0.20 at AUC=0.55 — weak model gets low influence
+            raw_w = float((ml_test_auc - 0.50) / 0.05 * 0.20)
         else:
-            raw_w = float(np.clip(0.40 + (ml_test_auc - 0.50) / 0.20 * 0.35, 0.40, 0.75))
+            # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
+            raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
         ml_w  = min(raw_w, p["ml_weight_cap"])
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
@@ -926,6 +1033,24 @@ def _apply_style_signal(
         reasons["ml_weight"] = 0.0
 
     fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── SA-18: Blend weekly TA score into fused probability (SWING/LONG only) ─
+    # Daily signals can fire on short-term noise that contradicts the medium-term
+    # weekly picture. For SWING/LONG, shift 15% weight to the weekly TA composite
+    # score so the fused probability always reflects both timeframes.
+    # weekly_score of 0.5 = neutral; the blend gently pulls toward weekly bias.
+    # GROWTH and SHORT are excluded: SHORT is pure daily momentum; GROWTH uses
+    # a different weekly gate (skip_weekly_gate=True).
+    weekly_score_blend = weekly_tech.get("weekly_score", 0.5)
+    if style_key in ("SWING", "LONG") and weekly_tech.get("weekly_rsi") is not None:
+        wc = weekly_tech.get("weekly_confidence", 1.0)
+        blend_weight = 0.15 * wc  # scale blend by data confidence (SA-4 convention)
+        fused = fused * (1.0 - blend_weight) + weekly_score_blend * blend_weight
+        reasons["weekly_blend_applied"] = True
+    else:
+        reasons["weekly_blend_applied"] = False
+    fused = float(np.clip(fused, 0.0, 1.0))
+
     fused_before_filters = fused  # snapshot before compression — used for cap enforcement
 
     # ── Weekly multi-timeframe alignment ──────────────────────────────────────
@@ -1041,6 +1166,19 @@ def _apply_style_signal(
         reasons["rs_flag"] = "lagging_sector"
     elif rs_rank is not None:
         reasons["rs_flag"] = "in_line_or_leading"
+    fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── SA-16: Sector ETF trend filter (SWING/LONG only) ──────────────────────
+    # When the stock's sector ETF is below its 50-day SMA the whole sector is
+    # in a structural downtrend. A stock bucking that trend alone faces higher
+    # mean-reversion risk, so we compress the signal 15% toward neutral.
+    # GROWTH and SHORT are exempt: growth names lead their sector, and SHORT is
+    # purely momentum-driven and unaffected by sector-level trend.
+    if style_key in ("SWING", "LONG") and sector_etf_above_sma50 is False:
+        fused = 0.5 + (fused - 0.5) * 0.85
+        reasons["sector_headwind"] = True
+    else:
+        reasons["sector_headwind"] = False
     fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── Options flow ──────────────────────────────────────────────────────────
@@ -1185,7 +1323,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     days_to_earnings = _fetch_earnings_proximity(symbol)
     earnings_beat_rate = _fetch_earnings_beat_rate(symbol)
     news_sentiment = _fetch_news_sentiment(symbol)
-    rs_score, rs_rank = _fetch_relative_strength(symbol)
+    rs_score, rs_rank, sector_etf_above_sma50 = _fetch_relative_strength(symbol)
     options_sentiment, cp_ratio = _fetch_options_flow(symbol)
     patterns = _fetch_patterns_from_ta(symbol)
     pattern_adj, active_patterns = _pattern_score_adjustment(patterns, len(df))
@@ -1212,8 +1350,9 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["pattern_adjustment"] = round(pattern_adj, 3)
     reasons["days_to_earnings"]   = days_to_earnings
     reasons["news_sentiment"]     = news_sentiment
-    reasons["rs_score"]           = rs_score
-    reasons["rs_rank"]            = rs_rank
+    reasons["rs_score"]                = rs_score
+    reasons["rs_rank"]                 = rs_rank
+    reasons["sector_etf_above_sma50"]  = sector_etf_above_sma50
     reasons["options_sentiment"]  = options_sentiment
     reasons["options_cp_ratio"]   = round(cp_ratio, 2) if cp_ratio is not None else None
     reasons["kscore"]             = kscore
@@ -1249,6 +1388,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             is_stale=is_stale,
             base_reasons=reasons,
             earnings_beat_rate=earnings_beat_rate,
+            sector_etf_above_sma50=sector_etf_above_sma50,
         )
 
     return {k: _make_signal(k) for k in ("SHORT", "SWING", "LONG", "GROWTH")}

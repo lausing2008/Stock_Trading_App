@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import MarketClosedBanner from '@/components/MarketClosedBanner';
 import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem } from '@/lib/api';
 import { storage } from '@/lib/storage';
 import { getSignalStyle } from '@/lib/settings';
@@ -154,10 +155,11 @@ function AlertModal({ symbol, price, existingAlerts, hasEmail, onAdd, onDelete, 
 
 /* ── Create watchlist modal ─────────────────────────────── */
 const STYLE_OPTS = [
-  { value: null,    label: 'Global default', desc: 'Follows your Settings → Trading Style', color: '#475569' },
-  { value: 'SHORT', label: 'Short Term',      desc: '1–5 days · pure TA',                   color: '#f87171' },
-  { value: 'SWING', label: 'Swing Trade',     desc: '5–20 days · balanced',                 color: '#818cf8' },
-  { value: 'LONG',  label: 'Long Term',       desc: '30–90 days · fundamentals',            color: '#4ade80' },
+  { value: null,     label: 'Global default',    desc: 'Follows your Settings → Trading Style', color: '#475569' },
+  { value: 'SHORT',  label: 'Short Term',         desc: '1–5 days · pure TA',                   color: '#f87171' },
+  { value: 'SWING',  label: 'Swing Trade',        desc: '5–20 days · balanced',                 color: '#818cf8' },
+  { value: 'LONG',   label: 'Long Term',          desc: '30–90 days · fundamentals',            color: '#4ade80' },
+  { value: 'GROWTH', label: 'Growth / Momentum',  desc: 'Relaxed thresholds for high-vol AI/tech stocks', color: '#a78bfa' },
 ] as const;
 
 function CreateWatchlistModal({ onSave, onClose }: { onSave: (name: string, style: string | null) => Promise<void>; onClose: () => void }) {
@@ -528,7 +530,15 @@ export default function Watchlist() {
     { revalidateOnFocus: false },
   );
 
-  useEffect(() => { setNotes(loadNotes()); }, []);
+  // UI-2: seed notes from API response (backend is source of truth; localStorage is a cache)
+  useEffect(() => {
+    const local = loadNotes();
+    const api_notes: Record<string, string> = {};
+    for (const item of data ?? []) {
+      if (item.note) api_notes[item.symbol] = item.note;
+    }
+    setNotes({ ...local, ...api_notes });
+  }, [data]);
 
   const alertMap = useMemo(() => {
     const m: Record<string, PriceAlert[]> = {};
@@ -602,7 +612,10 @@ export default function Watchlist() {
   function saveNote(symbol: string, val: string) {
     const next = { ...notes, [symbol]: val };
     if (!val) delete next[symbol];
-    setNotes(next); saveNotes(next);
+    setNotes(next);
+    saveNotes(next); // optimistic localStorage cache
+    // UI-2: persist to backend (fire-and-forget; localStorage keeps it usable immediately)
+    api.updateWatchlistNote(symbol, val || null, activeListId ?? undefined).catch(() => {});
   }
   async function handleAddAlert(symbol: string, target: number, dir: 'above' | 'below') {
     try {
@@ -725,6 +738,7 @@ export default function Watchlist() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <MarketClosedBanner />
 
       {/* Alert toast */}
       {alertToast && (
@@ -736,10 +750,33 @@ export default function Watchlist() {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
         <h1 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>Watchlist</h1>
-        <button onClick={handleRefresh} disabled={refreshing} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: refreshing ? '#818cf8' : '#64748b', cursor: 'pointer', fontSize: '13px' }}>
-          <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {/* UI-3: CSV export */}
+          <button
+            onClick={() => {
+              const rows = visible;
+              if (!rows.length) return;
+              const headers = ['Symbol', 'Name', 'Sector', 'Market', 'Exchange', 'Note', 'Added'];
+              const lines = [headers.join(','), ...rows.map(item => [
+                item.symbol, `"${(item.name ?? '').replace(/"/g, '""')}"`,
+                item.sector ?? '', item.market, item.exchange,
+                `"${(notes[item.symbol] ?? '').replace(/"/g, '""')}"`,
+                item.added_at.slice(0, 10),
+              ].join(','))];
+              const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+              const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+              a.download = `watchlist-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+            }}
+            style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '7px 12px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: '#64748b', cursor: 'pointer', fontSize: '12px' }}
+            title="Export CSV"
+          >
+            ↓ CSV
+          </button>
+          <button onClick={handleRefresh} disabled={refreshing} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: refreshing ? '#818cf8' : '#64748b', cursor: 'pointer', fontSize: '13px' }}>
+            <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* Watchlist tabs */}
@@ -748,7 +785,7 @@ export default function Watchlist() {
           const isActive = list.id === resolvedListId;
           const styleOpt = STYLE_OPTS.find(o => o.value === list.trading_style);
           const styleColor = styleOpt?.color ?? '#334155';
-          const CYCLE = [null, 'SHORT', 'SWING', 'LONG'] as const;
+          const CYCLE = [null, 'SHORT', 'SWING', 'LONG', 'GROWTH'] as const;
           async function cycleStyle() {
             const idx = CYCLE.indexOf(list.trading_style as typeof CYCLE[number]);
             const next = CYCLE[(idx + 1) % CYCLE.length];
@@ -917,7 +954,7 @@ export default function Watchlist() {
 
                 {/* Top row: symbol + price */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
-                  <Link href={`/stock/${item.symbol}`} style={{ fontWeight: 700, fontSize: '17px', letterSpacing: '-0.01em', color: '#f1f5f9' }}>{item.symbol}</Link>
+                  <Link href={`/stock/${item.symbol}${activeList?.trading_style ? `?style=${activeList.trading_style}` : ''}`} style={{ fontWeight: 700, fontSize: '17px', letterSpacing: '-0.01em', color: '#f1f5f9' }}>{item.symbol}</Link>
                   <div style={{ textAlign: 'right' }}>
                     {lp ? (<>
                       <div style={{ fontWeight: 600, fontSize: '14px', color: '#f1f5f9' }}>

@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import useSWR from 'swr';
 import RankingsTable from '@/components/RankingsTable';
+import MarketClosedBanner from '@/components/MarketClosedBanner';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import { api, type Stock, type WatchlistItem, type LatestPrice, type RankingRow, type SignalSummary, type TradePlan } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
@@ -79,6 +80,7 @@ export default function RankingsPage() {
 
   return (
     <div>
+      <MarketClosedBanner />
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold">Rankings</h1>
         <div className="flex gap-2 text-sm items-center">

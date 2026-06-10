@@ -15,6 +15,7 @@ import json
 
 import numpy as np
 import optuna
+from optuna.pruners import MedianPruner
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
@@ -23,7 +24,7 @@ from xgboost import XGBClassifier
 from common.logging import get_logger
 
 from ..features import build_features, compute_label_threshold, fetch_macro_features
-from .trainer import _load_prices, _params_path, _recency_weights, train_model
+from .trainer import _blend_weights, _load_prices, _params_path, _recency_weights, train_model
 
 log = get_logger("tuner")
 
@@ -100,23 +101,33 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
         )
         tscv = TimeSeriesSplit(n_splits=5)
         aucs: list[float] = []
-        for tr_idx, val_idx in tscv.split(X_arr):
+        for fold, (tr_idx, val_idx) in enumerate(tscv.split(X_arr)):
             X_tr, X_val = X_arr[tr_idx], X_arr[val_idx]
             y_tr, y_val = y_arr[tr_idx], y_arr[val_idx]
             sc = StandardScaler()
-            # Recency-weighted training so Optuna optimises for recent market behaviour (5× ratio)
-            w = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
+            # ML-FIX-2 + ML-FIX-3: blended weights (recency × balanced class) in tuner too
+            recency_w = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
+            w = _blend_weights(y_tr, recency_w)
             clf.fit(sc.fit_transform(X_tr), y_tr, sample_weight=w, verbose=False)
             preds = clf.predict_proba(sc.transform(X_val))[:, 1]
             if len(np.unique(y_val)) > 1:
                 aucs.append(roc_auc_score(y_val, preds))
+
+            # ML-FIX-3: report running mean so MedianPruner can kill weak trials early
+            if aucs:
+                trial.report(-float(np.mean(aucs)), step=fold)
+                if trial.should_prune():
+                    raise optuna.exceptions.TrialPruned()
 
         # Return a large positive value (bad objective) when no fold produced a valid AUC.
         # Optuna minimises, so 1.0 (= AUC of 0.0 inverted) is correctly worse than
         # any real model's objective (which is negative for AUC > 0).
         return -float(np.mean(aucs)) if aucs else 1.0
 
-    study = optuna.create_study(direction="minimize")
+    # ML-FIX-3: MedianPruner kills trials that are below the median after 10 startup trials.
+    # n_warmup_steps=2 means the first 2 folds are never pruned (not enough data for the pruner).
+    pruner = MedianPruner(n_startup_trials=10, n_warmup_steps=2)
+    study = optuna.create_study(direction="minimize", pruner=pruner)
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
     best_params = study.best_params

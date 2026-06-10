@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import spearmanr
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import (
     accuracy_score, f1_score, precision_recall_curve,
@@ -13,6 +14,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_sample_weight
 from sqlalchemy import select
 
 from common.config import get_settings
@@ -144,6 +146,22 @@ def _recency_weights(n: int, newest_to_oldest_ratio: float = 5.0) -> np.ndarray:
     return w / w.mean()
 
 
+def _blend_weights(y: np.ndarray, recency_w: np.ndarray) -> np.ndarray:
+    """ML-FIX-2: Blend recency weights with balanced class weights.
+
+    Combines two sources of importance:
+      - Recency: recent bars reflect current regime better than old bars.
+      - Class balance: minority-class samples (typically bullish) should not
+        be drowned out by the majority class in imbalanced datasets.
+
+    Element-wise product then renormalise to mean=1 so total effective sample
+    size is preserved (consistent with the rest of the training pipeline).
+    """
+    class_w = compute_sample_weight("balanced", y)
+    combined = recency_w * class_w
+    return combined / combined.mean()
+
+
 def train_model(
     symbol: str,
     model_name: str = "xgboost",
@@ -176,7 +194,7 @@ def train_model(
     # Per-symbol volatility-adjusted dead zone (0.5 × expected N-day move)
     label_threshold = compute_label_threshold(df, horizon)
 
-    X, y_dir, _ = build_features(
+    X, y_dir, y_ret = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold
     )
     if len(X) < 200:
@@ -187,9 +205,16 @@ def train_model(
     if hyperparams is None and model_name == "xgboost":
         hyperparams = _load_best_params(symbol)
 
-    # --- Walk-forward CV metrics (5-fold, no data leakage) ---
+    # --- SA-9: Walk-forward OOS metrics (5-fold, no data leakage) ---
+    # Each fold trains on months 1–N, evaluates on month N+1 (true OOS).
+    # IC = Spearman rank correlation between predicted probability and actual
+    # forward return — measures whether the model ranks returns correctly, not
+    # just whether it classifies direction correctly.
     cv_aucs: list[float] = []
     cv_accs: list[float] = []
+    oos_precisions: list[float] = []
+    oos_recalls: list[float] = []
+    oos_ics: list[float] = []
     tscv = TimeSeriesSplit(n_splits=5)
     for tr_idx, val_idx in tscv.split(X):
         X_cv_tr, X_cv_val = X.iloc[tr_idx].values, X.iloc[val_idx].values
@@ -198,15 +223,26 @@ def train_model(
         X_cv_tr_s = sc.fit_transform(X_cv_tr)
         X_cv_val_s = sc.transform(X_cv_val)
 
-        # Recency-weighted training: recent bars matter more (5× ratio adapts faster to regime shifts)
-        cv_weights = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
+        # ML-FIX-2: recency + balanced class weights combined
+        cv_recency = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
+        cv_weights = _blend_weights(y_cv_tr, cv_recency)
         cv_model = get_model(model_name, **(hyperparams or {}))
         cv_model.fit(X_cv_tr_s, y_cv_tr, sample_weight=cv_weights)
 
         preds_proba = cv_model.predict_proba(X_cv_val_s)[:, 1]  # positive-class only, shape (n,)
         if len(np.unique(y_cv_val)) > 1:
             cv_aucs.append(roc_auc_score(y_cv_val, preds_proba))
-        cv_accs.append(accuracy_score(y_cv_val, (preds_proba > 0.5).astype(int)))
+        preds_binary = (preds_proba > 0.5).astype(int)
+        cv_accs.append(accuracy_score(y_cv_val, preds_binary))
+        oos_precisions.append(float(precision_score(y_cv_val, preds_binary, zero_division=0)))
+        oos_recalls.append(float(recall_score(y_cv_val, preds_binary, zero_division=0)))
+
+        # IC: Spearman corr between predicted probability and actual return
+        ret_cv_val = y_ret.iloc[val_idx].values
+        if len(ret_cv_val) >= 5:
+            ic, _ = spearmanr(preds_proba, ret_cv_val)
+            if not np.isnan(ic):
+                oos_ics.append(float(ic))
 
     # --- Three-way split: train / calibration / threshold evaluation ---
     # Separating calibration and threshold sets prevents double-dipping:
@@ -230,8 +266,9 @@ def train_model(
     X_cal_s   = scaler.transform(X_cal.values)
     X_test_s  = scaler.transform(X_test.values)
 
-    # Recency weights for final training (5× ratio adapts faster to regime shifts)
-    train_weights = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
+    # ML-FIX-2: recency + balanced class weights blended for final training
+    _recency_w = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
+    train_weights = _blend_weights(y_train.values, _recency_w)
 
     # XGBoost early stopping on calibration set (separate from threshold eval set)
     model = get_model(model_name, early_stopping_rounds=50, **(hyperparams or {}))
@@ -281,22 +318,53 @@ def train_model(
             note="model is near-random; predictions will carry low weight in signal fusion",
         )
 
+    test_auc_val = float(roc_auc_score(y_test, preds)) if len(np.unique(y_test)) > 1 else None
+    overfit_gap_val = round(cv_auc_mean - test_auc_val, 4) if (cv_auc_mean is not None and test_auc_val is not None) else None
+    oos_acc_mean = float(np.mean(cv_accs)) if cv_accs else None
+    oos_ic_mean = round(float(np.mean(oos_ics)), 4) if oos_ics else None
     metrics = {
         "accuracy": float(accuracy_score(y_test, y_pred)),
-        "auc": float(roc_auc_score(y_test, preds)) if len(np.unique(y_test)) > 1 else None,
+        "auc": test_auc_val,
         "precision": float(precision_score(y_test, y_pred, zero_division=0)),
         "recall": float(recall_score(y_test, y_pred, zero_division=0)),
         "f1": float(f1_score(y_test, y_pred, zero_division=0)),
         "buy_threshold": float(buy_threshold),
         "cv_auc_mean": cv_auc_mean,
         "cv_auc_std": float(np.std(cv_aucs)) if cv_aucs else None,
-        "cv_acc_mean": float(np.mean(cv_accs)) if cv_accs else None,
+        "cv_acc_mean": oos_acc_mean,
+        "oos_precision_mean": round(float(np.mean(oos_precisions)), 4) if oos_precisions else None,
+        "oos_recall_mean": round(float(np.mean(oos_recalls)), 4) if oos_recalls else None,
+        "oos_ic_mean": oos_ic_mean,
+        "overfit_gap": overfit_gap_val,
         "n_train": int(len(X_train)),
         "n_cal": int(len(X_cal)),
         "n_test": int(len(X_test)),
         "n_features": len(FEATURE_COLUMNS),
         "label_threshold": label_threshold,
     }
+
+    # SA-9: suppress signals when OOS accuracy < 52% (coin-flip model)
+    oos_suppressed = oos_acc_mean is not None and oos_acc_mean < 0.52
+    if oos_suppressed:
+        log.warning(
+            "train.oos_suppressed",
+            symbol=symbol,
+            oos_acc=round(oos_acc_mean, 4),
+            note="model OOS accuracy < 52%; live predictions will be held at 0.5 (neutral)",
+        )
+
+    # ML-FIX-4: overfitting detection — CV-AUC is measured on in-distribution folds;
+    # test-AUC is the final held-out split. A gap > 0.10 means the model memorised
+    # training patterns that don't generalise to unseen data.
+    if overfit_gap_val is not None and overfit_gap_val > 0.10:
+        log.warning(
+            "train.overfit_detected",
+            symbol=symbol,
+            cv_auc=round(cv_auc_mean, 4),
+            test_auc=round(test_auc_val, 4),
+            gap=overfit_gap_val,
+            note="CV-AUC vs test-AUC gap >0.10; consider reducing max_depth or increasing min_child_weight",
+        )
 
     path = _artifact_path(symbol, model_name)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -310,6 +378,7 @@ def train_model(
         "metrics": metrics,
         "feature_columns": list(FEATURE_COLUMNS),
         "feature_importance": feature_importance,
+        "oos_suppressed": oos_suppressed,
     }, path)
 
     log.info("train.done", symbol=symbol, model=model_name, **{k: v for k, v in metrics.items() if v is not None})
@@ -354,6 +423,18 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     )
     if X.empty:
         return {"symbol": symbol, "bullish_probability": 0.5, "confidence": 0}
+
+    # SA-9: suppress predictions for coin-flip models (OOS accuracy < 52%)
+    if bundle.get("oos_suppressed"):
+        log.warning("predict.oos_suppressed", symbol=symbol,
+                    note="model OOS accuracy <52%; returning neutral 0.5")
+        return {
+            "symbol": symbol, "model": model_name,
+            "bullish_probability": 0.5, "direction": "neutral",
+            "confidence": 0.0, "horizon_days": horizon,
+            "metrics": bundle.get("metrics", {}),
+            "oos_suppressed": True,
+        }
 
     X_aligned = X.reindex(columns=saved_cols, fill_value=0.0).fillna(0.0)
     Xs = scaler.transform(X_aligned.values)

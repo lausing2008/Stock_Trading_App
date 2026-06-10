@@ -274,6 +274,7 @@ class WatchlistItem(Base):
         ForeignKey("watchlists.id", ondelete="CASCADE"), nullable=True, index=True
     )
     added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped["User | None"] = relationship(back_populates="watchlist_items")
     watchlist: Mapped["Watchlist | None"] = relationship(back_populates="items")
@@ -468,3 +469,95 @@ class TradePlan(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship(back_populates="trade_plans")
+
+
+# ── WF-2: Paper Trading Engine ────────────────────────────────────────────────
+
+class PaperPortfolio(Base):
+    """Configuration and running cash balance for an autonomous paper portfolio."""
+    __tablename__ = "paper_portfolios"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="Paper Portfolio")
+    initial_capital: Mapped[float] = mapped_column(Float)
+    current_cash: Mapped[float] = mapped_column(Float)
+    # JSON config — see paper_trading_engine.py _DEFAULT_CONFIG
+    config: Mapped[dict] = mapped_column(JSON)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    trades: Mapped[list["PaperTrade"]] = relationship(back_populates="portfolio", cascade="all, delete-orphan")
+    equity_curve: Mapped[list["PaperEquityCurve"]] = relationship(back_populates="portfolio", cascade="all, delete-orphan")
+
+
+class PaperTrade(Base):
+    """One simulated paper trade — open or closed."""
+    __tablename__ = "paper_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("paper_portfolios.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
+    trading_style: Mapped[str] = mapped_column(String(16), default="GROWTH")  # GROWTH|SWING|LONG|SHORT
+
+    # Entry
+    entry_date: Mapped[date] = mapped_column(Date, index=True)
+    entry_time: Mapped[datetime] = mapped_column(DateTime)
+    entry_price: Mapped[float] = mapped_column(Float)
+    shares: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[float] = mapped_column(Float)    # initial hard stop
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_stop: Mapped[float] = mapped_column(Float)  # trails up
+
+    # Decision quality at entry
+    entry_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entry_decision_notes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    confidence_at_entry: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kscore_at_entry: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rr_ratio_at_entry: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_regime_at_entry: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    entry_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Signal.reasons snapshot
+
+    # Live tracking
+    current_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    highest_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stage: Mapped[str] = mapped_column(String(20), default="open", index=True)  # open|closed
+    hold_days: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Exit (null until closed)
+    exit_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    exit_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pct_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    portfolio: Mapped["PaperPortfolio"] = relationship(back_populates="trades")
+
+    __table_args__ = (
+        Index("ix_paper_trades_portfolio_stage", "portfolio_id", "stage"),
+    )
+
+
+class PaperEquityCurve(Base):
+    """Daily equity snapshots for the paper portfolio equity curve chart."""
+    __tablename__ = "paper_equity_curve"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("paper_portfolios.id", ondelete="CASCADE"), index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    equity: Mapped[float] = mapped_column(Float)             # cash + open position value
+    cash: Mapped[float] = mapped_column(Float)
+    open_positions_value: Mapped[float] = mapped_column(Float, default=0.0)
+    open_positions_count: Mapped[int] = mapped_column(Integer, default=0)
+    spy_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    qqq_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hsi_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    portfolio: Mapped["PaperPortfolio"] = relationship(back_populates="equity_curve")
+
+    __table_args__ = (
+        UniqueConstraint("portfolio_id", "date", name="uq_paper_equity_portfolio_date"),
+    )

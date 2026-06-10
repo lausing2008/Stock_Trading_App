@@ -8,6 +8,7 @@ structlog==24.4.0
 pandas==2.2.2
 numpy==1.26.4
 scikit-learn==1.5.1
+scipy>=1.11
 xgboost==2.1.1
 lightgbm==4.5.0
 torch==2.4.1
