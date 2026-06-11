@@ -26,7 +26,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type Overview, type TradePlan, type EarningsItem } from '@/lib/api';
+import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type WatchlistMeta, type Overview, type TradePlan, type EarningsItem } from '@/lib/api';
 import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 import { askAI, isAiConfigured } from '@/lib/ai';
 import { getSignalStyle } from '@/lib/settings';
@@ -447,16 +447,45 @@ export default function Opportunities() {
   const [outlookStatus, setOutlookStatus] = useState('');
   const [outlookCollapsed, setOutlookCollapsed] = useState(false);
 
+  // Radar watchlist add state
+  const [radarAdding, setRadarAdding] = useState<string | null>(null);
+  const [radarDone, setRadarDone] = useState<Set<string>>(new Set());
+
   const { data: rankData, isLoading } = useSWR('rankings-all', () => api.rankings());
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData } = useSWR('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
-  const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: watchlist, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: watchlists, mutate: mutateWatchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
   const { data: boardData } = useSWR<TradePlan[]>('board', () => api.listBoard());
   const { data: earningsData, isLoading: earningsLoading, error: earningsError } = useSWR<EarningsItem[]>('earnings-14d', () => api.earningsCalendar(14));
 
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
   const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage !== 'closed').map(p => p.symbol) ?? []), [boardData]);
   const earningsSet = useMemo(() => new Set(earningsData?.map(e => e.symbol) ?? []), [earningsData]);
+
+  // Radar watchlist — fetch its contents separately so we know what's already in it
+  const radarList = useMemo(() => watchlists?.find(w => w.name === 'Radar'), [watchlists]);
+  const { data: radarItems, mutate: mutateRadar } = useSWR<WatchlistItem[]>(
+    radarList ? `watchlist-radar-${radarList.id}` : null,
+    () => radarList ? api.listWatchlist(radarList.id) : Promise.resolve([]),
+  );
+  const radarSymbols = useMemo(() => new Set((radarItems ?? []).map(w => w.symbol)), [radarItems]);
+
+  async function addToRadar(symbol: string) {
+    setRadarAdding(symbol);
+    try {
+      let listId = radarList?.id;
+      if (!listId) {
+        const created = await api.createWatchlist('Radar', null);
+        listId = created.id;
+        await mutateWatchlists();
+      }
+      await api.addToWatchlist(symbol, listId);
+      await mutateRadar();
+      setRadarDone(prev => new Set(prev).add(symbol));
+    } catch { /* non-fatal */ }
+    setRadarAdding(null);
+  }
 
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
@@ -1179,21 +1208,45 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                       <span style={{ color: scoreColor(stratScore), fontWeight: 700 }}>{stratScore}</span>
                       <span style={{ color: '#334155' }}> · K{(r.score ?? 0).toFixed(0)}</span>
                     </div>
-                    {/* Bell button */}
-                    <button
-                      onClick={e => { e.preventDefault(); e.stopPropagation(); openAlertPanel(r.symbol); }}
-                      title="Suggest alerts"
-                      style={{
-                        marginTop: '8px', display: 'block', marginLeft: 'auto',
-                        background: panelOpen ? 'rgba(99,102,241,0.2)' : 'transparent',
-                        border: `1px solid ${panelOpen ? 'rgba(99,102,241,0.5)' : '#1e293b'}`,
-                        color: panelOpen ? '#818cf8' : '#334155',
-                        borderRadius: '6px', padding: '4px 8px', fontSize: '13px',
-                        cursor: 'pointer', transition: 'all 0.15s',
-                      }}
-                    >
-                      🔔
-                    </button>
+                    {/* Action buttons row */}
+                    <div style={{ display: 'flex', gap: '4px', marginTop: '8px', justifyContent: 'flex-end' }}>
+                      {/* Add to Radar */}
+                      {(() => {
+                        const inRadar = radarSymbols.has(r.symbol) || radarDone.has(r.symbol);
+                        const adding = radarAdding === r.symbol;
+                        return (
+                          <button
+                            onClick={e => { e.preventDefault(); e.stopPropagation(); if (!inRadar) addToRadar(r.symbol); }}
+                            disabled={adding || inRadar}
+                            title={inRadar ? 'Already on Radar watchlist' : 'Add to Radar watchlist'}
+                            style={{
+                              background: inRadar ? 'rgba(52,211,153,0.12)' : 'transparent',
+                              border: `1px solid ${inRadar ? 'rgba(52,211,153,0.35)' : '#1e293b'}`,
+                              color: inRadar ? '#34d399' : '#334155',
+                              borderRadius: '6px', padding: '4px 8px', fontSize: '12px',
+                              cursor: inRadar ? 'default' : 'pointer', transition: 'all 0.15s',
+                              fontWeight: inRadar ? 700 : 400,
+                            }}
+                          >
+                            {adding ? '…' : inRadar ? '📡 Radar' : '📡'}
+                          </button>
+                        );
+                      })()}
+                      {/* Bell button */}
+                      <button
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); openAlertPanel(r.symbol); }}
+                        title="Suggest alerts"
+                        style={{
+                          background: panelOpen ? 'rgba(99,102,241,0.2)' : 'transparent',
+                          border: `1px solid ${panelOpen ? 'rgba(99,102,241,0.5)' : '#1e293b'}`,
+                          color: panelOpen ? '#818cf8' : '#334155',
+                          borderRadius: '6px', padding: '4px 8px', fontSize: '13px',
+                          cursor: 'pointer', transition: 'all 0.15s',
+                        }}
+                      >
+                        🔔
+                      </button>
+                    </div>
                   </div>
                 </div>
               </Link>
