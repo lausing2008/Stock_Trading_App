@@ -224,6 +224,10 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_signal_outcomes_horizon_correct ON signal_outcomes (horizon, is_correct)"
         ))
+        # alert_mode column added after initial signal_alerts creation
+        conn.execute(text(
+            "ALTER TABLE signal_alerts ADD COLUMN IF NOT EXISTS alert_mode VARCHAR(16) NOT NULL DEFAULT 'all'"
+        ))
 
 
 def _seed_admin() -> None:
@@ -232,12 +236,16 @@ def _seed_admin() -> None:
     except ImportError:
         return  # bcrypt not available in non-auth services
 
+    raw_pw = _settings.admin_password
+    if not raw_pw:
+        return  # no password configured — skip seeding (admin created manually)
+
     with engine.begin() as conn:
         row = conn.execute(
             text("SELECT id FROM users WHERE username = 'lausing'")
         ).fetchone()
         if not row:
-            hashed = _bcrypt.hashpw(b"120402", _bcrypt.gensalt()).decode()
+            hashed = _bcrypt.hashpw(raw_pw.encode(), _bcrypt.gensalt()).decode()
             result = conn.execute(
                 text("""
                     INSERT INTO users (username, password_hash, role, is_active, created_at)

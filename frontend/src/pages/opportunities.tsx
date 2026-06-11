@@ -452,7 +452,7 @@ export default function Opportunities() {
   const { data: signalsData } = useSWR('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
   const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
   const { data: boardData } = useSWR<TradePlan[]>('board', () => api.listBoard());
-  const { data: earningsData } = useSWR<EarningsItem[]>('earnings-14d', () => api.earningsCalendar(14));
+  const { data: earningsData, isLoading: earningsLoading, error: earningsError } = useSWR<EarningsItem[]>('earnings-14d', () => api.earningsCalendar(14));
 
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
   const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage !== 'closed').map(p => p.symbol) ?? []), [boardData]);
@@ -872,7 +872,17 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
       {/* ── End Near-Term Outlook ────────────────────────────────────── */}
 
       {/* ── Earnings This Week ──────────────────────────────────────── */}
-      {earningsThisWeek.length > 0 && (
+      {earningsLoading && (
+        <div style={{ padding: '14px 18px', borderRadius: '14px', border: '1px solid rgba(251,146,60,0.15)', color: '#475569', fontSize: '12px' }}>
+          Loading earnings…
+        </div>
+      )}
+      {earningsError && !earningsLoading && (
+        <div style={{ padding: '14px 18px', borderRadius: '14px', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', fontSize: '12px' }}>
+          Could not load earnings calendar.
+        </div>
+      )}
+      {!earningsLoading && !earningsError && earningsThisWeek.length > 0 && (
         <div style={{
           borderRadius: '14px', border: '1px solid rgba(251,146,60,0.25)',
           background: 'linear-gradient(135deg, rgba(251,146,60,0.04) 0%, rgba(15,23,42,0.95) 100%)',

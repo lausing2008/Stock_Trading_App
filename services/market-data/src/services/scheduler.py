@@ -1129,14 +1129,14 @@ def _weekly_full_refresh() -> None:
     the Optuna tune_all job so Monday's signals use freshly tuned hyperparams.
     tune_all runs in the background inside the ml-prediction container (~2–4 h).
     """
-    all_symbols = _symbols_for("US") + _symbols_for("HK")
-    if not all_symbols:
-        log.info("scheduler.weekly_refresh.skip", reason="no_symbols")
-        _record_job_status("weekly_refresh", "skipped", 0.0)
-        return
-    log.info("scheduler.weekly_refresh_start", count=len(all_symbols))
     _t0 = time.monotonic()
     try:
+        all_symbols = _symbols_for("US") + _symbols_for("HK")
+        if not all_symbols:
+            log.info("scheduler.weekly_refresh.skip", reason="no_symbols")
+            _record_job_status("weekly_refresh", "skipped", 0.0)
+            return
+        log.info("scheduler.weekly_refresh_start", count=len(all_symbols))
         ingest_universe(all_symbols, "1d", force=True)
         _post(f"{_settings.ranking_engine_url}/rankings/refresh")
         _post(f"{_settings.signal_engine_url}/signals/refresh")

@@ -282,8 +282,6 @@ class WatchlistItem(Base):
     user: Mapped["User | None"] = relationship(back_populates="watchlist_items")
     watchlist: Mapped["Watchlist | None"] = relationship(back_populates="items")
 
-    __table_args__ = (UniqueConstraint("user_id", "stock_id", name="uq_watchlist_user_stock"),)
-
 
 class AlertCondition(str, enum.Enum):
     ABOVE = "above"

@@ -1206,9 +1206,11 @@ def short_squeeze(
     # Latest rankings for momentum scores
     today = _sdate.today()
     rank_rows = session.execute(
-        select(Ranking).where(Ranking.as_of >= today - timedelta(days=7))
+        select(Ranking)
+        .where(Ranking.as_of >= today - timedelta(days=7))
+        .order_by(Ranking.stock_id, Ranking.as_of.asc())
     ).scalars().all()
-    rank_map = {rk.stock_id: rk for rk in rank_rows}
+    rank_map = {rk.stock_id: rk for rk in rank_rows}  # last write per stock_id = most recent
     stock_id_map = {s.symbol: s.id for s in stocks}
 
     # Live prices
@@ -1450,7 +1452,7 @@ def get_dividends(symbol: str):
         _get_redis().setex(cache_key, 60 * 60 * 72, json.dumps(data))
         return data
     except Exception as e:
-        return {"symbol": sym, "dividends": [], "error": str(e)}
+        raise HTTPException(status_code=502, detail=f"Failed to fetch dividends for {sym}: {e}")
 
 
 # ── Institutional Holdings ────────────────────────────────────────────────────
@@ -1516,8 +1518,7 @@ def get_institutional(symbol: str):
         _get_redis().setex(cache_key, 60 * 60 * 72, json.dumps(data))
         return data
     except Exception as e:
-        return {"symbol": sym, "held_pct_institutions": None, "held_pct_insiders": None,
-                "major_holders": {}, "institutional_holders": [], "error": str(e)}
+        raise HTTPException(status_code=502, detail=f"Failed to fetch institutional data for {sym}: {e}")
 
 
 @router.get("/conviction")
