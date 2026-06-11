@@ -188,6 +188,9 @@ export default function StockDetail() {
   ];
   const [signalAlertSaving, setSignalAlertSaving] = useState(false);
   const [signalAlertError, setSignalAlertError] = useState('');
+  const [selectedHorizon, setSelectedHorizon] = useState<string>('SWING');
+  // Sync to watchlist style when page loads (pageStyle comes from router.query, may arrive late)
+  useEffect(() => { if (pageStyle) setSelectedHorizon(pageStyle); }, [pageStyle]);
 
   // Game plan state
   type GamePlanEntry = { label: string; price: number; rationale: string };
@@ -1289,21 +1292,62 @@ Return ONLY valid JSON — no markdown, no prose:
 
         {/* Sidebar */}
         <div className="space-y-3">
-          {/* AI Signal — show only the card matching the watchlist style */}
-          {pageStyle === 'SHORT' && shortSignal && <SignalCard signal={shortSignal} />}
-          {pageStyle === 'LONG'  && longSignal  && <SignalCard signal={longSignal} />}
-          {pageStyle === 'GROWTH' && growthSignal && (
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)', padding: '2px 8px', borderRadius: 4, letterSpacing: '0.05em' }}>
-                  GROWTH / MOMENTUM
-                </span>
-                <span style={{ fontSize: 10, color: '#64748b' }}>Relaxed thresholds for high-volatility stocks</span>
+          {/* AI Signal — tabbed horizon switcher */}
+          {(() => {
+            const SIG_C: Record<string, string> = { BUY: '#4ade80', SELL: '#f87171', WAIT: '#fbbf24', HOLD: '#94a3b8' };
+            const HORIZON_COLOR: Record<string, string> = { SHORT: '#38bdf8', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa' };
+            const activeSig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+              ?? (selectedHorizon === 'SWING' ? data.signal : null);
+            return (
+              <div>
+                {/* Horizon tabs */}
+                <div style={{ display: 'flex', gap: 3, marginBottom: 8 }}>
+                  {allHorizonSignals.map(({ label, horizon, sig }) => {
+                    const isActive = selectedHorizon === horizon;
+                    const hColor = HORIZON_COLOR[horizon] ?? '#818cf8';
+                    return (
+                      <button
+                        key={horizon}
+                        onClick={() => setSelectedHorizon(horizon)}
+                        style={{
+                          flex: 1, padding: '5px 4px', borderRadius: 6, border: `1px solid ${isActive ? hColor : '#1e293b'}`,
+                          background: isActive ? `${hColor}18` : 'rgba(255,255,255,0.02)',
+                          cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                        }}
+                      >
+                        <span style={{ fontSize: 9, fontWeight: 700, color: isActive ? hColor : '#475569', letterSpacing: '0.04em' }}>{label}</span>
+                        {sig ? (
+                          <span style={{ fontSize: 10, fontWeight: 800, color: SIG_C[sig.signal] ?? '#475569' }}>{sig.signal}</span>
+                        ) : (
+                          <span style={{ fontSize: 10, color: '#334155' }}>—</span>
+                        )}
+                        {horizon === pageStyle && (
+                          <span style={{ fontSize: 8, color: hColor, opacity: 0.7 }}>watchlist</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Signal card for selected horizon */}
+                {activeSig && (
+                  <div>
+                    {selectedHorizon === 'GROWTH' && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.3)', padding: '2px 8px', borderRadius: 4, letterSpacing: '0.05em' }}>GROWTH / MOMENTUM</span>
+                        <span style={{ fontSize: 10, color: '#64748b' }}>Relaxed thresholds for high-volatility stocks</span>
+                      </div>
+                    )}
+                    <SignalCard signal={activeSig} />
+                  </div>
+                )}
+                {!activeSig && (
+                  <div style={{ padding: '20px', textAlign: 'center', color: '#334155', fontSize: 12, border: '1px solid #1e293b', borderRadius: 8 }}>
+                    Loading {selectedHorizon} signal…
+                  </div>
+                )}
               </div>
-              <SignalCard signal={growthSignal} />
-            </div>
-          )}
-          {(!pageStyle || pageStyle === 'SWING') && data.signal && <SignalCard signal={data.signal} />}
+            );
+          })()}
           {signalHistory && signalHistory.length >= 2 && (
             <ConfidenceTrend history={signalHistory} />
           )}
