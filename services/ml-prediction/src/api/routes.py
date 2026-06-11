@@ -279,8 +279,8 @@ def list_all_metrics(model: str = "xgboost"):
             results.append({
                 "symbol": sym,
                 "model": model,
-                "test_auc": m.get("test_auc"),
-                "cv_auc": m.get("cv_auc"),
+                "test_auc": m.get("auc"),           # bundle stores as "auc", not "test_auc"
+                "cv_auc": m.get("cv_auc_mean"),     # bundle stores as "cv_auc_mean"
                 "accuracy": m.get("accuracy"),
                 "overfit_gap": m.get("overfit_gap"),
                 "buy_threshold": bundle.get("buy_threshold"),
