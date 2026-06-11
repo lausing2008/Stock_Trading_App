@@ -836,6 +836,8 @@ const ITEMS: Item[] = [
   {
     id: 'ui-board-added-badge',
     tier: 4, severity: 'low',
+    defaultStatus: 'done',
+    implementedNote: 'Already live — boardSet (derived from GET /board, stage≠closed) + "✓ On Board" green badge implemented in opportunities.tsx (line 1142) and RankingsTable component. Verified 2026-06-10.',
     title: 'UI-14: Show "Added" badge in Screener/Rankings when stock is already on Trade Board',
     file: 'frontend/src/pages/opportunities.tsx · frontend/src/pages/rankings.tsx',
     effort: '< 1 day',
@@ -1088,6 +1090,8 @@ const ITEMS: Item[] = [
   {
     id: 'tm1-portfolio-metrics',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-10 — _portfolio_risk_metrics() added to paper_portfolio.py; loads full equity curve at summary time; computes annualised Sharpe (rf=5%), max drawdown %, Calmar ratio. Three new StatCards added to paper-portfolio.tsx: Sharpe (green≥1/yellow≥0/red<0), Max Drawdown (green≤10%/yellow≤20%/red>20%), Calmar (green≥1/yellow≥0.5/red<0.5). Returns —  when <2 curve points (new portfolio). PaperPortfolioSummary type in api.ts updated.',
     title: 'TM-1: Professional portfolio metrics — Sharpe, Calmar, max drawdown, benchmark comparison',
     file: 'frontend/src/pages/paper-portfolio.tsx · frontend/src/pages/positions.tsx',
     effort: '2–3 days',

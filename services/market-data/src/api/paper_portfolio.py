@@ -1,4 +1,5 @@
 """WF-2 Paper Portfolio API — read-only views + admin controls."""
+import math
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -11,6 +12,46 @@ from .auth import get_current_user, get_admin_user
 from db.models import User
 
 router = APIRouter(prefix="/paper-portfolio", tags=["paper-portfolio"])
+
+
+def _portfolio_risk_metrics(curve_rows: list) -> dict:
+    """Compute Sharpe, max drawdown, Calmar from equity curve rows (ordered by date)."""
+    equities = [r.equity for r in curve_rows if r.equity and r.equity > 0]
+    if len(equities) < 2:
+        return {"sharpe": None, "max_drawdown_pct": None, "calmar": None}
+
+    # Daily returns
+    daily_returns = [(equities[i] / equities[i - 1]) - 1 for i in range(1, len(equities))]
+
+    n = len(daily_returns)
+    mean_r = sum(daily_returns) / n
+    variance = sum((r - mean_r) ** 2 for r in daily_returns) / max(n - 1, 1)
+    std_r = math.sqrt(variance) if variance > 0 else 0.0
+
+    annualised_return = mean_r * 252
+    annualised_vol = std_r * math.sqrt(252)
+    risk_free = 0.05
+    sharpe = round((annualised_return - risk_free) / annualised_vol, 2) if annualised_vol > 0 else None
+
+    # Max drawdown
+    peak = equities[0]
+    max_dd = 0.0
+    for e in equities:
+        if e > peak:
+            peak = e
+        dd = (peak - e) / peak
+        if dd > max_dd:
+            max_dd = dd
+    max_dd_pct = round(max_dd * 100, 2)
+
+    # Calmar = annualised return / max drawdown
+    calmar = round(annualised_return / max_dd, 2) if max_dd > 0 else None
+
+    return {
+        "sharpe": sharpe,
+        "max_drawdown_pct": max_dd_pct,
+        "calmar": calmar,
+    }
 
 
 def _get_active_portfolio(session: Session) -> PaperPortfolio:
@@ -52,12 +93,14 @@ def get_summary(
         sum(((t.current_price or t.entry_price) - t.entry_price) * t.shares for t in open_trades), 2
     )
 
-    latest_curve = session.execute(
+    all_curve = session.execute(
         select(PaperEquityCurve)
         .where(PaperEquityCurve.portfolio_id == p.id)
-        .order_by(desc(PaperEquityCurve.date))
-        .limit(1)
-    ).scalar_one_or_none()
+        .order_by(PaperEquityCurve.date)
+    ).scalars().all()
+
+    risk = _portfolio_risk_metrics(all_curve)
+    latest_curve = all_curve[-1] if all_curve else None
 
     return {
         "portfolio_id": p.id,
@@ -75,6 +118,9 @@ def get_summary(
         "win_rate_pct": win_rate,
         "avg_win_pct": avg_win,
         "avg_loss_pct": avg_loss,
+        "sharpe": risk["sharpe"],
+        "max_drawdown_pct": risk["max_drawdown_pct"],
+        "calmar": risk["calmar"],
         "spy_close": latest_curve.spy_close if latest_curve else None,
         "qqq_close": latest_curve.qqq_close if latest_curve else None,
         "config": p.config,

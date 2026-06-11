@@ -893,6 +893,9 @@ export type PaperPortfolioSummary = {
   win_rate_pct: number;
   avg_win_pct: number;
   avg_loss_pct: number;
+  sharpe: number | null;
+  max_drawdown_pct: number | null;
+  calmar: number | null;
   spy_close: number | null;
   qqq_close: number | null;
   config: PaperPortfolioConfig;

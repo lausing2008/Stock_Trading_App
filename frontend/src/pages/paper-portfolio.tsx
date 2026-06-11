@@ -475,6 +475,24 @@ export default function PaperPortfolioPage() {
           <StatCard label="Avg Win / Loss"
             value={`${fmtPct(summary.avg_win_pct, 1)} / ${fmtPct(summary.avg_loss_pct, 1)}`}
             color={summary.avg_win_pct > Math.abs(summary.avg_loss_pct) ? '#22c55e' : '#f59e0b'} />
+          <StatCard
+            label="Sharpe Ratio"
+            value={summary.sharpe != null ? summary.sharpe.toFixed(2) : '—'}
+            color={summary.sharpe == null ? undefined : summary.sharpe >= 1 ? '#22c55e' : summary.sharpe >= 0 ? '#f59e0b' : '#ef4444'}
+            sub="annualised, rf=5%"
+          />
+          <StatCard
+            label="Max Drawdown"
+            value={summary.max_drawdown_pct != null ? `-${summary.max_drawdown_pct.toFixed(1)}%` : '—'}
+            color={summary.max_drawdown_pct == null ? undefined : summary.max_drawdown_pct <= 10 ? '#22c55e' : summary.max_drawdown_pct <= 20 ? '#f59e0b' : '#ef4444'}
+            sub="peak → trough"
+          />
+          <StatCard
+            label="Calmar Ratio"
+            value={summary.calmar != null ? summary.calmar.toFixed(2) : '—'}
+            color={summary.calmar == null ? undefined : summary.calmar >= 1 ? '#22c55e' : summary.calmar >= 0.5 ? '#f59e0b' : '#ef4444'}
+            sub="return / drawdown"
+          />
         </div>
 
         {/* Tabs */}
