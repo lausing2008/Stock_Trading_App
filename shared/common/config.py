@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # Auth
     jwt_secret: str = "stockai-change-me-in-production-secret-key"
     jwt_expire_days: int = 7
+    admin_password: str = ""   # required in production; seed skipped if empty
+
+    # CORS — comma-separated allowed origins; defaults to * in dev, must be set in prod
+    cors_origins: str = ""
 
     def __post_init__(self) -> None:
         pass  # kept for subclass compatibility

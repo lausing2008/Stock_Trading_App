@@ -127,7 +127,11 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     # ML-FIX-3: MedianPruner kills trials that are below the median after 10 startup trials.
     # n_warmup_steps=2 means the first 2 folds are never pruned (not enough data for the pruner).
     pruner = MedianPruner(n_startup_trials=10, n_warmup_steps=2)
-    study = optuna.create_study(direction="minimize", pruner=pruner)
+    study = optuna.create_study(
+        direction="minimize",
+        pruner=pruner,
+        sampler=optuna.samplers.TPESampler(seed=42),
+    )
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
     best_params = study.best_params

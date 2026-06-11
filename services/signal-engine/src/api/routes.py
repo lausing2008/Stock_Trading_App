@@ -669,7 +669,7 @@ def calibrate_ml_weight(
             return None
         return _pclose[sid][idx]
 
-    observations: list[tuple[float, float, float]] = []
+    observations: list[tuple[float, float, float, object]] = []
     seen: set[tuple] = set()
     for sig, _ in rows:
         signal_date = sig.ts.date() if isinstance(sig.ts, datetime) else sig.ts
@@ -692,31 +692,58 @@ def calibrate_ml_weight(
         if exit_p is None or ts_list[-1] <= signal_date:
             continue
         pct = (exit_p - entry) / entry * 100
-        observations.append((float(ml_prob), float(ta_score), pct))
+        observations.append((float(ml_prob), float(ta_score), pct, signal_date))
 
     if not observations:
         return {"applied": False, "reason": "no_observations", "optimal_weight": None}
+
+    # Sort by date, split older 70% for calibration, newer 30% for validation
+    observations.sort(key=lambda x: x[3])
+    split = max(1, int(len(observations) * 0.7))
+    calib_obs = observations[:split]
+    val_obs = observations[split:] or observations  # fall back to all if too few
 
     weights = [round(w / 20, 2) for w in range(21)]
     best_acc = -1.0
     optimal_weight = 0.5
     curve = []
     for w in weights:
+        # Select weight using calibration set only
         correct = fired = 0
-        returns = []
-        for ml_p, ta_s, pct in observations:
+        for ml_p, ta_s, pct, _ in calib_obs:
             fused = w * ml_p + (1 - w) * ta_s
             if fused > 0.5:
                 fired += 1
                 if pct > 0:
                     correct += 1
+        calib_acc = correct / fired if fired else None
+        if calib_acc is not None and calib_acc > best_acc:
+            best_acc = calib_acc
+            optimal_weight = w
+
+        # Curve accuracy shown on validation set
+        v_correct = v_fired = 0
+        returns = []
+        for ml_p, ta_s, pct, _ in val_obs:
+            fused = w * ml_p + (1 - w) * ta_s
+            if fused > 0.5:
+                v_fired += 1
+                if pct > 0:
+                    v_correct += 1
                 returns.append(pct)
-        acc = round(correct / fired * 100, 1) if fired else None
+        acc = round(v_correct / v_fired * 100, 1) if v_fired else None
         avg_ret = round(sum(returns) / len(returns), 2) if returns else None
         curve.append({"weight": w, "accuracy": acc, "avg_return_pct": avg_ret})
-        if acc is not None and acc > best_acc:
-            best_acc = acc
-            optimal_weight = w
+
+    # Report validation accuracy for the chosen weight
+    v_correct = v_fired = 0
+    for ml_p, ta_s, pct, _ in val_obs:
+        fused = optimal_weight * ml_p + (1 - optimal_weight) * ta_s
+        if fused > 0.5:
+            v_fired += 1
+            if pct > 0:
+                v_correct += 1
+    best_acc = round(v_correct / v_fired * 100, 1) if v_fired else 0.0
 
     set_ml_weight_global_cap(optimal_weight)
     log.info("calibrate_ml_weight: applied cap=%.2f (acc=%.1f%%, n=%d, lookback=%dd)",
@@ -1351,14 +1378,18 @@ def suppressed_signals(
         for h in history:
             conds = _extract_conditions(h.reasons or {})
             ts = h.ts.replace(tzinfo=timezone.utc) if h.ts.tzinfo is None else h.ts
+            # Gap > 2 calendar days (more than a weekend) resets all active streaks
+            if prev_ts is not None and (prev_ts - ts).days > 2:
+                for k in _CONDITION_KEYS:
+                    active[k] = False
             for k in _CONDITION_KEYS:
                 if not active[k]:
                     continue
                 if conds.get(k, False):
-                    # Each distinct signal bar counts as one day
                     streak[k] += 1
                 else:
                     active[k] = False
+            prev_ts = ts
         return streak
 
     # Attach days_active to each result
@@ -1632,9 +1663,13 @@ def calibrate_ta_weights(
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     clf = LogisticRegression(max_iter=500, C=1.0, random_state=42)
-    clf.fit(X_scaled, y)
 
-    accuracy = float(np.mean(clf.predict(X_scaled) == y))
+    from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+    cv_scores = cross_val_score(clf, X_scaled, y, cv=TimeSeriesSplit(n_splits=5), scoring="accuracy")
+    accuracy = float(np.mean(cv_scores))
+
+    # Fit on full data to derive the production weights
+    clf.fit(X_scaled, y)
     coefs = clf.coef_[0]
 
     # Map coefficients → weight dict (clip negatives to 0 for positive-weight features)
@@ -1940,6 +1975,109 @@ def signal_history(
     ]
 
 
+@router.get("/outcomes/summary")
+def outcomes_summary(
+    horizon: str | None = Query(None, description="SHORT | SWING | LONG"),
+    days: int = Query(90, description="Look-back window in calendar days"),
+    session: Session = Depends(get_session),
+):
+    """Return win-rate and return stats from the signal_outcomes table.
+
+    Groups results by confidence band (0-40, 40-55, 55-70, 70-85, 85+) so you
+    can verify that higher-confidence signals actually win more often.
+    """
+    import statistics
+
+    cutoff = date.today() - timedelta(days=days)
+
+    q = select(SignalOutcome).where(
+        SignalOutcome.signal_date >= cutoff,
+        SignalOutcome.is_correct.is_not(None),
+    )
+    if horizon:
+        try:
+            q = q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))
+        except ValueError:
+            raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    outcomes = session.execute(q).scalars().all()
+
+    if not outcomes:
+        return {"total": 0, "message": "No evaluated outcomes yet in this window"}
+
+    # Overall stats
+    wins = [o for o in outcomes if o.is_correct]
+    returns = [o.pct_return for o in outcomes if o.pct_return is not None]
+
+    # By confidence band
+    bands = [
+        (0, 40, "0-40"),
+        (40, 55, "40-55"),
+        (55, 70, "55-70"),
+        (70, 85, "70-85"),
+        (85, 101, "85+"),
+    ]
+    band_stats = []
+    for lo, hi, label in bands:
+        bucket = [o for o in outcomes if lo <= o.confidence < hi]
+        if not bucket:
+            continue
+        bucket_wins = sum(1 for o in bucket if o.is_correct)
+        bucket_returns = [o.pct_return for o in bucket if o.pct_return is not None]
+        band_stats.append({
+            "band": label,
+            "count": len(bucket),
+            "win_rate": round(bucket_wins / len(bucket), 3),
+            "avg_return_pct": round(statistics.mean(bucket_returns) * 100, 2) if bucket_returns else None,
+        })
+
+    # By horizon (if not filtered)
+    horizon_stats = {}
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        hbucket = [o for o in outcomes if o.horizon.value == h]
+        if not hbucket:
+            continue
+        hreturns = [o.pct_return for o in hbucket if o.pct_return is not None]
+        horizon_stats[h] = {
+            "count": len(hbucket),
+            "win_rate": round(sum(1 for o in hbucket if o.is_correct) / len(hbucket), 3),
+            "avg_return_pct": round(statistics.mean(hreturns) * 100, 2) if hreturns else None,
+        }
+
+    # By market regime
+    regime_stats = {}
+    for o in outcomes:
+        reg = o.market_regime or "unknown"
+        if reg not in regime_stats:
+            regime_stats[reg] = {"count": 0, "wins": 0, "returns": []}
+        regime_stats[reg]["count"] += 1
+        if o.is_correct:
+            regime_stats[reg]["wins"] += 1
+        if o.pct_return is not None:
+            regime_stats[reg]["returns"].append(o.pct_return)
+    regime_summary = {
+        reg: {
+            "count": v["count"],
+            "win_rate": round(v["wins"] / v["count"], 3),
+            "avg_return_pct": round(statistics.mean(v["returns"]) * 100, 2) if v["returns"] else None,
+        }
+        for reg, v in regime_stats.items()
+    }
+
+    return {
+        "total": len(outcomes),
+        "days_lookback": days,
+        "overall": {
+            "win_rate": round(len(wins) / len(outcomes), 3),
+            "avg_return_pct": round(statistics.mean(returns) * 100, 2) if returns else None,
+            "median_return_pct": round(statistics.median(returns) * 100, 2) if returns else None,
+        },
+        "by_confidence_band": band_stats,
+        "by_horizon": horizon_stats,
+        "by_market_regime": regime_summary,
+    }
+
+
 @router.get("/{symbol}")
 def signal_for(
     symbol: str,
@@ -2139,107 +2277,3 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         skipped_no_price=skipped_no_price,
     )
     return {"evaluated": evaluated, "skipped_open": skipped_open, "skipped_no_price": skipped_no_price}
-
-
-@router.get("/outcomes/summary")
-def outcomes_summary(
-    horizon: str | None = Query(None, description="SHORT | SWING | LONG"),
-    days: int = Query(90, description="Look-back window in calendar days"),
-    session: Session = Depends(get_session),
-):
-    """Return win-rate and return stats from the signal_outcomes table.
-
-    Groups results by confidence band (0-40, 40-55, 55-70, 70-85, 85+) so you
-    can verify that higher-confidence signals actually win more often.
-    """
-    import statistics
-
-    cutoff = date.today() - timedelta(days=days)
-
-    q = select(SignalOutcome).where(
-        SignalOutcome.signal_date >= cutoff,
-        SignalOutcome.is_correct.is_not(None),
-    )
-    if horizon:
-        try:
-            q = q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))
-        except ValueError:
-            raise HTTPException(400, f"Unknown horizon: {horizon}")
-
-    outcomes = session.execute(q).scalars().all()
-
-    if not outcomes:
-        return {"total": 0, "message": "No evaluated outcomes yet in this window"}
-
-    # Overall stats
-    wins = [o for o in outcomes if o.is_correct]
-    returns = [o.pct_return for o in outcomes if o.pct_return is not None]
-
-    # By confidence band
-    bands = [
-        (0, 40, "0-40"),
-        (40, 55, "40-55"),
-        (55, 70, "55-70"),
-        (70, 85, "70-85"),
-        (85, 101, "85+"),
-    ]
-    band_stats = []
-    for lo, hi, label in bands:
-        bucket = [o for o in outcomes if lo <= o.confidence < hi]
-        if not bucket:
-            continue
-        bucket_wins = sum(1 for o in bucket if o.is_correct)
-        bucket_returns = [o.pct_return for o in bucket if o.pct_return is not None]
-        band_stats.append({
-            "band": label,
-            "count": len(bucket),
-            "win_rate": round(bucket_wins / len(bucket), 3),
-            "avg_return_pct": round(statistics.mean(bucket_returns) * 100, 2) if bucket_returns else None,
-        })
-
-    # By horizon (if not filtered)
-    horizon_stats = {}
-    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
-        hbucket = [o for o in outcomes if o.horizon.value == h]
-        if not hbucket:
-            continue
-        hreturns = [o.pct_return for o in hbucket if o.pct_return is not None]
-        horizon_stats[h] = {
-            "count": len(hbucket),
-            "win_rate": round(sum(1 for o in hbucket if o.is_correct) / len(hbucket), 3),
-            "avg_return_pct": round(statistics.mean(hreturns) * 100, 2) if hreturns else None,
-        }
-
-    # By market regime
-    regime_stats = {}
-    for o in outcomes:
-        reg = o.market_regime or "unknown"
-        if reg not in regime_stats:
-            regime_stats[reg] = {"count": 0, "wins": 0, "returns": []}
-        regime_stats[reg]["count"] += 1
-        if o.is_correct:
-            regime_stats[reg]["wins"] += 1
-        if o.pct_return is not None:
-            regime_stats[reg]["returns"].append(o.pct_return)
-    regime_summary = {
-        reg: {
-            "count": v["count"],
-            "win_rate": round(v["wins"] / v["count"], 3),
-            "avg_return_pct": round(statistics.mean(v["returns"]) * 100, 2) if v["returns"] else None,
-        }
-        for reg, v in regime_stats.items()
-    }
-
-    return {
-        "total": len(outcomes),
-        "days_lookback": days,
-        "overall": {
-            "win_rate": round(len(wins) / len(outcomes), 3),
-            "avg_return_pct": round(statistics.mean(returns) * 100, 2) if returns else None,
-            "median_return_pct": round(statistics.median(returns) * 100, 2) if returns else None,
-        },
-        "by_confidence_band": band_stats,
-        "by_horizon": horizon_stats,
-        "by_market_regime": regime_summary,
-    }
-
