@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type SchedulerJob, type MlModelMetric } from '@/lib/api';
+import { api, type SchedulerJob, type MlModelMetric, type SignalSummary } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string }> = {
@@ -120,6 +120,20 @@ export default function AdminHealthPage() {
     { revalidateOnFocus: false },
   );
 
+  const { data: signalsData } = useSWR<SignalSummary[]>(
+    authed ? 'signals-SWING' : null,
+    () => api.allSignals('SWING'),
+    { revalidateOnFocus: false, refreshInterval: 120_000 },
+  );
+
+  const signalCounts = useMemo(() => {
+    const counts: Record<string, number> = { BUY: 0, SELL: 0, WAIT: 0, HOLD: 0 };
+    for (const s of signalsData ?? []) {
+      if (s.signal in counts) counts[s.signal]++;
+    }
+    return counts;
+  }, [signalsData]);
+
   const jobs = data?.jobs ?? [];
   const errorCount = jobs.filter(j => j.status === 'error').length;
   const staleCount = jobs.filter(j => {
@@ -198,6 +212,166 @@ export default function AdminHealthPage() {
             ))}
           </div>
         </>
+      )}
+
+      {/* Signal Refresh Health */}
+      {signalsData && (
+        <div style={{ marginTop: '28px' }}>
+          <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginBottom: '10px' }}>SIGNAL REFRESH HEALTH</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px' }}>
+
+            {/* Signal distribution card */}
+            <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginBottom: '10px' }}>
+                Signal Distribution (SWING)
+                <span style={{ marginLeft: '8px', fontSize: '11px', color: '#334155', fontWeight: 400 }}>{signalsData.length} stocks</span>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {[
+                  { label: 'BUY',  color: '#4ade80', bg: 'rgba(74,222,128,0.1)',  border: 'rgba(74,222,128,0.3)'  },
+                  { label: 'SELL', color: '#f87171', bg: 'rgba(239,68,68,0.1)',   border: 'rgba(239,68,68,0.3)'   },
+                  { label: 'WAIT', color: '#fbbf24', bg: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.25)' },
+                  { label: 'HOLD', color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.2)' },
+                ].map(({ label, color, bg, border }) => (
+                  <div key={label} style={{ flex: 1, minWidth: '70px', padding: '10px 8px', borderRadius: '8px', background: bg, border: `1px solid ${border}`, textAlign: 'center' }}>
+                    <div style={{ fontSize: '20px', fontWeight: 800, color }}>{signalCounts[label]}</div>
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px', fontWeight: 600 }}>{label}</div>
+                    <div style={{ fontSize: '10px', color: '#334155', marginTop: '1px' }}>
+                      {signalsData.length > 0 ? `${((signalCounts[label] / signalsData.length) * 100).toFixed(0)}%` : '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: '10px' }}>
+                <div style={{ height: '4px', borderRadius: '2px', background: '#1e293b', overflow: 'hidden', display: 'flex' }}>
+                  {(['BUY', 'SELL', 'WAIT', 'HOLD'] as const).map((k, i) => (
+                    <div key={k} style={{
+                      width: `${signalsData.length ? (signalCounts[k] / signalsData.length) * 100 : 0}%`,
+                      background: ['#4ade80','#f87171','#fbbf24','#475569'][i],
+                    }} />
+                  ))}
+                </div>
+                <div style={{ fontSize: '10px', color: '#334155', marginTop: '4px' }}>
+                  Bull/Bear ratio: {signalCounts.SELL > 0 ? (signalCounts.BUY / signalCounts.SELL).toFixed(1) : '∞'}
+                </div>
+              </div>
+            </div>
+
+            {/* Last refresh card */}
+            {(() => {
+              const usJob = jobs.find(j => j.job === 'us_refresh');
+              const hkJob = jobs.find(j => j.job === 'hk_refresh');
+              const freshSignals = signalsData.filter(s => s.ts && (Date.now() - new Date(s.ts).getTime()) < 86400000 * 2).length;
+              const staleSignals = signalsData.length - freshSignals;
+              return (
+                <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginBottom: '10px' }}>Signal Freshness</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {usJob && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '12px', color: '#64748b' }}>US last refresh</span>
+                        <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>{relTime(usJob.last_run)}</span>
+                      </div>
+                    )}
+                    {hkJob && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '12px', color: '#64748b' }}>HK last refresh</span>
+                        <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>{relTime(hkJob.last_run)}</span>
+                      </div>
+                    )}
+                    <div style={{ borderTop: '1px solid #1e293b', paddingTop: '8px', display: 'flex', gap: '10px' }}>
+                      <div style={{ flex: 1, textAlign: 'center', padding: '6px', borderRadius: '6px', background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.15)' }}>
+                        <div style={{ fontSize: '18px', fontWeight: 800, color: '#4ade80' }}>{freshSignals}</div>
+                        <div style={{ fontSize: '10px', color: '#475569' }}>Fresh ≤2d</div>
+                      </div>
+                      <div style={{ flex: 1, textAlign: 'center', padding: '6px', borderRadius: '6px', background: staleSignals > 0 ? 'rgba(251,191,36,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${staleSignals > 0 ? 'rgba(251,191,36,0.2)' : '#1e293b'}` }}>
+                        <div style={{ fontSize: '18px', fontWeight: 800, color: staleSignals > 0 ? '#fbbf24' : '#334155' }}>{staleSignals}</div>
+                        <div style={{ fontSize: '10px', color: '#475569' }}>Stale &gt;2d</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* ML Training Health */}
+      {mlData && mlData.count > 0 && (
+        <div style={{ marginTop: '28px' }}>
+          <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginBottom: '10px' }}>ML TRAINING HEALTH</div>
+          {(() => {
+            const usJob = jobs.find(j => j.job === 'us_post_close');
+            const hkJob = jobs.find(j => j.job === 'hk_post_close');
+            const all = mlData.symbols.filter((m: MlModelMetric) => m.test_auc != null);
+            const avgAuc = all.length > 0 ? all.reduce((s: number, m: MlModelMetric) => s + (m.test_auc ?? 0), 0) / all.length : 0;
+            const goodModels = all.filter((m: MlModelMetric) => (m.test_auc ?? 0) >= 0.65).length;
+            const weakModels = all.filter((m: MlModelMetric) => (m.test_auc ?? 0) < 0.55).length;
+            const overfitModels = all.filter((m: MlModelMetric) => (m.overfit_gap ?? 0) > 0.1).length;
+            const aucColor = avgAuc >= 0.65 ? '#4ade80' : avgAuc >= 0.55 ? '#fbbf24' : '#f87171';
+            return (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px' }}>
+                <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginBottom: '10px' }}>Model Quality</div>
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                    <div style={{ flex: 1, textAlign: 'center', padding: '8px', borderRadius: '6px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.15)' }}>
+                      <div style={{ fontSize: '20px', fontWeight: 800, color: aucColor }}>{avgAuc.toFixed(3)}</div>
+                      <div style={{ fontSize: '10px', color: '#475569' }}>Avg AUC</div>
+                    </div>
+                    <div style={{ flex: 1, textAlign: 'center', padding: '8px', borderRadius: '6px', background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.15)' }}>
+                      <div style={{ fontSize: '20px', fontWeight: 800, color: '#4ade80' }}>{goodModels}</div>
+                      <div style={{ fontSize: '10px', color: '#475569' }}>Good ≥0.65</div>
+                    </div>
+                    <div style={{ flex: 1, textAlign: 'center', padding: '8px', borderRadius: '6px', background: weakModels > 0 ? 'rgba(251,191,36,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${weakModels > 0 ? 'rgba(251,191,36,0.2)' : '#1e293b'}` }}>
+                      <div style={{ fontSize: '20px', fontWeight: 800, color: weakModels > 0 ? '#fbbf24' : '#334155' }}>{weakModels}</div>
+                      <div style={{ fontSize: '10px', color: '#475569' }}>Weak &lt;0.55</div>
+                    </div>
+                    <div style={{ flex: 1, textAlign: 'center', padding: '8px', borderRadius: '6px', background: overfitModels > 0 ? 'rgba(239,68,68,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${overfitModels > 0 ? 'rgba(239,68,68,0.2)' : '#1e293b'}` }}>
+                      <div style={{ fontSize: '20px', fontWeight: 800, color: overfitModels > 0 ? '#f87171' : '#334155' }}>{overfitModels}</div>
+                      <div style={{ fontSize: '10px', color: '#475569' }}>Overfit</div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#334155', display: 'flex', gap: '16px' }}>
+                    <span>{mlData.count} models total</span>
+                    {all.length < mlData.count && <span style={{ color: '#fbbf24' }}>⚠ {mlData.count - all.length} missing metrics</span>}
+                  </div>
+                </div>
+
+                <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#0d1424', border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', marginBottom: '10px' }}>Last Retrain</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {usJob ? (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '12px', color: '#64748b' }}>US Post-Close</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>{relTime(usJob.last_run)}</span>
+                          <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', color: usJob.status === 'ok' ? '#4ade80' : '#f87171', background: usJob.status === 'ok' ? 'rgba(74,222,128,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${usJob.status === 'ok' ? 'rgba(74,222,128,0.3)' : 'rgba(239,68,68,0.3)'}` }}>
+                            {usJob.status === 'ok' ? '✓' : '✗'}
+                          </span>
+                        </div>
+                      </div>
+                    ) : <span style={{ fontSize: '12px', color: '#334155' }}>US — no record yet</span>}
+                    {hkJob ? (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '12px', color: '#64748b' }}>HK Post-Close</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>{relTime(hkJob.last_run)}</span>
+                          <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', color: hkJob.status === 'ok' ? '#4ade80' : '#f87171', background: hkJob.status === 'ok' ? 'rgba(74,222,128,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${hkJob.status === 'ok' ? 'rgba(74,222,128,0.3)' : 'rgba(239,68,68,0.3)'}` }}>
+                            {hkJob.status === 'ok' ? '✓' : '✗'}
+                          </span>
+                        </div>
+                      </div>
+                    ) : <span style={{ fontSize: '12px', color: '#334155' }}>HK — no record yet</span>}
+                    <div style={{ borderTop: '1px solid #1e293b', paddingTop: '8px', fontSize: '11px', color: '#334155' }}>
+                      Retraining runs at US 16:30 ET and HK 16:30 HKT on market days
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
       )}
 
       {/* ML Model Metrics */}
