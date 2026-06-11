@@ -2149,6 +2149,12 @@ Return ONLY valid JSON — no markdown, no prose:
                           'Lowered Target': '#fb923c',
                           'Raised Target':  '#4ade80',
                         };
+                        const UP_ACTIONS = ['up', 'upgrade', 'init', 'initiated'];
+                        const DOWN_ACTIONS = ['down', 'downgrade'];
+                        const sevenDaysAgo = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
+                        const recent7d = f.analyst_actions.filter(a => a.date >= sevenDaysAgo);
+                        const ups7d = recent7d.filter(a => UP_ACTIONS.includes(a.action.toLowerCase())).length;
+                        const downs7d = recent7d.filter(a => DOWN_ACTIONS.includes(a.action.toLowerCase())).length;
                         const actionColor = (a: string) => {
                           for (const [k, v] of Object.entries(ACTION_COLOR)) {
                             if (a.toLowerCase().includes(k.toLowerCase())) return v;
@@ -2164,8 +2170,16 @@ Return ONLY valid JSON — no markdown, no prose:
                         };
                         return (
                           <div>
-                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
-                              Recent Analyst Actions <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: '#334155' }}>· last 90 days</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '8px' }}>
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                Recent Analyst Actions <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: '#334155' }}>· last 90 days</span>
+                              </div>
+                              {(ups7d > 0 || downs7d > 0) && (
+                                <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
+                                  {ups7d > 0 && <span style={{ fontSize: 10, background: 'rgba(34,197,94,0.12)', color: '#22c55e', borderRadius: 4, padding: '1px 6px', fontWeight: 700 }}>+{ups7d} 7d</span>}
+                                  {downs7d > 0 && <span style={{ fontSize: 10, background: 'rgba(239,68,68,0.12)', color: '#ef4444', borderRadius: 4, padding: '1px 6px', fontWeight: 700 }}>−{downs7d} 7d</span>}
+                                </div>
+                              )}
                             </div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                               {f.analyst_actions.map((a, i) => (
