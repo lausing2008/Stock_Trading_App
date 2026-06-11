@@ -465,9 +465,9 @@ def _sector_bench(sector: str) -> dict:
 
 # ── Fundamental scoring ───────────────────────────────────────────────────────
 
-def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
+def _score_fundamental(fund: dict, sector: str = "Unknown", price: float = 0.0) -> dict:
     if not fund:
-        return {"score": 50, "revenue": {}, "eps": {}, "margins": {}, "balance_sheet": {},
+        return {"score": 35, "revenue": {}, "eps": {}, "margins": {}, "balance_sheet": {},
                 "cash_flow": {}, "valuation": {}, "profitability": {}}
 
     bench = _sector_bench(sector)
@@ -533,10 +533,11 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
             return None
         return round(v * 100, 1) if abs(v) <= 1 else round(v, 1)
 
-    # Balance sheet
+    # Balance sheet — D/E uses book equity (book_value per share × shares outstanding)
     cash = fund.get("total_cash") or 0
     debt = fund.get("total_debt") or 0
-    de_ratio = round(debt / cash, 2) if cash > 0 else None
+    book_equity = (fund.get("book_value") or 0) * (fund.get("shares_outstanding") or 0)
+    de_ratio = round(debt / book_equity, 2) if book_equity > 0 else None
     bs_assess = "Strong Balance Sheet"
     if de_ratio is not None:
         if de_ratio < 0.5:
@@ -585,6 +586,11 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
     if pe and rev_growth and rev_growth > 0:
         g = rev_growth * 100  # yfinance returns decimal fraction
         peg = round(pe / g, 2) if g > 0 else None
+    if peg is not None:
+        if peg < 1.0:
+            score += 5
+        elif peg > 3.0:
+            score -= 4
 
     # Profitability
     roe = fund.get("return_on_equity")
@@ -609,6 +615,22 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
             eps_surprise_bonus = 5; score += 5
         elif beat_rate >= 0.50:
             eps_surprise_bonus = 2; score += 2
+
+    # EPS surprise trend — improving momentum signals re-rating potential
+    eps_trend = fund.get("eps_surprise_trend")
+    if eps_trend == "improving":
+        score += 3
+    elif eps_trend == "declining":
+        score -= 3
+
+    # Analyst target premium — consensus significantly above/below price
+    target_price = fund.get("target_price")
+    if price > 0 and target_price and target_price > 0:
+        target_upside = (target_price - price) / price
+        if target_upside >= 0.25:
+            score += 5
+        elif target_upside <= -0.10:
+            score -= 3
 
     score = max(0, min(100, score))
 
@@ -658,6 +680,10 @@ def _score_fundamental(fund: dict, sector: str = "Unknown") -> dict:
             "roe": pct(roe),
             "roa": pct(roa),
             "grade": prof_grade,
+        },
+        "analyst_target": {
+            "price": round(target_price, 2) if target_price else None,
+            "upside_pct": round(target_upside * 100, 1) if (price > 0 and target_price and target_price > 0) else None,
         },
     }
 
@@ -1296,7 +1322,7 @@ async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(
 
     # Compute scores
     tech = _score_technical(stock, prices, indicators, levels, live_price=price)
-    fund_scores = _score_fundamental(fund, sector=stock.get("sector", "Unknown"))
+    fund_scores = _score_fundamental(fund, sector=stock.get("sector", "Unknown"), price=price)
     dcf = _dcf_fair_value(fund, price, sector=stock.get("sector", "Unknown"))
 
     # Call Claude for qualitative analysis

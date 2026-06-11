@@ -966,6 +966,19 @@ const ITEMS: Item[] = [
   },
 
   {
+    id: 'res2b-fundamental-scoring',
+    tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-10 — 5 fixes to _score_fundamental() in research-engine routes.py: (1) D/E ratio fixed from debt/cash to debt/(book_value×shares_outstanding); (2) PEG scored: <1.0 → +5, >3.0 → -4; (3) EPS surprise trend scored: improving → +3, declining → -3; (4) Analyst target premium: ≥25% upside → +5, ≤-10% downside → -3; (5) Missing data default lowered from 50 → 35. Price passed to _score_fundamental(). Return dict adds analyst_target.{price, upside_pct}.',
+    title: 'RES-2b: Research engine fundamental scoring — fix D/E bug, score PEG + trend + target',
+    file: 'services/research-engine/src/api/routes.py',
+    effort: '0.5 days',
+    impact: 'Medium — 5 scoring bugs/gaps: D/E ratio used debt/cash (wrong denominator); PEG computed but never scored; EPS trend field unused; analyst target premium ignored; missing data defaulted to neutral 50 instead of uncertain.',
+    what: 'The fundamental scorer had an incorrect D/E denominator (should be equity, not cash), computed PEG but never added it to the score, ignored the eps_surprise_trend field, did not factor in analyst target price vs current price, and returned score=50 (neutral) when fundamentals were missing (should be lower to signal uncertainty).',
+    fix: 'Fix D/E denominator. Score PEG: <1 → +5, >3 → -4. Score trend: improving → +3, declining → -3. Score analyst target: ≥25% upside → +5, ≤-10% → -3. Lower missing data default to 35.',
+  },
+
+  {
     id: 'res3-pattern-recognition',
     tier: 3, severity: 'feature',
     title: 'RES-3: Technical pattern recognition — cup-and-handle, breakout, consolidation, flag',
@@ -1926,7 +1939,7 @@ export default function ImprovementsPage() {
             { label: 'ML methodology',  score: 9.0, target: 9.0, note: '✓ AUC key fix + SA-3/SA-5 all done' },
             { label: 'Signal logic',    score: 9.0, target: 9.0, note: '✓ SA-7 regime earnings done; all SA items shipped' },
             { label: 'K-Score ranking', score: 8.2, target: 8.5, note: '↑ Conviction screener shipped (UI-04)' },
-            { label: 'Research engine', score: 7.5, target: 8.5, note: '↑ Cache quality flag (tech-research-cache-quality)' },
+            { label: 'Research engine', score: 7.8, target: 8.5, note: '↑ RES-2b: D/E fix + PEG scoring + trend + target premium' },
             { label: 'Frontend / UX',   score: 9.5, target: 9.5, note: '↑ Per-horizon alerts + consensus indicator + Add to Radar' },
             { label: 'Risk management', score: 8.5, target: 9.0, note: '↑ Portfolio risk + P&L heatmap (UI-06) done' },
             { label: 'Overall',         score: 9.2, target: 9.5, note: '✓ Tier 7 alert intelligence shipped 2026-06-10' },
@@ -1947,7 +1960,7 @@ export default function ImprovementsPage() {
           All Tier 1–4 shipped as of 2026-06-07. SA-1/2/3/4/5/6/7/8 all done. SA-3 was already live (4 boolean flags in builder.py). SA-5 wired to Sunday scheduler. SA-7 regime-aware earnings compression implemented (bull+beater≥70%: +3% boost; bull+50-70%: halved compression; bear/hv: tightened).
           Tier 5: UI-01 to UI-09 + UI-12 all shipped. Remaining (low priority): UI-10 (ML weight auto-apply), UI-11 (factor chart verify).
           Tier 3 new items (2026-06-08): TB-1 (trailing stop), TB-2 (time-stop), TB-3 (stop breach alert), TB-4 (dollar P&amp;L), TB-5 (portfolio heat-at-risk), SL-1 (admin signal log). SL-1 implemented 2026-06-08.
-          Overall: <strong style={{ color: '#4ade80' }}>9.2 / 10</strong> — Tier 7 alert intelligence shipped 2026-06-10: per-horizon signal alerts (SHORT/SWING/LONG/GROWTH independent subscriptions), require_consensus gate (≥2 horizons agree before alert fires), 4-horizon consensus indicator on stock detail, Add to Radar button on Opportunities. Admin health expanded: Signal Refresh Health + ML Training Health sections; AUC key mismatch bug fixed (all 119 models now show real AUC values). All Tier 1–6 complete. WF-2 (autonomous paper trading), 11 security/reliability audit fixes, signal pipeline audit all done 2026-06-09.
+          Overall: <strong style={{ color: '#4ade80' }}>9.2 / 10</strong> — Tier 7 alert intelligence shipped 2026-06-10: per-horizon signal alerts (SHORT/SWING/LONG/GROWTH independent subscriptions), require_consensus gate (≥2 horizons agree before alert fires), 4-horizon consensus indicator on stock detail, Add to Radar button on Opportunities. Admin health expanded: Signal Refresh Health + ML Training Health sections; AUC key mismatch bug fixed (all 119 models now show real AUC values). RES-2 analyst momentum + RES-2b fundamental scoring (D/E fix, PEG, EPS trend, analyst target premium) shipped 2026-06-10. All Tier 1–6 complete. WF-2 (autonomous paper trading), 11 security/reliability audit fixes, signal pipeline audit all done 2026-06-09.
         </p>
       </div>
     </div>
