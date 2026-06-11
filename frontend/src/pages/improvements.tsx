@@ -1103,6 +1103,7 @@ const ITEMS: Item[] = [
   {
     id: 'tm2-signal-decay',
     tier: 3, severity: 'feature',
+    implementedNote: 'Done 2026-06-11 — GET /signals/alpha_decay endpoint in signal-engine (days 1,2,3,5,7,10,15,20,30 post-entry; avg/p25/p75/n per day; optimal_hold_days = peak avg return day). "Alpha Decay" tab added to /signal-accuracy: horizon picker (SWING/SHORT/LONG/GROWTH), lookback picker (90/180/365d), SVG line chart with avg return curve + p25–p75 shaded band, optimal hold chip, per-day breakdown table. Entry = first daily close ≥ signal date; up to 5 calendar-day slippage for weekends/holidays.',
     title: 'TM-2: Signal decay analysis — how long does the alpha last after a BUY signal?',
     file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
     effort: '2–3 days',
