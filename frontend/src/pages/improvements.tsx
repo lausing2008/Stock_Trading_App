@@ -955,8 +955,10 @@ const ITEMS: Item[] = [
   {
     id: 'res2-analyst-momentum',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-10 — _fetch_analyst_momentum() added to signal-engine/generators/signals.py; reads analyst_actions from existing fundamentals cache (no new yfinance call); counts upgrades_7d / downgrades_7d. Adjustment applied in _apply_style_signal() for SWING/LONG/GROWTH: ≥2 upgrades net positive → +2.5% per upgrade (max +5%); single upgrade → +2%; ≥2 downgrades net negative → -4% per downgrade (max -8%); single downgrade → -3%. Reasons: analyst_momentum (strong_upgrade/mild_upgrade/neutral/mild_downgrade/strong_downgrade), analyst_upgrades_7d, analyst_downgrades_7d, analyst_momentum_adj. Stock detail page analyst actions section now shows "+N 7d" / "−N 7d" momentum chips when recent actions exist.',
     title: 'RES-2: Analyst upgrade/downgrade momentum — recent rating changes as signal catalyst',
-    file: 'services/market-data/src/api/routes.py · services/signal-engine/src/generators/signals.py',
+    file: 'services/market-data/src/api/routes.py · services/signal-engine/src/generators/signals.py · frontend/src/pages/stock/[symbol].tsx',
     effort: '2–3 days',
     impact: 'Medium — an analyst upgrade in the last 7 days is a strong near-term catalyst. A downgrade while holding is a major exit warning. Currently only the consensus rating is used, not the direction or recency of changes.',
     what: 'The system uses recommendationMean (consensus) from yfinance but does not track rating changes over time. An upgrade from Neutral to Buy (direction) that happened 2 days ago is far more actionable than a stable Buy rating that has been unchanged for 6 months.',
@@ -1547,6 +1549,18 @@ const ITEMS: Item[] = [
     impact: 'High — the #1 failure mode of ML trading systems is overfitting: the backtest shows 70% accuracy but live performance is 54%. Without explicitly tracking the gap, this degradation is invisible until significant losses occur.',
     what: 'The system has both a backtest engine and live signal tracking, but they are never compared. Backtest accuracy is computed on historical data. Live accuracy comes from signal_outcomes. There is no dashboard showing whether live performance is tracking backtest expectations or has diverged significantly.',
     fix: 'Add a "Live vs Backtest" panel to /signal-accuracy: (1) Backtest accuracy: run the accuracy calculation on the 2-year historical training period (before the model went live). (2) Live accuracy: last 90 days from signal_outcomes. (3) Show both as a side-by-side bar chart per horizon (SHORT/SWING/LONG). (4) Alert if live accuracy < backtest × 0.85 for any horizon — this is a 15% degradation threshold that flags probable overfitting or regime change. (5) Track this gap monthly and plot a trend line — a widening gap over 3 months triggers an automatic re-tune request. (6) Include model version number so accuracy is correctly attributed to the model that generated it (not polluted by a retrained model mid-period).',
+  },
+
+  // ── Tier 7 — Maintenance & Ops (2026-06-10) ─────────────────────────────
+  {
+    id: 'maint-db-purge-job',
+    tier: 7, severity: 'low',
+    title: 'DB maintenance: scheduled purge job for prices_5m and scheduler_jobs tables',
+    file: 'services/market-data/src/services/scheduler.py · shared/db/session.py',
+    effort: '0.5 days',
+    impact: 'LOW — prices_5m grows ~3.5M rows/year (~1 GB); scheduler_jobs grows ~18k rows/year. Neither self-prunes. Without a purge, disk usage grows unbounded on the EC2 30 GB volume.',
+    what: 'prices_5m stores 5-minute OHLCV bars. Oldest bars are never queried by any signal or indicator — all TA uses daily bars. scheduler_jobs accumulates one row per job run (~50/day). Both tables grow forever with no existing purge logic.',
+    fix: 'Add a weekly purge job to scheduler.py (e.g., Sunday after weekly_full_refresh): (1) DELETE FROM prices_5m WHERE ts < NOW() - INTERVAL \'90 days\'; (2) DELETE FROM scheduler_jobs WHERE created_at < NOW() - INTERVAL \'90 days\'. Run VACUUM ANALYZE after purge. Alternatively add a nightly lightweight purge for prices_5m only. No UI change needed — purely backend.',
   },
 
   // ── Tier 7 — Alert Intelligence & UX Enhancements (2026-06-10) ───────────

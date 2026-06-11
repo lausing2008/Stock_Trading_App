@@ -1009,6 +1009,40 @@ def _fetch_short_interest(symbol: str) -> tuple[float | None, float | None]:
     return None, None
 
 
+def _fetch_analyst_momentum(symbol: str) -> tuple[int, int]:
+    """Return (upgrades_7d, downgrades_7d) from market-data analyst_actions (last 7 days).
+
+    Uses the already-cached fundamentals endpoint so no extra yfinance call is made.
+    action values from yfinance: "up" / "down" / "main" / "init" / "reit".
+    "init" (initiated coverage) counts as an upgrade if to_grade is positive.
+    Returns (0, 0) on any failure.
+    """
+    _UP_ACTIONS = {"up", "upgrade", "init", "initiated"}
+    _DOWN_ACTIONS = {"down", "downgrade"}
+    try:
+        from datetime import date as _adate, timedelta as _td
+        cutoff = (_adate.today() - _td(days=7)).isoformat()
+        url = f"{_settings.market_data_url}/stocks/{symbol}/fundamentals"
+        with httpx.Client(timeout=6) as c:
+            r = c.get(url)
+            if r.status_code == 200:
+                actions = r.json().get("analyst_actions", [])
+                ups = sum(
+                    1 for a in actions
+                    if a.get("date", "") >= cutoff
+                    and a.get("action", "").lower() in _UP_ACTIONS
+                )
+                downs = sum(
+                    1 for a in actions
+                    if a.get("date", "") >= cutoff
+                    and a.get("action", "").lower() in _DOWN_ACTIONS
+                )
+                return ups, downs
+    except Exception:
+        pass
+    return 0, 0
+
+
 def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str, str]:
     """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds.
 
@@ -1045,6 +1079,8 @@ def _apply_style_signal(
     earnings_beat_rate: float | None = None,
     sector_etf_above_sma50: bool | None = None,
     short_pct_float: float | None = None,
+    analyst_upgrades_7d: int = 0,
+    analyst_downgrades_7d: int = 0,
 ) -> "AIConfidence":
     """Apply style-specific fusion and filters from shared base values.
 
@@ -1287,6 +1323,40 @@ def _apply_style_signal(
         reasons["short_interest_flag"] = "no_data" if short_pct_float is None else "normal"
     fused = float(np.clip(fused, 0.0, 1.0))
 
+    # ── Analyst upgrade/downgrade momentum ───────────────────────────────────
+    # Recent (last 7 days) analyst actions shift probability toward the consensus.
+    # Upgrades from multiple firms = institutional buy pressure; downgrades = exit signal.
+    # Not applied to SHORT (too short-horizon to care about analyst coverage cycles).
+    if style_key != "SHORT":
+        net = analyst_upgrades_7d - analyst_downgrades_7d
+        if analyst_upgrades_7d >= 2 and net >= 2:
+            adj = min(analyst_upgrades_7d * 0.025, 0.05)
+            fused = float(np.clip(fused + adj, 0.0, 1.0))
+            reasons["analyst_momentum"] = "strong_upgrade"
+            reasons["analyst_momentum_adj"] = round(adj, 3)
+        elif analyst_upgrades_7d >= 1 and net >= 1:
+            fused = float(np.clip(fused + 0.02, 0.0, 1.0))
+            reasons["analyst_momentum"] = "mild_upgrade"
+            reasons["analyst_momentum_adj"] = 0.02
+        elif analyst_downgrades_7d >= 2 and net <= -2:
+            adj = min(analyst_downgrades_7d * 0.04, 0.08)
+            fused = float(np.clip(fused - adj, 0.0, 1.0))
+            reasons["analyst_momentum"] = "strong_downgrade"
+            reasons["analyst_momentum_adj"] = round(-adj, 3)
+        elif analyst_downgrades_7d >= 1 and net <= -1:
+            fused = float(np.clip(fused - 0.03, 0.0, 1.0))
+            reasons["analyst_momentum"] = "mild_downgrade"
+            reasons["analyst_momentum_adj"] = -0.03
+        else:
+            reasons["analyst_momentum"] = "neutral"
+            reasons["analyst_momentum_adj"] = 0.0
+    else:
+        reasons["analyst_momentum"] = "n/a"
+        reasons["analyst_momentum_adj"] = 0.0
+    reasons["analyst_upgrades_7d"] = analyst_upgrades_7d
+    reasons["analyst_downgrades_7d"] = analyst_downgrades_7d
+    fused = float(np.clip(fused, 0.0, 1.0))
+
     # ── K-Score fundamental boost (LONG only) ────────────────────────────────
     if p.get("kscore_boost") and kscore is not None:
         if kscore >= 70:
@@ -1405,6 +1475,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     weekly_score = weekly_tech["weekly_score"]
     kscore = _fetch_kscore(symbol)
     short_pct_float, short_ratio = _fetch_short_interest(symbol)
+    analyst_upgrades_7d, analyst_downgrades_7d = _fetch_analyst_momentum(symbol)
 
     # Populate shared base reasons (written into every style's output)
     reasons["market_regime"]      = market_regime
@@ -1466,6 +1537,8 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             earnings_beat_rate=earnings_beat_rate,
             sector_etf_above_sma50=sector_etf_above_sma50,
             short_pct_float=short_pct_float,
+            analyst_upgrades_7d=analyst_upgrades_7d,
+            analyst_downgrades_7d=analyst_downgrades_7d,
         )
 
     return {k: _make_signal(k) for k in ("SHORT", "SWING", "LONG", "GROWTH")}
