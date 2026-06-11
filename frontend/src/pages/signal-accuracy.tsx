@@ -47,7 +47,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type SignalAccuracyReport } from '@/lib/api';
+import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type SignalAccuracyReport, type AlphaDecayReport, type AlphaDecayCurvePoint } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 type RollingPoint = { date: string; accuracy: number; signal_count: number };
@@ -535,6 +535,257 @@ function WalkForwardSection() {
   );
 }
 
+const DECAY_HORIZONS = ['SWING', 'SHORT', 'LONG', 'GROWTH'] as const;
+const DECAY_LOOKBACKS = [
+  { label: '90d', value: 90 },
+  { label: '180d', value: 180 },
+  { label: '365d', value: 365 },
+];
+
+function AlphaDecaySection() {
+  const [horizon, setHorizon] = useState<typeof DECAY_HORIZONS[number]>('SWING');
+  const [lookbackDays, setLookbackDays] = useState(180);
+
+  const { data, isLoading, error } = useSWR<AlphaDecayReport>(
+    ['alpha-decay', horizon, lookbackDays],
+    () => api.alphaDecay(horizon, lookbackDays),
+    { revalidateOnFocus: false },
+  );
+
+  const curve: AlphaDecayCurvePoint[] = data?.curve ?? [];
+  const hasData = curve.length > 0 && curve.some(p => p.avg_return_pct != null);
+
+  // SVG chart setup
+  const chartW = 560;
+  const chartH = 120;
+  const padL = 36;
+  const padR = 10;
+  const padT = 10;
+  const padB = 24;
+  const innerW = chartW - padL - padR;
+  const innerH = chartH - padT - padB;
+
+  const returns = curve.map(p => p.avg_return_pct ?? 0);
+  const p25s = curve.map(p => p.p25 ?? 0);
+  const p75s = curve.map(p => p.p75 ?? 0);
+  const allVals = [...returns, ...p25s, ...p75s, 0];
+  const minV = Math.min(...allVals) - 0.5;
+  const maxV = Math.max(...allVals) + 0.5;
+  const range = maxV - minV || 1;
+
+  function toX(i: number) {
+    return padL + (i / Math.max(curve.length - 1, 1)) * innerW;
+  }
+  function toY(v: number) {
+    return padT + ((maxV - v) / range) * innerH;
+  }
+
+  const zeroY = toY(0);
+  const avgPoints = curve.map((p, i) => `${toX(i)},${toY(p.avg_return_pct ?? 0)}`).join(' ');
+  const bandPoints = [
+    ...curve.map((p, i) => `${toX(i)},${toY(p.p75 ?? (p.avg_return_pct ?? 0))}`),
+    ...[...curve].reverse().map((p, i) => `${toX(curve.length - 1 - i)},${toY(p.p25 ?? (p.avg_return_pct ?? 0))}`),
+  ].join(' ');
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: 20, marginBottom: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Horizon</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {DECAY_HORIZONS.map(h => (
+              <button key={h} onClick={() => setHorizon(h)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                  borderColor: horizon === h ? '#6366f1' : '#1e293b',
+                  background: horizon === h ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: horizon === h ? '#818cf8' : '#64748b' }}>
+                {h}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Lookback</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {DECAY_LOOKBACKS.map(o => (
+              <button key={o.value} onClick={() => setLookbackDays(o.value)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                  borderColor: lookbackDays === o.value ? '#6366f1' : '#1e293b',
+                  background: lookbackDays === o.value ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: lookbackDays === o.value ? '#818cf8' : '#64748b' }}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {isLoading && <div style={{ color: '#64748b', textAlign: 'center', padding: 60 }}>Computing alpha decay curve…</div>}
+      {error && <div style={{ color: '#f87171', padding: 16 }}>Failed to load decay data.</div>}
+
+      {!isLoading && !error && !hasData && (
+        <div style={{ textAlign: 'center', padding: '60px 0', color: '#475569' }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📉</div>
+          <div>Not enough signal history for {horizon} decay analysis.</div>
+          <div style={{ fontSize: 12, marginTop: 4 }}>Need BUY signals with settled outcomes in the {lookbackDays}d window. Try a longer lookback.</div>
+        </div>
+      )}
+
+      {!isLoading && !error && hasData && data && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Optimal hold chip */}
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+              <div style={{ fontSize: 11, color: '#64748b' }}>Signal count ({lookbackDays}d)</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: '#e2e8f0', marginTop: 2 }}>{data.signal_count}</div>
+            </div>
+            {data.optimal_hold_days != null && (
+              <div style={{ background: '#0f172a', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 8, padding: '10px 16px' }}>
+                <div style={{ fontSize: 11, color: '#64748b' }}>Optimal hold — {horizon}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: '#4ade80', marginTop: 2 }}>
+                  {data.optimal_hold_days}d
+                  {data.optimal_return_pct != null && (
+                    <span style={{ fontSize: 13, color: '#86efac', marginLeft: 8 }}>
+                      (peak α = {data.optimal_return_pct >= 0 ? '+' : ''}{data.optimal_return_pct.toFixed(2)}%)
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>
+                  Based on {data.signal_count} {horizon} BUY signals
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SVG line chart */}
+          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 4 }}>
+              Cumulative return after BUY signal — {horizon} ({lookbackDays}d lookback)
+            </div>
+            <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+              Avg return at each day post-entry. Band = 25th–75th percentile range.
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <svg width={chartW} height={chartH} style={{ display: 'block' }}>
+                {/* Zero line */}
+                <line x1={padL} y1={zeroY} x2={chartW - padR} y2={zeroY}
+                  stroke="#334155" strokeWidth={1} strokeDasharray="4,3" />
+
+                {/* p25–p75 band */}
+                {curve.length >= 2 && (
+                  <polygon points={bandPoints} fill="rgba(99,102,241,0.12)" />
+                )}
+
+                {/* Optimal day marker */}
+                {data.optimal_hold_days != null && (() => {
+                  const optIdx = curve.findIndex(p => p.day === data.optimal_hold_days);
+                  if (optIdx < 0) return null;
+                  const ox = toX(optIdx);
+                  return (
+                    <line x1={ox} y1={padT} x2={ox} y2={chartH - padB}
+                      stroke="rgba(74,222,128,0.4)" strokeWidth={1} strokeDasharray="3,3" />
+                  );
+                })()}
+
+                {/* Avg return line */}
+                {curve.length >= 2 && (
+                  <polyline
+                    fill="none"
+                    stroke="#818cf8"
+                    strokeWidth={2}
+                    strokeLinejoin="round"
+                    points={avgPoints}
+                  />
+                )}
+
+                {/* Data point dots */}
+                {curve.map((p, i) => {
+                  if (p.avg_return_pct == null) return null;
+                  const isOptimal = p.day === data.optimal_hold_days;
+                  return (
+                    <circle key={p.day}
+                      cx={toX(i)} cy={toY(p.avg_return_pct)}
+                      r={isOptimal ? 5 : 3}
+                      fill={isOptimal ? '#4ade80' : '#818cf8'}
+                    >
+                      <title>{`Day ${p.day}: ${p.avg_return_pct >= 0 ? '+' : ''}${p.avg_return_pct.toFixed(2)}% (n=${p.n})`}</title>
+                    </circle>
+                  );
+                })}
+
+                {/* Y-axis labels */}
+                {[minV, 0, maxV].map(v => (
+                  <text key={v} x={padL - 4} y={toY(v) + 4}
+                    textAnchor="end" fontSize={9} fill="#475569">
+                    {v >= 0 ? '+' : ''}{v.toFixed(1)}%
+                  </text>
+                ))}
+
+                {/* X-axis day labels */}
+                {curve.map((p, i) => (
+                  <text key={p.day} x={toX(i)} y={chartH - 4}
+                    textAnchor="middle" fontSize={9} fill="#475569">
+                    {p.day}d
+                  </text>
+                ))}
+              </svg>
+            </div>
+            <div style={{ display: 'flex', gap: 14, marginTop: 8, fontSize: 10, color: '#475569' }}>
+              <span><span style={{ color: '#818cf8' }}>—</span> Avg return</span>
+              <span><span style={{ color: 'rgba(99,102,241,0.4)' }}>■</span> p25–p75 band</span>
+              <span><span style={{ color: 'rgba(74,222,128,0.5)' }}>|</span> Optimal hold day</span>
+            </div>
+          </div>
+
+          {/* Per-day table */}
+          <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Per-day breakdown</div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                    {['Hold Day', 'Avg Return', 'p25', 'p75', 'N signals'].map(h => (
+                      <th key={h} style={{ padding: '4px 10px', textAlign: 'left', color: '#475569', fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {curve.map(p => {
+                    const isOpt = p.day === data.optimal_hold_days;
+                    const r = p.avg_return_pct;
+                    return (
+                      <tr key={p.day} style={{ borderBottom: '1px solid #0f172a', background: isOpt ? 'rgba(74,222,128,0.05)' : 'transparent' }}>
+                        <td style={{ padding: '5px 10px', color: isOpt ? '#4ade80' : '#94a3b8', fontWeight: isOpt ? 700 : 400 }}>
+                          {p.day}d {isOpt && <span style={{ fontSize: 10, color: '#4ade80' }}>★ optimal</span>}
+                        </td>
+                        <td style={{ padding: '5px 10px', fontWeight: 600, color: r == null ? '#334155' : r >= 0 ? '#4ade80' : '#f87171' }}>
+                          {r == null ? '—' : `${r >= 0 ? '+' : ''}${r.toFixed(2)}%`}
+                        </td>
+                        <td style={{ padding: '5px 10px', color: p.p25 == null ? '#334155' : p.p25 >= 0 ? '#86efac' : '#fca5a5' }}>
+                          {p.p25 == null ? '—' : `${p.p25 >= 0 ? '+' : ''}${p.p25.toFixed(2)}%`}
+                        </td>
+                        <td style={{ padding: '5px 10px', color: p.p75 == null ? '#334155' : p.p75 >= 0 ? '#86efac' : '#fca5a5' }}>
+                          {p.p75 == null ? '—' : `${p.p75 >= 0 ? '+' : ''}${p.p75.toFixed(2)}%`}
+                        </td>
+                        <td style={{ padding: '5px 10px', color: '#64748b' }}>{p.n ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+            ℹ️ Entry = first daily close on or after BUY signal date. Return = (close at day N − entry) / entry. Up to 5 calendar-day slippage allowed for weekends/holidays.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SignalAccuracyPage() {
   const router = useRouter();
   const [authed, setAuthed] = useState(false);
@@ -546,7 +797,7 @@ export default function SignalAccuracyPage() {
     setAuthed(true);
   }, [router]);
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward' | 'outcomes'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward' | 'outcomes' | 'decay'>('overview');
   const [lookback, setLookback] = useState(90);
   const [filterSymbol, setFilterSymbol] = useState('');
   const [signalFilter, setSignalFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
@@ -661,7 +912,7 @@ export default function SignalAccuracyPage() {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #1e293b', paddingBottom: 0 }}>
-        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward'], ['outcomes', 'Outcomes']] as const).map(([tab, label]) => (
+        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward'], ['outcomes', 'Outcomes'], ['decay', 'Alpha Decay']] as const).map(([tab, label]) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             style={{ padding: '7px 18px', borderRadius: '6px 6px 0 0', fontSize: 13, fontWeight: 500, cursor: 'pointer',
               border: '1px solid', borderBottom: activeTab === tab ? '1px solid #0f172a' : '1px solid transparent',
@@ -675,6 +926,7 @@ export default function SignalAccuracyPage() {
       </div>
 
       {activeTab === 'walkforward' && <WalkForwardSection />}
+      {activeTab === 'decay' && <AlphaDecaySection />}
 
       {activeTab === 'outcomes' && (
         <div>
