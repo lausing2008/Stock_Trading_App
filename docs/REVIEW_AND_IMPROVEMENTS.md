@@ -1,19 +1,19 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-07 (All Tier 1–4 complete — SA-1–8, UI-01–09, portfolio risk, ATR sizer, peer compare, DCF)  
+**Last updated:** 2026-06-10 (Per-horizon alerts, consensus indicator, Add to Radar, admin health expansion, AUC fix)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 9.0 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 — full Tier 2–4 batch shipped 2026-06-04/07)*
+**Overall rating:** 9.2 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 — alert/UX improvements shipped 2026-06-10)*
 
 ---
 
 ## Executive Summary
 
-StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. **As of 2026-06-07, all Tier 1–4 improvements are complete.** The signal engine is regime-aware, ML features cover 34 inputs with weekly auto-calibration, portfolio risk is quantified, position sizing is ATR-driven, and the outcomes feedback loop is fully wired.
+StockAI is a well-architected personal trading intelligence platform with a genuinely impressive feature set for a self-built system. The microservice separation, dual-storage pipeline, multi-user auth, email alerts, and ML + TA signal fusion all reflect real systems thinking. **As of 2026-06-10, all Tier 1–4 improvements are complete plus alert intelligence enhancements.** The signal engine is regime-aware, ML features cover 34 inputs with weekly auto-calibration, portfolio risk is quantified, position sizing is ATR-driven, outcomes feedback loop fully wired, and signal alerts now operate per-horizon with optional multi-timeframe consensus gating.
 
 This document is the single source of truth for everything that was found, why it matters, and how it was fixed.
 
-**Remaining (Tier 5, low priority):** UI-08 walk-forward drill-down, UI-10 ML weight auto-apply, UI-12 congress trading page.
+**Remaining (Tier 5, low priority):** UI-08 walk-forward drill-down, UI-12 congress trading page.
 
 ---
 
@@ -78,6 +78,14 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-07 | **SA-3: Macro boolean ML features confirmed** — is_bear_market, vix_spiking, high_vol_regime, market_stress already in FEATURE_COLUMNS and flowing to XGBoost; marked done | ml-prediction/builder.py | ✅ Already live |
 | 2026-06-07 | **SA-5: calibrate_ta_weights on schedule** — _weekly_full_refresh() now calls POST /signals/calibrate_ta_weights every Sunday after tune_all; fits logistic regression on signal history, writes ta_weights.json | market-data/scheduler.py | ✅ Done |
 | 2026-06-07 | **SA-7: Regime-aware earnings compression** — bull+beat≥70%: skip compression +3% boost; bull+50-70%: beat_scale=2.0 (halved); bear/high_vol: beat_scale=0.75–1.0 (tightened); unknown: original ±20% formula | signal-engine/signals.py | ✅ Done |
+| 2026-06-10 | **ML AUC key fix** — trainer bundles store `"auc"` / `"cv_auc_mean"` but `/ml/metrics` endpoint read `"test_auc"` / `"cv_auc"`; all 119 models returned null; fixed key names so admin health shows real values | ml-prediction/routes.py | ✅ Done |
+| 2026-06-10 | **Per-horizon signal alerts** — `signal_alerts` schema extended with `horizon` column; unique constraint updated to `(user_id, symbol, horizon)`; each timeframe (SHORT/SWING/LONG/GROWTH) gets its own subscription row | shared/db/models.py + session.py + market-data/signal_alerts.py | ✅ Done |
+| 2026-06-10 | **Require consensus setting** — `require_consensus` Boolean on alert subscription; scheduler skips alert if <2 of 4 horizons agree on the new signal direction | shared/db/models.py + market-data/scheduler.py | ✅ Done |
+| 2026-06-10 | **4-horizon consensus indicator on stock detail** — stock detail fetches all 4 horizon signals concurrently; 2×2 grid shows signal + confidence per horizon plus consensus label (Strong bullish / Moderately bullish / Mixed / etc.) | frontend/stock/[symbol].tsx + api.ts | ✅ Done |
+| 2026-06-10 | **Per-horizon alert rows on alerts page** — subscription list shows 4 rows per symbol with horizon badge, mode toggle, and ⚡ Consensus / Any toggle; add form includes horizon selector | frontend/alerts.tsx | ✅ Done |
+| 2026-06-10 | **Add to Radar button on Opportunities** — 📡 button per stock card; adds symbol to "Radar" watchlist (auto-created if missing); already-added stocks show as checked | frontend/opportunities.tsx | ✅ Done |
+| 2026-06-10 | **Admin health — SIGNAL REFRESH HEALTH** — BUY/SELL/WAIT/HOLD distribution, bull/bear ratio, fresh/stale counts, last US/HK refresh timestamps | frontend/admin-health.tsx | ✅ Done |
+| 2026-06-10 | **Admin health — ML TRAINING HEALTH** — Avg AUC, good/weak/overfit model counts, last US/HK retrain timestamps with pass/fail badges | frontend/admin-health.tsx | ✅ Done |
 
 ---
 
@@ -90,9 +98,9 @@ This document is the single source of truth for everything that was found, why i
 | Signal logic | 9.0 / 10 | ↑ SA-1 conflict weighting + SA-2 style thresholds + SA-7 regime earnings + S/R context + walk-forward |
 | K-Score ranking | 8.2 / 10 | ↑ Falling knife gate + RSI curve + sector-relative peer scoring + peer comparison drawer |
 | Research engine | 7.5 / 10 | ↑ DCF valuation + sector-relative fundamentals + cache quality flag; Nginx 150s timeout fixed |
-| Frontend / UX | 9.3 / 10 | ↑ Outcomes tab + P&L heatmap + conviction screener + walk-forward + sector rotation + factor chart |
+| Frontend / UX | 9.5 / 10 | ↑ Per-horizon alerts + consensus indicator + Add to Radar + Outcomes tab + P&L heatmap + conviction screener |
 | Risk management | 8.5 / 10 | ↑ Portfolio beta + VaR + correlation + ATR position sizer + unrealized P&L + portfolio heatmap |
-| **Overall** | **9.0 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 → 8.7 → 8.8 → 8.9 → 9.0 — all Tier 1–4 complete 2026-06-07)* |
+| **Overall** | **9.2 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 — alert intelligence + UX 2026-06-10)* |
 
 ---
 

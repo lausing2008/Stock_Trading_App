@@ -263,18 +263,25 @@ function SignalAlertsTab() {
   const { data: allSignals } = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()), { refreshInterval: 120000 });
 
   const [addSymbol, setAddSymbol] = useState('');
+  const [addHorizon, setAddHorizon] = useState('SWING');
   const [email, setEmail]         = useState('');
   const [adding, setAdding]       = useState(false);
   const [addError, setAddError]   = useState('');
   const [addOk, setAddOk]         = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [togglingModeId, setTogglingModeId] = useState<number | null>(null);
+  const [togglingId, setTogglingId] = useState<number | null>(null);
 
   async function handleToggleMode(sub: SignalAlertItem) {
     const next = (sub.alert_mode ?? 'all') === 'all' ? 'buy_only' : 'all';
-    setTogglingModeId(sub.id);
-    try { await api.updateSignalAlert(sub.id, next); await mutate(); } catch {}
-    setTogglingModeId(null);
+    setTogglingId(sub.id);
+    try { await api.updateSignalAlert(sub.id, { alert_mode: next }); await mutate(); } catch {}
+    setTogglingId(null);
+  }
+
+  async function handleToggleConsensus(sub: SignalAlertItem) {
+    setTogglingId(sub.id);
+    try { await api.updateSignalAlert(sub.id, { require_consensus: !sub.require_consensus }); await mutate(); } catch {}
+    setTogglingId(null);
   }
 
   useEffect(() => {
@@ -286,16 +293,15 @@ function SignalAlertsTab() {
   const sigMap: Record<string, SignalSummary> = {};
   for (const s of allSignals ?? []) sigMap[s.symbol] = s;
 
-  // Stocks not yet subscribed (for picker)
-  const subscribedSymbols = new Set((signalAlerts ?? []).map(a => a.symbol));
-  const available = (stocks ?? []).filter(s => !subscribedSymbols.has(s.symbol));
+  // Stocks not yet fully subscribed (show all for picker — user can add multiple horizons per stock)
+  const available = stocks ?? [];
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!addSymbol || !email) return;
     setAdding(true); setAddError('');
     try {
-      await api.createSignalAlert(addSymbol, email);
+      await api.createSignalAlert(addSymbol, email, 'all', addHorizon);
       localStorage.setItem('stockai_alert_email', email);
       await mutate();
       setAddSymbol('');
@@ -334,7 +340,7 @@ function SignalAlertsTab() {
         <div style={{ padding: '20px 24px' }}>
           <h2 style={{ margin: '0 0 16px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Add Subscription</h2>
           <form onSubmit={handleAdd}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '12px', alignItems: 'end' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 1fr auto', gap: '12px', alignItems: 'end' }}>
               <div>
                 <label style={lbl}>Stock</label>
                 <select value={addSymbol} onChange={e => setAddSymbol(e.target.value)} required style={inp}>
@@ -342,6 +348,12 @@ function SignalAlertsTab() {
                   {available.map(s => (
                     <option key={s.symbol} value={s.symbol}>{s.symbol} — {s.name}</option>
                   ))}
+                </select>
+              </div>
+              <div>
+                <label style={lbl}>Horizon</label>
+                <select value={addHorizon} onChange={e => setAddHorizon(e.target.value)} style={inp}>
+                  {['SHORT','SWING','LONG','GROWTH'].map(h => <option key={h} value={h}>{h}</option>)}
                 </select>
               </div>
               <div>
@@ -408,8 +420,8 @@ function SignalAlertsTab() {
               return (
                 <div key={sub.id} style={{
                   display: 'grid', alignItems: 'center',
-                  gridTemplateColumns: '90px 1fr 110px 110px 120px 100px 90px 36px',
-                  gap: '12px', padding: '13px 16px', borderRadius: '10px',
+                  gridTemplateColumns: '90px 60px 1fr 100px 110px 120px 80px 90px 36px',
+                  gap: '10px', padding: '13px 16px', borderRadius: '10px',
                   border: '1px solid #1e293b', background: 'rgba(15,23,42,0.7)',
                   transition: 'border-color 0.15s',
                 }}>
@@ -420,6 +432,13 @@ function SignalAlertsTab() {
                     {stockInfo && <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{stockInfo.name}</div>}
                   </Link>
 
+                  {/* Horizon badge */}
+                  <div>
+                    <span style={{ padding: '2px 7px', borderRadius: '5px', fontSize: '10px', fontWeight: 700, background: 'rgba(99,102,241,0.12)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.25)' }}>
+                      {sub.horizon ?? 'SWING'}
+                    </span>
+                  </div>
+
                   {/* Email */}
                   <div style={{ fontSize: '11px', color: '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sub.email ?? ''}>
                     {sub.email ?? '—'}
@@ -427,10 +446,7 @@ function SignalAlertsTab() {
 
                   {/* Current signal badge */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{
-                      padding: '3px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700,
-                      color, background: bg, border: `1px solid ${color}44`, letterSpacing: '0.04em',
-                    }}>{signal}</span>
+                    <span style={{ padding: '3px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 700, color, background: bg, border: `1px solid ${color}44`, letterSpacing: '0.04em' }}>{signal}</span>
                   </div>
 
                   {/* Confidence */}
@@ -448,32 +464,43 @@ function SignalAlertsTab() {
                   {/* Last triggered */}
                   <div style={{ fontSize: '11px', color: '#475569' }}>
                     {sub.last_signal ? (
-                      <span style={{
-                        padding: '2px 8px', borderRadius: '4px', fontWeight: 600,
-                        background: 'rgba(99,102,241,0.15)', color: '#818cf8',
-                      }}>Last: {sub.last_signal}</span>
-                    ) : <span style={{ color: '#334155' }}>Never triggered</span>}
+                      <span style={{ padding: '2px 8px', borderRadius: '4px', fontWeight: 600, background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>Last: {sub.last_signal}</span>
+                    ) : <span style={{ color: '#334155' }}>Never sent</span>}
                   </div>
+
+                  {/* Consensus toggle */}
+                  <button
+                    onClick={() => handleToggleConsensus(sub)}
+                    disabled={togglingId === sub.id}
+                    title={sub.require_consensus ? 'Consensus required (≥2 horizons agree) — click to disable' : 'Any transition — click to require ≥2 horizons to agree'}
+                    style={{
+                      padding: '3px 7px', borderRadius: '6px', fontSize: '10px', fontWeight: 700,
+                      cursor: 'pointer', border: '1px solid',
+                      background: sub.require_consensus ? 'rgba(251,191,36,0.12)' : 'rgba(148,163,184,0.06)',
+                      color: sub.require_consensus ? '#fbbf24' : '#475569',
+                      borderColor: sub.require_consensus ? 'rgba(251,191,36,0.3)' : '#1e293b',
+                      opacity: togglingId === sub.id ? 0.5 : 1, whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {togglingId === sub.id ? '…' : sub.require_consensus ? '⚡ Consensus' : 'Any'}
+                  </button>
 
                   {/* Mode toggle */}
                   <button
                     onClick={() => handleToggleMode(sub)}
-                    disabled={togglingModeId === sub.id}
-                    title={(sub.alert_mode ?? 'all') === 'buy_only' ? 'BUY transitions only — click for all transitions' : 'All transitions — click for BUY only'}
+                    disabled={togglingId === sub.id}
+                    title={(sub.alert_mode ?? 'all') === 'buy_only' ? 'BUY transitions only — click for all' : 'All transitions — click for BUY only'}
                     style={{
                       padding: '3px 9px', borderRadius: '6px', fontSize: '11px', fontWeight: 700,
                       cursor: 'pointer', border: '1px solid',
                       background: (sub.alert_mode ?? 'all') === 'buy_only' ? 'rgba(74,222,128,0.12)' : 'rgba(148,163,184,0.08)',
                       color: (sub.alert_mode ?? 'all') === 'buy_only' ? '#4ade80' : '#64748b',
                       borderColor: (sub.alert_mode ?? 'all') === 'buy_only' ? 'rgba(74,222,128,0.3)' : '#1e293b',
-                      opacity: togglingModeId === sub.id ? 0.5 : 1,
+                      opacity: togglingId === sub.id ? 0.5 : 1,
                     }}
                   >
-                    {togglingModeId === sub.id ? '…' : (sub.alert_mode ?? 'all') === 'buy_only' ? 'BUY only' : 'All'}
+                    {togglingId === sub.id ? '…' : (sub.alert_mode ?? 'all') === 'buy_only' ? 'BUY only' : 'All'}
                   </button>
-
-                  {/* Added */}
-                  <div style={{ fontSize: '11px', color: '#334155' }}>{relTime(sub.created_at)}</div>
 
                   {/* Delete */}
                   <button

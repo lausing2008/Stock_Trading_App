@@ -322,6 +322,10 @@ class SignalAlert(Base):
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # "all" = all signal transitions; "buy_only" = only transitions to/from BUY
     alert_mode: Mapped[str] = mapped_column(String(16), server_default="all")
+    # horizon this subscription tracks: SHORT / SWING / LONG / GROWTH
+    horizon: Mapped[str] = mapped_column(String(16), server_default="SWING")
+    # when True, only fire if ≥2 horizons agree on the new direction
+    require_consensus: Mapped[bool] = mapped_column(Boolean, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="signal_alerts")

@@ -228,6 +228,29 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE signal_alerts ADD COLUMN IF NOT EXISTS alert_mode VARCHAR(16) NOT NULL DEFAULT 'all'"
         ))
+        # per-horizon alert subscriptions
+        conn.execute(text(
+            "ALTER TABLE signal_alerts ADD COLUMN IF NOT EXISTS horizon VARCHAR(16) NOT NULL DEFAULT 'SWING'"
+        ))
+        conn.execute(text(
+            "ALTER TABLE signal_alerts ADD COLUMN IF NOT EXISTS require_consensus BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        # drop old single-stock unique constraint, replace with per-horizon one
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'signal_alerts_user_id_symbol_key'
+                ) THEN
+                    ALTER TABLE signal_alerts DROP CONSTRAINT signal_alerts_user_id_symbol_key;
+                END IF;
+            END $$;
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_alerts_user_symbol_horizon
+            ON signal_alerts (user_id, symbol, horizon)
+        """))
 
 
 def _seed_admin() -> None:

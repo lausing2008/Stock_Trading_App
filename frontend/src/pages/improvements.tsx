@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -1548,6 +1548,74 @@ const ITEMS: Item[] = [
     what: 'The system has both a backtest engine and live signal tracking, but they are never compared. Backtest accuracy is computed on historical data. Live accuracy comes from signal_outcomes. There is no dashboard showing whether live performance is tracking backtest expectations or has diverged significantly.',
     fix: 'Add a "Live vs Backtest" panel to /signal-accuracy: (1) Backtest accuracy: run the accuracy calculation on the 2-year historical training period (before the model went live). (2) Live accuracy: last 90 days from signal_outcomes. (3) Show both as a side-by-side bar chart per horizon (SHORT/SWING/LONG). (4) Alert if live accuracy < backtest × 0.85 for any horizon — this is a 15% degradation threshold that flags probable overfitting or regime change. (5) Track this gap monthly and plot a trend line — a widening gap over 3 months triggers an automatic re-tune request. (6) Include model version number so accuracy is correctly attributed to the model that generated it (not polluted by a retrained model mid-period).',
   },
+
+  // ── Tier 7 — Alert Intelligence & UX Enhancements (2026-06-10) ───────────
+  {
+    id: 'auc-key-fix',
+    tier: 7, severity: 'critical', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-10 — ml-prediction/routes.py lines 282-283: "test_auc" key changed to "auc", "cv_auc" changed to "cv_auc_mean". These match the keys written by trainer.py. All 119 models now return real AUC values in the admin health page.',
+    title: 'ML AUC key mismatch — admin health showed 0.000 for all models',
+    file: 'services/ml-prediction/src/api/routes.py:282-283',
+    effort: '15 min',
+    impact: 'HIGH — Avg AUC showed 0.000 and top/bottom 5 model lists were empty; model quality was invisible',
+    what: 'Trainer bundles write metrics as "auc" and "cv_auc_mean" but GET /ml/metrics was reading "test_auc" and "cv_auc". m.test_auc != null filtered out all 119 models, leaving the AUC widget showing 0.000 with empty best/worst lists.',
+    fix: 'Changed key lookups in routes.py to match the actual bundle format: m.get("auc") and m.get("cv_auc_mean").',
+  },
+  {
+    id: 'per-horizon-signal-alerts',
+    tier: 7, severity: 'medium', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-10 — shared/db/models.py: horizon + require_consensus columns added to SignalAlert. shared/db/session.py _run_migrations(): ADD COLUMN IF NOT EXISTS for both; old (user_id, symbol) unique constraint dropped; new idx_signal_alerts_user_symbol_horizon unique index created. market-data/api/signal_alerts.py: new SignalAlertCreate/Update/Out schemas; create checks uniqueness on (user_id, symbol, horizon); update is partial (alert_mode and/or require_consensus).',
+    title: 'Per-horizon signal alerts — subscribe to SHORT/SWING/LONG/GROWTH independently',
+    file: 'shared/db/models.py · shared/db/session.py · services/market-data/src/api/signal_alerts.py',
+    effort: '2 hours',
+    impact: 'MEDIUM — users can now track the SWING signal separately from GROWTH without duplicate noise',
+    what: 'Signal alerts had a UNIQUE(user_id, symbol) constraint, meaning one subscription per stock regardless of timeframe. A user in both SWING and GROWTH watchlists got only one alert, and there was no way to choose which horizon to monitor.',
+    fix: 'Added horizon column to SignalAlert (default SWING). Changed unique constraint to (user_id, symbol, horizon). Each timeframe subscription is now an independent row.',
+  },
+  {
+    id: 'require-consensus-setting',
+    tier: 7, severity: 'medium', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-10 — require_consensus Boolean added to SignalAlert (server_default false). Scheduler check_signal_alerts(): when require_consensus=True, fetches signals for all 4 horizons; counts how many agree on the current direction; skips alert if < 2 horizons agree. UI: ⚡ Consensus / Any toggle per subscription row in alerts.tsx; calls PATCH /signal-alerts/{id} with {require_consensus: bool}.',
+    title: 'Require consensus setting — only alert when ≥2 horizons agree on signal direction',
+    file: 'shared/db/models.py · services/market-data/src/services/scheduler.py · frontend/src/pages/alerts.tsx',
+    effort: '2 hours',
+    impact: 'MEDIUM — dramatically reduces false-positive alerts; BUY signal confirmed by multiple timeframes is higher conviction',
+    what: 'A SWING BUY could fire in isolation even when SHORT and LONG were SELL. No way to require that multiple timeframes agree before triggering an email.',
+    fix: 'Added require_consensus Boolean per subscription. Scheduler fetches all 4 horizons for flagged symbols and gates the alert on ≥2 agreeing.',
+  },
+  {
+    id: '4-horizon-consensus-indicator',
+    tier: 7, severity: 'feature', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-10 — stock/[symbol].tsx: 4 parallel useSWR hooks for SHORT/SWING/LONG/GROWTH. Consensus box shows 2×2 grid (horizon label, signal badge, confidence %) plus consensus label row: ≥3 BUY = Strong bullish, 2 BUY = Moderately bullish, 2 SELL = Moderately bearish, ≥3 SELL = Strong bearish, mixed = Mixed signals. Per-horizon alert rows replace the old single bell toggle.',
+    title: '4-horizon consensus indicator on stock detail page',
+    file: 'frontend/src/pages/stock/[symbol].tsx · frontend/src/lib/api.ts',
+    effort: '3 hours',
+    impact: 'MEDIUM — surfaces timeframe agreement/disagreement directly; users no longer need to manually check each horizon',
+    what: 'Stock detail showed a single AI signal for the watchlist style only. Users had no way to see if SHORT and LONG agreed with the SWING signal without switching views.',
+    fix: 'Fetch all 4 horizon signals concurrently. Render a 2×2 grid with signal badge + confidence per horizon. Derive and display a consensus label from the vote count.',
+  },
+  {
+    id: 'add-to-radar-button',
+    tier: 7, severity: 'feature', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-10 — opportunities.tsx: radarList SWR (watchlists → find "Radar"); radarItems SWR (api.listWatchlist(radarList.id), null-guarded); radarSymbols Set for O(1) membership check. addToRadar() creates the "Radar" watchlist on first call if it doesn\'t exist, then adds the symbol. 📡 button next to 🔔 in each card; already-added stocks show ✓ in green.',
+    title: 'Add to Radar button on Opportunities page',
+    file: 'frontend/src/pages/opportunities.tsx',
+    effort: '1 hour',
+    impact: 'LOW — reduces friction when user spots an interesting stock in Opportunities and wants to track it',
+    what: 'Opportunities page showed stocks matching screening criteria but had no way to save them for follow-up. Users had to navigate to Watchlists and manually add the symbol.',
+    fix: 'Added 📡 per-card button. Auto-creates a "Radar" watchlist on first use. Symbol is added to Radar and the button turns to a green checkmark.',
+  },
+  {
+    id: 'admin-health-signal-section',
+    tier: 7, severity: 'feature', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-10 — admin-health.tsx: SIGNAL REFRESH HEALTH section fetches api.allSignals("SWING"). BUY/SELL/WAIT/HOLD counts, bull-bear ratio, animated progress bar, fresh vs stale counts (last_generated within 2d), last US/HK refresh timestamps from scheduler jobs. ML TRAINING HEALTH section: Avg AUC from /ml/metrics, good (AUC≥0.6)/weak (0.52–0.6)/overfit (gap≥0.1) model counts, last US/HK retrain job timestamps with pass/fail badge.',
+    title: 'Admin health — Signal Refresh Health + ML Training Health sections',
+    file: 'frontend/src/pages/admin-health.tsx',
+    effort: '2 hours',
+    impact: 'MEDIUM — gives at-a-glance visibility into signal and ML health without diving into logs',
+    what: 'Admin health page had a model metrics card but no signal distribution overview and no ML training timeline. AUC showed 0.000 due to the key mismatch bug. Top/bottom 5 lists were empty.',
+    fix: 'Added two new sections. Signal section: distribution chart + bull/bear ratio + freshness counts. ML section: Avg AUC (fixed), good/weak/overfit counts, per-market retrain timestamps.',
+  },
 ];
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -1559,6 +1627,7 @@ const TIER_LABEL: Record<Tier, string> = {
   4: 'Tier 4 — Signal Accuracy & ML Tuning',
   5: 'Tier 5 — UI Gaps & Tech Debt',
   6: 'Tier 6 — Security & Reliability Audit (2026-06-09)',
+  7: 'Tier 7 — Alert Intelligence & UX (2026-06-10)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -1568,6 +1637,7 @@ const TIER_COLOR: Record<Tier, string> = {
   4: '#34d399',
   5: '#67e8f9',
   6: '#f97316',
+  7: '#a78bfa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -1834,18 +1904,18 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current (2026-06-07) — All Tier 1–4 complete
+          Current (2026-06-10) — All Tier 1–4 complete + Tier 7 alert intelligence
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
             { label: 'Data pipeline',   score: 8.5, target: 8.8, note: '↑ Data freshness chip shipped (UI-09)' },
-            { label: 'ML methodology',  score: 9.0, target: 9.0, note: '✓ SA-3 (boolean flags) + SA-5 (calibrate_ta_weights) done' },
+            { label: 'ML methodology',  score: 9.0, target: 9.0, note: '✓ AUC key fix + SA-3/SA-5 all done' },
             { label: 'Signal logic',    score: 9.0, target: 9.0, note: '✓ SA-7 regime earnings done; all SA items shipped' },
             { label: 'K-Score ranking', score: 8.2, target: 8.5, note: '↑ Conviction screener shipped (UI-04)' },
             { label: 'Research engine', score: 7.5, target: 8.5, note: '↑ Cache quality flag (tech-research-cache-quality)' },
-            { label: 'Frontend / UX',   score: 9.3, target: 9.5, note: '↑ P&L heatmap + conviction screener shipped' },
+            { label: 'Frontend / UX',   score: 9.5, target: 9.5, note: '↑ Per-horizon alerts + consensus indicator + Add to Radar' },
             { label: 'Risk management', score: 8.5, target: 9.0, note: '↑ Portfolio risk + P&L heatmap (UI-06) done' },
-            { label: 'Overall',         score: 9.0, target: 9.0, note: '✓ All Tier 1–4 shipped (SA-1–8 + Tier 1–3)' },
+            { label: 'Overall',         score: 9.2, target: 9.5, note: '✓ Tier 7 alert intelligence shipped 2026-06-10' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -1863,7 +1933,7 @@ export default function ImprovementsPage() {
           All Tier 1–4 shipped as of 2026-06-07. SA-1/2/3/4/5/6/7/8 all done. SA-3 was already live (4 boolean flags in builder.py). SA-5 wired to Sunday scheduler. SA-7 regime-aware earnings compression implemented (bull+beater≥70%: +3% boost; bull+50-70%: halved compression; bear/hv: tightened).
           Tier 5: UI-01 to UI-09 + UI-12 all shipped. Remaining (low priority): UI-10 (ML weight auto-apply), UI-11 (factor chart verify).
           Tier 3 new items (2026-06-08): TB-1 (trailing stop), TB-2 (time-stop), TB-3 (stop breach alert), TB-4 (dollar P&amp;L), TB-5 (portfolio heat-at-risk), SL-1 (admin signal log). SL-1 implemented 2026-06-08.
-          Overall: <strong style={{ color: '#4ade80' }}>9.5 / 10</strong> — WF-2 (autonomous paper trading engine) shipped 2026-06-09, 11 audit fixes, signal pipeline 5-bug audit. Trade Board Position Lifecycle shipped 2026-06-09: WF-1 (signal state chip), WF-3 (live position monitor — trail stop, near target, near stop, stalled warning), TB-1 (trail recommendations), TB-2 (time-stop badge), TB-3 (stop breach banner), TB-4 (dollar P&amp;L + risk), TB-5 (active positions summary bar). Pending: UI-13/14, scheduler monitor.
+          Overall: <strong style={{ color: '#4ade80' }}>9.2 / 10</strong> — Tier 7 alert intelligence shipped 2026-06-10: per-horizon signal alerts (SHORT/SWING/LONG/GROWTH independent subscriptions), require_consensus gate (≥2 horizons agree before alert fires), 4-horizon consensus indicator on stock detail, Add to Radar button on Opportunities. Admin health expanded: Signal Refresh Health + ML Training Health sections; AUC key mismatch bug fixed (all 119 models now show real AUC values). All Tier 1–6 complete. WF-2 (autonomous paper trading), 11 security/reliability audit fixes, signal pipeline audit all done 2026-06-09.
         </p>
       </div>
     </div>

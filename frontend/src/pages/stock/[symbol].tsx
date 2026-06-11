@@ -175,6 +175,17 @@ export default function StockDetail() {
   const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>(
     'signal-alerts', () => api.listSignalAlerts(),
   );
+  // All-horizon signals for the consensus indicator
+  const { data: sigShort } = useSWR(symbol ? `sig-${symbol}-SHORT` : null, () => api.signal(symbol, 'SHORT'), { refreshInterval: 300_000 });
+  const { data: sigSwing } = useSWR(symbol ? `sig-${symbol}-SWING` : null, () => api.signal(symbol, 'SWING'), { refreshInterval: 300_000 });
+  const { data: sigLong } = useSWR(symbol ? `sig-${symbol}-LONG` : null, () => api.signal(symbol, 'LONG'), { refreshInterval: 300_000 });
+  const { data: sigGrowth } = useSWR(symbol ? `sig-${symbol}-GROWTH` : null, () => api.signal(symbol, 'GROWTH'), { refreshInterval: 300_000 });
+  const allHorizonSignals: { label: string; horizon: string; sig: typeof sigShort }[] = [
+    { label: 'SHORT', horizon: 'SHORT', sig: sigShort },
+    { label: 'SWING', horizon: 'SWING', sig: sigSwing },
+    { label: 'LONG',  horizon: 'LONG',  sig: sigLong  },
+    { label: 'GROWTH',horizon: 'GROWTH',sig: sigGrowth },
+  ];
   const [signalAlertSaving, setSignalAlertSaving] = useState(false);
   const [signalAlertError, setSignalAlertError] = useState('');
 
@@ -1432,59 +1443,91 @@ Return ONLY valid JSON — no markdown, no prose:
             );
           })()}
 
-          {/* Signal Alert subscription */}
+          {/* Signal Consensus + per-horizon alert subscriptions */}
           {(() => {
-            const existing = signalAlerts?.find(a => a.symbol === symbol);
-            async function toggle() {
+            const SIG_C: Record<string, string> = { BUY: '#4ade80', SELL: '#f87171', WAIT: '#fbbf24', HOLD: '#94a3b8' };
+            const SIG_BG: Record<string, string> = { BUY: 'rgba(74,222,128,0.1)', SELL: 'rgba(239,68,68,0.1)', WAIT: 'rgba(251,191,36,0.08)', HOLD: 'rgba(148,163,184,0.06)' };
+            const email = (typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null) ?? '';
+
+            const directions = allHorizonSignals.map(h => h.sig?.signal).filter(Boolean);
+            const buyCount  = directions.filter(d => d === 'BUY').length;
+            const sellCount = directions.filter(d => d === 'SELL').length;
+            const consensusLabel = directions.length === 0 ? null
+              : buyCount >= 3 ? 'Strong bullish'
+              : buyCount === 2 ? 'Moderately bullish'
+              : sellCount >= 3 ? 'Strong bearish'
+              : sellCount === 2 ? 'Moderately bearish'
+              : 'Mixed — check entry timing';
+            const consensusColor = buyCount >= 3 ? '#4ade80' : buyCount === 2 ? '#a3e635' : sellCount >= 3 ? '#f87171' : sellCount === 2 ? '#fb923c' : '#fbbf24';
+
+            async function toggleHorizon(horizon: string) {
               setSignalAlertError('');
               setSignalAlertSaving(true);
+              const existing = signalAlerts?.find(a => a.symbol === symbol && a.horizon === horizon);
               try {
                 if (existing) {
                   await api.deleteSignalAlert(existing.id);
                 } else {
-                  const email = (typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null) ?? '';
-                  if (!email) {
-                    setSignalAlertError('Set an email in Settings → Profile first');
-                    return;
-                  }
-                  await api.createSignalAlert(symbol, email);
+                  if (!email) { setSignalAlertError('Set an email in Settings → Profile first'); return; }
+                  await api.createSignalAlert(symbol as string, email, 'all', horizon);
                 }
                 await mutateSignalAlerts();
               } catch (err: unknown) {
                 const msg = err instanceof Error ? err.message : String(err);
                 setSignalAlertError(msg.includes('400') ? 'Set an email in Settings → Profile first' : 'Failed to save alert');
-              } finally {
-                setSignalAlertSaving(false);
-              }
+              } finally { setSignalAlertSaving(false); }
             }
-            const active = !!existing;
+
             return (
-              <div>
-                <button
-                  onClick={toggle}
-                  disabled={signalAlertSaving}
-                  title={active ? 'Click to stop signal notifications for this stock' : 'Get emailed when AI Signal improves (SELL→HOLD or HOLD→BUY) while analysts rate it BUY'}
-                  style={{
-                    width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
-                    padding: '9px 14px', borderRadius: '8px', cursor: signalAlertSaving ? 'not-allowed' : 'pointer',
-                    border: active ? '1px solid rgba(99,102,241,0.5)' : '1px solid rgba(148,163,184,0.15)',
-                    background: active ? 'rgba(99,102,241,0.1)' : 'rgba(255,255,255,0.02)',
-                    color: active ? '#818cf8' : '#64748b',
-                    fontSize: '12px', fontWeight: 600, transition: 'all 0.15s', textAlign: 'left',
-                  }}
-                >
-                  <span style={{ fontSize: '14px' }}>{active ? '🔔' : '🔕'}</span>
-                  <span style={{ flex: 1 }}>
-                    {signalAlertSaving ? 'Saving…' : active ? 'Signal alert on' : 'Notify on signal improvement'}
-                  </span>
-                  {active && existing?.last_signal && (
-                    <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.2)', padding: '2px 6px', borderRadius: '4px' }}>
-                      Last: {existing.last_signal}
-                    </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {/* Consensus banner */}
+                <div style={{ padding: '8px 12px', borderRadius: '8px', background: 'rgba(15,23,42,0.8)', border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginBottom: '6px' }}>SIGNAL CONSENSUS</div>
+                  <div style={{ display: 'flex', gap: '4px', marginBottom: '6px' }}>
+                    {allHorizonSignals.map(({ label, sig }) => (
+                      <div key={label} style={{ flex: 1, textAlign: 'center', padding: '4px 2px', borderRadius: '6px', background: SIG_BG[sig?.signal ?? ''] ?? 'rgba(255,255,255,0.02)', border: `1px solid ${SIG_C[sig?.signal ?? ''] ?? '#1e293b'}33` }}>
+                        <div style={{ fontSize: '9px', color: '#475569', marginBottom: '2px' }}>{label}</div>
+                        <div style={{ fontSize: '11px', fontWeight: 800, color: SIG_C[sig?.signal ?? ''] ?? '#334155' }}>
+                          {sig?.signal ?? '—'}
+                        </div>
+                        {sig?.confidence != null && (
+                          <div style={{ fontSize: '9px', color: '#334155', marginTop: '1px' }}>{sig.confidence.toFixed(0)}%</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {consensusLabel && (
+                    <div style={{ fontSize: '11px', fontWeight: 600, color: consensusColor }}>
+                      {consensusLabel}
+                    </div>
                   )}
-                </button>
+                </div>
+
+                {/* Per-horizon alert rows */}
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginTop: '2px', marginBottom: '2px' }}>SIGNAL ALERTS</div>
+                {allHorizonSignals.map(({ label, horizon, sig }) => {
+                  const sub = signalAlerts?.find(a => a.symbol === symbol && a.horizon === horizon);
+                  const active = !!sub;
+                  return (
+                    <div key={horizon} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px', borderRadius: '7px', border: active ? '1px solid rgba(99,102,241,0.4)' : '1px solid #1e293b', background: active ? 'rgba(99,102,241,0.07)' : 'rgba(255,255,255,0.01)' }}>
+                      <span style={{ fontSize: '10px', fontWeight: 700, color: '#475569', width: '42px', flexShrink: 0 }}>{label}</span>
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: SIG_C[sig?.signal ?? ''] ?? '#334155', width: '36px', flexShrink: 0 }}>{sig?.signal ?? '—'}</span>
+                      <span style={{ flex: 1, fontSize: '10px', color: '#334155' }}>
+                        {active && sub.last_signal ? `Last sent: ${sub.last_signal}` : active ? 'Watching' : ''}
+                      </span>
+                      <button
+                        onClick={() => toggleHorizon(horizon)}
+                        disabled={signalAlertSaving}
+                        title={active ? `Stop ${label} signal alerts` : `Get emailed when ${label} signal improves`}
+                        style={{ fontSize: '13px', background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: active ? '#818cf8' : '#334155', transition: 'color 0.15s' }}
+                      >
+                        {active ? '🔔' : '🔕'}
+                      </button>
+                    </div>
+                  );
+                })}
                 {signalAlertError && (
-                  <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#f87171' }}>{signalAlertError}</p>
+                  <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#f87171' }}>{signalAlertError}</p>
                 )}
               </div>
             );

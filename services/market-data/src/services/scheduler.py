@@ -710,27 +710,22 @@ def check_signal_alerts() -> None:
                             symbol_count=len(symbols))
                 fresh_symbols = set(symbols)
 
-            # Build (user_id, symbol) → trading_style map from watchlists with a style override
-            symbol_user_style: dict[tuple[int, str], str] = {}
-            try:
-                rows = session.execute(
-                    select(Stock.symbol, Watchlist.user_id, Watchlist.trading_style)
-                    .join(WatchlistItem, WatchlistItem.watchlist_id == Watchlist.id)
-                    .join(Stock, WatchlistItem.stock_id == Stock.id)
-                    .where(Watchlist.trading_style.isnot(None))
-                ).all()
-                for sym, uid, style in rows:
-                    symbol_user_style[(uid, sym)] = style
-            except Exception as exc:
-                log.warning("signal_alert.style_lookup_failed", error=str(exc))
+            _ALL_HORIZONS = ["SHORT", "SWING", "LONG", "GROWTH"]
 
-            # Fetch current signals per unique (symbol, style) pair
+            # Build the set of (symbol, horizon) pairs to fetch.
+            # Alerts now carry an explicit horizon; for require_consensus alerts we also
+            # need all 4 horizons per symbol to count how many agree.
+            consensus_symbols = {a.symbol for a in alerts if getattr(a, "require_consensus", False)}
+            style_sym_pairs: set[tuple[str, str]] = set()
+            for a in alerts:
+                style_sym_pairs.add((a.symbol, getattr(a, "horizon", "SWING")))
+            for sym in consensus_symbols:
+                for h in _ALL_HORIZONS:
+                    style_sym_pairs.add((sym, h))
+
+            # Fetch current signals per unique (symbol, horizon) pair
             signals: dict[tuple[str, str], str] = {}
             signal_details: dict[tuple[str, str], dict] = {}
-            style_sym_pairs = {
-                (a.symbol, symbol_user_style.get((a.user_id, a.symbol), "SWING"))
-                for a in alerts
-            }
             for sym, style in style_sym_pairs:
                 try:
                     r = httpx.get(
@@ -778,7 +773,7 @@ def check_signal_alerts() -> None:
                 if alert.symbol not in fresh_symbols:
                     continue
 
-                style = symbol_user_style.get((alert.user_id, alert.symbol), "SWING")
+                style = getattr(alert, "horizon", "SWING")
                 key = (alert.symbol, style)
                 current = signals.get(key)
                 if not current:
@@ -788,14 +783,11 @@ def check_signal_alerts() -> None:
 
                 if prev == current:
                     # Refresh conviction status for stable BUY stocks every minute.
-                    # Email was already sent (last_signal advanced only after email_ok),
-                    # so sent=True always; failed shows if gate would block a re-trigger.
                     if current == "BUY":
                         sig_data = signal_details.get(key) or {}
                         all_pass, passed, failed = _is_conviction_buy(
                             sig_data, kscore=kscores.get(alert.symbol), regime=current_regime
                         )
-                        # Use DB-persisted sent_at as fallback so Redis restarts don't lose the timestamp.
                         db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
                         _store_conviction(alert.symbol, style, True, passed, failed, current, sent_at=db_sent_at)
                     continue
@@ -815,6 +807,20 @@ def check_signal_alerts() -> None:
                     alert.last_signal = current
                     _store_conviction(alert.symbol, style, False, [], [f"Signal is {current} — gate only runs on BUY transitions"], current)
                     continue
+
+                # Consensus gate: skip if fewer than 2 horizons agree on the new direction.
+                if getattr(alert, "require_consensus", False):
+                    agreeing = sum(
+                        1 for h in _ALL_HORIZONS
+                        if signals.get((alert.symbol, h)) == current
+                    )
+                    if agreeing < 2:
+                        log.info(
+                            "signal_alert.skipped_consensus",
+                            symbol=alert.symbol, horizon=style,
+                            current=current, agreeing=agreeing,
+                        )
+                        continue  # last_signal NOT updated — retried next run
 
                 # Both bullish and bearish state advances happen only after successful email
                 # send (see `if email_ok` below), so a failed send can be retried next run.

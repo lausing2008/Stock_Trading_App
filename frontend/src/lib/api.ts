@@ -98,10 +98,13 @@ export const api = {
 
   // Signal alerts
   listSignalAlerts: () => request<SignalAlertItem[]>(`/signal-alerts`),
-  createSignalAlert: (symbol: string, email?: string, alertMode?: string) =>
-    request<SignalAlertItem>(`/signal-alerts`, { method: 'POST', body: JSON.stringify({ symbol, email, alert_mode: alertMode ?? 'all' }) }),
-  updateSignalAlert: (id: number, alertMode: string) =>
-    request<SignalAlertItem>(`/signal-alerts/${id}`, { method: 'PATCH', body: JSON.stringify({ alert_mode: alertMode }) }),
+  createSignalAlert: (symbol: string, email?: string, alertMode?: string, horizon?: string, requireConsensus?: boolean) =>
+    request<SignalAlertItem>(`/signal-alerts`, { method: 'POST', body: JSON.stringify({
+      symbol, email, alert_mode: alertMode ?? 'all',
+      horizon: horizon ?? 'SWING', require_consensus: requireConsensus ?? false,
+    }) }),
+  updateSignalAlert: (id: number, updates: { alert_mode?: string; require_consensus?: boolean }) =>
+    request<SignalAlertItem>(`/signal-alerts/${id}`, { method: 'PATCH', body: JSON.stringify(updates) }),
   deleteSignalAlert: (id: number) => request(`/signal-alerts/${id}`, { method: 'DELETE' }),
 
   // Trade board (Kanban)
@@ -443,7 +446,7 @@ export type WatchlistMeta = { id: number; name: string; item_count: number; trad
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
 export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; created_at: string };
-export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; alert_mode: string; created_at: string };
+export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; alert_mode: string; horizon: string; require_consensus: boolean; created_at: string };
 export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; exit_price: number | null; actual_entry_price: number | null; shares: number | null; trading_style: string | null; closed_at: string | null; created_at: string; updated_at: string };
 export type CongressTrade = { Ticker: string; Date: string; Politician: string; Transaction: string; Min: number | null; Max: number | null; Party: string | null; State: string | null; Chamber: string | null; ReportDate: string | null };
 export type SignalAccuracyRow = { symbol: string; name: string; signal: 'BUY' | 'SELL'; confidence: number; bullish_probability: number | null; signal_date: string; entry_price: number; exit_price: number; pct_change: number; correct: boolean; days_held: number };
