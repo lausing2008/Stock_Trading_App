@@ -203,6 +203,7 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
                         "ml_model": data.get("model", "xgboost"),
                         "ml_agreement": data.get("ensemble_agreement"),
                         "ml_model_probs": data.get("model_probabilities"),
+                        "ml_oos_suppressed": bool(data.get("oos_suppressed", False)),
                     }
                     return prob, test_auc, ml_meta
         except Exception as exc:
@@ -1087,6 +1088,7 @@ def _apply_style_signal(
     short_pct_float: float | None = None,
     analyst_upgrades_7d: int = 0,
     analyst_downgrades_7d: int = 0,
+    ml_oos_suppressed: bool = False,
 ) -> "AIConfidence":
     """Apply style-specific fusion and filters from shared base values.
 
@@ -1404,6 +1406,18 @@ def _apply_style_signal(
         fused = 0.5 + (fused - 0.5) * 0.5
         reasons["insufficient_history_warning"] = True
 
+    # ── SA-27: Low OOS accuracy penalty ───────────────────────────────────────
+    # When the ML model's cross-val accuracy < 52% (coin-flip territory), the ML
+    # service returns bullish_probability=0.5 (neutralised). TA can still push fused
+    # above threshold, but we apply a 0.6× compression so a low-confidence model
+    # doesn't unduly amplify bullish TA noise into a full BUY.
+    # Absent flag = new/untuned symbol → do not penalise.
+    if ml_oos_suppressed:
+        fused = 0.5 + (fused - 0.5) * 0.6
+        reasons["low_oos_accuracy"] = True
+    else:
+        reasons["low_oos_accuracy"] = False
+
     fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── Compression cap ───────────────────────────────────────────────────────
@@ -1520,6 +1534,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["ml_model"]           = ml_meta.get("ml_model")
     reasons["ml_agreement"]       = ml_meta.get("ml_agreement")
     reasons["ml_model_probs"]     = ml_meta.get("ml_model_probs")
+    reasons["ml_oos_suppressed"]  = ml_meta.get("ml_oos_suppressed", False)
     reasons["weekly_ta_score"]    = round(weekly_score, 3)
     reasons["weekly_rsi"]         = weekly_tech["weekly_rsi"]
     reasons["weekly_trend"]       = weekly_tech["weekly_trend"]
@@ -1588,6 +1603,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             short_pct_float=short_pct_float,
             analyst_upgrades_7d=analyst_upgrades_7d,
             analyst_downgrades_7d=analyst_downgrades_7d,
+            ml_oos_suppressed=ml_meta.get("ml_oos_suppressed", False),
         )
 
     return {k: _make_signal(k) for k in ("SHORT", "SWING", "LONG", "GROWTH")}

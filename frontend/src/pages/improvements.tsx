@@ -2034,6 +2034,8 @@ const ITEMS: Item[] = [
   // ── Tier 7 — Maintenance & Ops (2026-06-10) ─────────────────────────────
   {
     id: 'maint-db-purge-job',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — _purge_old_data() added to scheduler.py: deletes prices WHERE timeframe=M5 AND ts < 90 days (intraday bars) and signal_outcomes WHERE ts_evaluated < 365 days using raw SQL in a SessionLocal() transaction. Scheduled weekly on Sunday at 15:00 PST via db_purge_weekly job.',
     tier: 7, severity: 'low',
     title: 'DB maintenance: scheduled purge job for prices_5m and scheduler_jobs tables',
     file: 'services/market-data/src/services/scheduler.py · shared/db/session.py',
@@ -2447,6 +2449,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa-27-oos-signal-suppression',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — _fetch_ml_data() now captures oos_suppressed flag from ML prediction response and stores it in ml_meta. generate_all_signals() adds ml_oos_suppressed to base reasons. _apply_style_signal() accepts ml_oos_suppressed param: if True, applies 0.6× compression on fused−0.5 distance and sets reasons["low_oos_accuracy"]=True. SignalCard shows yellow "LOW ML CONF" chip in header when low_oos_accuracy is present.',
     tier: 9, severity: 'feature',
     title: 'SA-27: SA-9 OOS accuracy per symbol is computed but never wired to signal generation — weak symbols still fire full-strength BUY',
     file: 'services/signal-engine/src/generators/signals.py + services/signal-engine/src/api/routes.py',
@@ -2485,14 +2489,14 @@ const ITEMS: Item[] = [
   {
     id: 'pt-5m-engine-cadence',
     defaultStatus: 'done',
-    implementedNote: 'Done 2026-06-11 — _refresh_5m("US") now calls paper_trading_step() after each 5m bar ingest. During regular hours (10:00–15:00) this increases paper trading from every 10 min to every 5 min. Open/close burst already ran every 5 min via _refresh_market. Total paper trading cycles per day: ~78 (full session 9:30–16:00) vs ~45 before.',
+    implementedNote: 'Done 2026-06-11 — _refresh_5m() now calls paper_trading_step() for both US and HK markets after each 5m bar ingest. Signal generation cadence also increased: us_intra and hk_intra jobs changed from every 10 min to every 5 min (full market hours 10:00–15:00). Total signal refresh cycles now ~78/day per market (was ~45). HK paper trading wired in via _refresh_5m("HK").',
     tier: 9, severity: 'feature',
-    title: 'PT-5M: Paper trading engine cadence increased to every 5 minutes — monitors positions on every price bar',
+    title: 'PT-5M / SCH-5M: Signal refresh and paper trading engine cadence increased to every 5 minutes for US and HK markets',
     file: 'services/market-data/src/services/scheduler.py',
     effort: '30 min',
-    impact: 'High — during regular hours (10:00–15:00), the previous 10-minute gap meant a stop loss could be breached for up to 10 minutes before the engine detected it. With 5-minute cadence matching the intraday bar frequency, position monitoring is as tight as possible without over-polling. Behaves like a human trader checking the screen every 5 minutes.',
-    what: '_refresh_5m() only ingested bars; paper_trading_step() was called only by _refresh_market() (every 10 min during regular hours, 5 min during open/close bursts). The 5m ingest updated price data but the paper trading engine did not react until the next _refresh_market cycle.',
-    fix: 'Added paper_trading_step() call at the end of _refresh_5m("US") so position monitoring runs after every 5m bar ingestion. Entry scan also runs here — it reads the latest BUY signals from DB (refreshed by the previous _refresh_market cycle). Job status recorded as paper_trading_5m for health monitoring.',
+    impact: 'High — during regular hours (10:00–15:00), the previous 10-minute gap meant stops could be breached 10 min before detection and BUY signals could be stale for 10 min before paper trading saw them. With 5-minute cadence matching the intraday bar frequency, both signal quality and position monitoring are tighter throughout the full session.',
+    what: '_refresh_5m() only ingested bars; paper_trading_step() was called only by _refresh_market() (every 10 min during regular hours, 5 min during open/close bursts). Signal generation ran every 10 min during regular hours and HK had no paper trading in _refresh_5m.',
+    fix: '(1) Changed us_intra and hk_intra CronTrigger minute patterns from "0,10,20,30,40,50" to "0,5,10,...,55" — signals + rankings every 5 min. (2) Changed _refresh_5m paper trading guard from `if market == "US"` to `if market in ("US", "HK")`. (3) Added _purge_old_data() weekly job as maint-db-purge-job.',
   },
 
   {
