@@ -835,59 +835,74 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     vol_z = (volume.iloc[-1] - volume.rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0
     reasons["volume_z"] = float(vol_z) if not pd.isna(vol_z) else None
 
-    # ── Score (data-driven weights via ta_weights.json, SA-5) ─────────────
-    w = _load_ta_weights()
-    score = 0.0
+    # ── SA-19: Pillar-based TA score — 4 independent dimensions ─────────────
+    # Each pillar scores 0–1 using the BEST signal within that dimension (max,
+    # not sum). Correlated indicators (above_sma50 + sma50_above_sma200 + adx)
+    # all reflect the same underlying trend, so stacking them overstates edge.
+    # TA score = mean of the 4 pillar scores; independent_pillars_active counts
+    # how many pillars reach ≥ 0.5 (used by _apply_style_signal for gate/boost).
 
-    # SA-15: volume_z used for confirmation weighting (safe float)
     _vz = float(reasons.get("volume_z") or 0.0)
 
-    if above_sma50:        score += w["above_sma50"]
-    if sma50_above_sma200: score += w["sma50_above_sma200"]
-    # SA-15: golden cross on shrinking volume is unreliable — half credit
-    if golden_cross_event: score += w["golden_cross_event"] * (1.0 if _vz > 0.5 else 0.5)
-    if death_cross_event:  score -= w["death_cross_penalty"]
+    # TREND pillar — structural price direction
+    if death_cross_event:
+        p_trend = 0.0  # confirmed downtrend; hard override regardless of SMAs
+    else:
+        p_trend = max(
+            1.0 if above_sma50 else 0.0,
+            1.0 if sma50_above_sma200 else 0.0,
+            1.0 if bullish_trend else 0.0,
+            1.0 if (golden_cross_event and _vz > 0.5) else (0.7 if golden_cross_event else 0.0),
+        )
 
-    if rsi_val is not None:
-        if 45 < rsi_val < 65:    score += w["rsi_sweet_spot"]
-        elif 35 < rsi_val <= 45: score += w["rsi_mild_oversold"]
-        elif 65 <= rsi_val < 72: score += w["rsi_mild_overbought"]
+    # MOMENTUM pillar — oscillator-based rate of change
+    rsi_score = (
+        1.0 if (rsi_val is not None and 45 < rsi_val < 65) else
+        0.8 if (rsi_val is not None and 35 < rsi_val <= 45) else
+        0.5 if (rsi_val is not None and 65 <= rsi_val < 72) else
+        0.0
+    )
+    macd_score = (
+        1.0 if (macd_hist > 0 and macd_rising) else
+        0.9 if macd_zero_cross_up else
+        0.7 if macd_hist > 0 else
+        0.0
+    )
+    stoch_score = 0.8 if stoch_oversold else (0.7 if stoch_cross_up else 0.0)
+    p_momentum = max(rsi_score, macd_score, stoch_score)
+    if stoch_overbought:
+        p_momentum *= 0.5   # overbought stoch halves momentum conviction
+    elif rsi_val is not None and rsi_val >= 72:
+        p_momentum *= 0.7   # extreme RSI reduces but doesn't zero out
 
-    if stoch_oversold:      score += w["stoch_oversold"]
-    elif stoch_overbought:  score -= w["stoch_overbought_penalty"]
-    if stoch_cross_up:      score += w["stoch_cross_up"]
+    # VOLUME pillar — demand confirmation
+    p_volume = max(
+        1.0 if obv_bullish else 0.0,
+        0.7 if _vz > 0.5 else 0.0,
+    )
 
-    # SA-15: divergence weighted by volume confirmation
-    if rsi_divergence == "bearish":
-        # High volume on a divergence day CONFIRMS price move, making bearish divergence LESS reliable
-        # Low/declining volume = divergence is more meaningful → full penalty
-        score -= w["rsi_divergence_bearish_penalty"] * (0.5 if _vz > 0.3 else 1.0)
-    elif rsi_divergence == "bullish":
-        # Bullish divergence requires volume to be credible
-        score += w["rsi_divergence_bullish"] * (1.0 if _vz > 0.3 else 0.5)
+    # STRUCTURE pillar — price position (VWAP + Bollinger Band)
+    bb_score = 0.8 if (0.2 < bb_pct_b < 0.8) else 0.0
+    vwap_score = (
+        1.0 if price_above_vwap is True else
+        0.0 if price_above_vwap is False else
+        0.4  # unknown — treat as mildly neutral
+    )
+    p_structure = max(vwap_score, bb_score)
+    if price_above_vwap is False:
+        p_structure = max(0.0, p_structure - 0.15)  # below VWAP pulls structure down
 
-    if macd_hist > 0 and macd_rising:  score += w["macd_strong"]
-    elif macd_hist > 0:                score += w["macd_positive"]
-    # SA-17: MACD zero-cross gets full credit only when price is above SMA50
-    if macd_zero_cross_up:
-        score += w["macd_zero_cross_up"] * (1.0 if above_sma50 else 0.4)
+    pillar_scores = [p_trend, p_momentum, p_volume, p_structure]
+    independent_pillars_active = sum(1 for ps in pillar_scores if ps >= 0.5)
+    reasons["independent_pillars_active"] = independent_pillars_active
+    reasons["pillar_trend"]     = round(p_trend, 2)
+    reasons["pillar_momentum"]  = round(p_momentum, 2)
+    reasons["pillar_volume"]    = round(p_volume, 2)
+    reasons["pillar_structure"] = round(p_structure, 2)
 
-    if 0.2 < bb_pct_b < 0.8:   score += w["bb_mid_zone"]
+    base = float(np.mean(pillar_scores))
 
-    if price_above_vwap is True:    score += w["price_above_vwap"]
-    elif price_above_vwap is False: score -= w["price_below_vwap_penalty"]
-
-    if bullish_trend:                                       score += w["bullish_trend"]
-    if obv_bullish:                                         score += w["obv_bullish"]
-    if reasons["volume_z"] and reasons["volume_z"] > 0.5:  score += w["volume_surge"]
-
-    # Normalise by sum of all positive weights so score stays in [0,1].
-    _TA_MAX_SCORE = sum(v for k, v in w.items() if not k.endswith("_penalty"))
-    if _TA_MAX_SCORE <= 0:
-        return 0.5, reasons  # degenerate calibration; return neutral
-    base = float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0))
-
-    # SA-14: pullback + recovery boost applied after normalisation
+    # SA-14: pullback + recovery boost applied after pillar mean
     pr_delta, pr_reasons = _pullback_recovery(df)
     reasons.update(pr_reasons)
 
@@ -1168,6 +1183,20 @@ def _apply_style_signal(
     fused = float(np.clip(fused, 0.0, 1.0))
 
     fused_before_filters = fused  # snapshot before compression — used for cap enforcement
+
+    # ── SA-19: Independent pillar gate ───────────────────────────────────────
+    # Compress signals where only 1 dimension agrees (likely market-beta noise);
+    # boost where all 4 pillars converge (rare, high-confidence setup).
+    _pillars = int(base_reasons.get("independent_pillars_active", 2))
+    if _pillars < 2:
+        fused = 0.5 + (fused - 0.5) * 0.85
+        reasons["pillar_gate"] = f"compressed_{_pillars}_pillar"
+    elif _pillars >= 4:
+        fused = float(np.clip(fused + 0.03, 0.0, 1.0))
+        reasons["pillar_gate"] = "boosted_4_pillar_confluence"
+    else:
+        reasons["pillar_gate"] = f"{_pillars}_pillars"
+    fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── Weekly multi-timeframe alignment ──────────────────────────────────────
     weekly_score = weekly_tech.get("weekly_score", 0.5)
