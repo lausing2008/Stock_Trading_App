@@ -2078,6 +2078,117 @@ def outcomes_summary(
     }
 
 
+_DECAY_DAYS = [1, 2, 3, 5, 7, 10, 15, 20, 30]
+
+
+@router.get("/alpha_decay")
+def alpha_decay(
+    horizon: str = Query("SWING"),
+    lookback_days: int = Query(365, ge=30, le=730),
+    regime: str | None = Query(None),
+    session: Session = Depends(get_session),
+):
+    """TM-2: Average cumulative return after BUY signals at each day offset.
+
+    Uses signal_outcomes joined to daily prices to compute returns at 1, 2, 3,
+    5, 7, 10, 15, 20, and 30 calendar days after the entry date.  Returns p25/
+    p75 bands and the empirically optimal hold day (peak average return).
+    """
+    from bisect import bisect_left
+    from collections import defaultdict
+
+    cutoff = date.today() - timedelta(days=lookback_days)
+
+    try:
+        hz = SignalHorizon(horizon.upper())
+    except ValueError:
+        raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    q = select(SignalOutcome).where(
+        SignalOutcome.signal_date >= cutoff,
+        SignalOutcome.signal_direction == "BUY",
+        SignalOutcome.horizon == hz,
+        SignalOutcome.entry_price.is_not(None),
+        SignalOutcome.entry_date.is_not(None),
+    )
+    if regime:
+        q = q.where(SignalOutcome.market_regime == regime)
+
+    outcomes = session.execute(q).scalars().all()
+
+    if not outcomes:
+        return {
+            "horizon": horizon.upper(), "signal_count": 0,
+            "lookback_days": lookback_days,
+            "optimal_hold_days": None, "optimal_return_pct": None,
+            "curve": [],
+        }
+
+    stock_ids = {o.stock_id for o in outcomes}
+    min_entry = min(o.entry_date for o in outcomes)
+    max_entry = max(o.entry_date for o in outcomes)
+    price_end = max_entry + timedelta(days=37)
+
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close).where(
+            Price.stock_id.in_(stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= datetime.combine(min_entry, datetime.min.time()),
+            Price.ts <= datetime.combine(price_end, datetime.max.time()),
+        ).order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    price_map: dict[int, list] = defaultdict(list)
+    for stock_id, ts, close in price_rows:
+        price_map[stock_id].append((ts.date(), close))
+
+    def price_on_or_after(stock_id: int, target: date) -> float | None:
+        bars = price_map.get(stock_id)
+        if not bars:
+            return None
+        dates = [b[0] for b in bars]
+        idx = bisect_left(dates, target)
+        for i in range(idx, min(idx + 6, len(bars))):
+            if (bars[i][0] - target).days <= 5:
+                return bars[i][1]
+        return None
+
+    day_returns: dict[int, list] = {d: [] for d in _DECAY_DAYS}
+    for o in outcomes:
+        for td in _DECAY_DAYS:
+            p = price_on_or_after(o.stock_id, o.entry_date + timedelta(days=td))
+            if p and o.entry_price and o.entry_price > 0:
+                day_returns[td].append((p / o.entry_price - 1) * 100)
+
+    curve = []
+    for d in _DECAY_DAYS:
+        rets = sorted(day_returns[d])
+        n = len(rets)
+        if n == 0:
+            curve.append({"day": d, "avg_return_pct": None, "p25": None, "p75": None, "n": 0})
+            continue
+        avg = sum(rets) / n
+        curve.append({
+            "day": d,
+            "avg_return_pct": round(avg, 2),
+            "p25": round(rets[max(0, int(n * 0.25) - 1)], 2),
+            "p75": round(rets[min(n - 1, int(n * 0.75))], 2),
+            "n": n,
+        })
+
+    best = max((c for c in curve if c["avg_return_pct"] is not None),
+               key=lambda c: c["avg_return_pct"], default=None)
+
+    return {
+        "horizon": horizon.upper(),
+        "signal_count": len(outcomes),
+        "lookback_days": lookback_days,
+        "optimal_hold_days": best["day"] if best else None,
+        "optimal_return_pct": best["avg_return_pct"] if best else None,
+        "curve": curve,
+    }
+
+
 @router.get("/{symbol}")
 def signal_for(
     symbol: str,

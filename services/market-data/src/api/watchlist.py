@@ -219,12 +219,20 @@ def add_to_watchlist(
     item = WatchlistItem(stock_id=stock.id, watchlist_id=wl.id)
     session.add(item)
 
-    # Auto-subscribe to signal alerts if not already subscribed
+    # Auto-subscribe to signal alerts for this watchlist's horizon
+    horizon = wl.trading_style or "SWING"
     existing_alert = session.execute(
-        select(SignalAlert).where(SignalAlert.user_id == current.id, SignalAlert.symbol == stock.symbol)
+        select(SignalAlert).where(
+            SignalAlert.user_id == current.id,
+            SignalAlert.symbol == stock.symbol,
+            SignalAlert.horizon == horizon,
+        )
     ).scalar_one_or_none()
     if not existing_alert:
-        session.add(SignalAlert(user_id=current.id, symbol=stock.symbol, email=current.email))
+        session.add(SignalAlert(
+            user_id=current.id, symbol=stock.symbol,
+            email=current.email, horizon=horizon,
+        ))
 
     session.commit()
     session.refresh(item)

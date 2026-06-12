@@ -86,6 +86,8 @@ def send_signal_alert_email(
     fundamentals: dict | None = None,
     game_plan: dict | None = None,
     conviction_layers: list[str] | None = None,
+    near_conviction: bool = False,
+    near_conviction_failed: list[str] | None = None,
     horizon: str | None = None,
 ) -> bool:
     direction_map = {
@@ -220,14 +222,32 @@ def send_signal_alert_email(
             f'<span style="color:#16a34a;font-weight:700;margin-right:8px">✓</span>{layer}</td></tr>'
             for layer in conviction_layers
         )
-        conviction_html = f"""
+        if near_conviction and near_conviction_failed:
+            failed_rows = "".join(
+                f'<tr><td style="padding:5px 12px;font-size:13px;color:#92400e;border-bottom:1px solid #fef08a">'
+                f'<span style="color:#ca8a04;font-weight:700;margin-right:8px">⚠</span>{layer}</td></tr>'
+                for layer in near_conviction_failed
+            )
+            conviction_html = f"""
+    <div style="margin-top:20px">
+      <div style="font-size:11px;font-weight:700;color:#ca8a04;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">⚡ Near-Conviction BUY — 1 Soft Check Missed</div>
+      <table style="width:100%;border-collapse:collapse;background:#f0fdf4;border-radius:8px;overflow:hidden;border:1px solid #bbf7d0">
+        {layer_rows}
+      </table>
+      <table style="width:100%;border-collapse:collapse;background:#fefce8;border-radius:8px;overflow:hidden;border:1px solid #fef08a;margin-top:6px">
+        {failed_rows}
+      </table>
+    </div>"""
+            conviction_text = "\n⚡ Near-Conviction BUY (1 soft check missed):\n" + "\n".join(f"  ✓ {l}" for l in conviction_layers) + "\n" + "\n".join(f"  ⚠ {l}" for l in near_conviction_failed) + "\n"
+        else:
+            conviction_html = f"""
     <div style="margin-top:20px">
       <div style="font-size:11px;font-weight:700;color:#16a34a;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">✅ 5-Layer Conviction Gate — All Passed</div>
       <table style="width:100%;border-collapse:collapse;background:#f0fdf4;border-radius:8px;overflow:hidden;border:1px solid #bbf7d0">
         {layer_rows}
       </table>
     </div>"""
-        conviction_text = "\n✅ 5-Layer Conviction Gate — All Passed:\n" + "\n".join(f"  ✓ {l}" for l in conviction_layers) + "\n"
+            conviction_text = "\n✅ 5-Layer Conviction Gate — All Passed:\n" + "\n".join(f"  ✓ {l}" for l in conviction_layers) + "\n"
 
     # ── Game plan HTML (only for BUY transitions) ─────────────────────────
     game_plan_html = ""
@@ -441,6 +461,95 @@ def send_price_alert_email(to: str, symbol: str, condition: str, threshold: floa
     </div>
     {f'<p style="color:#64748b;font-size:14px"><em>{note}</em></p>' if note else ''}
     <p style="font-size:13px;color:#94a3b8;margin-top:24px">This alert has been marked as triggered and will not fire again.</p>
+  </div>
+</body></html>"""
+    return send_email(to, subject, body_html, body_text)
+
+
+def send_trade_exit_email(
+    to: str,
+    symbol: str,
+    exit_reason: str,
+    entry_price: float,
+    exit_price: float,
+    pnl_dollar: float,
+    pnl_pct: float,
+    hold_days: int,
+    shares: float,
+    style: str = "GROWTH",
+    signal_at_exit: str | None = None,
+    highest_price: float | None = None,
+    entry_notes: list | None = None,
+) -> bool:
+    """Send a paper trade exit email — fired whenever the paper trading engine closes a position."""
+    _EXIT_LABEL = {
+        "signal_exit":       ("🔴 SELL Signal Exit",    "#ef4444", "The signal engine issued a SELL — position closed."),
+        "stop_hit":          ("🛑 Stop Loss Triggered",  "#ef4444", "Price hit the trailing stop — capital protected."),
+        "target_reached":    ("🎯 Take-Profit Reached",  "#22c55e", "Target price hit — profit locked in."),
+        "hold_stall_timeout":("⏳ HOLD Stall Exit",      "#f97316", "Position stalled for 30+ days under 5% gain — freeing capital."),
+        "time_stop":         ("⌛ Time Stop",            "#f97316", "Maximum hold period reached."),
+        "momentum_exit":     ("📉 Momentum Lost",        "#f97316", "WAIT signal persisted too long — momentum faded."),
+    }
+    label, accent, reason_note = _EXIT_LABEL.get(exit_reason, ("📋 Position Closed", "#6366f1", "Position closed by paper trading engine."))
+
+    is_win = pnl_dollar >= 0
+    pnl_color  = "#22c55e" if is_win else "#ef4444"
+    pnl_sign   = "+" if is_win else ""
+    pnl_pct_f  = f"{pnl_sign}{pnl_pct:.2f}%"
+    pnl_dollar_f = f"{pnl_sign}${abs(pnl_dollar):.2f}"
+
+    mfe_row = ""
+    if highest_price and highest_price > entry_price:
+        mfe_pct = (highest_price - entry_price) / entry_price * 100
+        mfe_row = f"""
+      <tr><td style="color:#64748b">Max Favourable Excursion</td>
+          <td style="text-align:right;color:#22c55e">${highest_price:.2f} (+{mfe_pct:.1f}%)</td></tr>"""
+
+    notes_html = ""
+    if entry_notes:
+        bullets = "".join(f'<li style="margin:2px 0;color:#64748b">{n}</li>' for n in entry_notes[:4])
+        notes_html = f'<div style="margin-top:16px"><p style="font-weight:600;margin:0 0 6px">Entry rationale</p><ul style="margin:0;padding-left:20px;font-size:13px">{bullets}</ul></div>'
+
+    subject = f"[Paper Trade] {label} — {symbol} ({pnl_pct_f})"
+    body_text = (
+        f"{label}: {symbol}\n"
+        f"P&L: {pnl_dollar_f} ({pnl_pct_f}) over {hold_days} day(s)\n"
+        f"Entry: ${entry_price:.4f}  Exit: ${exit_price:.4f}\n"
+        f"Signal at exit: {signal_at_exit or '—'}\n"
+        f"Reason: {reason_note}"
+    )
+    body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:520px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <div style="background:{accent};border-radius:8px;padding:8px 14px;color:#fff;font-weight:700;font-size:18px">{symbol}</div>
+      <div style="font-size:20px;font-weight:700;color:{accent}">{label}</div>
+    </div>
+    <div style="background:#f1f5f9;border-radius:10px;padding:20px;margin-bottom:20px;text-align:center">
+      <div style="font-size:36px;font-weight:800;color:{pnl_color}">{pnl_dollar_f}</div>
+      <div style="font-size:20px;color:{pnl_color};margin-top:4px">{pnl_pct_f}</div>
+      <div style="font-size:13px;color:#94a3b8;margin-top:6px">{"PROFIT" if is_win else "LOSS"} over {hold_days} trading day(s)</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:14px">
+      <tr><td style="color:#64748b;padding:6px 0">Entry Price</td>
+          <td style="text-align:right;font-weight:600">${entry_price:.4f}</td></tr>
+      <tr><td style="color:#64748b;padding:6px 0">Exit Price</td>
+          <td style="text-align:right;font-weight:600">${exit_price:.4f}</td></tr>
+      <tr><td style="color:#64748b;padding:6px 0">Shares</td>
+          <td style="text-align:right">{shares:.2f}</td></tr>{mfe_row}
+      <tr><td style="color:#64748b;padding:6px 0">Exit Reason</td>
+          <td style="text-align:right;color:{accent};font-weight:600">{exit_reason.replace('_', ' ').title()}</td></tr>
+      <tr><td style="color:#64748b;padding:6px 0">Signal at Exit</td>
+          <td style="text-align:right">{signal_at_exit or '—'}</td></tr>
+      <tr><td style="color:#64748b;padding:6px 0">Style</td>
+          <td style="text-align:right">{style}</td></tr>
+    </table>
+    <div style="margin-top:16px;padding:12px;background:#fef2f2 if not is_win else #f0fdf4;border-radius:8px;font-size:13px;color:#64748b">
+      {reason_note}
+    </div>
+    {notes_html}
+    <p style="font-size:12px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:12px">
+      This is a paper trade simulation — no real money involved. StockAI Paper Trading Engine.
+    </p>
   </div>
 </body></html>"""
     return send_email(to, subject, body_html, body_text)

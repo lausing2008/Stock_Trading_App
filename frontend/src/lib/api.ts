@@ -205,6 +205,11 @@ export const api = {
     if (horizon) params.set('horizon', horizon);
     return request<OutcomesSummary>(`/signals/outcomes/summary?${params}`);
   },
+  alphaDecay: (horizon = 'SWING', lookbackDays = 365, regime?: string) => {
+    const params = new URLSearchParams({ horizon, lookback_days: String(lookbackDays) });
+    if (regime) params.set('regime', regime);
+    return request<AlphaDecayReport>(`/signals/alpha_decay?${params}`);
+  },
   stockAtr: (symbol: string, period = 14) =>
     request<{ symbol: string; atr: number; close: number; stop_loss_2atr: number; period: number }>(`/stocks/${symbol}/atr?period=${period}`),
   portfolioRisk: (symbols: string[], weights?: number[]) => {
@@ -468,6 +473,8 @@ export type OutcomesSummary = {
   by_horizon?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
   by_market_regime?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
 };
+export type AlphaDecayCurvePoint = { day: number; avg_return_pct: number | null; p25: number | null; p75: number | null; n: number };
+export type AlphaDecayReport = { horizon: string; signal_count: number; lookback_days: number; optimal_hold_days: number | null; optimal_return_pct: number | null; curve: AlphaDecayCurvePoint[] };
 export type WalkForwardReport = {
   train_days: number; test_days: number; lookback_days: number; hold_days: number;
   windows: WalkForwardWindow[];
@@ -893,8 +900,22 @@ export type PaperPortfolioSummary = {
   win_rate_pct: number;
   avg_win_pct: number;
   avg_loss_pct: number;
+  sharpe: number | null;
+  max_drawdown_pct: number | null;
+  calmar: number | null;
+  data_days: number;
+  insufficient_data: boolean;
+  outperformance_vs_spy: number | null;
+  outperformance_vs_qqq: number | null;
   spy_close: number | null;
   qqq_close: number | null;
+  regime_state: 'bull' | 'neutral' | 'choppy' | 'risk_off' | 'bear' | null;
+  regime_vix: number | null;
+  regime_spy: number | null;
+  regime_notes: string[];
+  alpha: number | null;
+  beta: number | null;
+  info_ratio: number | null;
   config: PaperPortfolioConfig;
   created_at: string | null;
 };
