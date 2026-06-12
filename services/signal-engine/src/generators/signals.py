@@ -93,6 +93,7 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
 }
 _TA_WEIGHTS_PATH = Path(_settings.model_dir) / "ta_weights.json"
 _ML_WEIGHT_OVERRIDE_PATH = Path(_settings.model_dir) / "ml_weight_override.json"
+_CONVICTION_WEIGHTS_PATH = Path(_settings.model_dir) / "conviction_weights.json"
 
 # Global ML weight cap override: None means use the per-style profile default.
 # Set by calibrate_ml_weight(); loaded at import time from disk if present.
@@ -142,6 +143,21 @@ def _load_ta_weights() -> dict[str, float]:
     except Exception:
         pass
     return dict(_TA_WEIGHTS_DEFAULT)
+
+
+def load_conviction_weights() -> dict[str, float]:
+    """Load calibrated conviction layer weights from disk (AL-3).
+
+    Returns a dict of {reason_flag: accuracy_vs_baseline} where values > 0 mean the
+    flag is more common in winning trades.  Returns empty dict if not yet calibrated.
+    """
+    try:
+        if _CONVICTION_WEIGHTS_PATH.exists():
+            with open(_CONVICTION_WEIGHTS_PATH) as f:
+                return json.load(f).get("edge_pct", {})
+    except Exception:
+        pass
+    return {}
 
 
 @dataclass

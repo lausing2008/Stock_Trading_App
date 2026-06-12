@@ -566,6 +566,7 @@ class PaperEquityCurve(Base):
     spy_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     qqq_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     hsi_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_regime: Mapped[str | None] = mapped_column(String(16), nullable=True)  # PT-A2
 
     portfolio: Mapped["PaperPortfolio"] = relationship(back_populates="equity_curve")
 

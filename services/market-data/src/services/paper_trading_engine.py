@@ -474,110 +474,18 @@ def _should_enter(
     else:
         notes.append(f"Acceptable R:R {rr:.1f}:1")
 
-    # ── Momentum / RSI (style-aware) ─────────────────────────────────────────
+    # ── Volume confirmation (CB-5: independent of signal engine — not in fused_prob) ──
+    # PA-B2: low-volume signals have higher false-positive rate for breakouts
 
-    rsi = reasons.get("rsi")
-    if rsi is not None:
-        rsi = float(rsi)
-        if style == "GROWTH":
-            # Tighter range checked first — elif order matters here
-            if 72 <= rsi <= 85:
-                score += 2
-                notes.append(f"RSI {rsi:.0f} — strong momentum (growth names run hot)")
-            elif 55 <= rsi < 72:
-                score += 1
-                notes.append(f"RSI {rsi:.0f} — momentum territory (valid for growth)")
-            elif 85 < rsi <= 88:
-                score += 1  # elevated but within tolerance for growth names
-                notes.append(f"RSI {rsi:.0f} — elevated, within growth tolerance")
-            elif rsi > 88:
-                score -= 2
-                notes.append(f"RSI {rsi:.0f} — potential exhaustion above 88")
-            elif rsi < 38:
-                score -= 1
-                notes.append(f"RSI {rsi:.0f} — below growth entry minimum (38)")
-        else:
-            if rsi > 72:
-                score -= 2
-                notes.append(f"RSI {rsi:.0f} overbought — wait for cooldown")
-            elif 40 <= rsi <= 65:
-                score += 1
-                notes.append(f"RSI {rsi:.0f} — healthy range")
-
-    # ── MACD / momentum confirmation ─────────────────────────────────────────
-
-    if reasons.get("macd_rising") and reasons.get("macd_zero_cross_up"):
-        score += 2
-        notes.append("MACD rising + zero-cross — momentum confirmed")
-    elif reasons.get("macd_rising"):
-        score += 1
-        notes.append("MACD rising — building momentum")
-
-    if reasons.get("obv_bullish"):
-        score += 1
-        notes.append("OBV bullish — volume confirming price direction")
-
-    # PA-B2: volume confirmation — penalise low-volume signals
     volume_z = reasons.get("volume_z")
     if volume_z is not None:
         vz = float(volume_z)
-        if vz < -0.5:
+        if vz > 1.0:
+            score += 1
+            notes.append(f"Above-average volume (z={vz:.1f}) — conviction confirmation")
+        elif vz < -0.5:
             score -= 1
             notes.append(f"Below-average volume (z={vz:.1f}) — breakout less reliable")
-
-    # ── Trend structure ───────────────────────────────────────────────────────
-
-    if style == "GROWTH":
-        # SMA20 > SMA50 sufficient for GROWTH (skip SMA50 > SMA200 requirement)
-        sma_above = reasons.get("trend_above_sma50")   # reuse as proxy
-        if sma_above:
-            score += 1
-            notes.append("Price above SMA50 — short-term uptrend intact")
-    else:
-        if reasons.get("sma50_above_sma200") and reasons.get("trend_above_sma50"):
-            score += 2
-            notes.append("SMA50>SMA200 golden-cross + price above SMA50")
-        elif reasons.get("trend_above_sma50"):
-            score += 1
-            notes.append("Price above SMA50 — trend intact")
-
-    # ── Market context ────────────────────────────────────────────────────────
-    # Live regime (fetched this cycle) takes precedence over stale signal-stored value
-
-    live_regime_state = live_regime.get("state") if live_regime else None
-    regime_state = live_regime_state or reasons.get("market_regime", "unknown")
-
-    if regime_state == "bull":
-        score += 1
-        notes.append("Bull regime — macro tailwind")
-    elif regime_state == "bear":
-        score -= 2
-        notes.append("Bear regime — higher false-signal rate")
-    elif regime_state in ("risk_off", "choppy"):
-        score -= 1
-        notes.append(f"{regime_state} regime — tighter entry standards applied")
-    elif regime_state == "high_vol":
-        score -= 1
-        notes.append("High-vol regime — wider stop already accommodates this")
-
-    breadth = reasons.get("breadth_pct")
-    if breadth is not None:
-        if float(breadth) >= 55:
-            score += 1
-            notes.append(f"Market breadth {float(breadth):.0f}% — broad participation healthy")
-        elif float(breadth) < 40:
-            score -= 1
-            notes.append(f"Market breadth {float(breadth):.0f}% — broad weakness, be selective")
-
-    # ── Sector context (GROWTH is exempt from sector headwind penalty) ────────
-
-    if style != "GROWTH":
-        if reasons.get("sector_headwind"):
-            score -= 1
-            notes.append("Sector ETF below SMA50 — sector headwind")
-        elif reasons.get("sector_etf_above_sma50"):
-            score += 1
-            notes.append("Sector ETF above SMA50 — sector tailwind")
 
     # ── Earnings window ───────────────────────────────────────────────────────
 
@@ -585,19 +493,18 @@ def _should_enter(
         score -= 1
         notes.append(f"Earnings in {dte} days — size conservatively")
 
-    # ── Signal conviction ─────────────────────────────────────────────────────
+    # ── Signal conviction summary (CB-5: single bonus replaces per-factor double-count) ──
+    # RSI, MACD, OBV, trend, regime, breadth, sector are all captured in bull_prob already.
+    # Score the fusion result ONCE rather than re-scoring each component individually.
 
-    bull_prob = signal_data.get("bullish_probability") or 0.0
-    confidence = signal_data.get("confidence") or 0.0
-    if float(bull_prob) >= 0.72:
-        score += 2
-        notes.append(f"High conviction {float(bull_prob)*100:.0f}% fused probability")
-    elif float(bull_prob) >= 0.62:
+    bull_prob = float(signal_data.get("bullish_probability") or 0.0)
+    confidence = float(signal_data.get("confidence") or 0.0)
+    if bull_prob >= 0.70:
         score += 1
-        notes.append(f"Moderate conviction {float(bull_prob)*100:.0f}% fused probability")
-    if float(confidence) >= 75:
-        score += 1
-        notes.append(f"Confidence {float(confidence):.0f}% above high-conviction threshold")
+        notes.append(f"Strong conviction {bull_prob*100:.0f}% fused probability")
+    elif bull_prob < 0.58:
+        score -= 1
+        notes.append(f"Weak conviction {bull_prob*100:.0f}% fused probability")
 
     # ── SA-26: Confidence trajectory — accelerating signals outperform decelerating ─
     conf_delta = signal_data.get("confidence_delta")
@@ -1444,7 +1351,7 @@ def _sector_value(session, portfolio: PaperPortfolio, sector: str, live_prices: 
 # ── Equity curve snapshot ─────────────────────────────────────────────────────
 
 def snapshot_equity_curve(portfolio_id: int | None = None) -> None:
-    """Record EOD equity + benchmark closes. Called post-close from scheduler."""
+    """Record EOD equity + benchmark closes + market regime. Called post-close from scheduler."""
     try:
         import yfinance as yf
     except ImportError:
@@ -1463,6 +1370,14 @@ def snapshot_equity_curve(portfolio_id: int | None = None) -> None:
                 pass
     except Exception as exc:
         log.warning("paper.benchmark_fetch_failed", error=str(exc))
+
+    # PT-A2: fetch current regime for shading overlay
+    snapshot_regime: str | None = None
+    try:
+        regime_data = _fetch_market_regime(_DEFAULT_CONFIG)
+        snapshot_regime = regime_data.get("state")
+    except Exception:
+        pass
 
     with SessionLocal() as session:
         portfolios_q = select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
@@ -1502,6 +1417,8 @@ def snapshot_equity_curve(portfolio_id: int | None = None) -> None:
                 existing.spy_close = bench_prices.get("SPY")
                 existing.qqq_close = bench_prices.get("QQQ")
                 existing.hsi_close = bench_prices.get("^HSI")
+                if snapshot_regime:
+                    existing.market_regime = snapshot_regime
             else:
                 session.add(PaperEquityCurve(
                     portfolio_id         = portfolio.id,
@@ -1513,6 +1430,7 @@ def snapshot_equity_curve(portfolio_id: int | None = None) -> None:
                     spy_close            = bench_prices.get("SPY"),
                     qqq_close            = bench_prices.get("QQQ"),
                     hsi_close            = bench_prices.get("^HSI"),
+                    market_regime        = snapshot_regime,
                 ))
 
             session.commit()

@@ -1209,6 +1209,12 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.signal_engine_url}/signals/calibrate_ta_weights")
     _record_job_status("calibrate_ta_weights_sent", "ok", 0.0)
 
+    # AL-3: calibrate conviction layer weights from signal_outcomes.
+    # Fits logistic regression on reason boolean flags; writes conviction_weights.json.
+    log.info("scheduler.calibrate_conviction_weights_start")
+    _post(f"{_settings.signal_engine_url}/signals/calibrate_conviction_weights")
+    _record_job_status("calibrate_conviction_weights_sent", "ok", 0.0)
+
 
 def _purge_old_data() -> None:
     """Delete rows older than 90 days from intraday price bars and signal outcomes.

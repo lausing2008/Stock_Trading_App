@@ -133,6 +133,32 @@ function EquityChart({ data, initialCapital }: { data: PaperEquityPoint[]; initi
         });
       }
 
+      // PT-A2: build regime shading shapes from consecutive same-regime spans
+      const REGIME_COLORS: Record<string, string> = {
+        bull:     'rgba(34,197,94,0.08)',
+        bear:     'rgba(239,68,68,0.08)',
+        risk_off: 'rgba(249,115,22,0.10)',
+        choppy:   'rgba(245,158,11,0.08)',
+      };
+      const shapes: any[] = [];
+      let spanStart = 0;
+      for (let i = 1; i <= dates.length; i++) {
+        const prev = data[i - 1]?.market_regime ?? null;
+        const curr = data[i]?.market_regime ?? null;
+        if (curr !== prev || i === dates.length) {
+          const fillcolor = prev ? REGIME_COLORS[prev] : null;
+          if (fillcolor) {
+            shapes.push({
+              type: 'rect', layer: 'below',
+              x0: dates[spanStart], x1: dates[i - 1],
+              y0: 0, y1: 1, yref: 'paper',
+              fillcolor, line: { width: 0 },
+            });
+          }
+          spanStart = i;
+        }
+      }
+
       const layout = {
         paper_bgcolor: '#0f172a', plot_bgcolor: '#0f172a',
         margin: { t: 10, b: 40, l: 60, r: 10 },
@@ -141,6 +167,7 @@ function EquityChart({ data, initialCapital }: { data: PaperEquityPoint[]; initi
         yaxis: { color: '#64748b', gridcolor: '#1e293b', tickprefix: '$', tickformat: ',.0f' },
         legend: { font: { color: '#94a3b8', size: 11 }, bgcolor: 'transparent', orientation: 'h', x: 0, y: -0.15 },
         hovermode: 'x unified',
+        shapes,
       };
 
       Plotly.react(ref.current, traces, layout, { displayModeBar: false, responsive: true });
@@ -378,7 +405,7 @@ function ConfigPanel({ config, onSave }: { config: PaperPortfolioConfig; onSave:
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-const TABS = ['Positions', 'Decisions', 'Closed Trades', 'Equity Curve'] as const;
+const TABS = ['Positions', 'Decisions', 'Closed Trades', 'Equity Curve', 'Attribution'] as const;
 type Tab = typeof TABS[number];
 
 export default function PaperPortfolioPage() {
@@ -415,6 +442,10 @@ export default function PaperPortfolioPage() {
   const { data: decisions } = useSWR(
     authed && tab === 'Decisions' ? ['paper-decisions', decPage] : null,
     () => api.paperDecisions({ page: decPage, limit: 50, days_back: 90 })
+  );
+  const { data: attribution } = useSWR(
+    authed && tab === 'Attribution' ? 'paper-attribution' : null,
+    () => api.paperAttribution(), { revalidateOnFocus: false }
   );
 
   if (!authed) return null;
@@ -718,6 +749,70 @@ export default function PaperPortfolioPage() {
               <div style={{ color: '#64748b', fontSize: 13, textAlign: 'center' }}>
                 Equity curve snapshots are taken once per day after market close. Check back after first trading session.
               </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'Attribution' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {!attribution || attribution.message ? (
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 24, textAlign: 'center' }}>
+                <div style={{ fontSize: 32, marginBottom: 8 }}>📊</div>
+                <div style={{ color: '#64748b' }}>{attribution?.message ?? 'No closed trades yet.'}</div>
+              </div>
+            ) : (
+              <>
+                {attribution.best_profile && (
+                  <div style={{ background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.25)', borderRadius: 8, padding: '12px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
+                    <span style={{ fontSize: 20 }}>🏆</span>
+                    <div>
+                      <span style={{ color: '#4ade80', fontWeight: 700, fontSize: 13 }}>Best entry profile: </span>
+                      <span style={{ color: '#e2e8f0', fontSize: 13 }}>Score {attribution.best_profile.score_band} · Confidence {attribution.best_profile.conf_band}</span>
+                      <span style={{ color: '#4ade80', fontWeight: 700, fontSize: 13 }}> → {attribution.best_profile.win_rate}% win rate</span>
+                      <span style={{ color: '#64748b', fontSize: 12 }}> (n={attribution.best_profile.count})</span>
+                    </div>
+                  </div>
+                )}
+                {[
+                  { title: 'By Entry Score', rows: attribution.by_score },
+                  { title: 'By Confidence at Entry', rows: attribution.by_confidence },
+                  { title: 'By Market Regime at Entry', rows: attribution.by_regime },
+                  { title: 'By Risk:Reward Ratio', rows: attribution.by_rr },
+                ].map(({ title, rows }) => (
+                  <div key={title} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 12 }}>{title}</div>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                          {['Band', 'Trades', 'Win Rate', 'Avg Return', 'Profit Factor'].map(h => (
+                            <th key={h} style={{ padding: '4px 8px', textAlign: h === 'Band' ? 'left' : 'right', color: '#475569', fontWeight: 500 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.filter(r => r.count > 0).map(r => (
+                          <tr key={r.band} style={{ borderBottom: '1px solid #0f172a' }}>
+                            <td style={{ padding: '5px 8px', color: '#e2e8f0', fontWeight: 500 }}>{r.band}</td>
+                            <td style={{ padding: '5px 8px', color: '#64748b', textAlign: 'right' }}>{r.count}</td>
+                            <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600,
+                              color: r.win_rate == null ? '#475569' : r.win_rate >= 60 ? '#4ade80' : r.win_rate >= 50 ? '#facc15' : '#f87171' }}>
+                              {r.win_rate != null ? `${r.win_rate}%` : '—'}
+                            </td>
+                            <td style={{ padding: '5px 8px', textAlign: 'right',
+                              color: r.avg_return == null ? '#475569' : r.avg_return >= 0 ? '#4ade80' : '#f87171' }}>
+                              {r.avg_return != null ? `${r.avg_return >= 0 ? '+' : ''}${r.avg_return.toFixed(2)}%` : '—'}
+                            </td>
+                            <td style={{ padding: '5px 8px', textAlign: 'right',
+                              color: r.profit_factor == null ? '#475569' : r.profit_factor >= 1.5 ? '#4ade80' : r.profit_factor >= 1 ? '#facc15' : '#f87171' }}>
+                              {r.profit_factor != null ? r.profit_factor.toFixed(2) : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </>
             )}
           </div>
         )}

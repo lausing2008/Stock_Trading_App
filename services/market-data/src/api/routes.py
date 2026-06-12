@@ -1107,6 +1107,107 @@ def sector_performance(session: Session = Depends(get_session)):
     return result
 
 
+# ── Sector Rotation Heatmap (RES-4) ──────────────────────────────────────────
+
+_SECTOR_ETFS = {
+    "XLK": "Technology",
+    "XLV": "Healthcare",
+    "XLF": "Financials",
+    "XLE": "Energy",
+    "XLI": "Industrials",
+    "XLY": "Consumer Discretionary",
+    "XLP": "Consumer Staples",
+    "XLU": "Utilities",
+    "XLRE": "Real Estate",
+    "XLC": "Communication Services",
+    "XLB": "Materials",
+}
+_SECTOR_ROTATION_TTL = 3_600  # 1-hour cache
+
+
+@router.get("/sector_rotation")
+def sector_rotation():
+    """RES-4: Returns 1w / 1m / 3m returns for US sector ETFs vs SPY.
+
+    Classification vs SPY 1m return:
+      leading      — sector >= SPY + 3%
+      in-line      — within 3% of SPY
+      lagging      — sector < SPY - 1%
+      distributing — sector < SPY - 5%
+    """
+    r = _get_redis()
+    cache_key = "sector_rotation"
+    try:
+        cached = r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    tickers = list(_SECTOR_ETFS.keys()) + ["SPY"]
+    try:
+        raw = yf.download(tickers, period="4mo", interval="1d", progress=False, auto_adjust=True)
+        # Multi-ticker download returns MultiIndex columns (field, ticker) — select Close level
+        try:
+            closes = raw["Close"]
+        except KeyError:
+            closes = raw  # single-ticker fallback (shouldn't happen here)
+    except Exception as exc:
+        log.warning("sector_rotation.yf_failed", error=str(exc))
+        return {"error": "Unable to fetch sector data", "sectors": []}
+
+    results = []
+    spy_closes = closes["SPY"].dropna() if "SPY" in closes.columns else None
+
+    def _ret(series, days: int) -> float | None:
+        clean = series.dropna()
+        if len(clean) < days + 1:
+            return None
+        return round((float(clean.iloc[-1]) / float(clean.iloc[-days - 1]) - 1) * 100, 2)
+
+    spy_1m = _ret(spy_closes, 21) if spy_closes is not None else None
+
+    for etf, sector_name in _SECTOR_ETFS.items():
+        if etf not in closes.columns:
+            continue
+        s = closes[etf]
+        ret_1w = _ret(s, 5)
+        ret_1m = _ret(s, 21)
+        ret_3m = _ret(s, 63)
+
+        vs_spy = (ret_1m - spy_1m) if ret_1m is not None and spy_1m is not None else None
+        if vs_spy is None:
+            status = "unknown"
+        elif vs_spy >= 3:
+            status = "leading"
+        elif vs_spy >= -1:
+            status = "in-line"
+        elif vs_spy >= -5:
+            status = "lagging"
+        else:
+            status = "distributing"
+
+        results.append({
+            "etf": etf,
+            "sector": sector_name,
+            "ret_1w": ret_1w,
+            "ret_1m": ret_1m,
+            "ret_3m": ret_3m,
+            "vs_spy_1m": round(vs_spy, 2) if vs_spy is not None else None,
+            "status": status,
+        })
+
+    results.sort(key=lambda x: x["ret_1m"] or -999, reverse=True)
+    payload = {"spy_1m": spy_1m, "sectors": results, "ts": datetime.now(timezone.utc).isoformat()}
+
+    try:
+        r.setex(cache_key, _SECTOR_ROTATION_TTL, json.dumps(payload))
+    except Exception:
+        pass
+
+    return payload
+
+
 # ── Earnings Calendar ─────────────────────────────────────────────────────────
 
 @router.get("/earnings_calendar")

@@ -337,6 +337,7 @@ def get_equity_curve(
             "spy_close": r.spy_close,
             "qqq_close": r.qqq_close,
             "hsi_close": r.hsi_close,
+            "market_regime": r.market_regime,  # PT-A2: for regime shading overlay
         }
         for r in rows
     ]
@@ -525,3 +526,95 @@ def set_engine_state(
 
     session.commit()
     return {"ok": True, "state": state, "config": p.config}
+
+
+@router.get("/attribution")
+def get_attribution(
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """PT-A1: Aggregate closed trades by entry_score, confidence, regime, and R:R bands.
+
+    Returns win_rate, avg_return, profit_factor, and count for each bucket so
+    traders can identify which entry profiles actually perform.
+    """
+    p = _get_active_portfolio(session)
+    trades = session.execute(
+        select(PaperTrade).where(
+            PaperTrade.portfolio_id == p.id,
+            PaperTrade.stage == "closed",
+            PaperTrade.pnl.is_not(None),
+        )
+    ).scalars().all()
+
+    if not trades:
+        return {"message": "No closed trades yet", "by_score": [], "by_confidence": [], "by_regime": [], "by_rr": []}
+
+    def _stats(bucket: list) -> dict:
+        if not bucket:
+            return {"count": 0, "win_rate": None, "avg_return": None, "profit_factor": None}
+        wins = [t for t in bucket if (t.pnl or 0) > 0]
+        losses = [t for t in bucket if (t.pnl or 0) <= 0]
+        returns = [t.pct_return for t in bucket if t.pct_return is not None]
+        gross_win = sum(t.pnl for t in wins if t.pnl)
+        gross_loss = abs(sum(t.pnl for t in losses if t.pnl))
+        return {
+            "count": len(bucket),
+            "win_rate": round(len(wins) / len(bucket) * 100, 1),
+            "avg_return": round(sum(returns) / len(returns) * 100, 2) if returns else None,
+            "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
+        }
+
+    # By entry score band
+    score_bands = [
+        ("≤2", lambda t: (t.entry_score or 0) <= 2),
+        ("3", lambda t: (t.entry_score or 0) == 3),
+        ("4", lambda t: (t.entry_score or 0) == 4),
+        ("5+", lambda t: (t.entry_score or 0) >= 5),
+    ]
+    by_score = [{"band": label, **_stats([t for t in trades if fn(t)])} for label, fn in score_bands]
+
+    # By confidence band
+    conf_bands = [
+        ("<55%", lambda t: (t.confidence_at_entry or 0) < 55),
+        ("55–65%", lambda t: 55 <= (t.confidence_at_entry or 0) < 65),
+        ("65–75%", lambda t: 65 <= (t.confidence_at_entry or 0) < 75),
+        ("75%+", lambda t: (t.confidence_at_entry or 0) >= 75),
+    ]
+    by_confidence = [{"band": label, **_stats([t for t in trades if fn(t)])} for label, fn in conf_bands]
+
+    # By market regime at entry
+    regimes = sorted({t.market_regime_at_entry for t in trades if t.market_regime_at_entry})
+    by_regime = [{"band": r, **_stats([t for t in trades if t.market_regime_at_entry == r])} for r in regimes]
+    unknown_regime = [t for t in trades if not t.market_regime_at_entry]
+    if unknown_regime:
+        by_regime.append({"band": "unknown", **_stats(unknown_regime)})
+
+    # By R:R band
+    rr_bands = [
+        ("<1.5", lambda t: (t.rr_ratio_at_entry or 0) < 1.5),
+        ("1.5–2.5", lambda t: 1.5 <= (t.rr_ratio_at_entry or 0) < 2.5),
+        ("2.5+", lambda t: (t.rr_ratio_at_entry or 0) >= 2.5),
+    ]
+    by_rr = [{"band": label, **_stats([t for t in trades if fn(t)])} for label, fn in rr_bands]
+
+    # Best entry profile (score + confidence combo with ≥10 trades)
+    best_profile = None
+    best_wr = -1.0
+    for s_label, s_fn in score_bands:
+        for c_label, c_fn in conf_bands:
+            bucket = [t for t in trades if s_fn(t) and c_fn(t)]
+            if len(bucket) >= 10:
+                wr = sum(1 for t in bucket if (t.pnl or 0) > 0) / len(bucket)
+                if wr > best_wr:
+                    best_wr = wr
+                    best_profile = {"score_band": s_label, "conf_band": c_label, "win_rate": round(wr * 100, 1), "count": len(bucket)}
+
+    return {
+        "total_trades": len(trades),
+        "by_score": by_score,
+        "by_confidence": by_confidence,
+        "by_regime": by_regime,
+        "by_rr": by_rr,
+        "best_profile": best_profile,
+    }

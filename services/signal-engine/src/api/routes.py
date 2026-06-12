@@ -1699,6 +1699,113 @@ def calibrate_ta_weights(
     }
 
 
+@router.post("/calibrate_conviction_weights")
+def calibrate_conviction_weights(
+    lookback_days: int = Query(365, ge=90, le=730),
+    min_count: int = Query(10),
+    session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
+):
+    """AL-3: Fit logistic regression on conviction layer flags from signal_outcomes.
+
+    For each boolean reason flag, computes edge = presence_in_winners − presence_in_losers.
+    Writes conviction_weights.json with per-flag accuracy and edge data.
+    Flags with accuracy < 52% are marked as noise layers.
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        import numpy as np
+        from sklearn.linear_model import LogisticRegression
+    except ImportError:
+        raise HTTPException(500, "scikit-learn not installed")
+
+    from ..generators.signals import _CONVICTION_WEIGHTS_PATH
+
+    cutoff = date.today() - timedelta(days=lookback_days)
+
+    rows = session.execute(
+        select(SignalOutcome.is_correct, Signal.reasons)
+        .join(Signal, Signal.id == SignalOutcome.signal_id)
+        .where(
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            Signal.reasons.is_not(None),
+        )
+    ).all()
+
+    if len(rows) < 30:
+        raise HTTPException(400, f"Need ≥30 evaluated BUY outcomes, found {len(rows)}")
+
+    n_win = sum(1 for r in rows if r.is_correct)
+    n_los = sum(1 for r in rows if not r.is_correct)
+    key_wins: dict[str, int] = {}
+    key_los: dict[str, int] = {}
+
+    for r in rows:
+        reasons = r.reasons or {}
+        bucket = key_wins if r.is_correct else key_los
+        for k, v in reasons.items():
+            if isinstance(v, bool) and v:
+                bucket[k] = bucket.get(k, 0) + 1
+
+    all_keys = set(key_wins) | set(key_los)
+    layer_stats: dict[str, dict] = {}
+    for k in all_keys:
+        wc = key_wins.get(k, 0)
+        lc = key_los.get(k, 0)
+        if wc + lc < min_count:
+            continue
+        wp = wc / n_win if n_win > 0 else 0.0
+        lp = lc / n_los if n_los > 0 else 0.0
+        accuracy = wc / (wc + lc) if (wc + lc) > 0 else 0.5
+        layer_stats[k] = {
+            "win_pct": round(wp * 100, 1),
+            "los_pct": round(lp * 100, 1),
+            "edge_pct": round((wp - lp) * 100, 1),
+            "accuracy": round(accuracy * 100, 1),
+            "is_noise": accuracy < 0.52,
+            "win_count": wc,
+            "los_count": lc,
+        }
+
+    # Fit logistic regression for coefficient-based weights
+    features = sorted(layer_stats.keys())
+    if len(features) >= 3 and len(rows) >= 50:
+        X = np.array([[int(bool((r.reasons or {}).get(f))) for f in features] for r in rows])
+        y = np.array([int(r.is_correct) for r in rows])
+        try:
+            lr = LogisticRegression(max_iter=500, C=1.0, random_state=42)
+            lr.fit(X, y)
+            for feat, coef in zip(features, lr.coef_[0]):
+                if feat in layer_stats:
+                    layer_stats[feat]["logistic_coef"] = round(float(coef), 4)
+        except Exception:
+            pass
+
+    payload = {
+        "as_of": date.today().isoformat(),
+        "lookback_days": lookback_days,
+        "total_winners": n_win,
+        "total_losers": n_los,
+        "layer_count": len(layer_stats),
+        "noise_count": sum(1 for s in layer_stats.values() if s["is_noise"]),
+        "layers": layer_stats,
+        "edge_pct": {k: v["edge_pct"] for k, v in layer_stats.items()},
+    }
+
+    try:
+        Path(_CONVICTION_WEIGHTS_PATH).parent.mkdir(parents=True, exist_ok=True)
+        Path(_CONVICTION_WEIGHTS_PATH).write_text(json.dumps(payload, indent=2))
+    except Exception as exc:
+        log.warning("conviction_weights.write_failed", error=str(exc))
+
+    log.info("conviction_weights.calibrated", layers=len(layer_stats), noise=payload["noise_count"])
+    return payload
+
+
 @router.get("/walkforward")
 def walkforward_backtest(
     train_days: int = Query(180, ge=30, le=365),
@@ -2388,3 +2495,161 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         skipped_no_price=skipped_no_price,
     )
     return {"evaluated": evaluated, "skipped_open": skipped_open, "skipped_no_price": skipped_no_price}
+
+
+@router.get("/information_coefficient")
+def information_coefficient(
+    horizon: str = Query("SWING"),
+    lookback_days: int = Query(365, ge=90, le=730),
+    session: Session = Depends(get_session),
+):
+    """TM-3: Monthly IC — Spearman rank correlation between fused_prob rank and
+    actual return rank.  IC > 0.05 is good; IC_IR (mean/std) > 0.5 is excellent.
+    """
+    import statistics
+
+    cutoff = date.today() - timedelta(days=lookback_days)
+    try:
+        hz = SignalHorizon(horizon.upper())
+    except ValueError:
+        raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.horizon == hz,
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.fused_prob.is_not(None),
+            SignalOutcome.pct_return.is_not(None),
+        )
+    ).scalars().all()
+
+    from collections import defaultdict
+    monthly: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for o in outcomes:
+        monthly[o.signal_date.strftime("%Y-%m")].append(
+            (float(o.fused_prob), float(o.pct_return))
+        )
+
+    def _rank(lst: list[float]) -> list[float]:
+        order = sorted(range(len(lst)), key=lambda i: lst[i])
+        ranks = [0.0] * len(lst)
+        for r, i in enumerate(order):
+            ranks[i] = float(r + 1)
+        return ranks
+
+    series = []
+    for month in sorted(monthly):
+        pairs = monthly[month]
+        if len(pairs) < 5:
+            continue
+        probs = [p[0] for p in pairs]
+        rets = [p[1] for p in pairs]
+        rp = _rank(probs)
+        rr = _rank(rets)
+        n = len(rp)
+        mp, mr = sum(rp) / n, sum(rr) / n
+        cov = sum((a - mp) * (b - mr) for a, b in zip(rp, rr)) / n
+        sp = (sum((a - mp) ** 2 for a in rp) / n) ** 0.5
+        sr = (sum((b - mr) ** 2 for b in rr) / n) ** 0.5
+        ic = cov / (sp * sr) if sp > 0 and sr > 0 else 0.0
+        series.append({"month": month, "ic": round(ic, 4), "n": n})
+
+    if not series:
+        return {
+            "horizon": horizon, "lookback_days": lookback_days,
+            "monthly_ic": [], "ic_mean": None, "ic_std": None,
+            "ic_ir": None, "total_periods": 0,
+            "message": "Not enough data — at least 5 BUY outcomes per month required",
+        }
+
+    ics = [s["ic"] for s in series]
+    ic_mean = statistics.mean(ics)
+    ic_std = statistics.stdev(ics) if len(ics) > 1 else 0.0
+    ic_ir = round(ic_mean / ic_std, 3) if ic_std > 0 else None
+
+    return {
+        "horizon": horizon,
+        "lookback_days": lookback_days,
+        "monthly_ic": series,
+        "ic_mean": round(ic_mean, 4),
+        "ic_std": round(ic_std, 4),
+        "ic_ir": ic_ir,
+        "total_periods": len(series),
+        "quality": "excellent" if ic_mean > 0.05 else "good" if ic_mean > 0.02 else "poor",
+    }
+
+
+@router.get("/factor_attribution")
+def factor_attribution(
+    horizon: str = Query("SWING"),
+    lookback_days: int = Query(365, ge=90, le=730),
+    min_count: int = Query(10),
+    session: Session = Depends(get_session),
+):
+    """TM-4: For each boolean reason flag, compute presence in winners vs losers.
+    Edge = win_pct - los_pct.  Positive edge = factor predicts wins; negative = noise.
+    """
+    cutoff = date.today() - timedelta(days=lookback_days)
+    try:
+        hz = SignalHorizon(horizon.upper())
+    except ValueError:
+        raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    rows = session.execute(
+        select(SignalOutcome.is_correct, Signal.reasons)
+        .join(Signal, Signal.id == SignalOutcome.signal_id)
+        .where(
+            SignalOutcome.horizon == hz,
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            Signal.reasons.is_not(None),
+        )
+    ).all()
+
+    if not rows:
+        return {
+            "factors": [], "total_winners": 0, "total_losers": 0,
+            "message": "No evaluated outcomes with reason data yet",
+        }
+
+    n_win = sum(1 for r in rows if r.is_correct)
+    n_los = sum(1 for r in rows if not r.is_correct)
+    key_wins: dict[str, int] = {}
+    key_los: dict[str, int] = {}
+
+    for r in rows:
+        reasons = r.reasons or {}
+        bucket = key_wins if r.is_correct else key_los
+        for k, v in reasons.items():
+            if isinstance(v, bool) and v:
+                bucket[k] = bucket.get(k, 0) + 1
+
+    all_keys = set(key_wins) | set(key_los)
+    factors = []
+    for k in all_keys:
+        wc = key_wins.get(k, 0)
+        lc = key_los.get(k, 0)
+        if wc + lc < min_count:
+            continue
+        wp = wc / n_win if n_win > 0 else 0.0
+        lp = lc / n_los if n_los > 0 else 0.0
+        factors.append({
+            "factor": k,
+            "win_pct": round(wp * 100, 1),
+            "los_pct": round(lp * 100, 1),
+            "edge": round((wp - lp) * 100, 1),
+            "win_count": wc,
+            "los_count": lc,
+        })
+
+    factors.sort(key=lambda x: x["edge"], reverse=True)
+
+    return {
+        "horizon": horizon,
+        "lookback_days": lookback_days,
+        "total_winners": n_win,
+        "total_losers": n_los,
+        "factors": factors,
+    }

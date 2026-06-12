@@ -48,6 +48,20 @@ export const api = {
   },
   sectorRotation: (market?: string) =>
     request<SectorRotationReport>(`/rankings/sector_rotation${market ? `?market=${market}` : ''}`),
+  screen: (params: {
+    market?: string; sector?: string; signal?: string;
+    min_confidence?: number; min_score?: number; max_score?: number;
+    min_momentum?: number; min_technical?: number; min_rs?: number; min_growth?: number;
+    sort_by?: string; limit?: number;
+  }) => {
+    const p = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') p.set(k, String(v)); });
+    return request<{ total: number; items: {
+      symbol: string; name: string; sector: string | null; market: string;
+      score: number; technical: number; momentum: number; value: number; growth: number;
+      rs_score: number | null; signal: string | null; confidence: number | null; horizon: string | null;
+    }[] }>(`/rankings/screen?${p}`);
+  },
   signal: (symbol: string, style?: string) => request<Signal>(`/signals/${symbol}${style ? `?style=${style}` : ''}`),
   allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
   signalHistory: (symbol: string, style = 'SWING', days = 60) =>
@@ -210,6 +224,18 @@ export const api = {
     if (regime) params.set('regime', regime);
     return request<AlphaDecayReport>(`/signals/alpha_decay?${params}`);
   },
+  informationCoefficient: (horizon = 'SWING', lookbackDays = 365) =>
+    request<{
+      horizon: string; lookback_days: number; monthly_ic: { month: string; ic: number; n: number }[];
+      ic_mean: number | null; ic_std: number | null; ic_ir: number | null;
+      total_periods: number; quality: string; message?: string;
+    }>(`/signals/information_coefficient?horizon=${horizon}&lookback_days=${lookbackDays}`),
+  factorAttribution: (horizon = 'SWING', lookbackDays = 365, minCount = 10) =>
+    request<{
+      horizon: string; lookback_days: number; total_winners: number; total_losers: number;
+      factors: { factor: string; win_pct: number; los_pct: number; edge: number; win_count: number; los_count: number }[];
+      message?: string;
+    }>(`/signals/factor_attribution?horizon=${horizon}&lookback_days=${lookbackDays}&min_count=${minCount}`),
   stockAtr: (symbol: string, period = 14) =>
     request<{ symbol: string; atr: number; close: number; stop_loss_2atr: number; period: number }>(`/stocks/${symbol}/atr?period=${period}`),
   portfolioRisk: (symbols: string[], weights?: number[]) => {
@@ -256,6 +282,12 @@ export const api = {
 
   // Sector heatmap / performance
   sectorPerformance: () => request<SectorGroup[]>('/stocks/sector_performance'),
+  sectorRotationEtf: () => request<{
+    spy_1m: number | null;
+    sectors: { etf: string; sector: string; ret_1w: number | null; ret_1m: number | null; ret_3m: number | null; vs_spy_1m: number | null; status: string }[];
+    ts: string;
+    error?: string;
+  }>('/stocks/sector_rotation'),
 
   // Earnings calendar
   earningsCalendar: (daysAhead = 45) => request<EarningsItem[]>(`/stocks/earnings_calendar?days_ahead=${daysAhead}`),
@@ -305,6 +337,15 @@ export const api = {
     if (params?.days_back) p.set('days_back', String(params.days_back));
     return request<PaperDecisionsResponse>(`/paper-portfolio/decisions?${p}`);
   },
+  paperAttribution: () =>
+    request<{
+      total_trades: number; message?: string;
+      by_score: { band: string; count: number; win_rate: number | null; avg_return: number | null; profit_factor: number | null }[];
+      by_confidence: { band: string; count: number; win_rate: number | null; avg_return: number | null; profit_factor: number | null }[];
+      by_regime: { band: string; count: number; win_rate: number | null; avg_return: number | null; profit_factor: number | null }[];
+      by_rr: { band: string; count: number; win_rate: number | null; avg_return: number | null; profit_factor: number | null }[];
+      best_profile: { score_band: string; conf_band: string; win_rate: number; count: number } | null;
+    }>('/paper-portfolio/attribution'),
   paperConfigure: (body: Partial<PaperPortfolioConfig>) =>
     request<{ ok: boolean; config: PaperPortfolioConfig }>('/paper-portfolio/configure', { method: 'POST', body: JSON.stringify(body) }),
   paperReset: () =>
@@ -982,6 +1023,7 @@ export type PaperEquityPoint = {
   spy_close: number | null;
   qqq_close: number | null;
   hsi_close: number | null;
+  market_regime: string | null;  // PT-A2: for regime shading overlay
 };
 
 export type PaperDecisionItem = {

@@ -635,6 +635,8 @@ const ITEMS: Item[] = [
   {
     id: 'ui11-factor-exposure-chart',
     tier: 5, severity: 'low',
+    defaultStatus: 'done',
+    implementedNote: 'Verified 2026-06-11 — GET /signals/factor-exposure endpoint exists and returns RSI, ADX, Vol Z, ML Probability, News Sentiment, TA Score split by correct/wrong. FactorChart component in signal-accuracy.tsx calls api.factorExposure(lookback) via useSWR and renders horizontal bars showing deviation from neutral. Chart is present in the Overview tab.',
     title: 'UI-11: Verify factor exposure chart is rendering correctly',
     file: 'frontend/src/pages/signal-accuracy.tsx',
     effort: '0.5 days',
@@ -657,6 +659,8 @@ const ITEMS: Item[] = [
   {
     id: 'tech-research-cache-quality',
     tier: 5, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Done — All four fixes implemented: (1) report_quality field stored with every cached report: "full" | "partial" | "fallback". (2) Quality-aware TTLs: full=24h, partial=30min, fallback=5min — bad reports expire quickly automatically. (3) DELETE /research/{symbol} cache-bust endpoint added. (4) Quality warning banners in research/[symbol].tsx: red banner for fallback (AI error), yellow banner for partial (missing services). No auto-invalidate on price ingest needed — TTL structure already limits exposure.',
     title: 'Research Engine Cache Poisoning (Bad Report Served for 24h)',
     file: 'services/research-engine/src/api/routes.py',
     effort: '1–2 days',
@@ -887,6 +891,8 @@ const ITEMS: Item[] = [
   {
     id: 'pt-trade-attribution',
     tier: 8, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — GET /paper-portfolio/attribution endpoint added to paper_portfolio.py. Aggregates all closed PaperTrades by entry_score_band (≤2/3/4/5+), confidence_band (<55%/55-65%/65-75%/75%+), market_regime_at_entry, and rr_band (<1.5/1.5-2.5/2.5+). Returns win_rate, avg_return, profit_factor, count per bucket plus best_profile (highest win rate with ≥10 trades). Frontend: Attribution tab added to paper-portfolio.tsx TABS constant with tables for each dimension and a best-profile chip.',
     title: 'PT-A1: No trade attribution — can\'t identify which entry factors predict wins vs losses',
     file: 'services/market-data/src/api/paper_portfolio.py · frontend/src/pages/paper-portfolio.tsx',
     effort: '1 week',
@@ -898,6 +904,8 @@ const ITEMS: Item[] = [
   {
     id: 'pt-regime-equity-overlay',
     tier: 8, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — Backend: market_regime VARCHAR(16) column added to paper_equity_curve (DB migration in session.py). snapshot_equity_curve() fetches current regime from _fetch_market_regime() and stores it per snapshot. get_equity_curve() returns market_regime per data point. Frontend: PaperEquityPoint type updated with market_regime field. EquityChart groups consecutive regime spans and renders them as Plotly shapes (type:rect, layer:below) with color-coded fills: bull=green, bear=red, risk_off=orange, choppy=amber.',
     title: 'PT-A2: Market regime not overlaid on equity curve — can\'t see how portfolio performs per regime',
     file: 'frontend/src/pages/paper-portfolio.tsx · services/market-data/src/services/paper_trading_engine.py',
     effort: '2–3 hours',
@@ -1445,6 +1453,8 @@ const ITEMS: Item[] = [
   {
     id: 'res3-pattern-recognition',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done — Pattern detectors implemented in technical-analysis service; signals.py _fetch_patterns_from_ta() fetches them and _pattern_score_adjustment() applies boosts. Patterns: double_bottom (with neckline break + volume confirmation), ascending_triangle, bull_flag, cup_and_handle. Bearish patterns (double_top, head_and_shoulders, descending_triangle) apply penalties. Detected patterns stored in Signal.reasons JSON and show as chips on the stock detail page.',
     title: 'RES-3: Technical pattern recognition — cup-and-handle, breakout, consolidation, flag',
     file: 'services/technical-analysis/src/calculators/ · services/signal-engine/src/generators/signals.py',
     effort: '3–5 days',
@@ -1456,6 +1466,8 @@ const ITEMS: Item[] = [
   {
     id: 'res4-sector-rotation',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — GET /stocks/sector_rotation endpoint in market-data/routes.py. Downloads XLK/XLV/XLF/XLE/XLI/XLY/XLP/XLU/XLRE/XLC/XLB + SPY via yf.download(), computes 1w (5d) / 1m (21d) / 3m (63d) returns. Status vs SPY 1m: leading (≥+3%), in-line (within 3%), lagging (-1% to -5%), distributing (<-5%). 1-hour Redis cache. Rankings page: SectorEtf SWR hook + heatmap panel showing colored cards per sector with 1m return and status legend.',
     title: 'RES-4: Sector rotation heat map — surface stocks in leading sectors, avoid lagging ones',
     file: 'frontend/src/pages/rankings.tsx · services/ranking-engine/src/scoring/kscore.py',
     effort: '2–3 days',
@@ -1469,6 +1481,8 @@ const ITEMS: Item[] = [
   {
     id: 'scr1-custom-screener',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — GET /rankings/screen endpoint added to ranking-engine. Filters: market, sector (ilike), signal type, min_confidence, min/max K-Score, min_momentum, min_technical, min_rs, min_growth. Sorts by score/momentum/technical/rs_score/confidence. Returns up to 200 results. Frontend screener.tsx page already existed with client-side filtering; backend endpoint adds server-side capability. api.ts screen() function added. Signal imports added to ranking-engine routes.',
     title: 'SCR-1: Multi-factor custom screener — user-defined filter combinations',
     file: 'frontend/src/pages/screener.tsx (new) · services/ranking-engine/src/api/routes.py',
     effort: '3–5 days',
@@ -1528,6 +1542,8 @@ const ITEMS: Item[] = [
   {
     id: 'al3-self-improving-conviction',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — POST /signals/calibrate_conviction_weights endpoint added to signal-engine routes.py. Joins signal_outcomes with Signal.reasons via signal_id; for each boolean reason flag computes: win_pct, los_pct, edge_pct=(win_pct-los_pct), accuracy, is_noise (accuracy<52%). Optionally fits logistic regression for coefficient-based weights. Writes conviction_weights.json to model_dir (same pattern as ta_weights.json). _CONVICTION_WEIGHTS_PATH added to signals.py; load_conviction_weights() function exported. Wired into weekly scheduler: _calibrate_conviction_weights() called after calibrate_ta_weights. Data populates as signal_outcomes accumulates (same 90d minimum as TM-4).',
     title: 'AL-3: Self-improving conviction gate — learn which layers actually predict success',
     file: 'services/market-data/src/services/scheduler.py · services/signal-engine/src/api/routes.py',
     effort: '2–3 days',
@@ -1565,6 +1581,7 @@ const ITEMS: Item[] = [
   {
     id: 'tm2-signal-decay',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
     implementedNote: 'Done 2026-06-11 — GET /signals/alpha_decay endpoint in signal-engine (days 1,2,3,5,7,10,15,20,30 post-entry; avg/p25/p75/n per day; optimal_hold_days = peak avg return day). "Alpha Decay" tab added to /signal-accuracy: horizon picker (SWING/SHORT/LONG/GROWTH), lookback picker (90/180/365d), SVG line chart with avg return curve + p25–p75 shaded band, optimal hold chip, per-day breakdown table. Entry = first daily close ≥ signal date; up to 5 calendar-day slippage for weekends/holidays.',
     title: 'TM-2: Signal decay analysis — how long does the alpha last after a BUY signal?',
     file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
@@ -1577,6 +1594,8 @@ const ITEMS: Item[] = [
   {
     id: 'tm3-information-coefficient',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — GET /signals/information_coefficient endpoint in signal-engine. Groups signal_outcomes by calendar month; computes Spearman rank correlation between fused_prob rank and actual pct_return rank per month (min 5 per month). Returns monthly_ic series, ic_mean, ic_std, ic_ir (mean/std). Quality label: excellent (>0.05), good (>0.02), poor. IC Score tab added to /signal-accuracy: horizon picker, stat cards (IC Mean/Std/IR/Months), bar chart per month (green=positive IC, red=negative). api.ts informationCoefficient() function added.',
     title: 'TM-3: Information Coefficient (IC) tracking — the gold standard signal quality metric',
     file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
     effort: '2–3 days',
@@ -1588,6 +1607,8 @@ const ITEMS: Item[] = [
   {
     id: 'tm4-factor-attribution',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — GET /signals/factor_attribution endpoint in signal-engine. Joins signal_outcomes with Signal.reasons via signal_id; for each boolean flag computes win_pct, los_pct, edge=win_pct-los_pct. Min count param (default 10). Sorted by edge descending. Factor Attribution tab added to /signal-accuracy: horizon picker, winner/loser counts, horizontal bar chart (green=positive edge, red=negative), W%/L%/n labels. api.ts factorAttribution() function added.',
     title: 'TM-4: Factor attribution report — which signal components drove wins vs losses?',
     file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-accuracy.tsx',
     effort: '2–3 days',
@@ -1762,6 +1783,8 @@ const ITEMS: Item[] = [
   {
     id: 'ui-alert-granularity',
     tier: 5, severity: 'low',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Implemented as signal-alert-granularity (Tier 6): alert_mode column added to SignalAlert; buy_only mode only fires on BUY transitions; Any/BUY-only toggle per subscription row in alerts.tsx.',
     title: 'UI-6: Signal alert granularity — alert only on specific transitions (e.g., HOLD→BUY)',
     file: 'frontend/src/pages/watchlist.tsx · services/market-data/src/services/scheduler.py',
     effort: '1.5 days',
@@ -1773,6 +1796,8 @@ const ITEMS: Item[] = [
   {
     id: 'ui-suppression-days-active',
     tier: 5, severity: 'low',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Implemented as signal-filter-days-active (Tier 6): /signals/suppressed computes consecutive streak per condition; days_active dict per row; signal-filters.tsx shows "Nd" label below dot, red when ≥10 days.',
     title: 'UI-7: Signal filter "days active" — show how long each suppression condition has been blocking',
     file: 'frontend/src/pages/signal-filters.tsx · services/signal-engine/src/api/routes.py',
     effort: '1 day',
@@ -1795,6 +1820,8 @@ const ITEMS: Item[] = [
   {
     id: 'dp-hk-holiday-calendar',
     tier: 5, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-09 — Implemented as hk-holiday-calendar (Tier 6): _HK_HOLIDAYS frozenset (2025–2026) and _is_hk_holiday() added to scheduler.py; both _refresh_market("HK") and _refresh_5m("HK") skip on HKEX holidays.',
     title: 'DP-2: HK holiday calendar — scheduler fires on Chinese New Year and other HK market holidays',
     file: 'services/market-data/src/services/scheduler.py',
     effort: '1 day',
@@ -2337,6 +2364,8 @@ const ITEMS: Item[] = [
   {
     id: 'cb-5-entry-gate-independence',
     tier: 9, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-11 — Removed RSI, MACD, OBV, trend structure, regime, breadth, and sector factor scoring from _should_enter(). Replaced with: volume z-score (independent confirmation, +1/>1σ, -1/<-0.5σ), single conviction summary (bull_prob≥0.70 → +1; <0.58 → -1). SA-24 freshness and SA-26 trajectory remain as truly independent factors. Regime handled upstream by RE-2 bear gate and RE-4 min_entry_score elevation.',
     title: 'CB-5: _should_enter() re-evaluates factors already in fused_probability — double-counting inflates score artificially',
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '2 hours',
