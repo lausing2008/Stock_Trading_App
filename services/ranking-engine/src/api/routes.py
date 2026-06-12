@@ -436,19 +436,28 @@ def screen(
         if min_confidence is not None and confidence < min_confidence:
             continue
 
+        def _f(v):
+            if v is None:
+                return None
+            try:
+                f = float(v)
+                return None if (f != f or f == float("inf") or f == float("-inf")) else round(f, 1)
+            except (TypeError, ValueError):
+                return None
+
         results.append({
             "symbol": stock.symbol,
             "name": stock.name,
             "sector": stock.sector,
             "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
-            "score": round(ranking.score, 1),
-            "technical": round(ranking.technical, 1),
-            "momentum": round(ranking.momentum, 1),
-            "value": round(ranking.value, 1),
-            "growth": round(ranking.growth, 1),
-            "rs_score": round(ranking.rs_score, 1) if ranking.rs_score is not None else None,
+            "score": _f(ranking.score),
+            "technical": _f(ranking.technical),
+            "momentum": _f(ranking.momentum),
+            "value": _f(ranking.value),
+            "growth": _f(ranking.growth),
+            "rs_score": _f(ranking.rs_score),
             "signal": sig_value,
-            "confidence": round(confidence, 1) if confidence else None,
+            "confidence": _f(confidence) if confidence else None,
             "horizon": sig.get("horizon"),
         })
 
