@@ -2454,6 +2454,8 @@ const ITEMS: Item[] = [
 
   {
     id: 'sa-19-independence-gate',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-12 — _ta_score() replaced with 4-pillar approach (Trend/Momentum/Volume/Structure). Each pillar takes max() of its constituent indicators; TA score = mean(pillar_scores). independent_pillars_active gate in _apply_style_signal(): <2 pillars compresses 15%, 4 pillars boosts +3%. Pillar scores stored in signal reasons for attribution.',
     tier: 9, severity: 'feature',
     title: 'SA-19 BREAKTHROUGH: TA score collinearity — 68% of TA weight is trend factors that all fire simultaneously in bull markets',
     file: 'services/signal-engine/src/generators/signals.py',
