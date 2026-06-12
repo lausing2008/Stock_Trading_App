@@ -353,6 +353,117 @@ def sector_rotation(
     return {"as_of": as_of, "sectors": sectors}
 
 
+@router.get("/screen")
+def screen(
+    market: str | None = Query(None),
+    sector: str | None = Query(None),
+    signal: str | None = Query(None, description="BUY | HOLD | WAIT | SELL"),
+    min_confidence: float | None = Query(None, ge=0, le=100),
+    min_score: float | None = Query(None, ge=0, le=100),
+    max_score: float | None = Query(None, ge=0, le=100),
+    min_momentum: float | None = Query(None, ge=0, le=100),
+    min_technical: float | None = Query(None, ge=0, le=100),
+    min_rs: float | None = Query(None, ge=0, le=100),
+    min_growth: float | None = Query(None, ge=0, le=100),
+    sort_by: str = Query("score", description="score | momentum | technical | rs_score | confidence"),
+    limit: int = Query(50, ge=1, le=200),
+    session: Session = Depends(get_session),
+):
+    """SCR-1: Multi-factor screener — filter stocks by K-Score, signal, and sub-scores.
+
+    All filter params are optional. Results sorted by `sort_by` descending.
+    Returns matching stocks with ranking sub-scores, latest signal, and confidence.
+    """
+    # Latest ranking per stock
+    latest_subq = (
+        select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .group_by(Ranking.stock_id)
+        .subquery()
+    )
+    stmt = (
+        select(Stock, Ranking)
+        .join(Ranking, Stock.id == Ranking.stock_id)
+        .join(latest_subq,
+              (Ranking.stock_id == latest_subq.c.stock_id)
+              & (Ranking.as_of == latest_subq.c.max_as_of))
+        .where(Stock.active.is_(True))
+    )
+
+    if market:
+        stmt = stmt.where(Stock.market == market.upper())
+    if sector:
+        stmt = stmt.where(Stock.sector.ilike(f"%{sector}%"))
+    if min_score is not None:
+        stmt = stmt.where(Ranking.score >= min_score)
+    if max_score is not None:
+        stmt = stmt.where(Ranking.score <= max_score)
+    if min_momentum is not None:
+        stmt = stmt.where(Ranking.momentum >= min_momentum)
+    if min_technical is not None:
+        stmt = stmt.where(Ranking.technical >= min_technical)
+    if min_rs is not None:
+        stmt = stmt.where(Ranking.rs_score >= min_rs)
+    if min_growth is not None:
+        stmt = stmt.where(Ranking.growth >= min_growth)
+
+    rows = session.execute(stmt).all()
+
+    # Latest signal per stock
+    sig_subq = (
+        select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+        .group_by(Signal.stock_id)
+        .subquery()
+    )
+    sig_rows = session.execute(
+        select(Signal.stock_id, Signal.signal, Signal.confidence, Signal.horizon)
+        .join(sig_subq,
+              (Signal.stock_id == sig_subq.c.stock_id)
+              & (Signal.ts == sig_subq.c.max_ts))
+    ).all()
+    sig_map: dict[int, dict] = {
+        r.stock_id: {"signal": r.signal.value, "confidence": float(r.confidence), "horizon": r.horizon.value}
+        for r in sig_rows
+    }
+
+    results = []
+    for stock, ranking in rows:
+        sig = sig_map.get(stock.id, {})
+        sig_value = sig.get("signal")
+        confidence = sig.get("confidence", 0.0)
+
+        if signal and sig_value != signal.upper():
+            continue
+        if min_confidence is not None and confidence < min_confidence:
+            continue
+
+        results.append({
+            "symbol": stock.symbol,
+            "name": stock.name,
+            "sector": stock.sector,
+            "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
+            "score": round(ranking.score, 1),
+            "technical": round(ranking.technical, 1),
+            "momentum": round(ranking.momentum, 1),
+            "value": round(ranking.value, 1),
+            "growth": round(ranking.growth, 1),
+            "rs_score": round(ranking.rs_score, 1) if ranking.rs_score is not None else None,
+            "signal": sig_value,
+            "confidence": round(confidence, 1) if confidence else None,
+            "horizon": sig.get("horizon"),
+        })
+
+    sort_fields = {
+        "score": lambda x: x["score"],
+        "momentum": lambda x: x["momentum"],
+        "technical": lambda x: x["technical"],
+        "rs_score": lambda x: x["rs_score"] or 0,
+        "confidence": lambda x: x["confidence"] or 0,
+    }
+    key_fn = sort_fields.get(sort_by, sort_fields["score"])
+    results.sort(key=key_fn, reverse=True)
+    return {"total": len(results), "items": results[:limit]}
+
+
 @router.get("/{symbol}")
 def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -480,117 +591,6 @@ def _leaderboard_live(market: str | None, limit: int, session: Session) -> dict:
         )
     results.sort(key=lambda r: r["score"] or 0, reverse=True)
     return {"as_of": str(date.today()), "rankings": results[:limit]}
-
-
-@router.get("/screen")
-def screen(
-    market: str | None = Query(None),
-    sector: str | None = Query(None),
-    signal: str | None = Query(None, description="BUY | HOLD | WAIT | SELL"),
-    min_confidence: float | None = Query(None, ge=0, le=100),
-    min_score: float | None = Query(None, ge=0, le=100),
-    max_score: float | None = Query(None, ge=0, le=100),
-    min_momentum: float | None = Query(None, ge=0, le=100),
-    min_technical: float | None = Query(None, ge=0, le=100),
-    min_rs: float | None = Query(None, ge=0, le=100),
-    min_growth: float | None = Query(None, ge=0, le=100),
-    sort_by: str = Query("score", description="score | momentum | technical | rs_score | confidence"),
-    limit: int = Query(50, ge=1, le=200),
-    session: Session = Depends(get_session),
-):
-    """SCR-1: Multi-factor screener — filter stocks by K-Score, signal, and sub-scores.
-
-    All filter params are optional. Results sorted by `sort_by` descending.
-    Returns matching stocks with ranking sub-scores, latest signal, and confidence.
-    """
-    # Latest ranking per stock
-    latest_subq = (
-        select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
-        .group_by(Ranking.stock_id)
-        .subquery()
-    )
-    stmt = (
-        select(Stock, Ranking)
-        .join(Ranking, Stock.id == Ranking.stock_id)
-        .join(latest_subq,
-              (Ranking.stock_id == latest_subq.c.stock_id)
-              & (Ranking.as_of == latest_subq.c.max_as_of))
-        .where(Stock.active.is_(True))
-    )
-
-    if market:
-        stmt = stmt.where(Stock.market == market.upper())
-    if sector:
-        stmt = stmt.where(Stock.sector.ilike(f"%{sector}%"))
-    if min_score is not None:
-        stmt = stmt.where(Ranking.score >= min_score)
-    if max_score is not None:
-        stmt = stmt.where(Ranking.score <= max_score)
-    if min_momentum is not None:
-        stmt = stmt.where(Ranking.momentum >= min_momentum)
-    if min_technical is not None:
-        stmt = stmt.where(Ranking.technical >= min_technical)
-    if min_rs is not None:
-        stmt = stmt.where(Ranking.rs_score >= min_rs)
-    if min_growth is not None:
-        stmt = stmt.where(Ranking.growth >= min_growth)
-
-    rows = session.execute(stmt).all()
-
-    # Latest signal per stock
-    sig_subq = (
-        select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
-        .group_by(Signal.stock_id)
-        .subquery()
-    )
-    sig_rows = session.execute(
-        select(Signal.stock_id, Signal.signal, Signal.confidence, Signal.horizon)
-        .join(sig_subq,
-              (Signal.stock_id == sig_subq.c.stock_id)
-              & (Signal.ts == sig_subq.c.max_ts))
-    ).all()
-    sig_map: dict[int, dict] = {
-        r.stock_id: {"signal": r.signal.value, "confidence": float(r.confidence), "horizon": r.horizon.value}
-        for r in sig_rows
-    }
-
-    results = []
-    for stock, ranking in rows:
-        sig = sig_map.get(stock.id, {})
-        sig_value = sig.get("signal")
-        confidence = sig.get("confidence", 0.0)
-
-        if signal and sig_value != signal.upper():
-            continue
-        if min_confidence is not None and confidence < min_confidence:
-            continue
-
-        results.append({
-            "symbol": stock.symbol,
-            "name": stock.name,
-            "sector": stock.sector,
-            "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
-            "score": round(ranking.score, 1),
-            "technical": round(ranking.technical, 1),
-            "momentum": round(ranking.momentum, 1),
-            "value": round(ranking.value, 1),
-            "growth": round(ranking.growth, 1),
-            "rs_score": round(ranking.rs_score, 1) if ranking.rs_score is not None else None,
-            "signal": sig_value,
-            "confidence": round(confidence, 1) if confidence else None,
-            "horizon": sig.get("horizon"),
-        })
-
-    sort_fields = {
-        "score": lambda x: x["score"],
-        "momentum": lambda x: x["momentum"],
-        "technical": lambda x: x["technical"],
-        "rs_score": lambda x: x["rs_score"] or 0,
-        "confidence": lambda x: x["confidence"] or 0,
-    }
-    key_fn = sort_fields.get(sort_by, sort_fields["score"])
-    results.sort(key=key_fn, reverse=True)
-    return {"total": len(results), "items": results[:limit]}
 
 
 @router.post("/refresh")

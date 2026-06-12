@@ -2296,6 +2296,164 @@ def alpha_decay(
     }
 
 
+@router.get("/information_coefficient")
+def information_coefficient(
+    horizon: str = Query("SWING"),
+    lookback_days: int = Query(365, ge=90, le=730),
+    session: Session = Depends(get_session),
+):
+    """TM-3: Monthly IC — Spearman rank correlation between fused_prob rank and
+    actual return rank.  IC > 0.05 is good; IC_IR (mean/std) > 0.5 is excellent.
+    """
+    import statistics
+
+    cutoff = date.today() - timedelta(days=lookback_days)
+    try:
+        hz = SignalHorizon(horizon.upper())
+    except ValueError:
+        raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.horizon == hz,
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.fused_prob.is_not(None),
+            SignalOutcome.pct_return.is_not(None),
+        )
+    ).scalars().all()
+
+    from collections import defaultdict
+    monthly: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for o in outcomes:
+        monthly[o.signal_date.strftime("%Y-%m")].append(
+            (float(o.fused_prob), float(o.pct_return))
+        )
+
+    def _rank(lst: list[float]) -> list[float]:
+        order = sorted(range(len(lst)), key=lambda i: lst[i])
+        ranks = [0.0] * len(lst)
+        for r, i in enumerate(order):
+            ranks[i] = float(r + 1)
+        return ranks
+
+    series = []
+    for month in sorted(monthly):
+        pairs = monthly[month]
+        if len(pairs) < 5:
+            continue
+        probs = [p[0] for p in pairs]
+        rets = [p[1] for p in pairs]
+        rp = _rank(probs)
+        rr = _rank(rets)
+        n = len(rp)
+        mp, mr = sum(rp) / n, sum(rr) / n
+        cov = sum((a - mp) * (b - mr) for a, b in zip(rp, rr)) / n
+        sp = (sum((a - mp) ** 2 for a in rp) / n) ** 0.5
+        sr = (sum((b - mr) ** 2 for b in rr) / n) ** 0.5
+        ic = cov / (sp * sr) if sp > 0 and sr > 0 else 0.0
+        series.append({"month": month, "ic": round(ic, 4), "n": n})
+
+    if not series:
+        return {
+            "horizon": horizon, "lookback_days": lookback_days,
+            "monthly_ic": [], "ic_mean": None, "ic_std": None,
+            "ic_ir": None, "total_periods": 0,
+            "message": "Not enough data — at least 5 BUY outcomes per month required",
+        }
+
+    ics = [s["ic"] for s in series]
+    ic_mean = statistics.mean(ics)
+    ic_std = statistics.stdev(ics) if len(ics) > 1 else 0.0
+    ic_ir = round(ic_mean / ic_std, 3) if ic_std > 0 else None
+
+    return {
+        "horizon": horizon,
+        "lookback_days": lookback_days,
+        "monthly_ic": series,
+        "ic_mean": round(ic_mean, 4),
+        "ic_std": round(ic_std, 4),
+        "ic_ir": ic_ir,
+        "total_periods": len(series),
+        "quality": "excellent" if ic_mean > 0.05 else "good" if ic_mean > 0.02 else "poor",
+    }
+
+
+@router.get("/factor_attribution")
+def factor_attribution(
+    horizon: str = Query("SWING"),
+    lookback_days: int = Query(365, ge=90, le=730),
+    min_count: int = Query(10),
+    session: Session = Depends(get_session),
+):
+    """TM-4: For each boolean reason flag, compute presence in winners vs losers.
+    Edge = win_pct - los_pct.  Positive edge = factor predicts wins; negative = noise.
+    """
+    cutoff = date.today() - timedelta(days=lookback_days)
+    try:
+        hz = SignalHorizon(horizon.upper())
+    except ValueError:
+        raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    rows = session.execute(
+        select(SignalOutcome.is_correct, Signal.reasons)
+        .join(Signal, Signal.id == SignalOutcome.signal_id)
+        .where(
+            SignalOutcome.horizon == hz,
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            Signal.reasons.is_not(None),
+        )
+    ).all()
+
+    if not rows:
+        return {
+            "factors": [], "total_winners": 0, "total_losers": 0,
+            "message": "No evaluated outcomes with reason data yet",
+        }
+
+    n_win = sum(1 for r in rows if r.is_correct)
+    n_los = sum(1 for r in rows if not r.is_correct)
+    key_wins: dict[str, int] = {}
+    key_los: dict[str, int] = {}
+
+    for r in rows:
+        reasons = r.reasons or {}
+        bucket = key_wins if r.is_correct else key_los
+        for k, v in reasons.items():
+            if isinstance(v, bool) and v:
+                bucket[k] = bucket.get(k, 0) + 1
+
+    all_keys = set(key_wins) | set(key_los)
+    factors = []
+    for k in all_keys:
+        wc = key_wins.get(k, 0)
+        lc = key_los.get(k, 0)
+        if wc + lc < min_count:
+            continue
+        wp = wc / n_win if n_win > 0 else 0.0
+        lp = lc / n_los if n_los > 0 else 0.0
+        factors.append({
+            "factor": k,
+            "win_pct": round(wp * 100, 1),
+            "los_pct": round(lp * 100, 1),
+            "edge": round((wp - lp) * 100, 1),
+            "win_count": wc,
+            "los_count": lc,
+        })
+
+    factors.sort(key=lambda x: x["edge"], reverse=True)
+
+    return {
+        "horizon": horizon,
+        "lookback_days": lookback_days,
+        "total_winners": n_win,
+        "total_losers": n_los,
+        "factors": factors,
+    }
+
+
 @router.get("/{symbol}")
 def signal_for(
     symbol: str,
@@ -2495,161 +2653,3 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         skipped_no_price=skipped_no_price,
     )
     return {"evaluated": evaluated, "skipped_open": skipped_open, "skipped_no_price": skipped_no_price}
-
-
-@router.get("/information_coefficient")
-def information_coefficient(
-    horizon: str = Query("SWING"),
-    lookback_days: int = Query(365, ge=90, le=730),
-    session: Session = Depends(get_session),
-):
-    """TM-3: Monthly IC — Spearman rank correlation between fused_prob rank and
-    actual return rank.  IC > 0.05 is good; IC_IR (mean/std) > 0.5 is excellent.
-    """
-    import statistics
-
-    cutoff = date.today() - timedelta(days=lookback_days)
-    try:
-        hz = SignalHorizon(horizon.upper())
-    except ValueError:
-        raise HTTPException(400, f"Unknown horizon: {horizon}")
-
-    outcomes = session.execute(
-        select(SignalOutcome).where(
-            SignalOutcome.horizon == hz,
-            SignalOutcome.signal_direction == "BUY",
-            SignalOutcome.signal_date >= cutoff,
-            SignalOutcome.fused_prob.is_not(None),
-            SignalOutcome.pct_return.is_not(None),
-        )
-    ).scalars().all()
-
-    from collections import defaultdict
-    monthly: dict[str, list[tuple[float, float]]] = defaultdict(list)
-    for o in outcomes:
-        monthly[o.signal_date.strftime("%Y-%m")].append(
-            (float(o.fused_prob), float(o.pct_return))
-        )
-
-    def _rank(lst: list[float]) -> list[float]:
-        order = sorted(range(len(lst)), key=lambda i: lst[i])
-        ranks = [0.0] * len(lst)
-        for r, i in enumerate(order):
-            ranks[i] = float(r + 1)
-        return ranks
-
-    series = []
-    for month in sorted(monthly):
-        pairs = monthly[month]
-        if len(pairs) < 5:
-            continue
-        probs = [p[0] for p in pairs]
-        rets = [p[1] for p in pairs]
-        rp = _rank(probs)
-        rr = _rank(rets)
-        n = len(rp)
-        mp, mr = sum(rp) / n, sum(rr) / n
-        cov = sum((a - mp) * (b - mr) for a, b in zip(rp, rr)) / n
-        sp = (sum((a - mp) ** 2 for a in rp) / n) ** 0.5
-        sr = (sum((b - mr) ** 2 for b in rr) / n) ** 0.5
-        ic = cov / (sp * sr) if sp > 0 and sr > 0 else 0.0
-        series.append({"month": month, "ic": round(ic, 4), "n": n})
-
-    if not series:
-        return {
-            "horizon": horizon, "lookback_days": lookback_days,
-            "monthly_ic": [], "ic_mean": None, "ic_std": None,
-            "ic_ir": None, "total_periods": 0,
-            "message": "Not enough data — at least 5 BUY outcomes per month required",
-        }
-
-    ics = [s["ic"] for s in series]
-    ic_mean = statistics.mean(ics)
-    ic_std = statistics.stdev(ics) if len(ics) > 1 else 0.0
-    ic_ir = round(ic_mean / ic_std, 3) if ic_std > 0 else None
-
-    return {
-        "horizon": horizon,
-        "lookback_days": lookback_days,
-        "monthly_ic": series,
-        "ic_mean": round(ic_mean, 4),
-        "ic_std": round(ic_std, 4),
-        "ic_ir": ic_ir,
-        "total_periods": len(series),
-        "quality": "excellent" if ic_mean > 0.05 else "good" if ic_mean > 0.02 else "poor",
-    }
-
-
-@router.get("/factor_attribution")
-def factor_attribution(
-    horizon: str = Query("SWING"),
-    lookback_days: int = Query(365, ge=90, le=730),
-    min_count: int = Query(10),
-    session: Session = Depends(get_session),
-):
-    """TM-4: For each boolean reason flag, compute presence in winners vs losers.
-    Edge = win_pct - los_pct.  Positive edge = factor predicts wins; negative = noise.
-    """
-    cutoff = date.today() - timedelta(days=lookback_days)
-    try:
-        hz = SignalHorizon(horizon.upper())
-    except ValueError:
-        raise HTTPException(400, f"Unknown horizon: {horizon}")
-
-    rows = session.execute(
-        select(SignalOutcome.is_correct, Signal.reasons)
-        .join(Signal, Signal.id == SignalOutcome.signal_id)
-        .where(
-            SignalOutcome.horizon == hz,
-            SignalOutcome.signal_direction == "BUY",
-            SignalOutcome.signal_date >= cutoff,
-            SignalOutcome.is_correct.is_not(None),
-            Signal.reasons.is_not(None),
-        )
-    ).all()
-
-    if not rows:
-        return {
-            "factors": [], "total_winners": 0, "total_losers": 0,
-            "message": "No evaluated outcomes with reason data yet",
-        }
-
-    n_win = sum(1 for r in rows if r.is_correct)
-    n_los = sum(1 for r in rows if not r.is_correct)
-    key_wins: dict[str, int] = {}
-    key_los: dict[str, int] = {}
-
-    for r in rows:
-        reasons = r.reasons or {}
-        bucket = key_wins if r.is_correct else key_los
-        for k, v in reasons.items():
-            if isinstance(v, bool) and v:
-                bucket[k] = bucket.get(k, 0) + 1
-
-    all_keys = set(key_wins) | set(key_los)
-    factors = []
-    for k in all_keys:
-        wc = key_wins.get(k, 0)
-        lc = key_los.get(k, 0)
-        if wc + lc < min_count:
-            continue
-        wp = wc / n_win if n_win > 0 else 0.0
-        lp = lc / n_los if n_los > 0 else 0.0
-        factors.append({
-            "factor": k,
-            "win_pct": round(wp * 100, 1),
-            "los_pct": round(lp * 100, 1),
-            "edge": round((wp - lp) * 100, 1),
-            "win_count": wc,
-            "los_count": lc,
-        })
-
-    factors.sort(key=lambda x: x["edge"], reverse=True)
-
-    return {
-        "horizon": horizon,
-        "lookback_days": lookback_days,
-        "total_winners": n_win,
-        "total_losers": n_los,
-        "factors": factors,
-    }
