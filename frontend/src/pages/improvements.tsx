@@ -2453,6 +2453,32 @@ const ITEMS: Item[] = [
   },
 
   {
+    id: 'cb-6-conviction-gate-calibration',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-12 — (1) Dropped stoch recovery requirement from Layer 4b: old check (stoch_cross_up OR stoch_oversold+stoch_k<60) only fired 1-2 days after oversold crossing; blocked >90% of valid BUY setups in trending conditions. (2) Extended RSI window from 45-65 to 45-72: RSI 65-72 is healthy momentum not overextended. Stoch overbought (>80) is still a hard disqualifier. (3) Added ML probability to soft-fail list (alongside OBV/ADX): slight miss vs threshold no longer hard-blocks 5 passing layers.',
+    tier: 9, severity: 'bug',
+    title: 'CB-6: Conviction gate Layer 4b blocks ~90% of valid BUY setups — stoch recovery window too narrow, RSI ceiling too low',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '30 min',
+    impact: 'Critical — the stoch_cross_up condition fires only for 1-2 days after stoch crosses from <20% to >20%. Most BUY signals in trending conditions have stoch in neutral/high territory (40-75%). Combined with RSI capped at 65 (cuts off momentum setups at 65-72), the conviction gate silently rejected the majority of valid BUY transition emails. Users saw BUY signals in Signal Filter but never received alerts.',
+    what: 'Layer 4b required: stoch_cross_up (stoch just crossed 20% from below) OR (stoch_oversold AND stoch_k < 60). This is a "just recovered from oversold" detector, not a "not overbought" detector. The stoch overbought disqualifier already exists at the disqualifier block (stoch_rsi_overbought), making the Layer 4b stoch requirement redundant AND overly narrow. RSI 45-65 excluded healthy momentum (65-72). ML as a hard layer blocked alerts when model probability was 67% in neutral regime (threshold 70%) even when all 5 other layers passed.',
+    fix: 'Remove stoch recovery requirement from Layer 4b. Extend RSI range to 45-72 for SWING/LONG/SHORT. Move ML probability to soft-fail list alongside OBV/ADX. Stoch overbought (>80) remains as a hard disqualifier in the disqualifier block.',
+  },
+
+  {
+    id: 'sa-20-pillar-scores-signal-filter',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-12 — Backend: added pillar_trend/pillar_momentum/pillar_volume/pillar_structure/pillars_active to /signals/suppressed response. Frontend: added 4-bar mini visualization (T/M/V/S) below the signal badge in Signal Filter table. Bars colored green ≥0.7, yellow 0.4-0.7, grey <0.4. Shows pillar count (e.g. 3/4). Hover shows exact percentages.',
+    tier: 8, severity: 'feature',
+    title: 'SA-20: SA-19 pillar scores invisible — no way to see which dimensions drive a BUY signal',
+    file: 'services/signal-engine/src/api/routes.py · frontend/src/pages/signal-filters.tsx',
+    effort: '1 hour',
+    impact: 'Medium — after SA-19 introduced 4 independent pillars (Trend/Momentum/Volume/Structure), users can\'t see which pillars are active for a given BUY signal. A signal with 4/4 active pillars (broad confluence) is fundamentally higher quality than a 1/4 signal (pure trend, no momentum/volume confirmation). Exposing this in the Signal Filter page helps users prioritise which BUY signals to act on.',
+    what: 'The /signals/suppressed endpoint returned signal, confidence, and conditions but not the SA-19 pillar scores stored in signal.reasons. The Signal Filter table had no column or display for pillar data.',
+    fix: 'Add pillar_trend/pillar_momentum/pillar_volume/pillar_structure/pillars_active to the suppressed signals response. Add 4-bar mini visualization below the signal badge in the Signal Filter table.',
+  },
+
+  {
     id: 'sa-19-independence-gate',
     defaultStatus: 'done',
     implementedNote: 'Done 2026-06-12 — _ta_score() replaced with 4-pillar approach (Trend/Momentum/Volume/Structure). Each pillar takes max() of its constituent indicators; TA score = mean(pillar_scores). independent_pillars_active gate in _apply_style_signal(): <2 pillars compresses 15%, 4 pillars boosts +3%. Pillar scores stored in signal reasons for attribution.',

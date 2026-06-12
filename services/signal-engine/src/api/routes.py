@@ -1318,6 +1318,12 @@ def suppressed_signals(
             "news_sentiment":      r.get("news_sentiment"),
             "rs_score":            r.get("rs_score"),
             "conviction":          conv,
+            # SA-19 pillar scores — 0-1 per dimension; None if signal pre-dates SA-19
+            "pillar_trend":        r.get("pillar_trend"),
+            "pillar_momentum":     r.get("pillar_momentum"),
+            "pillar_volume":       r.get("pillar_volume"),
+            "pillar_structure":    r.get("pillar_structure"),
+            "pillars_active":      r.get("independent_pillars_active"),
         })
 
     # Compute days_active per condition — how many consecutive days each flag has been True.

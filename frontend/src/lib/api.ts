@@ -404,6 +404,11 @@ export type SuppressedSignalRow = {
     sent_at: string | null;
   } | null;
   days_active: Record<string, number>;
+  pillar_trend: number | null;
+  pillar_momentum: number | null;
+  pillar_volume: number | null;
+  pillar_structure: number | null;
+  pillars_active: number | null;
 };
 
 export type Stock = {

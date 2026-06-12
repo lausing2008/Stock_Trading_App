@@ -519,12 +519,30 @@ export default function SignalFiltersPage() {
                       </span>
                     </td>
 
-                    {/* Signal badge */}
+                    {/* Signal badge + SA-19 pillar mini-bars */}
                     <td style={TD}>
                       <span style={{
                         padding: '2px 8px', borderRadius: 5, fontSize: 11, fontWeight: 700,
                         background: sigColor + '22', color: sigColor, border: `1px solid ${sigColor}44`,
                       }}>{row.signal}</span>
+                      {row.pillar_trend != null && (
+                        <span
+                          style={{ display: 'flex', gap: 3, marginTop: 3, alignItems: 'center' }}
+                          title={`Pillars (SA-19): Trend ${(row.pillar_trend*100).toFixed(0)}% · Momentum ${((row.pillar_momentum??0)*100).toFixed(0)}% · Volume ${((row.pillar_volume??0)*100).toFixed(0)}% · Structure ${((row.pillar_structure??0)*100).toFixed(0)}%`}
+                        >
+                          {(['T','M','V','S'] as const).map((lbl, i) => {
+                            const v = [row.pillar_trend, row.pillar_momentum, row.pillar_volume, row.pillar_structure][i] ?? 0;
+                            const c = v >= 0.7 ? '#22c55e' : v >= 0.4 ? '#f59e0b' : '#475569';
+                            return (
+                              <span key={lbl} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                                <span style={{ width: 14, height: Math.round(v * 12) + 2, background: c, borderRadius: 2, minHeight: 2 }} />
+                                <span style={{ fontSize: 8, color: c, lineHeight: 1 }}>{lbl}</span>
+                              </span>
+                            );
+                          })}
+                          <span style={{ fontSize: 9, color: '#64748b', marginLeft: 2 }}>{row.pillars_active ?? 0}/4</span>
+                        </span>
+                      )}
                     </td>
 
                     {/* Alert / conviction gate */}
