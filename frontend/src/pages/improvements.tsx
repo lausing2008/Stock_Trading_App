@@ -2832,18 +2832,18 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current (2026-06-10) — All Tier 1–4 complete + Tier 7 alert intelligence
+          Current (2026-06-12) — Tier 8-9: TM-3/TM-4 IC+factor attribution, PT-A1/A2 attribution+regime overlay, RES-4 sector rotation, SCR-1 server-side screener, AL-3 conviction calibration
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
-            { label: 'Data pipeline',   score: 8.5, target: 8.8, note: '↑ Data freshness chip shipped (UI-09)' },
-            { label: 'ML methodology',  score: 9.0, target: 9.0, note: '✓ AUC key fix + SA-3/SA-5 all done' },
-            { label: 'Signal logic',    score: 9.0, target: 9.0, note: '✓ SA-7 regime earnings done; all SA items shipped' },
-            { label: 'K-Score ranking', score: 8.2, target: 8.5, note: '↑ Conviction screener shipped (UI-04)' },
-            { label: 'Research engine', score: 7.8, target: 8.5, note: '↑ RES-2b: D/E fix + PEG scoring + trend + target premium' },
-            { label: 'Frontend / UX',   score: 9.5, target: 9.5, note: '↑ Per-horizon alerts + consensus indicator + Add to Radar' },
-            { label: 'Risk management', score: 8.5, target: 9.0, note: '↑ Portfolio risk + P&L heatmap (UI-06) done' },
-            { label: 'Overall',         score: 9.2, target: 9.5, note: '✓ Tier 7 alert intelligence shipped 2026-06-10' },
+            { label: 'Data pipeline',   score: 8.6, target: 8.8, note: '↑ RES-4 sector rotation heatmap + SCR-1 server-side screener' },
+            { label: 'ML methodology',  score: 9.0, target: 9.0, note: '✓ TM-3 IC score + TM-4 factor attribution measurement live' },
+            { label: 'Signal logic',    score: 9.1, target: 9.1, note: '↑ AL-3 conviction calibration + TM-3/TM-4 attribution live' },
+            { label: 'K-Score ranking', score: 8.5, target: 8.5, note: '✓ SCR-1 multi-factor screener + RES-4 sector context (target met)' },
+            { label: 'Research engine', score: 8.2, target: 8.5, note: '↑ RES-4 sector rotation done; SCR-3 AI screener remaining' },
+            { label: 'Frontend / UX',   score: 9.5, target: 9.5, note: '✓ IC/factor attribution tabs + sector heatmap + regime overlay' },
+            { label: 'Risk management', score: 8.8, target: 9.0, note: '↑ PT-A1 trade attribution + PT-A2 regime equity overlay done' },
+            { label: 'Overall',         score: 9.3, target: 9.5, note: '↑ Tier 8-9 Tier improvements shipped 2026-06-12' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
