@@ -429,29 +429,25 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         else:
             failed.append("Uptrend structure not aligned (SMA50/SMA200/price)")
 
-    # Layer 4b — Entry timing: dip bought, not overextended
-    # RSI range is style-aware: GROWTH runs hot (55-85), SWING/LONG expect dip (45-65)
+    # Layer 4b — Entry timing: RSI in healthy range
+    # RSI upper bound extended to 72 (vs old 65): RSI 65-72 is healthy momentum,
+    # not overextended. Stoch overbought (>80) is already caught by the disqualifier
+    # below and is more precise than requiring stoch to recover from oversold — that
+    # old requirement only fired 1-2 days after a stoch cross and silently blocked
+    # the vast majority of valid BUY setups in normal trending conditions.
     rsi = reasons.get("rsi")
     stoch_k = float(reasons.get("stoch_rsi_k") or 50)
-    stoch_cross_up = bool(reasons.get("stoch_rsi_cross_up"))
-    stoch_oversold = bool(reasons.get("stoch_rsi_oversold"))
     if style == "GROWTH":
         rsi_ok = rsi is not None and 55.0 <= float(rsi) <= 85.0
         rsi_range_label = "55-85"
-        stoch_ok = True  # GROWTH momentum plays don't require oversold entry
     else:
-        rsi_ok = rsi is not None and 45.0 <= float(rsi) <= 65.0
-        rsi_range_label = "45-65"
-        stoch_ok = stoch_cross_up or (stoch_oversold and stoch_k < 60)
-    if rsi_ok and stoch_ok:
+        rsi_ok = rsi is not None and 45.0 <= float(rsi) <= 72.0
+        rsi_range_label = "45-72"
+    if rsi_ok:
         passed.append(f"Entry timing: RSI {float(rsi):.0f}, within {rsi_range_label} for {style}")
     else:
-        parts = []
-        if not rsi_ok:
-            parts.append(f"RSI {float(rsi):.0f} outside {rsi_range_label}" if rsi is not None else "RSI unavailable")
-        if not stoch_ok:
-            parts.append("Stoch RSI not recovering from oversold")
-        failed.append("Entry timing: " + "; ".join(parts))
+        rsi_str = f"RSI {float(rsi):.0f} outside {rsi_range_label}" if rsi is not None else "RSI unavailable"
+        failed.append(f"Entry timing: {rsi_str}")
 
     # Layer 4c — MACD momentum confirmed
     macd_hist = float(reasons.get("macd_hist") or 0)
@@ -494,8 +490,10 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     if bool(reasons.get("stoch_rsi_overbought")):
         failed.append("Stoch RSI overbought: RSI itself overextended — pullback risk elevated")
 
-    # CB-4: Near-conviction tier — allow 1 soft failure (OBV or ADX only) to still send email
-    _SOFT_LAYER_KEYWORDS = ("OBV", "ADX")
+    # CB-4: Near-conviction tier — allow 1 soft failure (OBV, ADX, or ML) to still send
+    # ML added as soft: a model slightly below threshold (e.g. 67% in neutral 70% regime)
+    # should not hard-block an alert when all other 5 layers pass.
+    _SOFT_LAYER_KEYWORDS = ("OBV", "ADX", "ML probability")
     soft_failed = [f for f in failed if any(kw in f for kw in _SOFT_LAYER_KEYWORDS)]
     hard_failed = [f for f in failed if f not in soft_failed]
 
