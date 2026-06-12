@@ -462,9 +462,9 @@ def screen(
         })
 
     sort_fields = {
-        "score": lambda x: x["score"],
-        "momentum": lambda x: x["momentum"],
-        "technical": lambda x: x["technical"],
+        "score": lambda x: x["score"] or 0,
+        "momentum": lambda x: x["momentum"] or 0,
+        "technical": lambda x: x["technical"] or 0,
         "rs_score": lambda x: x["rs_score"] or 0,
         "confidence": lambda x: x["confidence"] or 0,
     }
