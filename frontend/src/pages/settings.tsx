@@ -380,9 +380,13 @@ export default function SettingsPage() {
     setAiTestMsg('');
     try {
       const base = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+      const token = typeof window !== 'undefined' ? localStorage.getItem('stockai_jwt')?.trim() : null;
       const res = await fetch(`${base}/ai/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           provider: s.aiProvider,
           model: s.aiProvider === 'claude' ? s.claudeModel : s.deepseekModel,
