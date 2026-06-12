@@ -1210,6 +1210,34 @@ def _weekly_full_refresh() -> None:
     _record_job_status("calibrate_ta_weights_sent", "ok", 0.0)
 
 
+def _purge_old_data() -> None:
+    """Delete rows older than 90 days from intraday price bars and signal outcomes.
+
+    5-minute intraday bars (prices WHERE timeframe='M5') grow ~3.5M rows/year.
+    After 90 days they have no analytical value — all signals use daily bars.
+    signal_outcomes older than 1 year are also pruned; the rolling 90-day window
+    is sufficient for accuracy tracking and factor analysis.
+    Runs weekly (Sunday pre-full-refresh) to keep the tables lean.
+    """
+    from sqlalchemy import text as _text
+    try:
+        with SessionLocal() as session:
+            res5m = session.execute(
+                _text("DELETE FROM prices WHERE timeframe='M5' AND ts < NOW() - INTERVAL '90 days'")
+            )
+            resout = session.execute(
+                _text("DELETE FROM signal_outcomes WHERE ts_evaluated < NOW() - INTERVAL '365 days'")
+            )
+            session.commit()
+            log.info(
+                "scheduler.purge_done",
+                m5_bars_deleted=res5m.rowcount,
+                signal_outcomes_deleted=resout.rowcount,
+            )
+    except Exception as exc:
+        log.error("scheduler.purge_failed", error=str(exc), exc_info=True)
+
+
 def _refresh_5m(market: str) -> None:
     """Ingest the latest 5-minute bars and run a paper trading monitor cycle.
 
@@ -1231,17 +1259,16 @@ def _refresh_5m(market: str) -> None:
     except Exception as exc:
         log.error("scheduler.5m_ingest_failed", market=market, error=str(exc))
 
-    # PT-5M: paper trading position monitor runs after every 5m bar ingest (US only).
-    # Entry scan also runs here — it reads the latest BUY signal from DB which may
-    # have been refreshed in the previous _refresh_market cycle minutes ago.
-    if market == "US":
+    # PT-5M: paper trading position monitor runs after every 5m bar ingest.
+    # Entry scan reads the latest BUY signal from DB, refreshed by _refresh_market.
+    if market in ("US", "HK"):
         _pt0 = time.monotonic()
         try:
             paper_trading_step()
-            _record_job_status("paper_trading_5m", "ok", time.monotonic() - _pt0)
+            _record_job_status(f"paper_trading_5m_{market.lower()}", "ok", time.monotonic() - _pt0)
         except Exception as _pte:
-            log.error("scheduler.paper_trading_5m_failed", error=str(_pte), exc_info=True)
-            _record_job_status("paper_trading_5m", "error", time.monotonic() - _pt0, str(_pte))
+            log.error("scheduler.paper_trading_5m_failed", market=market, error=str(_pte), exc_info=True)
+            _record_job_status(f"paper_trading_5m_{market.lower()}", "error", time.monotonic() - _pt0, str(_pte))
 
 
 def start_scheduler() -> None:
@@ -1253,22 +1280,23 @@ def start_scheduler() -> None:
 
     Schedule (per market):
       - Open burst  (9:25–9:45):   every 5 min  — prices + rankings + signals
-      - Regular hrs (10:00–15:00): every 10 min — prices + rankings + signals
+      - Regular hrs (10:00–15:00): every 5 min  — prices + rankings + signals
       - Close burst (15:30–16:15): every 5 min  — prices + rankings + signals
       - Post-close  (16:30):       once         — above + ML retrain
       - 5m ingest   (9:30–16:00): every 5 min  — intraday bars only (US + HK)
       - Weekly full refresh (Sun 16:00 PST): force re-ingest 3 years
         → then tune_all (Optuna, 60 trials/symbol, ~2–4 h, background)
+      - DB purge    (Sun 15:00 PST): delete prices_5m + scheduler_jobs >90 days
 
     Signal and momentum are pure local math (TA + XGBoost), no external API
-    cost, so refreshing every 10 min during regular hours is safe and free.
+    cost, so refreshing every 5 min during regular hours is safe and free.
     ML retrain runs only post-close — retraining on intraday data has no value
     since the model learns from daily bar outcomes.
     Hyperparameter tuning runs once on Sunday so each symbol's best params are
     ready for the week ahead; subsequent daily retrains pick them up automatically.
 
     Job count: 4 US + 4 HK + 2 5m intraday + 1 weekly full refresh + tune_all
-               + 1 price alert checker = 12.
+               + 1 price alert checker + 1 db purge = 13.
     """
     global _scheduler
     if _scheduler is not None:
@@ -1283,11 +1311,11 @@ def start_scheduler() -> None:
         CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="America/New_York"),
         id="us_open_burst", replace_existing=True,
     )
-    # Regular hours: every 10 min 10:00–15:00
+    # Regular hours: every 5 min 10:00–15:00
     _scheduler.add_job(
         lambda: _refresh_market("US"),
         OrTrigger([
-            CronTrigger(hour="10,11,12,13,14", minute="0,10,20,30,40,50", day_of_week="mon-fri", timezone="America/New_York"),
+            CronTrigger(hour="10,11,12,13,14", minute="0,5,10,15,20,25,30,35,40,45,50,55", day_of_week="mon-fri", timezone="America/New_York"),
             CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
         ]),
         id="us_intra", replace_existing=True,
@@ -1316,11 +1344,11 @@ def start_scheduler() -> None:
         CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         id="hk_open_burst", replace_existing=True,
     )
-    # Regular hours: every 10 min 10:00–15:00
+    # Regular hours: every 5 min 10:00–15:00
     _scheduler.add_job(
         lambda: _refresh_market("HK"),
         OrTrigger([
-            CronTrigger(hour="10,11,12,13,14", minute="0,10,20,30,40,50", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+            CronTrigger(hour="10,11,12,13,14", minute="0,5,10,15,20,25,30,35,40,45,50,55", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
             CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         ]),
         id="hk_intra", replace_existing=True,
@@ -1381,6 +1409,14 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # ── DB purge — Sunday 15:00 PST (before weekly full refresh) ────────────
+    # Deletes prices_5m and scheduler_jobs rows older than 90 days.
+    _scheduler.add_job(
+        _purge_old_data,
+        CronTrigger(day_of_week="sun", hour=15, minute=0, timezone="America/Los_Angeles"),
+        id="db_purge_weekly", replace_existing=True,
+    )
+
     # ── One-shot startup run to restore conviction/Redis data after restarts ─
     # check_signal_alerts() is normally called by _run_market_refresh() (5×/day).
     # Running it once at startup (60s delay) repopulates Redis without adding a
@@ -1400,4 +1436,4 @@ def start_scheduler() -> None:
         log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=12)
+    log.info("scheduler.started", jobs=13)

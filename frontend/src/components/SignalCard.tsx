@@ -101,6 +101,9 @@ type Reasons = {
   stability_days?: number | null;
   // SA-12: regime threshold tier applied
   threshold_tier?: string | null;
+  // SA-27: OOS accuracy suppression flag
+  ml_oos_suppressed?: boolean;
+  low_oos_accuracy?: boolean;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
@@ -384,6 +387,11 @@ export default function SignalCard({ signal }: { signal: Signal }) {
           {reasons?.threshold_tier === 'bear' && (
             <span title="Bear/high-vol regime: tighter BUY threshold applied (0.72 vs 0.65 bull)" style={{ fontSize: '9px', fontWeight: 700, color: '#f97316', background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
               TIGHT
+            </span>
+          )}
+          {reasons?.low_oos_accuracy && (
+            <span title="ML model cross-validation accuracy < 52% — predictions are near coin-flip; signal relies more heavily on TA" style={{ fontSize: '9px', fontWeight: 700, color: '#eab308', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              LOW ML CONF
             </span>
           )}
           {reasons?.stability_days != null && reasons.stability_days > 0 && (
