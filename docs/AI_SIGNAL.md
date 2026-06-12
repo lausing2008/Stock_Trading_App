@@ -3,7 +3,7 @@
 Source: [`services/signal-engine/src/generators/signals.py`](../services/signal-engine/src/generators/signals.py)
 ML training: [`services/ml-prediction/src/training/trainer.py`](../services/ml-prediction/src/training/trainer.py)
 
-Last updated: 2026-06-06 (SA-8 accuracy improvements)
+Last updated: 2026-06-12 (SA-19 4-pillar TA scoring)
 
 ---
 
@@ -11,7 +11,7 @@ Last updated: 2026-06-06 (SA-8 accuracy improvements)
 
 The AI Signal is a **BUY / HOLD / WAIT / SELL** label backed by a **Bullish Probability** (0–100%) and a **Confidence** score (0–100). It fuses two independent layers of analysis:
 
-1. **Technical Analysis (TA)** — nine price-based indicators computed from up to 400 daily bars
+1. **Technical Analysis (TA)** — four independent pillars (Trend, Momentum, Volume, Structure) computed from up to 400 daily bars
 2. **Machine Learning (ML)** — an XGBoost + Random Forest ensemble trained per-symbol on the stock's own history
 
 Both layers produce a single number called the **fused bullish probability** (0–1). That probability is then filtered through style-specific compression factors and converted into a signal label based on the current market regime.
@@ -60,7 +60,7 @@ Every stock carries three signals simultaneously — one per trading style (SHOR
 ```
 Daily price history (last 400 bars)
          │
-         ├─► Stage 1: TA Score  (9 indicators → probability 0–1)
+         ├─► Stage 1: TA Score  (4 independent pillars → probability 0–1)
          │
          ├─► Stage 2: ML Prediction  (XGBoost + RF ensemble → bullish_probability 0–1)
          │
@@ -82,83 +82,124 @@ Stage 6: Confidence  →  |fused − 0.5| × 200
 
 ## Stage 1 — Technical Analysis Score
 
-The TA score is a weighted sum of nine independent indicators, each scored 0→1 (bearish→bullish). The result is a single probability from 0–1, where 0.5 = perfectly neutral.
+**SA-19 (2026-06-12):** The TA score uses **four independent pillars** — Trend, Momentum, Volume, and Structure. Each pillar is scored 0–1 independently via its best-performing sub-indicator (`max()` rather than a sum). The final TA score is the **mean of the four pillar scores**, ranging from 0–1 where 0.5 = perfectly neutral.
 
-### 1. SMA trend alignment (up to +0.35)
+This replaces the old additive system where nine sub-scores were summed — that design allowed a stock with three correlated trend signals (all measuring the same thing) to outscore a stock with one strong signal per dimension.
 
-| Condition | Score | What it means |
-|-----------|-------|---------------|
-| Price above SMA(50) | +0.15 | Short-term trend is up |
-| SMA(50) above SMA(200) | +0.10 | Medium-term trend is up |
-| Golden cross just fired | +0.10 | SMA(50) crossed above SMA(200) |
-| Death cross just fired | −0.10 | SMA(50) crossed below SMA(200) |
+```
+TA score = mean([p_trend, p_momentum, p_volume, p_structure])
+```
 
-### 2. RSI 14-period (up to +0.15)
+An **active pillar** is one where the pillar score ≥ 0.5. The count of active pillars is used for a gate applied after fusion (see Stage 4 pillar gate below).
+
+---
+
+### Pillar 1 — Trend (0–1)
+
+Measures whether the stock is in a structurally upward trend. A death cross immediately forces this pillar to 0.0, overriding all other conditions.
+
+| Condition | Score |
+|-----------|-------|
+| Death cross just fired | 0.0 (hard override) |
+| Price above SMA(50), or SMA(50) above SMA(200), or trend is bullish | 1.0 |
+| Golden cross just fired with strong volume Z-score | 1.0 |
+| Golden cross just fired (no volume confirmation) | 0.7 |
+| None of the above | 0.0 |
+
+The pillar takes the **max** of all applicable scores — one strong trend condition is enough.
+
+---
+
+### Pillar 2 — Momentum (0–1)
+
+Measures the strength and direction of price momentum from three sub-indicators. The pillar takes the **max** of the three sub-scores before applying overbought penalties.
+
+**RSI sub-score:**
 
 Uses Wilder's exponential smoothing — matches TradingView, Bloomberg, ThinkOrSwim.
 
-| RSI range | Score | Zone |
-|-----------|-------|------|
-| 45–65 | +0.15 | Ideal entry zone |
-| 35–45 | +0.08 | Oversold recovery |
-| 65–72 | +0.06 | Extended but not extreme |
-| > 72 | 0 | Overbought — pullback risk |
-| < 35 | 0 | Extreme oversold — too early |
+| RSI range | Sub-score |
+|-----------|-----------|
+| 45 – 65 | 1.0 — ideal entry zone |
+| 35 – 45 | 0.8 — oversold recovery |
+| 65 – 72 | 0.5 — extended but not extreme |
+| > 72 or < 35 | 0.0 |
 
-### 3. Stochastic RSI (up to +0.10, down to −0.08)
+**MACD sub-score:**
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| Stoch RSI K < 0.20 | +0.10 | RSI at low extreme — potential dip entry |
-| Stoch RSI K just crossed up through 0.20 | +0.05 | Fresh oversold recovery |
-| Stoch RSI K > 0.80 | −0.08 | RSI stretched — upside may be limited |
+| Condition | Sub-score |
+|-----------|-----------|
+| Histogram > 0 AND rising | 1.0 |
+| MACD line just crossed zero from below | 0.9 |
+| Histogram > 0 (not rising) | 0.7 |
+| Otherwise | 0.0 |
 
-### 4. RSI divergence (up to ±0.10)
+**Stochastic RSI sub-score:**
 
-Detected over a 10-bar lookback. Only computed when ≥ 50 bars of history exist.
+| Condition | Sub-score |
+|-----------|-----------|
+| Stoch K < 0.20 (oversold) | 0.8 |
+| Stoch K just crossed up through 0.20 | 0.7 |
+| Otherwise | 0.0 |
 
-| Divergence | Score | What it means |
-|------------|-------|---------------|
-| Bearish: price higher, RSI lower | −0.10 | Momentum fading as price rises |
-| Bullish: price lower, RSI higher | +0.08 | Momentum recovering as price falls |
-| None | 0 | No divergence |
+**Overbought penalties (applied after max):**
 
-### 5. MACD (up to +0.20)
+| Condition | Effect |
+|-----------|--------|
+| Stoch K > 0.80 | p_momentum × 0.5 |
+| RSI ≥ 72 | p_momentum × 0.7 |
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| MACD histogram > 0 AND rising | +0.15 | Momentum accelerating upward |
-| MACD histogram > 0 (not rising) | +0.08 | Upward momentum, but slowing |
-| MACD line just crossed zero from below | +0.05 | Trend-direction confirmation |
+---
 
-### 6. Bollinger Bands %B (up to +0.10)
+### Pillar 3 — Volume (0–1)
 
-| %B | Score | Zone |
-|----|-------|------|
-| 0.20 to 0.80 | +0.10 | Middle zone — not at an extreme |
-| < 0.20 or > 0.80 | 0 | Near band — overextended or breaking down |
+Measures whether institutional money flow confirms price action.
 
-### 7. ADX — trend strength (up to +0.10)
+| Condition | Score |
+|-----------|-------|
+| OBV 10-day avg > OBV 30-day avg (bullish net flow) | 1.0 |
+| Volume Z-score > 0.5σ above 20-day avg | 0.7 |
+| Neither | 0.0 |
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| ADX > threshold AND DI+ > DI− | +0.10 | Strong upward trend |
-| ADX > threshold AND DI+ ≤ DI− | 0 | Strong trend, but downward |
-| ADX ≤ threshold | 0 (compressed) | Ranging — signals less reliable |
+Pillar takes the **max** of the two sub-scores.
 
-ADX threshold: 25 for SHORT, **15 for SWING** (captures early-trend entries), off entirely for LONG.
+---
 
-### 8. OBV (up to +0.10)
+### Pillar 4 — Structure (0–1)
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| OBV 10-day avg > OBV 30-day avg | +0.10 | Net volume flow is bullish |
+Measures price position relative to key structural levels. Below-VWAP applies a penalty regardless of Bollinger position.
 
-### 9. Volume Z-score (up to +0.05)
+| Condition | Score |
+|-----------|-------|
+| Price above VWAP | 1.0 |
+| VWAP unavailable | 0.4 |
+| Price below VWAP | 0.0 |
+| Bollinger %B in 0.20–0.80 range | 0.8 (sub-score) |
+| Bollinger %B outside that range | 0.0 (sub-score) |
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| Volume > 0.5σ above 20-day average | +0.05 | Above-average participation |
+Pillar takes `max(VWAP score, BB score)`. If price is below VWAP, an additional −0.15 penalty is applied to the result (floored at 0.0).
+
+---
+
+### Pillar gate (applied in Stage 4, after fusion)
+
+After the TA and ML scores are fused, the active pillar count gates the result:
+
+| Active pillars | Effect |
+|----------------|--------|
+| 0 or 1 | Fused score compressed 15% toward 0.5 |
+| 2 or 3 | No change |
+| 4 (all pillars strong) | Fused score + 0.03 boost |
+
+This prevents a single dominant pillar (e.g., a very strong trend with weak momentum/volume/structure) from generating a BUY unilaterally.
+
+---
+
+### RSI Divergence — **DISABLED**
+
+> RSI divergence detection (`rsi_divergence`) was part of the original indicator set but is **currently disabled** in the engine. The function always returns `"none"` and applies no score adjustment. It may be re-enabled in a future update with a more robust pivot-high/low detection algorithm.
+
+The `rsi_divergence` key still appears in signal `reasons` dictionaries (as `"none"`) for schema compatibility.
 
 ---
 
