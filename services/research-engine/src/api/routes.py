@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import httpx
 import pandas as pd
 import yfinance as yf
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from common.jwt_auth import get_current_username
 from pydantic import BaseModel
@@ -56,9 +56,25 @@ class ResearchRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def _get(client: httpx.AsyncClient, url: str) -> dict | list | None:
+_REDIS_CLAUDE_KEY   = "stockai:admin:claude_api_key"
+_REDIS_DEEPSEEK_KEY = "stockai:admin:deepseek_api_key"
+
+
+def _get_admin_ai_key(provider: str = "claude") -> str:
+    """Return the admin-stored AI API key from Redis, or '' if unavailable."""
+    rkey = _REDIS_CLAUDE_KEY if provider == "claude" else _REDIS_DEEPSEEK_KEY
     try:
-        r = await client.get(url, timeout=20)
+        import redis as redis_lib
+        r = redis_lib.from_url(_s.redis_url, decode_responses=True, socket_connect_timeout=1)
+        return r.get(rkey) or ""
+    except Exception:
+        return ""
+
+
+async def _get(client: httpx.AsyncClient, url: str, auth: str = "") -> dict | list | None:
+    try:
+        headers = {"Authorization": auth} if auth else {}
+        r = await client.get(url, timeout=20, headers=headers)
         if r.status_code == 200:
             return r.json()
     except Exception as exc:
@@ -888,8 +904,10 @@ def _dcf_fair_value(fund: dict, price: float, sector: str = "Unknown") -> dict |
 
 async def _call_claude(req: ResearchRequest, symbol: str, stock: dict, fund: dict,
                        tech: dict, fund_scores: dict, live_price: float = 0.0) -> dict:
-    if not req.api_key.strip():
+    api_key = req.api_key.strip() or _get_admin_ai_key(req.provider)
+    if not api_key:
         return _fallback_ai()
+    req = req.model_copy(update={"api_key": api_key})
     price = live_price or stock.get("price") or stock.get("last_price") or "N/A"
     name = stock.get("name", symbol)
     sector = stock.get("sector", "Unknown")
@@ -1273,12 +1291,15 @@ async def clear_research(symbol: str, _: str = Depends(get_current_username)):
 
 
 @router.post("/{symbol}")
-async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(get_current_username)):
+async def generate_research(symbol: str, req: ResearchRequest, request: Request, _: str = Depends(get_current_username)):
     """Generate a full Planning Stage Research Report for the given symbol."""
     try:
         sym = _sanitise_symbol(symbol)
     except ValueError:
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
+
+    # Forward the caller's JWT to services that require auth (e.g. signal-engine)
+    auth = request.headers.get("authorization", "")
 
     # Gather data from all services in parallel
     async with httpx.AsyncClient(timeout=25) as client:
@@ -1288,7 +1309,7 @@ async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(
             _get(client, f"{_s.market_data_url}/stocks/{sym}/prices?timeframe=1d&limit=260"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/indicators?days=400"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/levels"),
-            _get(client, f"{_s.signal_engine_url}/signals/{sym}"),
+            _get(client, f"{_s.signal_engine_url}/signals/{sym}", auth),
             _get(client, f"{_s.ranking_engine_url}/rankings/{sym}"),
             _get(client, f"{_s.market_data_url}/stocks/latest_prices?symbols={sym}"),
         )
@@ -1461,8 +1482,9 @@ async def chat_research(symbol: str, req: ChatRequest, _: str = Depends(get_curr
     if not entry:
         raise HTTPException(404, "No research report found. Generate a report first.")
 
-    if not req.api_key.strip():
-        raise HTTPException(400, "API key required for chat.")
+    chat_api_key = req.api_key.strip() or _get_admin_ai_key(req.provider)
+    if not chat_api_key:
+        raise HTTPException(400, "No AI API key configured. Ask the admin to set a shared key in Settings → AI Assistant, or add your own key in Settings.")
 
     report, _ = entry
     sc = report.get("scores", {})
@@ -1518,7 +1540,7 @@ Answer questions concisely and directly. Use the data above. Be honest about unc
 
     if req.provider == "deepseek":
         url = "https://api.deepseek.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {req.api_key}", "content-type": "application/json"}
+        headers = {"Authorization": f"Bearer {chat_api_key}", "content-type": "application/json"}
         body = {"model": req.model, "max_tokens": 1024, "temperature": 0.3,
                 "messages": [{"role": "system", "content": system_prompt}] + messages}
         try:
@@ -1533,7 +1555,7 @@ Answer questions concisely and directly. Use the data above. Be honest about unc
             raise HTTPException(500, f"Chat error: {exc}")
     else:
         url = "https://api.anthropic.com/v1/messages"
-        headers = {"x-api-key": req.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        headers = {"x-api-key": chat_api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
         body = {"model": req.model, "max_tokens": 1024, "temperature": 0.3,
                 "system": system_prompt, "messages": messages}
         try:
