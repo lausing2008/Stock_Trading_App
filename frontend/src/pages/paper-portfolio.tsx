@@ -479,7 +479,7 @@ export default function PaperPortfolioPage() {
             label="Sharpe Ratio"
             value={summary.sharpe != null ? summary.sharpe.toFixed(2) : '—'}
             color={summary.sharpe == null ? undefined : summary.sharpe >= 1 ? '#22c55e' : summary.sharpe >= 0 ? '#f59e0b' : '#ef4444'}
-            sub="annualised, rf=5%"
+            sub={summary.insufficient_data ? `< 20 days data (${summary.data_days ?? 0}d)` : 'annualised, rf=5%'}
           />
           <StatCard
             label="Max Drawdown"
@@ -493,6 +493,51 @@ export default function PaperPortfolioPage() {
             color={summary.calmar == null ? undefined : summary.calmar >= 1 ? '#22c55e' : summary.calmar >= 0.5 ? '#f59e0b' : '#ef4444'}
             sub="return / drawdown"
           />
+          {summary.outperformance_vs_spy != null && (
+            <StatCard
+              label="vs SPY"
+              value={(summary.outperformance_vs_spy >= 0 ? '+' : '') + summary.outperformance_vs_spy.toFixed(1) + '%'}
+              color={summary.outperformance_vs_spy >= 0 ? '#22c55e' : '#ef4444'}
+              sub="portfolio excess return"
+            />
+          )}
+          {summary.outperformance_vs_qqq != null && (
+            <StatCard
+              label="vs QQQ"
+              value={(summary.outperformance_vs_qqq >= 0 ? '+' : '') + summary.outperformance_vs_qqq.toFixed(1) + '%'}
+              color={summary.outperformance_vs_qqq >= 0 ? '#22c55e' : '#ef4444'}
+              sub="portfolio excess return"
+            />
+          )}
+          {summary.regime_state && (
+            <StatCard
+              label="Regime"
+              value={summary.regime_state.replace('_', ' ').toUpperCase()}
+              color={
+                summary.regime_state === 'bull' ? '#22c55e' :
+                summary.regime_state === 'neutral' ? '#94a3b8' :
+                summary.regime_state === 'choppy' ? '#f59e0b' :
+                summary.regime_state === 'risk_off' ? '#f97316' : '#ef4444'
+              }
+              sub={summary.regime_vix != null ? `VIX ${summary.regime_vix.toFixed(1)}` : 'market regime'}
+            />
+          )}
+          {summary.alpha != null && (
+            <StatCard
+              label="Alpha (ann.)"
+              value={(summary.alpha >= 0 ? '+' : '') + summary.alpha.toFixed(1) + '%'}
+              color={summary.alpha >= 0 ? '#22c55e' : '#ef4444'}
+              sub={summary.beta != null ? `β ${summary.beta.toFixed(2)}` : 'vs SPY'}
+            />
+          )}
+          {summary.info_ratio != null && (
+            <StatCard
+              label="Info Ratio"
+              value={summary.info_ratio.toFixed(2)}
+              color={summary.info_ratio >= 0.5 ? '#22c55e' : summary.info_ratio >= 0 ? '#f59e0b' : '#ef4444'}
+              sub="active return / tracking err"
+            />
+          )}
         </div>
 
         {/* Tabs */}

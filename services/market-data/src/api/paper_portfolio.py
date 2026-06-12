@@ -10,15 +10,40 @@ from sqlalchemy.orm import Session
 from db import PaperEquityCurve, PaperPortfolio, PaperTrade, get_session
 from .auth import get_current_user, get_admin_user
 from db.models import User
+from common.logging import get_logger
+
+log = get_logger("paper_portfolio_api")
 
 router = APIRouter(prefix="/paper-portfolio", tags=["paper-portfolio"])
+
+
+_MIN_SHARPE_DAYS = 20  # annualizing < 20 days produces meaningless Sharpe/Calmar
 
 
 def _portfolio_risk_metrics(curve_rows: list) -> dict:
     """Compute Sharpe, max drawdown, Calmar from equity curve rows (ordered by date)."""
     equities = [r.equity for r in curve_rows if r.equity and r.equity > 0]
-    if len(equities) < 2:
-        return {"sharpe": None, "max_drawdown_pct": None, "calmar": None}
+    data_days = len(equities)
+
+    if data_days < 2:
+        return {"sharpe": None, "max_drawdown_pct": None, "calmar": None,
+                "data_days": data_days, "insufficient_data": True}
+
+    # Max drawdown — valid at any sample size
+    peak = equities[0]
+    max_dd = 0.0
+    for e in equities:
+        if e > peak:
+            peak = e
+        dd = (peak - e) / peak
+        if dd > max_dd:
+            max_dd = dd
+    max_dd_pct = round(max_dd * 100, 2)
+
+    # Sharpe and Calmar require enough data to annualize meaningfully
+    if data_days < _MIN_SHARPE_DAYS:
+        return {"sharpe": None, "max_drawdown_pct": max_dd_pct, "calmar": None,
+                "data_days": data_days, "insufficient_data": True}
 
     # Daily returns
     daily_returns = [(equities[i] / equities[i - 1]) - 1 for i in range(1, len(equities))]
@@ -33,17 +58,6 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
     risk_free = 0.05
     sharpe = round((annualised_return - risk_free) / annualised_vol, 2) if annualised_vol > 0 else None
 
-    # Max drawdown
-    peak = equities[0]
-    max_dd = 0.0
-    for e in equities:
-        if e > peak:
-            peak = e
-        dd = (peak - e) / peak
-        if dd > max_dd:
-            max_dd = dd
-    max_dd_pct = round(max_dd * 100, 2)
-
     # Calmar = annualised return / max drawdown
     calmar = round(annualised_return / max_dd, 2) if max_dd > 0 else None
 
@@ -51,7 +65,51 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
         "sharpe": sharpe,
         "max_drawdown_pct": max_dd_pct,
         "calmar": calmar,
+        "data_days": data_days,
+        "insufficient_data": False,
     }
+
+
+def _compute_alpha_beta(curve_rows: list) -> dict:
+    """Compute beta and annualised Jensen's alpha vs SPY from equity curve rows."""
+    paired = [
+        (r.equity, r.spy_close) for r in curve_rows
+        if r.equity and r.spy_close and r.equity > 0 and r.spy_close > 0
+    ]
+    if len(paired) < 20:
+        return {"alpha": None, "beta": None, "info_ratio": None}
+
+    equities = [p[0] for p in paired]
+    spys     = [p[1] for p in paired]
+    n = len(equities) - 1
+    if n < 2:
+        return {"alpha": None, "beta": None, "info_ratio": None}
+
+    p_rets = [(equities[i + 1] / equities[i]) - 1 for i in range(n)]
+    s_rets = [(spys[i + 1]     / spys[i])     - 1 for i in range(n)]
+
+    mean_p = sum(p_rets) / n
+    mean_s = sum(s_rets) / n
+
+    cov   = sum((p_rets[i] - mean_p) * (s_rets[i] - mean_s) for i in range(n)) / max(n - 1, 1)
+    var_s = sum((s_rets[i] - mean_s) ** 2                    for i in range(n)) / max(n - 1, 1)
+
+    beta = round(cov / var_s, 3) if var_s > 1e-10 else None
+
+    if beta is None:
+        return {"alpha": None, "beta": None, "info_ratio": None}
+
+    # Jensen's alpha: annualised excess return above what beta predicts
+    alpha = round((mean_p - beta * mean_s) * 252 * 100, 2)
+
+    # Information ratio: annualised active return / tracking error
+    active = [p_rets[i] - beta * s_rets[i] for i in range(n)]
+    mean_active = sum(active) / n
+    var_active  = sum((r - mean_active) ** 2 for r in active) / max(n - 1, 1)
+    te = math.sqrt(var_active * 252) if var_active > 0 else 0
+    info_ratio = round((mean_active * 252) / te, 2) if te > 0 else None
+
+    return {"alpha": alpha, "beta": round(beta, 2), "info_ratio": info_ratio}
 
 
 def _get_active_portfolio(session: Session) -> PaperPortfolio:
@@ -99,8 +157,22 @@ def get_summary(
         .order_by(PaperEquityCurve.date)
     ).scalars().all()
 
-    risk = _portfolio_risk_metrics(all_curve)
+    risk   = _portfolio_risk_metrics(all_curve)
+    ab     = _compute_alpha_beta(all_curve)
     latest_curve = all_curve[-1] if all_curve else None
+
+    # Benchmark outperformance: compare portfolio total return to SPY/QQQ since day 1
+    total_return_pct = round((equity / p.initial_capital - 1) * 100, 2)
+    outperformance_vs_spy: float | None = None
+    outperformance_vs_qqq: float | None = None
+    if all_curve:
+        first = all_curve[0]
+        if first.spy_close and latest_curve and latest_curve.spy_close:
+            spy_return = round((latest_curve.spy_close / first.spy_close - 1) * 100, 2)
+            outperformance_vs_spy = round(total_return_pct - spy_return, 2)
+        if first.qqq_close and latest_curve and latest_curve.qqq_close:
+            qqq_return = round((latest_curve.qqq_close / first.qqq_close - 1) * 100, 2)
+            outperformance_vs_qqq = round(total_return_pct - qqq_return, 2)
 
     return {
         "portfolio_id": p.id,
@@ -110,7 +182,7 @@ def get_summary(
         "current_equity": round(equity, 2),
         "current_cash": round(p.current_cash, 2),
         "open_positions_value": round(open_value, 2),
-        "total_return_pct": round((equity / p.initial_capital - 1) * 100, 2),
+        "total_return_pct": total_return_pct,
         "total_realized_pnl": total_realized,
         "total_unrealized_pnl": total_unrealized,
         "open_positions": len(open_trades),
@@ -121,8 +193,20 @@ def get_summary(
         "sharpe": risk["sharpe"],
         "max_drawdown_pct": risk["max_drawdown_pct"],
         "calmar": risk["calmar"],
+        "data_days": risk.get("data_days", 0),
+        "insufficient_data": risk.get("insufficient_data", False),
+        "alpha": ab["alpha"],
+        "beta": ab["beta"],
+        "info_ratio": ab["info_ratio"],
+        "outperformance_vs_spy": outperformance_vs_spy,
+        "outperformance_vs_qqq": outperformance_vs_qqq,
         "spy_close": latest_curve.spy_close if latest_curve else None,
         "qqq_close": latest_curve.qqq_close if latest_curve else None,
+        # Regime engine — current market state (written by engine each cycle)
+        "regime_state": p.config.get("regime_state"),
+        "regime_vix": p.config.get("regime_vix"),
+        "regime_spy": p.config.get("regime_spy"),
+        "regime_notes": p.config.get("regime_notes", []),
         "config": p.config,
         "created_at": p.created_at.isoformat() if p.created_at else None,
     }
@@ -331,8 +415,13 @@ def configure_portfolio(
         "wait_exit_days", "enabled", "paused",
     }
     updated = {k: v for k, v in body.items() if k in allowed_keys and v is not None}
+    old_vals = {k: p.config.get(k) for k in updated}
     p.config = {**p.config, **updated}
     session.commit()
+    # PT-C10: log config changes so the audit trail is visible in container logs
+    if updated:
+        log.info("paper.config_updated",
+                 changed={k: {"from": old_vals[k], "to": updated[k]} for k in updated})
     return {"ok": True, "config": p.config}
 
 

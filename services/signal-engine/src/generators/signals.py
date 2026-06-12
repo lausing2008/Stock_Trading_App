@@ -281,13 +281,13 @@ def _fetch_earnings_beat_rate(symbol: str) -> float | None:
     return None
 
 
-def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None, bool | None]:
-    """Return (rs_score 0-100, rs_rank, sector_etf_above_sma50) vs the stock's sector ETF.
+def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None, bool | None, float | None]:
+    """Return (rs_score 0-100, rs_rank, sector_etf_above_sma50, stock_20d_ret) vs the stock's sector ETF.
 
     Fetches the stock's sector from market-data, maps to the matching SPDR ETF
     (or ^HSI for HK stocks), then computes the 20-day return ratio and whether
     the ETF is currently above its 50-day SMA (SA-16 sector trend filter).
-    Returns (None, None, None) on any failure.
+    Returns (None, None, None, None) on any failure.
     """
     _SECTOR_ETF = {
         "Technology": "XLK", "Health Care": "XLV", "Healthcare": "XLV",
@@ -304,7 +304,7 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None, b
         with httpx.Client(timeout=8) as c:
             r = c.get(url)
             if r.status_code != 200:
-                return None, None, None
+                return None, None, None, None
         info = r.json()
         market = info.get("market", "US")
         sector = info.get("sector") or ""
@@ -313,16 +313,18 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None, b
         stock_hist = yf.Ticker(symbol).history(period="3mo")
         etf_hist   = yf.Ticker(etf_ticker).history(period="3mo")
         if stock_hist.empty or len(stock_hist) < 21:
-            return None, None, None
+            return None, None, None, None
         if etf_hist.empty or len(etf_hist) < 21:
-            return None, None, None
+            return None, None, None, None
 
         stock_ret = float(stock_hist["Close"].iloc[-1] / stock_hist["Close"].iloc[-21] - 1)
         etf_ret   = float(etf_hist["Close"].iloc[-1] / etf_hist["Close"].iloc[-21] - 1)
         if abs(1 + etf_ret) < 0.01:
-            return None, None, None
+            return None, None, None, None
         rs_rank = (1 + stock_ret) / (1 + etf_ret)
         rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
+        # SA-23: store absolute stock 20d return in reasons for floor check in compression gate
+        reasons_stock_ret = round(stock_ret * 100, 2)  # stored in reasons as stock_20d_return_pct
 
         # SA-16: sector ETF trend — above 50-day SMA means sector is in an uptrend
         etf_close = etf_hist["Close"]
@@ -331,9 +333,9 @@ def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None, b
         if etf_sma50 is not None and not pd.isna(etf_sma50):
             sector_etf_above_sma50 = bool(etf_close.iloc[-1] > etf_sma50)
 
-        return round(rs_score, 1), round(rs_rank, 4), sector_etf_above_sma50
+        return round(rs_score, 1), round(rs_rank, 4), sector_etf_above_sma50, round(stock_ret, 4)
     except Exception:
-        return None, None, None
+        return None, None, None, None
 
 
 def _fetch_news_sentiment(symbol: str) -> float | None:
@@ -410,8 +412,12 @@ def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
     dx  = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)
     adx = dx.ewm(alpha=1 / period, adjust=False).mean()
 
+    # C3 FIX: return None (not 20.0) when ADX is NaN. A 20.0 fallback silently passed
+    # adx_min=25 compression check on all short-history stocks (20 < 25 → always compressed),
+    # while also never granting bullish_trend (adx > 25 → never True). Return None so
+    # downstream callers can explicitly skip ADX-gated logic rather than silently misfiring.
     return (
-        float(adx.iloc[-1])      if not pd.isna(adx.iloc[-1])      else 20.0,
+        float(adx.iloc[-1])      if not pd.isna(adx.iloc[-1])      else None,
         float(di_plus.iloc[-1])  if not pd.isna(di_plus.iloc[-1])  else 0.0,
         float(di_minus.iloc[-1]) if not pd.isna(di_minus.iloc[-1]) else 0.0,
     )
@@ -682,11 +688,22 @@ def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float,
         if recency < 0.1:
             continue
         name = p.get("name", "")
+        meta = p.get("meta", {})
         if name in BULLISH:
-            adj += 0.08 * confidence * recency
+            base = 0.08
+            # double_bottom with confirmed neckline break + volume = much stronger signal
+            if name == "double_bottom" and meta.get("neckline_broken") and meta.get("vol_confirmed"):
+                base = 0.15  # neckline breakout on volume = highest-conviction reversal
+            elif name == "double_bottom" and meta.get("neckline_broken"):
+                base = 0.12
+            adj += base * confidence * recency
             active.append(name)
         elif name in BEARISH:
-            adj -= 0.08 * confidence * recency
+            base = 0.08
+            # double_top with confirmed neckline break = strong suppression signal
+            if name == "double_top" and meta.get("neckline_broken"):
+                base = 0.13
+            adj -= base * confidence * recency
             active.append(name)
 
     return float(np.clip(adj, -0.15, 0.15)), active
@@ -741,25 +758,13 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     reasons["stoch_rsi_cross_up"]   = stoch_cross_up
 
     # ── RSI divergence (peak-to-peak, 20-bar window) ─────────────────────
-    # Use peak comparison rather than raw point-in-time levels so that stocks
-    # in sustained uptrends with mean-reverting RSI don't falsely trigger bearish divergence.
+    # H3/H4 DISABLED: RSI divergence was comparing peak *timing* (argmax index position)
+    # rather than peak *levels*. A stock ripping to new highs with rising RSI (healthy
+    # momentum) was mislabeled "bearish" simply because price argmax landed later than RSI
+    # argmax in the window. The volume-inversion (0.5× on high-volume "confirmation") is
+    # also unbacktested and contested. Both the penalty and the bullish bonus are zeroed
+    # until the logic is rewritten to compare RSI values at the two price peaks.
     rsi_divergence = "none"
-    _div_window = 20
-    if len(rsi.dropna()) >= _div_window and len(close) >= _div_window:
-        _price_w = close.iloc[-_div_window:]
-        _rsi_w   = rsi.iloc[-_div_window:]
-        _price_peak_idx = int(_price_w.argmax())
-        _rsi_peak_idx   = int(_rsi_w.argmax())
-        # Bearish divergence: price peaks later (or same) while RSI peaked earlier
-        # Only fire if peaks are meaningfully separated (≥5 bars) to avoid noise
-        if _price_peak_idx > _rsi_peak_idx + 4:
-            # Price still making new highs after RSI has turned — momentum fading
-            if _price_w.iloc[-1] >= _price_w.iloc[_price_peak_idx] * 0.98:
-                rsi_divergence = "bearish"
-        elif _rsi_peak_idx > _price_peak_idx + 4:
-            # RSI recovers while price still low — hidden bullish divergence
-            if _rsi_w.iloc[-1] >= _rsi_w.iloc[_rsi_peak_idx] * 0.90:
-                rsi_divergence = "bullish"
     reasons["rsi_divergence"] = rsi_divergence
 
     # ── MACD histogram + zero-line crossover ──────────────────────────────
@@ -795,9 +800,10 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 
     # ── ADX — trend strength ──────────────────────────────────────────────
     adx_val, di_plus, di_minus = _adx(df)
-    trending      = adx_val > 25
+    # C3 FIX: adx_val is now None when insufficient data — guard all comparisons
+    trending      = (adx_val is not None) and adx_val > 25
     bullish_trend = trending and di_plus > di_minus
-    reasons["adx"]          = round(adx_val, 1)
+    reasons["adx"]          = round(adx_val, 1) if adx_val is not None else None
     reasons["adx_trending"] = trending
     reasons["adx_bullish"]  = bullish_trend
 
@@ -1172,9 +1178,10 @@ def _apply_style_signal(
     # ── ADX choppy-market compression ────────────────────────────────────────
     adx_min  = p.get("adx_min")
     adx_comp = p.get("adx_compression")
-    if adx_min is not None and adx_comp is not None and adx_val < adx_min:
+    # C3 FIX: skip compression if adx_val is None (insufficient history) — don't penalise
+    if adx_min is not None and adx_comp is not None and adx_val is not None and adx_val < adx_min:
         fused = 0.5 + (fused - 0.5) * adx_comp
-    reasons["adx_compression"] = (adx_min is not None and adx_val < (adx_min or 0))
+    reasons["adx_compression"] = (adx_min is not None and adx_val is not None and adx_val < adx_min)
 
     # ── High-volatility regime compression ───────────────────────────────────
     hv_comp = p.get("high_vol_compression")
@@ -1195,6 +1202,11 @@ def _apply_style_signal(
     # ── Chart pattern adjustment ──────────────────────────────────────────────
     fused = float(np.clip(fused + pattern_adj, 0.0, 1.0))
 
+    # Double-top neckline break — override: strong BUY suppression when breakdown confirmed
+    if base_reasons.get("double_top_neckline_broken") and "double_top" in (base_reasons.get("active_patterns") or []):
+        fused = 0.5 + (fused - 0.5) * 0.35  # collapse toward 0.50 — this is a SELL setup, not BUY
+        reasons["double_top_breakdown"] = True
+
     # ── Earnings proximity (style-specific, SA-7 regime-aware) ───────────────
     # Bull + reliable beater (≥70%): skip compression, +3% boost — earnings
     #   beats in bull markets tend to gap up; compression hurts win rate.
@@ -1202,6 +1214,14 @@ def _apply_style_signal(
     # Bear / high_vol: tighten compression (beat_scale = 0.75–1.0 based on rate).
     # Unknown / no history: original ±20% beat_rate adjustment.
     ec = p.get("earnings_compression")
+
+    # SA-25: SHORT style binary-event guard — even though earnings_compression=None (earnings treated
+    # as catalyst), DTE≤2 is a coin-flip event that can wipe a 5-day trade; apply hard compress.
+    if style_key == "SHORT" and days_to_earnings is not None and 0 <= days_to_earnings <= 2:
+        fused = 0.5 + (fused - 0.5) * 0.40
+        reasons["earnings_warning"] = "short_imminent_event"
+        reasons["earnings_beat_rate"] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None
+
     if ec is not None and days_to_earnings is not None:
         ebr = earnings_beat_rate
         reasons["earnings_beat_rate"] = round(ebr, 2) if ebr is not None else None
@@ -1252,10 +1272,16 @@ def _apply_style_signal(
     fused = float(np.clip(fused, 0.0, 1.0))
 
     # ── Relative strength vs sector ───────────────────────────────────────────
+    # SA-23: threshold changed 0.80 → 0.70; absolute return floor: never compress if stock
+    # itself is up > 5% in 20 days (it's not a true laggard, just a hot-sector context).
     rs_comp = p.get("rs_compression")
-    if rs_comp is not None and rs_rank is not None and rs_rank < 0.8:
+    stock_20d_ret_pct = base_reasons.get("stock_20d_return_pct")
+    rs_absolute_floor = stock_20d_ret_pct is not None and stock_20d_ret_pct > 5.0
+    if rs_comp is not None and rs_rank is not None and rs_rank < 0.70 and not rs_absolute_floor:
         fused = 0.5 + (fused - 0.5) * rs_comp
         reasons["rs_flag"] = "lagging_sector"
+    elif rs_absolute_floor and rs_rank is not None and rs_rank < 0.70:
+        reasons["rs_flag"] = "lagging_sector_floor_applied"  # lagging but absolute return positive
     elif rs_rank is not None:
         reasons["rs_flag"] = "in_line_or_leading"
     fused = float(np.clip(fused, 0.0, 1.0))
@@ -1425,10 +1451,17 @@ def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
     ingest scheduler should keep data fresh, so staleness indicates a pipeline
     gap rather than normal operation.
     """
-    from datetime import date as _date
     try:
         last_ts = pd.to_datetime(df["ts"]).max()
-        days_old = (_date.today() - last_ts.date()).days
+        # C2 FIX: normalize to UTC date before comparing — server-local date.today() can be
+        # off by one vs tz-aware bars near midnight UTC, causing valid data to appear stale.
+        if hasattr(last_ts, "tz_localize") and last_ts.tzinfo is None:
+            last_ts_utc = last_ts
+        else:
+            last_ts_utc = last_ts.tz_convert("UTC") if last_ts.tzinfo else last_ts
+        from datetime import timezone as _tz
+        today_utc = __import__("datetime").datetime.now(_tz.utc).date()
+        days_old = (today_utc - last_ts_utc.date()).days
         if days_old > 3:
             log.warning(
                 "signal.stale_price_data",
@@ -1466,7 +1499,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     days_to_earnings = _fetch_earnings_proximity(symbol)
     earnings_beat_rate = _fetch_earnings_beat_rate(symbol)
     news_sentiment = _fetch_news_sentiment(symbol)
-    rs_score, rs_rank, sector_etf_above_sma50 = _fetch_relative_strength(symbol)
+    rs_score, rs_rank, sector_etf_above_sma50, stock_20d_ret = _fetch_relative_strength(symbol)
     options_sentiment, cp_ratio = _fetch_options_flow(symbol)
     patterns = _fetch_patterns_from_ta(symbol)
     pattern_adj, active_patterns = _pattern_score_adjustment(patterns, len(df))
@@ -1493,11 +1526,27 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["weekly_macd_bull"]   = weekly_tech["weekly_macd_bull"]
     reasons["active_patterns"]    = active_patterns
     reasons["pattern_adjustment"] = round(pattern_adj, 3)
+
+    # Extract double_bottom / double_top metadata for conviction gate and paper trading
+    for p in patterns:
+        pname = p.get("name", "")
+        meta  = p.get("meta", {})
+        if pname == "double_bottom":
+            reasons["double_bottom_neckline"]        = meta.get("neckline")
+            reasons["double_bottom_target"]          = meta.get("target")
+            reasons["double_bottom_stop"]            = meta.get("stop")
+            reasons["double_bottom_neckline_broken"] = bool(meta.get("neckline_broken"))
+            reasons["double_bottom_vol_confirmed"]   = bool(meta.get("vol_confirmed"))
+        elif pname == "double_top":
+            reasons["double_top_neckline"]        = meta.get("neckline")
+            reasons["double_top_target"]          = meta.get("target")
+            reasons["double_top_neckline_broken"] = bool(meta.get("neckline_broken"))
     reasons["days_to_earnings"]   = days_to_earnings
     reasons["news_sentiment"]     = news_sentiment
     reasons["rs_score"]                = rs_score
     reasons["rs_rank"]                 = rs_rank
     reasons["sector_etf_above_sma50"]  = sector_etf_above_sma50
+    reasons["stock_20d_return_pct"]    = round(stock_20d_ret * 100, 2) if stock_20d_ret is not None else None
     reasons["options_sentiment"]  = options_sentiment
     reasons["options_cp_ratio"]   = round(cp_ratio, 2) if cp_ratio is not None else None
     reasons["kscore"]             = kscore

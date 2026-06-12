@@ -374,10 +374,11 @@ def _confluence_score_full(
     )
 
 
-def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str = "unknown") -> tuple[bool, list[str], list[str]]:
+def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str = "unknown") -> tuple[bool, str, list[str], list[str]]:
     """Check all conviction layers for a BUY signal across all 4 framework layers.
 
-    Returns (all_passed, passed_layers, failed_layers).
+    Returns (all_passed, conviction_tier, passed_layers, failed_layers).
+    conviction_tier: "full" (all pass) | "near" (1 soft fail: OBV or ADX) | "failed" (hard fail).
 
     Layer 1 — Fundamental filter   : Analyst bullish (checked separately before call)
     Layer 2 — Conviction score     : K-Score ≥ 55
@@ -406,25 +407,48 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     else:
         failed.append(f"K-Score {kscore:.0f} below 55 — weak fundamental/momentum case")
 
-    # Layer 4a — Clean uptrend structure
-    if reasons.get("sma50_above_sma200") and reasons.get("trend_above_sma50"):
-        passed.append("Uptrend: SMA50 > SMA200, price > SMA50")
+    # Style-aware flag — used by Layer 4a and 4b
+    style = signal_data.get("horizon", "SWING")
+
+    # Layer 4a — Uptrend structure (GROWTH-aware; double-bottom neckline break = automatic pass)
+    double_bottom_confirmed = (
+        bool(reasons.get("double_bottom_neckline_broken")) and
+        "double_bottom" in (reasons.get("active_patterns") or [])
+    )
+    if double_bottom_confirmed:
+        passed.append("Double bottom neckline break confirmed — pattern reversal overrides golden-cross requirement")
+    elif style == "GROWTH":
+        # GROWTH exemption: SMA20>SMA50 momentum is sufficient; golden cross (SMA50>SMA200) not required
+        if reasons.get("trend_above_sma50"):
+            passed.append("GROWTH uptrend: price above SMA50 (golden-cross not required for GROWTH style)")
+        else:
+            failed.append("Uptrend structure not aligned (price below SMA50)")
     else:
-        failed.append("Uptrend structure not aligned (SMA50/SMA200/price)")
+        if reasons.get("sma50_above_sma200") and reasons.get("trend_above_sma50"):
+            passed.append("Uptrend: SMA50 > SMA200, price > SMA50")
+        else:
+            failed.append("Uptrend structure not aligned (SMA50/SMA200/price)")
 
     # Layer 4b — Entry timing: dip bought, not overextended
+    # RSI range is style-aware: GROWTH runs hot (55-85), SWING/LONG expect dip (45-65)
     rsi = reasons.get("rsi")
     stoch_k = float(reasons.get("stoch_rsi_k") or 50)
     stoch_cross_up = bool(reasons.get("stoch_rsi_cross_up"))
     stoch_oversold = bool(reasons.get("stoch_rsi_oversold"))
-    rsi_ok = rsi is not None and 45.0 <= float(rsi) <= 65.0
-    stoch_ok = stoch_cross_up or (stoch_oversold and stoch_k < 60)
+    if style == "GROWTH":
+        rsi_ok = rsi is not None and 55.0 <= float(rsi) <= 85.0
+        rsi_range_label = "55-85"
+        stoch_ok = True  # GROWTH momentum plays don't require oversold entry
+    else:
+        rsi_ok = rsi is not None and 45.0 <= float(rsi) <= 65.0
+        rsi_range_label = "45-65"
+        stoch_ok = stoch_cross_up or (stoch_oversold and stoch_k < 60)
     if rsi_ok and stoch_ok:
-        passed.append(f"Entry timing: RSI {float(rsi):.0f}, Stoch RSI recovering from oversold")
+        passed.append(f"Entry timing: RSI {float(rsi):.0f}, within {rsi_range_label} for {style}")
     else:
         parts = []
         if not rsi_ok:
-            parts.append(f"RSI {float(rsi):.0f} outside 45-65" if rsi is not None else "RSI unavailable")
+            parts.append(f"RSI {float(rsi):.0f} outside {rsi_range_label}" if rsi is not None else "RSI unavailable")
         if not stoch_ok:
             parts.append("Stoch RSI not recovering from oversold")
         failed.append("Entry timing: " + "; ".join(parts))
@@ -470,7 +494,20 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     if bool(reasons.get("stoch_rsi_overbought")):
         failed.append("Stoch RSI overbought: RSI itself overextended — pullback risk elevated")
 
-    return len(failed) == 0, passed, failed
+    # CB-4: Near-conviction tier — allow 1 soft failure (OBV or ADX only) to still send email
+    _SOFT_LAYER_KEYWORDS = ("OBV", "ADX")
+    soft_failed = [f for f in failed if any(kw in f for kw in _SOFT_LAYER_KEYWORDS)]
+    hard_failed = [f for f in failed if f not in soft_failed]
+
+    if len(failed) == 0:
+        conviction_tier = "full"
+    elif len(hard_failed) == 0 and len(soft_failed) == 1:
+        conviction_tier = "near"
+    else:
+        conviction_tier = "failed"
+
+    all_passed = conviction_tier in ("full", "near")
+    return all_passed, conviction_tier, passed, failed
 
 
 _STYLE_PARAMS: dict[str, dict] = {
@@ -785,7 +822,7 @@ def check_signal_alerts() -> None:
                     # Refresh conviction status for stable BUY stocks every minute.
                     if current == "BUY":
                         sig_data = signal_details.get(key) or {}
-                        all_pass, passed, failed = _is_conviction_buy(
+                        all_pass, _tier, passed, failed = _is_conviction_buy(
                             sig_data, kscore=kscores.get(alert.symbol), regime=current_regime
                         )
                         db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
@@ -826,13 +863,15 @@ def check_signal_alerts() -> None:
                 # send (see `if email_ok` below), so a failed send can be retried next run.
 
                 conviction_passed: list[str] | None = None
+                near_conviction = False
+                near_conviction_failed: list[str] = []
                 if is_bullish:
                     sig_data = signal_details.get(key) or {}
                     confidence = float(sig_data.get("confidence") or 0)
 
                     if current == "BUY":
-                        # Full 4-layer conviction gate
-                        all_pass, passed, failed = _is_conviction_buy(
+                        # Full 4-layer conviction gate (CB-4: "near" tier allows 1 soft fail)
+                        all_pass, conviction_tier, passed, failed = _is_conviction_buy(
                             sig_data, kscore=kscores.get(alert.symbol), regime=current_regime
                         )
                         if not all_pass:
@@ -844,9 +883,11 @@ def check_signal_alerts() -> None:
                             _store_conviction(alert.symbol, style, False, passed, failed, current)
                             continue  # last_signal NOT updated — retried next run
                         conviction_passed = passed
+                        near_conviction = conviction_tier == "near"
+                        near_conviction_failed = [f for f in failed if near_conviction]
                         log.info(
                             "signal_alert.conviction_met", symbol=alert.symbol,
-                            passed=passed, regime=current_regime,
+                            tier=conviction_tier, passed=passed, regime=current_regime,
                         )
                     else:
                         # Non-BUY bullish improvement (e.g. WAIT→HOLD) — lighter gate:
@@ -888,6 +929,8 @@ def check_signal_alerts() -> None:
                     fundamentals=fundamentals_cache.get(alert.symbol),
                     game_plan=game_plan,
                     conviction_layers=conviction_passed,
+                    near_conviction=near_conviction,
+                    near_conviction_failed=near_conviction_failed,
                     horizon=style,
                 )
                 if email_ok:
@@ -1168,12 +1211,13 @@ def _weekly_full_refresh() -> None:
 
 
 def _refresh_5m(market: str) -> None:
-    """Ingest the latest 5-minute bars for all active stocks in the given market.
+    """Ingest the latest 5-minute bars and run a paper trading monitor cycle.
 
-    Runs every 5 minutes during regular market hours so the intraday chart on
-    the stock detail page always shows up-to-date candles.  Only fetches bars
-    since the last stored bar — incremental, not a full re-download.
-    Rankings and signals are NOT updated (they use daily bars only).
+    Runs every 5 minutes during regular market hours. The 5m ingest updates
+    intraday candles; the paper trading step then monitors open positions with
+    fresh live prices so stops, trailing stops, and SELL exits are checked every
+    5 minutes instead of every 10 during regular hours.
+    Rankings and signals are NOT updated here (they use daily bars only).
     """
     if market == "HK" and _is_hk_holiday():
         return
@@ -1186,6 +1230,18 @@ def _refresh_5m(market: str) -> None:
         log.info("scheduler.5m_ingest_done", market=market, count=len(symbols))
     except Exception as exc:
         log.error("scheduler.5m_ingest_failed", market=market, error=str(exc))
+
+    # PT-5M: paper trading position monitor runs after every 5m bar ingest (US only).
+    # Entry scan also runs here — it reads the latest BUY signal from DB which may
+    # have been refreshed in the previous _refresh_market cycle minutes ago.
+    if market == "US":
+        _pt0 = time.monotonic()
+        try:
+            paper_trading_step()
+            _record_job_status("paper_trading_5m", "ok", time.monotonic() - _pt0)
+        except Exception as _pte:
+            log.error("scheduler.paper_trading_5m_failed", error=str(_pte), exc_info=True)
+            _record_job_status("paper_trading_5m", "error", time.monotonic() - _pt0, str(_pte))
 
 
 def start_scheduler() -> None:

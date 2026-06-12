@@ -506,6 +506,7 @@ class PaperTrade(Base):
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
     trading_style: Mapped[str] = mapped_column(String(16), default="GROWTH")  # GROWTH|SWING|LONG|SHORT
+    sector: Mapped[str | None] = mapped_column(String(128), nullable=True)    # H-SECTOR: snapshotted at entry for PA-D1
 
     # Entry
     entry_date: Mapped[date] = mapped_column(Date, index=True)
@@ -538,6 +539,9 @@ class PaperTrade(Base):
     exit_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     pct_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # PA-G3: signal lifecycle — which signal was active at exit (for walk-forward attribution)
+    signal_at_exit_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
+    signal_at_exit_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # BUY/HOLD/SELL/WAIT
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
