@@ -1014,6 +1014,23 @@ Both values are saved to the card and displayed in the prices row as "Fill $X ×
 
 The fill can be skipped — clicking "Skip, use plan price" moves the card to Active without recording fill data.
 
+**Auto-sync to Positions:** If shares are entered in the Fill modal, the position is automatically created on the Positions page (`/positions`) the moment you confirm. If a position for that symbol already exists, a BUY trade is added and the average cost is recalculated. No manual re-entry required.
+
+### Editing an Active card
+
+Active cards show a **✎** button at the right of the price chip row. Clicking it opens a 2-column inline edit panel directly on the card — no modal, no page navigation:
+
+| Field | What it changes |
+|---|---|
+| Shares | `shares` on the trade plan — updates the dollar P&L and risk calculations live |
+| Fill Price | `actual_entry_price` — the real fill price used for P&L |
+| Stop Loss | `stop_loss` — updates the Stop chip and all stop-monitoring alerts |
+| Take Profit | `take_profit` — updates the Target chip and "near target" warnings |
+
+Press **Save** to write all changed fields in a single `PUT /board/{id}` call. Press **Cancel** to discard. Fields left blank are not overwritten — only non-empty inputs are sent.
+
+> This is useful when you partially filled a position, adjusted your stop after entry, or need to correct a mis-typed fill price.
+
 ### Closed trade P&L tracking
 
 When a card is moved to **Closed**:
@@ -1025,7 +1042,7 @@ When a card is moved to **Closed**:
 
 ### Trading style badge on closed cards
 
-Each closed card shows a small colored badge in the P&L section — **SHORT** (red) / **SWING** (indigo) / **LONG** (green) — recording which trading style was active when the position was opened. This lets you compare performance across different signal approaches at a glance.
+Each closed card shows a small colored badge in the P&L section — **SHORT** (red) / **SWING** (indigo) / **LONG** (green) / **GROWTH** (purple) — recording which trading style was active when the position was opened. This lets you compare performance across different signal approaches at a glance.
 
 The style is captured automatically when a card is activated (from the global or per-list style setting at that moment). It can only be set once — it records historical context, not current state.
 
@@ -1051,7 +1068,7 @@ For each style that has at least one closed trade, a chip shows:
 - Win rate %
 - Average return %
 
-This lets you evaluate whether SHORT, SWING, or LONG signals have been more accurate for your actual trades over time.
+This lets you evaluate whether SHORT, SWING, LONG, or GROWTH signals have been more accurate for your actual trades over time.
 
 ### Adding cards
 
@@ -1090,7 +1107,7 @@ Key columns on `trade_plans`:
 | `entry_price` | float | Planned limit/target price from the game plan |
 | `actual_entry_price` | float | Real fill price, captured via the Fill modal |
 | `shares` | float | Shares filled — enables dollar P&L |
-| `trading_style` | varchar(16) | SHORT / SWING / LONG — style active at activation time |
+| `trading_style` | varchar(16) | SHORT / SWING / LONG / GROWTH — style active at activation time |
 | `exit_price` | float | Closing price, entered manually on the closed card |
 | `closed_at` | timestamp | Set automatically the first time `stage = "closed"` is submitted |
 
