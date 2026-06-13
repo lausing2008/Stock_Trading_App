@@ -558,6 +558,7 @@ class PaperTrade(Base):
 
     __table_args__ = (
         Index("ix_paper_trades_portfolio_stage", "portfolio_id", "stage"),
+        Index("ix_paper_trades_signal_at_exit", "signal_at_exit_id"),
     )
 
 

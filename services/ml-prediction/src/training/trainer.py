@@ -498,7 +498,7 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
         "ensemble": True,
         "weights": {"xgboost": round(w_xgb, 2), "random_forest": round(w_rf, 2)},
         "metrics": {
-            "test_auc_mean": round((xgb_auc + rf_auc) / 2, 4),
+            "mean_model_test_auc": round((xgb_auc + rf_auc) / 2, 4),
             "cv_auc_mean": round(
                 (((xgb.get("metrics") or {}).get("cv_auc_mean") or xgb_auc) +
                  ((rf.get("metrics") or {}).get("cv_auc_mean") or rf_auc)) / 2, 4
@@ -608,7 +608,7 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5) -> dict:
         "model_probabilities": model_probs,
         "ensemble_agreement": agreement,
         "metrics": {
-            "test_auc_mean": round(mean_auc, 4),
+            "mean_model_test_auc": round(mean_auc, 4),
             "cv_auc_mean": round(mean_auc, 4),
             "buy_threshold": buy_threshold,
         },

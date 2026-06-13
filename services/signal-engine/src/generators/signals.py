@@ -214,7 +214,7 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
                     data = r.json()
                     prob = float(data.get("bullish_probability", 0.5))
                     m = data.get("metrics") or {}
-                    test_auc = float(m.get("test_auc_mean") or m.get("auc") or m.get("cv_auc_mean") or 0.55)
+                    test_auc = float(m.get("mean_model_test_auc") or m.get("auc") or m.get("cv_auc_mean") or 0.55)
                     ml_meta = {
                         "ml_model": data.get("model", "xgboost"),
                         "ml_agreement": data.get("ensemble_agreement"),
@@ -927,6 +927,7 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 _STYLE_PROFILES: dict[str, dict] = {
     "SHORT": {
         "ml_weight_cap": 0.30,
+        "ml_weight_floor": 0.10,  # global cap cannot push ML weight below this
         "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.62},
         "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.52, "unknown": 0.47},
         "adx_min": 25, "adx_compression": 0.85,
@@ -941,6 +942,7 @@ _STYLE_PROFILES: dict[str, dict] = {
     },
     "SWING": {
         "ml_weight_cap": 0.75,
+        "ml_weight_floor": 0.15,
         # SA-12: keep bull/neutral thresholds unchanged; only tighten bear/high_vol.
         # fused_prob ≈ 0.75×ml + 0.25×ta; 0.72 ≈ ML>0.78 target for stressed regimes.
         "buy_threshold":  {"bull": 0.62, "high_vol": 0.72, "bear": 0.72, "unknown": 0.62},
@@ -959,6 +961,7 @@ _STYLE_PROFILES: dict[str, dict] = {
     },
     "LONG": {
         "ml_weight_cap": 0.45,
+        "ml_weight_floor": 0.12,
         "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.70, "unknown": 0.62},
         "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.54, "unknown": 0.46},
         "adx_min": None, "adx_compression": None,
@@ -980,6 +983,7 @@ _STYLE_PROFILES: dict[str, dict] = {
     #   - No weekly BUY gate: weekly RSI can be high without being a sell signal for growth names
     "GROWTH": {
         "ml_weight_cap": 0.70,
+        "ml_weight_floor": 0.20,
         "buy_threshold":  {"bull": 0.57, "high_vol": 0.65, "bear": 0.68, "unknown": 0.57},
         "hold_threshold": {"bull": 0.45, "high_vol": 0.50, "bear": 0.52, "unknown": 0.45},
         "adx_min": 12, "adx_compression": 0.92,
@@ -1143,7 +1147,8 @@ def _apply_style_signal(
             # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
             raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
         eff_cap = _ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"]
-        ml_w  = min(raw_w, eff_cap)
+        ml_w = min(raw_w, eff_cap)
+        ml_w = max(ml_w, p.get("ml_weight_floor", 0.0))  # global cap cannot push below per-style floor
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
             # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).
@@ -1166,22 +1171,12 @@ def _apply_style_signal(
     fused = float(np.clip(fused, 0.0, 1.0))
     fused_before_filters = fused  # snapshot before weekly blend + compression — used for cap enforcement
 
-    # ── SA-18: Blend weekly TA score into fused probability (SWING/LONG only) ─
-    # Daily signals can fire on short-term noise that contradicts the medium-term
-    # weekly picture. For SWING/LONG, shift 15% weight to the weekly TA composite
-    # score so the fused probability always reflects both timeframes.
-    # weekly_score of 0.5 = neutral; the blend gently pulls toward weekly bias.
-    # GROWTH and SHORT are excluded: SHORT is pure daily momentum; GROWTH uses
-    # a different weekly gate (skip_weekly_gate=True).
-    weekly_score_blend = weekly_tech.get("weekly_score", 0.5)
-    if style_key in ("SWING", "LONG") and weekly_tech.get("weekly_rsi") is not None:
-        wc = weekly_tech.get("weekly_confidence", 1.0)
-        blend_weight = 0.15 * wc  # scale blend by data confidence (SA-4 convention)
-        fused = fused * (1.0 - blend_weight) + weekly_score_blend * blend_weight
-        reasons["weekly_blend_applied"] = True
-    else:
-        reasons["weekly_blend_applied"] = False
-    fused = float(np.clip(fused, 0.0, 1.0))
+    # SA-18 (additive 15% weekly blend) was removed: the weekly alignment filter
+    # below (lines ~1205-1227) already integrates the weekly picture via boost/compress.
+    # Double-applying the same weekly_score data (once as absolute blend, once as
+    # directional amplifier) produced compounding effects larger than documented.
+    # The alignment filter is the sole weekly integration mechanism.
+    reasons["weekly_blend_applied"] = False
 
     # ── SA-19: Independent pillar gate ───────────────────────────────────────
     # Compress signals where only 1 dimension agrees (likely market-beta noise);
@@ -1261,12 +1256,20 @@ def _apply_style_signal(
     # Unknown / no history: original ±20% beat_rate adjustment.
     ec = p.get("earnings_compression")
 
-    # SA-25: SHORT style binary-event guard — even though earnings_compression=None (earnings treated
-    # as catalyst), DTE≤2 is a coin-flip event that can wipe a 5-day trade; apply hard compress.
+    # SA-25: SHORT style binary-event guard — DTE≤2 is a coin-flip event that can wipe a 5-day trade.
+    # Uses beat_rate scaling (same logic as other styles) so reliable earnings beaters get less compression.
     if style_key == "SHORT" and days_to_earnings is not None and 0 <= days_to_earnings <= 2:
-        fused = 0.5 + (fused - 0.5) * 0.40
+        ebr_short = earnings_beat_rate
+        if ebr_short is not None and ebr_short >= 0.70 and market_regime == "bull":
+            beat_scale_short = 2.0  # reliable beater — halve compression
+        elif market_regime in ("bear", "high_vol"):
+            beat_scale_short = 0.85 if ebr_short is None else float(np.clip(0.75 + 0.25 * ebr_short, 0.75, 1.0))
+        else:
+            beat_scale_short = 1.0 if ebr_short is None else float(np.clip(1.0 + 0.20 * (ebr_short - 0.50) / 0.50, 0.80, 1.20))
+        adj_short = float(np.clip(0.40 * beat_scale_short, 0.0, 1.0))
+        fused = 0.5 + (fused - 0.5) * adj_short
         reasons["earnings_warning"] = "short_imminent_event"
-        reasons["earnings_beat_rate"] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None
+        reasons["earnings_beat_rate"] = round(ebr_short, 2) if ebr_short is not None else None
 
     if ec is not None and days_to_earnings is not None:
         ebr = earnings_beat_rate
@@ -1483,7 +1486,14 @@ def _apply_style_signal(
     # The 0.40× compression is intentionally exempt from max_compress_ratio so a SWING/LONG
     # BUY truly cannot fire in this condition without an overwhelming daily signal (≥0.90+).
     # GROWTH style skips this gate: growth names often have abnormal weekly RSI readings.
-    if style_key in ("SWING", "LONG") and not p.get("skip_weekly_gate") and weekly_rsi is not None and weekly_rsi < 40 and weekly_trend == "down":
+    # None weekly_trend (missing history) safely skips the gate — no data = no penalty.
+    # Threshold ≤ 38 (not < 40) reduces boundary sensitivity; RSI 38-40 is neutral, not bearish.
+    if (style_key in ("SWING", "LONG")
+            and not p.get("skip_weekly_gate")
+            and weekly_rsi is not None
+            and weekly_trend is not None
+            and weekly_rsi <= 38
+            and weekly_trend == "down"):
         fused = 0.5 + (fused - 0.5) * 0.40
         fused = float(np.clip(fused, 0.0, 1.0))
         reasons["weekly_gate_fired"] = True

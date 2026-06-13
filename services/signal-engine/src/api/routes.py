@@ -64,10 +64,12 @@ def all_latest_signals(
 ):
     """Return the most recently persisted signal for every active stock.
 
-    Optional ?style=SWING (default) filters to a specific trading horizon.
-    If omitted, returns the most recent signal regardless of style.
+    Optional ?style=SWING filters to a specific trading horizon.
+    If omitted, returns the best available signal per stock (SWING > LONG > GROWTH > SHORT).
     """
-    horizon_filter = style.upper() if style else "SWING"
+    # Preference order when no style specified: SWING wins if available, then LONG, GROWTH, SHORT.
+    _STYLE_PREFERENCE = ["SWING", "LONG", "GROWTH", "SHORT"]
+    horizon_filter = style.upper() if style else None
     # Subquery: latest ts per (stock_id, horizon)
     latest_subq = (
         select(Signal.stock_id, Signal.horizon, func.max(Signal.ts).label("max_ts"))
@@ -83,21 +85,39 @@ def all_latest_signals(
         .where(Stock.active.is_(True))
     )
     horizon_enum = None
-    try:
-        horizon_enum = SignalHorizon(horizon_filter)
-        q = q.where(Signal.horizon == horizon_enum)
-    except ValueError:
-        pass  # unknown style — return all
+    if horizon_filter:
+        try:
+            horizon_enum = SignalHorizon(horizon_filter)
+            q = q.where(Signal.horizon == horizon_enum)
+        except ValueError:
+            pass  # unknown style — return all
     rows = session.execute(q).all()
 
+    # When no style specified, apply preference order (SWING > LONG > GROWTH > SHORT)
+    # so each stock contributes at most one row (the best available style).
+    if horizon_filter is None:
+        _pref_idx = {s: i for i, s in enumerate(_STYLE_PREFERENCE)}
+        _best: dict[int, object] = {}
+        for row in rows:
+            style_val = row.horizon.value if hasattr(row.horizon, "value") else str(row.horizon)
+            cur = _best.get(row.stock_id)
+            if cur is None:
+                _best[row.stock_id] = row
+            else:
+                cur_style = cur.horizon.value if hasattr(cur.horizon, "value") else str(cur.horizon)
+                if _pref_idx.get(style_val, 99) < _pref_idx.get(cur_style, 99):
+                    _best[row.stock_id] = row
+        rows = list(_best.values())
+
     # Batch stability: one extra query for all stock_ids at this horizon
+    # Fetches ts so we can detect gaps in the streak (non-consecutive days don't count).
     stability_map: dict[int, int] = {}
     if rows and horizon_enum is not None:
         from collections import defaultdict
         stock_ids = list({row.stock_id for row in rows})
         cutoff = datetime.now(timezone.utc) - timedelta(days=35)
         recent = session.execute(
-            select(Signal.stock_id, Signal.signal)
+            select(Signal.stock_id, Signal.signal, Signal.ts)
             .where(
                 Signal.stock_id.in_(stock_ids),
                 Signal.horizon == horizon_enum,
@@ -105,18 +125,27 @@ def all_latest_signals(
             )
             .order_by(Signal.stock_id, Signal.ts.desc())
         ).all()
-        by_stock: dict[int, list[str]] = defaultdict(list)
+        by_stock: dict[int, list[tuple[str, object]]] = defaultdict(list)
         for r in recent:
-            by_stock[r.stock_id].append(r.signal.value)
+            by_stock[r.stock_id].append((r.signal.value, r.ts))
         latest_sig_map = {row.stock_id: row.signal.value for row in rows}
-        for sid, sigs in by_stock.items():
+        for sid, sig_ts_pairs in by_stock.items():
             cur = latest_sig_map.get(sid, "")
             count = 0
-            for s in sigs:
-                if s == cur:
-                    count += 1
-                else:
+            prev_ts = None
+            for sig_val, ts in sig_ts_pairs:
+                if sig_val != cur:
                     break
+                if prev_ts is not None:
+                    gap_days = (prev_ts - ts).days if hasattr(prev_ts, "days") else 0
+                    try:
+                        gap_days = (prev_ts.date() - ts.date()).days
+                    except Exception:
+                        gap_days = 1
+                    if gap_days > 3:  # gap > 3 calendar days breaks the consecutive streak
+                        break
+                count += 1
+                prev_ts = ts
             stability_map[sid] = count
 
     return [
