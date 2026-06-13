@@ -42,6 +42,7 @@ import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
 import { activeNewsSources, loadSettings } from '@/lib/settings';
+import { getUsername } from '@/lib/auth';
 
 function RefreshButton({ onClick, loading }: { onClick: () => void; loading: boolean }) {
   return (
@@ -130,6 +131,7 @@ export default function StockDetail() {
   const r = useRouter();
   const symbol = (r.query.symbol as string) ?? '';
   const pageStyle = ((r.query.style as string) ?? '').toUpperCase() || null;
+  const u = getUsername();
 
   const { data, error, isLoading, mutate: mutateOverview } = useSWR<Overview>(
     symbol ? `overview-${symbol}` : null,
@@ -170,10 +172,10 @@ export default function StockDetail() {
   const [aiOpen, setAiOpen] = useState(false);
   const aiBottomRef = useRef<HTMLDivElement>(null);
 
-  const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
+  const { data: watchlists } = useSWR<WatchlistMeta[]>(`${u}:watchlists`, () => api.listWatchlists());
   const { data: fearGreed } = useSWR<FearGreed>('fear-greed', () => api.fearGreed(), { refreshInterval: 3_600_000 });
   const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>(
-    'signal-alerts', () => api.listSignalAlerts(),
+    `${u}:signal-alerts`, () => api.listSignalAlerts(),
   );
   // All-horizon signals for the consensus indicator
   // live=false → reads stored DB signal (matches signal filter); Refresh button uses live=true
@@ -225,7 +227,7 @@ export default function StockDetail() {
         source: 'gameplan',
       });
       setSavedToBoard(true);
-      globalMutate('board');
+      globalMutate(`${u}:board`);
     } catch { /* silently ignore */ }
     setSavingToBoard(false);
   }
@@ -253,7 +255,7 @@ export default function StockDetail() {
   }
 
   const { data: allAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(
-    'alerts',
+    `${u}:alerts`,
     () => api.listAlerts(),
     { refreshInterval: 30_000 },
   );

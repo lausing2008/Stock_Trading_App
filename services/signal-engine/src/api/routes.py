@@ -54,7 +54,7 @@ def _compute_stability(session: Session, stock_id: int, horizon: SignalHorizon, 
             count += 1
         else:
             break
-    return max(count, 1)
+    return count
 
 
 @router.get("")
@@ -117,7 +117,7 @@ def all_latest_signals(
                     count += 1
                 else:
                     break
-            stability_map[sid] = max(count, 1)
+            stability_map[sid] = count
 
     return [
         {
@@ -184,14 +184,15 @@ def _bulk_persist(symbols: list[str]) -> None:
                     continue
                 for style_key, ai in all_sig.items():
                     horizon_enum = SignalHorizon(ai.horizon)
-                    # Only insert if the signal type changed for this (stock, horizon) pair.
+                    # Only insert if the signal type changed for this (stock, horizon) pair,
+                    # or if a new signal of the same type is being generated on a different day.
                     last = s.execute(
-                        select(Signal.signal)
+                        select(Signal.signal, Signal.ts)
                         .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
                         .order_by(desc(Signal.ts))
                         .limit(1)
-                    ).scalar_one_or_none()
-                    if last is not None and last == SignalType(ai.signal):
+                    ).one_or_none()
+                    if last is not None and last[0] == SignalType(ai.signal) and last[1].date() == date.today():
                         continue
                     s.add(Signal(
                         stock_id=stock.id,
@@ -615,6 +616,7 @@ def ml_weight_validation(
 def calibrate_ml_weight(
     lookback_days: int = Query(180, ge=30, le=730),
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Find the empirically optimal ML fusion weight and apply it as the global cap.
 
@@ -820,6 +822,14 @@ def factor_exposure(
         idx = bisect.bisect_right(ts_list, d) - 1
         return _pclose[sid][idx] if idx >= 0 else None
 
+    def _first_close_after_fe(sid: int, after_date):
+        """Return the first close strictly after after_date (no lookahead)."""
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, after_date)
+        return _pclose[sid][idx] if idx < len(ts_list) else None
+
     def most_recent_close_fe(sid: int):
         ts_list = _pts.get(sid)
         if not ts_list:
@@ -849,7 +859,7 @@ def factor_exposure(
         seen.add(key)
 
         reasons = sig.reasons or {}
-        entry = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
+        entry = _first_close_after_fe(sig.stock_id, signal_date)
         if entry is None or entry <= 0:
             continue
         exit_p = most_recent_close_fe(sig.stock_id)
@@ -2518,7 +2528,7 @@ def signal_for(
         else:
             if style:
                 s_key = style.upper()
-                data = stored.get(s_key) or stored.get("SWING")
+                data = stored.get(s_key)
                 if data:
                     return {"symbol": symbol, **data}
             else:

@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type TradePlan, type PriceAlert, type SignalAlertItem } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
+import { getUsername } from '@/lib/auth';
 
 const STAGES = ['watch', 'planning', 'active', 'closed'] as const;
 type Stage = typeof STAGES[number];
@@ -916,9 +917,10 @@ const isHK = (symbol: string) => /\.(HK|hk)$/.test(symbol) || /^\d{4,5}$/.test(s
 
 /* ── Main ─────────────────────────────────────────────── */
 export default function BoardPage() {
-  const { data, mutate, isLoading, error } = useSWR<TradePlan[]>('board', () => api.listBoard(), { revalidateOnFocus: false });
-  const { data: priceAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { revalidateOnFocus: false });
-  const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { revalidateOnFocus: false });
+  const u = getUsername();
+  const { data, mutate, isLoading, error } = useSWR<TradePlan[]>(`${u}:board`, () => api.listBoard(), { revalidateOnFocus: false });
+  const { data: priceAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(`${u}:alerts`, () => api.listAlerts(), { revalidateOnFocus: false });
+  const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>(`${u}:signal-alerts`, () => api.listSignalAlerts(), { revalidateOnFocus: false });
   const [market, setMarket] = useState<MarketFilter>('US');
   const [dragId, setDragId] = useState<number | null>(null);
   const [dragOverStage, setDragOverStage] = useState<Stage | null>(null);
@@ -931,7 +933,7 @@ export default function BoardPage() {
   // Fetch live prices for board symbols only, refresh every 60 s
   const boardSymbols = useMemo(() => [...new Set((data ?? []).map(p => p.symbol))], [data]);
   const { data: livePrices } = useSWR(
-    boardSymbols.length > 0 ? ['board-live-prices', boardSymbols.join(',')] : null,
+    boardSymbols.length > 0 ? [`${u}:board-live-prices`, boardSymbols.join(',')] : null,
     () => api.latestPricesFor(boardSymbols),
     { refreshInterval: 60_000, revalidateOnFocus: false },
   );
@@ -1112,7 +1114,7 @@ export default function BoardPage() {
     [riskPositions],
   );
   const { data: riskData, isLoading: riskLoading } = useSWR(
-    riskRequested && riskSymbols.length >= 2 ? ['portfolio-risk', riskSymbols.join(','), riskWeights.join(',')] : null,
+    riskRequested && riskSymbols.length >= 2 ? [`${u}:portfolio-risk`, riskSymbols.join(','), riskWeights.join(',')] : null,
     () => api.portfolioRisk(riskSymbols, riskWeights),
     { revalidateOnFocus: false, dedupingInterval: 300_000 },
   );

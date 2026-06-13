@@ -65,6 +65,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "trail_atr_mult":       2.0,       # trailing stop = highest_price - ATR × mult
     "trail_trigger_pct":         0.05,  # arm trailing stop after +5% gain (once armed, trails every cycle)
     "breakeven_trigger_pct":     0.03,  # move stop to breakeven after +3% gain
+    "partial_tp_pct":            0.07,  # sell 50% of position at +7% gain; set 0 to disable
     "wait_exit_days":            5,     # exit if signal stays WAIT this many days
     "max_portfolio_drawdown_pct":0.20,  # pause entries if equity drops 20% from peak
     "max_daily_loss_pct":        0.04,  # pause entries if realized losses today > 4% of equity
@@ -241,18 +242,14 @@ def _batch_compute_atr(symbols: list[str], period: int = 14) -> dict[str, float 
 # ── Market hours check ───────────────────────────────────────────────────────
 
 def _is_market_hours() -> bool:
-    """True if current UTC time falls within US regular session (9:30–16:00 ET, Mon–Fri).
+    """True if current time falls within US regular session (9:30–16:00 ET, Mon–Fri).
 
-    ET = UTC-4 in summer (EDT) / UTC-5 in winter (EST). Using a fixed UTC-5 offset
-    is conservative — may allow entries up to 1 hour early in summer, which is acceptable.
-    Using pytz/zoneinfo would be more precise but adds a dependency.
+    Uses zoneinfo (Python 3.9+) for correct EDT/EST auto-switching.
     """
-    from datetime import timezone as tz
-    now_utc = datetime.now(timezone.utc)
-    if now_utc.weekday() >= 5:  # Saturday=5, Sunday=6
+    from zoneinfo import ZoneInfo
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
         return False
-    # Convert to ET (UTC-5 conservative; EDT shifts by 1h which we accept)
-    now_et = now_utc - timedelta(hours=5)
     market_open  = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
     market_close = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
     return market_open <= now_et < market_close
@@ -839,6 +836,43 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                 "entry_notes": trade.entry_decision_notes or [],
             })
             continue
+
+        # ── Partial profit taking — sell half position at configurable gain ──────
+        # Fires once per trade when pnl_pct crosses partial_tp_pct, then never again.
+        # Remaining half continues to ride with a breakeven floor on the stop.
+
+        partial_tp_pct = cfg.get("partial_tp_pct", 0.07)  # default: 7% gain
+        _partial_marker = "PARTIAL_TAKEN"
+        partial_already_done = _partial_marker in (trade.entry_decision_notes or [])
+
+        if (not partial_already_done and partial_tp_pct and
+                pnl_pct >= partial_tp_pct and trade.shares > 0.01):
+            slippage = cfg.get("entry_slippage_pct", 0.001)
+            partial_shares = round(trade.shares / 2, 4)
+            partial_price  = round(live_price * (1 - slippage), 4)
+            partial_value  = round(partial_shares * partial_price, 2)
+            partial_pnl    = round((partial_price - entry) * partial_shares, 2)
+
+            trade.shares = round(trade.shares - partial_shares, 4)
+            portfolio.current_cash = round(portfolio.current_cash + partial_value, 2)
+
+            # Floor stop at breakeven for remaining half
+            if trade.current_stop < entry:
+                trade.current_stop = entry
+
+            notes_list = list(trade.entry_decision_notes or [])
+            notes_list.append(_partial_marker)
+            notes_list.append(
+                f"Partial: sold {partial_shares:.4f}sh @ ${partial_price:.2f} "
+                f"(+{pnl_pct*100:.1f}%), remaining {trade.shares:.4f}sh, stop → breakeven"
+            )
+            trade.entry_decision_notes = notes_list
+
+            log.info("paper.partial_profit_taken",
+                     symbol=trade.symbol, partial_shares=partial_shares,
+                     partial_price=partial_price, partial_value=partial_value,
+                     partial_pnl=partial_pnl, pnl_pct=round(pnl_pct * 100, 1),
+                     remaining_shares=trade.shares)
 
         # ── Trailing stop management (still open) ─────────────────────────────
 

@@ -301,7 +301,7 @@ def build_features(
     # In inference mode also backward-fill so the latest bar is never NaN
     if inference_mode:
         for col in MACRO_COLUMNS:
-            out[col] = out[col].bfill().fillna(0.0)
+            out[col] = out[col].ffill().fillna(0.0)
     else:
         for col in MACRO_COLUMNS:
             out[col] = out[col].fillna(0.0)

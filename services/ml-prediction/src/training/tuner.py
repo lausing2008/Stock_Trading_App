@@ -12,6 +12,7 @@ For each symbol the tuner:
 from __future__ import annotations
 
 import json
+import os
 
 import numpy as np
 import optuna
@@ -82,6 +83,9 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     X, y_dir, _ = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold
     )
+    # Restrict tuner to first 85% of data to avoid leaking the test period
+    cutoff = int(len(X) * 0.85)
+    X, y_dir = X.iloc[:cutoff], y_dir.iloc[:cutoff]
     if len(X) < 300:
         reason = f"only {len(X)} clean samples (need ≥300 for tuning)"
         log.warning("tune.skipped", symbol=symbol, reason=reason)
@@ -137,11 +141,13 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     best_params = study.best_params
     best_cv_auc = -study.best_value
 
-    # Persist best params
+    # Persist best params — atomic write to avoid partial-read race with _load_best_params
     p = _params_path(symbol)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w") as f:
+    tmp = p.with_suffix(".tmp")
+    with open(tmp, "w") as f:
         json.dump(best_params, f, indent=2)
+    os.replace(tmp, p)
     log.info("tune.best_params", symbol=symbol, cv_auc=round(best_cv_auc, 4), **best_params)
 
     # Retrain final model using best params (train_model will pick them up via _load_best_params)

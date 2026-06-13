@@ -6,6 +6,7 @@ import { useRouter } from 'next/router';
 import { useEffect } from 'react';
 import { api, type LatestPrice, type RankingRow, type SignalSummary, type WatchlistItem, type UserPosition } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
+import { getUsername } from '@/lib/auth';
 
 const DonutChart = dynamic(() => import('@/components/DonutChart'), { ssr: false });
 
@@ -100,12 +101,13 @@ export default function Positions() {
   const [toast, setToast]                 = useState<string | null>(null);
   const [confirmRemoveId, setConfirmRemoveId] = useState<number | null>(null);
 
-  const { data: positions = [], mutate: mutatePositions } = useSWR<UserPosition[]>('positions', () => api.listPositions());
-  const { data: cash = { USD: 0, HKD: 0 }, mutate: mutateCash } = useSWR<CashByMarket>('positions/cash', () => api.getCash());
-  const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
-  const { data: rankingsData }  = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
-  const { data: signalsData }   = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
-  const { data: watchlistData, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const u = getUsername();
+  const { data: positions = [], mutate: mutatePositions } = useSWR<UserPosition[]>(`${u}:positions`, () => api.listPositions());
+  const { data: cash = { USD: 0, HKD: 0 }, mutate: mutateCash } = useSWR<CashByMarket>(`${u}:positions/cash`, () => api.getCash());
+  const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>(`${u}:latest-prices`, () => api.latestPrices(), { refreshInterval: 60_000 });
+  const { data: rankingsData }  = useSWR<{ rankings: RankingRow[] }>(`${u}:rankings-all`, () => api.rankings());
+  const { data: signalsData }   = useSWR<SignalSummary[]>(`${u}:signals-${getSignalStyle()}`, () => api.allSignals(getSignalStyle()));
+  const { data: watchlistData, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>(`${u}:watchlist`, () => api.listWatchlist());
 
   /* pre-fill symbol from ?add= query (coming from watchlist) */
   useEffect(() => {
@@ -121,7 +123,7 @@ export default function Positions() {
   async function toggleWatch(symbol: string) {
     if (watchedSet.has(symbol)) await api.removeFromWatchlist(symbol);
     else await api.addToWatchlist(symbol);
-    mutateWatchlist(); globalMutate('watchlist');
+    mutateWatchlist(); globalMutate(`${u}:watchlist`);
   }
 
   const handleRefresh = useCallback(async () => {

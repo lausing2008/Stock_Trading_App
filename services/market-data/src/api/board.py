@@ -175,6 +175,13 @@ def delete_plan(
     ).scalar_one_or_none()
     if not plan:
         raise HTTPException(404, "Plan not found")
+    if plan.stage == "active":
+        from db.models import UserPosition
+        pos = session.execute(
+            select(UserPosition).where(UserPosition.symbol == plan.symbol.upper())
+        ).scalar_one_or_none()
+        if pos:
+            session.delete(pos)
     session.delete(plan)
     session.commit()
     return {"status": "deleted", "id": plan_id}

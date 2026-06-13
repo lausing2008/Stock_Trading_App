@@ -957,6 +957,8 @@ export type PaperPortfolioListItem = {
   open_positions: number;
   closed_trades: number;
   sharpe: number | null;
+  sortino: number | null;
+  cagr_pct: number | null;
   max_drawdown_pct: number | null;
   is_running: boolean;
   is_paused: boolean;
@@ -1000,6 +1002,7 @@ export type PaperPortfolioConfig = {
   trail_atr_mult: number;
   trail_trigger_pct: number;
   breakeven_trigger_pct: number;
+  partial_tp_pct: number;
   wait_exit_days: number;
   enabled: boolean;
   paused?: boolean;
@@ -1021,7 +1024,12 @@ export type PaperPortfolioSummary = {
   win_rate_pct: number;
   avg_win_pct: number;
   avg_loss_pct: number;
+  profit_factor: number | null;
+  avg_hold_days: number | null;
+  expectancy_pct: number | null;
   sharpe: number | null;
+  sortino: number | null;
+  cagr_pct: number | null;
   max_drawdown_pct: number | null;
   calmar: number | null;
   data_days: number;
@@ -1120,6 +1128,12 @@ export type PaperDecisionItem = {
   market_regime_at_entry: string | null;
   stage: string;
   exit_reason: string | null;
+  entry_reasons: Record<string, unknown>;
+  exit_reasons: Record<string, unknown>;
+  hold_days: number;
+  stop_loss: number;
+  take_profit: number | null;
+  shares: number;
   pnl: number | null;
   pct_return: number | null;
 };

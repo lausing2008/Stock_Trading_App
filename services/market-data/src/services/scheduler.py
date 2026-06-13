@@ -258,47 +258,57 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     _t0 = time.monotonic()
     _job_key = f"{market.lower()}_post_close" if post_close else f"{market.lower()}_refresh"
 
+    # Stage 1: Ingest — isolated so a yfinance blip doesn't kill alerts/paper trading
+    _ingest_ok = True
     try:
         ingest_universe(symbols, "1d")
+    except Exception as _ie:
+        _ingest_ok = False
+        log.error("scheduler.ingest_failed", market=market, error=str(_ie), exc_info=True)
 
+    # Stage 2: Rankings + signals — runs even if ingest partially failed (uses last good bar)
+    try:
         _post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": market})
         _post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": market})
 
         if post_close:
             _post(f"{_settings.ml_prediction_url}/ml/train_all")
-            # Evaluate any BUY/SELL signals whose hold window has now expired and
-            # persist their outcomes to signal_outcomes for accuracy tracking.
+            # Evaluate any BUY/SELL signals whose hold window has now expired.
             _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
+    except Exception as _re:
+        log.error("scheduler.rankings_signals_failed", market=market, error=str(_re), exc_info=True)
 
+    # Stage 3: Alerts — always runs regardless of ingest or signal failures
+    try:
         check_signal_alerts()
         check_technical_alerts()
+    except Exception as _ae:
+        log.error("scheduler.alerts_failed", error=str(_ae), exc_info=True)
 
-        # WF-2: paper trading engine — runs after signals are fresh.
-        # Only for US market (GROWTH watchlist is US stocks only).
-        if market == "US":
-            _pt0 = time.monotonic()
+    # Stage 4: Paper trading — always runs (US only)
+    if market == "US":
+        _pt0 = time.monotonic()
+        try:
+            paper_trading_step()
+            _record_job_status("paper_trading", "ok", time.monotonic() - _pt0)
+        except Exception as _pte:
+            log.error("scheduler.paper_trading_step_failed", error=str(_pte), exc_info=True)
+            _record_job_status("paper_trading", "error", time.monotonic() - _pt0, str(_pte))
+        if post_close:
             try:
-                paper_trading_step()
-                _record_job_status("paper_trading", "ok", time.monotonic() - _pt0)
-            except Exception as _pte:
-                log.error("scheduler.paper_trading_step_failed", error=str(_pte), exc_info=True)
-                _record_job_status("paper_trading", "error", time.monotonic() - _pt0, str(_pte))
-            if post_close:
-                try:
-                    snapshot_equity_curve()
-                except Exception as _sec:
-                    log.error("scheduler.snapshot_equity_curve_failed", error=str(_sec), exc_info=True)
+                snapshot_equity_curve()
+            except Exception as _sec:
+                log.error("scheduler.snapshot_equity_curve_failed", error=str(_sec), exc_info=True)
 
+    if _ingest_ok:
         _record_job_status(_job_key, "ok", time.monotonic() - _t0)
-        # DP-4: clear the refresh-failed flag so alerts can resume
         try:
             _get_redis().delete(_REDIS_REFRESH_FAILED_KEY)
         except Exception:
             pass
-        log.info("scheduler.refresh_done", market=market, post_close=post_close)
-    except Exception as exc:
-        log.error("scheduler.refresh_failed", market=market, post_close=post_close, error=str(exc), exc_info=True)
-        _record_job_status(_job_key, "error", time.monotonic() - _t0, str(exc))
+    else:
+        _record_job_status(_job_key, "error", time.monotonic() - _t0, "ingest_failed")
+    log.info("scheduler.refresh_done", market=market, post_close=post_close, ingest_ok=_ingest_ok)
 
 
 _BULLISH_TRANSITIONS = {

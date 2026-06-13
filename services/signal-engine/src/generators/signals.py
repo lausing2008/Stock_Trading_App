@@ -224,7 +224,7 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
                     return prob, test_auc, ml_meta
         except Exception as exc:
             log.warning("ml.fetch_failed", symbol=symbol, endpoint=endpoint, error=str(exc))
-    return None, 0.55, {}
+    return None, 0.0, {}
 
 
 def _fetch_market_regime() -> tuple[str, float | None]:
@@ -810,7 +810,7 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     vwap_20 = (typical_price * volume).rolling(20).sum() / volume.rolling(20).sum()
     vwap_val = vwap_20.iloc[-1]
     price_above_vwap: bool | None = None
-    if not pd.isna(vwap_val) and vwap_val > 0:
+    if not pd.isna(vwap_val) and not np.isinf(vwap_val) and vwap_val > 0:
         price_above_vwap = bool(close.iloc[-1] > vwap_val)
     reasons["price_above_vwap"] = price_above_vwap
     reasons["vwap_20"] = float(vwap_val) if not pd.isna(vwap_val) else None
@@ -1164,6 +1164,7 @@ def _apply_style_signal(
         reasons["ml_weight"] = 0.0
 
     fused = float(np.clip(fused, 0.0, 1.0))
+    fused_before_filters = fused  # snapshot before weekly blend + compression — used for cap enforcement
 
     # ── SA-18: Blend weekly TA score into fused probability (SWING/LONG only) ─
     # Daily signals can fire on short-term noise that contradicts the medium-term
@@ -1181,8 +1182,6 @@ def _apply_style_signal(
     else:
         reasons["weekly_blend_applied"] = False
     fused = float(np.clip(fused, 0.0, 1.0))
-
-    fused_before_filters = fused  # snapshot before compression — used for cap enforcement
 
     # ── SA-19: Independent pillar gate ───────────────────────────────────────
     # Compress signals where only 1 dimension agrees (likely market-beta noise);
@@ -1521,7 +1520,7 @@ def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
         from datetime import timezone as _tz
         today_utc = __import__("datetime").datetime.now(_tz.utc).date()
         days_old = (today_utc - last_ts_utc.date()).days
-        if days_old > 3:
+        if days_old > 5:
             log.warning(
                 "signal.stale_price_data",
                 symbol=symbol,
@@ -1632,7 +1631,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             ml_test_auc=ml_test_auc,
             style_key=style_key,
             market_regime=market_regime,
-            adx_val=float(reasons.get("adx") or 0.0),
+            adx_val=reasons.get("adx"),
             weekly_tech=weekly_tech,
             pattern_adj=pattern_adj,
             days_to_earnings=days_to_earnings,

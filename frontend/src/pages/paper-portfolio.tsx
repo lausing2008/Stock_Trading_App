@@ -250,6 +250,12 @@ function PortfolioCard({
         <span>Sharpe {portfolio.sharpe != null ? portfolio.sharpe.toFixed(2) : '—'}</span>
         <span>{portfolio.open_positions} open</span>
       </div>
+      {portfolio.cagr_pct != null && (
+        <div style={{ fontSize: 10, color: portfolio.cagr_pct >= 0 ? '#4ade80' : '#f87171', marginTop: 4 }}>
+          CAGR {portfolio.cagr_pct >= 0 ? '+' : ''}{portfolio.cagr_pct.toFixed(1)}%
+          {portfolio.sortino != null && <span style={{ color: '#94a3b8', marginLeft: 8 }}>Sortino {portfolio.sortino.toFixed(2)}</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -593,6 +599,9 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
         {field('min_entry_score', 'Min Entry Score', 1)}
         {field('max_hold_days', 'Max Hold Days', 1)}
         {field('trail_atr_mult', 'Trail ATR ×')}
+        {field('partial_tp_pct', 'Partial TP %')}
+        {field('trail_trigger_pct', 'Trail Trigger %')}
+        {field('breakeven_trigger_pct', 'Breakeven %')}
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 16, alignItems: 'center' }}>
         <button
@@ -723,6 +732,7 @@ export default function PaperPortfolioPage() {
   const [decPage, setDecPage] = useState(1);
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [expandedDecisionId, setExpandedDecisionId] = useState<number | null>(null);
 
   useEffect(() => {
     const session = getSession();
@@ -877,12 +887,28 @@ export default function PaperPortfolioPage() {
           <StatCard label="Avg Win / Loss"
             value={`${fmtPct(summary.avg_win_pct, 1)} / ${fmtPct(summary.avg_loss_pct, 1)}`}
             color={summary.avg_win_pct > Math.abs(summary.avg_loss_pct) ? '#22c55e' : '#f59e0b'} />
+          {summary.cagr_pct != null && (
+            <StatCard
+              label="CAGR"
+              value={(summary.cagr_pct >= 0 ? '+' : '') + summary.cagr_pct.toFixed(1) + '%'}
+              color={summary.cagr_pct >= 15 ? '#22c55e' : summary.cagr_pct >= 0 ? '#f59e0b' : '#ef4444'}
+              sub="annualised compound return"
+            />
+          )}
           <StatCard
             label="Sharpe Ratio"
             value={summary.sharpe != null ? summary.sharpe.toFixed(2) : '—'}
             color={summary.sharpe == null ? undefined : summary.sharpe >= 1 ? '#22c55e' : summary.sharpe >= 0 ? '#f59e0b' : '#ef4444'}
             sub={summary.insufficient_data ? `< 20 days data (${summary.data_days ?? 0}d)` : 'annualised, rf=5%'}
           />
+          {summary.sortino != null && (
+            <StatCard
+              label="Sortino Ratio"
+              value={summary.sortino.toFixed(2)}
+              color={summary.sortino >= 1.5 ? '#22c55e' : summary.sortino >= 0 ? '#f59e0b' : '#ef4444'}
+              sub="return / downside vol"
+            />
+          )}
           <StatCard
             label="Max Drawdown"
             value={summary.max_drawdown_pct != null ? `-${summary.max_drawdown_pct.toFixed(1)}%` : '—'}
@@ -938,6 +964,21 @@ export default function PaperPortfolioPage() {
               value={summary.info_ratio.toFixed(2)}
               color={summary.info_ratio >= 0.5 ? '#22c55e' : summary.info_ratio >= 0 ? '#f59e0b' : '#ef4444'}
               sub="active return / tracking err"
+            />
+          )}
+          {summary.profit_factor != null && (
+            <StatCard
+              label="Profit Factor"
+              value={summary.profit_factor.toFixed(2)}
+              color={summary.profit_factor >= 1.5 ? '#22c55e' : summary.profit_factor >= 1 ? '#f59e0b' : '#ef4444'}
+              sub="gross profit / gross loss"
+            />
+          )}
+          {summary.avg_hold_days != null && (
+            <StatCard
+              label="Avg Hold"
+              value={summary.avg_hold_days.toFixed(0) + 'd'}
+              sub={`${summary.closed_trades} trades · expectancy ${summary.expectancy_pct != null ? (summary.expectancy_pct >= 0 ? '+' : '') + summary.expectancy_pct.toFixed(1) + '%' : '—'}`}
             />
           )}
         </div>
@@ -1010,10 +1051,20 @@ export default function PaperPortfolioPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(decisions?.items ?? []).map(d => (
-                    <tr key={d.id} style={{ borderBottom: '1px solid #1e293b' }}>
+                  {(decisions?.items ?? []).map(d => {
+                    const isExpanded = expandedDecisionId === d.id;
+                    const reasons = d.entry_reasons ?? {};
+                    const exitReasons = d.exit_reasons ?? {};
+                    const reasonKeys = Object.keys(reasons).filter(k => !['stability_days'].includes(k));
+                    return (
+                    <>
+                    <tr key={d.id}
+                      onClick={() => setExpandedDecisionId(isExpanded ? null : d.id)}
+                      style={{ borderBottom: isExpanded ? 'none' : '1px solid #1e293b', cursor: 'pointer',
+                        background: isExpanded ? '#0f1a2e' : undefined, transition: 'background 0.1s' }}>
                       <td style={{ padding: '9px 10px' }}>
-                        <Link href={`/stocks/${d.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{d.symbol}</Link>
+                        <Link href={`/stocks/${d.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}
+                          onClick={e => e.stopPropagation()}>{d.symbol}</Link>
                       </td>
                       <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtTs(d.entry_time)}</td>
                       <td style={{ padding: '9px 10px' }}>${d.entry_price.toFixed(2)}</td>
@@ -1035,10 +1086,72 @@ export default function PaperPortfolioPage() {
                         {fmtPct(d.pct_return)}
                       </td>
                       <td style={{ padding: '9px 10px', color: '#64748b', maxWidth: 300, fontSize: 11 }}>
-                        {(d.decision_notes ?? []).slice(0, 2).join(' · ')}
+                        <span style={{ marginRight: 6 }}>{(d.decision_notes ?? []).slice(0, 2).join(' · ')}</span>
+                        <span style={{ color: '#334155', fontSize: 10 }}>{isExpanded ? '▲' : '▼'}</span>
                       </td>
                     </tr>
-                  ))}
+                    {isExpanded && (
+                      <tr key={`${d.id}-expand`} style={{ borderBottom: '1px solid #1e293b' }}>
+                        <td colSpan={11} style={{ padding: '0 10px 14px 10px', background: '#0f1a2e' }}>
+                          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
+                            {/* Entry stats */}
+                            <div>
+                              <div style={{ color: '#64748b', fontSize: 10, marginBottom: 6, fontWeight: 600, letterSpacing: 1 }}>ENTRY DETAILS</div>
+                              <div style={{ color: '#94a3b8', lineHeight: 1.8 }}>
+                                <div>Shares: <strong style={{ color: '#f1f5f9' }}>{d.shares}</strong></div>
+                                <div>Stop: <strong style={{ color: '#f87171' }}>${d.stop_loss.toFixed(2)}</strong></div>
+                                {d.take_profit && <div>Target: <strong style={{ color: '#4ade80' }}>${d.take_profit.toFixed(2)}</strong></div>}
+                                {d.hold_days > 0 && <div>Held: <strong style={{ color: '#f1f5f9' }}>{d.hold_days}d</strong></div>}
+                              </div>
+                            </div>
+                            {/* All decision notes */}
+                            {(d.decision_notes ?? []).length > 0 && (
+                              <div style={{ flex: 1, minWidth: 200 }}>
+                                <div style={{ color: '#64748b', fontSize: 10, marginBottom: 6, fontWeight: 600, letterSpacing: 1 }}>ENTRY NOTES</div>
+                                {d.decision_notes.map((n, i) => (
+                                  <div key={i} style={{ color: '#94a3b8', lineHeight: 1.8 }}>• {n}</div>
+                                ))}
+                              </div>
+                            )}
+                            {/* Signal reasons */}
+                            {reasonKeys.length > 0 && (
+                              <div style={{ flex: 2, minWidth: 240 }}>
+                                <div style={{ color: '#64748b', fontSize: 10, marginBottom: 6, fontWeight: 600, letterSpacing: 1 }}>AI SIGNAL REASONS</div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
+                                  {reasonKeys.map(k => {
+                                    const v = reasons[k];
+                                    const display = typeof v === 'number' ? (v as number).toFixed(2) : String(v);
+                                    const isPos = typeof v === 'number' && (v as number) > 0;
+                                    const isNeg = typeof v === 'number' && (v as number) < 0;
+                                    return (
+                                      <span key={k} style={{ fontSize: 11, color: isPos ? '#4ade80' : isNeg ? '#f87171' : '#94a3b8' }}>
+                                        {k.replace(/_/g, ' ')}: <strong>{display}</strong>
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                            {/* Exit reasons */}
+                            {Object.keys(exitReasons).length > 0 && (
+                              <div style={{ flex: 1, minWidth: 200 }}>
+                                <div style={{ color: '#64748b', fontSize: 10, marginBottom: 6, fontWeight: 600, letterSpacing: 1 }}>EXIT REASON</div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
+                                  {Object.entries(exitReasons).map(([k, v]) => (
+                                    <span key={k} style={{ fontSize: 11, color: '#94a3b8' }}>
+                                      {k.replace(/_/g, ' ')}: <strong style={{ color: '#f1f5f9' }}>{String(v)}</strong>
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

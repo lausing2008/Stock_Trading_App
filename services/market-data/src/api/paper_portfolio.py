@@ -39,12 +39,14 @@ _MIN_SHARPE_DAYS = 20  # annualizing < 20 days produces meaningless Sharpe/Calma
 
 
 def _portfolio_risk_metrics(curve_rows: list) -> dict:
-    """Compute Sharpe, max drawdown, Calmar from equity curve rows (ordered by date)."""
-    equities = [r.equity for r in curve_rows if r.equity and r.equity > 0]
+    """Compute Sharpe, Sortino, CAGR, max drawdown, Calmar from equity curve rows (ordered by date)."""
+    valid_rows = [r for r in curve_rows if r.equity and r.equity > 0]
+    equities = [r.equity for r in valid_rows]
     data_days = len(equities)
 
     if data_days < 2:
-        return {"sharpe": None, "max_drawdown_pct": None, "calmar": None,
+        return {"sharpe": None, "sortino": None, "cagr_pct": None,
+                "max_drawdown_pct": None, "calmar": None,
                 "data_days": data_days, "insufficient_data": True}
 
     # Max drawdown — valid at any sample size
@@ -58,9 +60,19 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
             max_dd = dd
     max_dd_pct = round(max_dd * 100, 2)
 
-    # Sharpe and Calmar require enough data to annualize meaningfully
+    # CAGR — use actual calendar days when available, else trading-day estimate
+    e0, ef = equities[0], equities[-1]
+    try:
+        cal_days = max((valid_rows[-1].date - valid_rows[0].date).days, 1)
+        years = cal_days / 365.25
+    except Exception:
+        years = max(data_days, 1) / 252
+    cagr_pct = round(((ef / e0) ** (1.0 / years) - 1) * 100, 2) if e0 > 0 and years > 0 else None
+
+    # Sharpe, Sortino, and Calmar require enough data to annualize meaningfully
     if data_days < _MIN_SHARPE_DAYS:
-        return {"sharpe": None, "max_drawdown_pct": max_dd_pct, "calmar": None,
+        return {"sharpe": None, "sortino": None, "cagr_pct": cagr_pct,
+                "max_drawdown_pct": max_dd_pct, "calmar": None,
                 "data_days": data_days, "insufficient_data": True}
 
     # Daily returns
@@ -76,11 +88,18 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
     risk_free = 0.05
     sharpe = round((annualised_return - risk_free) / annualised_vol, 2) if annualised_vol > 0 else None
 
+    # Sortino — downside deviation (returns below 0)
+    downside_sq = [min(r, 0.0) ** 2 for r in daily_returns]
+    downside_dev = math.sqrt(sum(downside_sq) / max(n, 1)) * math.sqrt(252)
+    sortino = round((annualised_return - risk_free) / downside_dev, 2) if downside_dev > 0 else None
+
     # Calmar = annualised return / max drawdown
     calmar = round(annualised_return / max_dd, 2) if max_dd > 0 else None
 
     return {
         "sharpe": sharpe,
+        "sortino": sortino,
+        "cagr_pct": cagr_pct,
         "max_drawdown_pct": max_dd_pct,
         "calmar": calmar,
         "data_days": data_days,
@@ -176,6 +195,17 @@ def get_summary(
     avg_win  = round(sum(t.pct_return or 0 for t in wins) / max(len(wins), 1), 2)
     avg_loss = round(sum(t.pct_return or 0 for t in losses) / max(len(losses), 1), 2)
     total_realized = round(sum(t.pnl or 0 for t in closed_trades), 2)
+
+    gross_profit = sum(t.pnl for t in wins if t.pnl)
+    gross_loss   = abs(sum(t.pnl for t in losses if t.pnl))
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
+
+    hold_days_list = [t.hold_days for t in closed_trades if t.hold_days and t.hold_days > 0]
+    avg_hold_days = round(sum(hold_days_list) / len(hold_days_list), 1) if hold_days_list else None
+
+    expectancy = round(
+        (win_rate / 100) * avg_win + (1 - win_rate / 100) * avg_loss, 2
+    ) if closed_trades else None
     total_unrealized = round(
         sum(((t.current_price or t.entry_price) - t.entry_price) * t.shares for t in open_trades), 2
     )
@@ -219,7 +249,12 @@ def get_summary(
         "win_rate_pct": win_rate,
         "avg_win_pct": avg_win,
         "avg_loss_pct": avg_loss,
+        "profit_factor": profit_factor,
+        "avg_hold_days": avg_hold_days,
+        "expectancy_pct": expectancy,
         "sharpe": risk["sharpe"],
+        "sortino": risk.get("sortino"),
+        "cagr_pct": risk.get("cagr_pct"),
         "max_drawdown_pct": risk["max_drawdown_pct"],
         "calmar": risk["calmar"],
         "data_days": risk.get("data_days", 0),
@@ -424,6 +459,12 @@ def get_decisions(
                 "market_regime_at_entry": t.market_regime_at_entry,
                 "stage": t.stage,
                 "exit_reason": t.exit_reason,
+                "entry_reasons": t.entry_reasons or {},
+                "exit_reasons": t.exit_reasons or {},
+                "hold_days": t.hold_days,
+                "stop_loss": t.stop_loss,
+                "take_profit": t.take_profit,
+                "shares": t.shares,
                 "pnl": t.pnl,
                 "pct_return": t.pct_return,
             }
@@ -701,6 +742,8 @@ def list_portfolios(
             "open_positions": len(open_trades),
             "closed_trades": len(closed_trades),
             "sharpe": risk["sharpe"],
+            "sortino": risk.get("sortino"),
+            "cagr_pct": risk.get("cagr_pct"),
             "max_drawdown_pct": risk["max_drawdown_pct"],
             "is_running": p.config.get("enabled", True) and not p.config.get("paused", False),
             "is_paused": p.config.get("enabled", True) and bool(p.config.get("paused", False)),
@@ -764,6 +807,7 @@ def compare_portfolios(
             .where(PaperEquityCurve.portfolio_id == p.id, PaperEquityCurve.date >= cutoff)
             .order_by(PaperEquityCurve.date)
         ).scalars().all()
+        first_equity = rows[0].equity if rows and rows[0].equity and rows[0].equity > 0 else None
         result.append({
             "portfolio_id": p.id,
             "name": p.name,
@@ -773,6 +817,7 @@ def compare_portfolios(
                 {
                     "date": r.date.isoformat(),
                     "equity": round(r.equity, 2),
+                    "indexed": round(r.equity / first_equity * 100, 4) if first_equity and r.equity else None,
                     "spy_close": r.spy_close,
                     "market_regime": r.market_regime,
                 }

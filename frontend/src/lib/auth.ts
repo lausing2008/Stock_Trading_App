@@ -90,6 +90,11 @@ export function isLoggedIn(): boolean {
   return getSession() !== null;
 }
 
+/** Returns the current username, used to namespace SWR cache keys per user. */
+export function getUsername(): string {
+  return getSession()?.username ?? '';
+}
+
 export async function resetPassword(
   username: string,
   oldPassword: string,

@@ -344,7 +344,7 @@ def train_model(
     }
 
     # SA-9: suppress signals when OOS accuracy < 52% (coin-flip model)
-    oos_suppressed = oos_acc_mean is not None and oos_acc_mean < 0.52
+    oos_suppressed = cv_auc_mean is not None and cv_auc_mean < 0.52
     if oos_suppressed:
         log.warning(
             "train.oos_suppressed",
@@ -583,8 +583,11 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5) -> dict:
 
     model_name = f"ensemble_xgb{'_lgb' if lgb_res else ''}{'_rf' if rf_res else ''}"
 
-    # Use XGBoost buy_threshold as the ensemble threshold (primary model)
-    buy_threshold = float((xgb.get("metrics") or {}).get("buy_threshold") or 0.5)
+    # Weight-average thresholds by the same portfolio weights used for blending
+    buy_threshold = sum(
+        float((m.get("metrics") or {}).get("buy_threshold") or 0.5) * w / total_w
+        for m, w in available
+    )
 
     xgb_auc = float((xgb.get("metrics") or {}).get("auc") or (xgb.get("metrics") or {}).get("cv_auc_mean") or 0.55)
     auc_vals = [xgb_auc]

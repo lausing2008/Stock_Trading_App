@@ -157,17 +157,17 @@ class Signal(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
-    ts: Mapped[datetime] = mapped_column(DateTime, index=True, default=func.now())
-    __table_args__ = (
-        Index("ix_signals_stock_ts", "stock_id", "ts"),
-        Index("ix_signals_stock_horizon_ts", "stock_id", "horizon", "ts"),
-    )
+    ts: Mapped[datetime] = mapped_column(DateTime, index=True, server_default=func.now())
     signal: Mapped[SignalType] = mapped_column(SAEnum(SignalType))
     horizon: Mapped[SignalHorizon] = mapped_column(SAEnum(SignalHorizon))
     confidence: Mapped[float] = mapped_column(Float)  # 0-100
     bullish_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
     reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(64), default="signal-engine")
+    __table_args__ = (
+        Index("ix_signals_stock_ts", "stock_id", "ts"),
+        Index("ix_signals_stock_horizon_ts", "stock_id", "horizon", "ts"),
+    )
 
 
 class Ranking(Base):
@@ -330,6 +330,10 @@ class SignalAlert(Base):
 
     user: Mapped["User"] = relationship(back_populates="signal_alerts")
 
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", "horizon", name="uq_signal_alerts_user_symbol_horizon"),
+    )
+
 
 class UserPosition(Base):
     __tablename__ = "user_positions"
@@ -345,6 +349,11 @@ class UserPosition(Base):
     user: Mapped["User"] = relationship(back_populates="positions")
     trades: Mapped[list["PositionTrade"]] = relationship(
         back_populates="position", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", name="uq_user_positions_user_symbol"),
+        Index("ix_user_positions_user_symbol", "user_id", "symbol"),
     )
 
 
