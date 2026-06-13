@@ -38,7 +38,7 @@ import pandas as pd
 
 from common.logging import get_logger
 from db import (
-    PaperEquityCurve, PaperPortfolio, PaperTrade,
+    PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
     Ranking, SessionLocal, Signal, SignalAlert, Stock, User, Watchlist, WatchlistItem,
 )
 from sqlalchemy import desc, func, select
@@ -652,6 +652,64 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         for sig, stk in batch_sigs:
             latest_signals[stk.symbol] = sig
 
+    # PT-H3: Batch-fetch latest K-score per open symbol — ONE query for all positions
+    latest_kscores: dict[str, float] = {}
+    if symbols:
+        kscore_date_subq = (
+            select(Ranking.stock_id, func.max(Ranking.as_of).label("max_date"))
+            .join(Stock, Ranking.stock_id == Stock.id)
+            .where(Stock.symbol.in_(symbols))
+            .group_by(Ranking.stock_id)
+            .subquery()
+        )
+        for score, sym in session.execute(
+            select(Ranking.score, Stock.symbol)
+            .join(Stock, Ranking.stock_id == Stock.id)
+            .join(kscore_date_subq,
+                  (Ranking.stock_id == kscore_date_subq.c.stock_id) &
+                  (Ranking.as_of == kscore_date_subq.c.max_date))
+        ).all():
+            if score is not None:
+                latest_kscores[sym] = float(score)
+
+    # PT-H4: Batch-fetch last 15 daily bars per open symbol for OBV divergence detection.
+    # OBV divergence (price holding up but OBV declining) indicates quiet distribution.
+    _obv_divergence: dict[str, bool] = {}
+    if symbols:
+        cutoff_15d = datetime.now(timezone.utc) - timedelta(days=22)  # ~15 trading days
+        price_rows = session.execute(
+            select(Stock.symbol, Price.close, Price.volume)
+            .join(Stock, Price.stock_id == Stock.id)
+            .where(
+                Stock.symbol.in_(symbols),
+                Price.timeframe == TimeFrame.D1,
+                Price.ts >= cutoff_15d,
+            )
+            .order_by(Stock.symbol, Price.ts)
+        ).all()
+        _sym_bars: dict[str, list[tuple[float, float]]] = {}
+        for sym, close, volume in price_rows:
+            _sym_bars.setdefault(sym, []).append((float(close), float(volume or 0)))
+        for sym, bars in _sym_bars.items():
+            if len(bars) < 10:
+                continue
+            bars = bars[-10:]
+            closes  = [b[0] for b in bars]
+            volumes = [b[1] for b in bars]
+            # Cumulative OBV
+            obv = 0.0
+            obv_series = [0.0]
+            for i in range(1, len(closes)):
+                obv += volumes[i] if closes[i] > closes[i - 1] else (-volumes[i] if closes[i] < closes[i - 1] else 0)
+                obv_series.append(obv)
+            n = len(obv_series)
+            first_half_mean = sum(obv_series[:n // 2]) / (n // 2)
+            second_half_mean = sum(obv_series[n // 2:]) / (n - n // 2)
+            price_held = closes[-1] >= closes[0] * 0.98  # price flat or up over window
+            obv_declining = second_half_mean < first_half_mean  # OBV trending down
+            if price_held and obv_declining:
+                _obv_divergence[sym] = True
+
     # Regime-adjusted trail multiplier — tighten stops in risk-off environments
     # so existing positions are protected even though new entries are paused/sized down
     regime_trail_adj = 1.0
@@ -925,6 +983,40 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                 log.warning("paper.double_top_trail_tightened", symbol=trade.symbol,
                             new_stop=round(tight_trail, 2),
                             note="double-top neckline break detected — tightening trail to 1.2× ATR")
+
+        # PT-H3: K-score deterioration — tighten trail when institutional flow reverses.
+        # A 15-pt drop in K-score (out of 100) signals smart-money distribution.
+        # Apply only when trail is armed (we have a gain to protect) to avoid premature exits.
+        kscore_entry = trade.kscore_at_entry
+        if (kscore_entry is not None and trail_armed and
+                atr is not None and atr > 0.01):
+            current_kscore = latest_kscores.get(trade.symbol)
+            if current_kscore is not None and current_kscore < kscore_entry - 15:
+                kdet_mult  = 1.5 * regime_trail_adj
+                kdet_trail = max((trade.highest_price or live_price) - atr * kdet_mult, trade.stop_loss)
+                if kdet_trail > trade.current_stop:
+                    trade.current_stop = round(kdet_trail, 4)
+                    log.warning("paper.kscore_deterioration_trail_tightened",
+                                symbol=trade.symbol,
+                                kscore_at_entry=round(kscore_entry, 1),
+                                kscore_now=round(current_kscore, 1),
+                                drop=round(kscore_entry - current_kscore, 1),
+                                new_stop=round(kdet_trail, 2),
+                                note="K-score drop >15 pts — possible institutional distribution")
+
+        # PT-H4: OBV divergence — price holding but volume declining (quiet distribution).
+        # Only tighten when we have a gain to protect AND price is above entry.
+        if (trail_armed and atr is not None and atr > 0.01 and
+                pnl_pct >= 0.02 and _obv_divergence.get(trade.symbol)):
+            obv_mult  = 1.5 * regime_trail_adj
+            obv_trail = max((trade.highest_price or live_price) - atr * obv_mult, trade.stop_loss)
+            if obv_trail > trade.current_stop:
+                trade.current_stop = round(obv_trail, 4)
+                log.warning("paper.obv_divergence_trail_tightened",
+                            symbol=trade.symbol,
+                            pnl_pct=round(pnl_pct * 100, 1),
+                            new_stop=round(obv_trail, 2),
+                            note="OBV declining while price holds — possible distribution")
 
         # PA-A3: Breakeven stop — unconditional (not elif) so it fires even when trail
         # is armed but ATR trail is still below entry (e.g. large ATR, small gain so far)
