@@ -599,13 +599,13 @@ This adds a 25% dampening in the 0.25–0.35 gap range, making the system more c
 **Status:** ⏳ Pending
 
 **What is wrong:**  
-All three trade horizons (SHORT/SWING/LONG) use the same 60% minimum precision when calibrating the buy threshold. SHORT trades (1–7 day holds) have the least time to recover from false entries — they need tighter precision. LONG trades (90-day holds) have more time to absorb noise and can afford more entries.
+All four trade horizons (SHORT/SWING/LONG/GROWTH) use the same 60% minimum precision when calibrating the buy threshold. SHORT trades (1–7 day holds) have the least time to recover from false entries — they need tighter precision. LONG trades (90-day holds) have more time to absorb noise and can afford more entries. GROWTH, like SWING, targets 10-day windows.
 
 **Fix:**
 ```python
-_PRECISION_BY_STYLE = {"SHORT": 0.70, "SWING": 0.60, "LONG": 0.50}
+_PRECISION_BY_STYLE = {"SHORT": 0.70, "SWING": 0.60, "LONG": 0.50, "GROWTH": 0.60}
 ```
-Use the style-specific floor in `_precision_threshold()` instead of the global `_MIN_PRECISION`. SHORT models calibrate to 70%+ precision (fewer signals, more reliable); LONG models accept 50%+ (more entries, wider net).
+Use the style-specific floor in `_precision_threshold()` instead of the global `_MIN_PRECISION`. SHORT models calibrate to 70%+ precision (fewer signals, more reliable); LONG models accept 50%+ (more entries, wider net). GROWTH uses SWING's 60% floor.
 
 ---
 
