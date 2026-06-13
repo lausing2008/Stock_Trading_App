@@ -28,7 +28,9 @@ Style overrides (on top of _DEFAULT_CONFIG):
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -97,6 +99,40 @@ _STYLE_PARAMS: dict[str, dict] = {
     "GROWTH": {"entry1_pct": 0.975, "entry2_pct": 0.940, "breakout_pct": 1.035,
                "stop_pct": 0.880, "default_tp_pct": 1.35},
 }
+
+# AL-4: Load Optuna-tuned params from shared model dir; overlay onto _STYLE_PARAMS.
+# trade_params.json is written by POST /paper-portfolio/tune-params.
+_TRADE_PARAMS_FILE = Path("/data/models/trade_params.json")
+
+
+def _load_tuned_params() -> None:
+    """Merge Optuna-tuned stop/tp/hold params into _STYLE_PARAMS if the file exists."""
+    if not _TRADE_PARAMS_FILE.exists():
+        return
+    try:
+        data = json.loads(_TRADE_PARAMS_FILE.read_text())
+        for style, result in data.items():
+            if style in _STYLE_PARAMS:
+                if "best_stop_pct" in result:
+                    _STYLE_PARAMS[style]["stop_pct"] = result["best_stop_pct"]
+                if "best_tp_pct" in result:
+                    _STYLE_PARAMS[style]["default_tp_pct"] = result["best_tp_pct"]
+        log.info("paper_engine.tuned_params_loaded", styles=list(data.keys()))
+    except Exception as exc:
+        log.warning("paper_engine.tuned_params_load_failed", exc=str(exc))
+
+
+# Also update _STYLE_OVERRIDES max_hold_days from tuned params when loaded.
+def _apply_tuned_hold_days() -> None:
+    if not _TRADE_PARAMS_FILE.exists():
+        return
+    try:
+        data = json.loads(_TRADE_PARAMS_FILE.read_text())
+        for style, result in data.items():
+            if style in _STYLE_OVERRIDES and "best_max_hold_days" in result:
+                _STYLE_OVERRIDES[style]["max_hold_days"] = result["best_max_hold_days"]
+    except Exception:
+        pass
 
 
 def _round_step(price: float) -> float:
@@ -1515,6 +1551,9 @@ def _send_exit_emails(session, closed_exits: list[dict]) -> None:
 
 def paper_trading_step() -> None:
     """One full monitor + scan cycle. Runs every 5-10 min during market hours."""
+    # AL-4: reload tuned params each cycle so they take effect without a restart
+    _load_tuned_params()
+    _apply_tuned_hold_days()
     try:
         with SessionLocal() as session:
             portfolios = session.execute(

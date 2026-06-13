@@ -1097,6 +1097,17 @@ Shown below the Kanban board when ≥ 2 active positions have shares and an entr
 
 Results are cached for 5 minutes — clicking Compute Risk again within that window returns the cached result instantly.
 
+### Bulk Sync: Active → Positions
+
+The **↑ Sync Active → Positions** button in the board header (top-right of column labels) pushes all Active-stage cards to the Positions page in one click.
+
+**Rules:**
+- Only Active cards with `shares > 0` and a fill price (actual entry price or entry price) are synced.
+- Symbols already in Positions are skipped — safe to click multiple times.
+- A brief feedback message confirms how many positions were created.
+
+This is useful after activating many cards from the Fill modal before the auto-sync feature was introduced, or after importing a batch of trades manually.
+
 ### Drag-and-drop between columns
 
 Cards can be dragged from any column to any other. Dragging highlights the target column with a colored border. Dropping onto **Active** triggers the Fill modal to capture the actual fill price — same as clicking the stage pill.
@@ -3073,9 +3084,9 @@ Editable from the page footer. Key parameters:
 
 ---
 
-## Multi-Portfolio A/B Testing (`/paper-portfolio`) — Planned
+## Multi-Portfolio A/B Testing (`/paper-portfolio`)
 
-> **Status: Design complete, implementation pending (AL-2 / PT-A4)**
+> **Status: Done (2026-06-12) — AL-2 / PT-A4**
 
 Run SWING, GROWTH, and LONG paper portfolios simultaneously on the same signals and compare their live performance empirically.
 
@@ -3097,55 +3108,36 @@ A single paper portfolio can't tell you whether GROWTH parameters outperform SWI
 │  Sharpe 1.2      │  Sharpe 1.8      │  Sharpe 0.4               │
 │  8 open          │  6 open          │  3 open                    │
 │  ● Running       │  ● Running       │  ● Running                 │
-│  [View Detail]   │  [View Detail ✦] │  [View Detail]             │
 ├──────────────────┴──────────────────┴───────────────────────────┤
-│  Equity Curves (overlaid, since portfolio start)                │
-│  ── SWING (indigo)  ── GROWTH (purple)  ── LONG (green)         │
-│  ── SPY (grey dashed, benchmark)                                │
-│                      [Plotly chart]                             │
+│  Normalized return % — all portfolios vs SPY (Plotly overlay)   │
 ├─────────────────────────────────────────────────────────────────┤
-│  ▼ SWING Portfolio  (selected by clicking a card above)         │
+│  ▼ SWING Portfolio  (click a card above to switch)              │
 │  [Positions] [Decisions] [Closed Trades] [Equity] [Attribution] │
 │                  [existing tab content, unchanged]              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Key UI decisions
+### Key UI features
 
-**Portfolio cards (not tabs)** — all portfolios visible simultaneously so you don't need to switch tabs to compare. The `★ best` badge marks the highest Sharpe ratio at a glance.
+**Portfolio comparison cards** — one card per active portfolio showing style, state badge, equity, total return %, win rate, Sharpe, open positions. `★` badge on the portfolio with the best Sharpe. Click any card to switch the detail panel below.
 
-**Overlaid equity chart** — the single most valuable comparison view. Shows divergence points where one strategy started outperforming. One chart, all curves, SPY as benchmark.
+**Overlaid equity chart** — all portfolio return % curves on the same Plotly chart with SPY dashed. Shows divergence points where one strategy started outperforming.
 
-**Click card → detail panel** — clicking any portfolio card expands the full existing detail UI (positions, closed trades, attribution, equity, decisions) below the comparison section. No new tabs required. Default: first portfolio selected.
+**`+ New Portfolio` modal (admin)** — Name, Style (SWING / GROWTH / LONG), Initial Capital. The engine already loops over all `is_active=True` portfolios — creating a new one is sufficient to start running it automatically.
 
-**`+ New Portfolio` modal** — form with: Name, Style (SWING / GROWTH / LONG), Starting Capital. The engine already loops over all active portfolios — creating a new one is sufficient to start it.
+**Backwards compatible** — with only 1 portfolio, the page looks identical to before. Comparison grid and overlay chart only appear with 2+ portfolios.
 
-### Backend changes required
+### Backend endpoints
 
-| Endpoint | Change |
+| Endpoint | Description |
 |---|---|
-| `GET /paper-portfolio/list` | New — returns id, name, style, equity, return %, sharpe, win rate, open count for all active portfolios |
-| `POST /paper-portfolio/create` | New — creates portfolio with `{name, trading_style, initial_capital}` |
-| `GET /paper-portfolio/compare` | New — returns all equity curves in one call for the overlay chart |
-| All existing endpoints | Add optional `?portfolio_id=N` query param; default to first active for backwards compatibility |
+| `GET /paper-portfolio/list` | All active portfolios: id, name, style, equity, return %, sharpe, win rate, open count, state |
+| `POST /paper-portfolio/create` | Admin — create portfolio with `{name, trading_style, initial_capital}` |
+| `GET /paper-portfolio/compare?days=N` | Equity curves for all portfolios in one call for the overlay chart |
+| All existing endpoints | Accept optional `?portfolio_id=N` query param; fall back to first active (backwards compatible) |
 
-The scheduler's `paper_trading_step()` already iterates over all `is_active=True` portfolios — no scheduler change needed.
+The scheduler's `paper_trading_step()` already iterates over all `is_active=True` portfolios — no scheduler change was needed.
 
-### Frontend changes required
+### Admin controls per portfolio
 
-| Component | Change |
-|---|---|
-| Page header | Replace single-portfolio title with comparison card grid |
-| Overlay chart | New Plotly chart — one trace per portfolio + SPY dashed |
-| Detail panel | Unchanged content; all SWR keys updated to include `portfolio_id` |
-| `+ New Portfolio` | Modal with name / style / capital fields |
-
-### What does NOT change
-
-Everything inside the detail panel (positions table, decisions log, closed trades, attribution heatmap) is the existing code with only the `portfolio_id` parameter added to each API call. Zero regression risk.
-
-### Implementation order
-
-1. Backend: `list`, `create`, `compare` endpoints + `portfolio_id` param on existing endpoints
-2. Frontend: comparison card grid + overlay chart + selected portfolio state
-3. Frontend: wire detail panel SWR keys to selected `portfolio_id`
+Engine start/stop/pause, capital settings, and config panel all operate on the currently selected portfolio (the clicked card). All POST endpoints accept `?portfolio_id=N`.

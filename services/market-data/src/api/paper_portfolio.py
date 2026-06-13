@@ -1,20 +1,38 @@
 """WF-2 Paper Portfolio API — read-only views + admin controls."""
+import json
 import math
+import threading
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from db import PaperEquityCurve, PaperPortfolio, PaperTrade, get_session
+from db import PaperEquityCurve, PaperPortfolio, PaperTrade, SessionLocal, get_session
+from db.models import User, Stock, Price, TimeFrame
 from .auth import get_current_user, get_admin_user
-from db.models import User
+from common.config import get_settings
 from common.logging import get_logger
 
 log = get_logger("paper_portfolio_api")
 
 router = APIRouter(prefix="/paper-portfolio", tags=["paper-portfolio"])
+
+_settings = get_settings()
+_TRADE_PARAMS_PATH = Path(_settings.model_dir) / "trade_params.json"
+
+# Defaults if no tuned params exist yet
+_FALLBACK_PARAMS: dict[str, dict] = {
+    "SHORT":  {"stop_pct": 0.970, "tp_pct": 1.05, "max_hold_days": 10},
+    "SWING":  {"stop_pct": 0.945, "tp_pct": 1.12, "max_hold_days": 20},
+    "GROWTH": {"stop_pct": 0.900, "tp_pct": 1.25, "max_hold_days": 60},
+    "LONG":   {"stop_pct": 0.880, "tp_pct": 1.35, "max_hold_days": 90},
+}
+
+_tune_lock = threading.Lock()
+_tune_running: dict[str, bool] = {}  # style → is running
 
 
 _MIN_SHARPE_DAYS = 20  # annualizing < 20 days produces meaningless Sharpe/Calmar
@@ -762,3 +780,223 @@ def compare_portfolios(
             ],
         })
     return result
+
+
+# ── AL-4: Trade parameter optimisation (Optuna) ───────────────────────────────
+
+def _load_trade_params() -> dict:
+    """Load tuned params from disk, fall back to hardcoded defaults."""
+    try:
+        if _TRADE_PARAMS_PATH.exists():
+            return json.loads(_TRADE_PARAMS_PATH.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _simulate_trade_sharpe(
+    trades: list,
+    price_map: dict,  # symbol → sorted list of (date, close)
+    stop_pct: float,
+    tp_pct: float,
+    max_hold_days: int,
+) -> float | None:
+    """Simulate exit outcomes for closed trades using given params. Returns annualised Sharpe."""
+    returns = []
+    for t in trades:
+        prices = price_map.get(t.symbol, [])
+        if not prices:
+            continue
+        entry_date = t.entry_date
+        entry_price = t.entry_price
+        stop_level = entry_price * stop_pct
+        tp_level   = entry_price * tp_pct
+        # Walk forward from entry_date
+        exit_return: float | None = None
+        days_held = 0
+        for d, close in prices:
+            if d < entry_date:
+                continue
+            if d == entry_date:
+                continue  # skip entry day itself
+            days_held += 1
+            if close <= stop_level:
+                exit_return = (stop_level / entry_price) - 1
+                break
+            if close >= tp_level:
+                exit_return = (tp_level / entry_price) - 1
+                break
+            if days_held >= max_hold_days:
+                exit_return = (close / entry_price) - 1
+                break
+        if exit_return is None and prices:
+            # Use last available price
+            exit_return = (prices[-1][1] / entry_price) - 1
+        if exit_return is not None:
+            returns.append(exit_return)
+
+    if len(returns) < 5:
+        return None
+
+    n = len(returns)
+    mean_r = sum(returns) / n
+    variance = sum((r - mean_r) ** 2 for r in returns) / max(n - 1, 1)
+    std_r = math.sqrt(variance) if variance > 0 else 0.0
+    if std_r == 0:
+        return None
+    # Rough annualisation: assume mean hold = max_hold_days/2 trading days
+    ann_factor = math.sqrt(252 / max(max_hold_days / 2, 1))
+    return (mean_r / std_r) * ann_factor
+
+
+def _run_optuna_for_style(style: str, n_trials: int) -> dict:
+    """Run Optuna to tune stop_pct, tp_pct, max_hold_days for one style.
+
+    Uses all closed paper trades of the given style as the dataset.
+    Runs inline — call from a background thread.
+    """
+    try:
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+    except ImportError:
+        return {"error": "optuna not installed in market-data — run pip install optuna"}
+
+    from db import SessionLocal
+
+    with SessionLocal() as session:
+        trades = session.execute(
+            select(PaperTrade).where(
+                PaperTrade.stage == "closed",
+                PaperTrade.trading_style == style,
+                PaperTrade.entry_price.is_not(None),
+                PaperTrade.entry_date.is_not(None),
+            )
+        ).scalars().all()
+
+        if len(trades) < 10:
+            return {"error": f"Not enough closed {style} trades ({len(trades)}); need ≥ 10"}
+
+        # Pre-fetch price history for all unique symbols
+        symbols = list({t.symbol for t in trades})
+        max_hold = 120  # enough for any style
+        cutoff = min(t.entry_date for t in trades) - timedelta(days=1)
+        price_map: dict[str, list] = {}
+        for sym in symbols:
+            stock = session.execute(
+                select(Stock).where(Stock.symbol == sym)
+            ).scalar_one_or_none()
+            if not stock:
+                continue
+            rows = session.execute(
+                select(Price.ts, Price.close)
+                .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1, Price.ts >= cutoff)
+                .order_by(Price.ts)
+            ).all()
+            price_map[sym] = [(r.ts.date(), r.close) for r in rows]
+
+        # Snapshot trades list (detach from session)
+        trade_snapshots = [(t.symbol, t.entry_date, t.entry_price) for t in trades]
+
+    class _TradeProxy:
+        def __init__(self, symbol, entry_date, entry_price):
+            self.symbol = symbol
+            self.entry_date = entry_date
+            self.entry_price = entry_price
+
+    trade_objs = [_TradeProxy(s, d, p) for s, d, p in trade_snapshots]
+
+    fallback = _FALLBACK_PARAMS.get(style, _FALLBACK_PARAMS["SWING"])
+
+    def objective(trial: "optuna.Trial") -> float:
+        stop_pct     = trial.suggest_float("stop_pct",     0.88, 0.98)
+        tp_pct       = trial.suggest_float("tp_pct",       1.04, 1.40)
+        max_hold_days = trial.suggest_int("max_hold_days",  5,    90)
+        sharpe = _simulate_trade_sharpe(trade_objs, price_map, stop_pct, tp_pct, max_hold_days)
+        return sharpe if sharpe is not None else -999.0
+
+    study = optuna.create_study(direction="maximize")
+    # Seed with current fallback params so search starts near a known good point
+    study.enqueue_trial({
+        "stop_pct": fallback["stop_pct"],
+        "tp_pct": fallback["tp_pct"],
+        "max_hold_days": fallback["max_hold_days"],
+    })
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+
+    best = study.best_params
+    best_sharpe = round(study.best_value, 3)
+    return {
+        "style": style,
+        "n_trials": n_trials,
+        "n_trades": len(trade_objs),
+        "best_stop_pct": round(best["stop_pct"], 4),
+        "best_tp_pct": round(best["tp_pct"], 4),
+        "best_max_hold_days": int(best["max_hold_days"]),
+        "best_sharpe": best_sharpe,
+        "tuned_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _tune_and_save(style: str, n_trials: int) -> None:
+    """Background task: run Optuna for style, merge results into trade_params.json."""
+    try:
+        result = _run_optuna_for_style(style, n_trials)
+        if "error" not in result:
+            current = _load_trade_params()
+            current[style] = result
+            _TRADE_PARAMS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _TRADE_PARAMS_PATH.write_text(json.dumps(current, indent=2))
+            log.info("paper.tune_params.saved", style=style, sharpe=result.get("best_sharpe"))
+        else:
+            log.warning("paper.tune_params.failed", style=style, error=result["error"])
+    except Exception as exc:
+        log.exception("paper.tune_params.exception", style=style, exc=str(exc))
+    finally:
+        _tune_running.pop(style, None)
+
+
+@router.get("/trade-params")
+def get_trade_params(
+    _: User = Depends(get_current_user),
+) -> dict:
+    """Return current tuned trade parameters per style (or fallback defaults if not yet tuned)."""
+    saved = _load_trade_params()
+    result = {}
+    for style, fallback in _FALLBACK_PARAMS.items():
+        if style in saved:
+            result[style] = {
+                **saved[style],
+                "is_tuned": True,
+                "is_running": _tune_running.get(style, False),
+            }
+        else:
+            result[style] = {
+                **fallback,
+                "is_tuned": False,
+                "is_running": _tune_running.get(style, False),
+                "note": "Using default params — run Optuna to tune",
+            }
+    return result
+
+
+@router.post("/tune-params")
+def tune_trade_params(
+    background_tasks: BackgroundTasks,
+    style: str = Query("SWING"),
+    n_trials: int = Query(80, ge=20, le=300),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Start Optuna tuning for stop_pct / tp_pct / max_hold_days for one trading style.
+
+    Runs in the background. Poll GET /trade-params to see when is_running=False.
+    Uses all closed paper trades of the given style as the optimization dataset.
+    """
+    style = style.upper()
+    if style not in _FALLBACK_PARAMS:
+        raise HTTPException(400, f"style must be one of: {list(_FALLBACK_PARAMS)}")
+    with _tune_lock:
+        if _tune_running.get(style):
+            return {"status": "already_running", "style": style}
+        _tune_running[style] = True
+    background_tasks.add_task(_tune_and_save, style, n_trials)
+    return {"status": "started", "style": style, "n_trials": n_trials}

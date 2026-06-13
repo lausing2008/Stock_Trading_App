@@ -8,6 +8,7 @@ import {
   type PaperPortfolioSummary,
   type PaperPortfolioListItem,
   type PaperCompareData,
+  type PaperTradeParamResult,
   type PaperPosition,
   type PaperTrade,
   type PaperEquityPoint,
@@ -608,6 +609,106 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
   );
 }
 
+// ── AL-4: Trade Parameter Optimizer panel (admin only) ────────────────────────
+
+const STYLE_OPTIONS = ['SWING', 'GROWTH', 'LONG', 'SHORT'];
+
+function TradeParamsPanel({ onDone }: { onDone: () => void }) {
+  const { data: params, mutate: mutateParams } = useSWR(
+    'paper-trade-params', () => api.paperTradeParams(), { revalidateOnFocus: false }
+  );
+  const [tuningStyle, setTuningStyle] = useState('SWING');
+  const [nTrials, setNTrials] = useState('80');
+  const [launching, setLaunching] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  async function launch() {
+    setLaunching(true); setMsg('');
+    try {
+      const r = await api.paperTuneParams(tuningStyle, parseInt(nTrials) || 80);
+      if (r.status === 'already_running') {
+        setMsg(`${tuningStyle} tuning already running — check back in a few minutes`);
+      } else {
+        setMsg(`Started ${r.n_trials}-trial Optuna search for ${tuningStyle} — runs in background`);
+        setTimeout(() => mutateParams(), 5000);
+      }
+    } catch { setMsg('Failed to start tuning'); }
+    finally { setLaunching(false); }
+  }
+
+  const fmtPct = (v: number | undefined) => v != null ? `${((v - 1) * 100).toFixed(1)}%` : '—';
+  const fmtStopPct = (v: number | undefined) => v != null ? `${((v - 1) * 100).toFixed(1)}%` : '—';
+
+  return (
+    <div style={{ background: '#1e293b', borderRadius: 10, padding: 20, border: '1px solid #334155' }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: '#f1f5f9' }}>Trade Parameter Optimizer (AL-4)</div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 16 }}>
+        Optuna tunes stop %, take-profit %, and max hold days using your actual closed paper trades as the dataset.
+        Params are saved to <code>/data/models/trade_params.json</code> and applied on the next engine cycle.
+      </div>
+
+      {params && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+          {STYLE_OPTIONS.map(style => {
+            const p = params[style];
+            if (!p) return null;
+            const stopVal = p.best_stop_pct ?? p.stop_pct;
+            const tpVal = p.best_tp_pct ?? p.tp_pct;
+            const holdVal = p.best_max_hold_days ?? p.max_hold_days;
+            return (
+              <div key={style} style={{
+                background: '#0f172a', borderRadius: 8, padding: '10px 14px',
+                border: `1px solid ${p.is_tuned ? 'rgba(34,197,94,0.25)' : '#334155'}`,
+                minWidth: 170,
+              }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700,
+                    color: STYLE_COLORS[style] ?? '#94a3b8',
+                    background: (STYLE_COLORS[style] ?? '#94a3b8') + '22',
+                    borderRadius: 4, padding: '1px 6px',
+                  }}>{style}</span>
+                  {p.is_running && <span style={{ fontSize: 10, color: '#f59e0b' }}>⏳ Tuning…</span>}
+                  {p.is_tuned && !p.is_running && <span style={{ fontSize: 10, color: '#22c55e' }}>✓ Tuned</span>}
+                </div>
+                <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.8 }}>
+                  <div>Stop: <span style={{ color: '#f87171', fontWeight: 600 }}>{fmtStopPct(stopVal)}</span></div>
+                  <div>Target: <span style={{ color: '#4ade80', fontWeight: 600 }}>+{fmtPct(tpVal)}</span></div>
+                  <div>Hold: <span style={{ color: '#f1f5f9', fontWeight: 600 }}>{holdVal ?? '—'}d</span></div>
+                  {p.best_sharpe != null && (
+                    <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
+                      Sharpe {p.best_sharpe.toFixed(2)} · {p.n_trades} trades
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <select value={tuningStyle} onChange={e => setTuningStyle(e.target.value)}
+          style={{ background: '#0f172a', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 5, padding: '5px 10px', fontSize: 12 }}>
+          {STYLE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <input value={nTrials} onChange={e => setNTrials(e.target.value)} type="number" min="20" max="300"
+          placeholder="80 trials"
+          style={{ width: 90, background: '#0f172a', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 5, padding: '5px 8px', fontSize: 12 }} />
+        <button onClick={launch} disabled={launching}
+          style={{ background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 16px', cursor: launching ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: 12, opacity: launching ? 0.7 : 1 }}>
+          {launching ? 'Starting…' : 'Run Optuna'}
+        </button>
+        <button onClick={() => mutateParams()}
+          style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', fontSize: 12 }}>
+          Refresh
+        </button>
+        {msg && <span style={{ fontSize: 11, color: '#f59e0b' }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 const TABS = ['Positions', 'Decisions', 'Closed Trades', 'Equity Curve', 'Attribution'] as const;
@@ -1097,6 +1198,7 @@ export default function PaperPortfolioPage() {
               portfolioId={selectedPortfolioId}
             />
             <ConfigPanel config={summary.config} onSave={mutateSummary} portfolioId={selectedPortfolioId} />
+            <TradeParamsPanel onDone={mutateSummary} />
           </div>
         )}
 

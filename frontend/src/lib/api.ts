@@ -379,6 +379,11 @@ export const api = {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return request<{ ok: boolean; state: string; config: PaperPortfolioConfig }>(`/paper-portfolio/engine${q}`, { method: 'POST', body: JSON.stringify({ state }) });
   },
+  paperTradeParams: () => request<Record<string, PaperTradeParamResult>>('/paper-portfolio/trade-params'),
+  paperTuneParams: (style: string, nTrials = 80) =>
+    request<{ status: string; style: string; n_trials: number }>(
+      `/paper-portfolio/tune-params?style=${style}&n_trials=${nTrials}`, { method: 'POST' }
+    ),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
   mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
 };
@@ -951,6 +956,21 @@ export type PaperPortfolioListItem = {
   is_running: boolean;
   is_paused: boolean;
   created_at: string | null;
+};
+
+export type PaperTradeParamResult = {
+  stop_pct?: number;
+  tp_pct?: number;
+  max_hold_days?: number;
+  best_stop_pct?: number;
+  best_tp_pct?: number;
+  best_max_hold_days?: number;
+  best_sharpe?: number;
+  n_trades?: number;
+  tuned_at?: string;
+  is_tuned: boolean;
+  is_running: boolean;
+  note?: string;
 };
 
 export type PaperCompareData = {
