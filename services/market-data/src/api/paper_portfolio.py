@@ -482,7 +482,11 @@ def configure_portfolio(
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Merge body keys into the portfolio config (admin only)."""
+    """Merge body keys into the portfolio config (admin only).
+
+    All percentage-based params expect decimal fractions (0.01 = 1%, NOT 1 = 1%).
+    The endpoint validates ranges and returns 400 if a value is out of bounds.
+    """
     p = _get_portfolio(session, portfolio_id)
     allowed_keys = {
         "max_positions", "max_sector_pct", "risk_per_trade_pct", "max_position_pct",
@@ -490,6 +494,34 @@ def configure_portfolio(
         "max_hold_days", "trail_atr_mult", "trail_trigger_pct", "breakeven_trigger_pct",
         "wait_exit_days", "enabled", "paused",
     }
+    # PT-H1: Validate decimal fraction params — reject values that look like % integers
+    # (e.g. risk_per_trade_pct=1 meaning "1%" but engine expects 0.01).
+    _RANGE_CHECKS: dict[str, tuple[float, float, str]] = {
+        "risk_per_trade_pct":   (0.001, 0.05,  "Enter as decimal fraction (e.g. 0.01 for 1%). Max 5%."),
+        "max_position_pct":     (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.10 for 10%). Max 30%."),
+        "max_loss_per_trade_pct":(0.005, 0.10, "Enter as decimal fraction (e.g. 0.02 for 2%). Max 10%."),
+        "max_sector_pct":       (0.05,  0.60,  "Enter as decimal fraction (e.g. 0.30 for 30%). Range 5–60%."),
+        "max_portfolio_drawdown_pct":(0.05, 0.50, "Enter as decimal fraction (e.g. 0.20 for 20%)."),
+        "max_daily_loss_pct":   (0.005, 0.15,  "Enter as decimal fraction (e.g. 0.04 for 4%)."),
+        "trail_trigger_pct":    (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.05 for 5%)."),
+        "breakeven_trigger_pct":(0.005, 0.20,  "Enter as decimal fraction (e.g. 0.03 for 3%)."),
+        "max_open_risk_pct":    (0.02,  0.50,  "Enter as decimal fraction (e.g. 0.12 for 12%)."),
+        "hold_stall_max_gain":  (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.05 for 5%)."),
+    }
+    errors: list[str] = []
+    for key, val in body.items():
+        if key in _RANGE_CHECKS and val is not None:
+            lo, hi, hint = _RANGE_CHECKS[key]
+            try:
+                fval = float(val)
+            except (TypeError, ValueError):
+                errors.append(f"{key}: expected a number")
+                continue
+            if not (lo <= fval <= hi):
+                errors.append(f"{key}={fval}: out of valid range [{lo}, {hi}]. {hint}")
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+
     updated = {k: v for k, v in body.items() if k in allowed_keys and v is not None}
     old_vals = {k: p.config.get(k) for k in updated}
     p.config = {**p.config, **updated}
@@ -755,13 +787,75 @@ def list_portfolios(
 
 # ── Multi-portfolio: create ───────────────────────────────────────────────────
 
+@router.post("/run-step")
+def run_paper_trading_step(
+    enforce_market_hours: bool = Query(True, description="Set false to test outside market hours"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """PT-H5: Manually trigger paper_trading_step() for testing and debugging.
+
+    Useful on weekends or holidays when the scheduler does not fire.
+    Rate-limited to one call per minute to avoid hammering yfinance.
+    Set enforce_market_hours=false to run outside 9:30–16:00 ET (for testing only).
+    """
+    import time
+    from services.paper_trading_engine import paper_trading_step, _DEFAULT_CONFIG
+    from db import PaperPortfolio, SessionLocal
+    from sqlalchemy import select
+
+    _last_run_key = "_run_step_last_called"
+    now_ts = time.time()
+    last = getattr(run_paper_trading_step, _last_run_key, 0.0)
+    if now_ts - last < 60:
+        raise HTTPException(status_code=429, detail="run-step rate limit: wait 60s between calls")
+    setattr(run_paper_trading_step, _last_run_key, now_ts)
+
+    if not enforce_market_hours:
+        # Temporarily patch the market hours check to always return True
+        import services.paper_trading_engine as _eng
+        _orig = _eng._is_market_hours
+        _eng._is_market_hours = lambda: True
+        try:
+            paper_trading_step()
+        finally:
+            _eng._is_market_hours = _orig
+    else:
+        paper_trading_step()
+
+    # Return a snapshot of current portfolio state after the step
+    with SessionLocal() as session:
+        portfolios = session.execute(
+            select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
+        ).scalars().all()
+        summary = [
+            {
+                "id": p.id,
+                "name": p.name,
+                "current_cash": round(p.current_cash, 2),
+                "regime_state": p.config.get("regime_state"),
+                "enabled": p.config.get("enabled"),
+                "paused": p.config.get("paused"),
+            }
+            for p in portfolios
+        ]
+
+    log.info("paper.run_step_manual", portfolios=len(summary),
+             enforce_market_hours=enforce_market_hours)
+    return {"ok": True, "portfolios": summary}
+
+
 @router.post("/create")
 def create_portfolio(
     body: dict,
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Create a new paper portfolio (admin only)."""
+    """Create a new paper portfolio (admin only).
+
+    Config is seeded from _DEFAULT_CONFIG + style overrides so all safety params
+    (risk_per_trade_pct=0.01, max_position_pct=0.10 etc.) are correct by default.
+    """
+    from services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
     name = str(body.get("name", "Paper Portfolio")).strip() or "Paper Portfolio"
     style = str(body.get("trading_style", "GROWTH")).upper()
     initial_capital = float(body.get("initial_capital", 100_000))
@@ -771,11 +865,13 @@ def create_portfolio(
     if style not in ("SWING", "GROWTH", "LONG", "SHORT"):
         raise HTTPException(status_code=400, detail="trading_style must be SWING, GROWTH, LONG, or SHORT")
 
+    # PT-H1: Seed full config from engine defaults so new portfolios are always correct
+    cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {}), "trading_style": style}
     p = PaperPortfolio(
         name=name,
         initial_capital=initial_capital,
         current_cash=initial_capital,
-        config={"trading_style": style, "enabled": True, "paused": False},
+        config=cfg,
         is_active=True,
     )
     session.add(p)

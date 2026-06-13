@@ -514,6 +514,7 @@ class PaperTrade(Base):
     portfolio_id: Mapped[int] = mapped_column(ForeignKey("paper_portfolios.id", ondelete="CASCADE"), index=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
+    stock_id: Mapped[int | None] = mapped_column(ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)  # PT-H2: for double-top mid-trade detection
     trading_style: Mapped[str] = mapped_column(String(16), default="GROWTH")  # GROWTH|SWING|LONG|SHORT
     sector: Mapped[str | None] = mapped_column(String(128), nullable=True)    # H-SECTOR: snapshotted at entry for PA-D1
 

@@ -1344,6 +1344,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             entry_time            = now,
             entry_price           = slipped_entry,   # slippage-adjusted entry
             sector                = stock.sector,    # H-SECTOR FIX: PA-D1 monitor reads trade.sector
+            stock_id              = stock.id,        # PT-H2: needed for double-top mid-trade detection
             shares                = shares,
             stop_loss             = stop,
             take_profit           = take_profit,
