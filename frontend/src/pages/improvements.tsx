@@ -1291,6 +1291,32 @@ const ITEMS: Item[] = [
   },
 
   {
+    id: 'tb6-board-positions-sync',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-12 — TB-6: Full bidirectional sync between Trade Board and Positions page. (1) FillModal confirm with shares → auto creates or buys into UserPosition. (2) Active card edit: if shares changes, delta BUY or SELL applied to position. (3) Exit price save → SELL recorded in Positions for plan.shares qty (capped at available position size). All three sync calls are best-effort — board plan update succeeds even if position API fails. Portfolio Risk dashboard made on-demand (Compute Risk button, 5 min cache) to fix page-load hang with 12+ positions.',
+    tier: 3, severity: 'feature',
+    title: 'TB-6: Sync Trade Board ↔ Positions — eliminate double-entry',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '1 day',
+    impact: 'High — previously required entering the same trade in two places (Trade Board for monitoring, Positions for P&L tracking). Every activation, add-on, and exit is now reflected automatically.',
+    what: 'Moving a card to Active and entering fill price + shares did not create a position on the Positions page. Users had to navigate to /positions and manually re-enter the same symbol, shares, and price. Similarly, closing a trade required a separate manual sell entry on the Positions page.',
+    fix: 'Three sync points added to board.tsx: (1) FillModal confirm (handleFillConfirm): after updateBoardPlan, call api.listPositions() to find existing position for symbol. If found: buyMorePosition(delta). If not: addPosition(). (2) Active card edit (saveActiveEdit): if shares field changed, compute delta and apply buyMorePosition or sellPosition. (3) Exit price save (saveExitPrice): after updateBoardPlan, call sellPosition for plan.shares qty at exit price. Portfolio Risk section changed from auto-load to on-demand (riskRequested flag + Compute Risk button) to fix 30s hang on page load with many positions.',
+  },
+
+  {
+    id: 'tb7-active-card-inline-edit',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-12 — TB-7: ✎ button at right of price chip row on Active cards. Opens 2-column inline edit panel (no modal) with inputs for Shares, Fill Price, Stop Loss, Take Profit. Save calls PUT /board/{id} with only non-empty fields. Cancel restores normal view. Saves via saveActiveEdit() which also triggers position delta sync (TB-6).',
+    tier: 3, severity: 'feature',
+    title: 'TB-7: Inline edit on Active cards — modify shares, fill price, stop, target after activation',
+    file: 'frontend/src/pages/board.tsx',
+    effort: '0.5 days',
+    impact: 'Medium — previously there was no way to correct a mis-typed fill price, record a partial fill, or adjust stop/target on an active position. The FillModal only fires once at activation.',
+    what: 'Once a card moves to Active, there is no UI to change the fill price, shares, stop loss, or take profit. All post-activation changes required direct DB edits. Users who partially filled, got a different fill than expected, or needed to trail their stop had no in-UI path.',
+    fix: 'Added editingActive state to PlanCard. ✎ button in price row opens an inline 2×2 grid of inputs pre-populated with current values. Save fires api.updateBoardPlan(id, updates) with only fields that have non-empty valid values, then triggers onExitSaved (mutate). Also triggers position delta sync for share changes.',
+  },
+
+  {
     id: 'sl1-admin-signal-log',
     defaultStatus: 'done',
     implementedNote: 'Done 2026-06-08 — GET /admin/signal-log (admin auth): joins Signal→Stock→SignalOutcome; paginated, filterable by symbol/signal_type/horizon/days_back. New /admin-signals page (admin-only redirect guard): stat strip, colour-coded BUY/SELL badges, confidence bar, outcome ✓/✗ once hold window closes, CSV export. Signal Log link added to Tools nav (adminOnly). Foundation for WF-2 paper trading engine.',

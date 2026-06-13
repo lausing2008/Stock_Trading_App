@@ -1029,6 +1029,8 @@ Active cards show a **✎** button at the right of the price chip row. Clicking 
 
 Press **Save** to write all changed fields in a single `PUT /board/{id}` call. Press **Cancel** to discard. Fields left blank are not overwritten — only non-empty inputs are sent.
 
+**Position sync on edit:** If shares are changed (e.g., 100 → 150 for an add-on, or 100 → 50 after a partial close), the difference is applied to the linked position automatically — a BUY is added for an increase, a SELL is recorded for a decrease. The fill price in the edit form is used as the trade price.
+
 > This is useful when you partially filled a position, adjusted your stop after entry, or need to correct a mis-typed fill price.
 
 ### Closed trade P&L tracking
@@ -1039,6 +1041,8 @@ When a card is moved to **Closed**:
 - **Dollar P&L** is shown when shares are recorded: `(exit − effective_entry) × shares`.
 - **% of target reached** — shown when a take_profit level was set.
 - `closed_at` timestamp is set automatically the first time a card enters the Closed stage.
+
+**Auto-sync SELL to Positions:** When exit price is saved and the card has `shares` recorded, a SELL trade is automatically posted to the Positions page for the full share count at the exit price. If shares in the position are fewer than the board quantity (e.g., a partial close was recorded earlier), the sell is capped at the available position size.
 
 ### Trading style badge on closed cards
 
@@ -1079,14 +1083,19 @@ Four ways to create a board card:
 3. **Manual** — click **+ Add** in the Radar column header on the board itself. Enter a symbol and optional notes.
 4. **Unified + Add ▾ button** — appears on Screener results and Forecast cards. Opens a dropdown with two sections: **Watchlists** (add to any named watchlist with item count shown) and **Trade Board** (add to Radar). A checkmark appears once added — prevents duplicates within the same session.
 
-### Adding cards
+### Portfolio Risk Dashboard
 
-Four ways to create a board card:
+Shown below the Kanban board when ≥ 2 active positions have shares and an entry price recorded. Click **Compute Risk** to trigger the calculation — it is on-demand because fetching correlation data for a large position set takes 15–30 seconds.
 
-1. **Stock detail page** — after the AI generates a game plan, click **📌 Save to Board** in the game plan card header. Saves with stage = Planning, entry/stop/target prices pre-filled.
-2. **Forecast page** — each AI pick has a **📌 Save to Board** button. Saves with stage = Radar, notes from the pick's setup/catalyst/risk text.
-3. **Manual** — click **+ Add** in the Radar column header on the board itself. Enter a symbol and optional notes.
-4. **Unified + Add ▾ button** — appears on Screener results and Forecast cards. Opens a dropdown with two sections: **Watchlists** (add to any named watchlist with item count shown) and **Trade Board** (add to Radar). A checkmark appears once added — prevents duplicates within the same session.
+| Stat | Description |
+|---|---|
+| Portfolio β | Weighted-average beta vs S&P 500. >1.5 = high market sensitivity (red), <0.8 = defensive (green) |
+| 1-day VaR 95% | Value-at-Risk: estimated max 1-day loss in 95% of scenarios |
+| Sector weights | Donut chart of sector concentration |
+| Correlation matrix | Heatmap of pairwise return correlations |
+| Individual betas | Beta for each position vs the benchmark |
+
+Results are cached for 5 minutes — clicking Compute Risk again within that window returns the cached result instantly.
 
 ### Drag-and-drop between columns
 
