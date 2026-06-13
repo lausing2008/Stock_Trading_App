@@ -372,6 +372,16 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
     setSavingExit(true);
     try {
       await api.updateBoardPlan(plan.id, { exit_price: val });
+      // Sync SELL to positions when shares are known
+      if (plan.shares != null && plan.shares > 0) {
+        try {
+          const positions = await api.listPositions();
+          const existing = positions.find(p => p.symbol === plan.symbol);
+          if (existing && existing.shares > 0) {
+            await api.sellPosition(existing.id, { shares: Math.min(plan.shares, existing.shares), price: val });
+          }
+        } catch { /* best-effort */ }
+      }
       setExitInput('');
       onExitSaved();
     } finally {
@@ -400,6 +410,21 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
       if (!isNaN(stop) && stop > 0) updates.stop_loss = stop;
       if (!isNaN(target) && target > 0) updates.take_profit = target;
       if (Object.keys(updates).length > 0) await api.updateBoardPlan(plan.id, updates);
+      // Sync shares delta to positions
+      const newShares = !isNaN(s) && s > 0 ? s : null;
+      const oldShares = plan.shares;
+      const fillPrice = (!isNaN(p) && p > 0 ? p : null) ?? plan.actual_entry_price;
+      if (newShares != null && oldShares != null && newShares !== oldShares && fillPrice != null) {
+        try {
+          const positions = await api.listPositions();
+          const existing = positions.find(pos => pos.symbol === plan.symbol);
+          if (existing) {
+            const delta = newShares - oldShares;
+            if (delta > 0) await api.buyMorePosition(existing.id, { shares: delta, price: fillPrice });
+            else await api.sellPosition(existing.id, { shares: Math.abs(delta), price: fillPrice });
+          }
+        } catch { /* best-effort */ }
+      }
       setEditingActive(false);
       onExitSaved();
     } finally {
@@ -1040,7 +1065,8 @@ export default function BoardPage() {
     return { count: closed.length, winRate: (wins / closed.length) * 100, avgReturn, best, worst, styleBreakdown };
   }, [byStage.closed]);
 
-  // Portfolio risk — compute from active positions with shares
+  // Portfolio risk — on-demand only (can be slow with many positions)
+  const [riskRequested, setRiskRequested] = useState(false);
   const riskPositions = useMemo(
     () => byStage.active.filter(p => p.shares != null && p.shares > 0 && (p.actual_entry_price ?? p.entry_price) != null),
     [byStage.active],
@@ -1050,10 +1076,10 @@ export default function BoardPage() {
     () => riskPositions.map(p => p.shares! * (p.actual_entry_price ?? p.entry_price!)),
     [riskPositions],
   );
-  const { data: riskData } = useSWR(
-    riskSymbols.length >= 2 ? ['portfolio-risk', riskSymbols.join(','), riskWeights.join(',')] : null,
+  const { data: riskData, isLoading: riskLoading } = useSWR(
+    riskRequested && riskSymbols.length >= 2 ? ['portfolio-risk', riskSymbols.join(','), riskWeights.join(',')] : null,
     () => api.portfolioRisk(riskSymbols, riskWeights),
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false, dedupingInterval: 300_000 },
   );
 
   return (
@@ -1425,8 +1451,20 @@ export default function BoardPage() {
       )}
 
       {riskSymbols.length >= 2 && !riskData && (
-        <div style={{ marginTop: 24, padding: '12px 20px', borderRadius: 10, background: 'rgba(99,102,241,0.04)', border: '1px solid #1e293b', fontSize: 12, color: '#475569' }}>
-          Computing portfolio risk for {riskSymbols.length} active positions…
+        <div style={{ marginTop: 24, padding: '12px 20px', borderRadius: 10, background: 'rgba(99,102,241,0.04)', border: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: 12 }}>
+          {riskLoading ? (
+            <span style={{ fontSize: 12, color: '#475569' }}>Computing portfolio risk for {riskSymbols.length} positions… (may take ~20s)</span>
+          ) : (
+            <>
+              <span style={{ fontSize: 12, color: '#475569' }}>{riskSymbols.length} active positions with size data</span>
+              <button
+                onClick={() => setRiskRequested(true)}
+                style={{ padding: '4px 14px', borderRadius: 6, border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.1)', color: '#818cf8', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+              >
+                Compute Risk
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
