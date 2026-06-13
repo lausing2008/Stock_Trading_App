@@ -27,31 +27,45 @@ Every stock carries three signals simultaneously — one per trading style (SHOR
 | **SHORT** | 1 – 5 days | Pure technical momentum. No earnings or news compression. Ideal for volatile stocks where fundamentals don't apply short-term. |
 | **SWING** | 5 – 20 days | Balanced TA + ML. Standard earnings and news filters. Default for most stocks. |
 | **LONG** | 30 – 90 days | Fundamentals-heavy. K-Score boost applied. Strong weekly alignment required. Designed for position trades. |
+| **GROWTH** | 10 – 40 days | Relaxed thresholds designed for high-velocity momentum stocks. Corrects the base TA score for stocks that structurally score lower because of high RSI and missing golden cross — not actual weakness, just growth-name characteristics. Fires BUY more often than SWING by design. |
 
 ### Style profile parameters
 
-| Parameter | SHORT | SWING | LONG |
-|-----------|-------|-------|------|
-| **ML weight cap** | 30% | 75% | 45% |
-| **BUY threshold — bull market** | 0.60 | **0.62** | 0.60 |
-| **BUY threshold — high-vol** | 0.65 | **0.67** | 0.65 |
-| **BUY threshold — bear market** | 0.68 | **0.70** | 0.70 |
-| **HOLD threshold — bull** | 0.46 | 0.50 | 0.46 |
-| **HOLD threshold — bear** | 0.52 | 0.56 | 0.54 |
-| **ADX filter (min trending)** | 25 | **15** | off |
-| **ADX compression** | 0.85× | 0.90× | — |
-| **High-vol compression** | 0.92× | 0.85× | 0.90× |
-| **Breadth compression** | off | 0.90× | 0.92× |
-| **Weekly align boost / compress** | 1.08× / 0.93× | 1.12× / 0.85× | 1.18× / 0.80× |
-| **Earnings compression (≤2d / ≤5d / ≤10d)** | off | 0.50× / 0.75× / 0.90× | off |
-| **News compression (score < 25 / < 35)** | off | 0.75× / 0.85× | off |
-| **RS compression** | 0.90× | 0.85× | 0.80× |
-| **K-Score boost** | off | off | **on** |
-| **Max compression floor** | 0.70 | 0.55 | 0.65 |
+| Parameter | SHORT | SWING | LONG | GROWTH |
+|-----------|-------|-------|------|--------|
+| **ML weight cap** | 30% | 75% | 45% | 70% |
+| **BUY threshold — bull market** | 0.60 | **0.62** | 0.60 | **0.57** |
+| **BUY threshold — high-vol** | 0.65 | **0.67** | 0.65 | 0.65 |
+| **BUY threshold — bear market** | 0.68 | **0.70** | 0.70 | 0.68 |
+| **HOLD threshold — bull** | 0.46 | 0.50 | 0.46 | 0.45 |
+| **HOLD threshold — bear** | 0.52 | 0.56 | 0.54 | 0.52 |
+| **ADX filter (min trending)** | 25 | **15** | off | **12** |
+| **ADX compression** | 0.85× | 0.90× | — | 0.92× |
+| **High-vol compression** | 0.92× | 0.85× | 0.90× | 0.88× |
+| **Breadth compression** | off | 0.90× | 0.92× | 0.95× |
+| **Weekly align boost / compress** | 1.08× / 0.93× | 1.12× / 0.85× | 1.18× / 0.80× | 1.08× / 0.92× |
+| **Weekly RSI gate** | — | applies | applies | **skipped** |
+| **Earnings compression (≤2d / ≤5d / ≤10d)** | off | 0.50× / 0.75× / 0.90× | off | 0.60× / 0.80× / 0.92× |
+| **News compression (score < 25 / < 35)** | off | 0.75× / 0.85× | off | 0.80× / 0.90× |
+| **RS compression** | 0.90× | 0.85× | 0.80× | **off** |
+| **Short squeeze boost** | off | on | off | **on** |
+| **K-Score boost** | off | off | **on** | off |
+| **Max compression floor** | 0.70 | 0.55 | 0.65 | 0.60 |
+| **TA score adjustment** | — | — | — | **+0.10 (SMA20>SMA50), +0.04 (RSI 72–85)** |
 
-**ML weight cap** controls how much the ensemble probability can dominate. SHORT keeps ML at ≤ 30% because short-term price movements are noisier — TA momentum is more actionable. SWING allows ML up to 75% when the model has high AUC. LONG caps ML at 45% to let weekly alignment and K-Score have meaningful weight.
+**ML weight cap** controls how much the ensemble probability can dominate. SHORT keeps ML at ≤ 30% because short-term price movements are noisier — TA momentum is more actionable. SWING allows ML up to 75% when the model has high AUC. LONG caps ML at 45% to let weekly alignment and K-Score have meaningful weight. GROWTH uses 70% to leverage ML on momentum continuation patterns.
 
 **Max compression floor** prevents stacked filters from making a BUY mathematically impossible. If all filters combined would compress the fused probability below this floor, the system restores the probability to the floor before applying thresholds.
+
+**GROWTH TA score adjustment** (`_growth_ta_adjustment`): The base TA score penalises growth stocks for two normal characteristics — RSI above 65 and lacking a golden cross (SMA50 > SMA200). GROWTH corrects this with an additive bonus before fusion:
+- **SMA(20) > SMA(50)**: +0.10 — replaces the SMA50>SMA200 requirement at equal weight; growth names typically trade above their 20-day but haven't crossed the 200-day yet
+- **RSI 72–85**: +0.04 — momentum territory is a feature for growth stocks, not a flaw
+- **RSI 65–72**: +0.02 — mild extra credit beyond the base score
+- Bonus is capped at +0.10 total
+
+**RS compression off** — growth leaders outperform their sector by definition. Penalising them for lagging their peers would systematically suppress exactly the stocks this style is designed to find.
+
+**Weekly RSI gate skipped** — growth stocks frequently show weekly RSI readings that would fail the gate for SWING/LONG. The gate is disabled so high-flying names aren't blocked at the last filter.
 
 ---
 
@@ -218,6 +232,7 @@ The horizon varies by trading style — predictions are trained on data that mat
 | SHORT | 5 trading days | Matches the 1–5 day intended hold |
 | SWING | 10 trading days | Matches the 1–4 week intended hold |
 | LONG | 20 trading days | Matches the 1–3 month intended hold |
+| GROWTH | 10 trading days | Same window as SWING; model trained separately so it learns the momentum-continuation pattern for high-RSI names rather than the mean-reversion signal SWING learns |
 
 ```
 label = 1  if forward_return_N > threshold

@@ -2456,7 +2456,7 @@ const ITEMS: Item[] = [
     id: 'cb-6-conviction-gate-calibration',
     defaultStatus: 'done',
     implementedNote: 'Done 2026-06-12 — (1) Dropped stoch recovery requirement from Layer 4b: old check (stoch_cross_up OR stoch_oversold+stoch_k<60) only fired 1-2 days after oversold crossing; blocked >90% of valid BUY setups in trending conditions. (2) Extended RSI window from 45-65 to 45-72: RSI 65-72 is healthy momentum not overextended. Stoch overbought (>80) is still a hard disqualifier. (3) Added ML probability to soft-fail list (alongside OBV/ADX): slight miss vs threshold no longer hard-blocks 5 passing layers.',
-    tier: 9, severity: 'bug',
+    tier: 9, severity: 'critical',
     title: 'CB-6: Conviction gate Layer 4b blocks ~90% of valid BUY setups — stoch recovery window too narrow, RSI ceiling too low',
     file: 'services/market-data/src/services/scheduler.py',
     effort: '30 min',
