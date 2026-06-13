@@ -929,6 +929,8 @@ const ITEMS: Item[] = [
   {
     id: 'pt-multi-portfolio',
     tier: 8, severity: 'feature',
+    defaultStatus: 'in-progress',
+    implementedNote: 'Design complete 2026-06-12. See AL-2 (al2-strategy-ab-testing) — same feature, unified implementation. UI: comparison card grid at top (one card per portfolio: equity, return%, sharpe, win rate, open count, status), overlaid equity chart (all curves + SPY dashed), click-card → detail panel below (existing tabs unchanged, portfolio_id param added). Backend: GET /list, POST /create, GET /compare (new), ?portfolio_id=N on all existing endpoints. Scheduler already loops all is_active portfolios — no change needed.',
     title: 'PT-A4: Only one active paper portfolio — can\'t A/B test GROWTH vs SWING strategies',
     file: 'services/market-data/src/services/paper_trading_engine.py · frontend/src/pages/paper-portfolio.tsx',
     effort: '1 week',
@@ -1557,8 +1559,10 @@ const ITEMS: Item[] = [
   {
     id: 'al2-strategy-ab-testing',
     tier: 3, severity: 'feature',
+    defaultStatus: 'in-progress',
+    implementedNote: 'Design complete 2026-06-12. Unified with PT-A4 (pt-multi-portfolio). Implementation plan: (1) Backend — add GET /paper-portfolio/list (all active portfolios: id/name/style/equity/return/sharpe/winrate/openCount), POST /paper-portfolio/create (name, trading_style, initial_capital), GET /paper-portfolio/compare (all equity curves + SPY in one call); add optional ?portfolio_id=N to all existing endpoints (default: first active, for backwards compat). (2) Frontend — replace page header with comparison card grid (one card per portfolio, ★ badge on best Sharpe), add overlaid Plotly equity chart (one trace per portfolio + SPY dashed), add "+ New Portfolio" modal, pass selectedPortfolioId state to all SWR fetches. Detail panel (all existing tabs) unchanged — only portfolio_id param added. Scheduler already iterates all is_active portfolios; no engine change needed. See FEATURES.md ## Multi-Portfolio A/B Testing for full layout spec.',
     title: 'AL-2: Multi-strategy A/B testing — run variants in parallel, auto-promote the winner',
-    file: 'services/market-data · frontend/src/pages/paper-portfolio.tsx',
+    file: 'services/market-data/src/api/paper_portfolio.py · frontend/src/pages/paper-portfolio.tsx',
     effort: '1–2 weeks',
     impact: 'High — removes guesswork from parameter tuning. Instead of manually deciding whether to raise the conviction threshold from 60% to 68%, run both in parallel on paper portfolios for 30 days and let the data decide.',
     what: 'When making changes to signal logic, conviction thresholds, or position sizing rules, there is no way to compare the new approach vs the old approach empirically without deploying to production. Changes are made based on intuition and backtest, not live A/B evidence.',

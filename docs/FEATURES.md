@@ -3010,3 +3010,142 @@ The **Research page** (`/research/[symbol]`) shows the DCF chip in the signal + 
 |------|------|
 | `services/research-engine/src/api/routes.py` | `_WACC` dict, `_TERMINAL_GROWTH`, `_dcf_fair_value()`, injected into `generate_research()` |
 | `frontend/src/pages/research/[symbol].tsx` | DCF chip + HIGH CONVICTION badge in signal row |
+
+---
+
+## Paper Portfolio (`/paper-portfolio`)
+
+A live paper trading simulator that runs concurrently with real market data. Admin-only. The engine executes the same signal pipeline used for real signals — every trade decision is driven by the same BUY signals, K-Score thresholds, and conviction gate logic, just without real capital.
+
+### How it works
+
+The scheduler calls `paper_trading_step()` every 5–10 minutes during market hours. Each step:
+
+1. **Monitor open positions** — check stop-loss breach, take-profit hit, trailing stop, signal decay, stall detection
+2. **Scan for new entries** — query fresh BUY signals, score each via the conviction gate, size via ATR, enter if all checks pass
+
+All decisions are logged to `paper_decisions` with full context (why entered, why skipped, why exited).
+
+### Tabs
+
+| Tab | Content |
+|---|---|
+| **Positions** | Open trades with entry price, current price, unrealised P&L, stop/target distances |
+| **Decisions** | Entry decision log — every signal considered, with pass/fail reason per conviction gate layer |
+| **Closed Trades** | All completed trades with entry/exit price, hold days, P&L %, exit reason |
+| **Equity Curve** | Equity vs SPY/QQQ with market regime shading (bull=green, bear=red, choppy=amber) |
+| **Attribution** | Win rate broken down by entry score band, confidence band, market regime, R:R ratio |
+
+### Summary stats
+
+| Stat | Description |
+|---|---|
+| Total Return % | `(current_equity − initial_capital) / initial_capital × 100` |
+| Sharpe Ratio | Annualised `(mean_return − risk_free) / std_return` over equity curve |
+| Max Drawdown | Largest peak-to-trough decline in equity curve |
+| Calmar Ratio | `annualised_return / max_drawdown` |
+| Alpha | Excess return above `beta × SPY_return` (CAPM alpha) |
+| Beta | `cov(portfolio, SPY) / var(SPY)` over equity curve |
+| Information Ratio | `alpha / tracking_error` |
+| Win Rate | Closed trades with `pnl > 0` / total closed |
+| vs SPY / vs QQQ | Equity return minus benchmark return over same period |
+
+### Engine config (admin)
+
+Editable from the page footer. Key parameters:
+
+| Param | Default | Effect |
+|---|---|---|
+| `max_positions` | 10 | Hard cap on simultaneous open trades |
+| `risk_per_trade_pct` | 1% | Position size = `risk_pct × equity / stop_distance` |
+| `min_confidence` | 62% | Signal confidence floor for entry |
+| `min_entry_score` | 3 | Minimum conviction gate score (0–10+) |
+| `trading_style` | GROWTH | Which style profile to use for signal filtering |
+
+### Database tables
+
+| Table | Purpose |
+|---|---|
+| `paper_portfolios` | Portfolio config, cash balance, is_active flag |
+| `paper_trades` | Every trade — entry/exit price, size, reasons, P&L |
+| `paper_equity_curve` | Daily EOD snapshot of equity + benchmark closes + market regime |
+| `paper_decisions` | Every entry/skip/exit decision with full reasoning |
+
+---
+
+## Multi-Portfolio A/B Testing (`/paper-portfolio`) — Planned
+
+> **Status: Design complete, implementation pending (AL-2 / PT-A4)**
+
+Run SWING, GROWTH, and LONG paper portfolios simultaneously on the same signals and compare their live performance empirically.
+
+### Why
+
+A single paper portfolio can't tell you whether GROWTH parameters outperform SWING under the same market conditions. Running them sequentially (reset and restart) gives different time periods — not a fair comparison. Running them in parallel on identical signal universes is the only valid A/B test.
+
+### Page layout
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Paper Portfolios                             [+ New Portfolio]  │
+│  3 strategies running in parallel                               │
+├──────────────────┬──────────────────┬───────────────────────────┤
+│  SWING           │  GROWTH ★ best   │  LONG                     │
+│  $54,200         │  $56,100         │  $49,800                   │
+│  +8.4%           │  +12.2% ▲        │  -0.4% ▼                  │
+│  Win 64%         │  Win 71%         │  Win 55%                   │
+│  Sharpe 1.2      │  Sharpe 1.8      │  Sharpe 0.4               │
+│  8 open          │  6 open          │  3 open                    │
+│  ● Running       │  ● Running       │  ● Running                 │
+│  [View Detail]   │  [View Detail ✦] │  [View Detail]             │
+├──────────────────┴──────────────────┴───────────────────────────┤
+│  Equity Curves (overlaid, since portfolio start)                │
+│  ── SWING (indigo)  ── GROWTH (purple)  ── LONG (green)         │
+│  ── SPY (grey dashed, benchmark)                                │
+│                      [Plotly chart]                             │
+├─────────────────────────────────────────────────────────────────┤
+│  ▼ SWING Portfolio  (selected by clicking a card above)         │
+│  [Positions] [Decisions] [Closed Trades] [Equity] [Attribution] │
+│                  [existing tab content, unchanged]              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key UI decisions
+
+**Portfolio cards (not tabs)** — all portfolios visible simultaneously so you don't need to switch tabs to compare. The `★ best` badge marks the highest Sharpe ratio at a glance.
+
+**Overlaid equity chart** — the single most valuable comparison view. Shows divergence points where one strategy started outperforming. One chart, all curves, SPY as benchmark.
+
+**Click card → detail panel** — clicking any portfolio card expands the full existing detail UI (positions, closed trades, attribution, equity, decisions) below the comparison section. No new tabs required. Default: first portfolio selected.
+
+**`+ New Portfolio` modal** — form with: Name, Style (SWING / GROWTH / LONG), Starting Capital. The engine already loops over all active portfolios — creating a new one is sufficient to start it.
+
+### Backend changes required
+
+| Endpoint | Change |
+|---|---|
+| `GET /paper-portfolio/list` | New — returns id, name, style, equity, return %, sharpe, win rate, open count for all active portfolios |
+| `POST /paper-portfolio/create` | New — creates portfolio with `{name, trading_style, initial_capital}` |
+| `GET /paper-portfolio/compare` | New — returns all equity curves in one call for the overlay chart |
+| All existing endpoints | Add optional `?portfolio_id=N` query param; default to first active for backwards compatibility |
+
+The scheduler's `paper_trading_step()` already iterates over all `is_active=True` portfolios — no scheduler change needed.
+
+### Frontend changes required
+
+| Component | Change |
+|---|---|
+| Page header | Replace single-portfolio title with comparison card grid |
+| Overlay chart | New Plotly chart — one trace per portfolio + SPY dashed |
+| Detail panel | Unchanged content; all SWR keys updated to include `portfolio_id` |
+| `+ New Portfolio` | Modal with name / style / capital fields |
+
+### What does NOT change
+
+Everything inside the detail panel (positions table, decisions log, closed trades, attribution heatmap) is the existing code with only the `portfolio_id` parameter added to each API call. Zero regression risk.
+
+### Implementation order
+
+1. Backend: `list`, `create`, `compare` endpoints + `portfolio_id` param on existing endpoints
+2. Frontend: comparison card grid + overlay chart + selected portfolio state
+3. Frontend: wire detail panel SWR keys to selected `portfolio_id`
