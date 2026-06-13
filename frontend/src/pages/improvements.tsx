@@ -3554,7 +3554,7 @@ export default function ImprovementsPage() {
           seeded[item.id] = 'done';
         }
       }
-      const merged = { ...saved, ...seeded }; // seeded wins over stale saved values
+      const merged = { ...seeded, ...saved }; // user overrides win; seeded provides defaults for new items
       setStatuses(merged);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
     } catch { /* ignore */ }
@@ -3578,7 +3578,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -3627,7 +3627,7 @@ export default function ImprovementsPage() {
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>
-          {([0, 1, 2, 3, 4, 5, 6, 7, 8] as const).map(t => (
+          {([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const).map(t => (
             <button key={t} onClick={() => setFilterTier(t as Tier | 0)}
               style={{ padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
                 borderColor: filterTier === t ? TIER_COLOR[t as Tier] ?? '#6366f1' : '#1e293b',

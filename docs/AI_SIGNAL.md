@@ -3,7 +3,7 @@
 Source: [`services/signal-engine/src/generators/signals.py`](../services/signal-engine/src/generators/signals.py)
 ML training: [`services/ml-prediction/src/training/trainer.py`](../services/ml-prediction/src/training/trainer.py)
 
-Last updated: 2026-06-12 (SA-19 4-pillar TA scoring)
+Last updated: 2026-06-13 (SA-19 4-pillar TA scoring; added FAQ — scoring model, multi-style BUY, ML/TA conflict)
 
 ---
 
@@ -685,6 +685,52 @@ All SHORT conditions, plus:
 7. No earnings in next 10 days (compression applied within that window)
 
 Note: GROWTH skips the weekly RSI gate and RS compression — growth leaders outperform their sector by definition and often have elevated weekly RSI as a structural feature.
+
+---
+
+## Reading the signal — common questions
+
+### "Not all indicators are green but the signal is still BUY. How?"
+
+This is the most common point of confusion. The AI Signal is **not a vote counter** — it is a **weighted continuous score**.
+
+Every indicator contributes a sub-score (0–1) that is multiplied by its weight and summed into the TA composite. Even if 4 of 10 displayed indicators are amber or red, the remaining 6 can outweigh them. The TA composite then gets blended with the ML model output, which is the dominant force when the model has a high AUC.
+
+**Example — ARMK:**
+
+| Layer | Value | Weight | Contribution |
+|-------|-------|--------|-------------|
+| Trend (SMA50 above SMA200, uptrend) | 1.0 | 25% | 0.25 |
+| Momentum (RSI 67 extended but not extreme) | 0.5 | 25% | 0.125 |
+| Volume (OBV confirming direction) | 1.0 | 25% | 0.25 |
+| Structure (above VWAP, at resistance) | 0.7 | 25% | 0.175 |
+| **TA composite** | | | **0.75** |
+| ML ensemble (84% bullish, 68.2% confident) | 0.84 | 70%+ | heavy pull |
+| **Fused result** | | | **~0.84** |
+| At Resistance compression | −15% toward neutral | | ~0.79 |
+| **Final fused** | | | **~0.79 → BUY** |
+
+MACD histogram at −0.21 is bearish-but-recovering: it contributes **0.0 to the momentum pillar sub-score** (histogram negative), but the RSI (45–65 range scores 1.0) takes the `max()` of all momentum sub-scores — so momentum pillar still passes. One passing sub-indicator per pillar is enough.
+
+"At Resistance" applies a **15% compression toward neutral** (`fused = 0.5 + (fused−0.5) × 0.85`) — it is a headwind, not a blocker. The signal is aware of resistance; that's why the UI says "signal compressed 15%."
+
+### "Why do all four styles show BUY simultaneously?"
+
+Each style runs its own independent calculation with different weights, thresholds, and ML models. All four can reach BUY when:
+
+1. The underlying stock is genuinely strong (strong trend, ML agreement, weekly alignment) — the raw fused score clears every style's threshold even before style-specific boosts.
+2. Regime is `bull` — all four styles use their lowest (easiest) thresholds.
+3. No per-style penalty applies — ARMK is 59 days from earnings (SWING earnings compression starts at 10 days), no negative news, ADX 38 (well above the trending threshold).
+
+The four confidence percentages differ because ML weight caps differ and TA adjustments differ per style (e.g., GROWTH adds +0.04 for RSI in momentum territory; LONG adds a K-Score boost if applicable).
+
+### "If all indicators were green would confidence be 100%?"
+
+No. Confidence is `|fused − 0.5| × 200`, which maxes at 100% only when `fused = 1.0`. Filters (weekly alignment at 1.12×, breadth, regime) boost the fused score toward 1.0 but never reach it in practice. A real 84% confidence (fused ≈ 0.92) represents an unusually strong setup — it means every filter pushed in the same direction with nothing compressing the result.
+
+### "The ML model disagrees with the TA score — what happens?"
+
+If the gap between `ml_probability` and `ta_prob` exceeds 35 percentage points, the ML weight is reduced by up to 25% (ML/TA conflict dampening). The signal won't ignore either layer — it just gives less trust to whichever one is the outlier. `reasons["ml_ta_conflict"] = true` will appear in the reasons panel. When this flag is set, treat the signal with extra skepticism regardless of the final label.
 
 ---
 
