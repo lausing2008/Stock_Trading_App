@@ -674,6 +674,18 @@ All SHORT conditions, plus:
 4. RS score above sector median — stock is outperforming peers
 5. No earnings in next 30 days (no compression)
 
+### GROWTH — highest conviction
+
+1. SMA(20) > SMA(50) — short-term momentum trend intact (replaces golden cross requirement)
+2. RSI 65–80 — momentum territory, not a flaw for growth names
+3. MACD histogram positive and rising — momentum accelerating
+4. Short interest ≥ 20% — squeeze potential amplifies bullish move
+5. ML probability > 65% — momentum-continuation model agrees
+6. Volume Z-score > 1.0 — above-average institutional participation
+7. No earnings in next 10 days (compression applied within that window)
+
+Note: GROWTH skips the weekly RSI gate and RS compression — growth leaders outperform their sector by definition and often have elevated weekly RSI as a structural feature.
+
 ---
 
 ## Known limitations
