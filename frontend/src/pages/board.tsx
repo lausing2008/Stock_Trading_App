@@ -349,6 +349,12 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
   const [alertOpen, setAlertOpen] = useState(false);
   const [exitInput, setExitInput] = useState('');
   const [savingExit, setSavingExit] = useState(false);
+  const [editingActive, setEditingActive] = useState(false);
+  const [editShares, setEditShares] = useState('');
+  const [editFillPrice, setEditFillPrice] = useState('');
+  const [editStop, setEditStop] = useState('');
+  const [editTarget, setEditTarget] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
   const meta = STAGE_META[plan.stage as Stage] ?? STAGE_META.watch;
   const gp = plan.game_plan as StoredGamePlan | null;
 
@@ -370,6 +376,34 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
       onExitSaved();
     } finally {
       setSavingExit(false);
+    }
+  }
+
+  function openActiveEdit() {
+    setEditShares(plan.shares != null ? String(plan.shares) : '');
+    setEditFillPrice(plan.actual_entry_price != null ? plan.actual_entry_price.toFixed(2) : '');
+    setEditStop(plan.stop_loss != null ? plan.stop_loss.toFixed(2) : '');
+    setEditTarget(plan.take_profit != null ? plan.take_profit.toFixed(2) : '');
+    setEditingActive(true);
+  }
+
+  async function saveActiveEdit() {
+    setSavingEdit(true);
+    try {
+      const updates: Record<string, number> = {};
+      const s = parseFloat(editShares);
+      const p = parseFloat(editFillPrice);
+      const stop = parseFloat(editStop);
+      const target = parseFloat(editTarget);
+      if (!isNaN(s) && s > 0) updates.shares = s;
+      if (!isNaN(p) && p > 0) updates.actual_entry_price = p;
+      if (!isNaN(stop) && stop > 0) updates.stop_loss = stop;
+      if (!isNaN(target) && target > 0) updates.take_profit = target;
+      if (Object.keys(updates).length > 0) await api.updateBoardPlan(plan.id, updates);
+      setEditingActive(false);
+      onExitSaved();
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -457,41 +491,87 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
         )}
 
         {/* Prices */}
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' }}>
-          {plan.actual_entry_price != null && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>Fill </span>
-              <span style={{ color: '#4ade80', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.actual_entry_price)}</span>
-              {plan.shares != null && <span style={{ color: '#334155' }}> × {plan.shares}</span>}
+        <div style={{ marginBottom: '8px' }}>
+          {plan.stage === 'active' && editingActive ? (
+            <div style={{ padding: '10px 12px', borderRadius: '8px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)' }}>
+              <div style={{ fontSize: '10px', color: '#64748b', fontWeight: 700, letterSpacing: '0.06em', marginBottom: '8px', textTransform: 'uppercase' }}>Edit Position</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#475569', display: 'block', marginBottom: '3px' }}>Shares</label>
+                  <input type="number" step="1" value={editShares} onChange={e => setEditShares(e.target.value)}
+                    style={{ width: '100%', padding: '5px 8px', borderRadius: '5px', border: '1px solid #334155', background: '#060814', color: '#f1f5f9', fontSize: '12px', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#475569', display: 'block', marginBottom: '3px' }}>Fill Price</label>
+                  <input type="number" step="0.01" value={editFillPrice} onChange={e => setEditFillPrice(e.target.value)}
+                    style={{ width: '100%', padding: '5px 8px', borderRadius: '5px', border: '1px solid #334155', background: '#060814', color: '#4ade80', fontSize: '12px', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#475569', display: 'block', marginBottom: '3px' }}>Stop Loss</label>
+                  <input type="number" step="0.01" value={editStop} onChange={e => setEditStop(e.target.value)}
+                    style={{ width: '100%', padding: '5px 8px', borderRadius: '5px', border: '1px solid #334155', background: '#060814', color: '#f87171', fontSize: '12px', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#475569', display: 'block', marginBottom: '3px' }}>Take Profit</label>
+                  <input type="number" step="0.01" value={editTarget} onChange={e => setEditTarget(e.target.value)}
+                    style={{ width: '100%', padding: '5px 8px', borderRadius: '5px', border: '1px solid #334155', background: '#060814', color: '#4ade80', fontSize: '12px', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button onClick={saveActiveEdit} disabled={savingEdit}
+                  style={{ flex: 1, padding: '5px', borderRadius: '5px', border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.12)', color: '#818cf8', fontSize: '11px', fontWeight: 700, cursor: 'pointer' }}>
+                  {savingEdit ? '…' : 'Save'}
+                </button>
+                <button onClick={() => setEditingActive(false)}
+                  style={{ padding: '5px 12px', borderRadius: '5px', border: '1px solid #1e293b', background: 'transparent', color: '#475569', fontSize: '11px', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+              </div>
             </div>
-          )}
-          {plan.entry_price != null && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>{plan.actual_entry_price != null ? 'Plan ' : 'Entry '}</span>
-              <span style={{ color: plan.actual_entry_price != null ? '#334155' : '#818cf8', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.entry_price)}</span>
-            </div>
-          )}
-          {(plan.stop_loss != null || gp?.stop_loss?.price != null) && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>Stop </span>
-              <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>
-                {fmt(plan.stop_loss ?? gp!.stop_loss!.price)}
-              </span>
-              {plan.stop_loss == null && gp?.stop_loss?.price != null && (
-                <span style={{ fontSize: '9px', color: '#334155', marginLeft: '3px' }}>gp</span>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              {plan.actual_entry_price != null && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>Fill </span>
+                  <span style={{ color: '#4ade80', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.actual_entry_price)}</span>
+                  {plan.shares != null && <span style={{ color: '#334155' }}> × {plan.shares}</span>}
+                </div>
               )}
-            </div>
-          )}
-          {plan.take_profit != null && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>Target </span>
-              <span style={{ color: '#4ade80', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.take_profit)}</span>
-            </div>
-          )}
-          {plan.entry_price != null && plan.stop_loss != null && plan.take_profit != null && plan.entry_price > plan.stop_loss && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>R:R </span>
-              <span style={{ color: '#facc15', fontWeight: 700 }}>{((plan.take_profit - plan.entry_price) / (plan.entry_price - plan.stop_loss)).toFixed(1)}x</span>
+              {plan.entry_price != null && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>{plan.actual_entry_price != null ? 'Plan ' : 'Entry '}</span>
+                  <span style={{ color: plan.actual_entry_price != null ? '#334155' : '#818cf8', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.entry_price)}</span>
+                </div>
+              )}
+              {(plan.stop_loss != null || gp?.stop_loss?.price != null) && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>Stop </span>
+                  <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>
+                    {fmt(plan.stop_loss ?? gp!.stop_loss!.price)}
+                  </span>
+                  {plan.stop_loss == null && gp?.stop_loss?.price != null && (
+                    <span style={{ fontSize: '9px', color: '#334155', marginLeft: '3px' }}>gp</span>
+                  )}
+                </div>
+              )}
+              {plan.take_profit != null && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>Target </span>
+                  <span style={{ color: '#4ade80', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.take_profit)}</span>
+                </div>
+              )}
+              {plan.entry_price != null && plan.stop_loss != null && plan.take_profit != null && plan.entry_price > plan.stop_loss && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>R:R </span>
+                  <span style={{ color: '#facc15', fontWeight: 700 }}>{((plan.take_profit - plan.entry_price) / (plan.entry_price - plan.stop_loss)).toFixed(1)}x</span>
+                </div>
+              )}
+              {plan.stage === 'active' && (
+                <button onClick={openActiveEdit} title="Edit shares / prices"
+                  style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '13px', padding: '0 2px', lineHeight: 1, flexShrink: 0 }}>
+                  ✎
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -874,12 +954,28 @@ export default function BoardPage() {
 
   async function handleFillConfirm(fillPrice: number, shares: number | null) {
     if (!fillTarget) return;
+    const activatingPlan = (data ?? []).find(p => p.id === fillTarget.id);
     await api.updateBoardPlan(fillTarget.id, {
       stage: 'active',
       actual_entry_price: fillPrice,
       trading_style: getSignalStyle(),
       ...(shares != null ? { shares } : {}),
     });
+    // Auto-sync to Positions page when shares + fill price are provided
+    if (shares != null && activatingPlan) {
+      try {
+        const positions = await api.listPositions();
+        const existing = positions.find(p => p.symbol === activatingPlan.symbol);
+        const currency = /\.(HK|hk)$/.test(activatingPlan.symbol) || /^\d{4,5}$/.test(activatingPlan.symbol) ? 'HKD' : 'USD';
+        if (existing) {
+          await api.buyMorePosition(existing.id, { shares, price: fillPrice });
+        } else {
+          await api.addPosition({ symbol: activatingPlan.symbol, shares, price: fillPrice, currency });
+        }
+      } catch {
+        // Position sync is best-effort; board plan update already succeeded
+      }
+    }
     setFillTarget(null);
     mutate();
   }
