@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -3475,6 +3475,138 @@ const ITEMS: Item[] = [
     what: 'The homepage shows the top-ranked stocks and some market data but there\'s no single panel with all the "morning checklist" data: futures direction, overnight VIX change, fear & greed trend, sector rotation signal, and earnings today.',
     fix: 'Add a PreMarket bar to the top of the homepage: SPY futures %, QQQ futures %, VIX current + 1-day change, 10Y yield, Fear & Greed gauge (fetched from the fear-greed endpoint), and a "Earnings Today" count badge. Refresh every 5 minutes.',
   },
+
+  // ── Tier 12 — Paper Trading Deep Review 2026-06-13 ──────────────────────────
+  {
+    id: 'pt-c1-portfolio-config-scale',
+    tier: 12, severity: 'critical',
+    title: 'Fix portfolio config scale values in DB (risk_per_trade_pct=1 should be 0.01)',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1 SQL statement',
+    impact: 'risk_per_trade_pct=1 means the engine treats 100% of equity as the risk base, then relies on max_loss_per_trade cap — massively distorting position sizing. max_hold_days=20 exits GROWTH trades 3× too early.',
+    what: 'The stored portfolio config has risk_per_trade_pct=1 (should be 0.01), max_position_pct=5 (should be 0.10), and max_hold_days=20 (should be 60 for GROWTH). These were set via UI with percentage inputs (e.g. "1" meaning 1%) but the engine expects decimal fractions (0.01). The UI never validated or documented the expected format.',
+    fix: 'Run on EC2: UPDATE paper_portfolios SET config = config || jsonb_build_object(\'risk_per_trade_pct\', 0.01, \'max_position_pct\', 0.10, \'max_hold_days\', 60) WHERE name = \'GROWTH Paper Portfolio\'; Then add validation in the /configure endpoint: reject risk_per_trade_pct > 0.05 with a clear error message.',
+  },
+  {
+    id: 'pt-h1-config-validation',
+    tier: 12, severity: 'high',
+    title: 'Add portfolio config validation on save — reject out-of-range decimal values',
+    file: 'services/market-data/src/routes.py',
+    effort: '2 hours',
+    impact: 'Prevents recurrence of PT-C1 — user enters 1 instead of 0.01 and blows up position sizing silently.',
+    what: 'The /paper-portfolio/configure endpoint accepts raw JSON config with no validation. risk_per_trade_pct=1 (100% equity risk) and max_position_pct=5 (500% equity) were accepted silently. The UI shows no units and no hint that these are decimal fractions.',
+    fix: 'Add Pydantic model or manual validation in the configure route: risk_per_trade_pct must be 0.001–0.05, max_position_pct must be 0.01–0.30, max_hold_days must be 5–200. Return 400 with a clear message on failure. Add "Enter as decimal (e.g. 0.01 for 1%)" labels in the UI config form.',
+  },
+  {
+    id: 'pt-h2-stock-id-on-trade',
+    tier: 12, severity: 'high',
+    title: 'Populate stock_id on PaperTrade entry so double-top mid-trade detection works',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1 hour',
+    impact: 'Double-top neckline tightening in _monitor_positions queries trade.stock_id — currently NULL, so query returns nothing and the tighter trail is never applied.',
+    what: '_scan_for_entries() creates PaperTrade rows but does not set stock_id. The monitor loop does: session.execute(sa_text("SELECT reasons FROM signals WHERE stock_id = :sid ..."), {"sid": trade.stock_id, ...}) — passes NULL, returns no rows, double-top tightening silently skipped every cycle.',
+    fix: 'In _scan_for_entries(), when creating the PaperTrade object, set stock_id=signal_row.Stock.id (already available in the query result). One line fix. Add a test that verifies double-top tightening fires correctly with a seeded trade.',
+  },
+  {
+    id: 'pt-h3-kscore-deterioration-exit',
+    tier: 12, severity: 'high',
+    title: 'Add K-score deterioration exit — exit if K-score drops 15+ points from entry value',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1 day',
+    impact: 'K-score captures institutional flow (OBV, volume, momentum breadth). A 15-point drop signals the smart money is exiting. This catch is earlier than waiting for price to hit the trailing stop.',
+    what: 'The hold/sell logic does not use K-score at all. A stock can go from K=75 at entry to K=40 (institutional distribution) while price still holds, then dump suddenly. The engine only reacts when the stop is hit — after the damage is done.',
+    fix: 'In _monitor_positions(), load the current K-score from Ranking (already joined in the signal query). If current_kscore < trade.kscore_at_entry - 15 and trail is armed (gain > 3%), tighten trail multiplier to 1.5× ATR (between the normal 2.0× and the double-top 1.2×). Log paper.kscore_deterioration_trail_tightened. Store kscore_at_entry on the PaperTrade row at entry.',
+  },
+  {
+    id: 'pt-h4-obv-divergence-exit',
+    tier: 12, severity: 'high',
+    title: 'Add OBV divergence exit — price holding but OBV declining signals distribution',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1 day',
+    impact: 'OBV divergence (price up, OBV down) is one of the most reliable distribution signals. Catching it early lets the trailing stop tighten before the inevitable price breakdown.',
+    what: 'The sell logic relies entirely on price-based stops (hard stop, trailing ATR stop). It does not track whether volume is supporting the price move. A stock distributing quietly — where institutions sell into retail buying — shows flat/rising price but declining OBV. The stop only fires after the price breaks.',
+    fix: 'Compute 5-day OBV change for each open position using daily bar data (already in the DB). If price is up > 2% from entry AND OBV has declined > 5% over the past 10 bars AND trail is armed, tighten trail multiplier to 1.5×. Add obv_divergence flag to exit reasons. Reuse the existing prices_1d table.',
+  },
+  {
+    id: 'pt-h5-manual-trigger-endpoint',
+    tier: 12, severity: 'high',
+    title: 'Add admin endpoint POST /paper-portfolio/run-step to manually trigger paper_trading_step',
+    file: 'services/market-data/src/routes.py',
+    effort: '2 hours',
+    impact: 'Critical for testing and debugging on weekends/holidays when the scheduler does not fire. Currently impossible to trigger the paper trading engine without editing the scheduler code.',
+    what: 'There is no way to manually trigger paper_trading_step() without waiting for the CronTrigger to fire during market hours Mon–Fri. This makes it impossible to debug paper trading logic on weekends, and blocked the entire investigation in this review (had to infer behavior from code reading).',
+    fix: 'Add POST /paper-portfolio/run-step (admin auth required). Calls paper_trading_step() synchronously and returns the log output (capture via structlog sink or return a summary dict). Add enforce_market_hours=False override flag so it works outside market hours for testing. Rate-limit to 1 call per minute.',
+  },
+  {
+    id: 'pt-m1-rs-vs-sector-exit',
+    tier: 12, severity: 'medium',
+    title: 'Add relative-strength vs sector exit — stock lagging sector ETF > 10% over 5 days',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1 day',
+    impact: 'A stock that holds price while its sector rotates up is a stealth laggard. Institutional money is quietly selling into the sector rally. Catching this before the stock drops to the trailing stop preserves 2-4% of gains.',
+    what: 'The exit logic uses only absolute price metrics (stop vs current price). It does not compare the held stock to its sector ETF. A semiconductor stock might stay at the same price while XLK rallies 5% — a -5% relative return that signals distribution before the absolute drop.',
+    fix: 'For each open position, cache the sector ETF return over the last 5 trading days (SPY, XLK, XLV etc. based on stock.sector). If stock 5d return < sector_etf 5d return - 10pp AND trail is armed, tighten trail to 1.5×. Use the peer_comparison data already computed by the research engine or compute directly from prices_1d.',
+  },
+  {
+    id: 'pt-m2-earnings-proximity-stop-freeze',
+    tier: 12, severity: 'medium',
+    title: 'Freeze trailing stop 2 days before earnings — prevent stop-out before binary event',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '3 hours',
+    impact: 'Trailing stops can stop you out on normal pre-earnings volatility the day before a blowout quarter. Freezing the stop (not the position) for 48h before earnings captures the earnings pop while preventing a bad fill on a gap-up open.',
+    what: 'The engine blocks NEW entries within 5 days of earnings but does not adjust exits for existing positions. A position might trail-stop on day 3 of a pre-earnings consolidation, then the stock gaps up 15% on the earnings print. The engine exited for a 1% loss that would have been a 15% gain.',
+    fix: 'In _monitor_positions(), if days_to_earnings <= 2 (from signal.reasons), skip all trail updates for this cycle (let the stop stay where it is). Log paper.earnings_proximity_stop_frozen. The hard stop (initial stop_loss) still protects against catastrophic breakdown. Resume normal trailing after earnings day passes.',
+  },
+  {
+    id: 'pt-m3-paper-trading-dashboard',
+    tier: 12, severity: 'medium',
+    title: 'Add paper trading dashboard — equity curve, entry/exit log, open positions table',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: '3 days',
+    impact: 'Currently the paper trading page shows basic portfolio stats but no trade history, no equity curve chart, and no way to see why specific trades entered or exited. Essential for evaluating if the engine is working correctly.',
+    what: 'The paper-portfolio page shows current positions and cash balance. It does not show: (1) historical equity curve (PaperEquityCurve table has all data), (2) closed trade log with entry/exit reasons and P&L, (3) entry decision notes (stored in entry_decision_notes JSON array on each trade), (4) regime state at entry, (5) signal state at exit.',
+    fix: 'Add three tabs to paper-portfolio page: Overview (equity curve chart using PaperEquityCurve rows), Open Positions (table with entry price, current P&L, current stop, days held, regime at entry), Closed Trades (sortable table with entry/exit/P&L/hold days/exit reason). Add GET /paper-portfolio/{id}/equity-curve and GET /paper-portfolio/{id}/trades (paginated) endpoints.',
+  },
+  {
+    id: 'pt-m4-regime-vix-term-structure',
+    tier: 12, severity: 'medium',
+    title: 'Add VIX term-structure check to regime engine — VIX9D vs VIX as near-term panic signal',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '3 hours',
+    impact: 'VIX9D > VIX (inverted VIX term structure) reliably signals near-term panic — the market is paying more to hedge 9-day risk than 30-day risk. Catching this before SPY drops below the 50EMA gives a 1-3 session head start.',
+    what: 'The regime engine uses VIX vs fixed thresholds (20, 25, 30). It does not check whether the VIX curve is inverted (VIX9D > VIX). A normal VIX of 18 with VIX9D of 22 is a pre-panic signal the engine currently misses entirely.',
+    fix: 'In _fetch_market_regime(), download ^VIX9D alongside ^VIX using yfinance. Compute vix9d_vs_vix = vix9d / vix. If > 1.10 (term structure inverted by > 10%) AND state is bull or neutral, set is_pre_risk_off = True. Log the ratio. This gives an early warning before the 50EMA flip.',
+  },
+  {
+    id: 'pt-m5-regime-market-breadth',
+    tier: 12, severity: 'medium',
+    title: 'Add market breadth to regime engine — % of S&P 500 above 200EMA as confirmatory signal',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1 day',
+    impact: 'SPY can stay above the 50EMA while breadth collapses internally (a narrowing market — only mega-caps holding up). Breadth < 40% while SPY looks fine is a major warning sign the regime engine currently misses.',
+    what: 'The regime engine classifies based solely on SPY price vs EMAs and VIX. It does not check whether the rally is broad or narrow. In late 2021 and early 2022, SPY stayed above the 50EMA while the Russell 2000 and breadth collapsed — a regime engine without breadth would have stayed in "bull" the whole way down.',
+    fix: 'Add a weekly breadth check using yfinance: download the S&P 500 constituents (or a proxy ETF like IWM, MDY) and compute % above 200EMA. Cache the result for 24h to avoid expensive daily recalculation. If breadth < 40%, set is_pre_risk_off = True even in bull regime. Use as a size multiplier: breadth 40-60% → 80% size, < 40% → 60% size.',
+  },
+  {
+    id: 'aud-c1-ml-label-imbalance',
+    tier: 12, severity: 'high',
+    title: 'AUD-C1: ML label imbalance — BUY labels overrepresented during bull training periods',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '1 day',
+    impact: 'If the training data is predominantly from a bull market, the model will overweight BUY signals. In neutral/choppy markets, the ML ensemble fires too easily, causing overconfident signals that TA composite then has to dampen via ml_ta_conflict.',
+    what: 'The ML trainer labels trades as BUY/SELL/HOLD based on 20-day forward returns. If the training window includes a sustained bull period (2020-2021), BUY labels dominate (60-70% of rows). The model then has a base-rate bias toward BUY that Optuna tuning cannot fix — the weights are fit on biased labels.',
+    fix: 'Add class_weight="balanced" to XGBClassifier (equivalent: scale_pos_weight = n_negative / n_positive per class). Alternatively, apply temporal stratified sampling: ensure each quarter contributes equally to the training set regardless of market regime. Add a label distribution check to the training log so we can verify balance.',
+  },
+  {
+    id: 'aud-c2-calibrator-leakage',
+    tier: 12, severity: 'high',
+    title: 'AUD-C2: Calibrator leakage — isotonic regression fit on full training set inflates probabilities',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '4 hours',
+    impact: 'The calibrator should be fit on held-out data it has never seen. Fitting on training data means the calibrated probabilities look well-calibrated on training set but are overfit — bullish_probability may be inflated by 3-8 percentage points in production.',
+    what: 'The IsotonicRegression calibrator is fit on the same data used to train the XGBoost model. Even though a separate 15% calibration split exists (70/15/15 split), if the XGBoost model was trained on the 70% and then used to generate calibration inputs from the 70% again, the calibrator is seeing training-set predictions — which are already overfit. The out-of-fold predictions (from CV) should be used instead.',
+    fix: 'Generate calibration targets using out-of-fold (OOF) predictions from the 5-fold CV run (already in trainer.py). Use model.predict_proba() on each fold\'s hold-out set, concatenate all 5 hold-out outputs, and fit IsotonicRegression on that. This gives a calibrator that has only seen OOF predictions — the same distribution as production inference.',
+  },
 ];
 
 
@@ -3493,6 +3625,7 @@ const TIER_LABEL: Record<Tier, string> = {
   9: 'Tier 9 — Signal Coherence & Breakthrough Improvements (2026-06-11)',
   10: 'Tier 10 — Adversarial System Audit 2026-06-12 (3 Critical · 19 High · 23 Medium)',
   11: 'Tier 11 — Competitor Feature Parity (TradingView · Finviz · WallStreetZen · Seeking Alpha)',
+  12: 'Tier 12 — Paper Trading Deep Review 2026-06-13 (1 Critical · 5 High · 5 Medium · 2 ML)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -3507,6 +3640,7 @@ const TIER_COLOR: Record<Tier, string> = {
   9: '#22d3ee',
   10: '#e879f9',
   11: '#86efac',
+  12: '#fda4af',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -3578,7 +3712,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -3627,7 +3761,7 @@ export default function ImprovementsPage() {
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>
-          {([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const).map(t => (
+          {([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const).map(t => (
             <button key={t} onClick={() => setFilterTier(t as Tier | 0)}
               style={{ padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
                 borderColor: filterTier === t ? TIER_COLOR[t as Tier] ?? '#6366f1' : '#1e293b',
