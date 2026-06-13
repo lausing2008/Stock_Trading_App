@@ -176,10 +176,11 @@ export default function StockDetail() {
     'signal-alerts', () => api.listSignalAlerts(),
   );
   // All-horizon signals for the consensus indicator
-  const { data: sigShort } = useSWR(symbol ? `sig-${symbol}-SHORT` : null, () => api.signal(symbol, 'SHORT'), { refreshInterval: 300_000 });
-  const { data: sigSwing } = useSWR(symbol ? `sig-${symbol}-SWING` : null, () => api.signal(symbol, 'SWING'), { refreshInterval: 300_000 });
-  const { data: sigLong } = useSWR(symbol ? `sig-${symbol}-LONG` : null, () => api.signal(symbol, 'LONG'), { refreshInterval: 300_000 });
-  const { data: sigGrowth } = useSWR(symbol ? `sig-${symbol}-GROWTH` : null, () => api.signal(symbol, 'GROWTH'), { refreshInterval: 300_000 });
+  // live=false → reads stored DB signal (matches signal filter); Refresh button uses live=true
+  const { data: sigShort,  mutate: mutateSigShort }  = useSWR(symbol ? `sig-${symbol}-SHORT`  : null, () => api.signal(symbol, 'SHORT',  false), { revalidateOnFocus: false });
+  const { data: sigSwing,  mutate: mutateSigSwing }  = useSWR(symbol ? `sig-${symbol}-SWING`  : null, () => api.signal(symbol, 'SWING',  false), { revalidateOnFocus: false });
+  const { data: sigLong,   mutate: mutateSigLong }   = useSWR(symbol ? `sig-${symbol}-LONG`   : null, () => api.signal(symbol, 'LONG',   false), { revalidateOnFocus: false });
+  const { data: sigGrowth, mutate: mutateSigGrowth } = useSWR(symbol ? `sig-${symbol}-GROWTH` : null, () => api.signal(symbol, 'GROWTH', false), { revalidateOnFocus: false });
   const allHorizonSignals: { label: string; horizon: string; sig: typeof sigShort }[] = [
     { label: 'SHORT', horizon: 'SHORT', sig: sigShort },
     { label: 'SWING', horizon: 'SWING', sig: sigSwing },
@@ -428,8 +429,12 @@ export default function StockDetail() {
   async function handleRefreshSignal() {
     setSigRefreshing(true);
     try {
+      // Recompute live + persist to DB, then reload all stored signals
       await api.refreshSignal(symbol);
-      await mutateOverview();
+      await Promise.all([
+        mutateOverview(),
+        mutateSigShort(), mutateSigSwing(), mutateSigLong(), mutateSigGrowth(),
+      ]);
     } catch { /* non-fatal */ }
     setSigRefreshing(false);
   }
@@ -1298,8 +1303,21 @@ Return ONLY valid JSON — no markdown, no prose:
             const HORIZON_COLOR: Record<string, string> = { SHORT: '#38bdf8', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa' };
             const activeSig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
               ?? (selectedHorizon === 'SWING' ? data.signal : null);
+            const sigTs = activeSig && 'ts' in activeSig ? (activeSig as Signal & { ts?: string }).ts : null;
+            const storedAge = sigTs ? (() => {
+              const mins = Math.round((Date.now() - new Date(sigTs).getTime()) / 60000);
+              if (mins < 90) return `${mins}m ago`;
+              const hrs = Math.round(mins / 60);
+              if (hrs < 48) return `${hrs}h ago`;
+              return `${Math.round(hrs / 24)}d ago`;
+            })() : null;
             return (
               <div>
+                {/* Stored-signal badge */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: 9, color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>AI Signals</span>
+                  {storedAge && <span style={{ fontSize: 9, color: '#334155' }}>stored · {storedAge} · <span style={{ color: '#475569' }}>Refresh to update</span></span>}
+                </div>
                 {/* Horizon tabs */}
                 <div style={{ display: 'flex', gap: 3, marginBottom: 8 }}>
                   {allHorizonSignals.map(({ label, horizon, sig }) => {

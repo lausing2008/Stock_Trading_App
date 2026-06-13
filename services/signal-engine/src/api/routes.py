@@ -2460,23 +2460,75 @@ def factor_attribution(
     }
 
 
+def _stored_signal_for_style(session: Session, stock_id: int, style_key: str) -> dict | None:
+    """Return the latest persisted signal row for this stock+style as a plain dict."""
+    from sqlalchemy import desc as _desc
+    try:
+        horiz = SignalHorizon(style_key)
+    except ValueError:
+        return None
+    row = session.execute(
+        select(Signal.signal, Signal.confidence, Signal.bullish_probability, Signal.ts, Signal.reasons)
+        .where(Signal.stock_id == stock_id, Signal.horizon == horiz)
+        .order_by(_desc(Signal.ts))
+        .limit(1)
+    ).one_or_none()
+    if not row:
+        return None
+    reasons = dict(row.reasons) if row.reasons else {}
+    reasons["stability_days"] = _compute_stability(session, stock_id, horiz, row.signal.value)
+    return {
+        "signal": row.signal.value,
+        "horizon": style_key,
+        "confidence": row.confidence,
+        "bullish_probability": row.bullish_probability,
+        "reasons": reasons,
+        "ts": row.ts.isoformat() if row.ts else None,
+    }
+
+
 @router.get("/{symbol}")
 def signal_for(
     symbol: str,
     persist: bool = False,
+    live: bool = Query(True, description="False = return latest persisted DB signal (matches signal filter). True = compute fresh (may differ from DB)."),
     style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG, GROWTH. Returns all if omitted."),
     session: Session = Depends(get_session),
 ):
-    """Generate (and optionally persist) fresh signals for the given symbol.
+    """Return signal(s) for a symbol.
 
-    Returns all 3 style signals by default, or just the requested style.
+    live=False (default on detail page): reads latest stored DB signal — consistent with signal filter.
+    live=True + persist=True: recomputes fresh and overwrites DB — used by the Refresh button.
     """
+    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+
+    if not live and not persist:
+        # Fast path: return stored signals from DB without running ML/TA
+        if not stock:
+            raise HTTPException(404, f"Stock {symbol} not found")
+        all_styles = ["SHORT", "SWING", "LONG", "GROWTH"]
+        stored: dict[str, dict] = {}
+        for s_key in all_styles:
+            d = _stored_signal_for_style(session, stock.id, s_key)
+            if d:
+                stored[s_key] = d
+        if not stored:
+            # No stored signals yet — fall through to live computation
+            pass
+        else:
+            if style:
+                s_key = style.upper()
+                data = stored.get(s_key) or stored.get("SWING")
+                if data:
+                    return {"symbol": symbol, **data}
+            else:
+                return {"symbol": symbol, "signals": stored}
+
+    # Live computation (or fallback when no stored signals exist)
     try:
         all_sig = generate_all_signals(symbol)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
-
-    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
 
     if persist and stock:
         for ai in all_sig.values():
@@ -2504,7 +2556,6 @@ def signal_for(
         ai = all_sig.get(style_key) or all_sig["SWING"]
         return {"symbol": symbol, **asdict(ai)}
 
-    # Return all styles (SHORT, SWING, LONG, GROWTH)
     return {
         "symbol": symbol,
         "signals": {k: asdict(v) for k, v in all_sig.items()},

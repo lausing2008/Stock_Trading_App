@@ -62,11 +62,16 @@ export const api = {
       rs_score: number | null; signal: string | null; confidence: number | null; horizon: string | null;
     }[] }>(`/rankings/screen?${p}`);
   },
-  signal: (symbol: string, style?: string) => request<Signal>(`/signals/${symbol}${style ? `?style=${style}` : ''}`),
+  // live=false reads DB-stored signal (matches signal filter); live=true recomputes fresh
+  signal: (symbol: string, style?: string, live = false) => {
+    const params = new URLSearchParams({ live: String(live) });
+    if (style) params.set('style', style);
+    return request<Signal>(`/signals/${symbol}?${params}`);
+  },
   allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
   signalHistory: (symbol: string, style = 'SWING', days = 60) =>
     request<SignalHistoryPoint[]>(`/signals/${symbol}/history?style=${style}&days=${days}`),
-  refreshSignal: (symbol: string) => request<Signal>(`/signals/${symbol}?persist=true`),
+  refreshSignal: (symbol: string) => request<Signal>(`/signals/${symbol}?live=true&persist=true`),
   refreshSignals: (market?: string) => request<{ status: string; count: number }>(`/signals/refresh${market ? `?market=${encodeURIComponent(market)}` : ''}`, { method: 'POST' }),
   predict: (symbol: string, model = 'xgboost') =>
     request<Prediction>(`/ml/predict`, { method: 'POST', body: JSON.stringify({ symbol, model }) }),
