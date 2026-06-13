@@ -1317,7 +1317,12 @@ Return ONLY valid JSON — no markdown, no prose:
                       >
                         <span style={{ fontSize: 9, fontWeight: 700, color: isActive ? hColor : '#475569', letterSpacing: '0.04em' }}>{label}</span>
                         {sig ? (
-                          <span style={{ fontSize: 10, fontWeight: 800, color: SIG_C[sig.signal] ?? '#475569' }}>{sig.signal}</span>
+                          <>
+                            <span style={{ fontSize: 10, fontWeight: 800, color: SIG_C[sig.signal] ?? '#475569' }}>{sig.signal}</span>
+                            <span style={{ fontSize: 9, color: isActive ? hColor : '#334155', opacity: 0.9 }}>
+                              {sig.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(0)}%` : ''}
+                            </span>
+                          </>
                         ) : (
                           <span style={{ fontSize: 10, color: '#334155' }}>—</span>
                         )}

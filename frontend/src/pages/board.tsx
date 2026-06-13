@@ -925,6 +925,8 @@ export default function BoardPage() {
   type FillTarget = { id: number; defaultPrice: number | null };
   const [fillTarget, setFillTarget] = useState<FillTarget | null>(null);
   const [closeConfirmId, setCloseConfirmId] = useState<number | null>(null);
+  const [closeExitInput, setCloseExitInput] = useState('');
+  const [fillSyncMsg, setFillSyncMsg] = useState('');
 
   // Fetch live prices for board symbols only, refresh every 60 s
   const boardSymbols = useMemo(() => [...new Set((data ?? []).map(p => p.symbol))], [data]);
@@ -972,8 +974,27 @@ export default function BoardPage() {
 
   async function handleCloseConfirmed() {
     if (closeConfirmId == null) return;
-    await api.updateBoardPlan(closeConfirmId, { stage: 'closed' });
+    const closePlan = (data ?? []).find(p => p.id === closeConfirmId);
+    const exitPrice = parseFloat(closeExitInput);
+    const updates: Record<string, unknown> = { stage: 'closed' };
+    if (!isNaN(exitPrice) && exitPrice > 0) updates.exit_price = exitPrice;
+    await api.updateBoardPlan(closeConfirmId, updates);
+    // Remove from Positions if the card has a tracked position
+    if (closePlan?.symbol) {
+      try {
+        const positions = await api.listPositions();
+        const existing = positions.find(p => p.symbol === closePlan.symbol.toUpperCase());
+        if (existing) {
+          if (!isNaN(exitPrice) && exitPrice > 0 && (closePlan.shares ?? 0) > 0) {
+            await api.sellPosition(existing.id, { shares: Math.min(closePlan.shares!, existing.shares), price: exitPrice });
+          } else {
+            await api.removePosition(existing.id);
+          }
+        }
+      } catch { /* best-effort */ }
+    }
     setCloseConfirmId(null);
+    setCloseExitInput('');
     mutate();
   }
 
@@ -990,16 +1011,21 @@ export default function BoardPage() {
     if (shares != null && activatingPlan) {
       try {
         const positions = await api.listPositions();
-        const existing = positions.find(p => p.symbol === activatingPlan.symbol);
+        const existing = positions.find(p => p.symbol === activatingPlan.symbol.toUpperCase());
         const currency = /\.(HK|hk)$/.test(activatingPlan.symbol) || /^\d{4,5}$/.test(activatingPlan.symbol) ? 'HKD' : 'USD';
         if (existing) {
           await api.buyMorePosition(existing.id, { shares, price: fillPrice });
         } else {
           await api.addPosition({ symbol: activatingPlan.symbol, shares, price: fillPrice, currency });
         }
+        setFillSyncMsg(`✓ Added to Positions (${shares} shares @ ${fillPrice})`);
       } catch {
-        // Position sync is best-effort; board plan update already succeeded
+        setFillSyncMsg('⚠ Position sync failed — add manually in Positions');
       }
+      setTimeout(() => setFillSyncMsg(''), 6000);
+    } else if (shares == null) {
+      setFillSyncMsg('No shares entered — open Positions to add manually');
+      setTimeout(() => setFillSyncMsg(''), 5000);
     }
     setFillTarget(null);
     mutate();
@@ -1020,7 +1046,16 @@ export default function BoardPage() {
   }
 
   async function handleDelete(id: number) {
+    const plan = (data ?? []).find(p => p.id === id);
     await api.deleteBoardPlan(id);
+    // If active with fill price → also remove from Positions
+    if (plan?.stage === 'active' && plan.actual_entry_price != null) {
+      try {
+        const positions = await api.listPositions();
+        const existing = positions.find(p => p.symbol === plan.symbol.toUpperCase());
+        if (existing) await api.removePosition(existing.id);
+      } catch { /* best-effort */ }
+    }
     mutate();
   }
 
@@ -1234,22 +1269,56 @@ export default function BoardPage() {
         />
       )}
 
+      {/* fill sync status toast */}
+      {fillSyncMsg && (
+        <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 2000, background: '#0f172a', border: `1px solid ${fillSyncMsg.startsWith('✓') ? 'rgba(74,222,128,0.4)' : 'rgba(251,191,36,0.4)'}`, borderRadius: 8, padding: '8px 18px', fontSize: 12, color: fillSyncMsg.startsWith('✓') ? '#4ade80' : '#fbbf24', fontWeight: 600, boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+          {fillSyncMsg}
+        </div>
+      )}
+
       {/* UI-5: close confirmation modal */}
       {closeConfirmId != null && (() => {
         const closePlan = (data ?? []).find(p => p.id === closeConfirmId);
+        const hasPosition = closePlan?.actual_entry_price != null;
+        const pnlPreview = (() => {
+          const exit = parseFloat(closeExitInput);
+          const entry = closePlan?.actual_entry_price ?? closePlan?.entry_price;
+          const shares = closePlan?.shares;
+          if (!isNaN(exit) && exit > 0 && entry != null && shares != null) {
+            const pnl = (exit - entry) * shares;
+            return { pnl, pct: ((exit - entry) / entry) * 100 };
+          }
+          return null;
+        })();
         return (
           <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
-            <div onClick={() => setCloseConfirmId(null)} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(6px)' }} />
-            <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '360px', borderRadius: '14px', background: 'linear-gradient(160deg,#0d1424 0%,#090e1a 100%)', border: '1px solid rgba(239,68,68,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.6)', padding: '24px 24px 20px' }}>
+            <div onClick={() => { setCloseConfirmId(null); setCloseExitInput(''); }} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(6px)' }} />
+            <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '380px', borderRadius: '14px', background: 'linear-gradient(160deg,#0d1424 0%,#090e1a 100%)', border: '1px solid rgba(239,68,68,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.6)', padding: '24px 24px 20px' }}>
               <div style={{ height: '3px', background: 'linear-gradient(90deg,#ef4444,#f87171)', borderRadius: '2px', marginBottom: '18px' }} />
               <div style={{ fontSize: '15px', fontWeight: 700, color: '#f1f5f9', marginBottom: '8px' }}>
                 Close trade{closePlan ? ` · ${closePlan.symbol}` : ''}?
               </div>
-              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '20px', lineHeight: 1.5 }}>
-                This will move the trade to <span style={{ color: '#94a3b8' }}>Closed</span>. Record an exit price on the card afterwards to log your P&amp;L.
+              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '16px', lineHeight: 1.5 }}>
+                Moves to <span style={{ color: '#94a3b8' }}>Closed</span>.{hasPosition ? ' Position will be removed from Positions page.' : ''}
               </div>
+              <label style={{ display: 'block', fontSize: '11px', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px' }}>
+                Exit price <span style={{ color: '#334155', fontWeight: 400, textTransform: 'none' }}>(optional — logs P&L)</span>
+              </label>
+              <input
+                autoFocus
+                type="number" step="0.01" placeholder="e.g. 165.00"
+                value={closeExitInput}
+                onChange={e => setCloseExitInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleCloseConfirmed()}
+                style={{ width: '100%', padding: '8px 12px', borderRadius: '7px', border: '1px solid #334155', background: '#060814', color: '#f1f5f9', fontSize: '14px', fontFamily: 'ui-monospace, monospace', outline: 'none', boxSizing: 'border-box', marginBottom: '10px' }}
+              />
+              {pnlPreview && (
+                <div style={{ fontSize: 12, marginBottom: 14, padding: '6px 10px', borderRadius: 6, background: pnlPreview.pnl >= 0 ? 'rgba(74,222,128,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${pnlPreview.pnl >= 0 ? 'rgba(74,222,128,0.2)' : 'rgba(239,68,68,0.2)'}`, color: pnlPreview.pnl >= 0 ? '#4ade80' : '#f87171' }}>
+                  P&L: {pnlPreview.pnl >= 0 ? '+' : ''}${Math.abs(pnlPreview.pnl).toFixed(0)} ({pnlPreview.pct >= 0 ? '+' : ''}{pnlPreview.pct.toFixed(1)}%)
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                <button onClick={() => setCloseConfirmId(null)} style={{ padding: '7px 16px', borderRadius: '6px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', fontSize: '12px', cursor: 'pointer' }}>
+                <button onClick={() => { setCloseConfirmId(null); setCloseExitInput(''); }} style={{ padding: '7px 16px', borderRadius: '6px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', fontSize: '12px', cursor: 'pointer' }}>
                   Cancel
                 </button>
                 <button onClick={handleCloseConfirmed} style={{ padding: '7px 18px', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.4)', background: 'rgba(239,68,68,0.12)', color: '#f87171', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>

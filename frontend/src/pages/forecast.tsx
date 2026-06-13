@@ -158,18 +158,18 @@ Criteria:
 Return ONLY a JSON array of HKEX ticker strings: ["0700.HK","9988.HK","3690.HK","9999.HK","1810.HK","2318.HK"]`;
   }
 
-  return `List 65 US stock tickers that are good swing trading candidates right now.
+  return `List 100 US stock tickers that are good swing trading candidates right now.
 
 Criteria:
-- Share price roughly $${priceMin} to $${priceMax}
+- Share price MUST be strictly between $${priceMin} and $${priceMax} — do NOT include any ticker priced below $${priceMin} or above $${priceMax}
 - Small to mid-cap companies ($200M – $15B market cap)
 - Sectors with momentum: Technology, Healthcare, Biotech, Energy, Fintech, Consumer, Industrials, Defense, AI/ML
 - Companies with recent catalysts: earnings beats, product launches, sector rotation, analyst upgrades
 - Active traders, liquid (not thinly traded)
-- NOT mega-caps (no AAPL, MSFT, GOOGL, AMZN, NVDA, TSLA, META)
-- NOT penny stocks under $2
+- NOT mega-caps (no AAPL, MSFT, GOOGL, AMZN, NVDA, TSLA, META)${priceMin >= 2 ? '' : '\n- NOT penny stocks under $1'}
 
 Include a mix of: small caps with momentum, sector leaders in their niche, recent breakout candidates.
+Remember: ALL tickers must have a current stock price between $${priceMin} and $${priceMax}.
 
 Return ONLY a JSON array of ticker strings: ["SOFI","HOOD","DKNG","PLTR","AI","RXRX","DOCS","OPEN","IONQ","BBAI"]`;
 }
@@ -279,7 +279,7 @@ export default function ForecastPage() {
     // Step 2: fetch real data from yfinance
     addStep(`Fetching live data for ${tickers.length} tickers via yfinance…`);
     const scanned = await api.quickScan(tickers, priceRange.min || undefined, priceRange.max >= 9999 ? undefined : priceRange.max);
-    if (scanned.length === 0) throw new Error('No stocks passed the price filter. Try a wider range.');
+    if (scanned.length === 0) throw new Error(`No stocks passed the $${priceRange.min}–$${priceRange.max} price filter. The AI suggested ${tickers.length} tickers but none currently trade in this range. Try a different range or run again.`);
     setScanCount(scanned.length);
     completeLastStep();
 
