@@ -6,6 +6,8 @@ import { getSession } from '@/lib/auth';
 import {
   api,
   type PaperPortfolioSummary,
+  type PaperPortfolioListItem,
+  type PaperCompareData,
   type PaperPosition,
   type PaperTrade,
   type PaperEquityPoint,
@@ -187,6 +189,209 @@ function EquityChart({ data, initialCapital }: { data: PaperEquityPoint[]; initi
   return <div ref={ref} style={{ width: '100%' }} />;
 }
 
+// ── Portfolio comparison card ─────────────────────────────────────────────────
+
+const STYLE_COLORS: Record<string, string> = {
+  GROWTH: '#22c55e',
+  SWING:  '#3b82f6',
+  LONG:   '#a78bfa',
+  SHORT:  '#f87171',
+};
+
+function PortfolioCard({
+  portfolio, selected, isBestSharpe, onSelect,
+}: {
+  portfolio: PaperPortfolioListItem;
+  selected: boolean;
+  isBestSharpe: boolean;
+  onSelect: () => void;
+}) {
+  const retColor = portfolio.total_return_pct >= 0 ? '#22c55e' : '#ef4444';
+  const styleColor = STYLE_COLORS[portfolio.trading_style] ?? '#94a3b8';
+  const state = portfolio.is_running ? 'Running' : portfolio.is_paused ? 'Paused' : 'Stopped';
+  const stateColor = portfolio.is_running ? '#22c55e' : portfolio.is_paused ? '#f59e0b' : '#ef4444';
+
+  return (
+    <div
+      onClick={onSelect}
+      style={{
+        background: selected ? '#1a2744' : '#1e293b',
+        border: `2px solid ${selected ? '#3b82f6' : '#334155'}`,
+        borderRadius: 12, padding: '14px 18px', cursor: 'pointer',
+        minWidth: 200, flex: '1 1 200px', maxWidth: 280,
+        transition: 'border-color 0.15s, background 0.15s', position: 'relative',
+      }}
+    >
+      {isBestSharpe && (
+        <span title="Best Sharpe Ratio" style={{
+          position: 'absolute', top: 8, right: 8, fontSize: 13, color: '#f59e0b',
+        }}>★</span>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, color: styleColor,
+          background: styleColor + '22', border: `1px solid ${styleColor}44`,
+          borderRadius: 4, padding: '2px 7px',
+        }}>{portfolio.trading_style}</span>
+        <span style={{ fontSize: 10, color: stateColor, fontWeight: 600 }}>● {state}</span>
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {portfolio.name}
+      </div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: retColor }}>
+        {portfolio.total_return_pct >= 0 ? '+' : ''}{portfolio.total_return_pct.toFixed(1)}%
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+        {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(portfolio.current_equity)}
+      </div>
+      <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: '#94a3b8' }}>
+        <span>Win {portfolio.win_rate_pct.toFixed(0)}%</span>
+        <span>Sharpe {portfolio.sharpe != null ? portfolio.sharpe.toFixed(2) : '—'}</span>
+        <span>{portfolio.open_positions} open</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Compare equity chart (overlay all portfolios + SPY) ───────────────────────
+
+function CompareEquityChart({ data }: { data: PaperCompareData[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ref.current || !data.length) return;
+    let cancelled = false;
+
+    import('plotly.js-dist-min').then((Plotly: any) => {
+      if (cancelled || !ref.current) return;
+
+      const COLORS = ['#22c55e', '#3b82f6', '#a78bfa', '#f59e0b', '#ec4899', '#06b6d4'];
+
+      const traces: any[] = data.map((p, i) => {
+        if (!p.curve.length) return null;
+        const startEquity = p.curve[0].equity;
+        return {
+          x: p.curve.map(d => d.date),
+          y: p.curve.map(d => ((d.equity / startEquity) - 1) * 100),
+          name: `${p.name} (${p.trading_style})`,
+          type: 'scatter', mode: 'lines',
+          line: { color: COLORS[i % COLORS.length], width: 2.5 },
+          hovertemplate: `%{x}: %{y:+.1f}%<extra>${p.name}</extra>`,
+        };
+      }).filter(Boolean);
+
+      // Add SPY from the first portfolio that has spy data
+      const firstWithSpy = data.find(p => p.curve.some(d => d.spy_close != null));
+      if (firstWithSpy) {
+        const spyStart = firstWithSpy.curve.find(d => d.spy_close != null)?.spy_close;
+        if (spyStart) {
+          traces.push({
+            x: firstWithSpy.curve.map(d => d.date),
+            y: firstWithSpy.curve.map(d => d.spy_close != null ? ((d.spy_close / spyStart) - 1) * 100 : null),
+            name: 'SPY',
+            type: 'scatter', mode: 'lines',
+            line: { color: '#64748b', width: 1.5, dash: 'dot' },
+            hovertemplate: '%{x}: %{y:+.1f}%<extra>SPY</extra>',
+          });
+        }
+      }
+
+      const layout = {
+        paper_bgcolor: '#0f172a', plot_bgcolor: '#0f172a',
+        margin: { t: 10, b: 40, l: 55, r: 10 },
+        height: 220,
+        xaxis: { color: '#64748b', gridcolor: '#1e293b', showgrid: true },
+        yaxis: { color: '#64748b', gridcolor: '#1e293b', ticksuffix: '%', zeroline: true, zerolinecolor: '#334155' },
+        legend: { font: { color: '#94a3b8', size: 11 }, bgcolor: 'transparent', orientation: 'h', x: 0, y: -0.2 },
+        hovermode: 'x unified',
+      };
+
+      Plotly.react(ref.current, traces, layout, { displayModeBar: false, responsive: true });
+    });
+
+    return () => { cancelled = true; };
+  }, [data]);
+
+  return <div ref={ref} style={{ width: '100%' }} />;
+}
+
+// ── Create portfolio modal ─────────────────────────────────────────────────────
+
+function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [name, setName] = useState('');
+  const [style, setStyle] = useState('SWING');
+  const [capital, setCapital] = useState('100000');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function create() {
+    const cap = parseFloat(capital);
+    if (!name.trim()) { setErr('Name is required'); return; }
+    if (isNaN(cap) || cap <= 0) { setErr('Capital must be > 0'); return; }
+    setSaving(true); setErr('');
+    try {
+      await api.paperCreate({ name: name.trim(), trading_style: style, initial_capital: cap });
+      onCreated();
+      onClose();
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to create portfolio');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', background: '#0f172a', border: '1px solid #334155', borderRadius: 6,
+    color: '#f1f5f9', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box',
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div style={{
+        background: '#1e293b', borderRadius: 12, padding: 28, width: 360,
+        border: '1px solid #334155', boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 20 }}>New Paper Portfolio</div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 5 }}>Name</div>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. SWING A/B Test"
+              style={inputStyle} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 5 }}>Strategy Style</div>
+            <select value={style} onChange={e => setStyle(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+              <option value="SWING">SWING — medium-term momentum</option>
+              <option value="GROWTH">GROWTH — high-volatility momentum</option>
+              <option value="LONG">LONG — trend-following long-term</option>
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 5 }}>Initial Capital ($)</div>
+            <input value={capital} onChange={e => setCapital(e.target.value)} type="number" min="1"
+              style={inputStyle} />
+          </div>
+        </div>
+
+        {err && <div style={{ color: '#f87171', fontSize: 12, marginTop: 10 }}>{err}</div>}
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={{ background: '#0f172a', color: '#94a3b8', border: '1px solid #334155', borderRadius: 6, padding: '7px 16px', cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <button onClick={create} disabled={saving} style={{ background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 16px', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 600, opacity: saving ? 0.7 : 1 }}>
+            {saving ? 'Creating…' : 'Create Portfolio'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Engine state badge (visible to all) ───────────────────────────────────────
 
 function EngineStateBadge({ config }: { config: PaperPortfolioConfig }) {
@@ -209,14 +414,14 @@ function EngineStateBadge({ config }: { config: PaperPortfolioConfig }) {
 
 // ── Engine controls (admin only) ──────────────────────────────────────────────
 
-function EngineControls({ config, onDone }: { config: PaperPortfolioConfig; onDone: () => void }) {
+function EngineControls({ config, onDone, portfolioId }: { config: PaperPortfolioConfig; onDone: () => void; portfolioId?: number | null }) {
   const [busy, setBusy] = useState(false);
   const enabled = config.enabled !== false;
   const paused = config.paused === true;
 
   async function setState(state: 'running' | 'paused' | 'stopped') {
     setBusy(true);
-    try { await api.paperSetEngine(state); onDone(); }
+    try { await api.paperSetEngine(state, portfolioId); onDone(); }
     catch { /* swallow — summary will stay current */ }
     finally { setBusy(false); }
   }
@@ -259,8 +464,8 @@ function EngineControls({ config, onDone }: { config: PaperPortfolioConfig; onDo
 // ── Capital Panel (admin only) ────────────────────────────────────────────────
 
 function CapitalPanel({
-  initialCapital, currentCash, onSave,
-}: { initialCapital: number; currentCash: number; onSave: () => void }) {
+  initialCapital, currentCash, onSave, portfolioId,
+}: { initialCapital: number; currentCash: number; onSave: () => void; portfolioId?: number | null }) {
   const [newInitial, setNewInitial] = useState('');
   const [newCash, setNewCash] = useState('');
   const [saving, setSaving] = useState(false);
@@ -273,7 +478,7 @@ function CapitalPanel({
     if (!Object.keys(body).length) return;
     setSaving(true); setMsg('');
     try {
-      const r = await api.paperSetCapital(body);
+      const r = await api.paperSetCapital(body, portfolioId);
       setMsg(`Saved — capital $${r.initial_capital.toLocaleString()}, cash $${r.current_cash.toLocaleString()}`);
       setNewInitial(''); setNewCash('');
       onSave();
@@ -334,7 +539,7 @@ function CapitalPanel({
 
 // ── Config Panel ──────────────────────────────────────────────────────────────
 
-function ConfigPanel({ config, onSave }: { config: PaperPortfolioConfig; onSave: () => void }) {
+function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioConfig; onSave: () => void; portfolioId?: number | null }) {
   const [draft, setDraft] = useState<Partial<PaperPortfolioConfig>>({});
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -357,7 +562,7 @@ function ConfigPanel({ config, onSave }: { config: PaperPortfolioConfig; onSave:
   async function save() {
     setSaving(true); setMsg('');
     try {
-      await api.paperConfigure(draft);
+      await api.paperConfigure(draft, portfolioId);
       setMsg('Saved');
       onSave();
       setDraft({});
@@ -368,7 +573,7 @@ function ConfigPanel({ config, onSave }: { config: PaperPortfolioConfig; onSave:
   async function reset() {
     if (!confirm('Reset portfolio? All open positions will be force-closed and cash reset to initial capital.')) return;
     try {
-      const r = await api.paperReset();
+      const r = await api.paperReset(portfolioId);
       setMsg(`Reset — ${r.positions_closed} positions closed`);
       onSave();
     } catch { setMsg('Reset failed'); }
@@ -415,6 +620,8 @@ export default function PaperPortfolioPage() {
   const [authed, setAuthed] = useState(false);
   const [tradesPage, setTradesPage] = useState(1);
   const [decPage, setDecPage] = useState(1);
+  const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   useEffect(() => {
     const session = getSession();
@@ -424,28 +631,45 @@ export default function PaperPortfolioPage() {
     setAuthed(true);
   }, [router]);
 
+  const { data: portfolioList, mutate: mutateList } = useSWR(
+    authed ? 'paper-list' : null, () => api.paperList(), { refreshInterval: 60_000 }
+  );
+
+  // Auto-select first portfolio when list loads
+  useEffect(() => {
+    if (portfolioList?.length && selectedPortfolioId === null) {
+      setSelectedPortfolioId(portfolioList[0].id);
+    }
+  }, [portfolioList, selectedPortfolioId]);
+
+  const { data: compareData } = useSWR(
+    authed && (portfolioList?.length ?? 0) > 1 ? 'paper-compare' : null,
+    () => api.paperCompare(180), { refreshInterval: 300_000 }
+  );
+
   const { data: summary, mutate: mutateSummary, error: summaryError } = useSWR(
-    authed ? 'paper-summary' : null, () => api.paperSummary(), { refreshInterval: 60_000 }
+    authed && selectedPortfolioId != null ? ['paper-summary', selectedPortfolioId] : null,
+    () => api.paperSummary(selectedPortfolioId), { refreshInterval: 60_000 }
   );
   const { data: positions } = useSWR(
-    authed && tab === 'Positions' ? 'paper-positions' : null,
-    () => api.paperPositions(), { refreshInterval: 60_000 }
+    authed && tab === 'Positions' && selectedPortfolioId != null ? ['paper-positions', selectedPortfolioId] : null,
+    () => api.paperPositions(selectedPortfolioId), { refreshInterval: 60_000 }
   );
   const { data: trades } = useSWR(
-    authed && tab === 'Closed Trades' ? ['paper-trades', tradesPage] : null,
-    () => api.paperTrades({ page: tradesPage, limit: 50 })
+    authed && tab === 'Closed Trades' && selectedPortfolioId != null ? ['paper-trades', tradesPage, selectedPortfolioId] : null,
+    () => api.paperTrades({ page: tradesPage, limit: 50, portfolioId: selectedPortfolioId })
   );
   const { data: curve } = useSWR(
-    authed && tab === 'Equity Curve' ? 'paper-curve' : null,
-    () => api.paperEquityCurve(180)
+    authed && tab === 'Equity Curve' && selectedPortfolioId != null ? ['paper-curve', selectedPortfolioId] : null,
+    () => api.paperEquityCurve(180, selectedPortfolioId)
   );
   const { data: decisions } = useSWR(
-    authed && tab === 'Decisions' ? ['paper-decisions', decPage] : null,
-    () => api.paperDecisions({ page: decPage, limit: 50, days_back: 90 })
+    authed && tab === 'Decisions' && selectedPortfolioId != null ? ['paper-decisions', decPage, selectedPortfolioId] : null,
+    () => api.paperDecisions({ page: decPage, limit: 50, days_back: 90, portfolioId: selectedPortfolioId })
   );
   const { data: attribution } = useSWR(
-    authed && tab === 'Attribution' ? 'paper-attribution' : null,
-    () => api.paperAttribution(), { revalidateOnFocus: false }
+    authed && tab === 'Attribution' && selectedPortfolioId != null ? ['paper-attribution', selectedPortfolioId] : null,
+    () => api.paperAttribution(selectedPortfolioId), { revalidateOnFocus: false }
   );
 
   if (!authed) return null;
@@ -458,13 +682,20 @@ export default function PaperPortfolioPage() {
     );
   }
 
-  if (!summary) {
+  if (!portfolioList || !summary) {
     return (
       <main style={{ minHeight: '100vh', background: '#0f172a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div style={{ color: '#94a3b8' }}>Loading paper portfolio…</div>
       </main>
     );
   }
+
+  const multiPortfolio = portfolioList.length > 1;
+  const bestSharpeId = portfolioList.reduce<number | null>((best, p) => {
+    if (p.sharpe == null) return best;
+    const bestSharpe = portfolioList.find(x => x.id === best)?.sharpe ?? null;
+    return bestSharpe == null || p.sharpe > bestSharpe ? p.id : best;
+  }, null);
 
   const ret = summary.total_return_pct;
   const retColor = ret >= 0 ? '#22c55e' : '#ef4444';
@@ -474,22 +705,61 @@ export default function PaperPortfolioPage() {
       <div style={{ maxWidth: 1200, margin: '0 auto' }}>
 
         {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
           <div>
             <div style={{ fontSize: 22, fontWeight: 700 }}>Paper Portfolio</div>
             <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 3 }}>
-              {summary.trading_style} style · autonomous paper trading engine (WF-2)
+              {multiPortfolio ? `${portfolioList.length} active portfolios · A/B strategy comparison` : `${summary.trading_style} style · autonomous paper trading engine`}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <EngineStateBadge config={summary.config} />
-            {isAdmin && <EngineControls config={summary.config} onDone={mutateSummary} />}
+            {isAdmin && <EngineControls config={summary.config} onDone={mutateSummary} portfolioId={selectedPortfolioId} />}
+            {isAdmin && (
+              <button
+                onClick={() => setShowCreateModal(true)}
+                style={{ fontSize: 12, color: '#3b82f6', background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.3)', borderRadius: 5, padding: '4px 10px', cursor: 'pointer', fontWeight: 600 }}
+              >+ New Portfolio</button>
+            )}
             <span style={{ fontSize: 12, color: '#64748b', background: '#1e293b', border: '1px solid #334155', borderRadius: 5, padding: '4px 10px' }}>
               Live · 60s refresh
             </span>
             <Link href="/" style={{ fontSize: 12, color: '#64748b', textDecoration: 'none' }}>← Home</Link>
           </div>
         </div>
+
+        {/* Multi-portfolio comparison grid */}
+        {multiPortfolio && (
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+              {portfolioList.map(p => (
+                <PortfolioCard
+                  key={p.id}
+                  portfolio={p}
+                  selected={p.id === selectedPortfolioId}
+                  isBestSharpe={p.id === bestSharpeId}
+                  onSelect={() => { setSelectedPortfolioId(p.id); setTab('Positions'); setTradesPage(1); setDecPage(1); }}
+                />
+              ))}
+            </div>
+            {compareData && compareData.some(d => d.curve.length > 0) && (
+              <div style={{ background: '#0f172a', borderRadius: 10, border: '1px solid #1e293b', padding: '14px 12px' }}>
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>Normalized return % — all portfolios vs SPY</div>
+                <CompareEquityChart data={compareData} />
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, marginTop: 4 }}>
+              Click a portfolio card to view its detail below
+            </div>
+          </div>
+        )}
+
+        {showCreateModal && (
+          <CreatePortfolioModal
+            onClose={() => setShowCreateModal(false)}
+            onCreated={() => { mutateList(); }}
+          />
+        )}
 
         {/* Stat strip */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 24 }}>
@@ -824,8 +1094,9 @@ export default function PaperPortfolioPage() {
               initialCapital={summary.initial_capital}
               currentCash={summary.current_cash}
               onSave={mutateSummary}
+              portfolioId={selectedPortfolioId}
             />
-            <ConfigPanel config={summary.config} onSave={mutateSummary} />
+            <ConfigPanel config={summary.config} onSave={mutateSummary} portfolioId={selectedPortfolioId} />
           </div>
         )}
 

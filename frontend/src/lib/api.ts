@@ -318,42 +318,67 @@ export const api = {
     request<{role: string; content: string}>(`/research/${symbol}/chat`, { method: 'POST', body: JSON.stringify({ messages, api_key, model, provider }) }, 60_000),
 
   // WF-2 Paper Portfolio
-  paperSummary: () => request<PaperPortfolioSummary>('/paper-portfolio/summary'),
-  paperPositions: () => request<PaperPosition[]>('/paper-portfolio/positions'),
-  paperTrades: (params?: { page?: number; limit?: number; symbol?: string; exit_reason?: string }) => {
+  paperList: () => request<PaperPortfolioListItem[]>('/paper-portfolio/list'),
+  paperCreate: (body: { name: string; trading_style: string; initial_capital: number }) =>
+    request<{ ok: boolean; portfolio_id: number; name: string }>('/paper-portfolio/create', { method: 'POST', body: JSON.stringify(body) }),
+  paperCompare: (days = 180) => request<PaperCompareData[]>(`/paper-portfolio/compare?days=${days}`),
+  paperSummary: (portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<PaperPortfolioSummary>(`/paper-portfolio/summary${q}`);
+  },
+  paperPositions: (portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<PaperPosition[]>(`/paper-portfolio/positions${q}`);
+  },
+  paperTrades: (params?: { page?: number; limit?: number; symbol?: string; exit_reason?: string; portfolioId?: number | null }) => {
     const p = new URLSearchParams();
     if (params?.page) p.set('page', String(params.page));
     if (params?.limit) p.set('limit', String(params.limit));
     if (params?.symbol) p.set('symbol', params.symbol);
     if (params?.exit_reason) p.set('exit_reason', params.exit_reason);
+    if (params?.portfolioId) p.set('portfolio_id', String(params.portfolioId));
     return request<PaperTradesResponse>(`/paper-portfolio/trades?${p}`);
   },
-  paperEquityCurve: (days = 180) => request<PaperEquityPoint[]>(`/paper-portfolio/equity-curve?days=${days}`),
-  paperDecisions: (params?: { page?: number; limit?: number; symbol?: string; days_back?: number }) => {
+  paperEquityCurve: (days = 180, portfolioId?: number | null) => {
+    const q = portfolioId ? `&portfolio_id=${portfolioId}` : '';
+    return request<PaperEquityPoint[]>(`/paper-portfolio/equity-curve?days=${days}${q}`);
+  },
+  paperDecisions: (params?: { page?: number; limit?: number; symbol?: string; days_back?: number; portfolioId?: number | null }) => {
     const p = new URLSearchParams();
     if (params?.page) p.set('page', String(params.page));
     if (params?.limit) p.set('limit', String(params.limit));
     if (params?.symbol) p.set('symbol', params.symbol);
     if (params?.days_back) p.set('days_back', String(params.days_back));
+    if (params?.portfolioId) p.set('portfolio_id', String(params.portfolioId));
     return request<PaperDecisionsResponse>(`/paper-portfolio/decisions?${p}`);
   },
-  paperAttribution: () =>
-    request<{
+  paperAttribution: (portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<{
       total_trades: number; message?: string;
       by_score: { band: string; count: number; win_rate: number | null; avg_return: number | null; profit_factor: number | null }[];
       by_confidence: { band: string; count: number; win_rate: number | null; avg_return: number | null; profit_factor: number | null }[];
       by_regime: { band: string; count: number; win_rate: number | null; avg_return: number | null; profit_factor: number | null }[];
       by_rr: { band: string; count: number; win_rate: number | null; avg_return: number | null; profit_factor: number | null }[];
       best_profile: { score_band: string; conf_band: string; win_rate: number; count: number } | null;
-    }>('/paper-portfolio/attribution'),
-  paperConfigure: (body: Partial<PaperPortfolioConfig>) =>
-    request<{ ok: boolean; config: PaperPortfolioConfig }>('/paper-portfolio/configure', { method: 'POST', body: JSON.stringify(body) }),
-  paperReset: () =>
-    request<{ ok: boolean; positions_closed: number; cash_reset_to: number }>('/paper-portfolio/reset', { method: 'POST' }),
-  paperSetCapital: (body: { initial_capital?: number; current_cash?: number }) =>
-    request<{ ok: boolean; initial_capital: number; current_cash: number }>('/paper-portfolio/capital', { method: 'POST', body: JSON.stringify(body) }),
-  paperSetEngine: (state: 'running' | 'paused' | 'stopped') =>
-    request<{ ok: boolean; state: string; config: PaperPortfolioConfig }>('/paper-portfolio/engine', { method: 'POST', body: JSON.stringify({ state }) }),
+    }>(`/paper-portfolio/attribution${q}`);
+  },
+  paperConfigure: (body: Partial<PaperPortfolioConfig>, portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<{ ok: boolean; config: PaperPortfolioConfig }>(`/paper-portfolio/configure${q}`, { method: 'POST', body: JSON.stringify(body) });
+  },
+  paperReset: (portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<{ ok: boolean; positions_closed: number; cash_reset_to: number }>(`/paper-portfolio/reset${q}`, { method: 'POST' });
+  },
+  paperSetCapital: (body: { initial_capital?: number; current_cash?: number }, portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<{ ok: boolean; initial_capital: number; current_cash: number }>(`/paper-portfolio/capital${q}`, { method: 'POST', body: JSON.stringify(body) });
+  },
+  paperSetEngine: (state: 'running' | 'paused' | 'stopped', portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<{ ok: boolean; state: string; config: PaperPortfolioConfig }>(`/paper-portfolio/engine${q}`, { method: 'POST', body: JSON.stringify({ state }) });
+  },
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
   mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
 };
@@ -910,6 +935,31 @@ export type AdminSignalLogResponse = {
 };
 
 // ── WF-2 Paper Portfolio types ────────────────────────────────────────────────
+
+export type PaperPortfolioListItem = {
+  id: number;
+  name: string;
+  trading_style: string;
+  current_equity: number;
+  initial_capital: number;
+  total_return_pct: number;
+  win_rate_pct: number;
+  open_positions: number;
+  closed_trades: number;
+  sharpe: number | null;
+  max_drawdown_pct: number | null;
+  is_running: boolean;
+  is_paused: boolean;
+  created_at: string | null;
+};
+
+export type PaperCompareData = {
+  portfolio_id: number;
+  name: string;
+  trading_style: string;
+  initial_capital: number;
+  curve: { date: string; equity: number; spy_close: number | null; market_regime: string | null }[];
+};
 
 export type PaperPortfolioConfig = {
   trading_style: string;

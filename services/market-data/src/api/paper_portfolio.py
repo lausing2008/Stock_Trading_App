@@ -112,9 +112,19 @@ def _compute_alpha_beta(curve_rows: list) -> dict:
     return {"alpha": alpha, "beta": round(beta, 2), "info_ratio": info_ratio}
 
 
-def _get_active_portfolio(session: Session) -> PaperPortfolio:
+def _get_portfolio(session: Session, portfolio_id: int | None = None) -> PaperPortfolio:
+    if portfolio_id is not None:
+        p = session.execute(
+            select(PaperPortfolio).where(
+                PaperPortfolio.id == portfolio_id,
+                PaperPortfolio.is_active.is_(True),
+            )
+        ).scalar_one_or_none()
+        if not p:
+            raise HTTPException(status_code=404, detail=f"Portfolio {portfolio_id} not found")
+        return p
     p = session.execute(
-        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).limit(1)
+        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).order_by(PaperPortfolio.id).limit(1)
     ).scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="No active paper portfolio found")
@@ -125,10 +135,11 @@ def _get_active_portfolio(session: Session) -> PaperPortfolio:
 
 @router.get("/summary")
 def get_summary(
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
 
     open_trades = session.execute(
         select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
@@ -216,10 +227,11 @@ def get_summary(
 
 @router.get("/positions")
 def get_positions(
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     trades = session.execute(
         select(PaperTrade)
         .where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
@@ -261,10 +273,11 @@ def get_trades(
     limit: int = Query(50, ge=1, le=200),
     symbol: str | None = Query(None),
     exit_reason: str | None = Query(None),
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     q = (
         select(PaperTrade)
         .where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "closed")
@@ -316,10 +329,11 @@ def get_trades(
 @router.get("/equity-curve")
 def get_equity_curve(
     days: int = Query(180, ge=7, le=730),
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     cutoff = date.today() - timedelta(days=days)
     rows = session.execute(
         select(PaperEquityCurve)
@@ -352,11 +366,12 @@ def get_decisions(
     symbol: str | None = Query(None),
     decision: str | None = Query(None),   # ENTER | WAIT | SKIP
     days_back: int = Query(30, ge=1, le=180),
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
     """Return entry decisions (all trades, open + closed, as decision log)."""
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     cutoff = datetime.utcnow() - timedelta(days=days_back)
 
     q = select(PaperTrade).where(
@@ -404,11 +419,12 @@ def get_decisions(
 @router.post("/configure")
 def configure_portfolio(
     body: dict,
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
     """Merge body keys into the portfolio config (admin only)."""
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     allowed_keys = {
         "max_positions", "max_sector_pct", "risk_per_trade_pct", "max_position_pct",
         "min_confidence", "min_kscore", "min_rr_ratio", "min_entry_score",
@@ -430,11 +446,12 @@ def configure_portfolio(
 
 @router.post("/reset")
 def reset_portfolio(
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
     """Close all open trades at current_price and reset cash to initial_capital."""
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     open_trades = session.execute(
         select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
     ).scalars().all()
@@ -465,6 +482,7 @@ def reset_portfolio(
 @router.post("/capital")
 def set_capital(
     body: dict,
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -473,7 +491,7 @@ def set_capital(
     Body: { initial_capital?: number, current_cash?: number }
     Setting current_cash lets you add/withdraw cash without a full reset.
     """
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
 
     new_initial = body.get("initial_capital")
     new_cash = body.get("current_cash")
@@ -503,6 +521,7 @@ def set_capital(
 @router.post("/engine")
 def set_engine_state(
     body: dict,
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -516,7 +535,7 @@ def set_engine_state(
     if state not in ("running", "paused", "stopped"):
         raise HTTPException(status_code=400, detail="state must be 'running', 'paused', or 'stopped'")
 
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     if state == "running":
         p.config = {**p.config, "enabled": True, "paused": False}
     elif state == "paused":
@@ -530,6 +549,7 @@ def set_engine_state(
 
 @router.get("/attribution")
 def get_attribution(
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -538,7 +558,7 @@ def get_attribution(
     Returns win_rate, avg_return, profit_factor, and count for each bucket so
     traders can identify which entry profiles actually perform.
     """
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     trades = session.execute(
         select(PaperTrade).where(
             PaperTrade.portfolio_id == p.id,
@@ -618,3 +638,127 @@ def get_attribution(
         "by_rr": by_rr,
         "best_profile": best_profile,
     }
+
+
+# ── Multi-portfolio: list ─────────────────────────────────────────────────────
+
+@router.get("/list")
+def list_portfolios(
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """Lightweight list of all active portfolios with summary stats."""
+    portfolios = session.execute(
+        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).order_by(PaperPortfolio.id)
+    ).scalars().all()
+
+    result = []
+    for p in portfolios:
+        open_trades = session.execute(
+            select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
+        ).scalars().all()
+        closed_trades = session.execute(
+            select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "closed")
+        ).scalars().all()
+
+        open_value = sum((t.current_price or t.entry_price) * t.shares for t in open_trades)
+        equity = p.current_cash + open_value
+
+        wins = [t for t in closed_trades if (t.pnl or 0) > 0]
+        win_rate = round(len(wins) / max(len(closed_trades), 1) * 100, 1)
+
+        all_curve = session.execute(
+            select(PaperEquityCurve).where(PaperEquityCurve.portfolio_id == p.id).order_by(PaperEquityCurve.date)
+        ).scalars().all()
+        risk = _portfolio_risk_metrics(all_curve)
+
+        result.append({
+            "id": p.id,
+            "name": p.name,
+            "trading_style": p.config.get("trading_style", "GROWTH"),
+            "current_equity": round(equity, 2),
+            "initial_capital": p.initial_capital,
+            "total_return_pct": round((equity / p.initial_capital - 1) * 100, 2),
+            "win_rate_pct": win_rate,
+            "open_positions": len(open_trades),
+            "closed_trades": len(closed_trades),
+            "sharpe": risk["sharpe"],
+            "max_drawdown_pct": risk["max_drawdown_pct"],
+            "is_running": p.config.get("enabled", True) and not p.config.get("paused", False),
+            "is_paused": p.config.get("enabled", True) and bool(p.config.get("paused", False)),
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        })
+
+    return result
+
+
+# ── Multi-portfolio: create ───────────────────────────────────────────────────
+
+@router.post("/create")
+def create_portfolio(
+    body: dict,
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Create a new paper portfolio (admin only)."""
+    name = str(body.get("name", "Paper Portfolio")).strip() or "Paper Portfolio"
+    style = str(body.get("trading_style", "GROWTH")).upper()
+    initial_capital = float(body.get("initial_capital", 100_000))
+
+    if initial_capital <= 0:
+        raise HTTPException(status_code=400, detail="initial_capital must be > 0")
+    if style not in ("SWING", "GROWTH", "LONG", "SHORT"):
+        raise HTTPException(status_code=400, detail="trading_style must be SWING, GROWTH, LONG, or SHORT")
+
+    p = PaperPortfolio(
+        name=name,
+        initial_capital=initial_capital,
+        current_cash=initial_capital,
+        config={"trading_style": style, "enabled": True, "paused": False},
+        is_active=True,
+    )
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+
+    log.info("paper.portfolio_created", portfolio_id=p.id, name=name, style=style, capital=initial_capital)
+    return {"ok": True, "portfolio_id": p.id, "name": p.name}
+
+
+# ── Multi-portfolio: compare equity curves ────────────────────────────────────
+
+@router.get("/compare")
+def compare_portfolios(
+    days: int = Query(180, ge=7, le=730),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """Return equity curves for all active portfolios for the comparison overlay chart."""
+    portfolios = session.execute(
+        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).order_by(PaperPortfolio.id)
+    ).scalars().all()
+
+    cutoff = date.today() - timedelta(days=days)
+    result = []
+    for p in portfolios:
+        rows = session.execute(
+            select(PaperEquityCurve)
+            .where(PaperEquityCurve.portfolio_id == p.id, PaperEquityCurve.date >= cutoff)
+            .order_by(PaperEquityCurve.date)
+        ).scalars().all()
+        result.append({
+            "portfolio_id": p.id,
+            "name": p.name,
+            "trading_style": p.config.get("trading_style", "GROWTH"),
+            "initial_capital": p.initial_capital,
+            "curve": [
+                {
+                    "date": r.date.isoformat(),
+                    "equity": round(r.equity, 2),
+                    "spy_close": r.spy_close,
+                    "market_regime": r.market_regime,
+                }
+                for r in rows
+            ],
+        })
+    return result

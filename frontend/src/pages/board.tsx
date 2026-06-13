@@ -1082,6 +1082,31 @@ export default function BoardPage() {
     { revalidateOnFocus: false, dedupingInterval: 300_000 },
   );
 
+  // Bulk sync: push all active cards → Positions (skips symbols already in positions)
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  async function syncActivePlans() {
+    setSyncMsg('Syncing…');
+    try {
+      const activePlans = byStage.active.filter(
+        p => (p.shares ?? 0) > 0 && (p.actual_entry_price ?? p.entry_price) != null
+      );
+      if (!activePlans.length) { setSyncMsg('No active cards with fill price/shares'); return; }
+      const existingPositions = await api.listPositions();
+      const existingSymbols = new Set(existingPositions.map(p => p.symbol.toUpperCase()));
+      let added = 0;
+      for (const plan of activePlans) {
+        if (existingSymbols.has(plan.symbol.toUpperCase())) continue;
+        const price = plan.actual_entry_price ?? plan.entry_price!;
+        const currency = plan.symbol.endsWith('.HK') ? 'HKD' : 'USD';
+        await api.addPosition({ symbol: plan.symbol, shares: plan.shares!, price, currency });
+        existingSymbols.add(plan.symbol.toUpperCase());
+        added++;
+      }
+      setSyncMsg(added > 0 ? `Synced ${added} position${added !== 1 ? 's' : ''}` : `Already in sync (${activePlans.length} cards)`);
+    } catch { setSyncMsg('Sync failed'); }
+    setTimeout(() => setSyncMsg(null), 5000);
+  }
+
   return (
     <div>
       {/* Header */}
@@ -1092,12 +1117,18 @@ export default function BoardPage() {
             {total > 0 ? `${total} idea${total !== 1 ? 's' : ''} · drag cards between columns` : 'Save game plans and forecast picks here'}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '8px', fontSize: '11px', color: '#334155' }}>
+        <div style={{ display: 'flex', gap: '8px', fontSize: '11px', color: '#334155', alignItems: 'center', flexWrap: 'wrap' }}>
           {STAGES.map(s => (
             <span key={s} style={{ padding: '4px 10px', borderRadius: '6px', background: STAGE_META[s].bg, border: `1px solid ${STAGE_META[s].border}`, color: STAGE_META[s].color, fontWeight: 600 }}>
               {STAGE_META[s].label} {byStage[s].length > 0 && `(${byStage[s].length})`}
             </span>
           ))}
+          <button
+            onClick={syncActivePlans}
+            title="Push all active cards (with shares + fill price) to Positions — skips symbols already there"
+            style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.25)', color: '#4ade80', fontWeight: 600, cursor: 'pointer' }}
+          >↑ Sync Active → Positions</button>
+          {syncMsg && <span style={{ color: syncMsg.startsWith('Sync') && !syncMsg.includes('failed') ? '#4ade80' : '#f59e0b', fontSize: 11 }}>{syncMsg}</span>}
         </div>
       </div>
 
