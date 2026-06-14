@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -3858,6 +3858,8 @@ const ITEMS: Item[] = [
     impact: 'At current T-bill rates (~5%), every stored backtest Sharpe is inflated by 0.8–1.2 points. A Sharpe of 1.2 in the dashboard is actually 0.0–0.4 after adjusting for the risk-free rate. Users making capital allocation decisions against these numbers are seeing systematically misleading risk-adjusted returns.',
     what: 'engine.py computes Sharpe as rets.mean() * 252 / ann_vol with no risk-free subtraction. This was reasonable at near-zero rates in 2020–2021 but is materially wrong at 5%+ rates.',
     fix: 'Add rf_annual=0.05 parameter: sharpe = (rets.mean() * 252 - rf_annual) / ann_vol. Make rf_annual configurable in the BacktestIn schema. Also add Sortino = (rets.mean() * 252 - rf) / (rets[rets < 0].std() * sqrt(252)) and Calmar = cagr / max_drawdown to the output metrics.',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: rf_annual=0.05 in engine.py; Sortino + Calmar added to BacktestResult and routes.py',
   },
   {
     id: 'aud14-no-benchmark',
@@ -3908,6 +3910,8 @@ const ITEMS: Item[] = [
     impact: 'Traders who know VWAP expect intraday institutional accumulation/distribution semantics (anchored to session open). The 20-day rolling VWMA is a valid trend filter but calling it VWAP in the reasons output and email alerts causes experienced traders to misinterpret the signal.',
     what: 'The current metric computes sum(close * volume) / sum(volume) over a 20-day rolling window — this is a Volume-Weighted Moving Average, not VWAP. True VWAP resets every session.',
     fix: 'Rename to vwma_20 throughout: reasons output, code comments, and UI display. No logic change needed — just a labeling fix that prevents trader confusion.',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: signals.py vwap_20→vwma_20, SignalCard.tsx label→VWMA(20d), stock/[symbol].tsx updated',
   },
   {
     id: 'aud14-isotonic-small',
@@ -4008,6 +4012,8 @@ const ITEMS: Item[] = [
     impact: 'Every symbol link in Positions, Decisions, and Closed Trades tabs is broken. Clicking any stock symbol from the paper portfolio navigates to a 404. The paper trading page is the most actively used page and this breaks all navigation from it.',
     what: 'href={`/stocks/${symbol}`} is used throughout paper-portfolio.tsx and positions.tsx. The Next.js route is /stock/[symbol] (singular). Every link from these pages produces a 404.',
     fix: 'Project-wide find-and-replace: href={`/stocks/` → href={`/stock/`. Use grep to find all instances: grep -r "/stocks/" frontend/src --include="*.tsx" | grep "href".',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: all 3 broken links in paper-portfolio.tsx corrected to /stock/${symbol}',
   },
 
   // ── MEDIUM — Infrastructure & Architecture ────────────────────────────────────
@@ -4100,8 +4106,97 @@ const ITEMS: Item[] = [
     impact: 'HKEX has a mandatory lunch break. 5-minute ingest fires during 12:00–13:00 HKT (04:00–05:00 UTC). Stale prices stored as live data. Any conviction alerts during this window reference prices from 11:59 HKT as if they were current. Alert emails sent during the break say "current price" using a 1-hour-old last quote.',
     what: '_is_hk_market_hours() returns True for 09:30–16:00 HKT with no lunch break exclusion. The 5-minute bar ingest during the break stores no-trade-data as if it were active market data.',
     fix: 'Add lunch break check in _is_hk_market_hours(): return False if 12:00 <= hkt_hour < 13:00. This is a 1-line fix with significant data quality impact for HK stocks.',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: hour 12 removed from hk_intra and hk_5m_intraday CronTrigger schedules in scheduler.py',
+  },
+
+  // ── Tier 15 — Audit Fix Wave 1: Signal Logic + Infrastructure (2026-06-13) ──
+  // Implementing the highest-leverage Tier 14 findings that can be fixed without
+  // large architectural changes: signal pillar logic, APScheduler safety, Redis pool,
+  // CORS lockdown, slippage fix, regime-failure fallback.
+
+  {
+    id: 'fix15-rsi-div-weight',
+    tier: 15, severity: 'high',
+    title: 'Remove RSI divergence dead-weight from TA denominator',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '30 minutes',
+    impact: 'The zeroed rsi_divergence keys sit in _TA_WEIGHTS_DEFAULT inflating the denominator by 0.18 of normalized weight. Every other indicator scores slightly lower than it should. Removing the dead keys corrects the normalization immediately — no retrain needed.',
+    what: 'rsi_divergence_bearish_penalty (0.10) and rsi_divergence_bullish (0.08) are hard-zeroed in the computation but present in the default weights dict. calibrate_ta_weights and the score denominator both include them.',
+    fix: 'Remove both keys from _TA_WEIGHTS_DEFAULT. The divergence detection bug (argmax vs value comparison) should be fixed and re-enabled in a later session rather than leaving dead weight in the config.',
+  },
+  {
+    id: 'fix15-momentum-weighted',
+    tier: 15, severity: 'high',
+    title: 'Replace momentum pillar max() with weighted average to prevent single-indicator override',
+    file: 'services/signal-engine/src/generators/signals.py:858-876',
+    effort: '1 hour',
+    impact: 'max(rsi_score, macd_score, stoch_score) allows MACD=1.0 to produce p_momentum=1.0 even when RSI is overbought (0.0) and StochRSI is overbought (0.0). Replacing with a weighted average (RSI 35%, MACD 40%, Stoch 25%) gives a more representative momentum read and prevents false-high momentum scores in overbought conditions.',
+    what: 'The SA-19 pillar restructure intended to reduce collinearity. max() achieves that but creates a new problem: whichever indicator is most extreme dominates the pillar regardless of the others.',
+    fix: 'p_momentum = rsi_score * 0.35 + macd_score * 0.40 + stoch_score * 0.25. Apply existing overbought penalties after the weighted average. Same change for trend pillar (currently max of 4 binaries).',
+  },
+  {
+    id: 'fix15-obv-label',
+    tier: 15, severity: 'medium',
+    title: 'Rename OBV bullish reason key from obv_bullish to obv_trend_bullish throughout',
+    file: 'services/signal-engine/src/generators/signals.py · frontend/src/components/SignalCard.tsx',
+    effort: '30 minutes',
+    impact: 'The reasons key obv_bullish is ambiguous — it reads as "OBV is generally bullish" rather than communicating it is specifically an OBV MA crossover (10-day > 30-day). Renaming to obv_trend_bullish makes the signal mechanics clear to developers and prevents future confusion with true OBV-price divergence detection.',
+    what: 'obv_bullish is computed as obv.rolling(10).mean() > obv.rolling(30).mean() — an OBV momentum crossover, not divergence. The SignalCard already says "OBV trending up/down" correctly. The code-level key name should match.',
+    fix: 'Rename reasons["obv_bullish"] → reasons["obv_trend_bullish"] in signals.py. Update SignalCard.tsx interface and if-check. Update email_service.py label from "Volume (OBV bullish)" → "OBV trend (10/30 MA)".',
+  },
+  {
+    id: 'fix15-apscheduler-limits',
+    tier: 15, severity: 'medium',
+    title: 'Add max_instances=1 + coalesce=True to all APScheduler jobs',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '30 minutes',
+    impact: 'Without max_instances=1, a slow _refresh_market() (e.g. 200 stocks × slow yfinance) can pile up a second instance before the first finishes. coalesce=True prevents missed-firing backlog from queuing multiple catch-up runs after a slow burst.',
+    what: '13 CronTrigger jobs with no concurrency guard. Default APScheduler behavior: new instance starts on schedule regardless of whether the previous is still running.',
+    fix: 'Add max_instances=1, coalesce=True, misfire_grace_time=60 to each add_job() call in _setup_scheduler().',
+  },
+  {
+    id: 'fix15-slippage-cash',
+    tier: 15, severity: 'high',
+    title: 'Fix paper engine: deduct cash at slipped price, not live price',
+    file: 'services/market-data/src/services/paper_trading_engine.py:1659-1681',
+    effort: '1 hour',
+    impact: 'Cash is deducted at unslipped live_price but cost basis is recorded at slipped_entry — a ~10bp phantom gain per trade. Over 100+ trades this accumulates as unrealised equity curve inflation. Exit commission is also not deducted.',
+    what: 'position_value = shares * live_price (pre-slip); cost basis = slipped_entry * shares. The two should be consistent: both should use the slipped entry price that was actually paid.',
+    fix: 'position_value = round(shares * slipped_entry_price, 2); portfolio.current_cash -= position_value. Deduct exit commission at close: portfolio.current_cash -= round(shares * commission_per_share, 2).',
+  },
+  {
+    id: 'fix15-regime-fallback',
+    tier: 15, severity: 'high',
+    title: 'Regime fetch failure: fall back to cached regime, not neutral — avoid full-size entry during outages',
+    file: 'services/market-data/src/services/paper_trading_engine.py:483-485',
+    effort: '1 hour',
+    impact: 'yfinance outages are most common during market stress. Neutral = 100% size, no threshold elevation. Defaulting to choppy on cache miss means the engine is conservative precisely when data is unavailable — the right risk posture.',
+    what: '_fetch_market_regime() except block returns neutral. If the cache has a recent regime (< 4h old) it should be used; if cache is stale, default to choppy not neutral.',
+    fix: 'Cache last good regime in a module-level variable with timestamp. On exception: return cached regime if age < 4h, else return "choppy". Log paper.regime_fallback_to_cached or paper.regime_fallback_to_choppy.',
+  },
+  {
+    id: 'fix15-cors-lockdown',
+    tier: 15, severity: 'medium',
+    title: 'Replace CORS wildcard with explicit origin from CORS_ORIGINS env var',
+    file: 'shared/common/service.py',
+    effort: '1 hour',
+    impact: 'allow_origins=["*"] means any website can make credentialed cross-origin requests to all 8 services. Reading CORS_ORIGINS from env and failing startup if empty-in-production closes this attack surface.',
+    what: 'shared/common/service.py sets allow_origins=["*"] as default. All 8 services share this factory with no production override.',
+    fix: 'Read CORS_ORIGINS from settings. In production, raise RuntimeError if CORS_ORIGINS is empty or contains "*". Add CORS_ORIGINS=https://stockai.yourdomain.com to .env.production template.',
+  },
+  {
+    id: 'fix15-redis-pool',
+    tier: 15, severity: 'medium',
+    title: 'Replace per-call Redis connections with module-level connection pool',
+    file: 'shared/common/jwt_auth.py · services/signal-engine/src/api/routes.py · services/research-engine/src/api/routes.py',
+    effort: '1 day',
+    impact: 'New TCP connection on every authenticated request. At 100+ req/min during signal refresh this creates 100+ Redis setup/teardown cycles per minute. A single pool shared across requests reduces latency and prevents connection exhaustion.',
+    what: 'redis.from_url() or Redis() called inside per-request functions in jwt_auth.py, auth.py, signal-engine routes, research-engine routes, api-gateway ai_proxy, and ml-prediction builder.',
+    fix: 'Create module-level redis.ConnectionPool() in each service. Store pool on app.state at startup. Access via request.app.state.redis in handlers. Shared pattern across all FastAPI services.',
   },
 ];
+
 
 
 
@@ -4125,6 +4220,7 @@ const TIER_LABEL: Record<Tier, string> = {
   12: 'Tier 12 — Paper Trading Deep Review 2026-06-13 (1 Critical · 5 High · 5 Medium · 2 ML)',
   13: 'Tier 13 — Signal-Research Convergence & Intelligence Layer (2026-06-13)',
   14: 'Tier 14 — Full System Audit 2026-06-13 (5 Critical · 27 High · 29 Medium · Technical + Financial Domain)',
+  15: 'Tier 15 — Audit Fix Wave 1: Signal Logic + Infrastructure (2026-06-13)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -4142,6 +4238,7 @@ const TIER_COLOR: Record<Tier, string> = {
   12: '#fda4af',
   13: '#38bdf8',
   14: '#f59e0b',
+  15: '#a3e635',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -4213,7 +4310,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;

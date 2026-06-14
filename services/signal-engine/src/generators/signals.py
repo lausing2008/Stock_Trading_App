@@ -79,8 +79,7 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "stoch_oversold":           0.10,
     "stoch_overbought_penalty": 0.08,
     "stoch_cross_up":           0.05,
-    "rsi_divergence_bearish_penalty": 0.10,
-    "rsi_divergence_bullish":   0.08,
+    # rsi_divergence keys removed — detection was hard-zeroed (argmax bug); dead weight in denominator
     "macd_strong":              0.15,
     "macd_positive":            0.08,
     "macd_zero_cross_up":       0.05,
@@ -845,17 +844,21 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     _vz = float(reasons.get("volume_z") or 0.0)
 
     # TREND pillar — structural price direction
+    # Weighted average (not max) so all 4 inputs contribute proportionally.
     if death_cross_event:
         p_trend = 0.0  # confirmed downtrend; hard override regardless of SMAs
     else:
-        p_trend = max(
-            1.0 if above_sma50 else 0.0,
-            1.0 if sma50_above_sma200 else 0.0,
-            1.0 if bullish_trend else 0.0,
-            1.0 if (golden_cross_event and _vz > 0.5) else (0.7 if golden_cross_event else 0.0),
+        _gc_score = 1.0 if (golden_cross_event and _vz > 0.5) else (0.7 if golden_cross_event else 0.0)
+        p_trend = (
+            (1.0 if above_sma50 else 0.0)      * 0.35 +
+            (1.0 if sma50_above_sma200 else 0.0) * 0.25 +
+            (1.0 if bullish_trend else 0.0)      * 0.25 +
+            _gc_score                            * 0.15
         )
 
     # MOMENTUM pillar — oscillator-based rate of change
+    # Weighted average (not max) so overbought RSI/Stoch meaningfully reduce the pillar
+    # even when MACD is strong. Overbought penalties applied before averaging.
     rsi_score = (
         1.0 if (rsi_val is not None and 45 < rsi_val < 65) else
         0.8 if (rsi_val is not None and 35 < rsi_val <= 45) else
@@ -869,11 +872,13 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
         0.0
     )
     stoch_score = 0.8 if stoch_oversold else (0.7 if stoch_cross_up else 0.0)
-    p_momentum = max(rsi_score, macd_score, stoch_score)
+    # Apply overbought penalties to individual components before averaging
     if stoch_overbought:
-        p_momentum *= 0.5   # overbought stoch halves momentum conviction
-    elif rsi_val is not None and rsi_val >= 72:
-        p_momentum *= 0.7   # extreme RSI reduces but doesn't zero out
+        stoch_score *= 0.0   # overbought stoch is bearish — zero it
+        macd_score  *= 0.7   # reduce MACD conviction when stoch overbought
+    if rsi_val is not None and rsi_val >= 72:
+        rsi_score   *= 0.0   # extreme overbought RSI is a warning, not a bullish signal
+    p_momentum = rsi_score * 0.35 + macd_score * 0.40 + stoch_score * 0.25
 
     # VOLUME pillar — demand confirmation
     p_volume = max(

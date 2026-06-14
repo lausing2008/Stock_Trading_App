@@ -1319,11 +1319,13 @@ def start_scheduler() -> None:
 
     # ── US Market (America/New_York — DST handled automatically) ────────────
 
+    _JOB_DEFAULTS = dict(max_instances=1, coalesce=True, misfire_grace_time=60)
+
     # Open burst: 9:25–9:45 every 5 min
     _scheduler.add_job(
         lambda: _refresh_market("US"),
         CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="America/New_York"),
-        id="us_open_burst", replace_existing=True,
+        id="us_open_burst", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Regular hours: every 5 min 10:00–15:00
     _scheduler.add_job(
@@ -1332,7 +1334,7 @@ def start_scheduler() -> None:
             CronTrigger(hour="10,11,12,13,14", minute="0,5,10,15,20,25,30,35,40,45,50,55", day_of_week="mon-fri", timezone="America/New_York"),
             CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
         ]),
-        id="us_intra", replace_existing=True,
+        id="us_intra", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Close burst: 15:30–16:15 every 5 min
     _scheduler.add_job(
@@ -1341,13 +1343,13 @@ def start_scheduler() -> None:
             CronTrigger(hour=15, minute="30,35,40,45,50,55", day_of_week="mon-fri", timezone="America/New_York"),
             CronTrigger(hour=16, minute="0,5,10,15", day_of_week="mon-fri", timezone="America/New_York"),
         ]),
-        id="us_close_burst", replace_existing=True,
+        id="us_close_burst", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Post-close: final bar confirmed + ML retrain
     _scheduler.add_job(
         lambda: _refresh_market("US", post_close=True),
         CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
-        id="us_post_close", replace_existing=True,
+        id="us_post_close", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── HK Market (Asia/Hong_Kong — UTC+8, no DST) ──────────────────────────
@@ -1356,7 +1358,7 @@ def start_scheduler() -> None:
     _scheduler.add_job(
         lambda: _refresh_market("HK"),
         CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="hk_open_burst", replace_existing=True,
+        id="hk_open_burst", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Regular hours: every 5 min 10:00–11:55 and 13:00–15:00 (skip 12:00–13:00 HKEX lunch)
     _scheduler.add_job(
@@ -1365,7 +1367,7 @@ def start_scheduler() -> None:
             CronTrigger(hour="10,11,13,14", minute="0,5,10,15,20,25,30,35,40,45,50,55", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
             CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         ]),
-        id="hk_intra", replace_existing=True,
+        id="hk_intra", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Close burst: 15:30–16:15 every 5 min (HK market closes 16:00, bar settles by 16:15)
     _scheduler.add_job(
@@ -1374,20 +1376,20 @@ def start_scheduler() -> None:
             CronTrigger(hour=15, minute="30,35,40,45,50,55", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
             CronTrigger(hour=16, minute="0,5,10,15", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         ]),
-        id="hk_close_burst", replace_existing=True,
+        id="hk_close_burst", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Post-close: final bar confirmed + ML retrain
     _scheduler.add_job(
         lambda: _refresh_market("HK", post_close=True),
         CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="hk_post_close", replace_existing=True,
+        id="hk_post_close", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Weekly full refresh — Sunday 16:00 PST, before HK Monday open ───────
     _scheduler.add_job(
         _weekly_full_refresh,
         CronTrigger(day_of_week="sun", hour=14, minute=0, timezone="America/Los_Angeles"),
-        id="weekly_full_refresh", replace_existing=True,
+        id="weekly_full_refresh", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── 5-minute intraday bars — US market hours ────────────────────────────
@@ -1399,7 +1401,7 @@ def start_scheduler() -> None:
             day_of_week="mon-fri",
             timezone="America/New_York",
         ),
-        id="us_5m_intraday", replace_existing=True,
+        id="us_5m_intraday", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── 5-minute intraday bars — HK market hours (skip 12:00–13:00 lunch break)
@@ -1411,7 +1413,7 @@ def start_scheduler() -> None:
             day_of_week="mon-fri",
             timezone="Asia/Hong_Kong",
         ),
-        id="hk_5m_intraday", replace_existing=True,
+        id="hk_5m_intraday", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Price alert checker — every minute ──────────────────────────────────
@@ -1421,6 +1423,7 @@ def start_scheduler() -> None:
         minutes=1,
         id="price_alert_check",
         replace_existing=True,
+        max_instances=1, coalesce=True,
     )
 
     # ── DB purge — Sunday 15:00 PST (before weekly full refresh) ────────────
@@ -1428,7 +1431,7 @@ def start_scheduler() -> None:
     _scheduler.add_job(
         _purge_old_data,
         CronTrigger(day_of_week="sun", hour=15, minute=0, timezone="America/Los_Angeles"),
-        id="db_purge_weekly", replace_existing=True,
+        id="db_purge_weekly", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── One-shot startup run to restore conviction/Redis data after restarts ─
@@ -1441,6 +1444,7 @@ def start_scheduler() -> None:
         run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
         id="signal_alert_startup",
         replace_existing=True,
+        max_instances=1,
     )
 
     # WF-2: ensure the default GROWTH paper portfolio exists on startup.
