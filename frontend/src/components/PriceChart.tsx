@@ -177,7 +177,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     const chart = createChart(mainRef.current, {
       ...theme,
       autoSize: true,
-      height: 380,
+      height: 420,
     });
 
     const candles = chart.addCandlestickSeries({
@@ -212,19 +212,27 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       });
     }
 
-    // ── Signal BUY/SELL markers (daily only) ──────────────────────────────
+    // ── Signal BUY/SELL markers (daily only, transition points only) ──────
     if (!isIntraday && showSignals && signalMarkers && signalMarkers.length > 0) {
-      const markers = signalMarkers
-        .filter(m => m.ts && (m.signal === 'BUY' || m.signal === 'SELL'))
-        .map(m => ({
-          time: m.ts!.slice(0, 10) as Time,
-          position: (m.signal === 'BUY' ? 'belowBar' : 'aboveBar') as 'belowBar' | 'aboveBar',
-          color: m.signal === 'BUY' ? '#22c55e' : '#ef4444',
-          shape: (m.signal === 'BUY' ? 'arrowUp' : 'arrowDown') as 'arrowUp' | 'arrowDown',
-          text: `${m.signal} ${Math.round((m.confidence ?? 0) * 100)}%`,
-          size: 1,
-        }))
-        .sort((a, b) => (a.time as string).localeCompare(b.time as string));
+      // Step 1: keep last entry per calendar date (signals fire every 5 min while stable)
+      const byDate = new Map<string, SignalHistoryPoint>();
+      for (const m of signalMarkers) {
+        if (!m.ts || (m.signal !== 'BUY' && m.signal !== 'SELL')) continue;
+        byDate.set(m.ts.slice(0, 10), m);
+      }
+      const sorted = Array.from(byDate.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, m]) => m);
+      // Step 2: keep only transition points (first day a new signal direction appears)
+      const transitions = sorted.filter((m, i) => i === 0 || m.signal !== sorted[i - 1].signal);
+      const markers = transitions.map(m => ({
+        time: m.ts!.slice(0, 10) as Time,
+        position: (m.signal === 'BUY' ? 'belowBar' : 'aboveBar') as 'belowBar' | 'aboveBar',
+        color: m.signal === 'BUY' ? '#22c55e' : '#ef4444',
+        shape: (m.signal === 'BUY' ? 'arrowUp' : 'arrowDown') as 'arrowUp' | 'arrowDown',
+        text: `${Math.round(m.confidence ?? 0)}%`,
+        size: 1,
+      }));
       if (markers.length > 0) candles.setMarkers(markers);
     }
 
@@ -366,7 +374,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     let rsiChart: IChartApi | null = null;
     if (!isIntraday && showRSI && rsiRef.current && visibleIndicators) {
       rsiChart = createChart(rsiRef.current, {
-        ...CHART_THEME, autoSize: true, height: 110,
+        ...CHART_THEME, autoSize: true, height: 120,
         timeScale: { ...CHART_THEME.timeScale, visible: false },
       });
       const rsiLine = rsiChart.addLineSeries({ color: '#f59e0b', lineWidth: 1 });
@@ -388,7 +396,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
     let macdChart: IChartApi | null = null;
     if (!isIntraday && showMACD && macdRef.current && visibleIndicators) {
       macdChart = createChart(macdRef.current, {
-        ...CHART_THEME, autoSize: true, height: 110,
+        ...CHART_THEME, autoSize: true, height: 120,
         timeScale: { ...CHART_THEME.timeScale, visible: !showRSI },
       });
 
@@ -463,12 +471,12 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   return (
     <div className="rounded-md border border-slate-800 bg-[#0b1020] overflow-hidden">
 
-      {/* Range selector */}
-      <div className="flex items-center gap-1 px-3 pt-2 pb-1">
+      {/* Range selector + toolbar row */}
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-3 pt-2 pb-1.5 border-b border-slate-800">
         {/* Intraday button */}
         <button
           onClick={() => setRange('5m')}
-          className={`px-2.5 py-0.5 rounded text-xs font-semibold transition-colors ${
+          className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
             range === '5m'
               ? 'bg-indigo-600 text-white'
               : 'text-slate-400 hover:text-indigo-300 hover:bg-slate-800'
@@ -481,7 +489,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
           <button
             key={r.label}
             onClick={() => setRange(r.label)}
-            className={`px-2.5 py-0.5 rounded text-xs font-semibold transition-colors ${
+            className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
               range === r.label
                 ? 'bg-indigo-600 text-white'
                 : 'text-slate-400 hover:text-indigo-300 hover:bg-slate-800'
@@ -490,7 +498,8 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
             {r.label}
           </button>
         ))}
-        <span className="ml-2 text-xs text-slate-600">
+        <span className="mx-2 h-4 w-px bg-slate-700" />
+        <span className="text-xs text-slate-600">
           {isIntraday
             ? (intradayLoading ? 'loading…' : `${activePrices.length} bars · UTC`)
             : `${activePrices.length} bars`}
@@ -498,7 +507,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       </div>
 
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 border-b border-slate-800 text-xs">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 border-b border-slate-800 text-xs">
         {!isIntraday ? (
           <>
             {/* SMA group */}
@@ -558,7 +567,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
 
       {/* Crosshair readout — line values at cursor (daily only) */}
       {!isIntraday && visibleIndicators && (
-        <div className="flex flex-wrap items-center gap-4 px-3 py-1 text-xs font-mono bg-[#0b1020] border-b border-slate-800/50 min-h-[22px]">
+        <div className="flex flex-wrap items-center gap-4 px-3 py-1.5 text-xs font-mono bg-slate-900/60 border-b border-slate-800/50 min-h-[26px]">
           {smaVals.sma_20   != null && showSMA20   && <span style={{ color: '#38bdf8' }}>SMA 20 = {f2(smaVals.sma_20)}</span>}
           {smaVals.sma_50   != null && showSMA50   && <span style={{ color: '#f59e0b' }}>SMA 50 = {f2(smaVals.sma_50)}</span>}
           {smaVals.sma_200  != null && showSMA200  && <span style={{ color: '#a78bfa' }}>SMA 200 = {f2(smaVals.sma_200)}</span>}
@@ -630,22 +639,24 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       </div>
 
       {!isIntraday && showRSI && (
-        <div className="border-t border-slate-800">
-          <div className="flex items-center gap-4 px-3 py-1 text-xs font-mono">
-            <span style={{ color: '#f59e0b' }}>─ RSI (14){rsiVal != null ? ` = ${f2(rsiVal)}` : ''}</span>
-            <span className="text-slate-600">OB: 70 · Mid: 50 · OS: 30</span>
+        <div className="border-t border-slate-700/60">
+          <div className="flex items-center gap-5 px-3 py-1.5 bg-slate-900/40">
+            <span className="text-slate-400 text-xs font-semibold tracking-wide">RSI (14)</span>
+            <span style={{ color: '#f59e0b' }} className="text-xs font-mono">{rsiVal != null ? f2(rsiVal) : '—'}</span>
+            <span className="text-slate-600 text-xs ml-auto">OB 70 · Mid 50 · OS 30</span>
           </div>
           <div ref={rsiRef} className="w-full" />
         </div>
       )}
 
       {!isIntraday && showMACD && (
-        <div className="border-t border-slate-800">
-          <div className="flex items-center gap-4 px-3 py-1 text-xs font-mono">
-            <span style={{ color: '#38bdf8' }}>─ MACD (12,26){macdCross.macd != null ? ` = ${f3(macdCross.macd)}` : ''}</span>
-            <span style={{ color: '#f59e0b' }}>─ Signal (9){macdCross.signal != null ? ` = ${f3(macdCross.signal)}` : ''}</span>
-            <span style={{ color: macdCross.hist != null && macdCross.hist >= 0 ? '#22c55e' : '#ef4444' }}>
-              ─ Hist{macdCross.hist != null ? ` = ${f3(macdCross.hist)}` : ''}
+        <div className="border-t border-slate-700/60">
+          <div className="flex items-center gap-5 px-3 py-1.5 bg-slate-900/40">
+            <span className="text-slate-400 text-xs font-semibold tracking-wide">MACD (12,26,9)</span>
+            <span style={{ color: '#38bdf8' }} className="text-xs font-mono">{macdCross.macd != null ? f3(macdCross.macd) : '—'}</span>
+            <span style={{ color: '#f59e0b' }} className="text-xs font-mono">Sig {macdCross.signal != null ? f3(macdCross.signal) : '—'}</span>
+            <span style={{ color: macdCross.hist != null && macdCross.hist >= 0 ? '#22c55e' : '#ef4444' }} className="text-xs font-mono">
+              Hist {macdCross.hist != null ? f3(macdCross.hist) : '—'}
             </span>
           </div>
           <div ref={macdRef} className="w-full" />
