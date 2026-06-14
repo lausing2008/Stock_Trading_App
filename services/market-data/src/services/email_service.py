@@ -441,6 +441,195 @@ Key Risk: {risk}
     return send_email(to, subject, body_html, body_text)
 
 
+def send_morning_digest_email(
+    to: str,
+    date_str: str,
+    regime: dict,
+    top_opportunities: list,
+    open_positions: list,
+    pattern_alerts: list,
+) -> bool:
+    """Send the daily pre-market digest email."""
+    state = regime.get("state", "unknown")
+    spy_price = regime.get("spy_price")
+    vix = regime.get("vix")
+    regime_notes = regime.get("notes", [])
+
+    _state_color = {
+        "bull":     "#22c55e",
+        "neutral":  "#facc15",
+        "choppy":   "#f97316",
+        "risk_off": "#f97316",
+        "bear":     "#ef4444",
+    }
+    _state_label = {
+        "bull":     "BULL",
+        "neutral":  "NEUTRAL",
+        "choppy":   "CHOPPY",
+        "risk_off": "RISK OFF",
+        "bear":     "BEAR",
+    }
+    sc = _state_color.get(state, "#94a3b8")
+    sl = _state_label.get(state, state.upper())
+
+    # ── Market pulse section ──────────────────────────────────────────────────
+    spy_str = f"${spy_price:,.2f}" if spy_price else "—"
+    vix_str = f"{vix:.1f}" if vix else "—"
+    regime_notes_html = "".join(
+        f'<li style="font-size:12px;color:#64748b;margin:2px 0">{n}</li>'
+        for n in (regime_notes or [])[:4]
+    )
+
+    # ── Top opportunities section ─────────────────────────────────────────────
+    opp_rows_html = ""
+    opp_rows_text = ""
+    for i, o in enumerate(top_opportunities[:5], 1):
+        sig = o.get("signal") or "—"
+        sig_color = {"BUY": "#22c55e", "HOLD": "#facc15", "WAIT": "#f97316", "SELL": "#ef4444"}.get(sig, "#94a3b8")
+        ml = o.get("ml_prob")
+        ml_str = f"{ml*100:.0f}%" if ml else "—"
+        score_str = f"{o['score']:.0f}" if o.get("score") is not None else "—"
+        price_str = f"${o['price']:,.2f}" if o.get("price") else "—"
+        opp_rows_html += (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{o["symbol"]}</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{o.get("name","")[:24]}</td>'
+            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:#6366f1">{score_str}</td>'
+            f'<td style="padding:7px 10px"><span style="background:{sig_color}22;color:{sig_color};font-size:11px;font-weight:700;padding:2px 6px;border-radius:4px">{sig}</span></td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{ml_str}</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{price_str}</td>'
+            f'</tr>'
+        )
+        opp_rows_text += f"  {i}. {o['symbol']:6} Score {score_str:4}  Signal {sig:4}  ML {ml_str:4}  {o.get('name','')[:20]}\n"
+
+    opp_section_html = ""
+    if opp_rows_html:
+        opp_section_html = f"""
+    <div style="margin-top:24px">
+      <div style="font-size:11px;font-weight:700;color:#6366f1;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Top Opportunities</div>
+      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
+        <tr style="background:#f1f5f9">
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Symbol</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Name</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Score</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Signal</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">ML%</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Price</th>
+        </tr>
+        {opp_rows_html}
+      </table>
+    </div>"""
+    opp_section_text = f"\nTOP OPPORTUNITIES\n{opp_rows_text}" if opp_rows_text else ""
+
+    # ── Open positions section ────────────────────────────────────────────────
+    pos_rows_html = ""
+    pos_rows_text = ""
+    for p in open_positions:
+        pnl = p.get("pnl_pct", 0.0) or 0.0
+        pnl_color = "#22c55e" if pnl >= 0 else "#ef4444"
+        pnl_str = f"{pnl:+.1f}%"
+        stop_dist = p.get("stop_dist_pct")
+        stop_str = f"{stop_dist:.1f}% below" if stop_dist is not None else "—"
+        last_p = p.get("last_price")
+        price_str = f"${last_p:,.2f}" if last_p else "—"
+        entry_str = f"${p['entry_price']:,.2f}"
+        pos_rows_html += (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{p["symbol"]}</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{entry_str} → {price_str}</td>'
+            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{pnl_color}">{pnl_str}</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#ef4444">{stop_str}</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{p.get("hold_days",0)}d</td>'
+            f'</tr>'
+        )
+        pos_rows_text += f"  {p['symbol']:6} {entry_str} → {price_str}  P&L {pnl_str}  Stop {stop_str}  {p.get('hold_days',0)}d\n"
+
+    pos_section_html = ""
+    if pos_rows_html:
+        pos_section_html = f"""
+    <div style="margin-top:24px">
+      <div style="font-size:11px;font-weight:700;color:#f97316;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Open Positions ({len(open_positions)})</div>
+      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
+        <tr style="background:#f1f5f9">
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Symbol</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Entry → Close</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">P&L</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Stop Distance</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Held</th>
+        </tr>
+        {pos_rows_html}
+      </table>
+    </div>"""
+    pos_section_text = f"\nOPEN POSITIONS\n{pos_rows_text}" if pos_rows_text else ""
+
+    # ── Pattern alerts section ────────────────────────────────────────────────
+    _pattern_label = {
+        "golden_cross":        "Golden Cross",
+        "macd_bullish_cross":  "MACD Bullish Cross",
+        "rsi_oversold_bounce": "RSI Oversold Bounce",
+        "double_bottom":       "Double Bottom (W-pattern)",
+        "breakout":            "Volume Breakout",
+    }
+    pat_rows_html = "".join(
+        f'<tr style="border-bottom:1px solid #f1f5f9">'
+        f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{p["symbol"]}</td>'
+        f'<td style="padding:7px 10px;font-size:12px;color:#22c55e">{_pattern_label.get(p["condition"], p["condition"])}</td>'
+        f'</tr>'
+        for p in pattern_alerts
+    )
+    pat_section_html = ""
+    if pat_rows_html:
+        pat_section_html = f"""
+    <div style="margin-top:24px">
+      <div style="font-size:11px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Pattern Alerts Fired Yesterday</div>
+      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
+        {pat_rows_html}
+      </table>
+    </div>"""
+
+    subject = f"📊 Morning Digest: StockAI — {date_str} | Market: {sl}"
+    body_text = (
+        f"StockAI Morning Digest — {date_str}\n"
+        f"Market Regime: {sl}  |  SPY: {spy_str}  |  VIX: {vix_str}\n"
+        + ("\n".join(regime_notes or []))
+        + opp_section_text
+        + pos_section_text
+        + "\nNot financial advice. Paper trading simulation only.\n"
+    )
+    body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:560px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <h2 style="margin:0;font-size:18px;color:#0f172a">📊 StockAI Morning Digest</h2>
+      <span style="font-size:13px;color:#94a3b8">{date_str}</span>
+    </div>
+
+    <!-- Market Regime -->
+    <div style="margin-top:16px;background:#f8fafc;border-radius:10px;padding:16px;border:1px solid #e2e8f0">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div>
+          <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em">Market Regime</div>
+          <div style="font-size:22px;font-weight:800;color:{sc}">{sl}</div>
+        </div>
+        <div style="border-left:1px solid #e2e8f0;padding-left:14px">
+          <div style="font-size:11px;color:#64748b">SPY <strong style="color:#1e293b">{spy_str}</strong></div>
+          <div style="font-size:11px;color:#64748b;margin-top:3px">VIX <strong style="color:#1e293b">{vix_str}</strong></div>
+        </div>
+        {f'<div style="flex:1"><ul style="margin:0;padding-left:16px">{regime_notes_html}</ul></div>' if regime_notes_html else ''}
+      </div>
+    </div>
+
+    {opp_section_html}
+    {pos_section_html}
+    {pat_section_html}
+
+    <p style="font-size:11px;color:#94a3b8;margin-top:28px;border-top:1px solid #e2e8f0;padding-top:14px">
+      Not financial advice. Paper trading simulation only. StockAI · {date_str}
+    </p>
+  </div>
+</body></html>"""
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_price_alert_email(to: str, symbol: str, condition: str, threshold: float, price: float, note: str | None) -> bool:
     direction = "risen above" if condition == "above" else "fallen below"
     subject = f"Price Alert: {symbol} has {direction} {threshold}"

@@ -76,15 +76,16 @@ from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, Price, PriceAlert, SignalAlert, SessionLocal, Stock, Watchlist, WatchlistItem
+from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, Stock, User, Watchlist, WatchlistItem
+
 
 from .ingestion import ingest_universe
-from .email_service import send_price_alert_email, send_signal_alert_email
-from .paper_trading_engine import paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
+from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email
+from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
 
 log = get_logger("scheduler")
 _settings = get_settings()
@@ -1354,6 +1355,187 @@ def _refresh_5m(market: str) -> None:
             _record_job_status(f"paper_trading_5m_{market.lower()}", "error", time.monotonic() - _pt0, str(_pte))
 
 
+def send_morning_digest() -> None:
+    """Compile and email the daily pre-market digest to all users with an email configured.
+
+    Sections:
+      1. Market regime (SPY / VIX classification from last paper trading step)
+      2. Top 5 ranked opportunities (highest K-Score, with latest signal)
+      3. Open paper positions (all portfolios, with yesterday's close P&L)
+      4. Pattern alerts triggered since yesterday
+    """
+    _t0 = time.monotonic()
+    try:
+        regime = get_last_regime()
+        date_str = datetime.now(timezone.utc).strftime("%a, %b %-d")
+
+        with SessionLocal() as session:
+            # ── Recipients ────────────────────────────────────────────────────
+            users = session.execute(
+                select(User).where(User.email.isnot(None), User.email != "")
+            ).scalars().all()
+            if not users:
+                log.info("morning_digest.no_recipients")
+                return
+
+            # ── Top 5 opportunities: latest K-Score rankings ──────────────────
+            latest_rank_subq = (
+                select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+                .group_by(Ranking.stock_id)
+                .subquery()
+            )
+            # Latest SWING signal per stock
+            latest_sig_subq = (
+                select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+                .where(Signal.horizon == "SWING")
+                .group_by(Signal.stock_id)
+                .subquery()
+            )
+            rank_rows = session.execute(
+                select(Stock, Ranking, Signal)
+                .join(Ranking, Stock.id == Ranking.stock_id)
+                .join(latest_rank_subq,
+                      (Ranking.stock_id == latest_rank_subq.c.stock_id) &
+                      (Ranking.as_of == latest_rank_subq.c.max_as_of))
+                .outerjoin(latest_sig_subq, Stock.id == latest_sig_subq.c.stock_id)
+                .outerjoin(Signal,
+                           (Signal.stock_id == latest_sig_subq.c.stock_id) &
+                           (Signal.ts == latest_sig_subq.c.max_ts) &
+                           (Signal.horizon == "SWING"))
+                .where(Stock.active.is_(True))
+                .order_by(Ranking.score.desc())
+                .limit(50)
+            ).all()
+
+            # Prefer BUY-signal stocks in top-5; fall back to highest score
+            buy_rows = [r for r in rank_rows if r[2] and r[2].signal == "BUY"]
+            other_rows = [r for r in rank_rows if not (r[2] and r[2].signal == "BUY")]
+            top_rows = (buy_rows + other_rows)[:5]
+
+            # Latest close price per symbol from Price table
+            top_symbols = [r[0].symbol for r in top_rows]
+            latest_price_subq2 = (
+                select(Price.stock_id, func.max(Price.ts).label("max_ts"))
+                .where(Price.timeframe == "D1")
+                .group_by(Price.stock_id)
+                .subquery()
+            )
+            price_map: dict[str, float] = {}
+            if top_symbols:
+                price_rows = session.execute(
+                    select(Stock.symbol, Price.close)
+                    .join(Stock, Price.stock_id == Stock.id)
+                    .join(latest_price_subq2,
+                          (Price.stock_id == latest_price_subq2.c.stock_id) &
+                          (Price.ts == latest_price_subq2.c.max_ts))
+                    .where(Stock.symbol.in_(top_symbols), Price.timeframe == "D1")
+                ).all()
+                price_map = {sym: float(close) for sym, close in price_rows}
+
+            top_opportunities = []
+            for stock, ranking, signal in top_rows:
+                ml_prob = None
+                if signal and signal.reasons:
+                    ml_prob = signal.reasons.get("ml_probability")
+                    if ml_prob is not None:
+                        try:
+                            ml_prob = float(ml_prob)
+                        except (TypeError, ValueError):
+                            ml_prob = None
+                top_opportunities.append({
+                    "symbol":  stock.symbol,
+                    "name":    stock.name or "",
+                    "score":   float(ranking.score) if ranking.score is not None else None,
+                    "signal":  signal.signal if signal else None,
+                    "ml_prob": ml_prob,
+                    "sector":  stock.sector or "",
+                    "market":  stock.market.value if stock.market else "",
+                    "price":   price_map.get(stock.symbol),
+                })
+
+            # ── Open paper positions across all portfolios ────────────────────
+            open_trades = session.execute(
+                select(PaperTrade)
+                .where(PaperTrade.stage == "open")
+            ).scalars().all()
+
+            # Last daily close per symbol
+            open_symbols = list({t.symbol for t in open_trades})
+            close_map: dict[str, float] = {}
+            if open_symbols:
+                c_rows = session.execute(
+                    select(Stock.symbol, Price.close)
+                    .join(Stock, Price.stock_id == Stock.id)
+                    .join(latest_price_subq2,
+                          (Price.stock_id == latest_price_subq2.c.stock_id) &
+                          (Price.ts == latest_price_subq2.c.max_ts))
+                    .where(Stock.symbol.in_(open_symbols), Price.timeframe == "D1")
+                ).all()
+                close_map = {sym: float(close) for sym, close in c_rows}
+
+            open_positions = []
+            for trade in open_trades:
+                last_price = close_map.get(trade.symbol) or trade.current_price
+                pnl_pct = None
+                if last_price and trade.entry_price:
+                    pnl_pct = (last_price - trade.entry_price) / trade.entry_price * 100
+                stop_dist_pct = None
+                if last_price and trade.current_stop:
+                    stop_dist_pct = (last_price - trade.current_stop) / last_price * 100
+                open_positions.append({
+                    "symbol":       trade.symbol,
+                    "entry_price":  float(trade.entry_price),
+                    "last_price":   last_price,
+                    "pnl_pct":      pnl_pct,
+                    "current_stop": float(trade.current_stop) if trade.current_stop else None,
+                    "stop_dist_pct": stop_dist_pct,
+                    "hold_days":    trade.hold_days or 0,
+                })
+            open_positions.sort(key=lambda p: p.get("pnl_pct") or 0, reverse=True)
+
+            # ── Pattern alerts triggered since yesterday ──────────────────────
+            _PATTERN_CONDITIONS = {
+                "golden_cross", "macd_bullish_cross",
+                "rsi_oversold_bounce", "double_bottom", "breakout",
+            }
+            yesterday = datetime.now(timezone.utc) - timedelta(hours=28)
+            pa_rows = session.execute(
+                select(PriceAlert.symbol, PriceAlert.condition)
+                .where(
+                    PriceAlert.triggered.is_(True),
+                    PriceAlert.triggered_at >= yesterday,
+                )
+                .distinct()
+            ).all()
+            pattern_alerts = [
+                {"symbol": sym, "condition": str(cond.value if hasattr(cond, "value") else cond)}
+                for sym, cond in pa_rows
+                if str(cond.value if hasattr(cond, "value") else cond) in _PATTERN_CONDITIONS
+            ]
+
+        # ── Send to all recipients ────────────────────────────────────────────
+        sent = 0
+        for user in users:
+            ok = send_morning_digest_email(
+                to=user.email,
+                date_str=date_str,
+                regime=regime,
+                top_opportunities=top_opportunities,
+                open_positions=open_positions,
+                pattern_alerts=pattern_alerts,
+            )
+            if ok:
+                sent += 1
+
+        _record_job_status("morning_digest", "ok", time.monotonic() - _t0)
+        log.info("morning_digest.done", sent=sent, recipients=len(users),
+                 opportunities=len(top_opportunities), positions=len(open_positions))
+
+    except Exception as exc:
+        log.error("morning_digest.failed", error=str(exc), exc_info=True)
+        _record_job_status("morning_digest", "error", time.monotonic() - _t0, str(exc))
+
+
 def start_scheduler() -> None:
     """Register all APScheduler jobs and start the background scheduler.
 
@@ -1379,7 +1561,7 @@ def start_scheduler() -> None:
     ready for the week ahead; subsequent daily retrains pick them up automatically.
 
     Job count: 4 US + 4 HK + 2 5m intraday + 1 weekly full refresh + tune_all
-               + 1 price alert checker + 1 db purge = 13.
+               + 1 morning digest + 1 price alert checker + 1 db purge = 14.
     """
     global _scheduler
     if _scheduler is not None:
@@ -1485,6 +1667,13 @@ def start_scheduler() -> None:
         id="hk_5m_intraday", replace_existing=True, **_JOB_DEFAULTS,
     )
 
+    # ── Morning digest — 9:00 AM ET on market days (before open) ────────────
+    _scheduler.add_job(
+        send_morning_digest,
+        CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+        id="morning_digest", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # ── Price alert checker — every minute ──────────────────────────────────
     _scheduler.add_job(
         check_price_alerts,
@@ -1523,4 +1712,4 @@ def start_scheduler() -> None:
         log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=13)
+    log.info("scheduler.started", jobs=14)

@@ -379,6 +379,12 @@ def _is_market_hours() -> bool:
 _regime_cache: dict = {}          # last successful result
 _regime_cache_ts: float = 0.0     # epoch seconds of last successful fetch
 
+
+def get_last_regime() -> dict:
+    """Return the most recently cached market regime dict, or {} if not yet populated."""
+    return dict(_regime_cache)
+
+
 def _fetch_market_regime(cfg: dict) -> dict:
     """Download SPY/QQQ/VIX (300 days) and classify the current market regime.
 

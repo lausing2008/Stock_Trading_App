@@ -267,6 +267,14 @@ def admin_signal_log(
     }
 
 
+@router.post("/send-morning-digest")
+def trigger_morning_digest(background_tasks: BackgroundTasks, _: User = Depends(get_admin_user)):
+    """Manually trigger the morning digest email (admin only). Runs in background."""
+    from ..services.scheduler import send_morning_digest
+    background_tasks.add_task(send_morning_digest)
+    return {"status": "queued", "message": "Morning digest email is being sent to all users with email configured."}
+
+
 @router.get("/scheduler-status")
 def scheduler_status(_: User = Depends(get_admin_user)):
     """Return last-run status for all tracked scheduler jobs (from Redis)."""
@@ -281,3 +289,4 @@ def scheduler_status(_: User = Depends(get_admin_user)):
             except Exception:
                 pass
     return {"jobs": jobs}
+
