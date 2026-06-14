@@ -1303,10 +1303,10 @@ Return ONLY valid JSON — no markdown, no prose:
                   <h3 className="text-sm font-semibold mb-3" style={{ color: '#a5b4fc' }}>Live Pattern Signals</h3>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {livePatterns.patterns.map((p, i) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '8px 10px', borderRadius: '7px', background: 'rgba(74,222,128,0.07)', border: '1px solid rgba(74,222,128,0.2)' }}>
-                        <span style={{ fontSize: '16px', lineHeight: 1, marginTop: '1px' }}>{'↑'}</span>
+                      <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '8px 10px', borderRadius: '7px', background: p.bullish ? 'rgba(74,222,128,0.07)' : 'rgba(239,68,68,0.07)', border: `1px solid ${p.bullish ? 'rgba(74,222,128,0.2)' : 'rgba(239,68,68,0.2)'}` }}>
+                        <span style={{ fontSize: '16px', lineHeight: 1, marginTop: '1px' }}>{p.bullish ? '↑' : '↓'}</span>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: '12px', fontWeight: 700, color: '#4ade80', marginBottom: '2px' }}>{p.label}</div>
+                          <div style={{ fontSize: '12px', fontWeight: 700, color: p.bullish ? '#4ade80' : '#f87171', marginBottom: '2px' }}>{p.label}</div>
                           <div style={{ fontSize: '11px', color: '#64748b' }}>{p.description}</div>
                         </div>
                       </div>
