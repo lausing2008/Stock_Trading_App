@@ -1250,7 +1250,7 @@ Return ONLY valid JSON — no markdown, no prose:
           </div>
 
           {/* S/R + Fibonacci + Patterns */}
-          {(srLevels.length > 0 || Object.keys(fibLevels).length > 0 || (data.patterns?.patterns && data.patterns.patterns.length > 0)) && (
+          {(srLevels.length > 0 || Object.keys(fibLevels).length > 0 || (data.patterns?.patterns && data.patterns.patterns.length > 0) || (livePatterns && livePatterns.patterns.length > 0)) && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', alignItems: 'start' }}>
 
               {srLevels.length > 0 && (
