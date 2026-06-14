@@ -394,6 +394,7 @@ def _fetch_market_regime(cfg: dict) -> dict:
       qqq_ema50   : float | None
       notes       : list[str]      (human-readable explanation)
     """
+    global _regime_cache, _regime_cache_ts
     result: dict = {
         "state": "neutral",
         "spy_price": None, "spy_ema20": None, "spy_ema50": None, "spy_ema200": None,
@@ -595,7 +596,6 @@ def _fetch_market_regime(cfg: dict) -> dict:
              is_pre_risk_off=result["is_pre_risk_off"],
              notes=notes)
     import time as _time
-    global _regime_cache, _regime_cache_ts
     _regime_cache = dict(result)
     _regime_cache_ts = _time.time()
     return result
