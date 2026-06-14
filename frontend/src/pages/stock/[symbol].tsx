@@ -543,7 +543,7 @@ TECHNICAL INDICATORS:
   MACD hist: ${reasons.macd_hist != null ? Number(reasons.macd_hist).toFixed(3) : '?'} (${reasons.macd_rising ? 'rising' : 'falling'})
   Above SMA50: ${reasons.trend_above_sma50 ? 'Yes' : 'No'} | SMA50>SMA200: ${reasons.sma50_above_sma200 ? 'Yes' : 'No'}
   ADX: ${reasons.adx != null ? Number(reasons.adx).toFixed(1) : '?'} | Stoch RSI %K: ${reasons.stoch_rsi_k != null ? (Number(reasons.stoch_rsi_k) * 100).toFixed(0) : '?'}%
-  VWAP(20d): ${reasons.price_above_vwap === true ? 'Price ABOVE VWAP' : reasons.price_above_vwap === false ? 'Price BELOW VWAP' : 'N/A'}${reasons.vwap_20 != null ? ` ($${Number(reasons.vwap_20).toFixed(2)})` : ''}
+  VWMA(20d): ${reasons.price_above_vwap === true ? 'Price ABOVE VWMA' : reasons.price_above_vwap === false ? 'Price BELOW VWMA' : 'N/A'}${reasons.vwma_20 != null ? ` ($${Number(reasons.vwma_20).toFixed(2)})` : ''}
   Weekly alignment: ${reasons.weekly_alignment === true ? 'CONFIRMED (daily+weekly agree)' : reasons.weekly_alignment === false ? 'CONFLICT (timeframes diverge)' : 'N/A'} | Weekly TA score: ${reasons.weekly_ta_score != null ? (Number(reasons.weekly_ta_score) * 100).toFixed(0) : '?'}
   Active chart patterns: ${(reasons.active_patterns as string[] | undefined)?.length ? (reasons.active_patterns as string[]).join(', ') : 'none'}
   Earnings warning: ${reasons.earnings_warning ?? 'none'}${reasons.days_to_earnings != null ? ` (${reasons.days_to_earnings}d to earnings)` : ''}

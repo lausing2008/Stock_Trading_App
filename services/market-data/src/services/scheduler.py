@@ -1358,11 +1358,11 @@ def start_scheduler() -> None:
         CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         id="hk_open_burst", replace_existing=True,
     )
-    # Regular hours: every 5 min 10:00–15:00
+    # Regular hours: every 5 min 10:00–11:55 and 13:00–15:00 (skip 12:00–13:00 HKEX lunch)
     _scheduler.add_job(
         lambda: _refresh_market("HK"),
         OrTrigger([
-            CronTrigger(hour="10,11,12,13,14", minute="0,5,10,15,20,25,30,35,40,45,50,55", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+            CronTrigger(hour="10,11,13,14", minute="0,5,10,15,20,25,30,35,40,45,50,55", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
             CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         ]),
         id="hk_intra", replace_existing=True,
@@ -1402,11 +1402,11 @@ def start_scheduler() -> None:
         id="us_5m_intraday", replace_existing=True,
     )
 
-    # ── 5-minute intraday bars — HK market hours ────────────────────────────
+    # ── 5-minute intraday bars — HK market hours (skip 12:00–13:00 lunch break)
     _scheduler.add_job(
         lambda: _refresh_5m("HK"),
         CronTrigger(
-            hour="9,10,11,12,13,14,15",
+            hour="9,10,11,13,14,15",
             minute="30,35,40,45,50,55,0,5,10,15,20,25",
             day_of_week="mon-fri",
             timezone="Asia/Hong_Kong",

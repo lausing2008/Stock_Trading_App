@@ -1015,7 +1015,7 @@ export default function PaperPortfolioPage() {
                   {positions.map(p => (
                     <tr key={p.id} style={{ borderBottom: '1px solid #1e293b' }}>
                       <td style={{ padding: '9px 10px' }}>
-                        <Link href={`/stocks/${p.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{p.symbol}</Link>
+                        <Link href={`/stock/${p.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{p.symbol}</Link>
                       </td>
                       <td style={{ padding: '9px 10px' }}>${p.entry_price.toFixed(2)}</td>
                       <td style={{ padding: '9px 10px' }}>{p.current_price != null ? `$${p.current_price.toFixed(2)}` : '—'}</td>
@@ -1063,7 +1063,7 @@ export default function PaperPortfolioPage() {
                       style={{ borderBottom: isExpanded ? 'none' : '1px solid #1e293b', cursor: 'pointer',
                         background: isExpanded ? '#0f1a2e' : undefined, transition: 'background 0.1s' }}>
                       <td style={{ padding: '9px 10px' }}>
-                        <Link href={`/stocks/${d.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}
+                        <Link href={`/stock/${d.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}
                           onClick={e => e.stopPropagation()}>{d.symbol}</Link>
                       </td>
                       <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtTs(d.entry_time)}</td>
@@ -1186,7 +1186,7 @@ export default function PaperPortfolioPage() {
                     {trades.items.map(t => (
                       <tr key={t.id} style={{ borderBottom: '1px solid #1e293b' }}>
                         <td style={{ padding: '9px 10px' }}>
-                          <Link href={`/stocks/${t.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{t.symbol}</Link>
+                          <Link href={`/stock/${t.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{t.symbol}</Link>
                         </td>
                         <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.entry_date)}</td>
                         <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.exit_time)}</td>

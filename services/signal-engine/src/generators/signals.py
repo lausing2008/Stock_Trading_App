@@ -14,7 +14,7 @@ Accuracy improvements (v2):
 
 Accuracy improvements (v3):
   - Multi-timeframe confirmation: weekly TA alignment boosts/compresses signal
-  - Rolling 20-day VWAP: price above VWAP = institutional support
+  - Rolling 20-day VWMA: price above VWMA = volume-weighted trend filter
   - Earnings proximity penalty: compresses signal when earnings < 10 days away
   - Chart pattern fusion: bull_flag/cup_and_handle/double_bottom boost signal;
     head_and_shoulders/double_top/bear_flag reduce it
@@ -805,15 +805,15 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     bb_pct_b = float((close.iloc[-1] - bb_lower.iloc[-1]) / band_width) if band_width > 0 else 0.5
     reasons["bb_pct_b"] = round(bb_pct_b, 3)
 
-    # ── Rolling 20-day VWAP ───────────────────────────────────────────────
+    # ── Rolling 20-day VWMA (Volume-Weighted Moving Average, not session-reset VWAP) ──
     typical_price = (df["high"].astype(float) + df["low"].astype(float) + close) / 3
-    vwap_20 = (typical_price * volume).rolling(20).sum() / volume.rolling(20).sum()
-    vwap_val = vwap_20.iloc[-1]
+    vwma_20 = (typical_price * volume).rolling(20).sum() / volume.rolling(20).sum()
+    vwma_val = vwma_20.iloc[-1]
     price_above_vwap: bool | None = None
-    if not pd.isna(vwap_val) and not np.isinf(vwap_val) and vwap_val > 0:
-        price_above_vwap = bool(close.iloc[-1] > vwap_val)
+    if not pd.isna(vwma_val) and not np.isinf(vwma_val) and vwma_val > 0:
+        price_above_vwap = bool(close.iloc[-1] > vwma_val)
     reasons["price_above_vwap"] = price_above_vwap
-    reasons["vwap_20"] = float(vwap_val) if not pd.isna(vwap_val) else None
+    reasons["vwma_20"] = float(vwma_val) if not pd.isna(vwma_val) else None
 
     # ── ADX — trend strength ──────────────────────────────────────────────
     adx_val, di_plus, di_minus = _adx(df)
