@@ -3810,12 +3810,12 @@ const ITEMS: Item[] = [
   {
     id: 'aud14-single-model',
     tier: 14, severity: 'critical',
-    title: 'Single SWING-horizon model drives SHORT, SWING, and LONG signals simultaneously',
+    title: 'Single SWING-horizon model drives SHORT, SWING, LONG, and GROWTH signals simultaneously',
     file: 'services/market-data/src/services/scheduler.py:275 · services/signal-engine/src/generators/signals.py:1564,1640',
     effort: '3 days',
-    impact: 'Nightly scheduler trains one model with horizon=10 (SWING). _fetch_ml_data() passes the identical ml_prob to SHORT (5-day), SWING (10-day), and LONG (20-day) signal computation. A model trained on 10-day returns has incorrect feature weightings for 5-day or 20-day prediction — the ML layer adds noise, not signal, for two of the three styles. SHORT trades have the tightest stop tolerance and benefit most from accurate short-horizon prediction.',
-    what: 'Three signal styles use one model artifact. The model learns 10-day return predictors (momentum strength, 10-day trend) that are poorly calibrated for 5-day or 20-day prediction windows. SHORT signals are the most dangerous — overconfident 10-day model probability on a 5-day trade.',
-    fix: 'Train three model artifacts per symbol: _short (horizon=5), _swing (horizon=10), _long (horizon=20). Route _fetch_ml_data() by style key. At minimum, train a dedicated SHORT model immediately — it is the highest urgency due to tight stop tolerance. Requires 3× training time on nightly job; parallelize with asyncio.gather or ThreadPoolExecutor.',
+    impact: 'Nightly scheduler trains one model with horizon=10 (SWING). _fetch_ml_data() passes the identical ml_prob to SHORT (5-day), SWING (10-day), LONG (20-day), and GROWTH (high-volatility momentum) signal computation. A model trained on 10-day returns has incorrect feature weightings for 5-day, 20-day, and momentum breakout prediction horizons — the ML layer adds noise for three of the four styles. GROWTH in particular benefits from a longer horizon (15–20 day) that captures the breakout extension phase; the current 10-day model exits too early on GROWTH signals.',
+    what: 'All four signal styles — SHORT, SWING, LONG, GROWTH — share one model artifact trained with horizon=10. SHORT (5d) needs fast-momentum features. GROWTH needs breakout-continuation features (higher beta, volume expansion persistence) with a 15–20 day horizon. LONG (20d) needs macro-trend features. None of these overlap with SWING\'s 10-day balance.',
+    fix: 'Train four model artifacts per symbol: _short (horizon=5), _swing (horizon=10), _growth (horizon=15, include high_beta/vol_expansion features), _long (horizon=20). Route _fetch_ml_data() by style key. Any style without its own artifact falls back to _swing. GROWTH model should be weighted toward high-volume expansion events and ATR breakout distance. Parallelize training with asyncio.gather or ThreadPoolExecutor to keep nightly runtime manageable.',
   },
   {
     id: 'aud14-paper-race',
