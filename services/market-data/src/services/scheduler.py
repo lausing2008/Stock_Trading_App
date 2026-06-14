@@ -1046,6 +1046,10 @@ def check_technical_alerts() -> None:
         AlertCondition.NEW_52WK_LOW,
         AlertCondition.GOLDEN_CROSS,
         AlertCondition.DEATH_CROSS,
+        AlertCondition.MACD_BULLISH_CROSS,
+        AlertCondition.RSI_OVERSOLD_BOUNCE,
+        AlertCondition.DOUBLE_BOTTOM,
+        AlertCondition.BREAKOUT,
     }
 
     try:
@@ -1059,9 +1063,10 @@ def check_technical_alerts() -> None:
             if not alerts:
                 return
 
-            # Fetch 260 bars per unique symbol (enough for EMA200 + 52-week)
+            # Fetch 260 bars per unique symbol (enough for EMA200 + 52-week + MACD + RSI)
             symbols = list({a.symbol for a in alerts})
             prices_by_sym: dict[str, pd.Series] = {}
+            volumes_by_sym: dict[str, pd.Series] = {}
             for sym in symbols:
                 try:
                     stock = session.execute(
@@ -1070,7 +1075,7 @@ def check_technical_alerts() -> None:
                     if not stock:
                         continue
                     rows = session.execute(
-                        select(Price.ts, Price.close)
+                        select(Price.ts, Price.close, Price.volume)
                         .where(Price.stock_id == stock.id)
                         .order_by(Price.ts.asc())
                         .limit(260)
@@ -1079,6 +1084,9 @@ def check_technical_alerts() -> None:
                         continue
                     prices_by_sym[sym] = pd.Series(
                         [float(r.close) for r in rows]
+                    )
+                    volumes_by_sym[sym] = pd.Series(
+                        [float(r.volume) for r in rows]
                     )
                 except Exception as exc:
                     log.warning("tech_alert.price_error", symbol=sym, error=str(exc))
@@ -1089,6 +1097,7 @@ def check_technical_alerts() -> None:
                 close = prices_by_sym.get(alert.symbol)
                 if close is None:
                     continue
+                volume = volumes_by_sym.get(alert.symbol, pd.Series(dtype=float))
                 cond = alert.condition
 
                 try:
@@ -1143,6 +1152,66 @@ def check_technical_alerts() -> None:
                                 continue
                             cond_label = f"Death Cross — EMA50 ({ema50.iloc[-1]:.2f}) crossed below EMA200 ({ema200.iloc[-1]:.2f})"
                         threshold_val = float(ema50.iloc[-1])
+
+                    elif cond == AlertCondition.MACD_BULLISH_CROSS:
+                        if len(close) < 35:
+                            continue
+                        ema12 = close.ewm(span=12, adjust=False).mean()
+                        ema26 = close.ewm(span=26, adjust=False).mean()
+                        macd = ema12 - ema26
+                        sig = macd.ewm(span=9, adjust=False).mean()
+                        if not (macd.iloc[-2] < sig.iloc[-2] and macd.iloc[-1] >= sig.iloc[-1]):
+                            continue
+                        cond_label = f"MACD Bullish Cross — MACD ({macd.iloc[-1]:.3f}) crossed above signal ({sig.iloc[-1]:.3f})"
+                        threshold_val = float(sig.iloc[-1])
+
+                    elif cond == AlertCondition.RSI_OVERSOLD_BOUNCE:
+                        if len(close) < 16:
+                            continue
+                        delta = close.diff()
+                        gain = delta.clip(lower=0).rolling(14).mean()
+                        loss = (-delta.clip(upper=0)).rolling(14).mean()
+                        rs = gain / loss.replace(0, float("nan"))
+                        rsi = 100 - (100 / (1 + rs))
+                        prev_rsi = float(rsi.iloc[-2]) if not pd.isna(rsi.iloc[-2]) else None
+                        curr_rsi = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None
+                        if prev_rsi is None or curr_rsi is None or prev_rsi >= 30 or curr_rsi < 30:
+                            continue
+                        cond_label = f"RSI Oversold Bounce — RSI recovered from {prev_rsi:.1f} to {curr_rsi:.1f} (above 30)"
+                        threshold_val = curr_rsi
+
+                    elif cond == AlertCondition.DOUBLE_BOTTOM:
+                        if len(close) < 20:
+                            continue
+                        window = close.tail(60).values
+                        minima: list[tuple[int, float]] = []
+                        for i in range(2, len(window) - 2):
+                            if all(window[i] <= window[j] for j in range(i - 2, i + 3) if j != i):
+                                minima.append((i, float(window[i])))
+                        if len(minima) < 2:
+                            continue
+                        b1_idx, b1_val = minima[-2]
+                        b2_idx, b2_val = minima[-1]
+                        lower = min(b1_val, b2_val)
+                        if lower <= 0 or abs(b1_val - b2_val) / lower > 0.03 or b2_idx <= b1_idx + 3:
+                            continue
+                        peak = float(max(window[b1_idx:b2_idx + 1]))
+                        if peak < lower * 1.05 or float(close.iloc[-1]) <= lower * 1.01:
+                            continue
+                        cond_label = f"Double Bottom (W-pattern) — two troughs near ${lower:.2f}, price now ${float(close.iloc[-1]):.2f}"
+                        threshold_val = lower
+
+                    elif cond == AlertCondition.BREAKOUT:
+                        if len(close) < 21:
+                            continue
+                        high_20 = float(close.iloc[-21:-1].max())
+                        avg_vol = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else 0.0
+                        curr_price = float(close.iloc[-1])
+                        curr_vol = float(volume.iloc[-1]) if len(volume) > 0 else 0.0
+                        if curr_price <= high_20 or avg_vol <= 0 or curr_vol < avg_vol * 1.4:
+                            continue
+                        cond_label = f"Volume Breakout — closed ${curr_price:.2f} above 20-day high ${high_20:.2f} with {curr_vol/avg_vol:.1f}x volume"
+                        threshold_val = high_20
 
                     else:
                         continue

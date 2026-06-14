@@ -71,6 +71,8 @@ export const api = {
   allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
   signalHistory: (symbol: string, style = 'SWING', days = 60) =>
     request<SignalHistoryPoint[]>(`/signals/${symbol}/history?style=${style}&days=${days}`),
+  getPatterns: (symbol: string) =>
+    request<{ symbol: string; patterns: PatternSignal[]; as_of: string }>(`/signals/${symbol}/patterns`),
   refreshSignal: (symbol: string) => request<Signal>(`/signals/${symbol}?live=true&persist=true`),
   refreshSignals: (market?: string) => request<{ status: string; count: number }>(`/signals/refresh${market ? `?market=${encodeURIComponent(market)}` : ''}`, { method: 'POST' }),
   predict: (symbol: string, model = 'xgboost') =>
@@ -491,6 +493,7 @@ export type Signal = {
 
 export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null; ts: string | null; stability_days?: number | null };
 export type SignalHistoryPoint = { ts: string | null; signal: string; confidence: number; bullish_probability: number | null };
+export type PatternSignal = { name: string; label: string; description: string; bullish: boolean };
 export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null; relative_strength?: number | null };
 export type SectorRsStock = { symbol: string; name: string; rs_score: number | null; kscore: number | null; past_rs: number | null };
 export type SectorRotationEntry = { sector: string; etf: string; avg_rs: number; rs_change: number | null; stock_count: number; leading: number; lagging: number; leading_pct: number; top_stocks: SectorRsStock[]; bottom_stocks: SectorRsStock[] };

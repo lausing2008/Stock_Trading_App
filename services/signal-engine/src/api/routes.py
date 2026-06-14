@@ -2175,6 +2175,107 @@ def signal_history(
     ]
 
 
+@router.get("/{symbol}/patterns")
+def detect_patterns(
+    symbol: str,
+    session: Session = Depends(get_session),
+):
+    """Detect active technical chart patterns for a symbol.
+
+    Returns patterns detected within the last 3-5 bars so the UI shows
+    live "about to move" badges. Patterns checked: golden_cross,
+    macd_bullish_cross, rsi_oversold_bounce, double_bottom, breakout.
+    """
+    import pandas as pd
+
+    stock = session.execute(
+        select(Stock).where(Stock.symbol == symbol.upper())
+    ).scalar_one_or_none()
+    if not stock:
+        raise HTTPException(404, f"Stock {symbol} not found")
+
+    rows = session.execute(
+        select(Price.ts, Price.close, Price.high, Price.low, Price.volume)
+        .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1)
+        .order_by(Price.ts.asc())
+        .limit(260)
+    ).all()
+
+    if len(rows) < 30:
+        return {"symbol": symbol.upper(), "patterns": [], "as_of": datetime.now(timezone.utc).isoformat() + "Z"}
+
+    close = pd.Series([float(r.close) for r in rows])
+    volume = pd.Series([float(r.volume) for r in rows])
+
+    patterns: list[dict] = []
+
+    def _add(name: str, label: str, description: str, bullish: bool) -> None:
+        patterns.append({"name": name, "label": label, "description": description, "bullish": bullish})
+
+    # 1. Golden Cross — EMA50 crossed above EMA200 within last 5 bars
+    if len(close) >= 200:
+        ema50 = close.ewm(span=50, adjust=False).mean()
+        ema200 = close.ewm(span=200, adjust=False).mean()
+        for i in range(max(-5, -len(close) + 1), 0):
+            if ema50.iloc[i - 1] < ema200.iloc[i - 1] and ema50.iloc[i] >= ema200.iloc[i]:
+                _add("golden_cross", "Golden Cross", f"EMA50 crossed above EMA200 ({ema200.iloc[-1]:.2f})", True)
+                break
+
+    # 2. MACD Bullish Cross — MACD crossed above signal within last 3 bars
+    if len(close) >= 35:
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        sig = macd.ewm(span=9, adjust=False).mean()
+        for i in range(max(-3, -len(close) + 1), 0):
+            if macd.iloc[i - 1] < sig.iloc[i - 1] and macd.iloc[i] >= sig.iloc[i]:
+                _add("macd_bullish_cross", "MACD Cross ↑", f"MACD crossed above signal ({sig.iloc[-1]:.3f})", True)
+                break
+
+    # 3. RSI Oversold Bounce — RSI crossed above 30 within last 3 bars
+    if len(close) >= 16:
+        delta = close.diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = gain / loss.replace(0, float("nan"))
+        rsi = 100 - (100 / (1 + rs))
+        for i in range(max(-3, -len(close) + 1), 0):
+            prev_v = rsi.iloc[i - 1]
+            curr_v = rsi.iloc[i]
+            if pd.notna(prev_v) and pd.notna(curr_v) and prev_v < 30 and curr_v >= 30:
+                _add("rsi_oversold_bounce", "RSI Bounce", f"RSI recovered from oversold (now {rsi.iloc[-1]:.1f})", True)
+                break
+
+    # 4. Double Bottom — two troughs within 3% in last 60 bars, separated by 5%+ peak
+    if len(close) >= 20:
+        window = close.tail(60).values
+        minima: list[tuple[int, float]] = []
+        for i in range(2, len(window) - 2):
+            if all(window[i] <= window[j] for j in range(i - 2, i + 3) if j != i):
+                minima.append((i, float(window[i])))
+        if len(minima) >= 2:
+            b1_idx, b1_val = minima[-2]
+            b2_idx, b2_val = minima[-1]
+            lower = min(b1_val, b2_val)
+            if lower > 0 and abs(b1_val - b2_val) / lower <= 0.03 and b2_idx > b1_idx + 3:
+                peak = float(max(window[b1_idx:b2_idx + 1]))
+                if peak >= lower * 1.05 and float(close.iloc[-1]) > lower * 1.01:
+                    _add("double_bottom", "Double Bottom", f"W-pattern: two troughs near ${lower:.2f}", True)
+
+    # 5. Volume Breakout — close above 20-day high with elevated volume (1.4x avg)
+    if len(close) >= 21:
+        high_20 = float(close.iloc[-21:-1].max())
+        avg_vol = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else 0.0
+        if float(close.iloc[-1]) > high_20 and avg_vol > 0 and float(volume.iloc[-1]) >= avg_vol * 1.4:
+            _add("breakout", "Volume Breakout", f"Closed above 20-day high (${high_20:.2f}) on elevated volume", True)
+
+    return {
+        "symbol": symbol.upper(),
+        "patterns": patterns,
+        "as_of": datetime.now(timezone.utc).isoformat() + "Z",
+    }
+
+
 @router.get("/outcomes/summary")
 def outcomes_summary(
     horizon: str | None = Query(None, description="SHORT | SWING | LONG"),

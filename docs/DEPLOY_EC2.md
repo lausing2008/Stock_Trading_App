@@ -324,6 +324,17 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
+    # Research report generation calls Claude (up to 90s) — must come before /api/ catch-all
+    location /api/research/ {
+        rewrite ^/api/(.*) /$1 break;
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_read_timeout 200s;
+        proxy_send_timeout 200s;
+    }
+
     # AI endpoints can take up to 120s — must be listed before the catch-all
     location /api/ai/ {
         proxy_pass         http://127.0.0.1:3000;

@@ -290,8 +290,12 @@ class AlertCondition(str, enum.Enum):
     CROSS_BELOW_EMA = "cross_below_ema"
     NEW_52WK_HIGH   = "new_52wk_high"     # threshold unused (store 0)
     NEW_52WK_LOW    = "new_52wk_low"
-    GOLDEN_CROSS    = "golden_cross"      # EMA50 crosses above EMA200; threshold unused
-    DEATH_CROSS     = "death_cross"       # EMA50 crosses below EMA200; threshold unused
+    GOLDEN_CROSS         = "golden_cross"          # EMA50 crosses above EMA200; threshold unused
+    DEATH_CROSS          = "death_cross"           # EMA50 crosses below EMA200; threshold unused
+    MACD_BULLISH_CROSS   = "macd_bullish_cross"    # MACD line crosses above signal; threshold unused
+    RSI_OVERSOLD_BOUNCE  = "rsi_oversold_bounce"   # RSI crosses above 30 from below; threshold unused
+    DOUBLE_BOTTOM        = "double_bottom"         # W-pattern detected; threshold unused
+    BREAKOUT             = "breakout"              # Price closes above 20-day high with volume surge
 
 
 class PriceAlert(Base):

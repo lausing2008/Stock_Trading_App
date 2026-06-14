@@ -37,7 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -261,6 +261,12 @@ export default function StockDetail() {
   );
   const alerts = (allAlerts ?? []).filter(a => a.symbol === symbol);
 
+  const { data: livePatterns } = useSWR<{ symbol: string; patterns: PatternSignal[]; as_of: string }>(
+    symbol ? `patterns-${symbol}` : null,
+    () => api.getPatterns(symbol as string),
+    { revalidateOnFocus: false, dedupingInterval: 300_000 },
+  );
+
   const [divOpen, setDivOpen] = useState(false);
   const [instOpen, setInstOpen] = useState(false);
   const { data: optionsFlow } = useSWR(
@@ -333,7 +339,7 @@ export default function StockDetail() {
   }, []);
 
   const isEmaCondition = alertCondition === 'cross_above_ema' || alertCondition === 'cross_below_ema';
-  const isNoThreshold = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross'].includes(alertCondition);
+  const isNoThreshold = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross', 'macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout'].includes(alertCondition);
 
   async function createAlert() {
     if (!alertEmail) return;
@@ -1289,6 +1295,24 @@ Return ONLY valid JSON — no markdown, no prose:
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {livePatterns && livePatterns.patterns.length > 0 && (
+                <div className="rounded-md p-4" style={{ border: '1px solid rgba(99,102,241,0.35)', background: 'rgba(99,102,241,0.06)' }}>
+                  <h3 className="text-sm font-semibold mb-3" style={{ color: '#a5b4fc' }}>Live Pattern Signals</h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {livePatterns.patterns.map((p, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '8px 10px', borderRadius: '7px', background: 'rgba(74,222,128,0.07)', border: '1px solid rgba(74,222,128,0.2)' }}>
+                        <span style={{ fontSize: '16px', lineHeight: 1, marginTop: '1px' }}>{'↑'}</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '12px', fontWeight: 700, color: '#4ade80', marginBottom: '2px' }}>{p.label}</div>
+                          <div style={{ fontSize: '11px', color: '#64748b' }}>{p.description}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#334155', marginTop: '8px' }}>Detected in last 3–5 sessions</div>
                 </div>
               )}
 
@@ -2532,6 +2556,12 @@ Return ONLY valid JSON — no markdown, no prose:
                   <option value="new_52wk_high">New 52-week high</option>
                   <option value="new_52wk_low">New 52-week low</option>
                 </optgroup>
+                <optgroup label="Pattern Signals">
+                  <option value="macd_bullish_cross">MACD Bullish Crossover</option>
+                  <option value="rsi_oversold_bounce">RSI Oversold Bounce (crosses 30)</option>
+                  <option value="double_bottom">Double Bottom (W-pattern)</option>
+                  <option value="breakout">Volume Breakout (20-day high + surge)</option>
+                </optgroup>
               </select>
             </div>
             {/* Price threshold — only for above/below */}
@@ -2605,7 +2635,7 @@ Return ONLY valid JSON — no markdown, no prose:
         {alerts && alerts.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {alerts.map(a => {
-              const isUp = ['above', 'cross_above_ema', 'new_52wk_high', 'golden_cross'].includes(a.condition);
+              const isUp = ['above', 'cross_above_ema', 'new_52wk_high', 'golden_cross', 'macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout'].includes(a.condition);
               const icon = isUp ? '▲' : '▼';
               let label = '';
               if (a.condition === 'above') label = `Rises above ${a.threshold}`;
@@ -2616,6 +2646,10 @@ Return ONLY valid JSON — no markdown, no prose:
               else if (a.condition === 'new_52wk_low') label = 'New 52-week low';
               else if (a.condition === 'golden_cross') label = 'Golden Cross (EMA50 ↑ EMA200)';
               else if (a.condition === 'death_cross') label = 'Death Cross (EMA50 ↓ EMA200)';
+              else if (a.condition === 'macd_bullish_cross') label = 'MACD Bullish Crossover';
+              else if (a.condition === 'rsi_oversold_bounce') label = 'RSI Oversold Bounce (crosses 30)';
+              else if (a.condition === 'double_bottom') label = 'Double Bottom (W-pattern)';
+              else if (a.condition === 'breakout') label = 'Volume Breakout (20-day high + surge)';
               else label = a.condition;
               return (
                 <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: a.triggered ? 'rgba(30,41,59,0.4)' : 'rgba(30,41,59,0.7)', border: `1px solid ${a.triggered ? 'rgba(148,163,184,0.1)' : 'rgba(99,102,241,0.2)'}`, borderRadius: '8px', padding: '10px 14px' }}>
