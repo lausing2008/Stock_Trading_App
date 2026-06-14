@@ -68,7 +68,7 @@ type Reasons = {
   bb_pct_b?: number | null;
   adx?: number | null;
   adx_bullish?: boolean;
-  obv_bullish?: boolean;
+  obv_trend_bullish?: boolean;
   volume_z?: number | null;
   ml_probability?: number | null;
   market_regime?: string;
@@ -343,11 +343,11 @@ function buildReasons(r: Reasons): Factor[] {
   }
 
   // OBV
-  if (r.obv_bullish != null) {
+  if (r.obv_trend_bullish != null) {
     factors.push({
       label: 'OBV (Volume)',
-      bullish: r.obv_bullish,
-      detail: r.obv_bullish
+      bullish: r.obv_trend_bullish,
+      detail: r.obv_trend_bullish
         ? 'On-Balance Volume trending up — volume confirming price direction'
         : 'OBV trending down — volume not confirming the price move',
     });

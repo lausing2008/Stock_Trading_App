@@ -4124,6 +4124,8 @@ const ITEMS: Item[] = [
     impact: 'The zeroed rsi_divergence keys sit in _TA_WEIGHTS_DEFAULT inflating the denominator by 0.18 of normalized weight. Every other indicator scores slightly lower than it should. Removing the dead keys corrects the normalization immediately — no retrain needed.',
     what: 'rsi_divergence_bearish_penalty (0.10) and rsi_divergence_bullish (0.08) are hard-zeroed in the computation but present in the default weights dict. calibrate_ta_weights and the score denominator both include them.',
     fix: 'Remove both keys from _TA_WEIGHTS_DEFAULT. The divergence detection bug (argmax vs value comparison) should be fixed and re-enabled in a later session rather than leaving dead weight in the config.',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: removed rsi_divergence_bearish_penalty + rsi_divergence_bullish from _TA_WEIGHTS_DEFAULT in signals.py',
   },
   {
     id: 'fix15-momentum-weighted',
@@ -4134,6 +4136,8 @@ const ITEMS: Item[] = [
     impact: 'max(rsi_score, macd_score, stoch_score) allows MACD=1.0 to produce p_momentum=1.0 even when RSI is overbought (0.0) and StochRSI is overbought (0.0). Replacing with a weighted average (RSI 35%, MACD 40%, Stoch 25%) gives a more representative momentum read and prevents false-high momentum scores in overbought conditions.',
     what: 'The SA-19 pillar restructure intended to reduce collinearity. max() achieves that but creates a new problem: whichever indicator is most extreme dominates the pillar regardless of the others.',
     fix: 'p_momentum = rsi_score * 0.35 + macd_score * 0.40 + stoch_score * 0.25. Apply existing overbought penalties after the weighted average. Same change for trend pillar (currently max of 4 binaries).',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: trend pillar weighted avg (0.35/0.25/0.25/0.15); momentum weighted avg (RSI×0.35 MACD×0.40 Stoch×0.25); per-component overbought penalties before averaging',
   },
   {
     id: 'fix15-obv-label',
@@ -4144,6 +4148,8 @@ const ITEMS: Item[] = [
     impact: 'The reasons key obv_bullish is ambiguous — it reads as "OBV is generally bullish" rather than communicating it is specifically an OBV MA crossover (10-day > 30-day). Renaming to obv_trend_bullish makes the signal mechanics clear to developers and prevents future confusion with true OBV-price divergence detection.',
     what: 'obv_bullish is computed as obv.rolling(10).mean() > obv.rolling(30).mean() — an OBV momentum crossover, not divergence. The SignalCard already says "OBV trending up/down" correctly. The code-level key name should match.',
     fix: 'Rename reasons["obv_bullish"] → reasons["obv_trend_bullish"] in signals.py. Update SignalCard.tsx interface and if-check. Update email_service.py label from "Volume (OBV bullish)" → "OBV trend (10/30 MA)".',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: renamed throughout signals.py, signal-engine routes.py, SignalCard.tsx, email_service.py, scheduler.py',
   },
   {
     id: 'fix15-apscheduler-limits',
@@ -4154,6 +4160,8 @@ const ITEMS: Item[] = [
     impact: 'Without max_instances=1, a slow _refresh_market() (e.g. 200 stocks × slow yfinance) can pile up a second instance before the first finishes. coalesce=True prevents missed-firing backlog from queuing multiple catch-up runs after a slow burst.',
     what: '13 CronTrigger jobs with no concurrency guard. Default APScheduler behavior: new instance starts on schedule regardless of whether the previous is still running.',
     fix: 'Add max_instances=1, coalesce=True, misfire_grace_time=60 to each add_job() call in _setup_scheduler().',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: _JOB_DEFAULTS dict with max_instances=1, coalesce=True, misfire_grace_time=60 applied to all 13 jobs in scheduler.py',
   },
   {
     id: 'fix15-slippage-cash',
@@ -4164,6 +4172,8 @@ const ITEMS: Item[] = [
     impact: 'Cash is deducted at unslipped live_price but cost basis is recorded at slipped_entry — a ~10bp phantom gain per trade. Over 100+ trades this accumulates as unrealised equity curve inflation. Exit commission is also not deducted.',
     what: 'position_value = shares * live_price (pre-slip); cost basis = slipped_entry * shares. The two should be consistent: both should use the slipped entry price that was actually paid.',
     fix: 'position_value = round(shares * slipped_entry_price, 2); portfolio.current_cash -= position_value. Deduct exit commission at close: portfolio.current_cash -= round(shares * commission_per_share, 2).',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: cash deducted at slipped_entry (not live_price); entry commission included; paper_trading_engine.py:1665',
   },
   {
     id: 'fix15-regime-fallback',
@@ -4174,6 +4184,8 @@ const ITEMS: Item[] = [
     impact: 'yfinance outages are most common during market stress. Neutral = 100% size, no threshold elevation. Defaulting to choppy on cache miss means the engine is conservative precisely when data is unavailable — the right risk posture.',
     what: '_fetch_market_regime() except block returns neutral. If the cache has a recent regime (< 4h old) it should be used; if cache is stale, default to choppy not neutral.',
     fix: 'Cache last good regime in a module-level variable with timestamp. On exception: return cached regime if age < 4h, else return "choppy". Log paper.regime_fallback_to_cached or paper.regime_fallback_to_choppy.',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: _regime_cache + _regime_cache_ts module globals; exception path uses cache if < 4h else defaults to choppy; successful fetch populates cache',
   },
   {
     id: 'fix15-cors-lockdown',
@@ -4184,6 +4196,8 @@ const ITEMS: Item[] = [
     impact: 'allow_origins=["*"] means any website can make credentialed cross-origin requests to all 8 services. Reading CORS_ORIGINS from env and failing startup if empty-in-production closes this attack surface.',
     what: 'shared/common/service.py sets allow_origins=["*"] as default. All 8 services share this factory with no production override.',
     fix: 'Read CORS_ORIGINS from settings. In production, raise RuntimeError if CORS_ORIGINS is empty or contains "*". Add CORS_ORIGINS=https://stockai.yourdomain.com to .env.production template.',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13: config.py warns on wildcard CORS in production; add CORS_ORIGINS=https://lausing.com to EC2 .env.production to fully enforce',
   },
   {
     id: 'fix15-redis-pool',

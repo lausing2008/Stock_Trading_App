@@ -1622,7 +1622,7 @@ def calibrate_ta_weights(
         "rsi_divergence_bullish",
         "macd_strong", "macd_positive", "macd_zero_cross_up",
         "bb_mid_zone", "price_above_vwap",
-        "bullish_trend", "obv_bullish", "volume_surge",
+        "bullish_trend", "obv_trend_bullish", "volume_surge",
     ]
 
     # Map feature name → extractor from stored reasons JSON.
@@ -1643,7 +1643,7 @@ def calibrate_ta_weights(
         "bb_mid_zone":            lambda r: 0.2 < (r.get("bb_pct_b") or 0) < 0.8,
         "price_above_vwap":       lambda r: r.get("price_above_vwap") is True,
         "bullish_trend":          lambda r: bool(r.get("adx_bullish")),
-        "obv_bullish":            lambda r: bool(r.get("obv_bullish")),
+        "obv_trend_bullish":      lambda r: bool(r.get("obv_trend_bullish")),
         "volume_surge":           lambda r: (r.get("volume_z") or 0) > 0.5,
     }
 

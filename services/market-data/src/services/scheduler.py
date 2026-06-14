@@ -469,7 +469,7 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         failed.append("MACD: momentum not confirmed (histogram negative or falling)")
 
     # Layer 4d — Volume confirms direction
-    if reasons.get("obv_bullish"):
+    if reasons.get("obv_trend_bullish"):
         passed.append("OBV: volume confirming price direction")
     else:
         failed.append("OBV: volume not confirming direction")
@@ -650,7 +650,7 @@ def _build_game_plan(
             "SMA50 > SMA200 golden-cross structure intact" if sma50_above_sma200 else None,
             f"RSI {float(rsi):.0f} — recovering from oversold territory" if rsi is not None and float(rsi) < 50 else None,
             "MACD histogram rising — short-term momentum confirming" if reasons.get("macd_rising") else None,
-            "OBV bullish — volume confirming price direction" if reasons.get("obv_bullish") else None,
+            "OBV trend up — volume confirming price direction" if reasons.get("obv_trend_bullish") else None,
         ] if c is not None][:3]
         if not catalysts:
             catalysts = ["AI signal + analyst consensus aligned", "Technical structure improving", "Volume trend supporting move"]

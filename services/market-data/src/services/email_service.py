@@ -199,7 +199,7 @@ def send_signal_alert_email(
         ("MACD histogram",        f"{_fmt(reasons.get('macd_hist'), 3)} {'↑ rising' if reasons.get('macd_rising') else '↓ flat/falling'}{macd_zero}"),
         ("Bollinger %B",          _fmt(reasons.get("bb_pct_b"), 2)),
         ("ADX",                   f"{_fmt(adx_val)}{adx_note}"),
-        ("Volume (OBV bullish)",  _yn(reasons.get("obv_bullish"))),
+        ("OBV trend (10/30 MA)",  _yn(reasons.get("obv_trend_bullish"))),
         ("Volume Z-score",        _fmt(reasons.get("volume_z"), 2)),
         ("ML probability",        f"{float(ml_prob)*100:.1f}% bullish" if ml_prob is not None else "—"),
         ("Next earnings",         earnings_note),

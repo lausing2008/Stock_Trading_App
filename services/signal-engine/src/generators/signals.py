@@ -87,7 +87,7 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "price_above_vwap":         0.08,
     "price_below_vwap_penalty": 0.05,
     "bullish_trend":            0.10,
-    "obv_bullish":              0.10,
+    "obv_trend_bullish":              0.10,
     "volume_surge":             0.05,
 }
 _TA_WEIGHTS_PATH = Path(_settings.model_dir) / "ta_weights.json"
@@ -826,8 +826,8 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     # ── OBV trend (volume-confirmed direction) ────────────────────────────
     direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
     obv = (volume * direction).cumsum()
-    obv_bullish = bool(obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1])
-    reasons["obv_bullish"] = obv_bullish
+    obv_trend_bullish = bool(obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1])
+    reasons["obv_trend_bullish"] = obv_trend_bullish
 
     # ── Volume expansion ──────────────────────────────────────────────────
     vol_std = volume.rolling(20).std().iloc[-1]
@@ -882,7 +882,7 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 
     # VOLUME pillar — demand confirmation
     p_volume = max(
-        1.0 if obv_bullish else 0.0,
+        1.0 if obv_trend_bullish else 0.0,
         0.7 if _vz > 0.5 else 0.0,
     )
 

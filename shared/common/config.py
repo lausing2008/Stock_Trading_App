@@ -38,6 +38,13 @@ class Settings(BaseSettings):
                 "JWT_SECRET must be set to a strong random value in production. "
                 "The default placeholder is not safe."
             )
+        if self.env == "production" and (not self.cors_origins or "*" in self.cors_origins):
+            import warnings
+            warnings.warn(
+                "CORS_ORIGINS is not set or uses wildcard '*' in production. "
+                "Set CORS_ORIGINS=https://yourdomain.com in .env.production to lock down CORS.",
+                stacklevel=2,
+            )
 
     # Providers
     alpha_vantage_api_key: str = ""

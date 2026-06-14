@@ -376,6 +376,9 @@ def _is_market_hours() -> bool:
 
 # ── Market regime engine ─────────────────────────────────────────────────────
 
+_regime_cache: dict = {}          # last successful result
+_regime_cache_ts: float = 0.0     # epoch seconds of last successful fetch
+
 def _fetch_market_regime(cfg: dict) -> dict:
     """Download SPY/QQQ/VIX (300 days) and classify the current market regime.
 
@@ -481,8 +484,16 @@ def _fetch_market_regime(cfg: dict) -> dict:
             result["breadth_size_mult"] = 0.80
 
     except Exception as exc:
-        log.warning("paper.regime_fetch_failed", error=str(exc))
-        return result  # fall through with default "neutral" — never block trading on data error
+        import time as _time
+        age = _time.time() - _regime_cache_ts
+        if _regime_cache and age < 14_400:  # use cache if < 4 hours old
+            log.warning("paper.regime_fallback_to_cached", error=str(exc), cache_age_min=round(age / 60, 1))
+            return dict(_regime_cache)
+        # cache stale or empty — default to choppy (conservative) not neutral (full-size)
+        log.warning("paper.regime_fallback_to_choppy", error=str(exc))
+        result["state"] = "choppy"
+        result["notes"] = ["regime fetch failed — conservative choppy default"]
+        return result
 
     spy   = result["spy_price"]
     e20   = result["spy_ema20"]
@@ -583,6 +594,10 @@ def _fetch_market_regime(cfg: dict) -> dict:
              is_pre_choppy=result["is_pre_choppy"],
              is_pre_risk_off=result["is_pre_risk_off"],
              notes=notes)
+    import time as _time
+    global _regime_cache, _regime_cache_ts
+    _regime_cache = dict(result)
+    _regime_cache_ts = _time.time()
     return result
 
 
@@ -1661,8 +1676,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         slipped_entry = round(live_price * (1 + slippage), 4)
         commission    = round(cfg.get("commission_per_share", 0.0) * shares, 4)
 
-        # Simulate entry — floor at 0 to prevent negative cash from slippage rounding
-        portfolio.current_cash = max(0.0, round(portfolio.current_cash - position_value, 2))
+        # Deduct cash at slipped price (not live_price) so cash and cost basis are consistent
+        position_value = round(shares * slipped_entry, 2)
+        portfolio.current_cash = max(0.0, round(portfolio.current_cash - position_value - commission, 2))
         trade = PaperTrade(
             portfolio_id          = portfolio.id,
             symbol                = stock.symbol,
