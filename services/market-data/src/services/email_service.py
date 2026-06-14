@@ -445,9 +445,11 @@ def send_morning_digest_email(
     to: str,
     date_str: str,
     regime: dict,
-    top_opportunities: list,
+    swing_opportunities: list,
+    growth_opportunities: list,
     open_positions: list,
     pattern_alerts: list,
+    market: str = "US",
 ) -> bool:
     """Send the daily pre-market digest email."""
     state = regime.get("state", "unknown")
@@ -480,33 +482,34 @@ def send_morning_digest_email(
         for n in (regime_notes or [])[:4]
     )
 
-    # ── Top opportunities section ─────────────────────────────────────────────
-    opp_rows_html = ""
-    opp_rows_text = ""
-    for i, o in enumerate(top_opportunities[:5], 1):
-        sig = o.get("signal") or "—"
-        sig_color = {"BUY": "#22c55e", "HOLD": "#facc15", "WAIT": "#f97316", "SELL": "#ef4444"}.get(sig, "#94a3b8")
-        ml = o.get("ml_prob")
-        ml_str = f"{ml*100:.0f}%" if ml else "—"
-        score_str = f"{o['score']:.0f}" if o.get("score") is not None else "—"
-        price_str = f"${o['price']:,.2f}" if o.get("price") else "—"
-        opp_rows_html += (
-            f'<tr style="border-bottom:1px solid #f1f5f9">'
-            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{o["symbol"]}</td>'
-            f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{o.get("name","")[:24]}</td>'
-            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:#6366f1">{score_str}</td>'
-            f'<td style="padding:7px 10px"><span style="background:{sig_color}22;color:{sig_color};font-size:11px;font-weight:700;padding:2px 6px;border-radius:4px">{sig}</span></td>'
-            f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{ml_str}</td>'
-            f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{price_str}</td>'
-            f'</tr>'
-        )
-        opp_rows_text += f"  {i}. {o['symbol']:6} Score {score_str:4}  Signal {sig:4}  ML {ml_str:4}  {o.get('name','')[:20]}\n"
+    # ── Opportunity table helper ──────────────────────────────────────────────
+    def _opp_table(opportunities: list, label: str, accent: str) -> tuple[str, str]:
+        rows_html = ""
+        rows_text = ""
+        for i, o in enumerate(opportunities[:5], 1):
+            sig = o.get("signal") or "—"
+            sig_color = {"BUY": "#22c55e", "HOLD": "#facc15", "WAIT": "#f97316", "SELL": "#ef4444"}.get(sig, "#94a3b8")
+            ml = o.get("ml_prob")
+            ml_str = f"{ml*100:.0f}%" if ml else "—"
+            score_str = f"{o['score']:.0f}" if o.get("score") is not None else "—"
+            price_str = f"${o['price']:,.2f}" if o.get("price") else "—"
+            rows_html += (
+                f'<tr style="border-bottom:1px solid #f1f5f9">'
+                f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{o["symbol"]}</td>'
+                f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{o.get("name","")[:22]}</td>'
+                f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{accent}">{score_str}</td>'
+                f'<td style="padding:7px 10px"><span style="background:{sig_color}22;color:{sig_color};font-size:11px;font-weight:700;padding:2px 6px;border-radius:4px">{sig}</span></td>'
+                f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{ml_str}</td>'
+                f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{price_str}</td>'
+                f'</tr>'
+            )
+            rows_text += f"  {i}. {o['symbol']:6} Score {score_str:4}  Signal {sig:4}  ML {ml_str:4}  {o.get('name','')[:20]}\n"
 
-    opp_section_html = ""
-    if opp_rows_html:
-        opp_section_html = f"""
+        if not rows_html:
+            return "", ""
+        section_html = f"""
     <div style="margin-top:24px">
-      <div style="font-size:11px;font-weight:700;color:#6366f1;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Top Opportunities</div>
+      <div style="font-size:11px;font-weight:700;color:{accent};text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">{label}</div>
       <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
         <tr style="background:#f1f5f9">
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Symbol</th>
@@ -516,10 +519,17 @@ def send_morning_digest_email(
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">ML%</th>
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Price</th>
         </tr>
-        {opp_rows_html}
+        {rows_html}
       </table>
     </div>"""
-    opp_section_text = f"\nTOP OPPORTUNITIES\n{opp_rows_text}" if opp_rows_text else ""
+        return section_html, f"\n{label}\n{rows_text}"
+
+    # ── Top SWING + GROWTH sections ──────────────────────────────────────────
+    market_label = market.upper()
+    swing_html, swing_text = _opp_table(swing_opportunities, f"Top 5 SWING — {market_label}", "#6366f1")
+    growth_html, growth_text = _opp_table(growth_opportunities, f"Top 5 GROWTH — {market_label}", "#f97316")
+    opp_section_html = swing_html + growth_html
+    opp_section_text = swing_text + growth_text
 
     # ── Open positions section ────────────────────────────────────────────────
     pos_rows_html = ""
@@ -587,9 +597,10 @@ def send_morning_digest_email(
       </table>
     </div>"""
 
-    subject = f"📊 Morning Digest: StockAI — {date_str} | Market: {sl}"
+    _market_name = {"US": "US Markets (NYSE/NASDAQ)", "HK": "HK Market (HKEX)"}.get(market.upper(), market.upper())
+    subject = f"📊 Morning Digest [{market.upper()}]: StockAI — {date_str} | Regime: {sl}"
     body_text = (
-        f"StockAI Morning Digest — {date_str}\n"
+        f"StockAI Morning Digest [{market.upper()}] — {date_str}\n"
         f"Market Regime: {sl}  |  SPY: {spy_str}  |  VIX: {vix_str}\n"
         + ("\n".join(regime_notes or []))
         + opp_section_text
@@ -599,7 +610,7 @@ def send_morning_digest_email(
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:560px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-      <h2 style="margin:0;font-size:18px;color:#0f172a">📊 StockAI Morning Digest</h2>
+      <h2 style="margin:0;font-size:18px;color:#0f172a">📊 Morning Digest — {_market_name}</h2>
       <span style="font-size:13px;color:#94a3b8">{date_str}</span>
     </div>
 

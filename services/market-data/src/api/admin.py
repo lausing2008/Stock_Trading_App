@@ -268,11 +268,15 @@ def admin_signal_log(
 
 
 @router.post("/send-morning-digest")
-def trigger_morning_digest(background_tasks: BackgroundTasks, _: User = Depends(get_admin_user)):
-    """Manually trigger the morning digest email (admin only). Runs in background."""
+def trigger_morning_digest(
+    background_tasks: BackgroundTasks,
+    market: str = Query("US", regex="^(US|HK)$"),
+    _: User = Depends(get_admin_user),
+):
+    """Manually trigger the morning digest email for a market (admin only). Runs in background."""
     from ..services.scheduler import send_morning_digest
-    background_tasks.add_task(send_morning_digest)
-    return {"status": "queued", "message": "Morning digest email is being sent to all users with email configured."}
+    background_tasks.add_task(send_morning_digest, market)
+    return {"status": "queued", "market": market, "message": f"Morning digest [{market}] is being sent to all users with email configured."}
 
 
 @router.get("/scheduler-status")

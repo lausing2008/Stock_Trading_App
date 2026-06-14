@@ -1355,14 +1355,16 @@ def _refresh_5m(market: str) -> None:
             _record_job_status(f"paper_trading_5m_{market.lower()}", "error", time.monotonic() - _pt0, str(_pte))
 
 
-def send_morning_digest() -> None:
+def send_morning_digest(market: str = "US") -> None:
     """Compile and email the daily pre-market digest to all users with an email configured.
 
     Sections:
       1. Market regime (SPY / VIX classification from last paper trading step)
-      2. Top 5 ranked opportunities (highest K-Score, with latest signal)
+      2. Top 5 SWING + Top 5 GROWTH opportunities from the given market
       3. Open paper positions (all portfolios, with yesterday's close P&L)
       4. Pattern alerts triggered since yesterday
+
+    Called twice per day: 09:00 ET for US, 08:55 HK for HK.
     """
     _t0 = time.monotonic()
     try:
@@ -1378,86 +1380,94 @@ def send_morning_digest() -> None:
                 log.info("morning_digest.no_recipients")
                 return
 
-            # ── Top 5 opportunities: latest K-Score rankings ──────────────────
+            # ── Top 5 opportunities per horizon (SWING + GROWTH) ─────────────
             latest_rank_subq = (
                 select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
                 .group_by(Ranking.stock_id)
                 .subquery()
             )
-            # Latest SWING signal per stock
-            latest_sig_subq = (
-                select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
-                .where(Signal.horizon == "SWING")
-                .group_by(Signal.stock_id)
-                .subquery()
-            )
-            rank_rows = session.execute(
-                select(Stock, Ranking, Signal)
-                .join(Ranking, Stock.id == Ranking.stock_id)
-                .join(latest_rank_subq,
-                      (Ranking.stock_id == latest_rank_subq.c.stock_id) &
-                      (Ranking.as_of == latest_rank_subq.c.max_as_of))
-                .outerjoin(latest_sig_subq, Stock.id == latest_sig_subq.c.stock_id)
-                .outerjoin(Signal,
-                           (Signal.stock_id == latest_sig_subq.c.stock_id) &
-                           (Signal.ts == latest_sig_subq.c.max_ts) &
-                           (Signal.horizon == "SWING"))
-                .where(Stock.active.is_(True))
-                .order_by(Ranking.score.desc())
-                .limit(50)
-            ).all()
-
-            # Prefer BUY-signal stocks in top-5; fall back to highest score
-            buy_rows = [r for r in rank_rows if r[2] and r[2].signal == "BUY"]
-            other_rows = [r for r in rank_rows if not (r[2] and r[2].signal == "BUY")]
-            top_rows = (buy_rows + other_rows)[:5]
-
-            # Latest close price per symbol from Price table
-            top_symbols = [r[0].symbol for r in top_rows]
             latest_price_subq2 = (
                 select(Price.stock_id, func.max(Price.ts).label("max_ts"))
                 .where(Price.timeframe == "D1")
                 .group_by(Price.stock_id)
                 .subquery()
             )
-            price_map: dict[str, float] = {}
-            if top_symbols:
-                price_rows = session.execute(
-                    select(Stock.symbol, Price.close)
-                    .join(Stock, Price.stock_id == Stock.id)
-                    .join(latest_price_subq2,
-                          (Price.stock_id == latest_price_subq2.c.stock_id) &
-                          (Price.ts == latest_price_subq2.c.max_ts))
-                    .where(Stock.symbol.in_(top_symbols), Price.timeframe == "D1")
-                ).all()
-                price_map = {sym: float(close) for sym, close in price_rows}
 
-            top_opportunities = []
-            for stock, ranking, signal in top_rows:
-                ml_prob = None
-                if signal and signal.reasons:
-                    ml_prob = signal.reasons.get("ml_probability")
-                    if ml_prob is not None:
+            def _top5_for_horizon(horizon: str) -> list[dict]:
+                sig_subq = (
+                    select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+                    .where(Signal.horizon == horizon)
+                    .group_by(Signal.stock_id)
+                    .subquery()
+                )
+                stmt = (
+                    select(Stock, Ranking, Signal)
+                    .join(Ranking, Stock.id == Ranking.stock_id)
+                    .join(latest_rank_subq,
+                          (Ranking.stock_id == latest_rank_subq.c.stock_id) &
+                          (Ranking.as_of == latest_rank_subq.c.max_as_of))
+                    .outerjoin(sig_subq, Stock.id == sig_subq.c.stock_id)
+                    .outerjoin(Signal,
+                               (Signal.stock_id == sig_subq.c.stock_id) &
+                               (Signal.ts == sig_subq.c.max_ts) &
+                               (Signal.horizon == horizon))
+                    .where(Stock.active.is_(True), Stock.market == market.upper())
+                    .order_by(Ranking.score.desc())
+                    .limit(50)
+                )
+                rows = session.execute(stmt).all()
+                # Prefer BUY-signal stocks; fall back to highest K-Score
+                buy_rows = [r for r in rows if r[2] and r[2].signal == "BUY"]
+                other_rows = [r for r in rows if not (r[2] and r[2].signal == "BUY")]
+                top_rows = (buy_rows + other_rows)[:5]
+
+                symbols = [r[0].symbol for r in top_rows]
+                price_map: dict[str, float] = {}
+                if symbols:
+                    prows = session.execute(
+                        select(Stock.symbol, Price.close)
+                        .join(Stock, Price.stock_id == Stock.id)
+                        .join(latest_price_subq2,
+                              (Price.stock_id == latest_price_subq2.c.stock_id) &
+                              (Price.ts == latest_price_subq2.c.max_ts))
+                        .where(Stock.symbol.in_(symbols), Price.timeframe == "D1")
+                    ).all()
+                    price_map = {sym: float(close) for sym, close in prows}
+
+                result = []
+                for stock, ranking, signal in top_rows:
+                    ml_prob = None
+                    if signal and signal.reasons:
                         try:
-                            ml_prob = float(ml_prob)
+                            ml_prob = float(signal.reasons.get("ml_probability") or 0) or None
                         except (TypeError, ValueError):
                             ml_prob = None
-                top_opportunities.append({
-                    "symbol":  stock.symbol,
-                    "name":    stock.name or "",
-                    "score":   float(ranking.score) if ranking.score is not None else None,
-                    "signal":  signal.signal if signal else None,
-                    "ml_prob": ml_prob,
-                    "sector":  stock.sector or "",
-                    "market":  stock.market.value if stock.market else "",
-                    "price":   price_map.get(stock.symbol),
-                })
+                    result.append({
+                        "symbol":  stock.symbol,
+                        "name":    stock.name or "",
+                        "score":   float(ranking.score) if ranking.score is not None else None,
+                        "signal":  signal.signal if signal else None,
+                        "ml_prob": ml_prob,
+                        "sector":  stock.sector or "",
+                        "market":  stock.market.value if stock.market else "",
+                        "price":   price_map.get(stock.symbol),
+                    })
+                return result
 
-            # ── Open paper positions across all portfolios ────────────────────
-            open_trades = session.execute(
-                select(PaperTrade)
-                .where(PaperTrade.stage == "open")
-            ).scalars().all()
+            swing_opportunities = _top5_for_horizon("SWING")
+            growth_opportunities = _top5_for_horizon("GROWTH")
+
+            # ── Open paper positions (filtered to this market's stocks) ──────
+            market_symbols_set = set(
+                session.execute(
+                    select(Stock.symbol).where(Stock.active.is_(True), Stock.market == market.upper())
+                ).scalars().all()
+            )
+            open_trades = [
+                t for t in
+                session.execute(select(PaperTrade).where(PaperTrade.stage == "open")).scalars().all()
+                if t.symbol in market_symbols_set
+            ]
 
             # Last daily close per symbol
             open_symbols = list({t.symbol for t in open_trades})
@@ -1472,6 +1482,7 @@ def send_morning_digest() -> None:
                     .where(Stock.symbol.in_(open_symbols), Price.timeframe == "D1")
                 ).all()
                 close_map = {sym: float(close) for sym, close in c_rows}
+
 
             open_positions = []
             for trade in open_trades:
@@ -1520,20 +1531,24 @@ def send_morning_digest() -> None:
                 to=user.email,
                 date_str=date_str,
                 regime=regime,
-                top_opportunities=top_opportunities,
+                swing_opportunities=swing_opportunities,
+                growth_opportunities=growth_opportunities,
                 open_positions=open_positions,
                 pattern_alerts=pattern_alerts,
+                market=market,
             )
             if ok:
                 sent += 1
 
-        _record_job_status("morning_digest", "ok", time.monotonic() - _t0)
-        log.info("morning_digest.done", sent=sent, recipients=len(users),
-                 opportunities=len(top_opportunities), positions=len(open_positions))
+        job_key = f"morning_digest_{market.lower()}"
+        _record_job_status(job_key, "ok", time.monotonic() - _t0)
+        log.info("morning_digest.done", market=market, sent=sent, recipients=len(users),
+                 swing=len(swing_opportunities), growth=len(growth_opportunities),
+                 positions=len(open_positions))
 
     except Exception as exc:
-        log.error("morning_digest.failed", error=str(exc), exc_info=True)
-        _record_job_status("morning_digest", "error", time.monotonic() - _t0, str(exc))
+        log.error("morning_digest.failed", market=market, error=str(exc), exc_info=True)
+        _record_job_status(f"morning_digest_{market.lower()}", "error", time.monotonic() - _t0, str(exc))
 
 
 def start_scheduler() -> None:
@@ -1561,7 +1576,7 @@ def start_scheduler() -> None:
     ready for the week ahead; subsequent daily retrains pick them up automatically.
 
     Job count: 4 US + 4 HK + 2 5m intraday + 1 weekly full refresh + tune_all
-               + 1 morning digest + 1 price alert checker + 1 db purge = 14.
+               + 2 morning digests (US + HK) + 1 price alert checker + 1 db purge = 15.
     """
     global _scheduler
     if _scheduler is not None:
@@ -1667,11 +1682,18 @@ def start_scheduler() -> None:
         id="hk_5m_intraday", replace_existing=True, **_JOB_DEFAULTS,
     )
 
-    # ── Morning digest — 9:00 AM ET on market days (before open) ────────────
+    # ── Morning digests — pre-open for each market ───────────────────────────
+    # US: 09:00 ET (30 min before NYSE open)
     _scheduler.add_job(
-        send_morning_digest,
+        lambda: send_morning_digest("US"),
         CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
-        id="morning_digest", replace_existing=True, **_JOB_DEFAULTS,
+        id="morning_digest_us", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    # HK: 08:55 HKT (30 min before HKEX open)
+    _scheduler.add_job(
+        lambda: send_morning_digest("HK"),
+        CronTrigger(hour=8, minute=55, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="morning_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Price alert checker — every minute ──────────────────────────────────
@@ -1712,4 +1734,4 @@ def start_scheduler() -> None:
         log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=14)
+    log.info("scheduler.started", jobs=15)
