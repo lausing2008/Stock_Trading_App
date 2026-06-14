@@ -25,6 +25,10 @@ function alertLabel(a: PriceAlert): string {
   if (a.condition === 'new_52wk_low') return 'New 52-week low';
   if (a.condition === 'golden_cross') return 'Golden Cross (EMA50 ↑ EMA200)';
   if (a.condition === 'death_cross') return 'Death Cross (EMA50 ↓ EMA200)';
+  if (a.condition === 'macd_bullish_cross') return 'MACD Bullish Crossover';
+  if (a.condition === 'rsi_oversold_bounce') return 'RSI Oversold Bounce (crosses 30)';
+  if (a.condition === 'double_bottom') return 'Double Bottom (W-pattern)';
+  if (a.condition === 'breakout') return 'Volume Breakout (20-day high + surge)';
   return a.condition;
 }
 
@@ -37,6 +41,10 @@ function triggeredLabel(a: PriceAlert): string {
   if (a.condition === 'new_52wk_low') return 'Hit new 52-week low';
   if (a.condition === 'golden_cross') return 'Golden Cross fired';
   if (a.condition === 'death_cross') return 'Death Cross fired';
+  if (a.condition === 'macd_bullish_cross') return 'MACD Bullish Cross fired';
+  if (a.condition === 'rsi_oversold_bounce') return 'RSI Oversold Bounce fired';
+  if (a.condition === 'double_bottom') return 'Double Bottom pattern fired';
+  if (a.condition === 'breakout') return 'Volume Breakout fired';
   return a.condition;
 }
 
@@ -60,7 +68,7 @@ const lbl: React.CSSProperties = {
   textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '5px',
 };
 
-const NO_THRESHOLD = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross'];
+const NO_THRESHOLD = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross', 'macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout'];
 const EMA_CONDITIONS = ['cross_above_ema', 'cross_below_ema'];
 
 // ── Price Alerts tab ───────────────────────────────────────────────────────
@@ -147,6 +155,12 @@ function PriceAlertsTab() {
                   <optgroup label="Milestone">
                     <option value="new_52wk_high">New 52-week high</option>
                     <option value="new_52wk_low">New 52-week low</option>
+                  </optgroup>
+                  <optgroup label="Pattern Signals">
+                    <option value="macd_bullish_cross">MACD Bullish Crossover</option>
+                    <option value="rsi_oversold_bounce">RSI Oversold Bounce (crosses 30)</option>
+                    <option value="double_bottom">Double Bottom (W-pattern)</option>
+                    <option value="breakout">Volume Breakout (20-day high + surge)</option>
                   </optgroup>
                 </select>
               </div>
