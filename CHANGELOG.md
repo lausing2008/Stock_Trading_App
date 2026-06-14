@@ -4,9 +4,10 @@ All notable changes are documented here, newest first.
 
 ---
 
-## [2026-06-14] — Pattern Signals + Email Alerts; Research NetworkError Fix
+## [2026-06-14] — Morning Digest Email; Pattern Signals + Email Alerts; Research NetworkError Fix
 
 ### Features
+- **Daily morning digest email**: Automated email at 9:00 AM ET every weekday to all users with email configured. Contains: market regime (SPY/VIX state), top 5 ranked opportunities by K-Score with signal + ML%, open paper positions with yesterday's close P&L and stop distance, and any pattern alerts fired in the last 28 hours. Admin can trigger manually via `POST /admin/send-morning-digest`. Registered as APScheduler job `morning_digest` (job count now 14).
 - **Live Pattern Signals widget on stock detail**: "Live Pattern Signals" badge strip appears automatically when one or more bullish technical patterns are detected in the last 3–5 sessions. Patterns detected: Golden Cross, MACD Bullish Cross, RSI Oversold Bounce, Double Bottom (W-pattern), and Volume Breakout. Data comes from a new `GET /signals/{symbol}/patterns` endpoint in the signal-engine.
 - **Pattern alert email subscriptions**: Four new alert conditions added to the stock detail alert dropdown under "Pattern Signals": MACD Bullish Crossover, RSI Oversold Bounce (crosses 30), Double Bottom, and Volume Breakout. These fire a one-shot email the day the pattern is first detected, using the same Gmail/SES infrastructure as price alerts.
 - **DB migration**: `alertcondition` PostgreSQL enum extended with `macd_bullish_cross`, `rsi_oversold_bounce`, `double_bottom`, `breakout` values. Run `scripts/migrations/add_pattern_alert_conditions.sql` on existing deployments.
@@ -30,6 +31,10 @@ All notable changes are documented here, newest first.
 - `frontend/next.config.js`
 - `docs/DEPLOY_EC2.md`
 - `scripts/migrations/add_pattern_alert_conditions.sql` (new)
+- `services/market-data/src/services/email_service.py` (morning digest renderer)
+- `services/market-data/src/services/paper_trading_engine.py` (get_last_regime())
+- `services/market-data/src/services/scheduler.py` (morning digest job)
+- `services/market-data/src/api/admin.py` (manual trigger endpoint)
 
 ---
 
