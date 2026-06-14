@@ -4,7 +4,7 @@ import useSWR from 'swr';
 import { api, type RankingRow, type SignalSummary, type LatestPrice, type WatchlistItem } from '@/lib/api';
 import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 import { getSession } from '@/lib/auth';
-import { getSignalStyle, getSettings } from '@/lib/settings';
+import { getSignalStyle, loadSettings } from '@/lib/settings';
 
 // ─── Merged row type ──────────────────────────────────────────────────────────
 
@@ -132,7 +132,7 @@ export default function Screener() {
   const [nlError, setNlError] = useState('');
   const [nlExplain, setNlExplain] = useState('');
   const nlInputRef = useRef<HTMLInputElement>(null);
-  const settings = getSettings();
+  const settings = loadSettings();
   const aiProvider = settings?.aiProvider === 'deepseek' ? 'deepseek' : 'claude';
   const aiKey = aiProvider === 'deepseek' ? (settings?.deepseekApiKey ?? '') : (settings?.claudeApiKey ?? '');
   const aiModel = aiProvider === 'deepseek' ? (settings?.deepseekModel ?? 'deepseek-chat') : (settings?.claudeModel ?? 'claude-sonnet-4-6');
