@@ -1401,6 +1401,45 @@ Return ONLY valid JSON — no markdown, no prose:
             <ConfidenceTrend history={signalHistory} />
           )}
 
+          {/* Signal History — recent transitions */}
+          {signalHistory && signalHistory.length >= 2 && (() => {
+            const SIG_C: Record<string, string> = { BUY: '#4ade80', SELL: '#f87171', HOLD: '#94a3b8', WAIT: '#fbbf24' };
+            // Dedupe to transitions only (reversed = newest first)
+            const transitions: SignalHistoryPoint[] = [];
+            for (const h of [...signalHistory].reverse()) {
+              if (transitions.length === 0 || h.signal !== transitions[transitions.length - 1].signal) {
+                transitions.push(h);
+                if (transitions.length >= 5) break;
+              }
+            }
+            if (transitions.length < 2) return null;
+            return (
+              <div style={{ background: '#0a0f1e', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                  Signal History
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {transitions.map((h, i) => {
+                    const color = SIG_C[h.signal] ?? '#94a3b8';
+                    const date = h.ts ? new Date(h.ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+                    const bullPct = h.bullish_probability != null ? Math.round(h.bullish_probability * 100) : null;
+                    return (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', borderRadius: 5, background: i === 0 ? `${color}0f` : 'transparent' }}>
+                        <span style={{ fontSize: 9, fontWeight: 700, color: i === 0 ? color : '#334155', width: 26, flexShrink: 0 }}>
+                          {i === 0 ? 'NOW' : `−${i}`}
+                        </span>
+                        <span style={{ fontSize: 10, color: '#475569', fontFamily: 'monospace', width: 48, flexShrink: 0 }}>{date}</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color, width: 34, flexShrink: 0 }}>{h.signal}</span>
+                        <span style={{ fontSize: 10, color: '#64748b' }}>{Math.round(h.confidence ?? 0)}%</span>
+                        {bullPct != null && <span style={{ fontSize: 10, color: '#475569', marginLeft: 'auto' }}>{bullPct}% bull</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Fair Value */}
           {ranking?.fair_price != null && (() => {
             const lp2 = allPrices?.find(p => p.symbol === symbol);

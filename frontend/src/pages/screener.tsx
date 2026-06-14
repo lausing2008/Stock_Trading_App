@@ -46,6 +46,8 @@ const DEFAULT_FILTERS = {
   maxPrice: '',
   sector: '',
   minFairDiscount: '',   // min % stock trades BELOW fair value (positive = undervalued)
+  minRS: '',             // min relative strength score (0-100)
+  minConfidence: '',     // min signal confidence (0-100)
   watchlistOnly: true,
   search: '',
 };
@@ -243,6 +245,8 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     const minVal      = filters.minValue     ? +filters.minValue     : null;
     const minGrow     = filters.minGrowth    ? +filters.minGrowth    : null;
     const minBullish  = filters.minBullish   ? +filters.minBullish / 100 : null;
+    const minRS       = filters.minRS        ? +filters.minRS        : null;
+    const minConf     = filters.minConfidence ? +filters.minConfidence : null;
     const minChg      = filters.minChange    ? +filters.minChange    : null;
     const maxChg      = filters.maxChange    ? +filters.maxChange    : null;
     const minPrc      = filters.minPrice     ? +filters.minPrice     : null;
@@ -261,6 +265,8 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
       if (minVal     != null && (r.value     ?? 0) < minVal)   return false;
       if (minGrow    != null && (r.growth    ?? 0) < minGrow)  return false;
       if (minBullish != null && (r.bullish_probability ?? 0) < minBullish) return false;
+      if (minRS      != null && (r.relative_strength ?? 0) < minRS) return false;
+      if (minConf    != null && (r.confidence ?? 0) < minConf) return false;
       if (minChg     != null && (r.change_pct ?? 0) < minChg) return false;
       if (maxChg     != null && (r.change_pct ?? 0) > maxChg) return false;
       if (minPrc     != null && (r.price ?? 0) < minPrc) return false;
@@ -315,7 +321,8 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     filters.market === 'All' && filters.signals.size === 0 && !filters.minScore && !filters.minTechnical &&
     !filters.minMomentum && !filters.minValue && !filters.minGrowth && !filters.minBullish &&
     !filters.minChange && !filters.maxChange && !filters.minPrice && !filters.maxPrice &&
-    !filters.sector && !filters.minFairDiscount && !filters.watchlistOnly && !filters.search
+    !filters.sector && !filters.minFairDiscount && !filters.minRS && !filters.minConfidence &&
+    !filters.watchlistOnly && !filters.search
   );
 
   const loading = !rankData || !signals || !prices;
@@ -472,6 +479,8 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
 
           {/* Fair-value discount */}
           <NumInput label="Min Underval %" value={filters.minFairDiscount} onChange={v => setFilters(f => ({ ...f, minFairDiscount: v }))} placeholder="e.g. 10" />
+          <NumInput label="Min RS Score"   value={filters.minRS}           onChange={v => setFilters(f => ({ ...f, minRS: v }))}           placeholder="e.g. 50" />
+          <NumInput label="Min Confidence" value={filters.minConfidence}   onChange={v => setFilters(f => ({ ...f, minConfidence: v }))}   placeholder="e.g. 60" />
 
           {/* Watchlist toggle — admin only */}
           {isAdmin && (
