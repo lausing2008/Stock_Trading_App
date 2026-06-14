@@ -491,6 +491,8 @@ const ITEMS: Item[] = [
   {
     id: 'sa6-filter-interaction',
     tier: 4, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — filter_audit endpoint extended with by_filter_name analysis: for each suppression flag (weekly_gate_fired, adx_compression, high_vol_compression, breadth_compression, stale_price_warning, insufficient_history_warning, weekly_alignment, earnings_warning, news_sentiment_flag, rs_flag, options_flag), computes win_rate when active vs inactive, avg return, edge_pct (negative = predictive, positive = harmful), and verdict (predictive/weak/harmful). "Filter Audit" tab added to /signal-accuracy page with per-filter table and by-count breakdown. api.ts: filterAudit() function added.',
     title: 'SA-6: Filter interaction audit — identify redundant or harmful filters',
     file: 'services/signal-engine/src/api/routes.py',
     effort: '1 week',
@@ -1535,6 +1537,8 @@ const ITEMS: Item[] = [
   {
     id: 'scr3-ai-natural-language',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — "✦ AI Screen" input bar above the filter panel in screener.tsx. User types a natural language query, hits Enter/Screen; calls POST /ai/chat with a structured system prompt listing all 12 filter dimensions. Claude returns JSON filter spec + explanation sentence. Filters applied directly to existing screener state (market, signals, minScore, minTechnical, minMomentum, minValue, minGrowth, minBullish, minChange, maxChange, minPrice, maxPrice, minFairDiscount, watchlistOnly). Uses admin-configured AI provider (Claude or DeepSeek). api.ts: aiChat() function added for direct /ai/chat calls.',
     title: 'SCR-3: AI natural language screener — "find tech stocks with improving momentum and insider buying"',
     file: 'frontend/src/pages/screener.tsx · services/api-gateway/src/api/ai_proxy.py',
     effort: '2–3 days',

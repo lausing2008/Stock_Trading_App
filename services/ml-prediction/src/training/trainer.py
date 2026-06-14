@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score, f1_score, precision_recall_curve,
     precision_score, recall_score, roc_auc_score,
@@ -215,8 +216,11 @@ def train_model(
     oos_precisions: list[float] = []
     oos_recalls: list[float] = []
     oos_ics: list[float] = []
+    # Compute split point before CV so the loop only sees the training portion —
+    # splitting on the full X would leak future rows into validation folds.
+    split_train = int(len(X) * 0.70)
     tscv = TimeSeriesSplit(n_splits=5)
-    for tr_idx, val_idx in tscv.split(X):
+    for tr_idx, val_idx in tscv.split(X.iloc[:split_train]):
         X_cv_tr, X_cv_val = X.iloc[tr_idx].values, X.iloc[val_idx].values
         y_cv_tr, y_cv_val = y_dir.iloc[tr_idx].values, y_dir.iloc[val_idx].values
         sc = StandardScaler()
@@ -245,11 +249,8 @@ def train_model(
                 oos_ics.append(float(ic))
 
     # --- Three-way split: train / calibration / threshold evaluation ---
-    # Separating calibration and threshold sets prevents double-dipping:
-    # the calibrator is fit on X_cal (unseen by threshold search), and the
-    # buy_threshold is optimised on X_test (unseen by calibrator).
-    split_train = int(len(X) * 0.70)
-    split_cal   = int(len(X) * 0.85)
+    # split_train already computed above (reused here for clarity).
+    split_cal = int(len(X) * 0.85)
     X_train = X.iloc[:split_train]
     X_cal   = X.iloc[split_train:split_cal]
     X_test  = X.iloc[split_cal:]
@@ -289,17 +290,28 @@ def train_model(
     else:
         model.fit(X_train_s, y_train.values, sample_weight=train_weights)
 
-    # --- Probability calibration (isotonic regression on calibration set) ---
-    # Use positive-class probabilities only (shape (n,)) — IsotonicRegression expects 1D input.
+    # --- Probability calibration (on calibration set) ---
+    # Use positive-class probabilities only (shape (n,)) — both calibrators expect 1D input.
+    # Platt scaling (LogisticRegression) is more stable when the calibration set is small;
+    # IsotonicRegression needs ≥300 samples to avoid overfitting the monotone mapping.
     raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
-    calibrator: IsotonicRegression | None = None
+    calibrator: IsotonicRegression | LogisticRegression | None = None
     if len(np.unique(y_cal)) > 1 and len(y_cal) >= 20:
-        calibrator = IsotonicRegression(out_of_bounds="clip")
-        calibrator.fit(raw_cal_probs, y_cal.values)
+        if len(y_cal) < 300:
+            calibrator = LogisticRegression(C=1e6, solver="lbfgs")
+            calibrator.fit(raw_cal_probs.reshape(-1, 1), y_cal.values)
+        else:
+            calibrator = IsotonicRegression(out_of_bounds="clip")
+            calibrator.fit(raw_cal_probs, y_cal.values)
 
     # --- Precision-optimised BUY threshold (on held-out test set) ---
     raw_test_probs = model.predict_proba(X_test_s)[:, 1]  # shape (n,)
-    preds = calibrator.predict(raw_test_probs) if calibrator is not None else raw_test_probs
+    if calibrator is None:
+        preds = raw_test_probs
+    elif isinstance(calibrator, LogisticRegression):
+        preds = calibrator.predict_proba(raw_test_probs.reshape(-1, 1))[:, 1]
+    else:
+        preds = calibrator.predict(raw_test_probs)
     min_prec = _PRECISION_BY_STYLE.get(style.upper(), _MIN_PRECISION)
     buy_threshold = _precision_threshold(y_test.values, preds, min_precision=min_prec, symbol=symbol)
 
@@ -450,8 +462,12 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     proba = model.predict_proba(Xs)
     raw_prob = float(proba[-1, 1] if proba.ndim == 2 else proba[-1])
 
-    # Apply calibration if the model was trained with it
-    prob = float(calibrator.predict([raw_prob])[0]) if calibrator is not None else raw_prob
+    if calibrator is None:
+        prob = raw_prob
+    elif isinstance(calibrator, LogisticRegression):
+        prob = float(calibrator.predict_proba([[raw_prob]])[0, 1])
+    else:
+        prob = float(calibrator.predict([raw_prob])[0])
 
     return {
         "symbol": symbol,

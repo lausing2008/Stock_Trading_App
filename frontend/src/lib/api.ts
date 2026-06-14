@@ -241,6 +241,18 @@ export const api = {
       factors: { factor: string; win_pct: number; los_pct: number; edge: number; win_count: number; los_count: number }[];
       message?: string;
     }>(`/signals/factor_attribution?horizon=${horizon}&lookback_days=${lookbackDays}&min_count=${minCount}`),
+  filterAudit: (lookbackDays = 180, style = 'SWING', holdDays = 10) =>
+    request<{
+      lookback_days: number; style: string; hold_days: number;
+      n_buy_signals_found: number; n_with_return_data: number; overall_win_rate_pct: number | null;
+      by_filter_count: { filter_count: number; trade_count: number; win_rate_pct: number | null; avg_return_pct: number | null }[];
+      by_filter_name: {
+        filter: string; n_active: number; n_inactive: number;
+        win_rate_active: number | null; win_rate_inactive: number | null;
+        avg_return_active: number | null; avg_return_inactive: number | null;
+        edge_pct: number; verdict: string;
+      }[];
+    }>(`/signals/filter_audit?lookback_days=${lookbackDays}&style=${style}&hold_days=${holdDays}`),
   stockAtr: (symbol: string, period = 14) =>
     request<{ symbol: string; atr: number; close: number; stop_loss_2atr: number; period: number }>(`/stocks/${symbol}/atr?period=${period}`),
   portfolioRisk: (symbols: string[], weights?: number[]) => {
@@ -321,6 +333,8 @@ export const api = {
   clearResearch: (symbol: string) => request(`/research/${symbol}`, { method: 'DELETE' }),
   chatResearch: (symbol: string, messages: {role: string; content: string}[], api_key: string, model: string, provider: string) =>
     request<{role: string; content: string}>(`/research/${symbol}/chat`, { method: 'POST', body: JSON.stringify({ messages, api_key, model, provider }) }, 60_000),
+  aiChat: (messages: {role: string; content: string}[], system: string, provider: string, api_key: string, model: string) =>
+    request<{content: string; model: string; provider: string}>(`/ai/chat`, { method: 'POST', body: JSON.stringify({ provider, api_key, model, messages, system, max_tokens: 1024, temperature: 0.1 }) }, 30_000),
 
   // WF-2 Paper Portfolio
   paperList: () => request<PaperPortfolioListItem[]>('/paper-portfolio/list'),

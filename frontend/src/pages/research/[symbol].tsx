@@ -864,22 +864,35 @@ export default function ResearchPage() {
           {/* ── Tab: AI Verdict ──────────────────────────────────────────────── */}
           {(tab === 'AI Verdict' || printMode) && (() => {
             const v = report.ai_verdict;
+            const isFallback = report.report_quality === 'fallback';
             const buyColor = v?.can_buy_today === 'YES' ? '#4ade80' : v?.can_buy_today === 'NO' ? '#f87171' : '#facc15';
             return (
               <div>
                 {/* Hero verdict */}
-                <div style={{ textAlign: 'center', padding: '32px', background: '#0d1829', borderRadius: '14px', border: `1px solid ${recColor(v?.final_recommendation ?? '')}40`, marginBottom: '16px' }}>
-                  <div style={{ fontSize: '14px', color: '#475569', marginBottom: '8px' }}>Can I Buy This Stock Today?</div>
-                  <div style={{ fontSize: '56px', fontWeight: 800, color: buyColor, lineHeight: 1 }}>{v?.can_buy_today ?? '—'}</div>
-                  <div style={{ marginTop: '16px', fontSize: '14px', color: '#94a3b8', maxWidth: '600px', margin: '16px auto 0', lineHeight: 1.7 }}>{v?.why}</div>
-                  <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                    <div style={{ padding: '8px 20px', borderRadius: '10px', background: recBg(v?.final_recommendation ?? ''), border: `1px solid ${recColor(v?.final_recommendation ?? '')}55`, color: recColor(v?.final_recommendation ?? ''), fontSize: '16px', fontWeight: 800, letterSpacing: '0.04em' }}>
-                      {v?.final_recommendation}
-                    </div>
-                    <div style={{ padding: '8px 20px', borderRadius: '10px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', color: '#818cf8', fontSize: '14px', fontWeight: 600 }}>
-                      Confidence: {v?.confidence_pct ?? 0}%
-                    </div>
-                  </div>
+                <div style={{ textAlign: 'center', padding: '32px', background: '#0d1829', borderRadius: '14px', border: `1px solid ${isFallback ? '#ef4444' : recColor(v?.final_recommendation ?? '')}40`, marginBottom: '16px' }}>
+                  {isFallback ? (
+                    <>
+                      <div style={{ fontSize: '14px', color: '#ef4444', marginBottom: '8px', fontWeight: 600 }}>AI Analysis Unavailable</div>
+                      <div style={{ fontSize: '32px', fontWeight: 800, color: '#ef4444', lineHeight: 1 }}>INSUFFICIENT DATA</div>
+                      <div style={{ marginTop: '12px', fontSize: '13px', color: '#94a3b8', maxWidth: '500px', margin: '12px auto 0', lineHeight: 1.6 }}>
+                        The AI analysis could not be completed. Please retry later or check your API configuration.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: '14px', color: '#475569', marginBottom: '8px' }}>Can I Buy This Stock Today?</div>
+                      <div style={{ fontSize: '56px', fontWeight: 800, color: buyColor, lineHeight: 1 }}>{v?.can_buy_today ?? '—'}</div>
+                      <div style={{ marginTop: '16px', fontSize: '14px', color: '#94a3b8', maxWidth: '600px', margin: '16px auto 0', lineHeight: 1.7 }}>{v?.why}</div>
+                      <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <div style={{ padding: '8px 20px', borderRadius: '10px', background: recBg(v?.final_recommendation ?? ''), border: `1px solid ${recColor(v?.final_recommendation ?? '')}55`, color: recColor(v?.final_recommendation ?? ''), fontSize: '16px', fontWeight: 800, letterSpacing: '0.04em' }}>
+                          {v?.final_recommendation}
+                        </div>
+                        <div style={{ padding: '8px 20px', borderRadius: '10px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', color: '#818cf8', fontSize: '14px', fontWeight: 600 }}>
+                          Confidence: {v?.confidence_pct ?? 0}%
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>

@@ -528,8 +528,8 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
         elif pct < -0.01:
             weekly_trend = "down"
 
-    macd_line = close.ewm(span=12).mean() - close.ewm(span=26).mean()
-    hist = macd_line - macd_line.ewm(span=9).mean()
+    macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    hist = macd_line - macd_line.ewm(span=9, adjust=False).mean()
     macd_positive = bool(hist.iloc[-1] > 0)
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
     weekly_macd_bull = macd_positive and macd_rising
@@ -784,8 +784,8 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     reasons["rsi_divergence"] = rsi_divergence
 
     # ── MACD histogram + zero-line crossover ──────────────────────────────
-    macd_line = close.ewm(span=12).mean() - close.ewm(span=26).mean()
-    hist = macd_line - macd_line.ewm(span=9).mean()
+    macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    hist = macd_line - macd_line.ewm(span=9, adjust=False).mean()
     macd_hist  = float(hist.iloc[-1])
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
     macd_zero_cross_up = False

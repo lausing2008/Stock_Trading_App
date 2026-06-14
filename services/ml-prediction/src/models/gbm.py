@@ -17,8 +17,8 @@ class GradientBoostingModel(BaseModel):
             random_state=42,
         )
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> None:
-        self.clf.fit(X, y)
+    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs) -> None:
+        self.clf.fit(X, y, sample_weight=kwargs.get("sample_weight"))
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         return self.clf.predict_proba(X)

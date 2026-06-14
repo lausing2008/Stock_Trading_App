@@ -1,10 +1,10 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import { api, type RankingRow, type SignalSummary, type LatestPrice, type WatchlistItem } from '@/lib/api';
 import WatchlistPickerButton from '@/components/WatchlistPickerButton';
 import { getSession } from '@/lib/auth';
-import { getSignalStyle } from '@/lib/settings';
+import { getSignalStyle, getSettings } from '@/lib/settings';
 
 // ─── Merged row type ──────────────────────────────────────────────────────────
 
@@ -125,6 +125,73 @@ export default function Screener() {
 
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'score', dir: 'desc' });
+
+  // AI natural language screener
+  const [nlQuery, setNlQuery] = useState('');
+  const [nlLoading, setNlLoading] = useState(false);
+  const [nlError, setNlError] = useState('');
+  const [nlExplain, setNlExplain] = useState('');
+  const nlInputRef = useRef<HTMLInputElement>(null);
+  const settings = getSettings();
+  const aiProvider = settings?.aiProvider === 'deepseek' ? 'deepseek' : 'claude';
+  const aiKey = aiProvider === 'deepseek' ? (settings?.deepseekApiKey ?? '') : (settings?.claudeApiKey ?? '');
+  const aiModel = aiProvider === 'deepseek' ? (settings?.deepseekModel ?? 'deepseek-chat') : (settings?.claudeModel ?? 'claude-sonnet-4-6');
+
+  async function runNlScreener() {
+    if (!nlQuery.trim()) return;
+    setNlLoading(true); setNlError(''); setNlExplain('');
+    const systemPrompt = `You are a stock screener assistant. The user will describe what stocks they want in plain English.
+Your job: translate it into a JSON filter object with ONLY these fields (all optional):
+{
+  "market": "US" | "HK" | "All",
+  "signals": ["BUY"] | ["BUY","HOLD"] | [] (empty = all),
+  "minScore": number (0-100, K-Score),
+  "minTechnical": number (0-100),
+  "minMomentum": number (0-100),
+  "minValue": number (0-100),
+  "minGrowth": number (0-100),
+  "minBullish": number (0-100, bullish probability %),
+  "minChange": number (day change % min),
+  "maxChange": number (day change % max),
+  "minPrice": number,
+  "maxPrice": number,
+  "minFairDiscount": number (% below fair value, 0-100),
+  "watchlistOnly": boolean,
+  "explanation": "one sentence — what you set and why"
+}
+Respond with ONLY valid JSON — no markdown, no extra text. Set only fields relevant to the query.`;
+    try {
+      const resp = await api.aiChat(
+        [{ role: 'user', content: nlQuery }],
+        systemPrompt, aiProvider, aiKey, aiModel,
+      );
+      let parsed: Record<string, unknown>;
+      try { parsed = JSON.parse(resp.content.trim()); }
+      catch { throw new Error('AI returned invalid JSON — try rephrasing your query'); }
+
+      const next = { ...DEFAULT_FILTERS, signals: new Set<string>() };
+      if (parsed.market) next.market = parsed.market as 'All' | 'US' | 'HK';
+      if (Array.isArray(parsed.signals)) next.signals = new Set(parsed.signals as string[]);
+      if (parsed.minScore != null) next.minScore = String(parsed.minScore);
+      if (parsed.minTechnical != null) next.minTechnical = String(parsed.minTechnical);
+      if (parsed.minMomentum != null) next.minMomentum = String(parsed.minMomentum);
+      if (parsed.minValue != null) next.minValue = String(parsed.minValue);
+      if (parsed.minGrowth != null) next.minGrowth = String(parsed.minGrowth);
+      if (parsed.minBullish != null) next.minBullish = String(parsed.minBullish);
+      if (parsed.minChange != null) next.minChange = String(parsed.minChange);
+      if (parsed.maxChange != null) next.maxChange = String(parsed.maxChange);
+      if (parsed.minPrice != null) next.minPrice = String(parsed.minPrice);
+      if (parsed.maxPrice != null) next.maxPrice = String(parsed.maxPrice);
+      if (parsed.minFairDiscount != null) next.minFairDiscount = String(parsed.minFairDiscount);
+      if (parsed.watchlistOnly != null) next.watchlistOnly = Boolean(parsed.watchlistOnly);
+      if (typeof parsed.explanation === 'string') setNlExplain(parsed.explanation);
+      setFilters(next);
+    } catch (e: unknown) {
+      setNlError(e instanceof Error ? e.message : 'AI screener failed');
+    } finally {
+      setNlLoading(false);
+    }
+  }
 
   const wlSymbols = useMemo(
     () => new Set((wlItems ?? []).map(w => w.symbol)),
@@ -270,6 +337,34 @@ export default function Screener() {
           >
             Reset filters
           </button>
+        )}
+      </div>
+
+      {/* AI Natural Language Screener */}
+      <div style={{ background: '#080f1e', border: '1px solid #312e81', borderRadius: '10px', padding: '12px 16px', marginBottom: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: nlExplain || nlError ? '8px' : '0' }}>
+          <span style={{ fontSize: '11px', color: '#818cf8', fontWeight: 700, whiteSpace: 'nowrap' }}>✦ AI Screen</span>
+          <input
+            ref={nlInputRef}
+            value={nlQuery}
+            onChange={e => setNlQuery(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && runNlScreener()}
+            placeholder='Describe what you want, e.g. "tech stocks with BUY signal and high momentum"'
+            style={{ flex: 1, padding: '6px 10px', borderRadius: '6px', border: '1px solid #312e81', background: '#0f172a', color: '#e2e8f0', fontSize: '12px', outline: 'none' }}
+          />
+          <button
+            onClick={runNlScreener}
+            disabled={nlLoading || !nlQuery.trim()}
+            style={{ padding: '6px 14px', borderRadius: '6px', border: '1px solid #4f46e5', background: nlLoading ? 'transparent' : 'rgba(79,70,229,0.2)', color: '#a78bfa', fontSize: '12px', fontWeight: 600, cursor: nlLoading ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', opacity: (!nlQuery.trim() || nlLoading) ? 0.5 : 1 }}
+          >
+            {nlLoading ? 'Thinking…' : 'Screen'}
+          </button>
+        </div>
+        {nlExplain && (
+          <div style={{ fontSize: '11px', color: '#64748b', paddingLeft: '2px' }}>↳ {nlExplain}</div>
+        )}
+        {nlError && (
+          <div style={{ fontSize: '11px', color: '#f87171', paddingLeft: '2px' }}>⚠ {nlError}</div>
         )}
       </div>
 

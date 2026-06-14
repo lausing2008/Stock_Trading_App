@@ -1558,6 +1558,53 @@ def filter_audit(
             "median_return_pct": round(float(sorted(rets)[len(rets) // 2]) * 100, 2) if rets else None,
         })
 
+    # Per-filter win rate: for each flag compare win rate when active vs inactive.
+    # edge_pct negative = filter correctly suppresses weaker signals (good).
+    # edge_pct positive = filter incorrectly suppresses stronger signals (harmful).
+    all_filter_names = list(SUPPRESSION_BOOLEAN) + list(SUPPRESSION_NAMED.keys())
+    filter_buckets: dict[str, dict[str, list[float]]] = {f: {"active": [], "inactive": []} for f in all_filter_names}
+
+    for row in rows:
+        r = row.reasons or {}
+        filter_flags: dict[str, bool] = {}
+        for k in SUPPRESSION_BOOLEAN:
+            filter_flags[k] = bool(r.get(k))
+        for k, test in SUPPRESSION_NAMED.items():
+            filter_flags[k] = test(r.get(k))
+
+        signal_date = row.ts if isinstance(row.ts, date) else row.ts.date()
+        exit_date   = signal_date + timedelta(days=hold_days)
+        entry_price = _nearest_price(row.stock_id, signal_date)
+        exit_price  = _nearest_price(row.stock_id, exit_date)
+        if not (entry_price and exit_price and entry_price > 0):
+            continue
+        ret = (exit_price - entry_price) / entry_price
+        for fname, is_active in filter_flags.items():
+            bucket = "active" if is_active else "inactive"
+            filter_buckets[fname][bucket].append(ret)
+
+    by_filter = []
+    for fname in all_filter_names:
+        act = filter_buckets[fname]["active"]
+        inact = filter_buckets[fname]["inactive"]
+        act_wr   = round(sum(1 for r in act   if r > 0) / len(act)   * 100, 1) if act   else None
+        inact_wr = round(sum(1 for r in inact if r > 0) / len(inact) * 100, 1) if inact else None
+        act_avg   = round(sum(act)   / len(act)   * 100, 2) if act   else None
+        inact_avg = round(sum(inact) / len(inact) * 100, 2) if inact else None
+        edge = round((act_wr or 0) - (inact_wr or 0), 1)  # negative = filter correctly suppresses bad trades
+        by_filter.append({
+            "filter":           fname,
+            "n_active":         len(act),
+            "n_inactive":       len(inact),
+            "win_rate_active":  act_wr,
+            "win_rate_inactive": inact_wr,
+            "avg_return_active":  act_avg,
+            "avg_return_inactive": inact_avg,
+            "edge_pct": edge,  # negative means filter correctly blocks worse signals; positive means filter is harmful
+            "verdict": "harmful" if edge > 5 else ("weak" if edge > -3 else "predictive"),
+        })
+    by_filter.sort(key=lambda x: x["edge_pct"])  # most predictive (most negative) first
+
     n_signals = len(rows)
     n_with_returns = len(per_trade)
     overall_wr = round(sum(1 for t in per_trade if t["win"]) / n_with_returns * 100, 1) if n_with_returns else None
@@ -1570,6 +1617,7 @@ def filter_audit(
         "overall_win_rate_pct":   overall_wr,
         "note": "n_with_return_data < n_buy_signals_found when exit date is in the future or price data is missing.",
         "by_filter_count":        summary,
+        "by_filter_name":         by_filter,
         "trades":                 per_trade,
     }
     _cache_set(cache_key, result)
