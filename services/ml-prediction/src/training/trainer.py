@@ -270,7 +270,7 @@ def train_model(
     _recency_w = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
     train_weights = _blend_weights(y_train.values, _recency_w)
 
-    # XGBoost early stopping on calibration set (separate from threshold eval set)
+    # Early stopping on calibration set for XGBoost; LightGBM handles via its own callbacks (AUD-M10).
     model = get_model(model_name, early_stopping_rounds=50, **(hyperparams or {}))
     if model_name == "xgboost":
         model.fit(
@@ -278,6 +278,13 @@ def train_model(
             sample_weight=train_weights,
             eval_set=[(X_cal_s, y_cal.values)],
             verbose=False,
+        )
+    elif model_name == "lightgbm":
+        # AUD-M10: LGBMClassifier.fit() accepts eval_set; early_stopping callback injected in lgb.py
+        model.fit(
+            X_train_s, y_train.values,
+            sample_weight=train_weights,
+            eval_set=[(X_cal_s, y_cal.values)],
         )
     else:
         model.fit(X_train_s, y_train.values, sample_weight=train_weights)

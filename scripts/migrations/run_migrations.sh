@@ -39,4 +39,10 @@ run_migration "003_fix_paper_portfolio_config.sql"
 # Schema migrations continued
 run_migration "004_add_stock_id_to_paper_trades.sql"
 
+# Data integrity — partial unique index on active paper portfolios
+run_migration "005_paper_portfolio_unique_index.sql"
+
+# Signal deduplication — unique constraint prevents concurrent refresh races
+run_migration "006_signal_unique_constraint.sql"
+
 echo "=== All migrations complete ==="

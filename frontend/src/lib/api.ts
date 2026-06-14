@@ -316,7 +316,7 @@ export const api = {
 
   // Research Intelligence Engine
   generateResearch: (symbol: string, body: ResearchRequestBody) =>
-    request<ResearchReport>(`/research/${symbol}`, { method: 'POST', body: JSON.stringify(body) }, 90_000),
+    request<ResearchReport>(`/research/${symbol}`, { method: 'POST', body: JSON.stringify(body) }, 200_000),
   getResearch: (symbol: string) => request<ResearchReport>(`/research/${symbol}`),
   clearResearch: (symbol: string) => request(`/research/${symbol}`, { method: 'DELETE' }),
   chatResearch: (symbol: string, messages: {role: string; content: string}[], api_key: string, model: string, provider: string) =>

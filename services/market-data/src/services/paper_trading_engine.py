@@ -239,16 +239,135 @@ def _batch_compute_atr(symbols: list[str], period: int = 14) -> dict[str, float 
     return result
 
 
+# ── Sector ETF mapping (PT-M1) ───────────────────────────────────────────────
+
+_SECTOR_ETF_MAP: dict[str, str] = {
+    "Technology":              "XLK",
+    "Health Care":             "XLV",
+    "Healthcare":              "XLV",
+    "Financials":              "XLF",
+    "Financial Services":      "XLF",
+    "Energy":                  "XLE",
+    "Consumer Discretionary":  "XLY",
+    "Consumer Staples":        "XLP",
+    "Industrials":             "XLI",
+    "Materials":               "XLB",
+    "Real Estate":             "XLRE",
+    "Utilities":               "XLU",
+    "Communication Services":  "XLC",
+    "Telecommunications":      "XLC",
+}
+
+
+def _batch_sector_rs_lag(sym_sector_pairs: list[tuple[str, str | None]]) -> dict[str, bool]:
+    """PT-M1: Detect stocks lagging their sector ETF by > 10pp over the last 5 trading days.
+
+    Uses a single yfinance download for all stocks + their mapped ETFs.
+    Returns {symbol: True} for stocks with confirmed sector relative weakness.
+    """
+    if not sym_sector_pairs:
+        return {}
+
+    stock_syms = [s for s, _ in sym_sector_pairs]
+    sector_to_etf = {(sec or ""): _SECTOR_ETF_MAP.get(sec or "", "SPY") for _, sec in sym_sector_pairs}
+    etf_syms = list(set(sector_to_etf.values()))
+    all_syms = list(set(stock_syms + etf_syms))
+
+    try:
+        import yfinance as yf
+        raw = yf.download(all_syms, period="15d", auto_adjust=True, progress=False)
+        closes = raw["Close"] if "Close" in raw.columns else raw
+
+        # Handle single-ticker edge case (yfinance returns Series, not DataFrame)
+        if hasattr(closes, "name"):
+            closes = closes.to_frame(name=closes.name)
+
+        returns_5d: dict[str, float] = {}
+        for sym in all_syms:
+            if sym in closes.columns:
+                s = closes[sym].dropna()
+                if len(s) >= 6:
+                    returns_5d[sym] = float(s.iloc[-1]) / float(s.iloc[-6]) - 1
+
+        result: dict[str, bool] = {}
+        for stock_sym, sector in sym_sector_pairs:
+            etf = _SECTOR_ETF_MAP.get(sector or "", "SPY")
+            stock_ret = returns_5d.get(stock_sym)
+            etf_ret   = returns_5d.get(etf)
+            if stock_ret is not None and etf_ret is not None:
+                if etf_ret - stock_ret > 0.10:  # stock lagging sector ETF by > 10pp
+                    result[stock_sym] = True
+        return result
+
+    except Exception as exc:
+        log.warning("paper.sector_rs_lag_failed", error=str(exc))
+        return {}
+
+
 # ── Market hours check ───────────────────────────────────────────────────────
+
+# AUD-M13: NYSE/NASDAQ market holiday calendar 2024–2027.
+# Static list avoids a pandas_market_calendars dependency.
+# Observed dates: when the holiday falls on Sat → Fri observed; Sun → Mon observed.
+_NYSE_HOLIDAYS: frozenset[date] = frozenset([
+    # 2024
+    date(2024,  1,  1),  # New Year's Day
+    date(2024,  1, 15),  # MLK Day
+    date(2024,  2, 19),  # Presidents' Day
+    date(2024,  3, 29),  # Good Friday
+    date(2024,  5, 27),  # Memorial Day
+    date(2024,  6, 19),  # Juneteenth
+    date(2024,  7,  4),  # Independence Day
+    date(2024,  9,  2),  # Labor Day
+    date(2024, 11, 28),  # Thanksgiving
+    date(2024, 12, 25),  # Christmas
+    # 2025
+    date(2025,  1,  1),  # New Year's Day
+    date(2025,  1, 20),  # MLK Day
+    date(2025,  2, 17),  # Presidents' Day
+    date(2025,  4, 18),  # Good Friday
+    date(2025,  5, 26),  # Memorial Day
+    date(2025,  6, 19),  # Juneteenth
+    date(2025,  7,  4),  # Independence Day
+    date(2025,  9,  1),  # Labor Day
+    date(2025, 11, 27),  # Thanksgiving
+    date(2025, 12, 25),  # Christmas
+    # 2026
+    date(2026,  1,  1),  # New Year's Day
+    date(2026,  1, 19),  # MLK Day
+    date(2026,  2, 16),  # Presidents' Day
+    date(2026,  4,  3),  # Good Friday
+    date(2026,  5, 25),  # Memorial Day
+    date(2026,  6, 19),  # Juneteenth
+    date(2026,  7,  3),  # Independence Day (observed, July 4 = Sat)
+    date(2026,  9,  7),  # Labor Day
+    date(2026, 11, 26),  # Thanksgiving
+    date(2026, 12, 25),  # Christmas
+    # 2027
+    date(2027,  1,  1),  # New Year's Day
+    date(2027,  1, 18),  # MLK Day
+    date(2027,  2, 15),  # Presidents' Day
+    date(2027,  3, 26),  # Good Friday
+    date(2027,  5, 31),  # Memorial Day
+    date(2027,  6, 18),  # Juneteenth (observed, June 19 = Sat)
+    date(2027,  7,  5),  # Independence Day (observed, July 4 = Sun)
+    date(2027,  9,  6),  # Labor Day
+    date(2027, 11, 25),  # Thanksgiving
+    date(2027, 12, 24),  # Christmas (observed, Dec 25 = Sat)
+])
+
 
 def _is_market_hours() -> bool:
     """True if current time falls within US regular session (9:30–16:00 ET, Mon–Fri).
 
     Uses zoneinfo (Python 3.9+) for correct EDT/EST auto-switching.
+    Respects NYSE market holidays (AUD-M13).
     """
     from zoneinfo import ZoneInfo
     now_et = datetime.now(ZoneInfo("America/New_York"))
     if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    if now_et.date() in _NYSE_HOLIDAYS:
         return False
     market_open  = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
     market_close = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
@@ -275,24 +394,35 @@ def _fetch_market_regime(cfg: dict) -> dict:
     result: dict = {
         "state": "neutral",
         "spy_price": None, "spy_ema20": None, "spy_ema50": None, "spy_ema200": None,
-        "spy_20d_ret": None, "vix": None, "qqq_price": None, "qqq_ema50": None,
+        "spy_20d_ret": None, "vix": None, "vix9d": None, "qqq_price": None, "qqq_ema50": None,
         "notes": [],
         # RE-9: early warning fields
         "spy_pct_above_ema20": None,  # how far SPY is above/below EMA20 as %
         "vix_5d_trend": None,         # "rising" | "falling" | "flat"
         "is_pre_choppy": False,       # True when neutral but showing deterioration signals
         "is_pre_risk_off": False,     # True when neutral/choppy with VIX trending toward risk_off
+        # PT-M4: VIX term structure — VIX9D/VIX > 1.10 means near-term fear > medium-term → panic spike
+        "vix_term_inverted": False,   # True when ^VIX9D / ^VIX > 1.10
+        # PT-M5: Market breadth via IWM (Russell 2000) + MDY (S&P 400 mid-cap) vs 200EMA
+        "breadth_weak": False,        # True when BOTH IWM and MDY below 200EMA
+        "breadth_size_mult": 1.0,     # 0.80 if one below 200EMA; 0.60 if both
+        "iwm_vs_ema200": None,        # IWM price / 200EMA (for logging)
+        "mdy_vs_ema200": None,        # MDY price / 200EMA (for logging)
     }
     try:
         import yfinance as yf
         # 300 days needed to warm up the 200EMA; group_by default = by column
-        raw = yf.download(["SPY", "QQQ", "^VIX"], period="300d",
+        # IWM (Russell 2000) + MDY (S&P 400) added for PT-M5 breadth check
+        raw = yf.download(["SPY", "QQQ", "^VIX", "^VIX9D", "IWM", "MDY"], period="300d",
                           auto_adjust=True, progress=False)
         closes = raw["Close"] if "Close" in raw.columns else raw
 
-        spy_s = closes["SPY"].dropna()   if "SPY"  in closes.columns else None
-        qqq_s = closes["QQQ"].dropna()   if "QQQ"  in closes.columns else None
-        vix_s = closes["^VIX"].dropna()  if "^VIX" in closes.columns else None
+        spy_s   = closes["SPY"].dropna()    if "SPY"    in closes.columns else None
+        qqq_s   = closes["QQQ"].dropna()    if "QQQ"    in closes.columns else None
+        vix_s   = closes["^VIX"].dropna()   if "^VIX"   in closes.columns else None
+        vix9d_s = closes["^VIX9D"].dropna() if "^VIX9D" in closes.columns else None
+        iwm_s   = closes["IWM"].dropna()    if "IWM"    in closes.columns else None
+        mdy_s   = closes["MDY"].dropna()    if "MDY"    in closes.columns else None
 
         if spy_s is not None and len(spy_s) >= 20:
             result["spy_price"] = float(spy_s.iloc[-1])
@@ -320,6 +450,35 @@ def _fetch_market_regime(cfg: dict) -> dict:
                     result["vix_5d_trend"] = "falling"
                 else:
                     result["vix_5d_trend"] = "flat"
+
+        # PT-M4: VIX9D (9-day VIX) vs VIX (30-day) term structure.
+        # Inverted term structure (short-term fear > medium-term) precedes risk-off regimes.
+        if vix9d_s is not None and len(vix9d_s) >= 1 and result["vix"]:
+            vix9d_val = float(vix9d_s.iloc[-1])
+            result["vix9d"] = vix9d_val
+            if vix9d_val / result["vix"] > 1.10:
+                result["vix_term_inverted"] = True
+
+        # PT-M5: Market breadth via IWM (Russell 2000) + MDY (S&P 400 mid-cap).
+        # Both below their 200EMA signals a narrow market — mega-caps masking widespread weakness.
+        iwm_below = False
+        mdy_below = False
+        if iwm_s is not None and len(iwm_s) >= 200:
+            iwm_price = float(iwm_s.iloc[-1])
+            iwm_e200  = float(iwm_s.ewm(span=200, adjust=False).mean().iloc[-1])
+            result["iwm_vs_ema200"] = round(iwm_price / iwm_e200, 4)
+            iwm_below = iwm_price < iwm_e200
+        if mdy_s is not None and len(mdy_s) >= 200:
+            mdy_price = float(mdy_s.iloc[-1])
+            mdy_e200  = float(mdy_s.ewm(span=200, adjust=False).mean().iloc[-1])
+            result["mdy_vs_ema200"] = round(mdy_price / mdy_e200, 4)
+            mdy_below = mdy_price < mdy_e200
+        # Two-tier breadth sizing: one below → 80%; both below → 60%
+        if iwm_below and mdy_below:
+            result["breadth_weak"]      = True
+            result["breadth_size_mult"] = 0.60
+        elif iwm_below or mdy_below:
+            result["breadth_size_mult"] = 0.80
 
     except Exception as exc:
         log.warning("paper.regime_fetch_failed", error=str(exc))
@@ -389,12 +548,35 @@ def _fetch_market_regime(cfg: dict) -> dict:
             result["is_pre_risk_off"] = True
             notes.append(f"RE-9 pre-risk_off warning: SPY {(spy/e50-1)*100:.1f}% above 50EMA, VIX {vix_cur:.1f}")
 
+        # PT-M4: Inverted VIX term structure (VIX9D/VIX > 1.10) in bull/neutral → elevate to pre_risk_off.
+        # Short-term fear spiking above medium-term fear is a reliable early panic signal even before
+        # SPY loses its EMAs — gives us a session head-start over the standard RE-9 trigger.
+        if result.get("vix_term_inverted") and state in ("bull", "neutral"):
+            result["is_pre_risk_off"] = True
+            vix9d_val = result.get("vix9d") or 0
+            notes.append(f"PT-M4 VIX term structure inverted: VIX9D {vix9d_val:.1f} / VIX {vix_cur:.1f} > 1.10")
+
+        # PT-M5: Breadth weakness (IWM + MDY below 200EMA) in bull/neutral → elevate to pre_risk_off.
+        # A bull-regime SPY reading is unreliable when small/mid caps are already in a downtrend.
+        if result.get("breadth_weak") and state in ("bull", "neutral"):
+            result["is_pre_risk_off"] = True
+            notes.append(
+                f"PT-M5 breadth weak: IWM/200EMA={result.get('iwm_vs_ema200', 0):.3f}, "
+                f"MDY/200EMA={result.get('mdy_vs_ema200', 0):.3f} — narrow market"
+            )
+
     log.info("paper.regime_classified",
              state=result["state"],
              spy=result["spy_price"],
              ema20=result["spy_ema20"] and round(result["spy_ema20"], 2),
              ema50=result["spy_ema50"] and round(result["spy_ema50"], 2),
              vix=result["vix"],
+             vix9d=result["vix9d"],
+             vix_term_inverted=result["vix_term_inverted"],
+             breadth_weak=result["breadth_weak"],
+             breadth_size_mult=result["breadth_size_mult"],
+             iwm_vs_ema200=result["iwm_vs_ema200"],
+             mdy_vs_ema200=result["mdy_vs_ema200"],
              spy_20d_ret=result["spy_20d_ret"],
              spy_pct_above_ema20=result["spy_pct_above_ema20"],
              vix_5d_trend=result["vix_5d_trend"],
@@ -710,6 +892,12 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             if price_held and obv_declining:
                 _obv_divergence[sym] = True
 
+    # PT-M1: Batch-compute sector relative-strength lag for all open positions.
+    # One yfinance download covers all stocks + their sector ETFs.
+    _rs_sector_lag: dict[str, bool] = _batch_sector_rs_lag(
+        [(t.symbol, t.sector) for t in open_trades]
+    )
+
     # Regime-adjusted trail multiplier — tighten stops in risk-off environments
     # so existing positions are protected even though new entries are paused/sized down
     regime_trail_adj = 1.0
@@ -937,10 +1125,21 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         trail_trigger = cfg.get("trail_trigger_pct", 0.05)
         be_trigger    = cfg.get("breakeven_trigger_pct", 0.03)
 
+        # PT-M2: Earnings proximity — freeze trail updates within 2 trading days of earnings.
+        # Binary events gap both ways; stopping out 2 days before a blowout quarter is costly.
+        # Hard stop (stop_loss) remains active — only dynamic trail updates are paused.
+        _dte = (current_sig.reasons or {}).get("days_to_earnings") if current_sig else None
+        earnings_near = _dte is not None and int(_dte) <= 2
+        if earnings_near:
+            log.info("paper.earnings_proximity_stop_frozen",
+                     symbol=trade.symbol, dte=int(_dte),
+                     current_stop=round(trade.current_stop, 2),
+                     note="trail frozen — earnings binary event within 2 days")
+
         # Trail is armed once highest_price has ever cleared trail_trigger above entry.
         # After arming, update every cycle so stop ratchets up continuously on new highs.
         trail_armed = (trade.highest_price or entry) >= entry * (1 + trail_trigger)
-        if trail_armed:
+        if trail_armed and not earnings_near:
             atr = monitor_atr_cache.get(trade.symbol)
             if atr is not None and atr > 0.01:  # guard against None, NaN, or near-zero
                 mult = cfg.get("trail_atr_mult", 2.0) * regime_trail_adj
@@ -963,19 +1162,24 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                 log.warning("paper.trail_atr_invalid", symbol=trade.symbol, atr=atr,
                             note="skipping trail update this cycle")
 
+        # All tightening checks respect earnings proximity freeze — never tighten into a binary event.
+        if not earnings_near:
+            atr = monitor_atr_cache.get(trade.symbol)
+
         # Double-top neckline break mid-trade — tighten trail multiplier to 1.2× (from 2.0×)
         # A confirmed double-top breakdown while holding means the thesis is reversing
         sig_reasons = {}
-        try:
-            from sqlalchemy import text as sa_text
-            sig_reasons = session.execute(
-                sa_text("SELECT reasons FROM signals WHERE stock_id = :sid AND horizon = :h ORDER BY ts DESC LIMIT 1"),
-                {"sid": trade.stock_id, "h": trade.style or cfg.get("trading_style", "GROWTH")},
-            ).mappings().one_or_none()
-            sig_reasons = dict(sig_reasons["reasons"] or {}) if sig_reasons else {}
-        except Exception:
-            pass
-        if sig_reasons.get("double_top_breakdown") and trail_armed and atr is not None and atr > 0.01:
+        if not earnings_near:
+            try:
+                from sqlalchemy import text as sa_text
+                sig_reasons = session.execute(
+                    sa_text("SELECT reasons FROM signals WHERE stock_id = :sid AND horizon = :h ORDER BY ts DESC LIMIT 1"),
+                    {"sid": trade.stock_id, "h": trade.style or cfg.get("trading_style", "GROWTH")},
+                ).mappings().one_or_none()
+                sig_reasons = dict(sig_reasons["reasons"] or {}) if sig_reasons else {}
+            except Exception:
+                pass
+        if sig_reasons.get("double_top_breakdown") and trail_armed and not earnings_near and atr is not None and atr > 0.01:
             tight_mult = 1.2 * regime_trail_adj
             tight_trail = max((trade.highest_price or live_price) - atr * tight_mult, trade.stop_loss)
             if tight_trail > trade.current_stop:
@@ -988,7 +1192,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         # A 15-pt drop in K-score (out of 100) signals smart-money distribution.
         # Apply only when trail is armed (we have a gain to protect) to avoid premature exits.
         kscore_entry = trade.kscore_at_entry
-        if (kscore_entry is not None and trail_armed and
+        if (not earnings_near and kscore_entry is not None and trail_armed and
                 atr is not None and atr > 0.01):
             current_kscore = latest_kscores.get(trade.symbol)
             if current_kscore is not None and current_kscore < kscore_entry - 15:
@@ -1006,7 +1210,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
         # PT-H4: OBV divergence — price holding but volume declining (quiet distribution).
         # Only tighten when we have a gain to protect AND price is above entry.
-        if (trail_armed and atr is not None and atr > 0.01 and
+        if (not earnings_near and trail_armed and atr is not None and atr > 0.01 and
                 pnl_pct >= 0.02 and _obv_divergence.get(trade.symbol)):
             obv_mult  = 1.5 * regime_trail_adj
             obv_trail = max((trade.highest_price or live_price) - atr * obv_mult, trade.stop_loss)
@@ -1017,6 +1221,24 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                             pnl_pct=round(pnl_pct * 100, 1),
                             new_stop=round(obv_trail, 2),
                             note="OBV declining while price holds — possible distribution")
+
+        # PT-M1: Relative strength vs sector exit — stock lagging its sector ETF by > 10pp
+        # over the last 5 trading days signals idiosyncratic weakness, not market noise.
+        # Only tighten when trail is armed (protecting a gain), not earnings, and we have ATR.
+        if (not earnings_near and trail_armed and atr is not None and atr > 0.01 and
+                pnl_pct >= 0.02 and _rs_sector_lag.get(trade.symbol)):
+            rs_mult  = 1.5 * regime_trail_adj
+            rs_trail = max((trade.highest_price or live_price) - atr * rs_mult, trade.stop_loss)
+            if rs_trail > trade.current_stop:
+                trade.current_stop = round(rs_trail, 4)
+                etf_sym = _SECTOR_ETF_MAP.get(trade.sector or "", "SPY")
+                log.warning("paper.sector_rs_lag_trail_tightened",
+                            symbol=trade.symbol,
+                            sector=trade.sector,
+                            sector_etf=etf_sym,
+                            pnl_pct=round(pnl_pct * 100, 1),
+                            new_stop=round(rs_trail, 2),
+                            note="Stock lagging sector ETF by >10pp over 5d — sector RS weakness")
 
         # PA-A3: Breakeven stop — unconditional (not elif) so it fires even when trail
         # is armed but ATR trail is still below entry (e.g. large ATR, small gain so far)
@@ -1235,6 +1457,20 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             regime_size_mult = min(regime_size_mult, cfg.get("regime_risk_off_size_mult", 0.50))
             log.warning("paper.pre_risk_off_warning", vix=live_regime.get("vix"),
                         note="applying risk_off sizing preemptively — VIX elevated near 50EMA")
+
+        # PT-M5: Breadth-adjusted position sizing — applied on top of regime sizing.
+        # Narrow markets (IWM/MDY below 200EMA) warrant smaller positions regardless of SPY regime.
+        breadth_mult = live_regime.get("breadth_size_mult", 1.0)
+        if breadth_mult < 1.0:
+            prev_mult = regime_size_mult
+            regime_size_mult = min(regime_size_mult, breadth_mult)
+            log.warning("paper.breadth_weakness_size_reduced",
+                        breadth_size_mult=breadth_mult,
+                        prev_regime_mult=round(prev_mult, 2),
+                        new_regime_mult=round(regime_size_mult, 2),
+                        iwm_vs_ema200=live_regime.get("iwm_vs_ema200"),
+                        mdy_vs_ema200=live_regime.get("mdy_vs_ema200"),
+                        note="IWM/MDY breadth below 200EMA — reducing position size")
 
     # PT-D6: Re-sort candidates by composite priority — confidence + K-Score + breakout context
     def _composite_priority(row):

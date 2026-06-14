@@ -26,9 +26,20 @@ class LightGBMModel(BaseModel):
         )
 
     def fit(self, X: np.ndarray, y: np.ndarray, **kwargs) -> None:
-        callbacks = kwargs.pop("callbacks", None)
+        import lightgbm as lgb
         sample_weight = kwargs.pop("sample_weight", None)
-        self.clf.fit(X, y, sample_weight=sample_weight)
+        eval_set      = kwargs.pop("eval_set", None)
+        kwargs.pop("callbacks", None)   # discard any XGBoost-style callbacks
+        kwargs.pop("verbose", None)     # discard XGBoost verbose flag
+
+        fit_kwargs: dict = {}
+        if sample_weight is not None:
+            fit_kwargs["sample_weight"] = sample_weight
+        # AUD-M10: use LightGBM-native callbacks for early stopping
+        if eval_set:
+            fit_kwargs["eval_set"] = eval_set
+            fit_kwargs["callbacks"] = [lgb.early_stopping(50), lgb.log_evaluation(0)]
+        self.clf.fit(X, y, **fit_kwargs)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         return self.clf.predict_proba(X)

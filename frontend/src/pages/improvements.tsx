@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -3126,10 +3126,14 @@ const ITEMS: Item[] = [
     impact: 'Low — at RSI exactly 40 with neutral weekly trend, the weekly gate fires even though 40 is a borderline neutral RSI, not clearly bearish.',
     what: 'The weekly gate condition is weekly_rsi < 40 and weekly_trend == "down". The < 40 threshold is correct but RSI=40.0 is excluded, while 39.99 is included. More importantly, a stock with RSI=38 and missing weekly history returns None for weekly_trend, which compares False to "down" — gate silently does not fire.',
     fix: 'Add None-guard for weekly_trend before the gate condition. Consider changing to RSI ≤ 38 to reduce boundary sensitivity.',
+    defaultStatus: 'done',
+    implementedNote: 'Already fixed in prior session — weekly_rsi <= 38 and weekly_trend is not None guard at signals.py line 1493-1495.',
   },
   {
     id: 'aud-m4-ml-weight-global-cap',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Already fixed — per-style ml_weight_floor in _STYLE_PROFILES. Duplicate of aud-m4-ml-weight-floor (done 2026-06-13).',
     title: 'AUD-M4: _ml_weight_global_cap overrides all per-style caps with no per-style floor',
     file: 'services/signal-engine/src/generators/signals.py',
     effort: '1 hour',
@@ -3140,6 +3144,8 @@ const ITEMS: Item[] = [
   {
     id: 'aud-m5-stability-gap-detection',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Already fixed — batch stability fetches (signal, ts); streak breaks when gap > 3 calendar days. Duplicate of aud-m5-stability-gap (done 2026-06-13).',
     title: 'AUD-M5: _compute_stability streak doesn\'t detect gaps — non-consecutive BUYs counted as streaks',
     file: 'services/signal-engine/src/api/routes.py',
     effort: '1 hour',
@@ -3150,6 +3156,8 @@ const ITEMS: Item[] = [
   {
     id: 'aud-m6-all-latest-signals-swing-default',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Already fixed — preference order SWING > LONG > GROWTH > SHORT applied per stock when no style param. Duplicate of aud-m6-all-latest-swing-default (done 2026-06-13).',
     title: 'AUD-M6: all_latest_signals hardcodes SWING as default — stocks without SWING style invisible',
     file: 'services/signal-engine/src/api/routes.py',
     effort: '1 hour',
@@ -3160,6 +3168,8 @@ const ITEMS: Item[] = [
   {
     id: 'aud-m7-signal-accuracy-exit',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Already fixed — signal_accuracy uses first_close_after(signal_date) as T+1 entry (not same-day close). Fixed exit uses price at signal_date + horizon_days.',
     title: 'AUD-M7: signal_accuracy uses latest close for exit — not a fixed hold-window return',
     file: 'services/signal-engine/src/api/routes.py',
     effort: '2 hours',
@@ -3170,6 +3180,8 @@ const ITEMS: Item[] = [
   {
     id: 'aud-m8-outcome-lookahead',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Already fixed — evaluate_signal_outcomes uses _first_close_after(sig.stock_id, signal_date) for T+1 entry price across all outcome functions.',
     title: 'AUD-M8: evaluate_signal_outcomes uses same-day close — entry lookahead bias',
     file: 'services/signal-engine/src/api/routes.py',
     effort: '1 hour',
@@ -3180,6 +3192,8 @@ const ITEMS: Item[] = [
   {
     id: 'aud-m10-lgb-early-stopping',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — lgb.py fit() now uses LightGBM-native callbacks [lgb.early_stopping(50), lgb.log_evaluation(0)] when eval_set provided; trainer.py passes eval_set for lightgbm branch.',
     title: 'AUD-M10: LightGBM fit() silently discards eval_set and callbacks — no early stopping',
     file: 'services/ml-prediction/src/training/trainer.py',
     effort: '2 hours',
@@ -3190,6 +3204,8 @@ const ITEMS: Item[] = [
   {
     id: 'aud-m13-nyse-holidays',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — _NYSE_HOLIDAYS frozenset (2024–2027 static list) added before _is_market_hours(); date check added inside function; no pandas_market_calendars dependency.',
     title: 'AUD-M13: No NYSE holiday calendar — paper trading fires on market holidays',
     file: 'services/market-data/src/services/paper_trading_engine.py · services/market-data/src/services/scheduler.py',
     effort: '2 hours',
@@ -3200,6 +3216,8 @@ const ITEMS: Item[] = [
   {
     id: 'aud-m19-paper-portfolio-unique',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — migration 005: CREATE UNIQUE INDEX uix_paper_portfolios_active_name ON paper_portfolios (name) WHERE is_active = TRUE',
     title: 'AUD-M19: PaperPortfolio no partial unique index — duplicate active portfolios possible',
     file: 'shared/db/models.py',
     effort: '1 hour',
@@ -3210,6 +3228,8 @@ const ITEMS: Item[] = [
   {
     id: 'aud-m21-board-fsm',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Already implemented — VALID_TRANSITIONS dict at board.py top; PATCH validates transition and raises HTTP 400 for invalid jumps (e.g. watch→closed not allowed).',
     title: 'AUD-M21: Board stage transitions have no FSM guard — illegal jumps allowed',
     file: 'services/market-data/src/api/board.py',
     effort: '1 hour',
@@ -3220,6 +3240,8 @@ const ITEMS: Item[] = [
   {
     id: 'aud-m23-signal-unique-constraint',
     tier: 10, severity: 'medium',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — migration 006: CREATE UNIQUE INDEX uix_signals_stock_horizon_day ON signals (stock_id, horizon, date_trunc("day", ts)); duplicate cleanup block included (commented).',
     title: 'AUD-M23: Signal table no UNIQUE(stock_id, horizon, DATE(ts)) — concurrent refresh race',
     file: 'shared/db/models.py',
     effort: '2 hours',
@@ -3558,6 +3580,8 @@ const ITEMS: Item[] = [
     impact: 'A stock that holds price while its sector rotates up is a stealth laggard. Institutional money is quietly selling into the sector rally. Catching this before the stock drops to the trailing stop preserves 2-4% of gains.',
     what: 'The exit logic uses only absolute price metrics (stop vs current price). It does not compare the held stock to its sector ETF. A semiconductor stock might stay at the same price while XLK rallies 5% — a -5% relative return that signals distribution before the absolute drop.',
     fix: 'For each open position, cache the sector ETF return over the last 5 trading days (SPY, XLK, XLV etc. based on stock.sector). If stock 5d return < sector_etf 5d return - 10pp AND trail is armed, tighten trail to 1.5×. Use the peer_comparison data already computed by the research engine or compute directly from prices_1d.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — _SECTOR_ETF_MAP + _batch_sector_rs_lag() helper; single yfinance download for all stocks + ETFs; tightens trail to 1.5×ATR×regime_adj if lagging sector by >10pp over 5d; not earnings_near guard applied',
   },
   {
     id: 'pt-m2-earnings-proximity-stop-freeze',
@@ -3568,6 +3592,8 @@ const ITEMS: Item[] = [
     impact: 'Trailing stops can stop you out on normal pre-earnings volatility the day before a blowout quarter. Freezing the stop (not the position) for 48h before earnings captures the earnings pop while preventing a bad fill on a gap-up open.',
     what: 'The engine blocks NEW entries within 5 days of earnings but does not adjust exits for existing positions. A position might trail-stop on day 3 of a pre-earnings consolidation, then the stock gaps up 15% on the earnings print. The engine exited for a 1% loss that would have been a 15% gain.',
     fix: 'In _monitor_positions(), if days_to_earnings <= 2 (from signal.reasons), skip all trail updates for this cycle (let the stop stay where it is). Log paper.earnings_proximity_stop_frozen. The hard stop (initial stop_loss) still protects against catastrophic breakdown. Resume normal trailing after earnings day passes.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — earnings_near flag from signal.reasons.days_to_earnings; guard applied to normal trail, double-top, K-score, OBV, and sector RS blocks; hard stop still active',
   },
   {
     id: 'pt-m3-paper-trading-dashboard',
@@ -3578,6 +3604,8 @@ const ITEMS: Item[] = [
     impact: 'Currently the paper trading page shows basic portfolio stats but no trade history, no equity curve chart, and no way to see why specific trades entered or exited. Essential for evaluating if the engine is working correctly.',
     what: 'The paper-portfolio page shows current positions and cash balance. It does not show: (1) historical equity curve (PaperEquityCurve table has all data), (2) closed trade log with entry/exit reasons and P&L, (3) entry decision notes (stored in entry_decision_notes JSON array on each trade), (4) regime state at entry, (5) signal state at exit.',
     fix: 'Add three tabs to paper-portfolio page: Overview (equity curve chart using PaperEquityCurve rows), Open Positions (table with entry price, current P&L, current stop, days held, regime at entry), Closed Trades (sortable table with entry/exit/P&L/hold days/exit reason). Add GET /paper-portfolio/{id}/equity-curve and GET /paper-portfolio/{id}/trades (paginated) endpoints.',
+    defaultStatus: 'done',
+    implementedNote: 'Already fully implemented — paper-portfolio.tsx has 5 tabs: Positions, Decisions (entry notes + regime at entry), Closed Trades (paginated), Equity Curve (EquityChart + CompareEquityChart), Attribution. Backend /equity-curve and /trades endpoints both exist.',
   },
   {
     id: 'pt-m4-regime-vix-term-structure',
@@ -3588,6 +3616,8 @@ const ITEMS: Item[] = [
     impact: 'VIX9D > VIX (inverted VIX term structure) reliably signals near-term panic — the market is paying more to hedge 9-day risk than 30-day risk. Catching this before SPY drops below the 50EMA gives a 1-3 session head start.',
     what: 'The regime engine uses VIX vs fixed thresholds (20, 25, 30). It does not check whether the VIX curve is inverted (VIX9D > VIX). A normal VIX of 18 with VIX9D of 22 is a pre-panic signal the engine currently misses entirely.',
     fix: 'In _fetch_market_regime(), download ^VIX9D alongside ^VIX using yfinance. Compute vix9d_vs_vix = vix9d / vix. If > 1.10 (term structure inverted by > 10%) AND state is bull or neutral, set is_pre_risk_off = True. Log the ratio. This gives an early warning before the 50EMA flip.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — ^VIX9D added to yfinance download; vix_term_inverted flag (ratio > 1.10); sets is_pre_risk_off=True in bull/neutral state; vix9d + vix_term_inverted logged in regime_classified',
   },
   {
     id: 'pt-m5-regime-market-breadth',
@@ -3598,6 +3628,8 @@ const ITEMS: Item[] = [
     impact: 'SPY can stay above the 50EMA while breadth collapses internally (a narrowing market — only mega-caps holding up). Breadth < 40% while SPY looks fine is a major warning sign the regime engine currently misses.',
     what: 'The regime engine classifies based solely on SPY price vs EMAs and VIX. It does not check whether the rally is broad or narrow. In late 2021 and early 2022, SPY stayed above the 50EMA while the Russell 2000 and breadth collapsed — a regime engine without breadth would have stayed in "bull" the whole way down.',
     fix: 'Add a weekly breadth check using yfinance: download the S&P 500 constituents (or a proxy ETF like IWM, MDY) and compute % above 200EMA. Cache the result for 24h to avoid expensive daily recalculation. If breadth < 40%, set is_pre_risk_off = True even in bull regime. Use as a size multiplier: breadth 40-60% → 80% size, < 40% → 60% size.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-13 — IWM + MDY added to regime yfinance download (300d); 200EMA computed; breadth_weak=True if both below 200EMA → is_pre_risk_off in bull/neutral; breadth_size_mult: 0.80 one below, 0.60 both; applied in _scan_for_entries()',
   },
   {
     id: 'aud-c1-ml-label-imbalance',
@@ -3608,6 +3640,8 @@ const ITEMS: Item[] = [
     impact: 'If the training data is predominantly from a bull market, the model will overweight BUY signals. In neutral/choppy markets, the ML ensemble fires too easily, causing overconfident signals that TA composite then has to dampen via ml_ta_conflict.',
     what: 'The ML trainer labels trades as BUY/SELL/HOLD based on 20-day forward returns. If the training window includes a sustained bull period (2020-2021), BUY labels dominate (60-70% of rows). The model then has a base-rate bias toward BUY that Optuna tuning cannot fix — the weights are fit on biased labels.',
     fix: 'Add class_weight="balanced" to XGBClassifier (equivalent: scale_pos_weight = n_negative / n_positive per class). Alternatively, apply temporal stratified sampling: ensure each quarter contributes equally to the training set regardless of market regime. Add a label distribution check to the training log so we can verify balance.',
+    defaultStatus: 'done',
+    implementedNote: 'Already implemented — _blend_weights() uses compute_sample_weight("balanced", y) blended with recency weights. Confirmed in ML-FIX-2 session (trainer.py).',
   },
   {
     id: 'aud-c2-calibrator-leakage',
@@ -3618,8 +3652,459 @@ const ITEMS: Item[] = [
     impact: 'The calibrator should be fit on held-out data it has never seen. Fitting on training data means the calibrated probabilities look well-calibrated on training set but are overfit — bullish_probability may be inflated by 3-8 percentage points in production.',
     what: 'The IsotonicRegression calibrator is fit on the same data used to train the XGBoost model. Even though a separate 15% calibration split exists (70/15/15 split), if the XGBoost model was trained on the 70% and then used to generate calibration inputs from the 70% again, the calibrator is seeing training-set predictions — which are already overfit. The out-of-fold predictions (from CV) should be used instead.',
     fix: 'Generate calibration targets using out-of-fold (OOF) predictions from the 5-fold CV run (already in trainer.py). Use model.predict_proba() on each fold\'s hold-out set, concatenate all 5 hold-out outputs, and fit IsotonicRegression on that. This gives a calibrator that has only seen OOF predictions — the same distribution as production inference.',
+    defaultStatus: 'done',
+    implementedNote: 'Already implemented — calibrator fit on held-out X_cal (15% split from 70/15/15), never seen during XGBoost training. Confirmed in ML-FIX-2 session (trainer.py).',
+  },
+
+  // ── Tier 13 — Signal-Research Convergence & System Intelligence (2026-06-13) ─
+  // Analysis: ARMK AI Signal=BUY (conf 75, TA 88/100) vs Research=WAIT (score 66, conf 58%).
+  // Root cause: the two systems answer different questions — momentum entry vs full investment thesis.
+  // Compounded by yfinance returning empty financials, dragging research fundamental score to 58.
+  {
+    id: 'res-fix-1-fundamental-data-fallback',
+    tier: 13, severity: 'high',
+    title: 'RES-FIX-1: Add fallback data source when yfinance returns empty financial statements',
+    file: 'services/research-engine/src/data/fetcher.py',
+    effort: '1–2 days',
+    impact: 'When yfinance fails to return financial data (revenue, EPS, FCF, P/E, EV/EBITDA), the fundamental score defaults to 58 and the AI Verdict says "missing data makes valuation impossible." ARMK showed $0 Total Cash, $0 Total Debt, Revenue "—" — all critical metrics unavailable. The Research Report then gave WAIT not because fundamentals are bad but because it literally had no numbers. A fallback source fixes the false WAIT verdict.',
+    what: 'The research engine calls yfinance for financial statements. For some large-cap tickers (ARMK, others), yfinance intermittently returns empty DataFrames for income_stmt, balance_sheet, and cashflow. The fetcher has no retry and no fallback. The AI Verdict and fundamental score module treat null as a signal of weakness rather than a data gap.',
+    fix: 'In fetcher.py, after yfinance fails (returns empty/null for >50% of financial fields), retry once then fall back to Alpha Vantage fundamentals API (free tier: 25 calls/day) or Financial Modeling Prep (FMP, free tier: 250 calls/day). Add a data_source field to the report ("yfinance" | "alphavantage" | "fmp" | "unavailable") so the UI can show a yellow flag when using fallback data. Also add a distinct "INSUFFICIENT DATA" fundamental score of null (not 58) so the AI Verdict knows to say "data unavailable" rather than "fundamentally weak."',
+  },
+  {
+    id: 'res-fix-2-invalid-date-header',
+    tier: 13, severity: 'medium',
+    title: 'RES-FIX-2: Fix "Generated Invalid Date" shown in research report header',
+    file: 'frontend/src/pages/research/[symbol].tsx',
+    effort: '30 minutes',
+    impact: 'Every research report shows "Generated Invalid Date" in the header. Erodes trust and looks broken.',
+    what: 'The research page renders: new Date(report.generated_at).toLocaleString(). If generated_at is null, undefined, or not a valid ISO string (e.g., a Python datetime without timezone info that serializes as "2026-06-13T…" without Z), JavaScript Date constructor returns "Invalid Date".',
+    fix: 'In the research route backend (routes.py), ensure generated_at is serialized as a proper ISO 8601 UTC string: datetime.utcnow().isoformat() + "Z". In the frontend, add a guard: const genDate = report.generated_at ? new Date(report.generated_at) : null; then render genDate && !isNaN(genDate.getTime()) ? genDate.toLocaleString() : "just now".',
+  },
+  {
+    id: 'int-1-research-badge-stock-detail',
+    tier: 13, severity: 'high',
+    title: 'INT-1: Show cached research verdict badge on stock detail page alongside AI Signal',
+    file: 'frontend/src/pages/stocks/[symbol].tsx',
+    effort: '4 hours',
+    impact: 'Currently there is no way to see the Research Report verdict (BUY/WATCH/WAIT/AVOID) from the stock detail page without navigating away. The AI Signal and Research often diverge (ARMK: Signal=BUY, Research=WAIT). Showing both in one view lets the user immediately assess conviction and divergence without context switching.',
+    what: 'The stock detail page shows AI Signal (confidence, bullish %, horizon) in a prominent card. The research report is a separate page at /research/[symbol]. There is no cross-reference between them. When the signal fires BUY and research says WAIT, the user sees only BUY unless they navigate to the research page.',
+    fix: 'Add a GET /research/{symbol}/summary endpoint (or reuse the existing cached report endpoint) that returns {recommendation, overall_score, confidence, generated_at} — minimal fields, fast. On the stock detail page, fetch this summary alongside the AI Signal. Render a small "Research: WATCH · 66 pts" chip below the AI Signal card, color-coded per recommendation. Clicking it navigates to the full report. If no report exists, show "No report — Generate" link.',
+  },
+  {
+    id: 'int-2-alignment-indicator',
+    tier: 13, severity: 'high',
+    title: 'INT-2: Signal-Research alignment indicator — show ALIGNED / DIVERGENT status prominently',
+    file: 'frontend/src/pages/stocks/[symbol].tsx',
+    effort: '4 hours',
+    impact: 'When Signal=BUY and Research=WAIT, the system is giving conflicting guidance. Making this conflict explicit prevents overconfident entries. When both agree (Signal=BUY + Research=BUY), it is a high-conviction setup worth sizing up. Currently the user must manually compare two separate pages.',
+    what: 'No cross-signal alignment logic exists anywhere in the system. Signal and Research operate in isolation. The ARMK case showed confidence 75 signal with confidence 58 research — a meaningful disagreement with $54.27 vs $41.00 DCF fair value.',
+    fix: 'Define alignment rules: STRONGLY ALIGNED = signal direction matches research recommendation AND research confidence ≥ 65. ALIGNED = signal direction matches research. DIVERGENT = signal says BUY/STRONG BUY but research says WAIT/AVOID. PARTIALLY ALIGNED = signal says BUY but research says WATCH. Render a color-coded badge on the stock detail page: green "ALIGNED", amber "DIVERGENT", grey "No research data". For DIVERGENT, show a tooltip: "Signal: BUY (conf 75) vs Research: WAIT (conf 58) — review research before entering."',
+  },
+  {
+    id: 'int-3-research-gated-paper-sizing',
+    tier: 13, severity: 'high',
+    title: 'INT-3: Research-gated position sizing in paper trading — reduce size on divergent signal/research',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1 day',
+    impact: 'The paper trading engine currently ignores the Research Report entirely. A BUY signal that disagrees with Research=WAIT gets the same position size as one where both agree. This is leaving risk unmanaged. Integrating research as a size multiplier captures the best of both systems: momentum gets you in, research sizing keeps exposure proportionate to conviction.',
+    what: '_scan_for_entries() computes position size based on regime, confidence, and earnings proximity multipliers. It does not fetch the cached Research Report for the target symbol. The signal engine and research engine are completely decoupled.',
+    fix: 'In _scan_for_entries(), after a signal passes all gates, fetch the cached research report summary (GET /research/{symbol} — already in the routes). Extract recommendation and overall_score. Apply research_size_mult: STRONG BUY + score≥75 → 1.2×; BUY + score≥65 → 1.0×; WATCH + score≥60 → 0.8×; WAIT or AVOID → 0.6×; no report → 1.0× (unchanged). Log paper.research_size_adj with symbol, recommendation, score, mult. Make this behavior configurable per portfolio: research_gating_enabled (default True for new portfolios).',
+  },
+  {
+    id: 'int-4-auto-research-trigger',
+    tier: 13, severity: 'medium',
+    title: 'INT-4: Auto-trigger background research report generation when a BUY signal fires with no recent report',
+    file: 'services/signal-engine/src/services/signals.py',
+    effort: '1 day',
+    impact: 'When a BUY/STRONG BUY signal fires, the trader has to manually navigate to /research/[symbol] and click Generate. By the time they check, the signal opportunity may have passed. Auto-generating the report in the background means it is ready to read when the trader looks.',
+    what: 'Signal generation and research generation are completely decoupled. After a signal fires and is stored to the DB, nothing triggers a research report update. The research page always starts from a cached report or requires manual generation.',
+    fix: 'After signal_engine writes a BUY/STRONG BUY signal to the DB, publish a message to a Redis queue (or use a direct async HTTP call) to the research engine: POST /research/{symbol}/generate?background=true. The research engine processes this asynchronously (no response needed). Add a cooldown: do not re-trigger if an existing report is less than 6 hours old. Add a config flag to the signal engine: auto_trigger_research (default True).',
+  },
+  {
+    id: 'int-5-research-freshness-warning',
+    tier: 13, severity: 'medium',
+    title: 'INT-5: Research freshness indicator — warn when report is stale (>7 days old)',
+    file: 'frontend/src/pages/research/[symbol].tsx',
+    effort: '2 hours',
+    impact: 'A 2-week-old research report may be based on outdated technicals, pre-earnings fundamentals, or a different regime. The user has no way to tell the report is stale from the current UI — "Generated Invalid Date" makes it worse.',
+    what: 'The research header shows "Generated [date] · Regenerate" but with the date bug, it always shows "Generated Invalid Date." Even when the date is correct, there is no visual urgency signal when the report is old.',
+    fix: 'After fixing RES-FIX-2 (the date bug), add staleness logic: if report is 7–14 days old, show amber "Report 9d old — consider regenerating". If >14 days, show red "STALE — data may not reflect current conditions." Also surface the data_source field (from RES-FIX-1) as a yellow flag: "Fundamental data from FMP fallback — verify key metrics."',
+  },
+  {
+    id: 'int-6-composite-conviction-score',
+    tier: 13, severity: 'medium',
+    title: 'INT-6: Composite conviction score — blend signal confidence + research score into one gauge',
+    file: 'frontend/src/pages/stocks/[symbol].tsx',
+    effort: '4 hours',
+    impact: 'Two separate confidence numbers (Signal: 75, Research: 58) are hard to act on. A single composite score gives the trader a rapid single-number read on total system conviction, weighted by the reliability of each source.',
+    what: 'Signal confidence (0–100) and Research overall score (0–100) are displayed on completely different pages in different formats. No synthesis exists anywhere in the system.',
+    fix: 'Define: composite_conviction = (signal_confidence × 0.5) + (research_overall_score × 0.5) when a research report exists and is <14 days old. If no report: show signal_confidence with label "Signal only." Render a circular gauge on the stock detail page labeled "Conviction" with color bands: ≥75 green, 60–74 amber, <60 red. Add a breakdown tooltip: "Signal 75 (50%) + Research 58 (50%) = 66.5 composite."',
+  },
+  {
+    id: 'int-7-divergence-alert',
+    tier: 13, severity: 'medium',
+    title: 'INT-7: Divergence alert — notify when AI Signal says BUY but Research says WAIT or AVOID',
+    file: 'services/signal-engine/src/services/signals.py',
+    effort: '1 day',
+    impact: 'The ARMK case is exactly this scenario. The signal fired BUY with 75 confidence but research said WAIT citing overvaluation and missing fundamentals. The user would benefit from a specific alert saying "Signal-Research conflict on ARMK: signal BUY conf 75 but research WAIT conf 58. DCF shows 24.5% overvaluation. Review before entering."',
+    what: 'Signal alerts currently fire when a signal is generated. Research verdict is never compared to the signal. There is no cross-system divergence detection anywhere.',
+    fix: 'After signal generation, if the signal is BUY/STRONG BUY, fetch the cached research summary. If research recommendation is WAIT or AVOID (or research score <55), generate a divergence event. Send an in-app notification and optionally an email with subject "⚠ Signal-Research divergence: ARMK." Include: signal confidence, research recommendation, research score, DCF fair value vs current price if available. Rate-limit: one divergence alert per symbol per 24h.',
+  },
+  {
+    id: 'int-8-forward-return-tracking',
+    tier: 13, severity: 'feature',
+    title: 'INT-8: Forward return tracking — measure signal and research accuracy over time with +5/+10/+20d returns',
+    file: 'services/market-data/src/db/models.py',
+    effort: '3 days',
+    impact: 'The core question the ARMK analysis raises is: "which system is more accurate?" We cannot answer this without data. Over time, tracking which combination (Signal only, Research only, Signal+Research aligned, Signal+Research divergent) produces the best forward returns gives empirical evidence for how to weight each system. This data turns the accuracy question from opinion into measurement.',
+    what: 'No forward return tracking exists. Signals are stored with timestamp and direction but no outcome. Research reports are stored but never linked to subsequent price action. There is no signal accuracy dashboard.',
+    fix: 'Create a signal_outcomes table: signal_id FK, research_recommendation (nullable), research_score (nullable), price_at_signal, price_5d, price_10d, price_20d, return_5d, return_10d, return_20d, was_correct_5d (bool). A nightly scheduler job fills in the +5/+10/+20d prices for signals that are 5/10/20 trading days old. Add an Accuracy dashboard page showing: win rate by signal type, win rate when Research aligned vs divergent, average return by composite conviction score bucket. This directly answers "should I trust the signal or the research?"',
+  },
+  {
+    id: 'int-9-research-in-positions',
+    tier: 13, severity: 'feature',
+    title: 'INT-9: Show latest research verdict and score for each open paper trading position',
+    file: 'frontend/src/pages/portfolio.tsx',
+    effort: '4 hours',
+    impact: 'An open position in ARMK entered on a BUY signal should be monitored with the Research verdict. If research deteriorates from WATCH to AVOID while the position is open, the trader gets an early warning before the stop fires.',
+    what: 'The paper trading positions view shows entry price, stop, P&L, and days held. It does not show any research data for the underlying. The trader has to navigate away to the stock detail page to see if the research thesis is still intact.',
+    fix: 'For each open position symbol, fetch the cached research summary (recommendation + score + generated_at). Render a small chip in the positions table: "Research: WATCH · 66 · 23h ago". Flag positions where research recommendation is WAIT/AVOID in amber. Add a sort column "Research score" so traders can quickly scan which positions have deteriorating research.',
+  },
+  {
+    id: 'int-10-research-chip-opportunities',
+    tier: 13, severity: 'feature',
+    title: 'INT-10: Show research verdict chip on Opportunities signal cards',
+    file: 'frontend/src/pages/opportunities.tsx',
+    effort: '4 hours',
+    impact: 'The Opportunities page shows signal cards for the best current BUY signals. Adding a research chip lets the user immediately filter for high-conviction picks (Signal=BUY + Research=BUY) vs ones needing review (Signal=BUY + Research=WAIT). This is the primary workflow improvement for using both systems together effectively.',
+    what: 'Signal cards on Opportunities show symbol, signal type, confidence, K-score, and a few TA metrics. There is no research context. A user evaluating 10 BUY signals has no way to tell from this page which ones have research backing them.',
+    fix: 'Batch-fetch research summaries for all displayed signal symbols in a single request (new GET /research/batch?symbols=ARMK,NVDA,… endpoint or client-side Promise.all). Render a small "R: BUY" or "R: WAIT" chip on each signal card, styled with the same color coding as the alignment indicator (INT-2). Sort/filter option: "Show only Research-aligned signals." When no report exists, show "R: —" in grey.',
+  },
+
+  // ── Tier 14 — Full Technical & Financial Domain Audit 2026-06-13 ──────────────
+  // Technical audit: 10 subsystems × parallel architect-grade review
+  // Financial audit: 7 subsystems × quantitative analyst + CRO review
+  // Combined: 5 CRITICAL · 27 HIGH · 29 MEDIUM across all layers
+
+  // ── CRITICAL ─────────────────────────────────────────────────────────────────
+  {
+    id: 'aud14-adj-close',
+    tier: 14, severity: 'critical',
+    title: 'Unadjusted close prices corrupt SMA, ATR, MACD, ML labels system-wide',
+    file: 'services/signal-engine/src/generators/signals.py · services/ml-prediction/src/features/builder.py · services/market-data/src/services/paper_trading_engine.py',
+    effort: '2 days',
+    impact: 'A single stock split creates a false golden cross, mis-scaled ATR stop (2–3× wrong), spurious MACD spike, and a false-negative ML training label simultaneously. Compounds: paper engine uses auto_adjust=True for ATR computation but auto_adjust=False for live price comparison — stop distance wrong by the split ratio after any split event.',
+    what: 'All SMA, BB, VWAP, MACD calculations use df["close"] in both signals.py and builder.py. The market-data service price endpoint shows no adjusted=true parameter. The ML feature builder has the same issue in sma_20_gap through sma_200_gap. The paper_trading_engine._batch_compute_atr() uses auto_adjust=True but _fetch_live_bulk() uses auto_adjust=False — creating a systematic stop-distance mismatch after any split.',
+    fix: 'Replace df["close"] with df.get("adj_close", df["close"]) in signals.py and builder.py for all trend/oscillator computations. Standardize auto_adjust=True in all yf.download() calls across the paper trading engine. Verify market-data service exposes adj_close and daily bar ingestion stores it. This is an architectural gap that appears in 6+ separate audit findings — a single adj_close column from the market-data service fixes all of them.',
+  },
+  {
+    id: 'aud14-cv-leakage',
+    tier: 14, severity: 'critical',
+    title: 'CV folds overlap test set — all ML AUC, precision, recall metrics inflated',
+    file: 'services/ml-prediction/src/training/trainer.py:218-258',
+    effort: '1 day',
+    impact: 'TimeSeriesSplit applied to the full feature matrix before the 70/85/100% chronological split. Last CV fold validation window (rows ~750–900) directly overlaps X_test (last 15%). cv_auc_mean is inflated, oos_suppressed flag is unreliable, overfit_gap understates actual overfitting by 0.05–0.15 AUC. Any model that should be suppressed from fusion weight ramp may receive full weight.',
+    what: 'TimeSeriesSplit(n_splits=5).split(X) on full data overlaps X_test. The AUC reported to operators is optimistic. The oos_suppressed flag that controls ML fusion weight is calibrated against contaminated metrics. This is distinct from aud-m9-tuner-data-leak (tuner Optuna CV) — this is in the core trainer.py CV evaluation path used by every model.',
+    fix: 'Run TimeSeriesSplit(n_splits=5).split(X.iloc[:split_train]) only on the training window (first 70%). Keep calibration and test windows strictly unseen throughout. Additionally: derive buy_threshold from X_cal, not X_test — threshold-finding and metric reporting currently share the same held-out set (a second independent CRITICAL finding in the same trainer.py).',
+  },
+  {
+    id: 'aud14-single-model',
+    tier: 14, severity: 'critical',
+    title: 'Single SWING-horizon model drives SHORT, SWING, and LONG signals simultaneously',
+    file: 'services/market-data/src/services/scheduler.py:275 · services/signal-engine/src/generators/signals.py:1564,1640',
+    effort: '3 days',
+    impact: 'Nightly scheduler trains one model with horizon=10 (SWING). _fetch_ml_data() passes the identical ml_prob to SHORT (5-day), SWING (10-day), and LONG (20-day) signal computation. A model trained on 10-day returns has incorrect feature weightings for 5-day or 20-day prediction — the ML layer adds noise, not signal, for two of the three styles. SHORT trades have the tightest stop tolerance and benefit most from accurate short-horizon prediction.',
+    what: 'Three signal styles use one model artifact. The model learns 10-day return predictors (momentum strength, 10-day trend) that are poorly calibrated for 5-day or 20-day prediction windows. SHORT signals are the most dangerous — overconfident 10-day model probability on a 5-day trade.',
+    fix: 'Train three model artifacts per symbol: _short (horizon=5), _swing (horizon=10), _long (horizon=20). Route _fetch_ml_data() by style key. At minimum, train a dedicated SHORT model immediately — it is the highest urgency due to tight stop tolerance. Requires 3× training time on nightly job; parallelize with asyncio.gather or ThreadPoolExecutor.',
+  },
+  {
+    id: 'aud14-paper-race',
+    tier: 14, severity: 'critical',
+    title: 'Double execution of paper_trading_step() in close burst window — cash can double-credit',
+    file: 'services/market-data/src/services/scheduler.py:288-295,1278-1285',
+    effort: '1 day',
+    impact: 'During 15:30–16:15 ET, both _refresh_market() (close burst) and _refresh_5m() call paper_trading_step() within the same minute. APScheduler does not serialize jobs across the thread pool. Two concurrent calls can each observe the same open positions, independently decide to exit them, and both credit cash — producing double cash balances and duplicate exit records. This is a data integrity risk for the paper portfolio and would be a real-money risk in live deployment.',
+    what: 'The scheduler restructure (aud-h5-scheduler-isolation, Tier 10) isolated ingest from alerts but did not address the concurrent paper_trading_step() invocations between the close-burst and 5-minute refresh paths. _refresh_5m() still calls paper_trading_step() independently of _refresh_market() with no coordination.',
+    fix: 'Add a Redis-based distributed lock (SET NX EX 60) at the start of paper_trading_step(). On lock failure, log and return immediately. Alternatively, remove the paper_trading_step() call from _refresh_5m() entirely during the 15:00–16:30 ET close burst window. The aud-h5 fix isolated scheduler stages but did not resolve this inter-function concurrency.',
+  },
+  {
+    id: 'aud14-survivorship',
+    tier: 14, severity: 'critical',
+    title: 'Survivorship bias — ML training universe contains only currently active stocks',
+    file: 'services/ml-prediction/src/api/routes.py:88-89,119-120',
+    effort: '2 days',
+    impact: 'All train_all endpoints filter Stock.active.is_(True). Stocks that were delisted, acquired, or removed following large losses are absent. The model never sees losing trajectories, systematically inflating bullish recall. In a diversified universe over 3+ years, 10–20% of symbols may have been rotated out — each representing a loss scenario the model was never trained to recognize.',
+    what: 'routes.py train_all queries active stocks only. The model learns: "these patterns preceded gains" without ever seeing: "these same patterns preceded a delisting." This is classic survivorship bias — the model is trained on winners by construction.',
+    fix: 'Add a delisted flag (Boolean, default False) to the Stock table. Include delisted symbols in ML training (filter: Stock.active.is_(True) OR Stock.delisted.is_(True)). As an interim measure: add survivorship_bias: true to every ML metric bundle and tighten the buy_threshold precision floor by 3–5 percentage points to compensate for the known upward bias.',
+  },
+
+  // ── HIGH ──────────────────────────────────────────────────────────────────────
+  {
+    id: 'aud14-backtest-fill',
+    tier: 14, severity: 'high',
+    title: 'Backtest fills entry at signal-bar close — look-ahead bias in all trade-level P&L',
+    file: 'services/strategy-engine/src/engine.py:51-61',
+    effort: '1 day',
+    impact: 'Entry price is the signal bar\'s own close — impossible in practice (signal fires at bar close, fill would be the next bar open at best). Equity curve applies a 1-bar shift but trade-level P&L does not, creating inconsistency between Sharpe/CAGR and win rate/profit factor. All stored backtest results are misleading.',
+    what: 'engine.py detects signal at iloc[i] and fills at iloc[i] close. Real execution would detect at bar close and fill at the next open. This inflates win rate because a long signal at bar close that immediately opens lower the next day still shows a "win" in the backtest.',
+    fix: 'Detect signal at iloc[i-1], fill at iloc[i] open throughout both equity curve and trade records. This single change typically reduces reported win rate by 2–4 percentage points and gives a more realistic P&L.',
+  },
+  {
+    id: 'aud14-zero-rf',
+    tier: 14, severity: 'high',
+    title: 'Backtest Sharpe computed with risk-free rate = 0 — overstated by 0.8–1.2 pts',
+    file: 'services/strategy-engine/src/engine.py:80',
+    effort: '1 hour',
+    impact: 'At current T-bill rates (~5%), every stored backtest Sharpe is inflated by 0.8–1.2 points. A Sharpe of 1.2 in the dashboard is actually 0.0–0.4 after adjusting for the risk-free rate. Users making capital allocation decisions against these numbers are seeing systematically misleading risk-adjusted returns.',
+    what: 'engine.py computes Sharpe as rets.mean() * 252 / ann_vol with no risk-free subtraction. This was reasonable at near-zero rates in 2020–2021 but is materially wrong at 5%+ rates.',
+    fix: 'Add rf_annual=0.05 parameter: sharpe = (rets.mean() * 252 - rf_annual) / ann_vol. Make rf_annual configurable in the BacktestIn schema. Also add Sortino = (rets.mean() * 252 - rf) / (rets[rets < 0].std() * sqrt(252)) and Calmar = cagr / max_drawdown to the output metrics.',
+  },
+  {
+    id: 'aud14-no-benchmark',
+    tier: 14, severity: 'high',
+    title: 'No benchmark return in backtest results — 12% CAGR meaningless without SPY comparison',
+    file: 'services/strategy-engine/src/engine.py · services/strategy-engine/src/api/routes.py',
+    effort: '1 day',
+    impact: 'A 12% CAGR in the backtest looks excellent without knowing SPY returned 18% in the same window. Users are making capital allocation decisions against results with no benchmark context. The strategies page shows CAGR, Sharpe, and drawdown but never shows alpha.',
+    what: 'No benchmark is fetched or computed in the backtest engine. The front-end strategies page has no benchmark comparison column.',
+    fix: 'Fetch SPY for the same date range via yfinance in the backtest engine. Return benchmark_cagr, benchmark_total_return, alpha (portfolio_cagr - benchmark_cagr), and benchmark_equity_curve alongside the existing metrics. Display SPY benchmark line on the equity curve chart.',
+  },
+  {
+    id: 'aud14-momentum-max',
+    tier: 14, severity: 'high',
+    title: 'Momentum pillar uses max() — single indicator produces perfect score despite two overbought warnings',
+    file: 'services/signal-engine/src/generators/signals.py:858-876',
+    effort: '3 hours',
+    impact: 'p_momentum = max(rsi_score, macd_score, stoch_score). A stock with strong MACD (1.0) but overbought RSI (0.0) and overbought StochRSI (0.0) scores p_momentum=1.0 — perfect momentum despite two overbought warnings. This is a direct source of BUY signals in overbought conditions and contradicts the existing overbought penalties.',
+    what: 'The SA-19 pillar restructure introduced this max() logic for the momentum pillar. Overbought penalties applied after max() have partial effect only — MACD alone can dominate. The pillar was intended to reduce collinearity, but max() creates a different problem: a single extreme indicator overwhelms the others.',
+    fix: 'Apply overbought penalties to individual component scores before the max() call: if stoch_overbought: macd_score *= 0.5; rsi_score *= 0.5. Or replace max() with a weighted average of the three oscillators: (rsi_score * 0.35 + macd_score * 0.40 + stoch_score * 0.25). Update trend pillar similarly — any single bullish indicator currently gives p_trend=1.0.',
+  },
+  {
+    id: 'aud14-rsi-div-dead',
+    tier: 14, severity: 'high',
+    title: 'RSI divergence hard-zeroed but weights remain in denominator — TA score silently underpowered',
+    file: 'services/signal-engine/src/generators/signals.py:778-785',
+    effort: '2 hours',
+    impact: 'Both bearish penalty (0.10) and bullish bonus (0.08) are hard-zeroed. The keys remain in _TA_WEIGHTS_DEFAULT so the calibration endpoint includes dead columns in weight normalization math. The TA score is silently underpowered for divergence by 0.18 of normalized weight. calibrate_ta_weights will distribute this weight incorrectly across active indicators.',
+    what: 'The divergence detection bug (argmax comparison instead of value comparison at consecutive peaks) was identified and zeroed out rather than fixed. The weights were left in the config, creating a normalization error.',
+    fix: 'Option A (quick): remove rsi_divergence_bearish_penalty and rsi_divergence_bullish from _TA_WEIGHTS_DEFAULT so the denominator is correct. Option B (correct): implement proper divergence detection — compare RSI value at price peak A vs price peak B within a 20-bar lookback window, not argmax positions. Then re-enable the weights.',
+  },
+  {
+    id: 'aud14-obv-mislabeled',
+    tier: 14, severity: 'high',
+    title: 'OBV divergence is actually OBV MA crossover — semantically wrong, mislabeled in reasons output',
+    file: 'services/signal-engine/src/generators/signals.py:827-830',
+    effort: '1 hour',
+    impact: 'obv.rolling(10).mean() > obv.rolling(30).mean() measures OBV momentum, not divergence vs price. It fires bullish during sustained OBV uptrends regardless of price action. Signal reasons output and email alerts say "OBV divergence: bullish" when OBV is just trending up — misleading traders about the actual signal.',
+    what: 'True OBV-price divergence means price makes a new low but OBV does not confirm (less volume on down moves). The current implementation is a trend-following OBV signal, which is a valid indicator but wrongly labeled.',
+    fix: 'Rename to obv_trend_bullish in both code and reasons output. For true divergence: compare OBV slope over 15–20 bars vs price slope over the same window (sign disagreement = divergence). This also fixes the email alert wording.',
+  },
+  {
+    id: 'aud14-vwap-mislabeled',
+    tier: 14, severity: 'high',
+    title: 'VWAP is a 20-day rolling VWMA not session-reset VWAP — label misleads traders',
+    file: 'services/signal-engine/src/generators/signals.py:808-815',
+    effort: '1 hour',
+    impact: 'Traders who know VWAP expect intraday institutional accumulation/distribution semantics (anchored to session open). The 20-day rolling VWMA is a valid trend filter but calling it VWAP in the reasons output and email alerts causes experienced traders to misinterpret the signal.',
+    what: 'The current metric computes sum(close * volume) / sum(volume) over a 20-day rolling window — this is a Volume-Weighted Moving Average, not VWAP. True VWAP resets every session.',
+    fix: 'Rename to vwma_20 throughout: reasons output, code comments, and UI display. No logic change needed — just a labeling fix that prevents trader confusion.',
+  },
+  {
+    id: 'aud14-isotonic-small',
+    tier: 14, severity: 'high',
+    title: 'Isotonic calibration with ~135 samples likely overfitting — switch to Platt when n_cal < 300',
+    file: 'services/ml-prediction/src/training/trainer.py:251-298',
+    effort: '2 hours',
+    impact: 'Piecewise-constant non-parametric calibration on ~135 samples with class imbalance maps raw probabilities to a noise-fitted staircase. The calibrated confidence % output to the signal engine has high variance — small changes in raw probability produce large jumps in calibrated output, making confidence scores noisy.',
+    what: 'IsotonicRegression is the right calibrator for large sample sizes (500+) but overfits on small sets by fitting too many breakpoints. The calibration set is ~15% of the training window, which for HK small-caps with 2-3 years of history can be as few as 90-150 rows.',
+    fix: 'Switch to Platt scaling (LogisticRegression with 1 parameter) when n_cal < 300: calibrator = LogisticRegression(C=1e6) if len(X_cal) < 300 else IsotonicRegression(out_of_bounds="clip"). Reduces calibration variance for data-sparse symbols.',
+  },
+  {
+    id: 'aud14-macd-adjust',
+    tier: 14, severity: 'high',
+    title: 'MACD adjust=False in feature builder vs adjust=True in TA engine — training-inference skew',
+    file: 'services/ml-prediction/src/features/builder.py:241-248 · services/signal-engine/src/generators/signals.py:532,788-789',
+    effort: '1 hour',
+    impact: 'Training features use Wilder EWM (adjust=False); inference TA uses standard EMA (adjust=True). Divergence up to 5–15% of MACD magnitude in the first 50–100 bars. The ML model learns MACD thresholds on one EWM formula but is applied to MACD values computed with a different formula at inference time.',
+    what: 'builder.py computes MACD with adjust=False (Wilder smoothing). signals.py uses standard EMA for the MACD components. This creates a systematic feature skew between training and inference that degrades the ML model\'s MACD-related edge.',
+    fix: 'Standardize on adjust=False in both places. Update signals.py EMA calls for MACD computation. After change, retrain all models — the MACD feature values will shift slightly and models calibrated on the old values will need recalibration.',
+  },
+  {
+    id: 'aud14-label-lookahead',
+    tier: 14, severity: 'high',
+    title: 'label_threshold computed over full DataFrame including future test bars — look-ahead in labels',
+    file: 'services/ml-prediction/src/training/trainer.py:195 · services/ml-prediction/src/features/builder.py:159-175',
+    effort: '2 hours',
+    impact: 'Rolling volatility computed over 100% of history before any split. The label dead-zone threshold (which determines which samples become NaN and are dropped) uses future volatility information. Samples near the train/test boundary have labels influenced by future price volatility.',
+    what: 'compute_label_threshold() uses the full DataFrame to compute rolling volatility. This rolling window at bar T sees bars T+1 through T+20 when computing the threshold. Labels near the split boundary are determined using data that should be unseen at training time.',
+    fix: 'Compute label_threshold using only df.iloc[:split_train]. Apply this threshold to label the full dataset. This preserves the same threshold for the test period without future information leaking into label determination.',
+  },
+  {
+    id: 'aud14-gbm-lstm-crash',
+    tier: 14, severity: 'high',
+    title: 'GBM and LSTM fit() raise TypeError for sample_weight — training has never succeeded',
+    file: 'services/ml-prediction/src/models/gbm.py:20 · services/ml-prediction/src/models/lstm.py:48',
+    effort: '3 hours',
+    impact: 'Both GBM and LSTM model classes are registered and API-accessible but crash on training. LSTM training has never succeeded. The ensemble_three endpoint blends XGBoost, LightGBM, and RF but never GBM or LSTM — these two registered models contribute 0 to any result.',
+    what: 'Both fit() methods do not accept **kwargs. The trainer passes sample_weight as a keyword argument. The crash is immediate and silent (the background task logs an error but the UI shows no indication). Users trigger POST /ml/train_all_ensemble without knowing GBM and LSTM are non-functional.',
+    fix: 'Add **kwargs to both fit() signatures. Pass sample_weight through to GradientBoostingClassifier. Implement per-sample BCE loss weighting for LSTM. Also set shuffle=False in the LSTM DataLoader (currently shuffle=True on time-series sequences — another HIGH bug).',
+  },
+  {
+    id: 'aud14-slippage',
+    tier: 14, severity: 'high',
+    title: 'Cash deducted at unslipped price, entry_price stored as slipped — PnL systematically overstated',
+    file: 'services/market-data/src/services/paper_trading_engine.py:1659-1681',
+    effort: '1 hour',
+    impact: 'Cash out = shares × live_price; book cost = slipped_entry. PnL computed from slipped_entry systematically understates by ~0.1% (10 bps) per trade vs actual cash flow. Over 100 trades, this creates a phantom gain in the equity curve. More importantly, exit commission is not deducted when commission_per_share is non-zero.',
+    what: 'The position value deducted from cash uses the pre-slippage live_price, but the cost basis (used for PnL) uses the slipped_entry price. These should be the same value. At exit, commission_per_share is deducted at entry but not at exit.',
+    fix: 'After rounding shares, use slipped_entry for both the cash deduction and the cost basis: position_value = round(shares * slipped_entry_price, 2). Deduct cash as portfolio.current_cash -= position_value. Deduct exit commission: portfolio.current_cash -= round(shares * commission_per_share, 2) at exit.',
+  },
+  {
+    id: 'aud14-regime-default-neutral',
+    tier: 14, severity: 'high',
+    title: 'Regime fetch failure defaults to neutral — full-size entries during yfinance outages',
+    file: 'services/market-data/src/services/paper_trading_engine.py:483-485',
+    effort: '2 hours',
+    impact: 'yfinance outages are most common during market stress events. When _fetch_market_regime() fails, the engine defaults to neutral (100% position sizing) — maximum exposure precisely when risk is highest. During a flash crash at 10:00 AM, the engine would happily open full-size GROWTH positions while SPY is down 3%.',
+    what: 'The except block in _fetch_market_regime() returns neutral as the fallback. Neutral allows full-size entries and applies no threshold elevation. The regime cache implemented in the re-9 series helps but only if the cache was previously set.',
+    fix: 'Cache the last successfully computed regime. On fetch failure: use cached regime. If cache is stale > 4 hours: default to choppy (75% size, elevated entry threshold) not neutral. Log paper.regime_fallback_to_cached or paper.regime_fallback_to_choppy with the reason.',
+  },
+  {
+    id: 'aud14-research-fallback',
+    tier: 14, severity: 'high',
+    title: 'Research AI fallback WAIT verdict looks identical to a real WAIT — no visual distinction',
+    file: 'services/research-engine/src/api/routes.py:1135-1194',
+    effort: '3 hours',
+    impact: 'When Claude fails, the fallback returns can_buy_today=WAIT, final_recommendation=WATCH, confidence_pct=0, and placeholder scores of 50 across all AI dimensions. A user who misses the yellow quality banner acts on a placeholder verdict as if it were a real analysis. For a stock like ARMK where the fallback happened to return WAIT, the user might incorrectly avoid a valid momentum entry.',
+    what: 'The existing report_quality banner (yellow for partial, red for fallback) is present but understated. The recommendation text itself is unchanged from the fallback response. WAIT from a failed AI call looks exactly like WAIT from a real analysis.',
+    fix: 'Set recommendation to "INSUFFICIENT DATA" when _is_fallback=True (instead of WAIT/WATCH). Gray out the overall score with a "—" display. Suppress the "Can I Buy Today?" widget entirely when fallback. Make the fallback state impossible to miss rather than just a subtle banner.',
+  },
+  {
+    id: 'aud14-no-chart-entry',
+    tier: 14, severity: 'high',
+    title: 'Signal entry/stop/target never drawn on price chart — traders cannot visually validate the setup',
+    file: 'frontend/src/pages/stock/[symbol].tsx:1497-1513 · frontend/src/components/PriceChart.tsx:230-237',
+    effort: '1 day',
+    impact: 'The single most critical trading decision anchor — where to enter — exists only as text in the Game Plan sidebar. Traders cannot visually map entry price to price action, support/resistance zones, or recent structure. A stop at $44.30 that sits above a major support level is meaningless without seeing it on the chart.',
+    what: 'PriceChart.tsx renders price, volume, SMAs, and BB bands. The ATR stop from PositionSizer is computed on line 1497 but passed only to the Game Plan text block. The entry zones, stop, and targets from the game plan are never passed as props to PriceChart.',
+    fix: 'After Game Plan generation, pass entry_low, entry_high, stop_loss, target_1, target_2 as props to PriceChart. Render as labeled createPriceLine() objects: green dashed = entry zone, red = stop, purple = target 1, blue = target 2. This single change would dramatically improve the Game Plan\'s usability.',
+  },
+  {
+    id: 'aud14-no-exit-button',
+    tier: 14, severity: 'high',
+    title: 'No manual exit button in paper portfolio positions view',
+    file: 'frontend/src/pages/paper-portfolio.tsx:999-1038',
+    effort: '1 day',
+    impact: 'A trader who wants to cut a position ahead of earnings, override a trailing stop on a breaking news event, or exit before a regime shift has no UI path. They must either wait for the automated stop or manipulate the database directly. This is the most basic paper-trading UX feature.',
+    what: 'The Positions tab shows each open trade with entry price, stop, current P&L, and hold days. There is no per-row Exit button. The admin controls have a "Stop Engine" button but no position-level force-close.',
+    fix: 'Add a per-row "Exit" button (red, small) in the Positions table. On click: show a confirmation modal with current price and estimated P&L. On confirm: call a new POST /paper-portfolio/{id}/trades/{trade_id}/exit endpoint that marks the trade closed at the current live price.',
+  },
+  {
+    id: 'aud14-broken-links',
+    tier: 14, severity: 'high',
+    title: 'Broken internal links /stocks/${symbol} → 404 (correct path is /stock/)',
+    file: 'frontend/src/pages/paper-portfolio.tsx:1018,1066,1189 · frontend/src/pages/positions.tsx',
+    effort: '30 minutes',
+    impact: 'Every symbol link in Positions, Decisions, and Closed Trades tabs is broken. Clicking any stock symbol from the paper portfolio navigates to a 404. The paper trading page is the most actively used page and this breaks all navigation from it.',
+    what: 'href={`/stocks/${symbol}`} is used throughout paper-portfolio.tsx and positions.tsx. The Next.js route is /stock/[symbol] (singular). Every link from these pages produces a 404.',
+    fix: 'Project-wide find-and-replace: href={`/stocks/` → href={`/stock/`. Use grep to find all instances: grep -r "/stocks/" frontend/src --include="*.tsx" | grep "href".',
+  },
+
+  // ── MEDIUM — Infrastructure & Architecture ────────────────────────────────────
+  {
+    id: 'aud14-redis-per-call',
+    tier: 14, severity: 'medium',
+    title: 'Redis connection created per call across all services — no connection pool',
+    file: 'shared/common/jwt_auth.py · services/signal-engine/src/api/routes.py · services/research-engine/src/api/routes.py',
+    effort: '1 day',
+    impact: 'Creates a new TCP connection on every authenticated request. At 100+ API requests/minute during signal refresh, this produces 100+ Redis connection setups/teardowns per minute. At scale this causes Redis connection exhaustion and request latency spikes.',
+    what: '_get_redis() or redis.from_url() inside per-request or per-call functions across jwt_auth.py, auth.py, routes.py (signal-engine), ai_proxy.py (api-gateway), routes.py (research-engine), and builder.py (ml-prediction). No service uses a shared module-level connection pool.',
+    fix: 'Create a module-level Redis connection pool in each service using redis.ConnectionPool(). Inject the pool into the FastAPI app state at startup. Access via request.app.state.redis in endpoint handlers. This is a standard FastAPI pattern.',
+  },
+  {
+    id: 'aud14-cors-wildcard',
+    tier: 14, severity: 'medium',
+    title: 'CORS wildcard default (allow_origins=["*"]) applies to all 8 services in production',
+    file: 'shared/common/service.py',
+    effort: '2 hours',
+    impact: 'Any website can make credentialed cross-origin requests to all services. Combined with JWT stored in localStorage (not httpOnly cookie), this is a complete XSS-to-token-extraction chain. The JWT secret guard (Tier 6) partially mitigates this for forged tokens, but credential theft via a malicious site remains possible.',
+    what: 'shared/common/service.py sets allow_origins=["*"] when cors_origins is empty (the default). All 8 services share this factory. No startup guard enforces a non-wildcard origin in production.',
+    fix: 'Read CORS_ORIGINS from Settings (already in config.py). Fail startup if CORS_ORIGINS is empty or wildcard and env=="production". Add CORS_ORIGINS=https://yourapp.com to the production .env file. The guard should be as strict as the JWT secret check.',
+  },
+  {
+    id: 'aud14-float-financials',
+    tier: 14, severity: 'medium',
+    title: 'Financial values stored as IEEE 754 Float — cumulative rounding errors corrupt records',
+    file: 'shared/db/models.py:124-129',
+    effort: '2 days',
+    impact: 'Float for all price, cash, PnL, and weight columns across Price, PaperTrade, PaperPortfolio, UserPosition, UserCash, and PortfolioHolding. Cumulative floating-point errors over 1000+ trades can drift the cash ledger by $0.10–$5. The equity reconciliation bug (PT-C2 cash drift) is a symptom of this underlying issue.',
+    what: 'All 8 subsystem audits independently flag this. SQLAlchemy Float maps to REAL (IEEE 754 32-bit) in SQLite and DOUBLE PRECISION in PostgreSQL. Neither is appropriate for financial values — use NUMERIC/DECIMAL instead.',
+    fix: 'Migrate all financial columns to Numeric(precision=18, scale=4) (prices) and Numeric(precision=20, scale=6) (cash/PnL). Requires a migration to ALTER COLUMN TYPE. Do this before the paper portfolio accumulates significant trade history — migration with data is harder.',
+  },
+  {
+    id: 'aud14-apscheduler-pile',
+    tier: 14, severity: 'medium',
+    title: 'APScheduler jobs have no max_instances=1 — long-running jobs silently pile up',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '2 hours',
+    impact: 'If _refresh_market() (triggered every 10 min) takes longer than 10 minutes (possible during a slow yfinance download + full signal refresh of 200 stocks), a second instance starts while the first is still running. This can cascade: 2 concurrent → 4 concurrent → full thread pool saturation, stalling the API.',
+    what: 'All 13 APScheduler jobs use the default max_instances=1 only if explicitly set. The current code uses no max_instances parameter, so APScheduler defaults to 1 but coalesce=False, meaning missed firings are still queued rather than dropped.',
+    fix: 'Add max_instances=1 and misfire_grace_time=60 to all CronTrigger-based jobs. Add coalesce=True so that if a job missed multiple firings (e.g., server was busy), only the most recent is run on recovery rather than all missed ones.',
+  },
+  {
+    id: 'aud14-two-migrations',
+    tier: 14, severity: 'medium',
+    title: 'Two parallel migration systems with no tracking table — ambiguous authoritative schema',
+    file: 'shared/db/session.py · scripts/migrations/',
+    effort: '2 days',
+    impact: 'Inline SQL in shared/db/session.py:_run_migrations() and external .sql files in scripts/migrations/ both define schema changes with no coordination, no migration tracking, and no atomic transaction wrapping. Fresh deployments risk partial migrations. The WatchlistItem uniqueness constraint exists only in inline SQL, not in the ORM model — invisible to any future schema tooling.',
+    what: 'Two distinct migration paths have diverged. Migrations 001–003 are in scripts/migrations/ and run manually. Migrations defined in _run_migrations() are inline Python SQL. Migration 006 (signal uniqueness) is not called from _run_migrations(). The two systems can produce inconsistent schema state across fresh installs and upgrades.',
+    fix: 'Adopt Alembic as the single source of truth. Convert all existing inline _run_migrations() calls to Alembic revision files. Convert scripts/migrations/*.sql to Alembic revisions. Add a migration tracking table (alembic_version). This is a medium-term project but the ambiguity is a production deployment risk on every EC2 update.',
+  },
+  {
+    id: 'aud14-global-mutable-state',
+    tier: 14, severity: 'medium',
+    title: 'Module-level mutable global state mutated from concurrent threads without locks',
+    file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/services/paper_trading_engine.py · services/ranking-engine/src/api/routes.py',
+    effort: '1 day',
+    impact: '_ml_weight_global_cap in signals.py mutated by HTTP handler, read during bulk signal generation. _STYLE_PARAMS in paper_trading_engine.py mutated by scheduler thread, read by FastAPI request handlers. _ETF_CACHE in ranking-engine/routes.py never invalidated. Each is a data race under concurrent load.',
+    what: 'None of the module-level globals use locks. The system implicitly assumes single-worker single-container deployment. With Gunicorn/uvicorn multi-worker deployment (4 workers is the EC2 t3.medium recommendation), these globals are not shared across workers — calibrated weights are lost on worker restart.',
+    fix: 'Move all calibrated state to Redis (already the plan for ML weights). Use threading.Lock() for any globals that must be mutated within the same process. Add a startup reload from Redis on worker initialization for weight files.',
+  },
+  {
+    id: 'aud14-no-corr-ids',
+    tier: 14, severity: 'medium',
+    title: 'No request correlation IDs across service boundaries — incidents require manual timestamp correlation',
+    file: 'services/market-data/src/main.py · services/api-gateway/src/main.py',
+    effort: '1 day',
+    impact: 'The scheduler fires HTTP calls to 5+ services per refresh cycle. The research engine fans out to 8 services plus Claude. No service generates or propagates an X-Request-ID header. A failed signal refresh that touches market-data → signal-engine → ranking-engine requires manual timestamp correlation across 3+ log streams to diagnose.',
+    what: 'No FastAPI middleware generates UUID request IDs. No service propagates correlation context to downstream calls. The _post() helper in scheduler.py fires requests with no tracing header.',
+    fix: 'Add a FastAPI middleware to each service that generates a UUID request ID if not present in X-Request-ID header, binds it to structlog context, and passes it on all outbound HTTP calls. One-day implementation across all 8 services.',
+  },
+  {
+    id: 'aud14-kscore-proxy-labels',
+    tier: 14, severity: 'medium',
+    title: 'K-Score "Value" = price from 52W high, "Growth" = price CAGR — labels are actively misleading',
+    file: 'services/ranking-engine/src/scoring/kscore.py:116-141',
+    effort: '3 hours',
+    impact: 'The UI presents "Value" and "Growth" sub-scores as if they reflect fundamental business quality. A stock down 40% from its 52W high scores ~80 on "Value" regardless of P/E or EV/EBITDA. A company with flat revenue that bounced 80% from a trough scores 100 on "Growth." Users trusting these labels for value investing or growth screening are making decisions on technically-derived proxies.',
+    what: 'kscore.py _value_proxy() = 1 - (price / 52w_high). kscore.py _growth_proxy() = 12-month price CAGR. Both are momentum signals dressed as fundamental metrics. The Tier 1 falling knife gate partially mitigated the value proxy flaw but did not change the label.',
+    fix: 'Display null (shown as "—") when real fundamental data is unavailable. Do not substitute price-based proxies labeled as "Value" or "Growth." When yfinance returns fundamentals, use P/E vs sector median for Value and revenue/EPS growth rate for Growth. This is honest about data availability rather than showing confident-looking but misleading numbers.',
+  },
+  {
+    id: 'aud14-hk-lunch-break',
+    tier: 14, severity: 'medium',
+    title: 'HK market 12:00–13:00 lunch break not excluded — signals computed on stale prices during break',
+    file: 'services/market-data/src/services/scheduler.py:1356-1384',
+    effort: '1 hour',
+    impact: 'HKEX has a mandatory lunch break. 5-minute ingest fires during 12:00–13:00 HKT (04:00–05:00 UTC). Stale prices stored as live data. Any conviction alerts during this window reference prices from 11:59 HKT as if they were current. Alert emails sent during the break say "current price" using a 1-hour-old last quote.',
+    what: '_is_hk_market_hours() returns True for 09:30–16:00 HKT with no lunch break exclusion. The 5-minute bar ingest during the break stores no-trade-data as if it were active market data.',
+    fix: 'Add lunch break check in _is_hk_market_hours(): return False if 12:00 <= hkt_hour < 13:00. This is a 1-line fix with significant data quality impact for HK stocks.',
   },
 ];
+
+
+
 
 
 
@@ -3638,6 +4123,8 @@ const TIER_LABEL: Record<Tier, string> = {
   10: 'Tier 10 — Adversarial System Audit 2026-06-12 (3 Critical · 19 High · 23 Medium)',
   11: 'Tier 11 — Competitor Feature Parity (TradingView · Finviz · WallStreetZen · Seeking Alpha)',
   12: 'Tier 12 — Paper Trading Deep Review 2026-06-13 (1 Critical · 5 High · 5 Medium · 2 ML)',
+  13: 'Tier 13 — Signal-Research Convergence & Intelligence Layer (2026-06-13)',
+  14: 'Tier 14 — Full System Audit 2026-06-13 (5 Critical · 27 High · 29 Medium · Technical + Financial Domain)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -3653,6 +4140,8 @@ const TIER_COLOR: Record<Tier, string> = {
   10: '#e879f9',
   11: '#86efac',
   12: '#fda4af',
+  13: '#38bdf8',
+  14: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -3724,7 +4213,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -3920,18 +4409,18 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current (2026-06-12) — Tier 8-9: TM-3/TM-4 IC+factor attribution, PT-A1/A2 attribution+regime overlay, RES-4 sector rotation, SCR-1 server-side screener, AL-3 conviction calibration
+          Current (2026-06-13) — Tier 13: Signal-Research convergence layer. Next: RES-FIX-1 (yfinance fallback), INT-1/2 (research badge + alignment indicator), INT-3 (research-gated sizing), deep system audit findings pending.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
-            { label: 'Data pipeline',   score: 8.6, target: 8.8, note: '↑ RES-4 sector rotation heatmap + SCR-1 server-side screener' },
-            { label: 'ML methodology',  score: 9.0, target: 9.0, note: '✓ TM-3 IC score + TM-4 factor attribution measurement live' },
-            { label: 'Signal logic',    score: 9.1, target: 9.1, note: '↑ AL-3 conviction calibration + TM-3/TM-4 attribution live' },
+            { label: 'Data pipeline',   score: 8.6, target: 9.0, note: '↑ RES-FIX-1 yfinance fallback (Alpha Vantage/FMP) needed for fundamental data gaps' },
+            { label: 'ML methodology',  score: 9.0, target: 9.0, note: '✓ LightGBM early stopping fixed; calibrator leakage confirmed resolved' },
+            { label: 'Signal logic',    score: 9.1, target: 9.2, note: '↑ INT-7 divergence alert + INT-8 forward return tracking pending' },
             { label: 'K-Score ranking', score: 8.5, target: 8.5, note: '✓ SCR-1 multi-factor screener + RES-4 sector context (target met)' },
-            { label: 'Research engine', score: 8.2, target: 8.5, note: '↑ RES-4 sector rotation done; SCR-3 AI screener remaining' },
-            { label: 'Frontend / UX',   score: 9.5, target: 9.5, note: '✓ IC/factor attribution tabs + sector heatmap + regime overlay' },
-            { label: 'Risk management', score: 8.8, target: 9.0, note: '↑ PT-A1 trade attribution + PT-A2 regime equity overlay done' },
-            { label: 'Overall',         score: 9.3, target: 9.5, note: '↑ Tier 8-9 Tier improvements shipped 2026-06-12' },
+            { label: 'Research engine', score: 8.2, target: 8.8, note: '↑ RES-FIX-1 data fallback + INT-4 auto-trigger + INT-6 composite score' },
+            { label: 'Frontend / UX',   score: 9.5, target: 9.6, note: '↑ INT-1/2 research badge + alignment indicator + PDF export done' },
+            { label: 'Risk management', score: 8.8, target: 9.2, note: '↑ INT-3 research-gated sizing + PT-M1/M2/M4/M5 all live (sector RS, earnings freeze, VIX term, breadth)' },
+            { label: 'Overall',         score: 9.3, target: 9.5, note: '↑ Tier 13 convergence layer — 2 high + 3 medium + 5 feature items pending' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -3946,10 +4435,14 @@ export default function ImprovementsPage() {
           ))}
         </div>
         <p style={{ fontSize: 12, color: '#64748b', margin: 0, lineHeight: 1.6 }}>
-          All Tier 1–4 shipped as of 2026-06-07. SA-1/2/3/4/5/6/7/8 all done. SA-3 was already live (4 boolean flags in builder.py). SA-5 wired to Sunday scheduler. SA-7 regime-aware earnings compression implemented (bull+beater≥70%: +3% boost; bull+50-70%: halved compression; bear/hv: tightened).
-          Tier 5: UI-01 to UI-09 + UI-12 all shipped. Remaining (low priority): UI-10 (ML weight auto-apply), UI-11 (factor chart verify).
-          Tier 3 new items (2026-06-08): TB-1 (trailing stop), TB-2 (time-stop), TB-3 (stop breach alert), TB-4 (dollar P&amp;L), TB-5 (portfolio heat-at-risk), SL-1 (admin signal log). SL-1 implemented 2026-06-08.
-          Overall: <strong style={{ color: '#4ade80' }}>9.2 / 10</strong> — Tier 7 alert intelligence shipped 2026-06-10: per-horizon signal alerts (SHORT/SWING/LONG/GROWTH independent subscriptions), require_consensus gate (≥2 horizons agree before alert fires), 4-horizon consensus indicator on stock detail, Add to Radar button on Opportunities. Admin health expanded: Signal Refresh Health + ML Training Health sections; AUC key mismatch bug fixed (all 119 models now show real AUC values). RES-2 analyst momentum + RES-2b fundamental scoring (D/E fix, PEG, EPS trend, analyst target premium) shipped 2026-06-10. All Tier 1–6 complete. WF-2 (autonomous paper trading), 11 security/reliability audit fixes, signal pipeline audit all done 2026-06-09.
+          All Tier 1–4 shipped as of 2026-06-07. SA-1/2/3/4/5/6/7/8 all done. SA-5 wired to Sunday scheduler. SA-7 regime-aware earnings compression implemented.
+          Tier 5: UI-01 to UI-09 + UI-12 all shipped. Tier 6: 11 security/reliability audit fixes. Tier 7 alert intelligence (2026-06-10): per-horizon signal alerts, require_consensus gate, 4-horizon consensus indicator.
+          Tier 8–9 (2026-06-11): paper trading engine WF-2, GROWTH signal style, K-score gate, R:R gate, partial profit taking, ATR trailing stop, ML/TA conflict dampening.
+          Tier 10 (2026-06-12): adversarial system audit — AUD-H5 4-stage isolation, AUD-M1 risk_off dual-leg, AUD-RE9 early-warning flags, LightGBM early stopping fix, NYSE holidays, DB unique constraints, 27 total fixes.
+          Tier 12 (2026-06-13): paper trading deep review — PT-M1 sector RS trail, PT-M2 earnings stop freeze, PT-M4 VIX term structure, PT-M5 market breadth, portfolio config scale fix, stock_id on trades.
+          Tier 13 (2026-06-13): Signal-Research convergence — ARMK analysis documented (Signal=BUY conf 75 vs Research=WAIT conf 58 — different time horizons + missing yfinance fundamentals). 12 integration items added: RES-FIX-1/2, INT-1 through INT-10. PDF export added to Research page.
+          Full system audit running (parallel multi-agent) — findings will be added to next tier when complete.
+          Overall: <strong style={{ color: '#4ade80' }}>9.3 / 10</strong> — Tier 13 convergence items are the next implementation priority. Key: RES-FIX-1 (yfinance fallback), INT-1 (research badge), INT-2 (alignment indicator), INT-3 (research-gated sizing). Full audit findings pending.
         </p>
       </div>
     </div>

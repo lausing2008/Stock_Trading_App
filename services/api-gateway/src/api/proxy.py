@@ -101,8 +101,12 @@ async def reverse_proxy(full_path: str, request: Request):
         if k.lower() == "authorization" and v.strip() in ("", "Bearer", "Bearer "):
             continue
         safe_headers[k] = v
+    # Research report generation (POST /research/*) calls the AI provider and can take 2-3 min.
+    # Give it a longer timeout so the gateway doesn't cut it off before the AI responds.
+    prefix = full_path.strip("/").split("/", 1)[0]
+    proxy_timeout = 240 if prefix == "research" and request.method == "POST" else 120
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=proxy_timeout) as client:
             r = await client.request(
                 request.method,
                 url,

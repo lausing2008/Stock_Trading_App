@@ -1103,12 +1103,17 @@ Use your knowledge of {symbol} to fill in qualitative sections accurately. Base 
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        # 90s limit: the gateway allows 240s for research POST requests; keeping AI under 90s
+        # leaves buffer for data-gather (25s) and response serialisation.
+        async with httpx.AsyncClient(timeout=90) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
     except Exception as exc:
         log.warning("claude.call.failed", error=str(exc))
         return _fallback_ai()
 
+    if r.status_code == 429:
+        log.warning("claude.rate_limited", status=r.status_code, body=r.text[:200])
+        return _fallback_ai()
     if r.status_code != 200:
         log.warning("claude.error", status=r.status_code, body=r.text[:200])
         return _fallback_ai()
