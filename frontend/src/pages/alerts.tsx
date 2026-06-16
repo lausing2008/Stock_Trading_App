@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
-import { api, type PriceAlert, type SignalAlertItem, type Stock, type SignalSummary } from '@/lib/api';
+import { api, type PriceAlert, type SignalAlertItem, type Stock, type SignalSummary, type WatchlistMeta, type WatchlistItem } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -71,6 +71,118 @@ const lbl: React.CSSProperties = {
 const NO_THRESHOLD = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross', 'macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout'];
 const EMA_CONDITIONS = ['cross_above_ema', 'cross_below_ema'];
 
+// ── Bulk Pattern Alert card ────────────────────────────────────────────────
+
+function BulkPatternAlertCard({ onDone }: { onDone: () => void }) {
+  const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
+  const [listId, setListId]       = useState<number | ''>('');
+  const [condition, setCondition] = useState('golden_cross');
+  const [recurring, setRecurring] = useState(true);
+  const [email, setEmail]         = useState('');
+  const [applying, setApplying]   = useState(false);
+  const [result, setResult]       = useState('');
+
+  useEffect(() => {
+    const s = typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null;
+    if (s) setEmail(s);
+  }, []);
+
+  async function handleApply(e: React.FormEvent) {
+    e.preventDefault();
+    if (!listId || !email) return;
+    setApplying(true); setResult('');
+    try {
+      const items: WatchlistItem[] = await api.listWatchlist(Number(listId));
+      if (!items.length) { setResult('Watchlist is empty.'); return; }
+      const threshold = ['cross_above_ema', 'cross_below_ema'].includes(condition) ? 20 : 0;
+      let created = 0;
+      await Promise.all(items.map(async item => {
+        try {
+          await api.createAlert({ symbol: item.symbol, condition, threshold, email, recurring });
+          created++;
+        } catch {}
+      }));
+      localStorage.setItem('stockai_alert_email', email);
+      setResult(`Created ${created} alert${created !== 1 ? 's' : ''} for ${items.length} stocks.`);
+      onDone();
+    } catch (err) {
+      setResult('Failed — ' + (err instanceof Error ? err.message : String(err)));
+    } finally { setApplying(false); }
+  }
+
+  const selected = watchlists?.find(w => w.id === Number(listId));
+
+  return (
+    <div style={{ borderRadius: '12px', border: '1px solid rgba(251,191,36,0.2)', background: 'rgba(15,23,42,0.95)', overflow: 'hidden', marginBottom: '24px' }}>
+      <div style={{ height: '3px', background: 'linear-gradient(90deg,#f59e0b,#fbbf24,#f59e0b)' }} />
+      <div style={{ padding: '20px 24px' }}>
+        <h2 style={{ margin: '0 0 4px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Bulk Pattern Alert — Apply to Watchlist</h2>
+        <p style={{ margin: '0 0 16px', fontSize: '12px', color: '#475569' }}>Creates one alert per stock in the selected watchlist.</p>
+        <form onSubmit={handleApply}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', alignItems: 'end' }}>
+            <div>
+              <label style={lbl}>Watchlist</label>
+              <select value={listId} onChange={e => setListId(e.target.value === '' ? '' : Number(e.target.value))} required style={inp}>
+                <option value="">Select watchlist…</option>
+                {(watchlists ?? []).map(w => (
+                  <option key={w.id} value={w.id}>{w.name} ({w.item_count} stocks)</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={lbl}>Pattern</label>
+              <select value={condition} onChange={e => setCondition(e.target.value)} style={inp}>
+                <optgroup label="EMA50 vs EMA200">
+                  <option value="golden_cross">Golden Cross (EMA50 ↑ EMA200)</option>
+                  <option value="death_cross">Death Cross (EMA50 ↓ EMA200)</option>
+                </optgroup>
+                <optgroup label="Milestone">
+                  <option value="new_52wk_high">New 52-week high</option>
+                  <option value="new_52wk_low">New 52-week low</option>
+                </optgroup>
+                <optgroup label="Pattern Signals">
+                  <option value="macd_bullish_cross">MACD Bullish Crossover</option>
+                  <option value="rsi_oversold_bounce">RSI Oversold Bounce (crosses 30)</option>
+                  <option value="double_bottom">Double Bottom (W-pattern)</option>
+                  <option value="breakout">Volume Breakout (20-day high + surge)</option>
+                </optgroup>
+              </select>
+            </div>
+            <div>
+              <label style={lbl}>Email</label>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com" required style={inp} />
+            </div>
+          </div>
+          <div style={{ marginTop: '12px', display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button type="button" onClick={() => setRecurring(false)}
+                style={{ padding: '7px 12px', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${!recurring ? 'rgba(99,102,241,0.5)' : '#1e293b'}`, background: !recurring ? 'rgba(99,102,241,0.15)' : 'transparent', color: !recurring ? '#a5b4fc' : '#475569' }}>
+                Once
+              </button>
+              <button type="button" onClick={() => setRecurring(true)}
+                style={{ padding: '7px 12px', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${recurring ? 'rgba(251,191,36,0.5)' : '#1e293b'}`, background: recurring ? 'rgba(251,191,36,0.08)' : 'transparent', color: recurring ? '#fbbf24' : '#475569' }}>
+                ↻ Recurring
+              </button>
+            </div>
+            <button type="submit" disabled={applying || !listId || !email} style={{
+              background: 'linear-gradient(135deg,#d97706,#f59e0b)',
+              border: 'none', color: '#fff', padding: '9px 24px', borderRadius: '8px',
+              fontSize: '13px', fontWeight: 700, cursor: applying || !listId || !email ? 'not-allowed' : 'pointer',
+              opacity: applying || !listId || !email ? 0.5 : 1, whiteSpace: 'nowrap',
+            }}>
+              {applying ? `Creating…` : `Apply to ${selected ? selected.item_count + ' stocks' : 'watchlist'}`}
+            </button>
+            {result && (
+              <span style={{ fontSize: '12px', color: result.startsWith('Created') ? '#4ade80' : '#f87171' }}>{result}</span>
+            )}
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ── Price Alerts tab ───────────────────────────────────────────────────────
 
 function PriceAlertsTab() {
@@ -83,6 +195,7 @@ function PriceAlertsTab() {
   const [emaPeriod, setEmaPeriod] = useState('20');
   const [email, setEmail]         = useState('');
   const [note, setNote]           = useState('');
+  const [recurring, setRecurring] = useState(false);
   const [saving, setSaving]       = useState(false);
   const [saved, setSaved]         = useState(false);
   const [error, setError]         = useState('');
@@ -102,7 +215,7 @@ function PriceAlertsTab() {
     const thresholdVal = isNoThreshold ? 0 : isEma ? parseInt(emaPeriod) : parseFloat(threshold);
     setSaving(true); setError('');
     try {
-      await api.createAlert({ symbol, condition, threshold: thresholdVal, email, note: note || undefined });
+      await api.createAlert({ symbol, condition, threshold: thresholdVal, email, note: note || undefined, recurring: isNoThreshold ? recurring : false });
       localStorage.setItem('stockai_alert_email', email);
       await mutate();
       setThreshold(''); setNote('');
@@ -202,6 +315,21 @@ function PriceAlertsTab() {
                 <input type="text" value={note} onChange={e => setNote(e.target.value)}
                   placeholder="e.g. buy target" style={inp} />
               </div>
+              {isNoThreshold && (
+                <div>
+                  <label style={lbl}>Mode</label>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <button type="button" onClick={() => setRecurring(false)}
+                      style={{ padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${!recurring ? 'rgba(99,102,241,0.5)' : '#1e293b'}`, background: !recurring ? 'rgba(99,102,241,0.15)' : 'transparent', color: !recurring ? '#a5b4fc' : '#475569' }}>
+                      Once
+                    </button>
+                    <button type="button" onClick={() => setRecurring(true)}
+                      style={{ padding: '7px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${recurring ? 'rgba(251,191,36,0.5)' : '#1e293b'}`, background: recurring ? 'rgba(251,191,36,0.08)' : 'transparent', color: recurring ? '#fbbf24' : '#475569' }}>
+                      ↻ Recur
+                    </button>
+                  </div>
+                </div>
+              )}
               <button type="submit" disabled={saving} style={{
                 background: saved ? 'rgba(34,197,94,0.2)' : 'linear-gradient(135deg,#4f46e5,#6366f1)',
                 border: saved ? '1px solid rgba(34,197,94,0.4)' : 'none',
@@ -217,6 +345,8 @@ function PriceAlertsTab() {
         </div>
       </div>
 
+      <BulkPatternAlertCard onDone={() => mutate()} />
+
       {/* Active */}
       <div style={{ marginBottom: '24px' }}>
         <h2 style={{ fontSize: '13px', fontWeight: 700, color: '#94a3b8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
@@ -229,13 +359,19 @@ function PriceAlertsTab() {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {active.map(a => (
-              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', borderRadius: '10px', border: '1px solid rgba(99,102,241,0.2)', background: 'rgba(15,23,42,0.8)' }}>
+              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', borderRadius: '10px', border: `1px solid ${a.recurring ? 'rgba(251,191,36,0.2)' : 'rgba(99,102,241,0.2)'}`, background: 'rgba(15,23,42,0.8)' }}>
                 <Link href={`/stock/${a.symbol}`} style={{ fontSize: '13px', fontWeight: 800, color: '#818cf8', fontFamily: 'monospace', minWidth: '70px', textDecoration: 'none' }}>
                   {a.symbol}
                 </Link>
                 <span style={{ fontSize: '13px', color: '#cbd5e1', flex: 1 }}>{alertLabel(a)}</span>
                 {a.note && <span style={{ fontSize: '11px', color: '#475569', fontStyle: 'italic' }}>{a.note}</span>}
-                <span style={{ fontSize: '11px', color: '#475569' }}>{a.email}</span>
+                {a.recurring && (
+                  <span style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '4px', background: 'rgba(251,191,36,0.08)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.2)', whiteSpace: 'nowrap' }}>↻ recurring</span>
+                )}
+                {a.recurring && a.last_sent_at && (
+                  <span style={{ fontSize: '11px', color: '#475569', whiteSpace: 'nowrap' }}>fired {relTime(a.last_sent_at)}</span>
+                )}
+                {!a.recurring && <span style={{ fontSize: '11px', color: '#475569' }}>{a.email}</span>}
                 <span style={{ fontSize: '11px', color: '#334155' }}>{relTime(a.created_at)}</span>
                 <button onClick={() => handleDelete(a.id)} title="Delete alert"
                   style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px', padding: '2px 4px' }}>✕</button>
