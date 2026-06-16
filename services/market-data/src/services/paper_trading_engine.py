@@ -1307,12 +1307,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
     style   = cfg["trading_style"]
     now     = datetime.now(timezone.utc)
-    # CB-3 FIX: signals only write a new row on state *change* (dedup-on-change persistence).
-    # A persistent BUY held since the 9:30 open never writes a new row — its ts stays at 9:30.
-    # With a 2h cutoff, those signals are excluded by 11:31, silently blocking the best setups.
-    # 26h covers a full prior trading day, giving fresh + stale-but-unchanged BUYs equal access.
-    # The signal engine's own 3-day price-staleness compression already handles genuinely old data.
-    cutoff  = now - timedelta(hours=26)
+    # CB-3 FIX + CB-W1 FIX: signals use dedup-on-change persistence — a persistent BUY never
+    # writes a new row while unchanged. 26h was fine Mon–Thu but broke on Mondays: Friday's
+    # valid signals are 72h+ old and excluded entirely. 5 days (120h) covers any weekend or
+    # long-weekend gap. The signal engine's own 3-day price-staleness guard handles truly stale data.
+    cutoff  = now - timedelta(days=5)
 
     # Current portfolio state
     open_count = session.execute(
@@ -1359,10 +1358,24 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                     style=style, note="Add stocks to the GROWTH watchlist to enable entries")
         return
 
-    # Latest BUY signals for the style, updated recently
+    # CB-W1 FIX: use MOST RECENT signal per stock for this style. Without this, a stock
+    # that went BUY→SELL within the 5-day window would still appear in the candidates list
+    # (the old BUY row satisfies Signal.signal=="BUY" even though a newer SELL row exists).
+    latest_signal_ts_subq = (
+        select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+        .where(Signal.horizon == style)
+        .group_by(Signal.stock_id)
+        .subquery()
+    )
+
     buy_signals = session.execute(
         select(Signal, Stock, Ranking)
         .join(Stock, Signal.stock_id == Stock.id)
+        .join(
+            latest_signal_ts_subq,
+            (Signal.stock_id == latest_signal_ts_subq.c.stock_id) &
+            (Signal.ts == latest_signal_ts_subq.c.max_ts),
+        )
         .outerjoin(
             Ranking,
             (Ranking.stock_id == Stock.id) &
@@ -1374,13 +1387,10 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             )),
         )
         .where(
-            Signal.signal == "BUY",
+            Signal.signal == "BUY",          # only if LATEST signal is BUY
             Signal.horizon == style,
-            # Allow signals within 10% of threshold — let _should_enter() scoring decide.
-            # Hard SQL filter was too blunt: a 61% signal with great R:R + bull regime
-            # was rejected before scoring. A 55% floor still excludes obvious noise.
             Signal.confidence >= cfg["min_confidence"] * 0.90,
-            Signal.ts >= cutoff,
+            Signal.ts >= cutoff,             # within 5-day window
             Stock.active.is_(True),
         )
         .order_by(desc(Signal.confidence))
