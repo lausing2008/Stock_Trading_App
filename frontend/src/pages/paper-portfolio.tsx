@@ -88,6 +88,95 @@ function StatCard({ label, value, sub, color }: { label: string; value: string; 
   );
 }
 
+// ── Benchmark Comparison Table ────────────────────────────────────────────────
+
+function BenchmarkTable({ data }: { data: PaperEquityPoint[] }) {
+  if (!data.length) return null;
+
+  const sorted = [...data].sort((a, b) => a.date.localeCompare(b.date));
+  const latest = sorted[sorted.length - 1];
+  if (!latest) return null;
+
+  function periodReturn(daysBack: number, field: 'equity' | 'spy_close' | 'qqq_close'): number | null {
+    const cutoff = new Date(latest.date);
+    cutoff.setDate(cutoff.getDate() - daysBack);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    // Find nearest point at or before cutoff
+    const base = [...sorted].reverse().find(d => d.date <= cutoffStr);
+    if (!base) return null;
+    const baseVal = base[field];
+    const latestVal = latest[field];
+    if (!baseVal || !latestVal) return null;
+    return (latestVal / baseVal - 1) * 100;
+  }
+
+  const periods = [
+    { label: '1W', days: 7 },
+    { label: '1M', days: 30 },
+    { label: '3M', days: 90 },
+    { label: 'Inception', days: 10000 },
+  ];
+
+  const rows = periods.map(p => ({
+    label: p.label,
+    portfolio: periodReturn(p.days, 'equity'),
+    spy: periodReturn(p.days, 'spy_close'),
+    qqq: periodReturn(p.days, 'qqq_close'),
+  })).filter(r => r.portfolio !== null || r.spy !== null);
+
+  if (!rows.length) return null;
+
+  const cellStyle = (v: number | null, highlight = false): React.CSSProperties => ({
+    padding: '8px 14px',
+    textAlign: 'right',
+    fontWeight: highlight ? 700 : 400,
+    color: v == null ? '#475569' : highlight
+      ? (v >= 0 ? '#4ade80' : '#f87171')
+      : '#94a3b8',
+    fontSize: 13,
+  });
+
+  const outStyle = (portfolio: number | null, bench: number | null): React.CSSProperties => {
+    if (portfolio == null || bench == null) return { padding: '8px 14px', textAlign: 'right', color: '#475569', fontSize: 13 };
+    const diff = portfolio - bench;
+    return { padding: '8px 14px', textAlign: 'right', color: diff >= 0 ? '#4ade80' : '#f87171', fontSize: 13, fontWeight: 600 };
+  };
+
+  return (
+    <div style={{ background: '#0f172a', borderRadius: 10, border: '1px solid #1e293b', padding: '14px 0', marginTop: 16 }}>
+      <div style={{ fontSize: 12, color: '#64748b', padding: '0 16px 10px', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+        Benchmark Comparison
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid #1e293b' }}>
+              <th style={{ padding: '6px 16px', textAlign: 'left', color: '#64748b', fontWeight: 600, fontSize: 11 }}>Period</th>
+              <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>Portfolio</th>
+              <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>SPY</th>
+              <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>QQQ</th>
+              <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>vs SPY</th>
+              <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>vs QQQ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.label} style={{ borderBottom: '1px solid #0f172a' }}>
+                <td style={{ padding: '8px 16px', color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>{r.label}</td>
+                <td style={cellStyle(r.portfolio, true)}>{r.portfolio != null ? (r.portfolio >= 0 ? '+' : '') + r.portfolio.toFixed(2) + '%' : '—'}</td>
+                <td style={cellStyle(r.spy)}>{r.spy != null ? (r.spy >= 0 ? '+' : '') + r.spy.toFixed(2) + '%' : '—'}</td>
+                <td style={cellStyle(r.qqq)}>{r.qqq != null ? (r.qqq >= 0 ? '+' : '') + r.qqq.toFixed(2) + '%' : '—'}</td>
+                <td style={outStyle(r.portfolio, r.spy)}>{r.portfolio != null && r.spy != null ? (r.portfolio - r.spy >= 0 ? '+' : '') + (r.portfolio - r.spy).toFixed(2) + '%' : '—'}</td>
+                <td style={outStyle(r.portfolio, r.qqq)}>{r.portfolio != null && r.qqq != null ? (r.portfolio - r.qqq >= 0 ? '+' : '') + (r.portfolio - r.qqq).toFixed(2) + '%' : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ── Equity Curve Chart ─────────────────────────────────────────────────────────
 
 function EquityChart({ data, initialCapital }: { data: PaperEquityPoint[]; initialCapital: number }) {
@@ -1331,6 +1420,7 @@ export default function PaperPortfolioPage() {
               </div>
               <EquityChart data={curve ?? []} initialCapital={summary.initial_capital} />
             </div>
+            {(curve?.length ?? 0) > 0 && <BenchmarkTable data={curve ?? []} />}
             {(curve?.length ?? 0) === 0 && (
               <div style={{ color: '#64748b', fontSize: 13, textAlign: 'center' }}>
                 Equity curve snapshots are taken once per day after market close. Check back after first trading session.
