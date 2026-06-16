@@ -332,6 +332,7 @@ export default function StockDetail() {
   const [alertEmaPeriod, setAlertEmaPeriod] = useState<string>('20');
   const [alertEmail, setAlertEmail] = useState<string>('');
   const [alertNote, setAlertNote] = useState<string>('');
+  const [alertRecurring, setAlertRecurring] = useState<boolean>(false);
   const [alertSaving, setAlertSaving] = useState<boolean>(false);
   const [alertMsg, setAlertMsg] = useState<string>('');
 
@@ -351,7 +352,7 @@ export default function StockDetail() {
     setAlertSaving(true);
     setAlertMsg('');
     try {
-      await api.createAlert({ symbol, condition: alertCondition, threshold, email: alertEmail, note: alertNote || undefined });
+      await api.createAlert({ symbol, condition: alertCondition, threshold, email: alertEmail, note: alertNote || undefined, recurring: alertRecurring });
       localStorage.setItem('stockai_alert_email', alertEmail);
       setAlertMsg('Alert set!');
       setAlertThreshold('');
@@ -2753,6 +2754,22 @@ Return ONLY valid JSON — no markdown, no prose:
                 style={{ background: '#1e293b', color: '#e2e8f0', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '6px', padding: '6px 10px', fontSize: '13px', width: '100%' }}
               />
             </div>
+            {/* Recurring toggle — only for pattern/technical conditions */}
+            {isNoThreshold && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '11px', color: '#64748b' }}>Alert mode</label>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    onClick={() => setAlertRecurring(false)}
+                    style={{ padding: '5px 10px', borderRadius: '5px', fontSize: '11px', border: `1px solid ${!alertRecurring ? 'rgba(99,102,241,0.5)' : '#1e293b'}`, background: !alertRecurring ? 'rgba(99,102,241,0.15)' : 'transparent', color: !alertRecurring ? '#a5b4fc' : '#475569', cursor: 'pointer' }}
+                  >Once</button>
+                  <button
+                    onClick={() => setAlertRecurring(true)}
+                    style={{ padding: '5px 10px', borderRadius: '5px', fontSize: '11px', border: `1px solid ${alertRecurring ? 'rgba(251,191,36,0.5)' : '#1e293b'}`, background: alertRecurring ? 'rgba(251,191,36,0.08)' : 'transparent', color: alertRecurring ? '#fbbf24' : '#475569', cursor: 'pointer' }}
+                  >↻ Recurring</button>
+                </div>
+              </div>
+            )}
             {/* Show email field only if no account email is saved */}
             {!alertEmail ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '180px' }}>
@@ -2802,17 +2819,27 @@ Return ONLY valid JSON — no markdown, no prose:
               else if (a.condition === 'double_bottom') label = 'Double Bottom (W-pattern)';
               else if (a.condition === 'breakout') label = 'Volume Breakout (20-day high + surge)';
               else label = a.condition;
+              const isDone = a.triggered && !a.recurring;
+              const lastFired = a.recurring && a.last_sent_at
+                ? new Date(a.last_sent_at).toLocaleDateString()
+                : a.triggered_at ? new Date(a.triggered_at).toLocaleDateString() : null;
               return (
-                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: a.triggered ? 'rgba(30,41,59,0.4)' : 'rgba(30,41,59,0.7)', border: `1px solid ${a.triggered ? 'rgba(148,163,184,0.1)' : 'rgba(99,102,241,0.2)'}`, borderRadius: '8px', padding: '10px 14px' }}>
+                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: isDone ? 'rgba(30,41,59,0.4)' : 'rgba(30,41,59,0.7)', border: `1px solid ${isDone ? 'rgba(148,163,184,0.1)' : a.recurring ? 'rgba(251,191,36,0.25)' : 'rgba(99,102,241,0.2)'}`, borderRadius: '8px', padding: '10px 14px' }}>
                   <span style={{ fontSize: '18px' }}>{icon}</span>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: '13px', color: a.triggered ? '#64748b' : '#e2e8f0' }}>
+                    <div style={{ fontSize: '13px', color: isDone ? '#64748b' : '#e2e8f0' }}>
                       {label}
                       {a.note && <span style={{ color: '#64748b', marginLeft: '8px' }}>— {a.note}</span>}
                     </div>
-                    <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>→ {a.email}</div>
+                    <div style={{ fontSize: '11px', color: '#475569', marginTop: '2px' }}>
+                      → {a.email}
+                      {lastFired && <span style={{ marginLeft: '8px' }}>· last fired {lastFired}</span>}
+                    </div>
                   </div>
-                  {a.triggered && (
+                  {a.recurring && (
+                    <span style={{ fontSize: '10px', background: 'rgba(251,191,36,0.08)', color: '#fbbf24', padding: '2px 7px', borderRadius: '4px', border: '1px solid rgba(251,191,36,0.2)', whiteSpace: 'nowrap' }}>↻ recurring</span>
+                  )}
+                  {isDone && (
                     <span style={{ fontSize: '11px', background: 'rgba(74,222,128,0.1)', color: '#4ade80', padding: '2px 8px', borderRadius: '4px' }}>Triggered</span>
                   )}
                   <button

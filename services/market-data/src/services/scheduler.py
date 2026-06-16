@@ -1069,8 +1069,12 @@ def check_technical_alerts() -> None:
     Runs after each market refresh (when fresh daily bars are ingested).
     EMA period is stored in the threshold field (20, 50, or 200).
     52-week conditions store 0 in threshold.
+
+    Recurring alerts (recurring=True) re-fire every time the pattern is
+    detected, subject to a per-pattern cooldown to prevent spam.
     """
     import pandas as pd
+    from sqlalchemy import or_
 
     _TECHNICAL = {
         AlertCondition.CROSS_ABOVE_EMA,
@@ -1085,14 +1089,45 @@ def check_technical_alerts() -> None:
         AlertCondition.BREAKOUT,
     }
 
+    # Minimum days between re-fires for each pattern type
+    _COOLDOWN: dict[AlertCondition, int] = {
+        AlertCondition.GOLDEN_CROSS:        90,
+        AlertCondition.DEATH_CROSS:         90,
+        AlertCondition.NEW_52WK_HIGH:       30,
+        AlertCondition.NEW_52WK_LOW:        30,
+        AlertCondition.DOUBLE_BOTTOM:       30,
+        AlertCondition.MACD_BULLISH_CROSS:  14,
+        AlertCondition.CROSS_ABOVE_EMA:     14,
+        AlertCondition.CROSS_BELOW_EMA:     14,
+        AlertCondition.BREAKOUT:            7,
+        AlertCondition.RSI_OVERSOLD_BOUNCE: 7,
+    }
+
     try:
         with SessionLocal() as session:
+            # Include one-shot (triggered=False) AND recurring alerts
             alerts = session.execute(
                 select(PriceAlert).where(
-                    PriceAlert.triggered.is_(False),
                     PriceAlert.condition.in_(_TECHNICAL),
+                    or_(
+                        PriceAlert.triggered.is_(False),
+                        PriceAlert.recurring.is_(True),
+                    ),
                 )
             ).scalars().all()
+            if not alerts:
+                return
+
+            now = datetime.now(timezone.utc)
+
+            # For recurring alerts, skip those still within their cooldown window
+            def _in_cooldown(alert: PriceAlert) -> bool:
+                if not alert.recurring or alert.last_sent_at is None:
+                    return False
+                cooldown = _COOLDOWN.get(alert.condition, 30)
+                return (now - alert.last_sent_at.replace(tzinfo=timezone.utc)).days < cooldown
+
+            alerts = [a for a in alerts if not _in_cooldown(a)]
             if not alerts:
                 return
 
@@ -1249,10 +1284,17 @@ def check_technical_alerts() -> None:
                     else:
                         continue
 
-                    alert.triggered = True
-                    alert.triggered_at = datetime.now(timezone.utc)
+                    fire_time = datetime.now(timezone.utc)
+                    if alert.recurring:
+                        # Recurring: stamp last_sent_at but leave triggered=False so it stays active
+                        alert.last_sent_at = fire_time
+                        alert.triggered_at = fire_time
+                    else:
+                        # One-shot: mark done permanently
+                        alert.triggered = True
+                        alert.triggered_at = fire_time
                     fired += 1
-                    log.info("tech_alert.triggered", symbol=alert.symbol, condition=cond_label)
+                    log.info("tech_alert.triggered", symbol=alert.symbol, condition=cond_label, recurring=alert.recurring)
 
                     if alert.email:
                         pending_emails.append(dict(

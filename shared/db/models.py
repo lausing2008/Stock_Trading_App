@@ -310,6 +310,8 @@ class PriceAlert(Base):
     note: Mapped[str | None] = mapped_column(String(512), nullable=True)
     triggered: Mapped[bool] = mapped_column(Boolean, default=False)
     triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    recurring: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="price_alerts")

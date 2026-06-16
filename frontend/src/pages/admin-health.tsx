@@ -5,14 +5,32 @@ import { api, type SchedulerJob, type MlModelMetric, type SignalSummary } from '
 import { getSession } from '@/lib/auth';
 
 const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string }> = {
-  weekly_refresh:          { label: 'Weekly Full Refresh',       maxAgeDays: 8,  desc: 'Force re-ingest all stocks (Sun 14:00 PST)' },
-  us_post_close:           { label: 'US Post-Close',             maxAgeDays: 3,  desc: 'Final bar + ML retrain (Mon–Fri 16:30 ET)' },
-  hk_post_close:           { label: 'HK Post-Close',             maxAgeDays: 3,  desc: 'Final bar + ML retrain (Mon–Fri 16:30 HKT)' },
-  us_refresh:              { label: 'US Intraday Refresh',       maxAgeDays: 2,  desc: 'Prices + rankings + signals during market hours' },
-  hk_refresh:              { label: 'HK Intraday Refresh',       maxAgeDays: 2,  desc: 'Prices + rankings + signals during market hours' },
-  paper_trading:           { label: 'Paper Trading Engine',      maxAgeDays: 2,  desc: 'GROWTH-style autonomous trading step' },
-  tune_all_sent:           { label: 'Optuna Tune-All (sent)',    maxAgeDays: 8,  desc: 'Weekly hyperparameter tuning request sent to ML service' },
-  calibrate_ta_weights_sent: { label: 'TA Weight Calibration (sent)', maxAgeDays: 8, desc: 'Weekly TA logistic regression calibration request sent' },
+  // Key scheduled jobs
+  weekly_refresh:            { label: 'Weekly Full Refresh',         maxAgeDays: 8,  desc: 'Force re-ingest all stocks — 3 years of OHLCV (Sun 14:00 PST)' },
+  us_post_close:             { label: 'US Post-Close',               maxAgeDays: 3,  desc: 'Final daily bar + ML retrain for all US stocks (Mon–Fri 16:30 ET)' },
+  hk_post_close:             { label: 'HK Post-Close',               maxAgeDays: 3,  desc: 'Final daily bar + ML retrain for all HK stocks (Mon–Fri 16:30 HKT)' },
+  paper_trading:             { label: 'Paper Trading Engine',        maxAgeDays: 2,  desc: 'Autonomous GROWTH-style paper trade step (runs after each US refresh)' },
+  // Morning digests
+  morning_digest_us:         { label: 'US Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + watchlist moves (Mon–Fri 09:00 ET)' },
+  morning_digest_hk:         { label: 'HK Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + watchlist moves (Mon–Fri 08:55 HKT)' },
+  // Intraday refresh (full pipeline)
+  us_refresh:                { label: 'US Intraday Refresh',         maxAgeDays: 2,  desc: 'Prices + K-Score rankings + signals every 5 min (US market hours)' },
+  hk_refresh:                { label: 'HK Intraday Refresh',         maxAgeDays: 2,  desc: 'Prices + K-Score rankings + signals every 5 min (HK market hours)' },
+  us_open_burst:             { label: 'US Open Burst',               maxAgeDays: 2,  desc: 'Dense refresh at open — 5 runs 09:25–09:45 ET' },
+  us_intra:                  { label: 'US Intraday',                 maxAgeDays: 2,  desc: 'Prices + rankings + signals every 5 min (10:00–15:00 ET)' },
+  us_close_burst:            { label: 'US Close Burst',              maxAgeDays: 2,  desc: 'Dense refresh at close — every 5 min 15:30–16:15 ET' },
+  us_5m_intraday:            { label: 'US 5m Bars',                  maxAgeDays: 2,  desc: '5-minute intraday bar ingestion only (09:30–16:00 ET, no signals)' },
+  hk_open_burst:             { label: 'HK Open Burst',               maxAgeDays: 2,  desc: 'Dense refresh at open — 5 runs 09:25–09:45 HKT' },
+  hk_intra:                  { label: 'HK Intraday',                 maxAgeDays: 2,  desc: 'Prices + rankings + signals every 5 min (10:00–15:00 HKT, skip lunch)' },
+  hk_close_burst:            { label: 'HK Close Burst',              maxAgeDays: 2,  desc: 'Dense refresh at close — every 5 min 15:30–16:15 HKT' },
+  hk_5m_intraday:            { label: 'HK 5m Bars',                  maxAgeDays: 2,  desc: '5-minute intraday bar ingestion only (09:30–16:00 HKT, skip lunch)' },
+  // Always-on background jobs
+  live_price_cache_refresh:  { label: 'Live Price Cache',            maxAgeDays: 1,  desc: 'Writes live prices to Redis every 1 min during market hours (US/HK 09–17)' },
+  price_alert_check:         { label: 'Price Alert Check',           maxAgeDays: 1,  desc: 'Checks user alert thresholds against Redis live cache every 1 min' },
+  // Maintenance
+  db_purge_weekly:           { label: 'DB Weekly Purge',             maxAgeDays: 8,  desc: 'Deletes prices_5m + scheduler_jobs rows older than 90 days (Sun 15:00 PST)' },
+  tune_all_sent:             { label: 'Optuna Tune-All',             maxAgeDays: 8,  desc: 'Weekly XGBoost hyperparameter tuning sent to ML service (Optuna search)' },
+  calibrate_ta_weights_sent: { label: 'TA Weight Calibration',       maxAgeDays: 8,  desc: 'Weekly TA logistic regression calibration — updates ta_weights.json' },
 };
 
 function relTime(iso: string): string {
@@ -189,7 +207,7 @@ export default function AdminHealthPage() {
 
       {jobs.length > 0 && (
         <>
-          {/* Key jobs first */}
+          {/* Key jobs */}
           <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>SCHEDULED JOBS</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px', marginBottom: '24px' }}>
             {['weekly_refresh', 'us_post_close', 'hk_post_close', 'paper_trading'].map(key => {
@@ -197,6 +215,23 @@ export default function AdminHealthPage() {
               if (!job) return (
                 <div key={key} style={{ padding: '14px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b' }}>
                   <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>{JOB_META[key]?.label ?? key}</div>
+                  {JOB_META[key]?.desc && <div style={{ fontSize: '10px', color: '#1e293b', marginTop: '2px' }}>{JOB_META[key].desc}</div>}
+                  <div style={{ fontSize: '11px', color: '#1e293b', marginTop: '4px' }}>No record yet</div>
+                </div>
+              );
+              return <JobCard key={key} job={job} />;
+            })}
+          </div>
+
+          {/* Morning digests */}
+          <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>MORNING DIGESTS</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px', marginBottom: '24px' }}>
+            {['morning_digest_us', 'morning_digest_hk'].map(key => {
+              const job = jobs.find(j => j.job === key);
+              if (!job) return (
+                <div key={key} style={{ padding: '14px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>{JOB_META[key]?.label ?? key}</div>
+                  {JOB_META[key]?.desc && <div style={{ fontSize: '10px', color: '#1e293b', marginTop: '2px' }}>{JOB_META[key].desc}</div>}
                   <div style={{ fontSize: '11px', color: '#1e293b', marginTop: '4px' }}>No record yet</div>
                 </div>
               );
@@ -207,7 +242,7 @@ export default function AdminHealthPage() {
           {/* Intraday + background jobs */}
           <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>INTRADAY &amp; BACKGROUND</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px' }}>
-            {jobs.filter(j => !['weekly_refresh', 'us_post_close', 'hk_post_close', 'paper_trading'].includes(j.job)).map(j => (
+            {jobs.filter(j => !['weekly_refresh', 'us_post_close', 'hk_post_close', 'paper_trading', 'morning_digest_us', 'morning_digest_hk'].includes(j.job)).map(j => (
               <JobCard key={j.job} job={j} />
             ))}
           </div>
@@ -373,6 +408,81 @@ export default function AdminHealthPage() {
           })()}
         </div>
       )}
+
+      {/* Schedule Reference */}
+      <div style={{ marginTop: '32px' }}>
+        <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em', marginBottom: '12px' }}>SCHEDULE REFERENCE</div>
+        <div style={{ padding: '16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+
+            {/* US column */}
+            <div>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: '#60a5fa', marginBottom: '10px' }}>🇺🇸 US (America/New_York)</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {[
+                  { time: '09:00 ET', label: 'Morning Digest', desc: 'Email of top signals + moves', color: '#a78bfa' },
+                  { time: '09:25–09:45 ET', label: 'Open Burst', desc: 'Dense refresh at open (5 runs)', color: '#60a5fa' },
+                  { time: '10:00–15:00 ET', label: 'Intraday', desc: 'Full pipeline every 5 min', color: '#60a5fa' },
+                  { time: '15:30–16:15 ET', label: 'Close Burst', desc: 'Dense refresh at close', color: '#60a5fa' },
+                  { time: '16:30 ET', label: 'Post-Close', desc: 'Final bar + ML retrain', color: '#4ade80' },
+                  { time: '09:00–17:00 ET', label: 'Live Price Cache', desc: 'Refresh every 1 min (market hours)', color: '#94a3b8' },
+                ].map(row => (
+                  <div key={row.time} style={{ display: 'flex', gap: '10px', alignItems: 'baseline' }}>
+                    <span style={{ fontSize: '10px', color: '#475569', minWidth: '110px', fontFamily: 'monospace', flexShrink: 0 }}>{row.time}</span>
+                    <div>
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: row.color }}>{row.label}</span>
+                      <span style={{ fontSize: '10px', color: '#334155', marginLeft: '6px' }}>{row.desc}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* HK column */}
+            <div>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: '#f97316', marginBottom: '10px' }}>🇭🇰 HK (Asia/Hong_Kong)</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {[
+                  { time: '08:55 HKT', label: 'Morning Digest', desc: 'Email of top signals + moves', color: '#a78bfa' },
+                  { time: '09:25–09:45 HKT', label: 'Open Burst', desc: 'Dense refresh at open (5 runs)', color: '#f97316' },
+                  { time: '10:00–15:00 HKT', label: 'Intraday', desc: 'Full pipeline every 5 min (skip 12–13)', color: '#f97316' },
+                  { time: '15:30–16:15 HKT', label: 'Close Burst', desc: 'Dense refresh at close', color: '#f97316' },
+                  { time: '16:30 HKT', label: 'Post-Close', desc: 'Final bar + ML retrain', color: '#4ade80' },
+                  { time: '09:00–17:00 HKT', label: 'Live Price Cache', desc: 'Refresh every 1 min (market hours)', color: '#94a3b8' },
+                ].map(row => (
+                  <div key={row.time} style={{ display: 'flex', gap: '10px', alignItems: 'baseline' }}>
+                    <span style={{ fontSize: '10px', color: '#475569', minWidth: '110px', fontFamily: 'monospace', flexShrink: 0 }}>{row.time}</span>
+                    <div>
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: row.color }}>{row.label}</span>
+                      <span style={{ fontSize: '10px', color: '#334155', marginLeft: '6px' }}>{row.desc}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+          </div>
+
+          {/* Weekly / always-on footer */}
+          <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid #1e293b', display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+            <div>
+              <span style={{ fontSize: '10px', color: '#475569', fontFamily: 'monospace', marginRight: '8px' }}>Every 1 min</span>
+              <span style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>Price Alerts</span>
+              <span style={{ fontSize: '10px', color: '#334155', marginLeft: '6px' }}>Check thresholds against Redis live cache</span>
+            </div>
+            <div>
+              <span style={{ fontSize: '10px', color: '#475569', fontFamily: 'monospace', marginRight: '8px' }}>Sun 14:00 PST</span>
+              <span style={{ fontSize: '10px', color: '#fbbf24', fontWeight: 600 }}>Weekly Refresh</span>
+              <span style={{ fontSize: '10px', color: '#334155', marginLeft: '6px' }}>Force re-ingest 3 years of history for all stocks</span>
+            </div>
+            <div>
+              <span style={{ fontSize: '10px', color: '#475569', fontFamily: 'monospace', marginRight: '8px' }}>Sun 15:00 PST</span>
+              <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 600 }}>DB Purge</span>
+              <span style={{ fontSize: '10px', color: '#334155', marginLeft: '6px' }}>Delete prices_5m + job logs older than 90 days</span>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* ML Model Metrics */}
       {mlData && mlData.count > 0 && (
