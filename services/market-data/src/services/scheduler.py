@@ -1256,6 +1256,10 @@ def check_technical_alerts() -> None:
                         lower = min(b1_val, b2_val)
                         if lower <= 0 or abs(b1_val - b2_val) / lower > 0.03 or b2_idx <= b1_idx + 3:
                             continue
+                        # Second bottom must be within the last 10 bars — otherwise
+                        # the same old pattern stays in the 60-bar window for weeks
+                        if b2_idx < len(window) - 10:
+                            continue
                         peak = float(max(window[b1_idx:b2_idx + 1]))
                         if peak < lower * 1.05 or float(close.iloc[-1]) <= lower * 1.01:
                             continue
