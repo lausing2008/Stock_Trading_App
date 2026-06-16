@@ -110,6 +110,33 @@ export default function RankingsPage() {
               Clear
             </button>
           )}
+          <button
+            onClick={() => {
+              if (!rows.length) return;
+              const headers = ['Symbol','Name','Market','Sector','K-Score','Technical','Momentum','Value','Growth','Volatility','Signal','Bullish%','Confidence','Price','Change%'];
+              const csvRows = rows.map(r => {
+                const lp = priceMap[r.symbol];
+                const sig = signalMap[r.symbol];
+                return [
+                  r.symbol, r.name, r.market, r.sector ?? '',
+                  r.score?.toFixed(1) ?? '', r.technical?.toFixed(1) ?? '',
+                  r.momentum?.toFixed(1) ?? '', r.value?.toFixed(1) ?? '',
+                  r.growth?.toFixed(1) ?? '', r.volatility?.toFixed(1) ?? '',
+                  sig?.signal ?? '', sig?.bullish_probability != null ? (sig.bullish_probability * 100).toFixed(1) : '',
+                  sig?.confidence?.toFixed(1) ?? '',
+                  lp?.price?.toFixed(2) ?? '', lp?.change_pct?.toFixed(2) ?? '',
+                ].map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',');
+              });
+              const csv = [headers.join(','), ...csvRows].join('\n');
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+              a.download = `rankings-${new Date().toISOString().slice(0,10)}.csv`;
+              a.click();
+            }}
+            style={{ padding: '4px 12px', borderRadius: 6, fontSize: 11, border: '1px solid #334155', background: '#0b1420', color: '#64748b', cursor: 'pointer' }}
+          >
+            ↓ CSV
+          </button>
           {(['', 'US', 'HK'] as const).map((m) => (
             <button
               key={m || 'all'}

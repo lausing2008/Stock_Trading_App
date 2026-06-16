@@ -337,14 +337,39 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
             Filter across all {rows.length} tracked stocks · {sorted.length} match
           </p>
         </div>
-        {!isDefaultFilters && (
+        <div style={{ display: 'flex', gap: 8 }}>
           <button
-            onClick={resetFilters}
-            style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #334155', background: 'transparent', color: '#94a3b8', fontSize: '12px', cursor: 'pointer' }}
+            onClick={() => {
+              if (!sorted.length) return;
+              const headers = ['Symbol','Name','Market','Sector','K-Score','Technical','Momentum','Value','Growth','Signal','Bullish%','Confidence','Price','Change%','Fair Price'];
+              const csvRows = sorted.map(r => [
+                r.symbol, r.name, r.market, r.sector ?? '',
+                r.score?.toFixed(1) ?? '', r.technical?.toFixed(1) ?? '',
+                r.momentum?.toFixed(1) ?? '', r.value?.toFixed(1) ?? '',
+                r.growth?.toFixed(1) ?? '', r.signal ?? '',
+                r.bullish_probability != null ? (r.bullish_probability * 100).toFixed(1) : '',
+                r.confidence?.toFixed(1) ?? '', r.price?.toFixed(2) ?? '',
+                r.change_pct?.toFixed(2) ?? '', r.fair_price?.toFixed(2) ?? '',
+              ].map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','));
+              const csv = [headers.join(','), ...csvRows].join('\n');
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+              a.download = `screener-${new Date().toISOString().slice(0,10)}.csv`;
+              a.click();
+            }}
+            style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #334155', background: 'transparent', color: '#64748b', fontSize: '12px', cursor: 'pointer' }}
           >
-            Reset filters
+            ↓ CSV ({sorted.length})
           </button>
-        )}
+          {!isDefaultFilters && (
+            <button
+              onClick={resetFilters}
+              style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #334155', background: 'transparent', color: '#94a3b8', fontSize: '12px', cursor: 'pointer' }}
+            >
+              Reset filters
+            </button>
+          )}
+        </div>
       </div>
 
       {/* AI Natural Language Screener */}

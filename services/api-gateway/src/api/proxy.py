@@ -3,6 +3,8 @@ through the gateway without knowing about internal service hosts.
 """
 from __future__ import annotations
 
+import time as _time
+
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from jose import JWTError, jwt
@@ -40,6 +42,7 @@ _ROUTES = {
     "board": _settings.market_data_url,
     "congress": _settings.market_data_url,
     "paper-portfolio": _settings.market_data_url,
+    "broker": _settings.market_data_url,
 }
 
 
@@ -50,14 +53,30 @@ def _upstream(path: str) -> str | None:
 
 _BLACKLIST_PREFIX = "auth:blacklist:"
 
+# In-memory fallback: populated when Redis confirms a JTI is revoked.
+# When Redis is unavailable, known-revoked tokens stay blocked; unknown JTIs fail-open.
+_BLACKLIST_MEM: dict[str, float] = {}   # jti → expiry unix timestamp
+_BLACKLIST_MEM_TTL = 3600               # 1 hour
+
 
 def _is_blacklisted(jti: str) -> bool:
+    now = _time.time()
+    # Check in-memory cache first
+    exp = _BLACKLIST_MEM.get(jti)
+    if exp is not None and exp > now:
+        return True
     try:
         import redis as redis_lib
         r = redis_lib.from_url(_settings.redis_url, decode_responses=True, socket_connect_timeout=1)
-        return bool(r.exists(f"{_BLACKLIST_PREFIX}{jti}"))
+        revoked = bool(r.exists(f"{_BLACKLIST_PREFIX}{jti}"))
+        if revoked:
+            _BLACKLIST_MEM[jti] = now + _BLACKLIST_MEM_TTL
+            if len(_BLACKLIST_MEM) > 2000:   # bounded eviction
+                _BLACKLIST_MEM.clear()
+        return revoked
     except Exception:
-        return False
+        # Redis unavailable — use in-memory cache as fallback (fail-closed for known JTIs)
+        return exp is not None and exp > now
 
 
 def _require_auth(full_path: str, request: Request) -> None:

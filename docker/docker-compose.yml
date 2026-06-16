@@ -28,8 +28,11 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     #ports: ["6379:6379"]
     networks: [stockai-net]
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -60,6 +63,11 @@ services:
     #ports: ["8003:8003"]
     volumes:
       - datavol:/data
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+          cpus: "1.5"
 
   ranking-engine:
     <<: *py-common
@@ -139,6 +147,7 @@ services:
 volumes:
   datavol:
   pgdata:
+  redisdata:
 
 networks:
   stockai-net:

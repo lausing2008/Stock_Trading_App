@@ -1,5 +1,6 @@
 """Auth routes — JWT login, user management (admin), password change."""
 from datetime import datetime, timedelta, timezone
+import time as _time
 import uuid
 
 import bcrypt as _bcrypt
@@ -20,14 +21,20 @@ _settings = get_settings()
 _security = HTTPBearer(auto_error=False)
 
 _BLACKLIST_PREFIX = "auth:blacklist:"
+_BLACKLIST_MEM: dict[str, float] = {}   # jti → expiry unix timestamp
+_BLACKLIST_MEM_TTL = 3600               # 1 hour in-memory retention
 
 
 def _get_redis() -> redis_lib.Redis:
-    return redis_lib.from_url(_settings.redis_url, decode_responses=True)
+    from common.redis_client import get_redis as _pool_redis
+    return _pool_redis()
 
 
 def _blacklist_jti(jti: str, exp: int) -> None:
     """Store a token JTI in the Redis blacklist until it expires."""
+    _BLACKLIST_MEM[jti] = _time.time() + _BLACKLIST_MEM_TTL
+    if len(_BLACKLIST_MEM) > 2000:
+        _BLACKLIST_MEM.clear()
     try:
         ttl = max(1, exp - int(datetime.now(timezone.utc).timestamp()))
         _get_redis().setex(f"{_BLACKLIST_PREFIX}{jti}", ttl, "1")
@@ -36,10 +43,63 @@ def _blacklist_jti(jti: str, exp: int) -> None:
 
 
 def _is_blacklisted(jti: str) -> bool:
+    now = _time.time()
+    mem_exp = _BLACKLIST_MEM.get(jti)
+    if mem_exp is not None and mem_exp > now:
+        return True
     try:
-        return bool(_get_redis().exists(f"{_BLACKLIST_PREFIX}{jti}"))
+        revoked = bool(_get_redis().exists(f"{_BLACKLIST_PREFIX}{jti}"))
+        if revoked:
+            _BLACKLIST_MEM[jti] = now + _BLACKLIST_MEM_TTL
+            if len(_BLACKLIST_MEM) > 2000:
+                _BLACKLIST_MEM.clear()
+        return revoked
     except Exception:
-        return False  # fail-open: Redis down → don't block requests
+        return mem_exp is not None and mem_exp > now
+
+
+_RATE_PREFIX = "auth:login_fail:"
+_RATE_LIMIT   = 10   # max failures
+_RATE_WINDOW  = 300  # seconds (5 min)
+
+
+def _check_rate_limit(ip: str) -> None:
+    """Raise 429 if this IP has exceeded the login failure rate limit."""
+    try:
+        r = _get_redis()
+        key = f"{_RATE_PREFIX}{ip}"
+        count = int(r.get(key) or 0)
+        if count >= _RATE_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed login attempts. Try again in 5 minutes.",
+                headers={"Retry-After": str(_RATE_WINDOW)},
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # fail-open: Redis down → don't block
+
+
+def _record_login_failure(ip: str) -> None:
+    """Increment the failure counter for this IP; sets TTL on first failure."""
+    try:
+        r = _get_redis()
+        key = f"{_RATE_PREFIX}{ip}"
+        pipe = r.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, _RATE_WINDOW)
+        pipe.execute()
+    except Exception:
+        pass
+
+
+def _clear_rate_limit(ip: str) -> None:
+    """Remove failure counter on successful login."""
+    try:
+        _get_redis().delete(f"{_RATE_PREFIX}{ip}")
+    except Exception:
+        pass
 
 
 def _hash_password(password: str) -> str:
@@ -141,12 +201,16 @@ class UpdateProfileRequest(BaseModel):
 # ── Public endpoints ──────────────────────────────────────────────────────────
 
 @router.post("/login")
-def login(body: LoginRequest, session: Session = Depends(get_session)):
+def login(request: Request, body: LoginRequest, session: Session = Depends(get_session)):
+    ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(ip)
     user = session.execute(
         select(User).where(User.username == body.username.lower())
     ).scalar_one_or_none()
     if not user or not user.is_active or not _verify_password(body.password, user.password_hash):
+        _record_login_failure(ip)
         raise HTTPException(401, "Incorrect username or password")
+    _clear_rate_limit(ip)
     token = _make_token(user.username, user.role.value)
     return {"token": token, "username": user.username, "role": user.role.value.lower()}
 

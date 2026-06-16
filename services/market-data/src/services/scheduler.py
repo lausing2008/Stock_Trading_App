@@ -92,6 +92,29 @@ _settings = get_settings()
 _scheduler: BackgroundScheduler | None = None
 _redis: redis_lib.Redis | None = None
 
+# Cache a service-to-service JWT so scheduler can call auth-protected internal endpoints.
+_service_token_cache: str | None = None
+
+
+def _service_token() -> str:
+    """Return a long-lived JWT for scheduler → internal service calls (sub='scheduler')."""
+    global _service_token_cache
+    if _service_token_cache:
+        return _service_token_cache
+    try:
+        from jose import jwt as _jwt
+        import uuid
+        payload = {
+            "sub": "scheduler",
+            "jti": str(uuid.uuid4()),
+            "exp": datetime.now(timezone.utc) + timedelta(days=365),
+        }
+        _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+        return _service_token_cache
+    except Exception as exc:
+        log.error("scheduler.service_token_failed", error=str(exc))
+        return ""
+
 
 def _get_redis() -> redis_lib.Redis:
     global _redis
@@ -214,6 +237,12 @@ def _post(url: str, **kwargs) -> None:
     Redis flag so that check_signal_alerts() can suppress stale-data alerts.
     """
     delays = [3, 8, 20]  # kept short — scheduler thread pool has limited slots
+    # Inject service-to-service auth token so endpoints protected by get_current_username work.
+    headers = kwargs.pop("headers", {})
+    tok = _service_token()
+    if tok:
+        headers = {"Authorization": f"Bearer {tok}", **headers}
+    kwargs["headers"] = headers
     last_exc: Exception | None = None
     for attempt, delay in enumerate(delays, start=1):
         try:
@@ -723,9 +752,10 @@ def check_signal_alerts() -> None:
             except Exception:
                 pass
 
-            # DP-3: Build per-symbol price freshness map; skip symbols with stale bars (>2 days).
+            # DP-3: Build per-symbol price freshness map; skip symbols with stale bars.
+            # Use 4-day window to accommodate weekends (Fri close → Mon alert run = 3 calendar days).
             fresh_symbols: set[str] = set()
-            stale_cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+            stale_cutoff = datetime.now(timezone.utc) - timedelta(days=4)
             try:
                 price_rows = session.execute(
                     select(Stock.symbol, Price.ts)
@@ -1077,7 +1107,7 @@ def check_technical_alerts() -> None:
                         continue
                     rows = session.execute(
                         select(Price.ts, Price.close, Price.volume)
-                        .where(Price.stock_id == stock.id)
+                        .where(Price.stock_id == stock.id, Price.timeframe == "D1")
                         .order_by(Price.ts.asc())
                         .limit(260)
                     ).all()

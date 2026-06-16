@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 import json
+import os as _os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -232,6 +233,33 @@ def _bulk_persist(symbols: list[str]) -> None:
                         reasons=ai.reasons,
                     ))
                 s.commit()
+
+                # INT-4: auto-trigger research on new BUY signal (fire-and-forget)
+                # INT-7: log divergence if research and signal disagree
+                if ai.signal in ("BUY", "STRONG BUY"):
+                    try:
+                        import httpx as _httpx
+                        _url = _settings.research_engine_url
+                        # INT-4: trigger background research if stale
+                        _httpx.post(f"{_url}/research/{symbol}/trigger", timeout=1.5)
+                        # INT-7: check divergence
+                        _sr = _httpx.get(f"{_url}/research/{symbol}/summary", timeout=1.5)
+                        if _sr.status_code == 200:
+                            _rd = _sr.json()
+                            _rec = _rd.get("recommendation", "")
+                            _score = float(_rd.get("overall_score") or 0)
+                            if _rec in ("AVOID", "SELL") or (_rec == "WATCH" and _score < 60):
+                                log.warning(
+                                    "signal.research_divergence",
+                                    symbol=symbol,
+                                    signal=ai.signal,
+                                    signal_conf=round(ai.confidence or 0, 1),
+                                    research_rec=_rec,
+                                    research_score=_score,
+                                )
+                    except Exception:
+                        pass  # never block signal generation on research calls
+
         except Exception as exc:
             log.warning("signals.refresh.skip", symbol=symbol, error=str(exc))
 
@@ -1779,7 +1807,9 @@ def calibrate_ta_weights(
     new_weights.update(fitted_scaled)
 
     Path(_TA_WEIGHTS_PATH).parent.mkdir(parents=True, exist_ok=True)
-    Path(_TA_WEIGHTS_PATH).write_text(json.dumps(new_weights, indent=2))
+    _tmp = Path(_TA_WEIGHTS_PATH).with_suffix(".tmp")
+    _tmp.write_text(json.dumps(new_weights, indent=2))
+    _os.replace(str(_tmp), str(_TA_WEIGHTS_PATH))
     log.info("calibrate_ta_weights: wrote %s (accuracy=%.3f, n=%d)", _TA_WEIGHTS_PATH, accuracy, len(X_rows))
 
     return {

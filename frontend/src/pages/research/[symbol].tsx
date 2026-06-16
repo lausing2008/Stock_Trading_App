@@ -200,14 +200,32 @@ export default function ResearchPage() {
             <h1 style={{ fontSize: '26px', fontWeight: 800, color: '#818cf8', fontFamily: 'ui-monospace,monospace', margin: 0 }}>{symbol}</h1>
             {report && <span style={{ fontSize: '13px', color: '#475569' }}>{report.company_name}</span>}
           </div>
-          {report && (
-            <div style={{ fontSize: '11px', color: '#334155', marginTop: '4px' }}>
-              Generated {new Date(report.generated_at).toLocaleString()}
-              <span className="no-print">
-                <button onClick={() => { setReport(null); api.clearResearch(symbol).catch(() => {}); }} style={{ marginLeft: '12px', fontSize: '10px', color: '#475569', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>Regenerate</button>
-              </span>
-            </div>
-          )}
+          {report && (() => {
+            const genDate = report.generated_at ? new Date(report.generated_at) : null;
+            const validDate = genDate && !isNaN(genDate.getTime());
+            const ageMs = validDate ? Date.now() - genDate!.getTime() : 0;
+            const ageDays = Math.floor(ageMs / 86400000);
+            const stale = ageDays >= 14;
+            const aging = !stale && ageDays >= 7;
+            return (
+              <div style={{ fontSize: '11px', color: '#334155', marginTop: '4px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <span>Generated {validDate ? genDate!.toLocaleString() : 'just now'}</span>
+                {aging && (
+                  <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                    {ageDays}d old — consider regenerating
+                  </span>
+                )}
+                {stale && (
+                  <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', color: '#f87171', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)' }}>
+                    STALE · {ageDays}d — data may not reflect current conditions
+                  </span>
+                )}
+                <span className="no-print">
+                  <button onClick={() => { setReport(null); api.clearResearch(symbol).catch(() => {}); }} style={{ fontSize: '10px', color: '#475569', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>Regenerate</button>
+                </span>
+              </div>
+            );
+          })()}
         </div>
 
         {report && (

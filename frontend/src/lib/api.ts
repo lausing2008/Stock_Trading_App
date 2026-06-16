@@ -23,9 +23,25 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 30_000):
     clearTimeout(timeout);
   }
   if (r.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-    localStorage.removeItem('stockai_jwt');
-    window.location.href = '/login';
-    throw new Error('Session expired');
+    // Only log out if the JWT is actually expired. Transient 401s (e.g. during container
+    // startup after a deployment) should not invalidate a locally-valid token.
+    const raw = localStorage.getItem('stockai_jwt');
+    let expired = true;
+    if (raw) {
+      try {
+        const b64 = raw.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(b64));
+        expired = payload.exp < Date.now() / 1000;
+      } catch { /* malformed token — treat as expired */ }
+    }
+    if (expired) {
+      localStorage.removeItem('stockai_jwt');
+      window.location.href = '/login';
+      throw new Error('Session expired');
+    }
+    // Locally-valid token but server returned 401 — throw without logging out.
+    // The caller's .catch() or SWR error state handles it gracefully.
+    throw new Error('Unauthorized');
   }
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   if (r.status === 204 || r.headers.get('content-length') === '0') return undefined as T;
@@ -157,7 +173,9 @@ export const api = {
     polygon_api_key?: string; alpha_vantage_api_key?: string; quiver_api_key?: string;
     claude_api_key?: string; deepseek_api_key?: string;
     claude_model?: string; deepseek_model?: string;
+    broker_enabled?: boolean;
   }) => request<{ status: string }>(`/admin/config`, { method: 'POST', body: JSON.stringify(keys) }),
+  getFeatureFlags: () => request<{ broker_enabled: boolean }>(`/admin/feature-flags/public`),
 
   getAdminSignalLog: (params?: {
     symbol?: string; signal_type?: string; horizon?: string;
@@ -332,6 +350,8 @@ export const api = {
   generateResearch: (symbol: string, body: ResearchRequestBody) =>
     request<ResearchReport>(`/research/${symbol}`, { method: 'POST', body: JSON.stringify(body) }, 200_000),
   getResearch: (symbol: string) => request<ResearchReport>(`/research/${symbol}`),
+  getResearchSummary: (symbol: string) => request<ResearchSummary>(`/research/${symbol}/summary`),
+  getResearchBatch: (symbols: string[]) => request<Record<string, ResearchSummary>>(`/research/batch?symbols=${symbols.join(',')}`),
   clearResearch: (symbol: string) => request(`/research/${symbol}`, { method: 'DELETE' }),
   chatResearch: (symbol: string, messages: {role: string; content: string}[], api_key: string, model: string, provider: string) =>
     request<{role: string; content: string}>(`/research/${symbol}/chat`, { method: 'POST', body: JSON.stringify({ messages, api_key, model, provider }) }, 60_000),
@@ -407,6 +427,31 @@ export const api = {
     ),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
   mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
+
+  // ── Broker integration ──────────────────────────────────────────────────
+  brokerList: () => request<BrokerConnection[]>('/broker/connections'),
+  brokerCreate: (body: CreateBrokerConnectionPayload) =>
+    request<BrokerConnection>('/broker/connections', { method: 'POST', body: JSON.stringify(body) }),
+  brokerUpdate: (id: number, body: { name?: string; account_id?: string }) =>
+    request<BrokerConnection>(`/broker/connections/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  brokerDelete: (id: number) =>
+    request<void>(`/broker/connections/${id}`, { method: 'DELETE' }),
+  brokerOAuthStart: (id: number) =>
+    request<{ authorize_url: string; instructions: string }>(`/broker/connections/${id}/oauth/start`, { method: 'POST' }),
+  brokerOAuthComplete: (id: number, verifier: string) =>
+    request<{ status: string; account_id: string | null }>(`/broker/connections/${id}/oauth/complete`, {
+      method: 'POST', body: JSON.stringify({ verifier }),
+    }),
+  brokerReconnect: (id: number) =>
+    request<{ status: string }>(`/broker/connections/${id}/reconnect`, { method: 'POST' }),
+  brokerAccount: (id: number) =>
+    request<BrokerAccountInfo>(`/broker/connections/${id}/account`),
+  brokerGetPortfolioBroker: (portfolioId: number) =>
+    request<{ broker_connection_id: number | null; broker: BrokerConnection | null }>(`/broker/paper-portfolios/${portfolioId}/broker`),
+  brokerAssignPortfolio: (portfolioId: number, brokerConnectionId: number | null) =>
+    request<{ status: string }>(`/broker/paper-portfolios/${portfolioId}/broker`, {
+      method: 'PUT', body: JSON.stringify({ broker_connection_id: brokerConnectionId }),
+    }),
 };
 
 export type SuppressedSignalConditions = {
@@ -836,6 +881,13 @@ export type ResearchRequestBody = {
   max_risk_pct?: number;
 };
 
+export type ResearchSummary = {
+  recommendation: 'STRONG BUY' | 'BUY' | 'WATCH' | 'AVOID' | 'SELL';
+  overall_score: number;
+  confidence: number;
+  generated_at: string;
+};
+
 export type ChecklistItem = { item: string; status: 'pass' | 'warning' | 'fail'; note?: string };
 
 export type ResearchReport = {
@@ -1186,4 +1238,42 @@ export type MlMetricsList = {
   model: string;
   count: number;
   symbols: MlModelMetric[];
+};
+
+// ── Broker integration ────────────────────────────────────────────────────────
+
+export type BrokerType = 'etrade' | 'etrade_sandbox' | 'fidelity_manual';
+
+export type BrokerConnection = {
+  id: number;
+  name: string;
+  broker_type: BrokerType;
+  account_id: string | null;
+  is_active: boolean;
+  is_authorized: boolean;
+};
+
+export type CreateBrokerConnectionPayload = {
+  name: string;
+  broker_type: BrokerType;
+  consumer_key?: string;
+  consumer_secret?: string;
+  account_number?: string;
+  notes?: string;
+};
+
+export type BrokerAccountInfo = {
+  account_id: string;
+  broker_type: string;
+  cash_available: number;
+  equity: number;
+  buying_power: number;
+  positions: {
+    symbol: string;
+    qty: number;
+    avg_cost: number;
+    market_value: number;
+    unrealized_pnl: number;
+    unrealized_pnl_pct: number;
+  }[];
 };

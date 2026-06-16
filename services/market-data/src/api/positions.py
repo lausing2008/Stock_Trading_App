@@ -1,6 +1,6 @@
 """Positions — per-user portfolio positions with embedded trade history."""
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -43,8 +43,8 @@ class TradeIn(BaseModel):
 
 
 class CashIn(BaseModel):
-    USD: float = 0.0
-    HKD: float = 0.0
+    USD: float = Field(default=0.0, ge=0.0)
+    HKD: float = Field(default=0.0, ge=0.0)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

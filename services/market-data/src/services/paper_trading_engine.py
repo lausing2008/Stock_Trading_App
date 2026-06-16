@@ -75,6 +75,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "max_loss_per_trade_pct":    0.02,  # cap dollar loss on any single trade at 2% of equity
     "entry_slippage_pct":        0.001, # 10 bps slippage on entry and exit (simulates spread)
     "commission_per_share":      0.0,   # per-share commission ($0 for most retail brokers)
+    "hold_stall_days":           30,    # exit if position gains < hold_stall_max_gain for this many days
+    "hold_stall_max_gain":       0.05,  # max unrealized gain threshold for stall detection (5%)
     "enforce_market_hours":      True,  # skip new entries outside 9:30–16:00 ET Mon–Fri
     # Regime engine
     "enable_regime_filter":      True,   # master on/off
@@ -941,7 +943,8 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
     for trade in open_trades:
         # PT-B3: hold days in trading days (excludes weekends/holidays)
-        days_held = int(np.busday_count(trade.entry_date, date.today()))
+        # +1 so today counts as day 1 (busday_count is exclusive of end date)
+        days_held = int(np.busday_count(trade.entry_date, date.today() + timedelta(days=1)))
         trade.hold_days = days_held
 
         live_price = live_prices.get(trade.symbol)
@@ -958,7 +961,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         pnl_pct = (live_price - entry) / entry
 
         current_sig = latest_signals.get(trade.symbol)
-        sig_type = current_sig.signal.value if current_sig else "UNKNOWN"
+        sig_type = current_sig.signal.value if current_sig and current_sig.signal else "UNKNOWN"
 
         exit_reason = None
         exit_notes: dict = {}
@@ -1058,8 +1061,11 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
         if exit_reason:
             # PT-B6: apply exit slippage (sells at a slightly lower price than quoted)
+            # RISK-2: stop-hit exits fill at stop level (not gap price) — simulates stop-limit semantics
             slippage = cfg.get("entry_slippage_pct", 0.001)
-            exit_price = round(live_price * (1 - slippage), 4)
+            fill_base = stop if exit_reason == "stop_hit" else live_price
+            exit_price = round(fill_base * (1 - slippage), 4)
+            exit_commission = round(cfg.get("commission_per_share", 0.0) * trade.shares, 4)
             exit_value = round(exit_price * trade.shares, 2)
             pnl_dollar = round((exit_price - entry) * trade.shares, 2)
             pnl_pct    = (exit_price - entry) / entry  # recalc with slipped exit
@@ -1073,7 +1079,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # PA-G3: record signal state at exit for walk-forward attribution
             trade.signal_at_exit_id   = current_sig.id   if current_sig else None
             trade.signal_at_exit_type = current_sig.signal.value if current_sig else None
-            portfolio.current_cash = max(0.0, round(portfolio.current_cash + exit_value, 2))
+            portfolio.current_cash = max(0.0, round(portfolio.current_cash + exit_value - exit_commission, 2))
             # PA-G4: rich attribution log — enables "why did this trade exit?" queries in logs
             log.info("paper.exit",
                      symbol=trade.symbol, reason=exit_reason,
@@ -1120,8 +1126,9 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             partial_value  = round(partial_shares * partial_price, 2)
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
 
+            partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
             trade.shares = round(trade.shares - partial_shares, 4)
-            portfolio.current_cash = round(portfolio.current_cash + partial_value, 2)
+            portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
 
             # Floor stop at breakeven for remaining half
             if trade.current_stop < entry:
@@ -1401,7 +1408,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # ── Daily realized-loss circuit breaker (net P&L — winners offset losers) ──────
     max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
     if max_daily_loss and max_daily_loss > 0 and equity > 0:
-        today_open = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        from zoneinfo import ZoneInfo
+        today_open = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
         daily_net_pnl = session.execute(
             select(func.sum(PaperTrade.pnl))
             .where(
@@ -1422,7 +1430,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # ── Max entries per day ───────────────────────────────────────────────────────
     max_entries_day = cfg.get("max_entries_per_day", 5)
     if max_entries_day and max_entries_day > 0:
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        from zoneinfo import ZoneInfo
+        today_start = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
         entries_today = session.execute(
             select(func.count()).select_from(PaperTrade)
             .where(
@@ -1622,7 +1631,35 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             confidence_size_mult = 0.75
             notes = notes + [f"Size 0.75× (confidence {sig_conf:.0f}% — marginal signal)"]
 
-        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult
+        # INT-3: Research-gated position sizing — reduce size when research disagrees
+        research_size_mult = 1.0
+        if cfg.get("research_gating_enabled", True):
+            try:
+                import httpx as _httpx
+                from common.config import get_settings as _gs
+                _res = _httpx.get(
+                    f"{_gs().research_engine_url}/research/{stock.symbol}/summary",
+                    timeout=1.5,
+                )
+                if _res.status_code == 200:
+                    _rs = _res.json()
+                    _rec = _rs.get("recommendation", "")
+                    _score = float(_rs.get("overall_score") or 0)
+                    if _rec == "STRONG BUY" and _score >= 75:
+                        research_size_mult = 1.2
+                        notes = notes + [f"Size 1.2× (Research: {_rec} {_score:.0f})"]
+                    elif _rec == "BUY" and _score >= 65:
+                        research_size_mult = 1.0
+                    elif _rec == "WATCH" and _score >= 60:
+                        research_size_mult = 0.8
+                        notes = notes + [f"Size 0.8× (Research: {_rec} {_score:.0f})"]
+                    elif _rec in ("WATCH", "AVOID", "SELL"):
+                        research_size_mult = 0.6
+                        notes = notes + [f"Size 0.6× (Research: {_rec} {_score:.0f})"]
+            except Exception:
+                pass  # no research data → neutral 1.0×
+
+        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult
         shares         = risk_dollar / stop_distance
 
         # PA-C1: Max dollar loss per trade — prevents wide ATR stops from risking > 2% equity
@@ -1648,7 +1685,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         max_open_risk = cfg.get("max_open_risk_pct", 0.12)
         if max_open_risk and equity > 0:
             open_risk = sum(
-                max(live_prices.get(t.symbol, t.entry_price) - t.current_stop, 0) * t.shares
+                abs(live_prices.get(t.symbol, t.entry_price) - t.current_stop) * t.shares
                 for t in session.execute(
                     select(PaperTrade).where(
                         PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open"
@@ -1711,9 +1748,6 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             stage                 = "open",
             hold_days             = 0,
         )
-        # Commission reduces cash immediately (round-trip cost paid at entry)
-        if commission > 0:
-            portfolio.current_cash = round(portfolio.current_cash - commission * 2, 2)
         session.add(trade)
         open_symbols.add(stock.symbol)
         entries_made += 1

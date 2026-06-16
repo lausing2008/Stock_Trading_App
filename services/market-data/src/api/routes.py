@@ -126,6 +126,7 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
                 prev_close = hist["Close"].iloc[-2] if len(hist) > 1 else None
 
         if price is None:
+            log.info("live_price.not_found", symbol=symbol, error="no_price_data")
             return None
 
         volume = None
@@ -147,7 +148,7 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
             "avg_volume": avg_volume,
         }
     except Exception as exc:
-        log.warning("live_price.failed", symbol=symbol, error=str(exc))
+        log.warning("live_price.unavailable", symbol=symbol, error=str(exc))
         return None
 
 

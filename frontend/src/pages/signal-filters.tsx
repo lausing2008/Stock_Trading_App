@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
@@ -216,6 +216,37 @@ export default function SignalFiltersPage() {
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('suppression_count');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [copied, setCopied] = useState(false);
+
+  const urlReady = useRef(false);
+
+  // Restore filter state from URL on initial load (runs once when router is ready)
+  useEffect(() => {
+    if (!router.isReady || urlReady.current) return;
+    urlReady.current = true;
+    const q = router.query;
+    if (q.style && STYLES.includes(q.style as typeof STYLES[number])) setStyle(q.style as string);
+    if (q.sig && SIGNAL_OPTS.includes(q.sig as typeof SIGNAL_OPTS[number])) setSigFilter(q.sig as string);
+    if (q.cond) setCondFilters(new Set((q.cond as string).split(',').filter(Boolean) as CondKey[]));
+    if (q.sup === '1') setOnlySuppressed(true);
+    if (q.search) setSearch(q.search as string);
+    if (q.sort) setSortKey(q.sort as SortKey);
+    if (q.dir === 'asc' || q.dir === 'desc') setSortDir(q.dir as 'asc' | 'desc');
+  }, [router.isReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync filter state → URL whenever filters change (shallow replace = no history entry)
+  useEffect(() => {
+    if (!urlReady.current) return;
+    const q: Record<string, string> = {};
+    if (style !== 'SWING') q.style = style;
+    if (sigFilter !== 'ALL') q.sig = sigFilter;
+    if (condFilters.size > 0) q.cond = [...condFilters].join(',');
+    if (onlySuppressed) q.sup = '1';
+    if (search) q.search = search;
+    if (sortKey !== 'suppression_count') q.sort = sortKey;
+    if (sortDir !== 'desc') q.dir = sortDir;
+    router.replace({ pathname: router.pathname, query: q }, undefined, { shallow: true });
+  }, [style, sigFilter, condFilters, onlySuppressed, search, sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data, isLoading, error, mutate } = useSWR(
     authed ? ['suppressed', style] : null,
@@ -288,15 +319,56 @@ export default function SignalFiltersPage() {
             All active stocks with suppression conditions from the latest signal. Hover dots for descriptions. Click headers to sort.
           </p>
         </div>
-        <button
-          onClick={() => mutate()}
-          style={{
-            padding: '7px 16px', borderRadius: 8, border: '1px solid #1e293b',
-            background: '#0b1420', color: '#94a3b8', cursor: 'pointer', fontSize: 12,
-          }}
-        >
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => {
+              if (!rows.length) return;
+              const headers = ['Symbol','Name','Market','Signal','Horizon','Confidence','Bullish%','RSI','Weekly RSI','ADX','RS Score','Breadth%','Days to Earnings','Suppression Count','Regime'];
+              const csvRows = rows.map(r => [
+                r.symbol, r.name, '', r.signal, r.horizon,
+                r.confidence?.toFixed(1) ?? '',
+                r.bullish_probability != null ? (r.bullish_probability * 100).toFixed(1) : '',
+                r.rsi?.toFixed(1) ?? '', r.weekly_rsi?.toFixed(1) ?? '',
+                r.adx?.toFixed(1) ?? '', r.rs_score?.toFixed(1) ?? '',
+                r.breadth_pct?.toFixed(1) ?? '', r.days_to_earnings ?? '',
+                r.suppression_count, r.market_regime ?? '',
+              ].map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','));
+              const csv = [headers.join(','), ...csvRows].join('\n');
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+              a.download = `signal-filters-${new Date().toISOString().slice(0,10)}.csv`;
+              a.click();
+            }}
+            style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #1e293b', background: '#0b1420', color: '#64748b', cursor: 'pointer', fontSize: 12 }}
+          >
+            ↓ CSV
+          </button>
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(window.location.href).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              });
+            }}
+            style={{
+              padding: '7px 14px', borderRadius: 8, border: '1px solid #1e293b',
+              background: copied ? '#0f2a1a' : '#0b1420',
+              color: copied ? '#22c55e' : '#64748b', cursor: 'pointer', fontSize: 12,
+              transition: 'color 0.2s, background 0.2s',
+            }}
+          >
+            {copied ? '✓ Copied' : '🔗 Copy link'}
+          </button>
+          <button
+            onClick={() => mutate()}
+            style={{
+              padding: '7px 16px', borderRadius: 8, border: '1px solid #1e293b',
+              background: '#0b1420', color: '#94a3b8', cursor: 'pointer', fontSize: 12,
+            }}
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Stat pills */}

@@ -491,6 +491,37 @@ class TradePlan(Base):
     user: Mapped["User"] = relationship(back_populates="trade_plans")
 
 
+# ── Broker Integration ────────────────────────────────────────────────────────
+
+class BrokerConnection(Base):
+    """A user's configured connection to a real brokerage account.
+
+    broker_type values:
+      'etrade'          — E*Trade production API (OAuth 1.0a)
+      'etrade_sandbox'  — E*Trade sandbox (paper money, same API)
+      'fidelity_manual' — No API; trade instructions shown for manual execution
+    config stores OAuth credentials and account info as JSON:
+      E*Trade: {consumer_key, consumer_secret, oauth_token, oauth_token_secret,
+                request_token, request_token_secret, account_id_key}
+      Fidelity manual: {account_number, notes}
+    Credentials are stored at-rest in the DB (same security boundary as the
+    JWT secret). Do NOT expose them through any API endpoint response.
+    """
+    __tablename__ = "broker_connections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))          # display label, e.g. "My E*Trade"
+    broker_type: Mapped[str] = mapped_column(String(32))    # 'etrade' | 'etrade_sandbox' | 'fidelity_manual'
+    account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)   # broker account ID (public)
+    config: Mapped[dict] = mapped_column(JSON, default=dict) # credentials — never return to frontend
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_authorized: Mapped[bool] = mapped_column(Boolean, default=False)  # OAuth complete?
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship()
+
+
 # ── WF-2: Paper Trading Engine ────────────────────────────────────────────────
 
 class PaperPortfolio(Base):
@@ -504,6 +535,10 @@ class PaperPortfolio(Base):
     # JSON config — see paper_trading_engine.py _DEFAULT_CONFIG
     config: Mapped[dict] = mapped_column(JSON)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Broker connection — null means paper-only simulation
+    broker_connection_id: Mapped[int | None] = mapped_column(
+        ForeignKey("broker_connections.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     trades: Mapped[list["PaperTrade"]] = relationship(back_populates="portfolio", cascade="all, delete-orphan")
@@ -556,6 +591,9 @@ class PaperTrade(Base):
     # PA-G3: signal lifecycle — which signal was active at exit (for walk-forward attribution)
     signal_at_exit_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
     signal_at_exit_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # BUY/HOLD/SELL/WAIT
+
+    # Real-broker execution tracking (null for paper-only portfolios)
+    broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

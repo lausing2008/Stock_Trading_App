@@ -37,7 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -163,6 +163,9 @@ export default function StockDetail() {
   const [mlLoading, setMlLoading] = useState(false);
   const [mlError, setMlError] = useState('');
   const [mlTrainOpen, setMlTrainOpen] = useState(false);
+
+  // Research summary (INT-1, INT-2, INT-6)
+  const [researchSummary, setResearchSummary] = useState<ResearchSummary | null>(null);
 
   // AI chat state
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
@@ -379,6 +382,12 @@ export default function StockDetail() {
     setSavedToBoard(false);
     setAiMessages([]);
     setMlResult(null);
+    setResearchSummary(null);
+  }, [symbol]);
+
+  useEffect(() => {
+    if (!symbol) return;
+    api.getResearchSummary(symbol).then(setResearchSummary).catch(() => setResearchSummary(null));
   }, [symbol]);
 
 
@@ -986,22 +995,36 @@ Return ONLY valid JSON — no markdown, no prose:
                   <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
                       <h3 className="text-sm font-semibold text-slate-300">K-Score Breakdown</h3>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                        <span style={{ fontSize: 26, fontWeight: 800, color: scoreColor, lineHeight: 1 }}>{s.toFixed(0)}</span>
-                        <span style={{ fontSize: 11, color: '#475569' }}>/100</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {(() => {
+                          const og = s >= 90 ? 'A+' : s >= 80 ? 'A' : s >= 65 ? 'B' : s >= 50 ? 'C' : s >= 35 ? 'D' : 'F';
+                          const ogc = s >= 80 ? '#4ade80' : s >= 65 ? '#86efac' : s >= 50 ? '#facc15' : s >= 35 ? '#fb923c' : '#f87171';
+                          return <span style={{ fontSize: 15, fontWeight: 800, color: ogc, background: `${ogc}18`, border: `1px solid ${ogc}50`, borderRadius: 4, padding: '2px 7px', lineHeight: '20px' }}>{og}</span>;
+                        })()}
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                          <span style={{ fontSize: 26, fontWeight: 800, color: scoreColor, lineHeight: 1 }}>{s.toFixed(0)}</span>
+                          <span style={{ fontSize: 11, color: '#475569' }}>/100</span>
+                        </div>
                       </div>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
                       {bars.map(([label, value, weight]) => {
                         const pct = typeof value === 'number' ? value : 0;
                         const bc = pct >= 70 ? '#4ade80' : pct >= 50 ? '#facc15' : '#f87171';
+                        const grade = typeof value !== 'number' ? null : pct >= 90 ? 'A+' : pct >= 80 ? 'A' : pct >= 65 ? 'B' : pct >= 50 ? 'C' : pct >= 35 ? 'D' : 'F';
+                        const gradeColor = !grade ? '#475569' : pct >= 80 ? '#4ade80' : pct >= 65 ? '#86efac' : pct >= 50 ? '#facc15' : pct >= 35 ? '#fb923c' : '#f87171';
                         return (
                           <div key={label}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                               <span style={{ fontSize: 11, color: '#94a3b8' }}>
                                 {label} <span style={{ color: '#334155', fontSize: 10 }}>{weight}</span>
                               </span>
-                              <span style={{ fontSize: 11, fontWeight: 700, color: bc }}>{typeof value === 'number' ? value.toFixed(0) : '—'}</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {grade && (
+                                  <span style={{ fontSize: 10, fontWeight: 800, color: gradeColor, background: `${gradeColor}18`, border: `1px solid ${gradeColor}40`, borderRadius: 3, padding: '0px 5px', lineHeight: '16px' }}>{grade}</span>
+                                )}
+                                <span style={{ fontSize: 11, fontWeight: 700, color: bc }}>{typeof value === 'number' ? value.toFixed(0) : '—'}</span>
+                              </div>
                             </div>
                             <div style={{ height: 4, borderRadius: 2, background: '#1e293b' }}>
                               <div style={{ height: '100%', width: `${pct}%`, background: bc, borderRadius: 2, transition: 'width 0.5s' }} />
@@ -1397,6 +1420,95 @@ Return ONLY valid JSON — no markdown, no prose:
               </div>
             );
           })()}
+          {/* Research Intelligence — INT-1, INT-2, INT-6 */}
+          {(() => {
+            const REC_COLOR: Record<string, string> = { 'STRONG BUY': '#4ade80', BUY: '#86efac', WATCH: '#facc15', AVOID: '#fb923c', SELL: '#f87171' };
+            const REC_BG: Record<string, string> = { 'STRONG BUY': 'rgba(74,222,128,0.12)', BUY: 'rgba(74,222,128,0.08)', WATCH: 'rgba(250,204,21,0.12)', AVOID: 'rgba(251,146,60,0.12)', SELL: 'rgba(248,113,113,0.12)' };
+            const activeSig = data?.signal;
+            const sigConf = activeSig?.confidence ?? null;
+            const resCore = researchSummary?.recommendation;
+            const resScore = researchSummary?.overall_score ?? null;
+            const resConf = researchSummary?.confidence ?? null;
+            const resGenAt = researchSummary?.generated_at ? new Date(researchSummary.generated_at) : null;
+            const resAge = resGenAt && !isNaN(resGenAt.getTime()) ? Math.floor((Date.now() - resGenAt.getTime()) / 3600000) : null;
+
+            // Alignment logic (INT-2)
+            const sigIsBuy = activeSig?.signal === 'BUY' || activeSig?.signal === 'HOLD';
+            const resIsBuy = resCore === 'STRONG BUY' || resCore === 'BUY';
+            const resIsNeg = resCore === 'WATCH' || resCore === 'AVOID' || resCore === 'SELL';
+            let alignLabel = '', alignColor = '', alignBg = '', alignBorder = '';
+            if (resCore) {
+              if (sigIsBuy && resIsNeg) { alignLabel = 'DIVERGENT'; alignColor = '#f59e0b'; alignBg = 'rgba(245,158,11,0.12)'; alignBorder = 'rgba(245,158,11,0.3)'; }
+              else if (sigIsBuy && resIsBuy && (resConf ?? 0) >= 65) { alignLabel = 'STRONGLY ALIGNED'; alignColor = '#4ade80'; alignBg = 'rgba(74,222,128,0.12)'; alignBorder = 'rgba(74,222,128,0.3)'; }
+              else if (sigIsBuy && resIsBuy) { alignLabel = 'ALIGNED'; alignColor = '#86efac'; alignBg = 'rgba(74,222,128,0.08)'; alignBorder = 'rgba(74,222,128,0.25)'; }
+              else if (sigIsBuy && resCore === 'WATCH') { alignLabel = 'PARTIALLY ALIGNED'; alignColor = '#facc15'; alignBg = 'rgba(250,204,21,0.1)'; alignBorder = 'rgba(250,204,21,0.25)'; }
+              else { alignLabel = 'NEUTRAL'; alignColor = '#64748b'; alignBg = 'rgba(255,255,255,0.04)'; alignBorder = '#1e293b'; }
+            }
+
+            // Composite conviction (INT-6)
+            const staleResearch = resAge !== null && resAge > 14 * 24;
+            const convScore = sigConf !== null && resScore !== null && !staleResearch
+              ? Math.round(sigConf * 0.5 + resScore * 0.5)
+              : sigConf !== null ? Math.round(sigConf) : null;
+            const convColor = convScore !== null ? (convScore >= 75 ? '#4ade80' : convScore >= 60 ? '#facc15' : '#f87171') : '#475569';
+            const convLabel = sigConf !== null && resScore !== null && !staleResearch ? 'Conviction' : 'Signal conf.';
+
+            if (!resCore && !researchSummary) {
+              return (
+                <div style={{ fontSize: 10, color: '#334155', padding: '8px 12px', borderRadius: 8, border: '1px dashed #1e293b', textAlign: 'center' }}>
+                  No research report — <a href={`/research/${symbol}`} style={{ color: '#818cf8', textDecoration: 'none' }}>Generate</a> to see alignment
+                </div>
+              );
+            }
+
+            return (
+              <div style={{ background: '#0a0f1e', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* Research badge (INT-1) */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Research</span>
+                    {resCore && (
+                      <a href={`/research/${symbol}`} style={{ textDecoration: 'none' }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, color: REC_COLOR[resCore] ?? '#94a3b8', background: REC_BG[resCore] ?? 'rgba(255,255,255,0.05)', border: `1px solid ${(REC_COLOR[resCore] ?? '#475569')}44`, cursor: 'pointer' }}>
+                          {resCore}
+                        </span>
+                      </a>
+                    )}
+                    {resScore !== null && <span style={{ fontSize: 10, color: '#64748b' }}>{resScore} pts</span>}
+                    {resAge !== null && <span style={{ fontSize: 9, color: staleResearch ? '#f87171' : '#334155' }}>{resAge < 24 ? `${resAge}h ago` : `${Math.floor(resAge / 24)}d ago`}{staleResearch ? ' · STALE' : ''}</span>}
+                    {!resCore && <span style={{ fontSize: 10, color: '#334155' }}>—</span>}
+                  </div>
+                  {/* Conviction gauge (INT-6) */}
+                  {convScore !== null && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <span style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{convLabel}</span>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: convColor }}>{convScore}</span>
+                      {sigConf !== null && resScore !== null && !staleResearch && (
+                        <span style={{ fontSize: 9, color: '#334155' }} title={`Signal ${Math.round(sigConf)} × 50% + Research ${resScore} × 50%`}>ℹ</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {/* Alignment indicator (INT-2) */}
+                {alignLabel && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, color: alignColor, background: alignBg, border: `1px solid ${alignBorder}`, letterSpacing: '0.04em' }}>
+                      {alignLabel}
+                    </span>
+                    {alignLabel === 'DIVERGENT' && (
+                      <span style={{ fontSize: 10, color: '#64748b' }}>
+                        Signal: {activeSig?.signal} (conf {Math.round(sigConf ?? 0)}) vs Research: {resCore} (conf {resConf}) — review before entering
+                      </span>
+                    )}
+                    {alignLabel.includes('ALIGNED') && (
+                      <span style={{ fontSize: 10, color: '#475569' }}>Signal and research agree — higher conviction setup</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {signalHistory && signalHistory.length >= 2 && (
             <ConfidenceTrend history={signalHistory} />
           )}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import useSWR from 'swr';
@@ -14,6 +14,7 @@ import {
   type PaperEquityPoint,
   type PaperDecisionItem,
   type PaperPortfolioConfig,
+  type ResearchSummary,
 } from '@/lib/api';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -733,6 +734,9 @@ export default function PaperPortfolioPage() {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [expandedDecisionId, setExpandedDecisionId] = useState<number | null>(null);
+  // Broker assignment per portfolio
+  const [portfolioBroker, setPortfolioBroker] = useState<{ broker_connection_id: number | null; broker: import('@/lib/api').BrokerConnection | null } | null>(null);
+  const [brokerConnections, setBrokerConnections] = useState<import('@/lib/api').BrokerConnection[]>([]);
 
   useEffect(() => {
     const session = getSession();
@@ -753,6 +757,18 @@ export default function PaperPortfolioPage() {
     }
   }, [portfolioList, selectedPortfolioId]);
 
+  // Load broker connections list once
+  useEffect(() => {
+    if (!authed) return;
+    api.brokerList().then(setBrokerConnections).catch(() => {});
+  }, [authed]);
+
+  // Load broker assignment whenever selected portfolio changes
+  useEffect(() => {
+    if (!selectedPortfolioId) { setPortfolioBroker(null); return; }
+    api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker).catch(() => {});
+  }, [selectedPortfolioId]);
+
   const { data: compareData } = useSWR(
     authed && (portfolioList?.length ?? 0) > 1 ? 'paper-compare' : null,
     () => api.paperCompare(180), { refreshInterval: 300_000 }
@@ -766,6 +782,14 @@ export default function PaperPortfolioPage() {
     authed && tab === 'Positions' && selectedPortfolioId != null ? ['paper-positions', selectedPortfolioId] : null,
     () => api.paperPositions(selectedPortfolioId), { refreshInterval: 60_000 }
   );
+
+  // INT-9: research verdicts for open positions
+  const [posResearchMap, setPosResearchMap] = useState<Record<string, ResearchSummary>>({});
+  const posSymbols = useMemo(() => positions?.map(p => p.symbol) ?? [], [positions]);
+  useEffect(() => {
+    if (!posSymbols.length) { setPosResearchMap({}); return; }
+    api.getResearchBatch(posSymbols).then(r => setPosResearchMap(r ?? {})).catch(() => {});
+  }, [posSymbols.join(',')]);
   const { data: trades } = useSWR(
     authed && tab === 'Closed Trades' && selectedPortfolioId != null ? ['paper-trades', tradesPage, selectedPortfolioId] : null,
     () => api.paperTrades({ page: tradesPage, limit: 50, portfolioId: selectedPortfolioId })
@@ -838,6 +862,65 @@ export default function PaperPortfolioPage() {
             <Link href="/" style={{ fontSize: 12, color: '#64748b', textDecoration: 'none' }}>← Home</Link>
           </div>
         </div>
+
+        {/* Disclosure banner */}
+        <div style={{ background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: 6, padding: '8px 14px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ color: '#fbbf24', fontSize: 13 }}>⚠</span>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>
+            <strong style={{ color: '#fbbf24', fontWeight: 600 }}>Simulated results only.</strong>{' '}
+            All trades include 10 bps entry + 10 bps exit slippage. No commissions, market impact, or liquidity constraints are modelled.
+            Real-world performance will differ. Past paper-trading results do not guarantee future live returns.
+          </span>
+        </div>
+
+        {/* Broker assignment bar */}
+        {isAdmin && selectedPortfolioId != null && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Broker:</span>
+            {portfolioBroker?.broker ? (
+              <>
+                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 5, background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.25)', color: '#22d3ee' }}>
+                  {portfolioBroker.broker.broker_type === 'etrade' ? 'E*Trade Live' :
+                   portfolioBroker.broker.broker_type === 'etrade_sandbox' ? 'E*Trade Sandbox' : 'Fidelity Manual'}
+                  {' — '}{portfolioBroker.broker.name}
+                  {portfolioBroker.broker.is_authorized
+                    ? <span style={{ marginLeft: 6, color: '#4ade80' }}>✓</span>
+                    : <span style={{ marginLeft: 6, color: '#fbbf24' }}>⚠ not authorized</span>}
+                </span>
+                <button onClick={() => { if (selectedPortfolioId) api.brokerAssignPortfolio(selectedPortfolioId, null).then(() => api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker)); }}
+                  style={{ fontSize: 11, color: '#94a3b8', background: 'transparent', border: '1px solid #334155', borderRadius: 4, padding: '3px 8px', cursor: 'pointer' }}>
+                  Unlink
+                </button>
+              </>
+            ) : (
+              <>
+                <span style={{ fontSize: 11, color: '#475569' }}>Paper only (simulation)</span>
+                {brokerConnections.length > 0 && (
+                  <select
+                    defaultValue=""
+                    onChange={e => {
+                      const id = parseInt(e.target.value);
+                      if (!isNaN(id) && selectedPortfolioId) {
+                        api.brokerAssignPortfolio(selectedPortfolioId, id).then(() =>
+                          api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker)
+                        );
+                      }
+                    }}
+                    style={{ fontSize: 11, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 5, padding: '4px 8px', color: '#94a3b8', cursor: 'pointer' }}
+                  >
+                    <option value="">Link a broker…</option>
+                    {brokerConnections.map(b => (
+                      <option key={b.id} value={b.id}>{b.name} ({b.broker_type})</option>
+                    ))}
+                  </select>
+                )}
+                {brokerConnections.length === 0 && (
+                  <Link href="/settings" style={{ fontSize: 11, color: '#22d3ee', textDecoration: 'none' }}>+ Add broker in Settings →</Link>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Multi-portfolio comparison grid */}
         {multiPortfolio && (
@@ -1006,7 +1089,7 @@ export default function PaperPortfolioPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ color: '#64748b', borderBottom: '1px solid #334155' }}>
-                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', 'P&L', 'Stop', 'Target', 'Days', 'Score', 'R:R', 'Conf'].map(h => (
+                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', 'P&L', 'Stop', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research'].map(h => (
                       <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 500 }}>{h}</th>
                     ))}
                   </tr>
@@ -1030,6 +1113,25 @@ export default function PaperPortfolioPage() {
                       <td style={{ padding: '9px 10px' }}>{p.entry_score ?? '—'}</td>
                       <td style={{ padding: '9px 10px' }}>{p.rr_ratio_at_entry != null ? `${p.rr_ratio_at_entry.toFixed(1)}:1` : '—'}</td>
                       <td style={{ padding: '9px 10px' }}>{p.confidence_at_entry != null ? `${p.confidence_at_entry.toFixed(0)}%` : '—'}</td>
+                      <td style={{ padding: '9px 10px' }}>
+                        {(() => {
+                          const rs = posResearchMap[p.symbol];
+                          if (!rs) return <span style={{ fontSize: 10, color: '#334155' }}>—</span>;
+                          const RC: Record<string, string> = { 'STRONG BUY': '#4ade80', BUY: '#86efac', WATCH: '#facc15', AVOID: '#fb923c', SELL: '#f87171' };
+                          const col = RC[rs.recommendation] ?? '#94a3b8';
+                          const warn = rs.recommendation === 'AVOID' || rs.recommendation === 'SELL';
+                          const genDate = rs.generated_at ? new Date(rs.generated_at) : null;
+                          const ageH = genDate && !isNaN(genDate.getTime()) ? Math.round((Date.now() - genDate.getTime()) / 3600000) : null;
+                          return (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: col, background: warn ? 'rgba(251,146,60,0.12)' : 'transparent', border: warn ? '1px solid rgba(251,146,60,0.3)' : 'none', borderRadius: 3, padding: warn ? '1px 4px' : 0 }}>
+                                {rs.recommendation === 'STRONG BUY' ? 'S.BUY' : rs.recommendation}
+                              </span>
+                              {ageH !== null && <span style={{ fontSize: 9, color: '#475569' }}>{ageH}h ago</span>}
+                            </div>
+                          );
+                        })()}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

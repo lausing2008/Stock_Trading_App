@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import httpx
 import pandas as pd
 import yfinance as yf
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from common.jwt_auth import get_current_username
 from pydantic import BaseModel
@@ -1265,6 +1265,66 @@ def _yf_sync_fetch(sym: str):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@router.get("/batch")
+async def get_research_batch(symbols: str):
+    """Return lightweight research summaries for multiple symbols (comma-separated).
+    INT-10: Used by Opportunities page to show research chips on signal cards.
+    Returns only: recommendation, overall_score, confidence, generated_at per symbol.
+    Symbols with no cached report are omitted (no 404, just absent from response).
+    """
+    results = {}
+    for raw in symbols.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            sym = _sanitise_symbol(raw)
+        except ValueError:
+            continue
+        entry = _cache.get(sym)
+        if not entry:
+            continue
+        report, ts = entry
+        quality = report.get("report_quality", "full")
+        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+        if (datetime.now(timezone.utc) - ts).total_seconds() >= ttl:
+            _cache.pop(sym, None)
+            continue
+        results[sym] = {
+            "recommendation": report.get("recommendation"),
+            "overall_score": report.get("overall_score"),
+            "confidence": report.get("confidence"),
+            "generated_at": report.get("generated_at"),
+        }
+    return results
+
+
+@router.get("/{symbol}/summary")
+async def get_research_summary(symbol: str):
+    """Return lightweight cached research summary (INT-1: research badge on stock detail page).
+    Returns: recommendation, overall_score, confidence, generated_at.
+    404 if no cached report exists.
+    """
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
+    entry = _cache.get(sym)
+    if entry:
+        report, ts = entry
+        quality = report.get("report_quality", "full")
+        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl:
+            return {
+                "recommendation": report.get("recommendation"),
+                "overall_score": report.get("overall_score"),
+                "confidence": report.get("confidence"),
+                "generated_at": report.get("generated_at"),
+            }
+        _cache.pop(sym, None)
+    raise HTTPException(404, "No cached research report.")
+
+
 @router.get("/{symbol}")
 async def get_research(symbol: str):
     """Return cached research report (generated within last 24h)."""
@@ -1293,6 +1353,47 @@ async def clear_research(symbol: str, _: str = Depends(get_current_username)):
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
     _cache.pop(sym, None)
     return {"status": "cleared", "symbol": sym}
+
+
+@router.post("/{symbol}/trigger", status_code=202)
+async def trigger_research(symbol: str, background_tasks: BackgroundTasks):
+    """INT-4: Auto-trigger background research if no fresh report exists.
+    No auth required — only reachable from internal Docker network.
+    Cooldown: skips if a report younger than 6 hours is cached.
+    """
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        return {"status": "skipped", "reason": "invalid symbol"}
+    entry = _cache.get(sym)
+    if entry:
+        _, ts = entry
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+        if age < 21_600:  # 6 hours
+            return {"status": "fresh", "symbol": sym, "age_hours": round(age / 3600, 1)}
+    background_tasks.add_task(_generate_with_service_token, sym)
+    return {"status": "triggered", "symbol": sym}
+
+
+async def _generate_with_service_token(sym: str) -> None:
+    """Generate research in background using a short-lived service JWT (no user context)."""
+    try:
+        from jose import jwt as _jwt
+        from datetime import timedelta
+        expire = datetime.utcnow() + timedelta(hours=1)
+        token = _jwt.encode(
+            {"sub": "service", "role": "admin", "exp": expire},
+            _s.jwt_secret, algorithm="HS256",
+        )
+        async with httpx.AsyncClient(timeout=35) as client:
+            await client.post(
+                f"{_s.research_engine_url}/research/{sym}",
+                json={"provider": "claude", "model": "claude-sonnet-4-6", "api_key": ""},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        log.info("research.auto_trigger.done", symbol=sym)
+    except Exception as exc:
+        log.warning("research.auto_trigger.failed", symbol=sym, error=str(exc))
 
 
 @router.post("/{symbol}")
@@ -1401,7 +1502,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     report = {
         "symbol": sym,
         "company_name": stock.get("name", sym),
-        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "generated_at": datetime.utcnow().isoformat() + "Z",
         "report_quality": report_quality,
         "current_price": price,
         "market_cap": fund.get("market_cap"),

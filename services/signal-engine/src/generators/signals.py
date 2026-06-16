@@ -675,7 +675,7 @@ def _pullback_recovery(df: pd.DataFrame) -> tuple[float, dict]:
         return 0.0, reasons
 
     # Condition 3: volume expansion on recovery
-    vol_avg = volume.rolling(20).mean().iloc[-1]
+    vol_avg = volume.iloc[:-1].rolling(20).mean().iloc[-1]
     vol_confirms = bool(
         not pd.isna(vol_avg) and vol_avg > 0 and volume.iloc[-1] > vol_avg * 1.10
     )
@@ -805,8 +805,9 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     reasons["bb_pct_b"] = round(bb_pct_b, 3)
 
     # ── Rolling 20-day VWMA (Volume-Weighted Moving Average, not session-reset VWAP) ──
+    # Use iloc[:-1] to exclude today's bar from the rolling window (avoid self-contamination)
     typical_price = (df["high"].astype(float) + df["low"].astype(float) + close) / 3
-    vwma_20 = (typical_price * volume).rolling(20).sum() / volume.rolling(20).sum()
+    vwma_20 = (typical_price.iloc[:-1] * volume.iloc[:-1]).rolling(20).sum() / volume.iloc[:-1].rolling(20).sum()
     vwma_val = vwma_20.iloc[-1]
     price_above_vwap: bool | None = None
     if not pd.isna(vwma_val) and not np.isinf(vwma_val) and vwma_val > 0:
@@ -830,8 +831,8 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     reasons["obv_trend_bullish"] = obv_trend_bullish
 
     # ── Volume expansion ──────────────────────────────────────────────────
-    vol_std = volume.rolling(20).std().iloc[-1]
-    vol_z = (volume.iloc[-1] - volume.rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0
+    vol_std = volume.iloc[:-1].rolling(20).std().iloc[-1]
+    vol_z = (volume.iloc[-1] - volume.iloc[:-1].rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0
     reasons["volume_z"] = float(vol_z) if not pd.isna(vol_z) else None
 
     # ── SA-19: Pillar-based TA score — 4 independent dimensions ─────────────
@@ -1096,7 +1097,7 @@ def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tupl
     Returns (signal, style_key, threshold_tier).
     """
     p = _STYLE_PROFILES[style_key]
-    reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "unknown"
+    reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "high_vol"
     buy_t  = p["buy_threshold"][reg]
     hold_t = p["hold_threshold"][reg]
     tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")
@@ -1153,7 +1154,8 @@ def _apply_style_signal(
             raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
         eff_cap = _ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"]
         ml_w = min(raw_w, eff_cap)
-        ml_w = max(ml_w, p.get("ml_weight_floor", 0.0))  # global cap cannot push below per-style floor
+        if raw_w > 0:  # floor only applies to non-zero weights — don't resurrect a zero-weighted inverse model
+            ml_w = max(ml_w, p.get("ml_weight_floor", 0.0))
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
             # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).

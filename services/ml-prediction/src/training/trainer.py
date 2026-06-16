@@ -148,18 +148,24 @@ def _recency_weights(n: int, newest_to_oldest_ratio: float = 5.0) -> np.ndarray:
 
 
 def _blend_weights(y: np.ndarray, recency_w: np.ndarray) -> np.ndarray:
-    """ML-FIX-2: Blend recency weights with balanced class weights.
+    """Blend recency weights with balanced class weights, then enforce equal class mass.
 
-    Combines two sources of importance:
-      - Recency: recent bars reflect current regime better than old bars.
-      - Class balance: minority-class samples (typically bullish) should not
-        be drowned out by the majority class in imbalanced datasets.
-
-    Element-wise product then renormalise to mean=1 so total effective sample
-    size is preserved (consistent with the rest of the training pipeline).
+    Three-step process (AUD-C1 fix):
+      1. Multiply recency weight by class balance weight per sample.
+      2. Rescale each class so its total weight equals half the grand total.
+         Without this step, recent bull-market samples can dominate even after
+         class balancing because the majority class gets more recent rows.
+      3. Normalise to mean=1 so total effective sample size is preserved.
     """
     class_w = compute_sample_weight("balanced", y)
     combined = recency_w * class_w
+    # Enforce equal class mass after blending.
+    target_per_class = combined.sum() / 2.0
+    for cls in np.unique(y):
+        mask = y == cls
+        cls_sum = combined[mask].sum()
+        if cls_sum > 0:
+            combined[mask] *= target_per_class / cls_sum
     return combined / combined.mean()
 
 

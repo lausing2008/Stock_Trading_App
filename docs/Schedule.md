@@ -192,6 +192,37 @@ Emails include: signal confidence, ML probability, key TA indicators, earnings p
 
 ---
 
+---
+
+## ML Training Schedule Design Rationale
+
+The current split — **`train_all` nightly, `tune_all` weekly** — is intentional. This question was explicitly reviewed on 2026-06-15.
+
+### What each job does
+
+| Job | Frequency | What it does | Runtime |
+|-----|-----------|-------------|---------|
+| `train_all` | Nightly (post-close) | Retrains XGBoost models on the latest daily bars using the *current best hyperparameters* stored from the last `tune_all` run | Minutes |
+| `tune_all` | Weekly (Sunday 14:00 PST) | Runs 60 Optuna trials per symbol to find *better hyperparameters*; writes best params to per-symbol JSON for use by subsequent `train_all` runs | 2–4 hours |
+
+### Why not flip to tune daily / train weekly?
+
+**Hyperparameters change slowly; model weights must stay fresh.**
+
+Hyperparameters (tree depth, learning rate, regularization strength, subsampling) describe how the model learns from data — they reflect the underlying distribution of momentum/mean-reversion patterns in the market. That distribution shifts over weeks and months, not day-to-day. Running 60 Optuna trials every day would find essentially the same parameters as yesterday 95% of the time, burning 2–4 hours of CPU daily and risking overfitting to short-term noise.
+
+Model weights (the actual XGBoost trees), however, need to incorporate the latest price data to stay calibrated to current market conditions. Earnings surprises, regime shifts, and sector rotations can change signal quality within days. A model trained on a week-old dataset misses this entirely.
+
+**Resource constraint on a t3.medium:** Sunday `tune_all` finishes ~18:00 UTC — hours before Monday's HK open. Daily `tune_all` would run into market hours on weekdays and starve other containers (signal-engine, market-data, API gateway) of CPU.
+
+### The actual open issue
+
+The tuning *schedule* is correct. The tuning *methodology* was audited on 2026-06-15: both `tuner.py` and `trainer.py` already use `TimeSeriesSplit(n_splits=5)` correctly — no shuffling, chronological folds, and trainer.py reserves the last 30% of data as a held-out OOS set before CV starts. The deep audit finding was a false positive for this codebase.
+
+**Decision:** Keep `train_all` nightly + `tune_all` weekly. ML CV methodology is sound.
+
+---
+
 ## Potential Improvements / Known Issues
 
 | # | Issue | Status |
