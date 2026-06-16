@@ -1089,19 +1089,7 @@ def check_technical_alerts() -> None:
         AlertCondition.BREAKOUT,
     }
 
-    # Minimum days between re-fires for each pattern type
-    _COOLDOWN: dict[AlertCondition, int] = {
-        AlertCondition.GOLDEN_CROSS:        90,
-        AlertCondition.DEATH_CROSS:         90,
-        AlertCondition.NEW_52WK_HIGH:       30,
-        AlertCondition.NEW_52WK_LOW:        30,
-        AlertCondition.DOUBLE_BOTTOM:       30,
-        AlertCondition.MACD_BULLISH_CROSS:  14,
-        AlertCondition.CROSS_ABOVE_EMA:     14,
-        AlertCondition.CROSS_BELOW_EMA:     14,
-        AlertCondition.BREAKOUT:            7,
-        AlertCondition.RSI_OVERSOLD_BOUNCE: 7,
-    }
+    # (no cooldown dict needed — same-day dedup is sufficient; see _already_fired_today)
 
     try:
         with SessionLocal() as session:
@@ -1119,15 +1107,20 @@ def check_technical_alerts() -> None:
                 return
 
             now = datetime.now(timezone.utc)
+            today = now.date()
 
-            # For recurring alerts, skip those still within their cooldown window
-            def _in_cooldown(alert: PriceAlert) -> bool:
+            # For recurring alerts, skip if already fired today.
+            # Patterns use daily bars — the same bar is re-read every 5 min,
+            # so without this dedup the alert would fire all day on the same crossing.
+            def _already_fired_today(alert: PriceAlert) -> bool:
                 if not alert.recurring or alert.last_sent_at is None:
                     return False
-                cooldown = _COOLDOWN.get(alert.condition, 30)
-                return (now - alert.last_sent_at.replace(tzinfo=timezone.utc)).days < cooldown
+                sent = alert.last_sent_at
+                if sent.tzinfo is None:
+                    sent = sent.replace(tzinfo=timezone.utc)
+                return sent.date() >= today
 
-            alerts = [a for a in alerts if not _in_cooldown(a)]
+            alerts = [a for a in alerts if not _already_fired_today(a)]
             if not alerts:
                 return
 
