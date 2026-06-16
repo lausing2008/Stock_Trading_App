@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -4975,6 +4975,32 @@ const ITEMS: Item[] = [
     defaultStatus: 'done',
     implementedNote: 'Done 2026-06-16 — admin-health.tsx: JOB_META expanded to 22 entries; MORNING DIGESTS section; SCHEDULE REFERENCE card with US/HK columns.',
   },
+
+  // ── Tier 23 — ML Fundamentals + Paper Trading Cutoff Fix (2026-06-15) ────────
+  {
+    id: 'cb-w1-signal-cutoff',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — paper_trading_engine.py: cutoff changed from timedelta(hours=26) to timedelta(days=5); added latest_signal_ts_subq subquery (max(Signal.ts) per stock_id/horizon joined back) to ensure only most-recent signal per stock is evaluated — prevents entering stocks that flipped BUY→SELL within the window. After fix: 4 candidates found (MU 96%, UPST 54%, BULL 41%, NVDA 36%).',
+    tier: 23, severity: 'critical',
+    title: 'CB-W1: Paper trading signal cutoff bug — 26h window excluded all Friday signals every Monday, causing zero trades all week',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1 hour',
+    impact: 'Critical — the 26h lookback window caused zero entry candidates every Monday, since Friday signals are ~64h old by Monday morning. Paper trading engine ran for an entire week with 0 trades entered.',
+    what: 'The signal freshness cutoff in _scan_for_entries() used timedelta(hours=26). Friday market-close signals are generated at ~16:00 ET. Monday market open is ~9:30 ET — 64+ hours later. Every Monday, all Friday signals were excluded as "too old", leaving zero BUY candidates. Additionally, when multiple signals exist per stock per horizon within the window, only the latest was not guaranteed to be selected.',
+    fix: 'Changed cutoff to timedelta(days=5). Added latest_signal_ts_subq: a max(Signal.ts) subquery grouped by (stock_id, horizon) joined back to Signal, ensuring only the most-recent signal per stock/horizon is evaluated. This prevents entering stocks that flipped BUY→SELL within the 5-day window.',
+  },
+  {
+    id: 'ml-fund-features',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — 7 files: (1) shared/db/models.py: Fundamental table (16 fields, unique on stock_id+as_of); (2) shared/db/__init__.py: exported Fundamental; (3) scripts/migrations/008_fundamentals.sql: CREATE TABLE + indexes; (4) market-data/routes.py: get_fundamentals() now upserts to DB via pg_insert ON CONFLICT DO UPDATE after every yfinance fetch — auto-populates as stocks are viewed; (5) ml-prediction/features/builder.py: FUNDAMENTAL_COLUMNS (8 features), FEATURE_COLUMNS 34→42, build_features() gains fund_data param; (6) training/trainer.py: _load_fundamentals() helper + fund_data passed in both train and inference paths; (7) training/tuner.py: same. fcf_yield computed as free_cashflow/market_cap in _load_fundamentals().',
+    tier: 23, severity: 'feature',
+    title: 'ML-FUND-1: Fundamental signals in ML pipeline — 8 new features (revenue growth, EPS growth, gross margin, ROE, FCF yield, short ratio, analyst score, P/B)',
+    file: 'shared/db/models.py · services/market-data/src/api/routes.py · services/ml-prediction/src/features/builder.py · services/ml-prediction/src/training/trainer.py · services/ml-prediction/src/training/tuner.py',
+    effort: '1 day',
+    impact: 'High — XGBoost pipeline previously ignored all fundamental data. Adding 8 fundamental features allows the model to distinguish momentum stocks with deteriorating fundamentals (false signal risk) from those with improving fundamentals (high conviction). Stocks viewed in the UI auto-populate the fundamentals DB via the existing /fundamentals endpoint with no extra job needed.',
+    what: 'The ML feature pipeline had 34 features: price-derived TA indicators and macro factors. No company-specific fundamental data was included. The /fundamentals endpoint fetched from yfinance and cached in Redis but never persisted to DB or used in ML training. Model had no awareness of earnings growth, FCF quality, short interest, or analyst sentiment.',
+    fix: 'Added Fundamental DB table (16 fields, upserted on every /fundamentals call via ON CONFLICT DO UPDATE). FEATURE_COLUMNS expanded 34→42 with FUNDAMENTAL_COLUMNS: revenue_growth, earnings_growth, gross_margin, return_on_equity, fcf_yield, short_ratio, recommendation_mean, price_to_book. build_features() gains fund_data param; fundamentals broadcast as static scalars to all price rows (same pattern as macro). _load_fundamentals() helper in trainer.py queries latest Fundamental row per symbol, computes fcf_yield=free_cashflow/market_cap. XGBoost handles NaN natively for stocks not yet viewed.',
+  },
 ];
 
 
@@ -5008,6 +5034,7 @@ const TIER_LABEL: Record<Tier, string> = {
   20: 'Tier 20 — Deep Audit Wave 2: Signal + Paper Trading + Auth (2026-06-15)',
   21: 'Tier 21 — Audit Wave 3: Data Integrity + ML Reliability + Signal Quality (2026-06-15)',
   22: 'Tier 22 — Pattern Alert System: Recurring + Bulk + Fixes (2026-06-16)',
+  23: 'Tier 23 — ML Fundamentals + Paper Trading Cutoff Fix (2026-06-15)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5033,6 +5060,7 @@ const TIER_COLOR: Record<Tier, string> = {
   20: '#4ade80',
   21: '#a78bfa',
   22: '#2dd4bf',
+  23: '#fcd34d',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5346,6 +5374,7 @@ export default function ImprovementsPage() {
           Tier 20 (2026-06-15): Deep audit wave 2 — 9 findings, all fixed: F-1 CRITICAL (check_technical_alerts D1 timeframe filter missing — mixed M5+D1 bars in TA); LAB-001 (volume look-ahead in _pullback_recovery); LAB-002 (VWMA + volume z-score look-ahead); CVG-001 (ML weight floor resurrects zero-weight inverse models); REG-001 (unknown regime → conservative high_vol thresholds); FIN-01 (exit + partial-profit commission not deducted); FIN-03 (daily loss circuit used UTC midnight, now ET midnight); RISK-2 (stop-hit fills at gap price → now fills at stop level); AUTH-01 (auth.py blacklist fails-open → in-memory fallback added).
           Tier 21 (2026-06-15/16): Audit wave 3 — 13 items: AUTH-02 (reset-password rate limiting); AUTH-08 (research engine GET routes auth); RISK-1 (null-sector sector cap bypass); RISK-3 (per-sector position count cap); F-2 (force-ingest two-transaction gap → atomic DELETE+INSERT); F-3 (auto_adjust=False→True mismatch in live price fetch); STALE-001 (model staleness detection + trained_at in bundle); RACE-001 (atomic ML model write via os.replace); STY-001 (TA weights wired into _ta_score, volume_surge→volume_z rename); REG-002 (SHORT style breadth_compression=0.90); CVG-002 (pillar gate None sentinel with warning); FIN-07 (min_shares guard); live price cache 1-min refresh (routes.py refresh_live_price_cache() + scheduler job).
           Tier 22 (2026-06-16): Pattern Alert System — (1) Recurring alerts: price_alerts.recurring + last_sent_at columns (migration 007); check_technical_alerts() same-day dedup (_already_fired_today); recurring alerts stamp last_sent_at instead of triggered=True; once/↻ recurring toggle on alert forms. (2) Double bottom recency fix: b2_idx &gt;= len(window)-10 guard prevents stale W-pattern firing daily. (3) Bulk pattern alert: BulkPatternAlertCard on /alerts — pick watchlist + pattern + mode, creates alerts for all stocks in one click. (4) System health: MORNING DIGESTS section (09:00 ET / 08:55 HKT), SCHEDULE REFERENCE card with full US/HK timetable; JOB_META expanded from 8 to 22 entries.
+          Tier 23 (2026-06-15): CB-W1 paper trading signal cutoff bug — 26h window excluded all Friday signals every Monday, causing zero trades for a full week; changed to 5-day window + latest_signal_ts_subq subquery (max(Signal.ts) per stock_id/horizon). ML-FUND-1 fundamental signals in ML pipeline — Fundamental DB table (16 fields, upserted on every /fundamentals call); 8 new FEATURE_COLUMNS: revenue_growth, earnings_growth, gross_margin, return_on_equity, fcf_yield, short_ratio, recommendation_mean, price_to_book (34→42 features total); _load_fundamentals() in trainer.py + tuner.py. Models need retrain (train_all / tune_all) to activate new features.
           Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Remaining: walk-forward backtest, SUR-001, CV-001, WEIGHT-001, ENS-001 (ML training methodology items).
         </p>
       </div>

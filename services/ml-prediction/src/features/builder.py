@@ -1,4 +1,4 @@
-"""Feature engineering — 34 features (26 stock-specific + 8 macro).
+"""Feature engineering — 42 features (26 stock-specific + 8 macro + 8 fundamental).
 
 26 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
@@ -17,6 +17,16 @@
   high_vol_regime       — 1 if spy_vol_20 > 2% annualised daily vol
   market_stress         — 1 if SPY 5d return < -3% AND VIX above its MA
 
+8 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
+  revenue_growth        — YoY revenue growth rate
+  earnings_growth       — YoY EPS growth rate
+  gross_margin          — gross profit margin
+  return_on_equity      — ROE (net income / book equity)
+  fcf_yield             — free cash flow / market cap (value quality signal)
+  short_ratio           — days-to-cover (short interest / avg daily volume)
+  recommendation_mean   — analyst consensus (1=strong buy … 5=strong sell)
+  price_to_book         — P/B ratio (value factor)
+
 Label: binary BUY / SELL only — rows where |fwd_ret| < label_threshold are
 excluded from training (dead zone). This removes noise-level moves that are
 essentially unclassifiable and degrade model quality.
@@ -33,6 +43,17 @@ MACRO_COLUMNS = [
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Regime boolean flags (SA-3)
     "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
+]
+
+FUNDAMENTAL_COLUMNS = [
+    "revenue_growth",       # YoY revenue growth rate
+    "earnings_growth",      # YoY EPS growth rate
+    "gross_margin",         # gross profit / revenue
+    "return_on_equity",     # net income / book equity
+    "fcf_yield",            # free cash flow / market cap
+    "short_ratio",          # days-to-cover (short interest / avg daily vol)
+    "recommendation_mean",  # 1=strong buy … 5=strong sell
+    "price_to_book",        # P/B ratio
 ]
 
 FEATURE_COLUMNS = [
@@ -56,6 +77,8 @@ FEATURE_COLUMNS = [
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Macro — regime boolean flags
     "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
+    # Fundamentals — static per stock, broadcast to all price rows
+    *FUNDAMENTAL_COLUMNS,
 ]
 
 
@@ -189,6 +212,7 @@ def build_features(
     macro_df: pd.DataFrame | None = None,
     label_threshold: float = 0.01,
     inference_mode: bool = False,
+    fund_data: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (X, y_direction, y_return).
 
@@ -198,6 +222,11 @@ def build_features(
 
     inference_mode=True: skip label/dead-zone filtering so the latest bar (no
     known future return) is included in X for real-time prediction.
+
+    fund_data: dict mapping FUNDAMENTAL_COLUMNS names to scalar floats.
+    Values are broadcast to every row in X (fundamentals change quarterly;
+    using the most-recent snapshot as a static signal is standard practice).
+    Missing keys default to NaN — XGBoost handles NaN natively.
     """
     out = pd.DataFrame(index=df.index)
     c = df["close"].astype(float)
@@ -305,6 +334,13 @@ def build_features(
     else:
         for col in MACRO_COLUMNS:
             out[col] = out[col].fillna(0.0)
+
+    # --- Fundamental features (static per stock — broadcast from most-recent snapshot) ---
+    # XGBoost handles NaN natively; models trained before this data exists will
+    # see NaN for all fundamental columns and learn to ignore them gracefully.
+    for col in FUNDAMENTAL_COLUMNS:
+        val = (fund_data or {}).get(col)
+        out[col] = float(val) if val is not None else np.nan
 
     # --- Target ---
     fwd_ret = c.shift(-horizon) / c - 1

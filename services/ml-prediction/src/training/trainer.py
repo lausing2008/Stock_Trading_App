@@ -22,9 +22,10 @@ from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Price, SessionLocal, Stock, TimeFrame
+from db import Fundamental, Price, SessionLocal, Stock, TimeFrame
+from sqlalchemy import desc as sa_desc
 
-from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS
+from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS
 from ..models import BaseModel, get_model
 
 log = get_logger("trainer")
@@ -68,6 +69,42 @@ def _load_prices(symbol: str, lookback_days: int = 365 * 5) -> pd.DataFrame:
             "volume": [r.volume for r in rows],
         }
     )
+
+
+def _load_fundamentals(symbol: str) -> dict | None:
+    """Fetch the most-recent Fundamental row for a symbol and return as a dict.
+
+    Returns None if no row exists (model will train with NaN fundamental features).
+    fcf_yield is computed here as free_cashflow / market_cap so builder.py
+    only needs to consume scalar values.
+    """
+    with SessionLocal() as session:
+        stock = session.execute(
+            select(Stock).where(Stock.symbol == symbol)
+        ).scalar_one_or_none()
+        if not stock:
+            return None
+        row = session.execute(
+            select(Fundamental)
+            .where(Fundamental.stock_id == stock.id)
+            .order_by(sa_desc(Fundamental.as_of))
+            .limit(1)
+        ).scalar_one_or_none()
+    if row is None:
+        return None
+    fcf = row.free_cashflow
+    mkt = row.market_cap
+    fcf_yield = (fcf / mkt) if (fcf and mkt and mkt > 0) else None
+    return {
+        "revenue_growth":      row.revenue_growth,
+        "earnings_growth":     row.earnings_growth,
+        "gross_margin":        row.gross_margin,
+        "return_on_equity":    row.return_on_equity,
+        "fcf_yield":           fcf_yield,
+        "short_ratio":         row.short_ratio,
+        "recommendation_mean": row.recommendation_mean,
+        "price_to_book":       row.price_to_book,
+    }
 
 
 def _artifact_path(symbol: str, model_name: str) -> Path:
@@ -203,8 +240,15 @@ def train_model(
     # Per-symbol volatility-adjusted dead zone (0.5 × expected N-day move)
     label_threshold = compute_label_threshold(df, horizon)
 
+    fund_data: dict | None = None
+    try:
+        fund_data = _load_fundamentals(symbol)
+    except Exception:
+        pass
+
     X, y_dir, y_ret = build_features(
-        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold
+        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
+        fund_data=fund_data,
     )
     if len(X) < 200:
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
@@ -478,10 +522,17 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     except Exception:
         pass
 
+    infer_fund_data: dict | None = None
+    try:
+        infer_fund_data = _load_fundamentals(symbol)
+    except Exception:
+        pass
+
     # inference_mode=True: keeps the latest bar even without a known future return
     X, _, _ = build_features(
         df, horizon=horizon, macro_df=macro_df,
         label_threshold=0.0, inference_mode=True,
+        fund_data=infer_fund_data,
     )
     if X.empty:
         return {"symbol": symbol, "bullish_probability": 0.5, "confidence": 0}

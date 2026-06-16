@@ -25,7 +25,7 @@ from xgboost import XGBClassifier
 from common.logging import get_logger
 
 from ..features import build_features, compute_label_threshold, fetch_macro_features
-from .trainer import _blend_weights, _load_prices, _params_path, _recency_weights, train_model
+from .trainer import _blend_weights, _load_fundamentals, _load_prices, _params_path, _recency_weights, train_model
 
 log = get_logger("tuner")
 
@@ -80,8 +80,16 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
         pass
 
     label_threshold = compute_label_threshold(df, horizon)
+
+    fund_data: dict | None = None
+    try:
+        fund_data = _load_fundamentals(symbol)
+    except Exception:
+        pass
+
     X, y_dir, _ = build_features(
-        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold
+        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
+        fund_data=fund_data,
     )
     # Restrict tuner to first 85% of data to avoid leaking the test period
     cutoff = int(len(X) * 0.85)

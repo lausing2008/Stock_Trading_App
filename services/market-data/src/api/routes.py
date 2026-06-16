@@ -41,7 +41,7 @@ import yfinance as yf
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Price, Stock, TimeFrame, get_session
+from db import Fundamental, Price, Stock, TimeFrame, get_session
 from .auth import get_current_user
 
 log = get_logger("routes")
@@ -759,7 +759,7 @@ def fundamentals_bulk(session: Session = Depends(get_session)):
 
 
 @router.get("/{symbol}/fundamentals", response_model=FundamentalsOut)
-def get_fundamentals(symbol: str, refresh: bool = False):
+def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(get_session)):
     """Live company fundamentals from yfinance, Redis-cached for 24 h.
     Pass ?refresh=true to bypass the cache and force a fresh fetch."""
     cache_key = f"stockai:fundamentals:v2:{symbol.upper()}"
@@ -974,6 +974,61 @@ def get_fundamentals(symbol: str, refresh: bool = False):
         _get_redis().setex(cache_key, _FUND_TTL, data.model_dump_json())
     except Exception:
         pass
+
+    # Persist key fields to DB for ML feature use — upsert on (stock_id, today)
+    try:
+        from datetime import date as _date
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        stock_row = db.execute(
+            select(Stock).where(Stock.symbol == symbol.upper())
+        ).scalar_one_or_none()
+        if stock_row:
+            mkt_cap = info.get("marketCap")
+            fcf = data.free_cashflow
+            stmt = pg_insert(Fundamental).values(
+                stock_id=stock_row.id,
+                as_of=_date.today(),
+                trailing_pe=data.trailing_pe,
+                forward_pe=data.forward_pe,
+                price_to_book=data.price_to_book,
+                gross_margin=data.gross_margin,
+                profit_margin=data.profit_margin,
+                return_on_equity=data.return_on_equity,
+                return_on_assets=data.return_on_assets,
+                revenue_growth=data.revenue_growth,
+                earnings_growth=data.earnings_growth,
+                free_cashflow=fcf,
+                market_cap=int(mkt_cap) if mkt_cap else None,
+                short_percent_of_float=data.short_percent_of_float,
+                short_ratio=data.short_ratio,
+                recommendation_mean=data.recommendation_mean,
+                number_of_analysts=data.number_of_analysts,
+            ).on_conflict_do_update(
+                constraint="uq_fundamentals_stock_date",
+                set_=dict(
+                    trailing_pe=data.trailing_pe,
+                    forward_pe=data.forward_pe,
+                    price_to_book=data.price_to_book,
+                    gross_margin=data.gross_margin,
+                    profit_margin=data.profit_margin,
+                    return_on_equity=data.return_on_equity,
+                    return_on_assets=data.return_on_assets,
+                    revenue_growth=data.revenue_growth,
+                    earnings_growth=data.earnings_growth,
+                    free_cashflow=fcf,
+                    market_cap=int(mkt_cap) if mkt_cap else None,
+                    short_percent_of_float=data.short_percent_of_float,
+                    short_ratio=data.short_ratio,
+                    recommendation_mean=data.recommendation_mean,
+                    number_of_analysts=data.number_of_analysts,
+                    fetched_at=func.now(),
+                ),
+            )
+            db.execute(stmt)
+            db.commit()
+    except Exception as exc:
+        log.warning("fundamentals.db_persist_failed", symbol=symbol, error=str(exc))
+        db.rollback()
 
     log.info("fundamentals.ok", symbol=symbol)
     return data

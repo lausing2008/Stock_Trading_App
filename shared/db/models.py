@@ -628,3 +628,45 @@ class PaperEquityCurve(Base):
     __table_args__ = (
         UniqueConstraint("portfolio_id", "date", name="uq_paper_equity_portfolio_date"),
     )
+
+
+class Fundamental(Base):
+    """Snapshot of company fundamentals — one row per stock per fetch date.
+
+    Persisted from yfinance whenever the /fundamentals endpoint is called.
+    Used as static ML features (broadcast to all price rows for a stock during
+    training/inference). Updated at most once per day via the (stock_id, as_of)
+    unique constraint.
+    """
+    __tablename__ = "fundamentals"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    # Valuation
+    trailing_pe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    forward_pe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_to_book: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Profitability
+    gross_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    profit_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_on_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_on_assets: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Growth
+    revenue_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Cash flow / valuation
+    free_cashflow: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_cap: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Sentiment
+    short_percent_of_float: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Analyst consensus
+    recommendation_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    number_of_analysts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", "as_of", name="uq_fundamentals_stock_date"),
+    )
