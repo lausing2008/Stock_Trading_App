@@ -130,13 +130,6 @@ def set_ml_weight_global_cap(cap: float | None) -> None:
 # Load on module import
 _ml_weight_global_cap = _load_ml_weight_override()
 
-# STY-001: Load calibrated TA weights; used in _ta_score to blend with pillar score.
-# Only the blended path is active when the ta_weights.json file actually exists
-# (i.e. after admin runs POST /signals/calibrate_ta_weights). Default weights are
-# loaded for all cases so the dict is always populated.
-_ta_weights: dict[str, float] = _load_ta_weights()
-_ta_weights_calibrated: bool = _TA_WEIGHTS_PATH.exists()
-
 
 def _load_ta_weights() -> dict[str, float]:
     """Load calibrated TA weights from disk, falling back to defaults."""
@@ -152,6 +145,14 @@ def _load_ta_weights() -> dict[str, float]:
     except Exception:
         pass
     return dict(_TA_WEIGHTS_DEFAULT)
+
+
+# STY-001: Load calibrated TA weights; used in _ta_score to blend with pillar score.
+# Only the blended path is active when the ta_weights.json file actually exists
+# (i.e. after admin runs POST /signals/calibrate_ta_weights). Default weights are
+# loaded for all cases so the dict is always populated.
+_ta_weights: dict[str, float] = _load_ta_weights()
+_ta_weights_calibrated: bool = _TA_WEIGHTS_PATH.exists()
 
 
 def load_conviction_weights() -> dict[str, float]:
