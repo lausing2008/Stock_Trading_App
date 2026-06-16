@@ -4913,6 +4913,18 @@ const ITEMS: Item[] = [
     defaultStatus: 'done',
     implementedNote: 'Done 2026-06-15 — paper_trading_engine.py: shares < 0.01 or position_value <= 0 guard added after round(); logs skip_min_shares.',
   },
+  {
+    id: 'aud21-live-price-1min',
+    tier: 21, severity: 'feature',
+    title: 'Live price cache refreshes every 1 minute during market hours',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '1 hour',
+    impact: 'Previously live prices shown in the UI updated every 5 minutes (only during full refresh cycle). Price alerts already polled every minute but displayed prices lagged. Now UI prices stay current throughout market hours without running the heavy ranking+signal pipeline every minute.',
+    what: 'Scheduler had one 5-minute _refresh_market job that combined ingestion + rankings + signals + live price fetch. No lightweight job existed to keep just the Redis live price cache fresh between cycles.',
+    fix: 'Added refresh_live_price_cache() to routes.py — single yf.download() bulk call + Redis write, no DB writes or computation. Scheduler calls it every minute, gated to US (09–17 ET) and HK (09–17 HKT) market hours on weekdays. _LIVE_TTL bumped 60→90s for buffer.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — routes.py: refresh_live_price_cache(); scheduler.py: live_price_cache_refresh job every 1 min with market-hours gate; _LIVE_TTL=90s.',
+  },
 ];
 
 
@@ -5280,7 +5292,7 @@ export default function ImprovementsPage() {
           2026-06-15 Tier 19 medium sweep: aud19-ta-weights-file-race done (atomic write via os.replace). aud19-live-price-failure-ambiguity done (distinct log events: live_price.not_found vs live_price.unavailable). aud19-ml-model-missing-crash: already handled. aud19-stall-config-dead-keys: already present. aud19-alert-price-partial-commit: deliberate design (commit-before-email avoids duplicate alerts).
           2026-06-15 signal alert stale window fix: check_signal_alerts() extended stale_cutoff from 2 → 4 days to handle Fri close → Mon alert gap. Deployed; 78 conviction keys now set in Redis (48 US + 30 HK). US BUY signals now show conviction gate results instead of — in Signal Filter.
           Tier 20 (2026-06-15): Deep audit wave 2 — 9 findings, all fixed: F-1 CRITICAL (check_technical_alerts D1 timeframe filter missing — mixed M5+D1 bars in TA); LAB-001 (volume look-ahead in _pullback_recovery); LAB-002 (VWMA + volume z-score look-ahead); CVG-001 (ML weight floor resurrects zero-weight inverse models); REG-001 (unknown regime → conservative high_vol thresholds); FIN-01 (exit + partial-profit commission not deducted); FIN-03 (daily loss circuit used UTC midnight, now ET midnight); RISK-2 (stop-hit fills at gap price → now fills at stop level); AUTH-01 (auth.py blacklist fails-open → in-memory fallback added).
-          Tier 21 (2026-06-15): Audit wave 3 — 12 findings fixed: AUTH-02 (reset-password rate limiting); AUTH-08 (research engine GET routes auth); RISK-1 (null-sector sector cap bypass); RISK-3 (per-sector position count cap); F-2 (force-ingest two-transaction gap → atomic DELETE+INSERT); F-3 (auto_adjust=False→True mismatch in live price fetch); STALE-001 (model staleness detection + trained_at in bundle); RACE-001 (atomic ML model write via os.replace); STY-001 (TA weights wired into _ta_score, volume_surge→volume_z rename); REG-002 (SHORT style breadth_compression=0.90); CVG-002 (pillar gate None sentinel with warning); FIN-07 (min_shares guard).
+          Tier 21 (2026-06-15/16): Audit wave 3 — 13 items: AUTH-02 (reset-password rate limiting); AUTH-08 (research engine GET routes auth); RISK-1 (null-sector sector cap bypass); RISK-3 (per-sector position count cap); F-2 (force-ingest two-transaction gap → atomic DELETE+INSERT); F-3 (auto_adjust=False→True mismatch in live price fetch); STALE-001 (model staleness detection + trained_at in bundle); RACE-001 (atomic ML model write via os.replace); STY-001 (TA weights wired into _ta_score, volume_surge→volume_z rename); REG-002 (SHORT style breadth_compression=0.90); CVG-002 (pillar gate None sentinel with warning); FIN-07 (min_shares guard); live price cache 1-min refresh (routes.py refresh_live_price_cache() + scheduler job).
           Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Remaining: walk-forward backtest, SUR-001, CV-001, WEIGHT-001, ENS-001 (ML training methodology items).
         </p>
       </div>
