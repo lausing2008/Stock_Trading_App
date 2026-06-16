@@ -350,12 +350,17 @@ def build_features(
 
     X = out[FEATURE_COLUMNS].replace([np.inf, -np.inf], np.nan)
 
+    # Fundamental columns are NaN until the stock is viewed (DB populated).
+    # XGBoost tree_method='hist' handles NaN natively — require only non-fundamental
+    # columns to be non-null so rows are not discarded when fundamentals are absent.
+    _required = [c for c in FEATURE_COLUMNS if c not in FUNDAMENTAL_COLUMNS]
+
     if inference_mode:
         # Keep all rows with valid features; label/dead-zone filtering skipped
-        mask = X.notna().all(axis=1)
+        mask = X[_required].notna().all(axis=1)
     else:
         # Training: exclude dead-zone rows (|fwd_ret| < threshold) — only clear signals
         outside_deadzone = fwd_ret.abs() >= label_threshold
-        mask = X.notna().all(axis=1) & fwd_ret.notna() & outside_deadzone
+        mask = X[_required].notna().all(axis=1) & fwd_ret.notna() & outside_deadzone
 
     return X[mask], y_dir[mask], fwd_ret[mask]
