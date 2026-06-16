@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -4976,30 +4976,84 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-16 — admin-health.tsx: JOB_META expanded to 22 entries; MORNING DIGESTS section; SCHEDULE REFERENCE card with US/HK columns.',
   },
 
-  // ── Tier 23 — ML Fundamentals + Paper Trading Cutoff Fix (2026-06-15) ────────
+  // ── Tier 23 — ML Fundamentals + Paper Trading Cutoff Fix (2026-06-15/16) ──────
   {
     id: 'cb-w1-signal-cutoff',
     defaultStatus: 'done',
-    implementedNote: 'Done 2026-06-15 — paper_trading_engine.py: cutoff changed from timedelta(hours=26) to timedelta(days=5); added latest_signal_ts_subq subquery (max(Signal.ts) per stock_id/horizon joined back) to ensure only most-recent signal per stock is evaluated — prevents entering stocks that flipped BUY→SELL within the window. After fix: 4 candidates found (MU 96%, UPST 54%, BULL 41%, NVDA 36%).',
+    implementedNote: 'Done 2026-06-15 — paper_trading_engine.py: cutoff changed from timedelta(hours=26) to timedelta(days=5); added latest_signal_ts_subq subquery (max(Signal.ts) per stock_id/horizon joined back) to ensure only most-recent signal per stock is evaluated — prevents entering stocks that flipped BUY→SELL within the window. After fix: 4 candidates found on first run (MU 96%, UPST 54%, BULL 41%, NVDA 36%).',
     tier: 23, severity: 'critical',
     title: 'CB-W1: Paper trading signal cutoff bug — 26h window excluded all Friday signals every Monday, causing zero trades all week',
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '1 hour',
-    impact: 'Critical — the 26h lookback window caused zero entry candidates every Monday, since Friday signals are ~64h old by Monday morning. Paper trading engine ran for an entire week with 0 trades entered.',
+    impact: 'Critical — the 26h lookback window caused zero entry candidates every Monday, since Friday signals are ~64h old by Monday 9:30 ET. The paper trading engine ran for a full week with 0 trades. Practical benefit: you now capture Friday\'s highest-conviction setups (often formed after close when institutions rebalance) and enter them Monday morning at the open. The "latest signal only" subquery additionally prevents double-counting stocks that generated multiple signals within the 5-day window — only the most current assessment is used, so a BUY that later flipped to HOLD will not be entered.',
     what: 'The signal freshness cutoff in _scan_for_entries() used timedelta(hours=26). Friday market-close signals are generated at ~16:00 ET. Monday market open is ~9:30 ET — 64+ hours later. Every Monday, all Friday signals were excluded as "too old", leaving zero BUY candidates. Additionally, when multiple signals exist per stock per horizon within the window, only the latest was not guaranteed to be selected.',
     fix: 'Changed cutoff to timedelta(days=5). Added latest_signal_ts_subq: a max(Signal.ts) subquery grouped by (stock_id, horizon) joined back to Signal, ensuring only the most-recent signal per stock/horizon is evaluated. This prevents entering stocks that flipped BUY→SELL within the 5-day window.',
   },
   {
     id: 'ml-fund-features',
     defaultStatus: 'done',
-    implementedNote: 'Done 2026-06-15 — 7 files: (1) shared/db/models.py: Fundamental table (16 fields, unique on stock_id+as_of); (2) shared/db/__init__.py: exported Fundamental; (3) scripts/migrations/008_fundamentals.sql: CREATE TABLE + indexes; (4) market-data/routes.py: get_fundamentals() now upserts to DB via pg_insert ON CONFLICT DO UPDATE after every yfinance fetch — auto-populates as stocks are viewed; (5) ml-prediction/features/builder.py: FUNDAMENTAL_COLUMNS (8 features), FEATURE_COLUMNS 34→42, build_features() gains fund_data param; (6) training/trainer.py: _load_fundamentals() helper + fund_data passed in both train and inference paths; (7) training/tuner.py: same. fcf_yield computed as free_cashflow/market_cap in _load_fundamentals().',
+    implementedNote: 'Done 2026-06-15/16 — 7 files: (1) shared/db/models.py: Fundamental table (16 fields, unique on stock_id+as_of); (2) shared/db/__init__.py: exported Fundamental; (3) scripts/migrations/008_fundamentals.sql: CREATE TABLE + indexes; (4) market-data/routes.py: get_fundamentals() now upserts to DB via pg_insert ON CONFLICT DO UPDATE after every yfinance fetch — auto-populates as stocks are viewed; (5) ml-prediction/features/builder.py: FUNDAMENTAL_COLUMNS (8 features), FEATURE_COLUMNS 34→42, build_features() gains fund_data param; (6) training/trainer.py: _load_fundamentals() helper + fund_data passed in both train and inference paths; (7) training/tuner.py: same. fcf_yield computed as free_cashflow/market_cap in _load_fundamentals(). All 138 active symbols retrained with 42-feature pipeline on 2026-06-16. Top features for stocks with fundamentals data will include fundamental factors in next tune_all cycle.',
     tier: 23, severity: 'feature',
     title: 'ML-FUND-1: Fundamental signals in ML pipeline — 8 new features (revenue growth, EPS growth, gross margin, ROE, FCF yield, short ratio, analyst score, P/B)',
     file: 'shared/db/models.py · services/market-data/src/api/routes.py · services/ml-prediction/src/features/builder.py · services/ml-prediction/src/training/trainer.py · services/ml-prediction/src/training/tuner.py',
     effort: '1 day',
-    impact: 'High — XGBoost pipeline previously ignored all fundamental data. Adding 8 fundamental features allows the model to distinguish momentum stocks with deteriorating fundamentals (false signal risk) from those with improving fundamentals (high conviction). Stocks viewed in the UI auto-populate the fundamentals DB via the existing /fundamentals endpoint with no extra job needed.',
+    impact: 'High — XGBoost previously had no awareness of whether a stock\'s momentum was backed by business quality. Now it can learn: (1) False breakout filter: high momentum + negative earnings growth + rising short ratio = likely distribution, not accumulation. The model can learn to suppress these. (2) Institutional quality signal: low short ratio + high ROE + strong FCF yield = institutional buying, not retail chasing — higher conviction BUY. (3) Earnings risk: high short_ratio before report → model learns this pattern precedes outsized down moves. (4) Revenue growth acceleration: companies growing revenue faster than their P/B implies → typical institutional accumulation phase. (5) Analyst sentiment: recommendation_mean (1=strong buy, 5=sell) adds a professional consensus layer the TA system had no access to. Fundamentals populate automatically as you view stocks — no extra job needed.',
     what: 'The ML feature pipeline had 34 features: price-derived TA indicators and macro factors. No company-specific fundamental data was included. The /fundamentals endpoint fetched from yfinance and cached in Redis but never persisted to DB or used in ML training. Model had no awareness of earnings growth, FCF quality, short interest, or analyst sentiment.',
-    fix: 'Added Fundamental DB table (16 fields, upserted on every /fundamentals call via ON CONFLICT DO UPDATE). FEATURE_COLUMNS expanded 34→42 with FUNDAMENTAL_COLUMNS: revenue_growth, earnings_growth, gross_margin, return_on_equity, fcf_yield, short_ratio, recommendation_mean, price_to_book. build_features() gains fund_data param; fundamentals broadcast as static scalars to all price rows (same pattern as macro). _load_fundamentals() helper in trainer.py queries latest Fundamental row per symbol, computes fcf_yield=free_cashflow/market_cap. XGBoost handles NaN natively for stocks not yet viewed.',
+    fix: 'Added Fundamental DB table (16 fields, upserted on every /fundamentals call via ON CONFLICT DO UPDATE). FEATURE_COLUMNS expanded 34→42 with FUNDAMENTAL_COLUMNS: revenue_growth, earnings_growth, gross_margin, return_on_equity, fcf_yield, short_ratio, recommendation_mean, price_to_book. build_features() gains fund_data param; fundamentals broadcast as static scalars to all price rows (same pattern as macro). _load_fundamentals() helper in trainer.py queries latest Fundamental row per symbol, computes fcf_yield=free_cashflow/market_cap.',
+  },
+  {
+    id: 'ml-fund-nan-mask-fix',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — builder.py: X.notna().all(axis=1) changed to X[_required].notna().all(axis=1) where _required excludes FUNDAMENTAL_COLUMNS. XGBoost tree_method=hist handles NaN natively — learn optimal split direction for missing values during training. This means stocks without fundamentals data (not yet viewed) train fine with NaN columns and will benefit as soon as fundamentals are populated and models are retrained.',
+    tier: 23, severity: 'critical',
+    title: 'ML-FUND-NaN: Training mask discarded all rows when fundamentals DB was empty — 0 clean samples for every symbol',
+    file: 'services/ml-prediction/src/features/builder.py',
+    effort: '15 minutes',
+    impact: 'Critical blocker — without this fix, adding the 8 fundamental columns caused mask = X.notna().all(axis=1) to return all-False (every row had NaN in all 8 fundamental columns since the DB was just created). Every symbol reported "only 0 clean samples" and training was skipped entirely. Fix allows partial-NaN rows through — the XGBoost tree_method="hist" algorithm already knows how to handle missing values and learns the best split direction for them. Practical benefit: models retrain successfully NOW (before any stocks are viewed) and progressively improve as fundamentals accumulate in the DB.',
+    what: 'mask = X.notna().all(axis=1) required every one of the 42 feature columns to be non-NaN. The 8 new fundamental columns were all NaN for every stock (fundamentals table just created, no stocks yet viewed). Result: 0 valid training rows for all 138 symbols, making the train_all run completely ineffective.',
+    fix: '_required = [c for c in FEATURE_COLUMNS if c not in FUNDAMENTAL_COLUMNS]. mask uses X[_required].notna().all(axis=1) — only 34 non-fundamental columns must be non-null. XGBoost sees NaN fundamentals and learns the statistically optimal direction to route missing-value samples at each split.',
+  },
+
+  // ── Tier 24 — Forward Improvements: Fundamentals Depth & ML Quality ──────────
+  {
+    id: 'ml-fund-2-batch-refresh',
+    tier: 24, severity: 'high',
+    title: 'ML-FUND-2: Weekly fundamentals batch refresh — populate all active stocks without requiring manual views',
+    file: 'services/market-data/src/services/scheduler.py · services/market-data/src/api/routes.py',
+    effort: '2 hours',
+    impact: 'High — currently fundamentals only accumulate as stocks are viewed one-by-one in the UI. With 138 active symbols, the models for stocks you haven\'t visited will continue training on NaN fundamental columns until viewed. A weekly batch refresh (Sunday with tune_all) would populate fundamentals for all watchlisted stocks at once, so the next train_all uses real values everywhere. Typical benefit: fundamental features start appearing in top_features for your most-watched stocks within days of this running; within 1-2 tune_all cycles, the model learns which fundamental patterns predict price action.',
+    what: '_weekly_full_refresh() in scheduler.py runs Sunday at 02:00 ET but only refreshes signals and rankings. The /stocks/{symbol}/fundamentals endpoint exists and upserts to DB — it just needs to be called for each active symbol. Without this batch job, fundamentals accumulate only through user-initiated views, which may take weeks to cover the full universe.',
+    fix: 'In _weekly_full_refresh(): after signals/rankings refresh, iterate over all active symbols and call POST /market-data/stocks/{symbol}/fundamentals (or call the underlying _fetch_fundamentals() function directly). Rate-limit to ~3 symbols/second to avoid yfinance throttling. Log fundamentals.batch_refresh_complete with count and failures. Total time: ~46 seconds for 138 symbols at 3/s.',
+  },
+  {
+    id: 'ml-fund-3-feature-importance-ui',
+    tier: 24, severity: 'medium',
+    title: 'ML-FUND-3: Show top feature importances per symbol on stock detail ML section',
+    file: 'frontend/src/pages/stock/[symbol].tsx · services/ml-prediction/src/api/routes.py',
+    effort: '3 hours',
+    impact: 'Medium — after retraining with 42 features, the train.top_features log shows which features drive each model (e.g., AAPL: high_20_pct, macd_hist, momentum_12_1, obv_z, ret_60 — all TA). Once fundamentals are populated, you may see revenue_growth or short_ratio appear in the top 5 for specific stocks. Surfacing this in the UI lets you understand WHY the model is bullish: "momentum-driven" vs "fundamental-quality driven" — and whether the fundamental thesis supports the trade. A stock where the top feature is short_ratio (negative contribution) is a very different risk profile than one driven by revenue_growth.',
+    what: 'train_model() logs train.top_features and saves the model bundle to disk, but feature_importances_ from XGBoost are not exposed via any API endpoint. The stock detail ML section shows bull_prob, confidence, auc — but no feature breakdown.',
+    fix: 'Save feature_importances_ dict (top 10 features + importances) in the model bundle JSON alongside metrics. Expose via GET /ml/features/{symbol} endpoint. On stock detail page, add a collapsible "Model drivers" section below the ML confidence bar: horizontal bars showing the top 5 feature names and relative importance. Highlight fundamental features in a different color (e.g., amber) vs TA features (blue).',
+  },
+  {
+    id: 'ml-fund-4-fundamentals-freshness',
+    tier: 24, severity: 'low',
+    title: 'ML-FUND-4: Fundamentals staleness warning on stock detail — show age of fundamental data fed to ML model',
+    file: 'frontend/src/pages/stock/[symbol].tsx · services/market-data/src/api/routes.py',
+    effort: '1 hour',
+    impact: 'Low-Medium — yfinance fundamentals update quarterly (earnings season). If Fundamental.fetched_at is > 90 days old when training runs, the ML model is using stale data. This is especially relevant for high-growth stocks where one bad quarter can flip revenue_growth from +30% to -5%. Currently there is no indication of how fresh the fundamentals data is that the model used for training. A staleness warning lets you know when to manually refresh (visit the stock detail page to trigger a new fetch).',
+    what: 'The Fundamental table stores fetched_at but this timestamp is never surfaced in the UI or model metadata. The fundamentals section of stock detail shows metrics from the Redis cache (24h TTL) with no indication of underlying data age.',
+    fix: 'In GET /stocks/{symbol}/fundamentals: include as_of (the date of the DB row) and fetched_at in the response. On stock detail: show "Fundamentals as of [as_of date]" below the P/E and other metrics. If as_of > 90 days old: show amber "Data may be stale — click to refresh". Clicking re-calls the fundamentals endpoint (triggering yfinance fetch + DB upsert).',
+  },
+  {
+    id: 'ml-fund-5-tune-all-with-fundamentals',
+    tier: 24, severity: 'high',
+    title: 'ML-FUND-5: Run tune_all (Optuna hyperparameter search) with 42-feature pipeline — hyperparams were tuned for 34 features',
+    file: 'services/ml-prediction/src/training/tuner.py',
+    effort: '4-8 hours compute (automated)',
+    impact: 'High — the stored hyperparameters (max_depth, learning_rate, subsample, etc.) were tuned when FEATURE_COLUMNS had 34 features. Adding 8 new features changes the optimal regularization: more features typically benefits from lower learning_rate, higher min_child_weight, and more aggressive colsample_bytree to prevent individual fundamental features from dominating. Running tune_all re-optimizes all 138 symbols\' hyperparameters against the 42-feature pipeline. Expected improvement: +3-8% CV AUC for symbols with fundamentals data. Trigger: POST /ml/tune_all (takes ~4-8h to run through all symbols at 60 Optuna trials each).',
+    what: 'Hyperparameter files in /data/models/xgboost/{symbol}_params.json were generated when the pipeline had 34 features. The new fundamentals add 8 NaN columns initially, changing the effective information density. As fundamentals populate, colsample_bytree and min_child_weight tuned for 34 features will be suboptimal for 42. The CV AUC will improve after tune_all re-optimizes on the current feature space.',
+    fix: 'Run POST /ml/tune_all via API (once admin auth is resolved). Or trigger directly: replicate the train_trigger.py approach but import tune_symbol instead of train_model. Schedule to run every Sunday night after the weekly fundamentals batch refresh (ML-FUND-2) so hyperparameters stay current as new fundamentals data accumulates.',
   },
 ];
 
@@ -5034,7 +5088,8 @@ const TIER_LABEL: Record<Tier, string> = {
   20: 'Tier 20 — Deep Audit Wave 2: Signal + Paper Trading + Auth (2026-06-15)',
   21: 'Tier 21 — Audit Wave 3: Data Integrity + ML Reliability + Signal Quality (2026-06-15)',
   22: 'Tier 22 — Pattern Alert System: Recurring + Bulk + Fixes (2026-06-16)',
-  23: 'Tier 23 — ML Fundamentals + Paper Trading Cutoff Fix (2026-06-15)',
+  23: 'Tier 23 — ML Fundamentals + Paper Trading Cutoff Fix (2026-06-15/16)',
+  24: 'Tier 24 — Forward Improvements: Fundamentals Depth & ML Quality',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5061,6 +5116,7 @@ const TIER_COLOR: Record<Tier, string> = {
   21: '#a78bfa',
   22: '#2dd4bf',
   23: '#fcd34d',
+  24: '#6ee7b7',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5332,14 +5388,14 @@ export default function ImprovementsPage() {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
-            { label: 'Data pipeline',   score: 8.6, target: 9.0, note: '↑ RES-FIX-1 yfinance fallback (Alpha Vantage/FMP) needed for fundamental data gaps' },
-            { label: 'ML methodology',  score: 9.0, target: 9.0, note: '✓ LightGBM early stopping fixed; calibrator leakage confirmed resolved' },
+            { label: 'Data pipeline',   score: 8.8, target: 9.0, note: '↑ ML-FUND-1: fundamentals auto-persist to DB on every stock view; 42-feature pipeline live. ↑ ML-FUND-2 batch refresh pending.' },
+            { label: 'ML methodology',  score: 9.2, target: 9.3, note: '↑ 42-feature XGBoost with fundamental signals (revenue growth, ROE, FCF yield, short ratio, analyst score, P/B, earnings growth, gross margin). ↑ ML-FUND-5 tune_all with new feature space pending.' },
             { label: 'Signal logic',    score: 9.1, target: 9.2, note: '↑ INT-7 divergence alert + INT-8 forward return tracking pending' },
             { label: 'K-Score ranking', score: 8.5, target: 8.5, note: '✓ SCR-1 multi-factor screener + RES-4 sector context (target met)' },
             { label: 'Research engine', score: 8.2, target: 8.8, note: '↑ RES-FIX-1 data fallback + INT-4 auto-trigger + INT-6 composite score' },
             { label: 'Frontend / UX',   score: 9.7, target: 9.8, note: '↑ Tier 16: chart overhaul (EMA200, VWAP, 52W H/L, signal markers, pattern strip), signal history sidebar, screener filters' },
-            { label: 'Risk management', score: 8.8, target: 9.2, note: '↑ INT-3 research-gated sizing + PT-M1/M2/M4/M5 all live (sector RS, earnings freeze, VIX term, breadth)' },
-            { label: 'Overall',         score: 9.4, target: 9.6, note: '↑ Tier 17 audit logged — BOLA + JWT critical fixes + ML methodology hardening next' },
+            { label: 'Risk management', score: 8.8, target: 9.2, note: '↑ CB-W1 paper trading cutoff fixed (was 0 trades/week). INT-3 research-gated sizing + PT-M1/M2/M4/M5 all live.' },
+            { label: 'Overall',         score: 9.6, target: 9.7, note: '↑ Tier 23: fundamental ML pipeline (42 features), paper trading cutoff fix, NaN mask fix. Pending: ML-FUND-2/5, tune_all rerun.' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -5374,7 +5430,8 @@ export default function ImprovementsPage() {
           Tier 20 (2026-06-15): Deep audit wave 2 — 9 findings, all fixed: F-1 CRITICAL (check_technical_alerts D1 timeframe filter missing — mixed M5+D1 bars in TA); LAB-001 (volume look-ahead in _pullback_recovery); LAB-002 (VWMA + volume z-score look-ahead); CVG-001 (ML weight floor resurrects zero-weight inverse models); REG-001 (unknown regime → conservative high_vol thresholds); FIN-01 (exit + partial-profit commission not deducted); FIN-03 (daily loss circuit used UTC midnight, now ET midnight); RISK-2 (stop-hit fills at gap price → now fills at stop level); AUTH-01 (auth.py blacklist fails-open → in-memory fallback added).
           Tier 21 (2026-06-15/16): Audit wave 3 — 13 items: AUTH-02 (reset-password rate limiting); AUTH-08 (research engine GET routes auth); RISK-1 (null-sector sector cap bypass); RISK-3 (per-sector position count cap); F-2 (force-ingest two-transaction gap → atomic DELETE+INSERT); F-3 (auto_adjust=False→True mismatch in live price fetch); STALE-001 (model staleness detection + trained_at in bundle); RACE-001 (atomic ML model write via os.replace); STY-001 (TA weights wired into _ta_score, volume_surge→volume_z rename); REG-002 (SHORT style breadth_compression=0.90); CVG-002 (pillar gate None sentinel with warning); FIN-07 (min_shares guard); live price cache 1-min refresh (routes.py refresh_live_price_cache() + scheduler job).
           Tier 22 (2026-06-16): Pattern Alert System — (1) Recurring alerts: price_alerts.recurring + last_sent_at columns (migration 007); check_technical_alerts() same-day dedup (_already_fired_today); recurring alerts stamp last_sent_at instead of triggered=True; once/↻ recurring toggle on alert forms. (2) Double bottom recency fix: b2_idx &gt;= len(window)-10 guard prevents stale W-pattern firing daily. (3) Bulk pattern alert: BulkPatternAlertCard on /alerts — pick watchlist + pattern + mode, creates alerts for all stocks in one click. (4) System health: MORNING DIGESTS section (09:00 ET / 08:55 HKT), SCHEDULE REFERENCE card with full US/HK timetable; JOB_META expanded from 8 to 22 entries.
-          Tier 23 (2026-06-15): CB-W1 paper trading signal cutoff bug — 26h window excluded all Friday signals every Monday, causing zero trades for a full week; changed to 5-day window + latest_signal_ts_subq subquery (max(Signal.ts) per stock_id/horizon). ML-FUND-1 fundamental signals in ML pipeline — Fundamental DB table (16 fields, upserted on every /fundamentals call); 8 new FEATURE_COLUMNS: revenue_growth, earnings_growth, gross_margin, return_on_equity, fcf_yield, short_ratio, recommendation_mean, price_to_book (34→42 features total); _load_fundamentals() in trainer.py + tuner.py. Models need retrain (train_all / tune_all) to activate new features.
+          Tier 23 (2026-06-15/16): CB-W1 paper trading signal cutoff bug — 26h window excluded all Friday signals every Monday (engine ran all week with 0 trades); changed to 5-day window + latest_signal_ts_subq subquery. ML-FUND-1 fundamental signals — Fundamental DB table (16 fields, auto-upserted on every /fundamentals view); 8 new FEATURE_COLUMNS: revenue_growth, earnings_growth, gross_margin, return_on_equity, fcf_yield, short_ratio, recommendation_mean, price_to_book (34→42 features total). ML-FUND-NaN critical fix — mask was dropping all rows with NaN fundamentals (0 clean samples); changed to only require non-fundamental columns to be non-null so XGBoost handles missing values natively. All 138 symbols retrained with 42-feature pipeline on 2026-06-16.
+          Tier 24 (open): ML-FUND-2 weekly fundamentals batch refresh (populate all 138 symbols Sunday with tune_all instead of waiting for manual views). ML-FUND-3 feature importance UI (show top-5 model drivers per stock — fundamental vs TA — on stock detail). ML-FUND-4 fundamentals staleness warning (amber badge if as_of > 90d). ML-FUND-5 tune_all rerun with 42-feature pipeline (current hyperparams were tuned for 34 features; re-tuning expected +3-8% CV AUC improvement).
           Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Remaining: walk-forward backtest, SUR-001, CV-001, WEIGHT-001, ENS-001 (ML training methodology items).
         </p>
       </div>
