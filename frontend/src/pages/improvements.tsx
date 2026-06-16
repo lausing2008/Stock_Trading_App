@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -4925,6 +4925,56 @@ const ITEMS: Item[] = [
     defaultStatus: 'done',
     implementedNote: 'Done 2026-06-16 — routes.py: refresh_live_price_cache(); scheduler.py: live_price_cache_refresh job every 1 min with market-hours gate; _LIVE_TTL=90s.',
   },
+
+  // ── Tier 22 — Pattern Alert System (2026-06-16) ──────────────────────────
+  {
+    id: 't22-recurring-alerts',
+    tier: 22, severity: 'feature',
+    title: 'Recurring pattern alerts — auto-refire on same-day dedup',
+    file: 'services/market-data/src/services/scheduler.py + api/alerts.py + shared/db/models.py',
+    effort: '3 hours',
+    impact: 'Pattern alerts (golden cross, MACD, RSI bounce, double bottom, breakout, 52-week high/low) previously fired once then required manual re-creation. Now a "recurring" mode keeps alerts permanently active and re-emails every time the pattern fires, gated by same-day dedup to prevent spam from the 5-minute refresh cycle re-reading the same daily bars.',
+    what: 'Technical pattern alerts in PriceAlert were one-shot: triggered=True after first fire, never emailing again. Users had to go to each stock page and re-create alerts manually. The 5-min scheduler re-reads daily bars each cycle — without dedup, a recurring alert would email 50+ times per day from the same crossing event.',
+    fix: 'DB: added recurring BOOLEAN DEFAULT false and last_sent_at TIMESTAMPTZ to price_alerts (migration 007). check_technical_alerts(): query now includes recurring=True alerts; _already_fired_today() skips if last_sent_at.date() >= today; recurring alerts stamp last_sent_at instead of triggered=True. API: AlertCreate + AlertOut include recurring field. UI: Once/↻ Recurring toggle on both alert creation forms.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — migration 007, models.py, alerts.py, scheduler.py check_technical_alerts(), api.ts PriceAlert type.',
+  },
+  {
+    id: 't22-double-bottom-recency',
+    tier: 22, severity: 'high',
+    title: 'Double bottom alert: require second trough within 10 bars',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '15 minutes',
+    impact: 'Without recency check, once a W-pattern forms it stays visible in the 60-bar window for weeks. With same-day dedup this meant one email per market day for potentially 30+ days from the same old formation.',
+    what: 'check_technical_alerts() double bottom detector scans the last 60 bars for two minima. The second bottom (b2_idx) could be 30+ bars old — the pattern remains present for weeks as new bars shift the window. Each market day would have re-fired the alert against the same stale pattern.',
+    fix: 'Added: if b2_idx < len(window) - 10: continue — only fires if the second trough formed within the last 10 daily bars (~2 trading weeks). Ensures alert represents a fresh, actionable setup.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — scheduler.py check_technical_alerts() double_bottom branch: b2_idx >= len(window) - 10 guard.',
+  },
+  {
+    id: 't22-bulk-watchlist-alert',
+    tier: 22, severity: 'feature',
+    title: 'Bulk pattern alert — apply to entire watchlist in one click',
+    file: 'frontend/src/pages/alerts.tsx',
+    effort: '1.5 hours',
+    impact: 'Previously each stock required a separate trip to its detail page to set a pattern alert. With 20-100 stocks per watchlist this was impractical. Now one action creates the chosen pattern alert (golden cross, MACD, RSI bounce etc.) for all stocks simultaneously.',
+    what: 'Alerts page only supported creating one alert at a time via a stock picker dropdown. No bulk operation existed. Users watching 50 stocks would need 50 separate form submissions to set the same golden cross recurring alert across their watchlist.',
+    fix: 'Added BulkPatternAlertCard to alerts.tsx: watchlist picker, pattern picker, once/recurring toggle, "Apply to N stocks" button. On submit, fetches watchlist items via api.listWatchlist(id) then runs Promise.all(items.map(api.createAlert)) with the chosen condition. Button label shows live stock count from selected watchlist.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — alerts.tsx BulkPatternAlertCard component; imports WatchlistMeta + WatchlistItem from api.ts.',
+  },
+  {
+    id: 't22-health-schedule-reference',
+    tier: 22, severity: 'feature',
+    title: 'System health page: morning digest times + schedule reference section',
+    file: 'frontend/src/pages/admin-health.tsx',
+    effort: '1 hour',
+    impact: 'Health page previously showed scheduler jobs with minimal descriptions. Admins had no way to know what each job did, when it ran, or what the full schedule looked like without reading the source code.',
+    what: 'JOB_META had entries for 8 jobs; 7 other job types (morning digests, live price cache, price alerts, DB purge, open/close bursts, 5m intraday) showed as raw job IDs with no description. Morning digest schedule (09:00 ET / 08:55 HKT) was not visible anywhere in the UI.',
+    fix: 'Expanded JOB_META from 8 to 22 entries covering all 15 scheduler job types plus variants. Added MORNING DIGESTS grid section (shows 09:00 ET / 08:55 HKT) prominently. Added SCHEDULE REFERENCE card at bottom: US and HK columns with every phase time, color-coded by type; weekly/always-on footer row.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — admin-health.tsx: JOB_META expanded to 22 entries; MORNING DIGESTS section; SCHEDULE REFERENCE card with US/HK columns.',
+  },
 ];
 
 
@@ -4957,6 +5007,7 @@ const TIER_LABEL: Record<Tier, string> = {
   19: 'Tier 19 — Fresh Code Audit 2026-06-15 (3 Critical · 5 High · 4 Medium)',
   20: 'Tier 20 — Deep Audit Wave 2: Signal + Paper Trading + Auth (2026-06-15)',
   21: 'Tier 21 — Audit Wave 3: Data Integrity + ML Reliability + Signal Quality (2026-06-15)',
+  22: 'Tier 22 — Pattern Alert System: Recurring + Bulk + Fixes (2026-06-16)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -4981,6 +5032,7 @@ const TIER_COLOR: Record<Tier, string> = {
   19: '#f43f5e',
   20: '#4ade80',
   21: '#a78bfa',
+  22: '#2dd4bf',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5052,7 +5104,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -5101,7 +5153,7 @@ export default function ImprovementsPage() {
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>
-          {([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] as const).map(t => (
+          {([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22] as const).map(t => (
             <button key={t} onClick={() => setFilterTier(t as Tier | 0)}
               style={{ padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
                 borderColor: filterTier === t ? TIER_COLOR[t as Tier] ?? '#6366f1' : '#1e293b',
@@ -5293,6 +5345,7 @@ export default function ImprovementsPage() {
           2026-06-15 signal alert stale window fix: check_signal_alerts() extended stale_cutoff from 2 → 4 days to handle Fri close → Mon alert gap. Deployed; 78 conviction keys now set in Redis (48 US + 30 HK). US BUY signals now show conviction gate results instead of — in Signal Filter.
           Tier 20 (2026-06-15): Deep audit wave 2 — 9 findings, all fixed: F-1 CRITICAL (check_technical_alerts D1 timeframe filter missing — mixed M5+D1 bars in TA); LAB-001 (volume look-ahead in _pullback_recovery); LAB-002 (VWMA + volume z-score look-ahead); CVG-001 (ML weight floor resurrects zero-weight inverse models); REG-001 (unknown regime → conservative high_vol thresholds); FIN-01 (exit + partial-profit commission not deducted); FIN-03 (daily loss circuit used UTC midnight, now ET midnight); RISK-2 (stop-hit fills at gap price → now fills at stop level); AUTH-01 (auth.py blacklist fails-open → in-memory fallback added).
           Tier 21 (2026-06-15/16): Audit wave 3 — 13 items: AUTH-02 (reset-password rate limiting); AUTH-08 (research engine GET routes auth); RISK-1 (null-sector sector cap bypass); RISK-3 (per-sector position count cap); F-2 (force-ingest two-transaction gap → atomic DELETE+INSERT); F-3 (auto_adjust=False→True mismatch in live price fetch); STALE-001 (model staleness detection + trained_at in bundle); RACE-001 (atomic ML model write via os.replace); STY-001 (TA weights wired into _ta_score, volume_surge→volume_z rename); REG-002 (SHORT style breadth_compression=0.90); CVG-002 (pillar gate None sentinel with warning); FIN-07 (min_shares guard); live price cache 1-min refresh (routes.py refresh_live_price_cache() + scheduler job).
+          Tier 22 (2026-06-16): Pattern Alert System — (1) Recurring alerts: price_alerts.recurring + last_sent_at columns (migration 007); check_technical_alerts() same-day dedup (_already_fired_today); recurring alerts stamp last_sent_at instead of triggered=True; once/↻ recurring toggle on alert forms. (2) Double bottom recency fix: b2_idx >= len(window)-10 guard prevents stale W-pattern firing daily. (3) Bulk pattern alert: BulkPatternAlertCard on /alerts — pick watchlist + pattern + mode, creates alerts for all stocks in one click. (4) System health: MORNING DIGESTS section (09:00 ET / 08:55 HKT), SCHEDULE REFERENCE card with full US/HK timetable; JOB_META expanded from 8 → 22 entries.
           Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Remaining: walk-forward backtest, SUR-001, CV-001, WEIGHT-001, ENS-001 (ML training methodology items).
         </p>
       </div>
