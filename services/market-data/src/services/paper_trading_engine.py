@@ -52,6 +52,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "trading_style":        "GROWTH",  # which signal horizon to trade
     "max_positions":        10,
     "max_sector_pct":       0.30,      # max 30% in one sector
+    "max_sector_positions": 3,         # max positions per sector (RISK-3)
     "risk_per_trade_pct":   0.01,      # risk 1% of equity per trade
     "max_position_pct":     0.10,      # cap any single position at 10% of equity
     # Signal.confidence = abs(bull_probability - 0.5) × 200
@@ -1675,6 +1676,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         shares         = round(shares, 4)
         position_value = round(shares * live_price, 2)
 
+        # FIN-07: skip near-zero share positions that would pollute the journal
+        if shares < 0.01 or position_value <= 0:
+            log.info("paper.skip_min_shares", symbol=stock.symbol,
+                     shares=shares, position_value=position_value)
+            continue
+
         # Cap position at max_position_pct of equity
         max_pos = equity * cfg["max_position_pct"] * earnings_size_mult
         if position_value > max_pos:
@@ -1699,13 +1706,19 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                          limit_pct=round(max_open_risk * 100, 1))
                 continue
 
-        # Sector concentration check using actual position_value
-        if stock.sector:
-            sector_value = _sector_value(session, portfolio, stock.sector, live_prices)
-            if (sector_value + position_value) / max(equity, 1) > cfg["max_sector_pct"]:
-                log.info("paper.skip_sector_cap", symbol=stock.symbol,
-                         sector=stock.sector, sector_pct=round((sector_value + position_value) / equity * 100, 1))
-                continue
+        # Sector concentration check — applies to ALL stocks, including null-sector ones
+        _sector = stock.sector  # may be None (unclassified stocks count against a shared bucket)
+        sector_value = _sector_value(session, portfolio, _sector, live_prices)
+        if (sector_value + position_value) / max(equity, 1) > cfg["max_sector_pct"]:
+            log.info("paper.skip_sector_cap", symbol=stock.symbol,
+                     sector=_sector or "unclassified",
+                     sector_pct=round((sector_value + position_value) / equity * 100, 1))
+            continue
+        max_sector_pos = int(cfg.get("max_sector_positions", 3))
+        if _sector_count(session, portfolio, _sector) >= max_sector_pos:
+            log.info("paper.skip_sector_count_cap", symbol=stock.symbol,
+                     sector=_sector or "unclassified", limit=max_sector_pos)
+            continue
 
         # Ensure we have the cash
         if position_value > portfolio.current_cash * 0.98:
@@ -1787,20 +1800,27 @@ def _compute_equity(session, portfolio: PaperPortfolio, live_prices: dict[str, f
     return portfolio.current_cash + positions_value
 
 
-def _sector_value(session, portfolio: PaperPortfolio, sector: str, live_prices: dict[str, float]) -> float:
-    """Dollar value of open trades in the given sector."""
-    rows = session.execute(
+def _sector_value(session, portfolio: PaperPortfolio, sector: str | None, live_prices: dict[str, float]) -> float:
+    """Dollar value of open trades in the given sector (None = unclassified stocks)."""
+    q = (
         select(PaperTrade, Stock)
         .join(Stock, PaperTrade.symbol == Stock.symbol)
-        .where(
-            PaperTrade.portfolio_id == portfolio.id,
-            PaperTrade.stage == "open",
-            Stock.sector == sector,
-        )
-    ).all()
-    return sum(
-        _best_price(t, live_prices) * t.shares for t, _ in rows
+        .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
     )
+    q = q.where(Stock.sector.is_(None)) if not sector else q.where(Stock.sector == sector)
+    return sum(_best_price(t, live_prices) * t.shares for t, _ in session.execute(q).all())
+
+
+def _sector_count(session, portfolio: PaperPortfolio, sector: str | None) -> int:
+    """Number of open positions in the given sector (None = unclassified)."""
+    q = (
+        select(func.count())
+        .select_from(PaperTrade)
+        .join(Stock, PaperTrade.symbol == Stock.symbol)
+        .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
+    )
+    q = q.where(Stock.sector.is_(None)) if not sector else q.where(Stock.sector == sector)
+    return session.execute(q).scalar() or 0
 
 
 # ── Equity curve snapshot ─────────────────────────────────────────────────────

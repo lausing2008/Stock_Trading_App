@@ -118,7 +118,7 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
             prev_close = getattr(fi, "previous_close", None)
         except Exception as fallback_exc:
             log.info("yfinance.fast_info.fallback", symbol=symbol, error=str(fallback_exc))
-            hist = ticker.history(period="2d", interval="1d", auto_adjust=False)
+            hist = ticker.history(period="2d", interval="1d", auto_adjust=True)
             if hist is not None and not hist.empty and "Close" in hist.columns:
                 if isinstance(hist.index, pd.MultiIndex):
                     hist.index = hist.index.droplevel(0)
@@ -170,7 +170,7 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
             symbols,
             period="2d",
             interval="1d",
-            auto_adjust=False,
+            auto_adjust=True,
             progress=False,
             group_by="ticker",
         )

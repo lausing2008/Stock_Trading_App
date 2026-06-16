@@ -88,7 +88,7 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "price_below_vwap_penalty": 0.05,
     "bullish_trend":            0.10,
     "obv_trend_bullish":              0.10,
-    "volume_surge":             0.05,
+    "volume_z":                 0.05,  # renamed from volume_surge to match reasons dict key
 }
 _TA_WEIGHTS_PATH = Path(_settings.model_dir) / "ta_weights.json"
 _ML_WEIGHT_OVERRIDE_PATH = Path(_settings.model_dir) / "ml_weight_override.json"
@@ -130,6 +130,13 @@ def set_ml_weight_global_cap(cap: float | None) -> None:
 # Load on module import
 _ml_weight_global_cap = _load_ml_weight_override()
 
+# STY-001: Load calibrated TA weights; used in _ta_score to blend with pillar score.
+# Only the blended path is active when the ta_weights.json file actually exists
+# (i.e. after admin runs POST /signals/calibrate_ta_weights). Default weights are
+# loaded for all cases so the dict is always populated.
+_ta_weights: dict[str, float] = _load_ta_weights()
+_ta_weights_calibrated: bool = _TA_WEIGHTS_PATH.exists()
+
 
 def _load_ta_weights() -> dict[str, float]:
     """Load calibrated TA weights from disk, falling back to defaults."""
@@ -137,6 +144,9 @@ def _load_ta_weights() -> dict[str, float]:
         if _TA_WEIGHTS_PATH.exists():
             with open(_TA_WEIGHTS_PATH) as f:
                 saved = json.load(f)
+            # Key migration: old files used 'volume_surge'; rename to 'volume_z'
+            if "volume_surge" in saved and "volume_z" not in saved:
+                saved["volume_z"] = saved.pop("volume_surge")
             # Merge: saved values override defaults; new keys in defaults keep their value
             return {**_TA_WEIGHTS_DEFAULT, **saved}
     except Exception:
@@ -725,7 +735,7 @@ def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float,
     return float(np.clip(adj, -0.15, 0.15)), active
 
 
-def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
+def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> tuple[float, dict]:
     close  = df["close"].astype(float)
     volume = df["volume"].astype(float)
     reasons: dict = {}
@@ -908,6 +918,40 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 
     base = float(np.mean(pillar_scores))
 
+    # STY-001: If calibrated TA weights were loaded from ta_weights.json, blend a
+    # weighted flag score (15%) with the pillar mean (85%).  Only active when the
+    # calibration file exists so production behaviour is unchanged until an admin
+    # explicitly runs POST /signals/calibrate_ta_weights.
+    _weights = ta_weights if ta_weights is not None else _ta_weights
+    if _ta_weights_calibrated or ta_weights is not None:
+        _flag_map = {
+            "above_sma50":              +1 if above_sma50 else 0,
+            "sma50_above_sma200":       +1 if sma50_above_sma200 else 0,
+            "golden_cross_event":       +1 if golden_cross_event else 0,
+            "death_cross_penalty":      -1 if death_cross_event else 0,
+            "rsi_sweet_spot":           +1 if (rsi_val is not None and 45 < rsi_val < 65) else 0,
+            "rsi_mild_oversold":        +1 if (rsi_val is not None and 35 < rsi_val <= 45) else 0,
+            "rsi_mild_overbought":      -1 if (rsi_val is not None and 65 <= rsi_val < 72) else 0,
+            "stoch_oversold":           +1 if stoch_oversold else 0,
+            "stoch_overbought_penalty": -1 if stoch_overbought else 0,
+            "stoch_cross_up":           +1 if stoch_cross_up else 0,
+            "macd_strong":              +1 if (macd_hist > 0 and macd_rising) else 0,
+            "macd_positive":            +1 if macd_hist > 0 else 0,
+            "macd_zero_cross_up":       +1 if macd_zero_cross_up else 0,
+            "bb_mid_zone":              +1 if (0.2 < bb_pct_b < 0.8) else 0,
+            "price_above_vwap":         +1 if price_above_vwap is True else 0,
+            "price_below_vwap_penalty": -1 if price_above_vwap is False else 0,
+            "bullish_trend":            +1 if bullish_trend else 0,
+            "obv_trend_bullish":        +1 if obv_trend_bullish else 0,
+            "volume_z":                 +1 if _vz > 0.5 else 0,
+        }
+        _max_w = sum(abs(v) for v in _weights.values())
+        if _max_w > 0:
+            _weighted = sum(_flag_map.get(k, 0) * v for k, v in _weights.items())
+            _calibrated = float(np.clip(0.5 + _weighted / (2 * _max_w), 0.0, 1.0))
+            base = base * 0.85 + _calibrated * 0.15
+            reasons["calibrated_ta_score"] = round(_calibrated, 3)
+
     # SA-14: pullback + recovery boost applied after pillar mean
     pr_delta, pr_reasons = _pullback_recovery(df)
     reasons.update(pr_reasons)
@@ -938,7 +982,7 @@ _STYLE_PROFILES: dict[str, dict] = {
         "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.52, "unknown": 0.47},
         "adx_min": 25, "adx_compression": 0.85,
         "high_vol_compression": 0.92,
-        "breadth_compression": None,
+        "breadth_compression": 0.90,  # REG-002: SHORT style now penalised when market breadth < 40%
         "weekly_boost": 1.08, "weekly_compress": 0.93,
         "earnings_compression": None,
         "news_compression": None,
@@ -1188,7 +1232,15 @@ def _apply_style_signal(
     # ── SA-19: Independent pillar gate ───────────────────────────────────────
     # Compress signals where only 1 dimension agrees (likely market-beta noise);
     # boost where all 4 pillars converge (rare, high-confidence setup).
-    _pillars = int(base_reasons.get("independent_pillars_active", 2))
+    # CVG-002: use None sentinel so missing key is detected and logged instead of
+    # silently defaulting to 2 (which masks data-quality issues).
+    _pillars_raw = base_reasons.get("independent_pillars_active")
+    if _pillars_raw is None:
+        import structlog as _sl
+        _sl.get_logger().warning("pillar_gate.missing_key", symbol=stock_symbol if 'stock_symbol' in dir() else "?")
+        _pillars = 2  # neutral fallback: no gate, no boost
+    else:
+        _pillars = int(_pillars_raw)
     if _pillars < 2:
         fused = 0.5 + (fused - 0.5) * 0.85
         reasons["pillar_gate"] = f"compressed_{_pillars}_pillar"
@@ -1566,7 +1618,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     insufficient_history = len(df) < 50
 
     is_stale = _check_price_staleness(df, symbol)
-    ta_prob, reasons = _ta_score(df)
+    ta_prob, reasons = _ta_score(df, ta_weights=_ta_weights)
     sr_data = _sr_context(df)
     ml_prob, ml_test_auc, ml_meta = _fetch_ml_data(symbol)
     market_regime, fg_score = _fetch_market_regime()

@@ -1266,7 +1266,7 @@ def _yf_sync_fetch(sym: str):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/batch")
-async def get_research_batch(symbols: str):
+async def get_research_batch(symbols: str, _: str = Depends(get_current_username)):
     """Return lightweight research summaries for multiple symbols (comma-separated).
     INT-10: Used by Opportunities page to show research chips on signal cards.
     Returns only: recommendation, overall_score, confidence, generated_at per symbol.
@@ -1300,7 +1300,7 @@ async def get_research_batch(symbols: str):
 
 
 @router.get("/{symbol}/summary")
-async def get_research_summary(symbol: str):
+async def get_research_summary(symbol: str, _: str = Depends(get_current_username)):
     """Return lightweight cached research summary (INT-1: research badge on stock detail page).
     Returns: recommendation, overall_score, confidence, generated_at.
     404 if no cached report exists.
@@ -1326,7 +1326,7 @@ async def get_research_summary(symbol: str):
 
 
 @router.get("/{symbol}")
-async def get_research(symbol: str):
+async def get_research(symbol: str, _: str = Depends(get_current_username)):
     """Return cached research report (generated within last 24h)."""
     try:
         sym = _sanitise_symbol(symbol)

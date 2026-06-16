@@ -232,19 +232,24 @@ def logout(creds: HTTPAuthorizationCredentials | None = Depends(_security)):
 
 
 @router.post("/reset-password")
-def reset_password_public(body: ResetPasswordRequest, session: Session = Depends(get_session)):
+def reset_password_public(request: Request, body: ResetPasswordRequest, session: Session = Depends(get_session)):
     """Password reset without JWT — requires old password for verification."""
+    ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(ip)
     user = session.execute(
         select(User).where(User.username == body.username.lower())
     ).scalar_one_or_none()
     if not user:
+        _record_login_failure(ip)
         raise HTTPException(404, "User not found")
     if not _verify_password(body.old_password, user.password_hash):
+        _record_login_failure(ip)
         raise HTTPException(401, "Current password is incorrect")
     if len(body.new_password) < 8:
         raise HTTPException(400, "New password must be at least 8 characters")
     user.password_hash = _hash_password(body.new_password)
     session.commit()
+    _clear_rate_limit(ip)
     return {"status": "ok"}
 
 

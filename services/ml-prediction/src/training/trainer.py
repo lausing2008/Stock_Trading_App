@@ -1,7 +1,9 @@
 """Trainer — walks the DB for price history, builds features, fits & persists."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+import os
+import tempfile
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -394,7 +396,7 @@ def train_model(
     path = _artifact_path(symbol, model_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     import joblib
-    joblib.dump({
+    bundle = {
         "model": model,
         "scaler": scaler,
         "calibrator": calibrator,
@@ -404,7 +406,22 @@ def train_model(
         "feature_columns": list(FEATURE_COLUMNS),
         "feature_importance": feature_importance,
         "oos_suppressed": oos_suppressed,
-    }, path)
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # RACE-001: atomic write — write to a temp file in the same directory, then rename.
+    # joblib.dump to the final path directly can produce a corrupt read if a prediction
+    # request hits joblib.load mid-write. os.replace() is atomic on POSIX.
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        os.close(tmp_fd)
+        joblib.dump(bundle, tmp_path)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     log.info("train.done", symbol=symbol, model=model_name, **{k: v for k, v in metrics.items() if v is not None})
     return {"symbol": symbol, "model": model_name, "path": str(path), "metrics": metrics}
@@ -419,8 +436,13 @@ def load_trained(symbol: str, model_name: str) -> tuple[BaseModel, StandardScale
     return bundle["model"], bundle["scaler"], bundle["metrics"]
 
 
+_MODEL_STALE_DAYS = 30  # warn when a model artifact is older than this
+
+
 def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -> dict:
     import joblib
+    import structlog as _slog
+    _log = _slog.get_logger()
     path = _artifact_path(symbol, model_name)
     if not path.exists():
         raise FileNotFoundError(f"No trained model at {path}")
@@ -430,6 +452,21 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     calibrator = bundle.get("calibrator")
     buy_threshold = bundle.get("buy_threshold", 0.5)
     saved_cols = bundle.get("feature_columns", list(FEATURE_COLUMNS))
+
+    # STALE-001: warn when the model artifact is older than _MODEL_STALE_DAYS
+    trained_at_str = bundle.get("trained_at")
+    model_age_days: int | None = None
+    if trained_at_str:
+        try:
+            trained_at = datetime.fromisoformat(trained_at_str)
+            if trained_at.tzinfo is None:
+                trained_at = trained_at.replace(tzinfo=timezone.utc)
+            model_age_days = (datetime.now(timezone.utc) - trained_at).days
+            if model_age_days > _MODEL_STALE_DAYS:
+                _log.warning("model.stale", symbol=symbol, model=model_name,
+                             trained_at=trained_at_str, age_days=model_age_days)
+        except Exception:
+            pass
 
     df = _load_prices(symbol, lookback_days=400)
 
@@ -483,6 +520,8 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
         "confidence": round(abs(prob - 0.5) * 200, 2),
         "horizon_days": horizon,
         "metrics": bundle.get("metrics", {}),
+        "trained_at": bundle.get("trained_at"),
+        "model_age_days": model_age_days,
     }
 
 

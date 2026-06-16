@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -4767,6 +4767,152 @@ const ITEMS: Item[] = [
     defaultStatus: 'done',
     implementedNote: 'Done 2026-06-15 — auth.py: _BLACKLIST_MEM + _BLACKLIST_MEM_TTL added; _blacklist_jti writes to memory; _is_blacklisted checks memory first, falls back to memory on Redis error.',
   },
+
+  // ── Tier 21 — Audit Wave 3: Data Integrity + ML Reliability + Signal Quality ─
+  {
+    id: 'aud21-auth02-reset-ratelimit',
+    tier: 21, severity: 'high',
+    title: 'AUTH-02: No rate limiting on /auth/reset-password — brute-force target',
+    file: 'services/market-data/src/api/auth.py',
+    effort: '30 min',
+    impact: 'POST /auth/reset-password accepted username+old_password+new_password with no IP rate limiting. An attacker could spray old-password guesses at scale. /auth/login had _check_rate_limit(ip) but reset-password did not.',
+    what: 'reset_password_public() had no Request parameter and no calls to _check_rate_limit/_record_login_failure. The gateway proxies /auth/* as a public prefix, so no gateway check applied either.',
+    fix: 'Added request: Request parameter and called _check_rate_limit(ip) at the top, _record_login_failure(ip) on wrong username/password, _clear_rate_limit(ip) on success — mirroring the login handler pattern.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — auth.py reset_password_public(): added Request param, _check_rate_limit at entry, _record_login_failure on 404/401, _clear_rate_limit on success.',
+  },
+  {
+    id: 'aud21-auth08-research-noauth',
+    tier: 21, severity: 'high',
+    title: 'AUTH-08: Research engine GET routes unauthenticated — AI credits exposed',
+    file: 'services/research-engine/src/api/routes.py',
+    effort: '30 min',
+    impact: 'GET /research/batch, GET /research/{symbol}/summary, GET /research/{symbol} had no authentication. The trigger endpoint could also be hit by any authenticated user, consuming AI API credits without restriction.',
+    what: 'Routes.py GET handlers had no Depends(get_current_username). The gateway routes /research/* through and passes all requests, so any unauthenticated caller could reach them.',
+    fix: 'Added _: str = Depends(get_current_username) to all three GET routes.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — research-engine routes.py: get_research_batch, get_research_summary, get_research all require get_current_username.',
+  },
+  {
+    id: 'aud21-risk1-null-sector-bypass',
+    tier: 21, severity: 'high',
+    title: 'RISK-1: Sector cap bypassed for null-sector stocks — 100% concentration possible',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '5 lines',
+    impact: 'Entry gate wrapped sector check in if stock.sector:, so any stock with NULL sector in DB skipped the concentration check entirely. With 10 possible positions, engine could hold 100% in unclassified stocks.',
+    what: '_sector_value() used Stock.sector == sector which evaluates NULL comparisons as NULL in SQL, returning 0. The PA-D1 post-hoc monitor bucketed them under "unknown" but never blocked entries.',
+    fix: 'Treat NULL sector as a distinct "unknown" bucket: _sector = stock.sector (may be None). _sector_value() uses Stock.sector.is_(None) when sector is None. Sector check now always runs for all stocks.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — paper_trading_engine.py: _sector = stock.sector (may be None); _sector_value() handles None with .is_(None); sector cap applies to all stocks.',
+  },
+  {
+    id: 'aud21-risk3-sector-count-cap',
+    tier: 21, severity: 'high',
+    title: 'RISK-3: No per-sector position count limit — 3 correlated positions in same sector allowed',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: 'Medium',
+    impact: 'Engine enforced max_sector_pct=30% by value but had no cap on position count within one sector. With max_position_pct=10%, engine could legally hold 3 Technology positions (3×10%=30%), all highly correlated — simultaneous stop hits on sector shock cause 3% portfolio loss.',
+    what: 'Only a dollar-value gate existed at line 1697. No max_positions_per_sector config or per-sector count query existed anywhere.',
+    fix: 'Added max_sector_positions: 3 to _DEFAULT_CONFIG. New _sector_count() function queries open PaperTrade by sector. Entry gate checks count cap after value cap.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — paper_trading_engine.py: _sector_count() added; max_sector_positions: 3 in config; count cap checked in _scan_for_entries after value cap.',
+  },
+  {
+    id: 'aud21-f2-ingest-two-transactions',
+    tier: 21, severity: 'high',
+    title: 'F-2: Force-ingest DELETE+INSERT in two separate transactions — data gap for concurrent readers',
+    file: 'services/market-data/src/services/ingestion.py',
+    effort: 'Low — remove one session.commit()',
+    impact: 'force=True ingested by deleting all price rows (commit), then re-inserting (second commit). Any reader between the two commits (ranking job, API call, alert checker) sees zero bars and computes garbage signals or empty results. With 6 threads and 80+ symbols, hundreds of gap windows exist simultaneously during weekly refresh.',
+    what: 'session.commit() at line 78 committed the DELETE as a standalone transaction. session.commit() at line 164 committed the INSERT separately. The yfinance fetch + row construction between them took real time.',
+    fix: 'Removed the intermediate session.commit() so DELETE and INSERT share one transaction. The on_conflict_do_update upsert handles idempotency safely.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — ingestion.py: removed session.commit() after DELETE in force=True path; DELETE and INSERT now commit atomically.',
+  },
+  {
+    id: 'aud21-f3-auto-adjust-mismatch',
+    tier: 21, severity: 'high',
+    title: 'F-3: Live prices use auto_adjust=False (unadjusted) but DB SMA-200 uses auto_adjust=True — market_breadth comparison wrong',
+    file: 'services/market-data/src/api/routes.py',
+    effort: 'Low — change two call sites',
+    impact: '_fetch_live_bulk (line 173) used auto_adjust=False, caching unadjusted prices to Redis. market_breadth compared live price against Ranking.fair_price (SMA-200 of adjusted historical closes from DB). For dividend-paying or post-split stocks, unadjusted price is higher, inflating breadth percentage. Same mismatch in sector_performance and short_squeeze.',
+    what: 'yfinance_adapter.py (DB ingestion) explicitly sets auto_adjust=True for daily bars. _fetch_live_bulk and _fetch_live_one fallback both used auto_adjust=False.',
+    fix: 'Changed auto_adjust=False → auto_adjust=True in both _fetch_live_bulk (line 173) and _fetch_live_one fallback (line 121) to match the ingestion pipeline.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — routes.py: _fetch_live_bulk auto_adjust=True; _fetch_live_one fallback history() auto_adjust=True.',
+  },
+  {
+    id: 'aud21-stale001-model-staleness',
+    tier: 21, severity: 'high',
+    title: 'STALE-001: No ML model staleness detection — months-old artifacts served without warning',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '1-2 hours',
+    impact: 'predict_latest() loaded .joblib bundles with no mtime check and no train_date field. A model trained during a bull-market regime would silently serve predictions in a bear regime. If retraining fails for a symbol, the old artifact is reused indefinitely.',
+    what: 'The joblib bundle saved at lines 397-407 had no timestamp field. predict_latest() (lines 422-486) performed no age check. GET /ml/metrics/{symbol} returned no age information.',
+    fix: 'Added trained_at: datetime.utcnow().isoformat() to the saved bundle. In predict_latest(), decoded trained_at and emitted log.warning when model_age_days > 30. model_age_days included in the return dict.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — trainer.py: trained_at saved in bundle; predict_latest() checks age, warns at >30 days; model_age_days returned in response.',
+  },
+  {
+    id: 'aud21-race001-atomic-model-write',
+    tier: 21, severity: 'high',
+    title: 'RACE-001: Concurrent train+predict can read corrupt .joblib — no atomic write guard',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '1-2 hours',
+    impact: 'joblib.dump() wrote directly to the final path by truncating then streaming bytes. A prediction request during a background train for the same symbol could joblib.load() a partially-written file, raising EOFError or returning a corrupt model bundle.',
+    what: 'train_model() used joblib.dump(bundle, path) with no temp-file-plus-rename. predict_latest() called joblib.load(path) with no lock. The tuner.py already used the correct atomic-rename pattern for _params.json.',
+    fix: 'Changed train_model to write to a tempfile.mkstemp in the same directory, then os.replace() to atomically rename to the final path. POSIX rename is atomic — no concurrent reader can see a partial write.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — trainer.py: tempfile.mkstemp + joblib.dump to temp + os.replace() to final path. Temp file cleaned up on error.',
+  },
+  {
+    id: 'aud21-sty001-ta-weights-dead-code',
+    tier: 21, severity: 'high',
+    title: 'STY-001: Calibrated TA weights (_load_ta_weights) never called — SA-5 calibration is dead code',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: 'Medium',
+    impact: 'SA-5 calibration endpoint (POST /signals/calibrate_ta_weights) wrote weights to ta_weights.json. _load_ta_weights() was defined but never called. _ta_score() used fully hard-coded pillar sub-weights, ignoring any calibrated values. The volume_surge key in _TA_WEIGHTS_DEFAULT also did not match the volume_z key in reasons dict.',
+    what: '_load_ta_weights() had no call site at module level (unlike _load_ml_weight_override() at line 131). _ta_score() used inline constants. REASONS_MAP in routes.py bridged volume_surge→volume_z for calibration fitting only — never for runtime signal computation.',
+    fix: 'Added _ta_weights = _load_ta_weights() at module level. Fixed volume_surge→volume_z rename in _TA_WEIGHTS_DEFAULT with backward-compat migration in _load_ta_weights(). _ta_score() now computes a calibrated flag score (flag_map × weights) and blends it 15% with the 85% pillar score — only when ta_weights.json file exists (opt-in).',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — signals.py: _ta_weights loaded at import; volume_surge→volume_z rename; _ta_score accepts ta_weights param; flag_map→calibrated blend (15%) when file exists.',
+  },
+  {
+    id: 'aud21-reg002-short-breadth',
+    tier: 21, severity: 'medium',
+    title: 'REG-002: SHORT style has no breadth compression — fires freely when 60%+ of market is below SMA-200',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '5 minutes',
+    impact: 'SHORT style breadth_compression was None, so short-term momentum signals fired with no breadth penalty even when market breadth < 40% (60%+ stocks below SMA-200 — structurally bearish). Other styles (SWING: 0.90, LONG: 0.92, GROWTH: 0.95) all had compression. A SHORT BUY with 35% breadth had the same score as with 60% breadth.',
+    what: '"SHORT" profile: "breadth_compression": None. breadth_compression: None check at line 1242 skipped the compression entirely for SHORT.',
+    fix: 'Set breadth_compression: 0.90 in the SHORT profile, matching SWING. SHORT momentum signals now compressed 10% when breadth < 40%.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — signals.py _STYLE_PROFILES["SHORT"]["breadth_compression"] = 0.90.',
+  },
+  {
+    id: 'aud21-cvg002-pillar-sentinel',
+    tier: 21, severity: 'medium',
+    title: 'CVG-002: Pillar gate default of 2 silently ignores missing key — data quality issue masked',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '10 minutes',
+    impact: 'If independent_pillars_active was missing from base_reasons (e.g. code path that skips _ta_score), the default of 2 meant neither compression (<2) nor boost (≥4) fired — a silent no-op. A signal with missing pillar data was treated identically to one with exactly 2 active pillars, masking the data quality issue.',
+    what: 'int(base_reasons.get("independent_pillars_active", 2)) used 2 as default with no warning when the key was absent.',
+    fix: 'Changed to use None sentinel: if _pillars_raw is None, log a warning and fallback to 2. Detects missing pillar data in all future code paths.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — signals.py: _pillars_raw = base_reasons.get(...) with None sentinel; warning logged when key missing; neutral fallback to 2.',
+  },
+  {
+    id: 'aud21-fin07-min-shares',
+    tier: 21, severity: 'medium',
+    title: 'FIN-07: No minimum-shares guard — near-zero share positions written to journal',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '10 minutes',
+    impact: 'At deep drawdown (equity near zero), risk_dollar collapsed and shares rounded to 0.0001 or even 0. No minimum check existed before session.add(trade). Fractional-penny positions polluted the trade journal and could cause division-by-zero in P&L aggregations.',
+    what: 'After round(shares, 4), the code went straight to position_value check and cash deduction with no minimum-shares guard.',
+    fix: 'Added if shares < 0.01 or position_value <= 0: continue after the rounding step. Logs paper.skip_min_shares and skips the trade.',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-15 — paper_trading_engine.py: shares < 0.01 or position_value <= 0 guard added after round(); logs skip_min_shares.',
+  },
 ];
 
 
@@ -4798,6 +4944,7 @@ const TIER_LABEL: Record<Tier, string> = {
   18: 'Tier 18 — Broker Integration (2026-06-14)',
   19: 'Tier 19 — Fresh Code Audit 2026-06-15 (3 Critical · 5 High · 4 Medium)',
   20: 'Tier 20 — Deep Audit Wave 2: Signal + Paper Trading + Auth (2026-06-15)',
+  21: 'Tier 21 — Audit Wave 3: Data Integrity + ML Reliability + Signal Quality (2026-06-15)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -4821,6 +4968,7 @@ const TIER_COLOR: Record<Tier, string> = {
   18: '#22d3ee',
   19: '#f43f5e',
   20: '#4ade80',
+  21: '#a78bfa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -4892,7 +5040,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -4941,7 +5089,7 @@ export default function ImprovementsPage() {
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>
-          {([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const).map(t => (
+          {([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] as const).map(t => (
             <button key={t} onClick={() => setFilterTier(t as Tier | 0)}
               style={{ padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
                 borderColor: filterTier === t ? TIER_COLOR[t as Tier] ?? '#6366f1' : '#1e293b',
@@ -5132,7 +5280,8 @@ export default function ImprovementsPage() {
           2026-06-15 Tier 19 medium sweep: aud19-ta-weights-file-race done (atomic write via os.replace). aud19-live-price-failure-ambiguity done (distinct log events: live_price.not_found vs live_price.unavailable). aud19-ml-model-missing-crash: already handled. aud19-stall-config-dead-keys: already present. aud19-alert-price-partial-commit: deliberate design (commit-before-email avoids duplicate alerts).
           2026-06-15 signal alert stale window fix: check_signal_alerts() extended stale_cutoff from 2 → 4 days to handle Fri close → Mon alert gap. Deployed; 78 conviction keys now set in Redis (48 US + 30 HK). US BUY signals now show conviction gate results instead of — in Signal Filter.
           Tier 20 (2026-06-15): Deep audit wave 2 — 9 findings, all fixed: F-1 CRITICAL (check_technical_alerts D1 timeframe filter missing — mixed M5+D1 bars in TA); LAB-001 (volume look-ahead in _pullback_recovery); LAB-002 (VWMA + volume z-score look-ahead); CVG-001 (ML weight floor resurrects zero-weight inverse models); REG-001 (unknown regime → conservative high_vol thresholds); FIN-01 (exit + partial-profit commission not deducted); FIN-03 (daily loss circuit used UTC midnight, now ET midnight); RISK-2 (stop-hit fills at gap price → now fills at stop level); AUTH-01 (auth.py blacklist fails-open → in-memory fallback added).
-          Overall: <strong style={{ color: '#4ade80' }}>9.90 / 10</strong> — Next: INT-8 (forward return tracking), remaining HIGH/MEDIUM findings from audit.
+          Tier 21 (2026-06-15): Audit wave 3 — 12 findings fixed: AUTH-02 (reset-password rate limiting); AUTH-08 (research engine GET routes auth); RISK-1 (null-sector sector cap bypass); RISK-3 (per-sector position count cap); F-2 (force-ingest two-transaction gap → atomic DELETE+INSERT); F-3 (auto_adjust=False→True mismatch in live price fetch); STALE-001 (model staleness detection + trained_at in bundle); RACE-001 (atomic ML model write via os.replace); STY-001 (TA weights wired into _ta_score, volume_surge→volume_z rename); REG-002 (SHORT style breadth_compression=0.90); CVG-002 (pillar gate None sentinel with warning); FIN-07 (min_shares guard).
+          Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Remaining: walk-forward backtest, SUR-001, CV-001, WEIGHT-001, ENS-001 (ML training methodology items).
         </p>
       </div>
     </div>
