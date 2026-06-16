@@ -57,7 +57,7 @@ def _get_redis() -> redis_lib.Redis:
     return _redis
 
 _LIVE_KEY = "stockai:live_prices"
-_LIVE_TTL = 60  # seconds
+_LIVE_TTL = 90  # seconds — refreshed every 1 min by scheduler; 90s gives a 30s buffer
 
 
 class StockOut(BaseModel):
@@ -608,6 +608,32 @@ def latest_prices(
 
     log.info("live_prices.ok", count=len(bulk_results), source="yfinance_bulk")
     return bulk_results
+
+
+def refresh_live_price_cache() -> int:
+    """Fetch live prices for all active stocks and write to Redis.
+
+    Designed to be called by the scheduler every minute during market hours.
+    Returns the number of symbols successfully refreshed, or 0 on failure.
+    Intentionally lightweight — no DB writes, no ranking/signal computation.
+    """
+    from db import SessionLocal
+    try:
+        with SessionLocal() as session:
+            stocks = list(session.execute(
+                select(Stock.symbol, Stock.currency).where(Stock.active.is_(True))
+            ).all())
+        if not stocks:
+            return 0
+        results = _fetch_live_bulk(stocks)
+        if results:
+            _get_redis().setex(_LIVE_KEY, _LIVE_TTL, json.dumps(results))
+            log.info("live_prices.cache_refresh", count=len(results))
+            return len(results)
+        return 0
+    except Exception as exc:
+        log.warning("live_prices.cache_refresh_failed", error=str(exc))
+        return 0
 
 
 class FundamentalsOut(BaseModel):

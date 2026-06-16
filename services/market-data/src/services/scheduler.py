@@ -75,6 +75,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func
 
@@ -86,6 +87,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 from .ingestion import ingest_universe
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
+from ..api.routes import refresh_live_price_cache
 
 log = get_logger("scheduler")
 _settings = get_settings()
@@ -1732,6 +1734,32 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="price_alert_check",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── Live price cache refresh — every minute during market hours ──────────
+    # Lightweight: one yf.download() bulk call → Redis write. No DB writes,
+    # no ranking/signal computation. Keeps the UI price display current
+    # between the 5-minute full refresh cycles.
+    # Gated to US+HK combined market hours (09:00–17:00 ET or 09:00–17:00 HKT)
+    # so the job is a no-op outside trading hours and doesn't burn API quota.
+    def _live_price_refresh_job() -> None:
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+        weekday = now_et.weekday()  # Mon=0 … Fri=4
+        if weekday >= 5:
+            return  # weekend
+        us_open = now_et.hour >= 9 and now_et.hour < 17
+        hk_open = now_hk.hour >= 9 and now_hk.hour < 17
+        if us_open or hk_open:
+            refresh_live_price_cache()
+
+    _scheduler.add_job(
+        _live_price_refresh_job,
+        "interval",
+        minutes=1,
+        id="live_price_cache_refresh",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )
