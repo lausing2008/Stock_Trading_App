@@ -48,6 +48,10 @@ Signal accuracy improvements (SA-1 through SA-7):
   SA-28: SWING bull threshold raised 0.62→0.65 (reverts SA-8); GROWTH bull threshold raised 0.57→0.60.
          Weekly overbought gate added (SWING/LONG): weekly_rsi > 75 AND trend UP → ×0.85 compress.
          Prevents chasing extended rallies in bull markets. Mirrors the existing oversold gate.
+  SA-30: Minimum pillar requirement per style. SWING and LONG now set min_pillars_for_buy=3.
+         When exactly 2 pillars are active (previously no penalty above the SA-19 < 2 gate),
+         those styles apply a ×0.70 compress — blocking borderline 2-pillar BUYs while passing
+         high-conviction ones (fused ≥ ~0.714 for SWING's 0.65 threshold still clears).
 """
 from __future__ import annotations
 
@@ -985,6 +989,7 @@ _STYLE_PROFILES: dict[str, dict] = {
         "rs_compression": 0.85,
         "kscore_boost": False,
         "max_compress_ratio": 0.55,
+        "min_pillars_for_buy": 3,  # SA-30: require 3+ active pillars; 2-pillar BUYs get ×0.70 compress
     },
     "LONG": {
         "ml_weight_cap": 0.45,
@@ -1000,6 +1005,7 @@ _STYLE_PROFILES: dict[str, dict] = {
         "rs_compression": 0.80,
         "kscore_boost": True,
         "max_compress_ratio": 0.65,
+        "min_pillars_for_buy": 3,  # SA-30: LONG requires broad agreement before committing to 20d hold
     },
     # SA-13: Growth/Momentum style for high-volatility, high-return stocks (AI, tech hypergrowth).
     # Key differences from SWING:
@@ -1207,9 +1213,12 @@ def _apply_style_signal(
     # The alignment filter is the sole weekly integration mechanism.
     reasons["weekly_blend_applied"] = False
 
-    # ── SA-19: Independent pillar gate ───────────────────────────────────────
+    # ── SA-19 / SA-30: Independent pillar gate ───────────────────────────────
     # Compress signals where only 1 dimension agrees (likely market-beta noise);
     # boost where all 4 pillars converge (rare, high-confidence setup).
+    # SA-30: styles with min_pillars_for_buy=3 (SWING, LONG) apply a stronger
+    # ×0.70 compress when exactly 2 pillars are active, blocking borderline BUYs
+    # that lack broad TA confirmation (breakeven fused ≈ 0.714 at 0.65 threshold).
     # CVG-002: use None sentinel so missing key is detected and logged instead of
     # silently defaulting to 2 (which masks data-quality issues).
     _pillars_raw = base_reasons.get("independent_pillars_active")
@@ -1219,9 +1228,14 @@ def _apply_style_signal(
         _pillars = 2  # neutral fallback: no gate, no boost
     else:
         _pillars = int(_pillars_raw)
+    _min_pillars = int(p.get("min_pillars_for_buy", 2))
     if _pillars < 2:
         fused = 0.5 + (fused - 0.5) * 0.85
         reasons["pillar_gate"] = f"compressed_{_pillars}_pillar"
+    elif _pillars < _min_pillars:
+        # SA-30: active pillars below style requirement — strong compress
+        fused = 0.5 + (fused - 0.5) * 0.70
+        reasons["pillar_gate"] = f"compressed_{_pillars}_pillar_below_min{_min_pillars}"
     elif _pillars >= 4:
         fused = float(np.clip(fused + 0.03, 0.0, 1.0))
         reasons["pillar_gate"] = "boosted_4_pillar_confluence"
