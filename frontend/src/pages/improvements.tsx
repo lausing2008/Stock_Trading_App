@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5261,6 +5261,55 @@ const ITEMS: Item[] = [
     what: 'live fallback silently computed but did not persist. Signal Filter missed any stock whose batch signal run hadn\'t happened yet.',
     fix: 'persist=True set automatically when falling through the no-stored-signals path. source field added to all responses so the UI can differentiate.',
   },
+  // ── Tier 30 — SA-29/SA-30 + tune_all + INT-8 Research Alignment (2026-06-17) ─
+  {
+    id: 'sa-29-weekly-rsi-ml-feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — ml-prediction/features/builder.py: WEEKLY_COLUMNS = ["weekly_rsi", "weekly_trend"] added to FEATURE_COLUMNS (34→42→44 features). weekly_rsi: RSI-14 computed on weekly bars (daily OHLCV resampled W-FRI, last close per week). weekly_trend: +1 if price > 10-week SMA by >1%, −1 if below by >1%, else 0. Forward-filled to daily frequency to match training/inference row shape — no look-ahead. Both columns added to _nan_ok set (NaN-optional like fundamentals) so stocks with <15 weekly bars still train. All 560 symbols (140 × 4 styles) already queued for tune_all rerun with the new 44-feature pipeline.',
+    tier: 30, severity: 'high',
+    title: 'SA-29: Weekly RSI + weekly trend as ML features (42 → 44 features)',
+    file: 'services/ml-prediction/src/features/builder.py',
+    effort: '1 hour',
+    impact: 'High — weekly technical state is a strong predictor of multi-week directional moves. A stock with daily BUY but RSI < 40 on the weekly chart is far more likely to be a whipsaw trade. Making this available to XGBoost as a feature (rather than only as a hard gate) lets the model learn the non-linear relationship between daily/weekly momentum alignment and actual 10-day forward returns. Stocks with <15 weekly bars (short history) receive NaN which XGBoost handles natively.',
+    what: 'All 42/44 features were computed from daily bars. Weekly timeframe momentum state — a well-known predictor in multi-timeframe TA — was not visible to the ML model despite daily prices being available for resampling.',
+    fix: 'Resample daily close to weekly W-FRI bars; compute RSI-14w and price-vs-10w-SMA trend; forward-fill back to daily index. Treat both as NaN-optional so short-history stocks are not excluded from training.',
+  },
+  {
+    id: 'sa-30-min-pillar-gate',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — signal-engine/signals.py: SWING and LONG style profiles gain min_pillars_for_buy=3. SA-19 pillar gate block extended: _min_pillars = int(p.get("min_pillars_for_buy", 2)). When exactly 2 pillars are active (<_min_pillars): fused compressed ×0.70 toward 0.5 (not hard-capped). Breakeven: 0.5 + 0.70×(fused−0.5) = 0.65 → fused ≥ 0.714 needed to survive compression and still pass the BUY threshold. Very high-conviction 2-pillar signals still fire; mediocre 2-pillar signals (fused 0.65–0.71) are filtered. Reason key: "pillar_gate": "compressed_2_pillar_below_min3". SHORT and GROWTH retain min_pillars_for_buy=2 (pillar diversity less critical for short-horizon momentum plays).',
+    tier: 30, severity: 'high',
+    title: 'SA-30: Minimum 3-pillar gate for SWING/LONG — 2-pillar BUYs compressed ×0.70',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '45 minutes',
+    impact: 'High — the original SA-19 gate (added 2026-06-12) required ≥2 independent pillars for a BUY but that was too permissive for 20–60 day hold styles. A SWING or LONG BUY resting on only 2 pillars (e.g., momentum + structure but no trend + no volume) lacks the breadth of agreement needed to justify a multi-week position. At ×0.70 compression a 2-pillar signal needs fused ≥ 0.714 to survive — roughly a 71% bullish probability — so only the strongest 2-pillar setups still fire. GROWTH and SHORT retain the 2-pillar threshold because they target faster-moving, higher-volatility setups where not all pillars are expected to agree.',
+    what: 'SA-19 required ≥2 active pillars (each ≥ 0.5) but the BUY threshold for SWING/LONG is 0.65. A signal just above threshold with only 2 pillars — e.g., momentum 0.7 + structure 0.6, trend 0.2, volume 0.1 — would fire even with weak trend and volume participation.',
+    fix: 'Added min_pillars_for_buy=3 to SWING and LONG profiles. elif branch in the gate compresses by 0.70× rather than 0.85× (the existing 0–1 pillar branch) to distinguish "below minimum but not completely absent" from "no pillar evidence at all".',
+  },
+  {
+    id: 'ml-fund-5-tune-all-44-features',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — triggered POST /ml/tune_all?n_trials=60&style=SWING/LONG/SHORT/GROWTH via market-data container with scheduler JWT. 560 Optuna jobs (140 symbols × 4 styles) running in background on EC2 ml-prediction container. New baseline: 44 features (28 stock-specific including weekly_rsi + weekly_trend, 8 macro, 8 fundamental). Previous run used 42-feature models. Expected benefit: weekly features provide multi-timeframe context that Optuna trial scoring will now incorporate. Estimated runtime: 3–5h per style. Closes the ML-FUND-5 open item from Tier 24.',
+    tier: 30, severity: 'high',
+    title: 'ML-FUND-5: tune_all relaunched with 44-feature pipeline (weekly RSI + trend)',
+    file: 'services/ml-prediction',
+    effort: '10 minutes (trigger) + 12–20h runtime',
+    impact: 'High — Optuna hyperparameter search with the previous 42-feature set is now stale. The two new weekly features (weekly_rsi, weekly_trend) change the optimal tree depth, learning rate, and subsample ratio since XGBoost now has access to additional weekly-regime context. Re-tuning ensures hyperparams are fitted to the actual feature space the model will use in production. Expect +1–4% CV AUC improvement for SWING/LONG styles where weekly alignment is most predictive.',
+    what: 'After SA-29 added 2 weekly features, the stored Optuna best-params for each symbol were optimised against the 42-feature input space. The new weekly columns were being included at inference time but with hyperparams that were never searched over the full 44-feature space.',
+    fix: 'Triggered tune_all for all 4 styles. After completion, train_all will pick up the new best-params and retrain production models.',
+  },
+  {
+    id: 'int-8-research-alignment-signal-filter',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — frontend/src/pages/signal-filters.tsx: added ResearchAlignmentPanel component above the condition summary bar. Fetches GET /signals/outcomes/summary?horizon={style}&days=90 via a second useSWR call (revalidateOnFocus: false). Displays win-rate tiles for aligned (research BUY/STRONG BUY), partial (WATCH), divergent (AVOID/SELL), no_research — each showing win%, signal count, and avg return %. Tile border/background color matches alignment category (green/yellow/red/gray). Win-rate color: ≥55% green, 45–55% yellow, <45% red. Panel only renders if at least one alignment category has data. Updates when style tab changes (SWING → LONG → etc.). api.ts OutcomesSummary type extended with by_research_alignment (Record<aligned|partial|divergent|no_research, {count, win_rate, avg_return_pct}>) and by_window (Record<5d|10d|20d, {count, win_rate, avg_return_pct} | null>).',
+    tier: 30, severity: 'medium',
+    title: 'INT-8 C: Research alignment win-rates panel in Signal Filter',
+    file: 'frontend/src/pages/signal-filters.tsx + frontend/src/lib/api.ts',
+    effort: '1 hour',
+    impact: 'Medium — surfaces the actionable question "do signals that agree with research actually win more often?" directly where the user is screening signals. If aligned win-rate (60%) is materially higher than divergent (40%), that is a live, data-driven reason to prefer research-aligned signals when filtering. Panel auto-populates as signal_outcomes accumulates (90-day lookback; Phase 2 backfill running nightly at 500 rows/run).',
+    what: 'INT-8 added research_rec + research_score to signal_outcomes and the by_research_alignment breakdown to the outcomes/summary endpoint, but that data was only visible on the /signal-accuracy outcomes tab — not where trading decisions are made (Signal Filter).',
+    fix: 'Added a second SWR call per style tab on the Signal Filter page. ResearchAlignmentPanel component renders compact win-rate cards, hidden when no outcome data exists yet.',
+  },
 ];
 
 
@@ -5301,6 +5350,7 @@ const TIER_LABEL: Record<Tier, string> = {
   27: 'Tier 27 — Signal Gate Tuning & Backtest Tool (2026-06-16)',
   28: 'Tier 28 — Kelly Criterion + Conviction Gate on Stock Detail (2026-06-16)',
   29: 'Tier 29 — Signal Pipeline Single Source of Truth (2026-06-16)',
+  30: 'Tier 30 — SA-29/SA-30 + INT-8 Research Alignment (2026-06-17)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5333,6 +5383,7 @@ const TIER_COLOR: Record<Tier, string> = {
   27: '#84cc16',
   28: '#e879f9',
   29: '#38bdf8',
+  30: '#c084fc',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5609,18 +5660,18 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current (2026-06-14) — Tier 17: Deep security & ML audit. BOLA row-level authz, JWT hardening, TimeSeriesSplit CV, survivorship bias, transaction costs, yfinance fallback, Redis persistence, Docker restart policy, PostgreSQL backups, CORS lockdown. Next: implement 2 critical fixes (BOLA + JWT) before next release.
+          Current (2026-06-17) — Tier 30: SA-29 weekly RSI + weekly trend as ML features (44 total), SA-30 minimum 3-pillar gate for SWING/LONG (×0.70 compress below min), tune_all relaunched with 44-feature baseline (560 jobs), INT-8 research alignment win-rates panel in Signal Filter.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
             { label: 'Data pipeline',   score: 9.0, target: 9.2, note: '↑ ML-FUND-2 weekly fundamentals batch refresh live (all 138 symbols Sunday, rate-limited 3/s). ↑ ML-FUND-4 staleness warning on Company Financials. ↑ fetched_at persisted in Redis cache so data age survives 24h TTL.' },
-            { label: 'ML methodology',  score: 9.3, target: 9.4, note: '↑ SA-29: weekly_rsi + weekly_trend added as ML features (44 total). TA weight calibration post-SA-28: macd_zero_cross_up (0.64) and bullish_trend (0.40) are dominant predictors. 560-job retrain running.' },
-            { label: 'Signal logic',    score: 9.2, target: 9.3, note: '↑ INT-8 forward return tracking live: multi-window 5d/10d/20d + research alignment in outcomes/summary. ↑ SA-28 SWING threshold 0.62→0.65, GROWTH 0.57→0.60, overbought gate.' },
+            { label: 'ML methodology',  score: 9.3, target: 9.4, note: '↑ SA-29: weekly_rsi + weekly_trend added as ML features (44 total, 2026-06-17). TA calibration: macd_zero_cross_up (0.64) + bullish_trend (0.40) dominant predictors. tune_all relaunched (560 jobs, 44-feature baseline).' },
+            { label: 'Signal logic',    score: 9.3, target: 9.4, note: '↑ SA-30 min 3-pillar gate for SWING/LONG (×0.70 compress, 2026-06-17). ↑ INT-8 research alignment panel in Signal Filter. ↑ SA-28 SWING threshold 0.62→0.65, GROWTH 0.57→0.60.' },
             { label: 'K-Score ranking', score: 8.5, target: 8.5, note: '✓ SCR-1 multi-factor screener + RES-4 sector context (target met)' },
             { label: 'Research engine', score: 8.2, target: 8.8, note: '↑ RES-FIX-1 data fallback + INT-4 auto-trigger + INT-6 composite score' },
             { label: 'Frontend / UX',   score: 9.7, target: 9.8, note: '↑ Tier 16: chart overhaul (EMA200, VWAP, 52W H/L, signal markers, pattern strip), signal history sidebar, screener filters' },
             { label: 'Risk management', score: 8.8, target: 9.2, note: '↑ CB-W1 paper trading cutoff fixed (was 0 trades/week). INT-3 research-gated sizing + PT-M1/M2/M4/M5 all live.' },
-            { label: 'Overall',         score: 9.7, target: 9.8, note: '↑ Tier 26: Sortino + Max Drawdown alongside Sharpe (3-card risk profile header), Squeeze Score badge in short interest (0-100, three-factor: float % + days-to-cover + options flow). Pending: ML-FUND-5 tune_all.' },
+            { label: 'Overall',         score: 9.7, target: 9.8, note: '↑ Tier 30: SA-29 weekly ML features (44 total), SA-30 3-pillar gate for SWING/LONG, tune_all relaunched (44-feature baseline), INT-8 research alignment panel in Signal Filter.' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -5662,6 +5713,7 @@ export default function ImprovementsPage() {
           Tier 26 (2026-06-16): Sortino Ratio + Max Drawdown on stock detail — riskMetrics1y calculates Sharpe/Sortino/MaxDD from 1Y price window in one IIFE; three compact color-coded cards in header. Squeeze Score — 3-component score (40+30+30) from short_percent_of_float, short_ratio, and optionsFlow.cp_ratio + whale_count; badge shown in Short Interest header: 🔥 HIGH (≥70), ⚡ MODERATE (≥40), no badge below 40. No new API calls — uses already-loaded fundamentals and options data.
           Tier 25 (2026-06-16): Sharpe ratio on stock detail — 1-year annualised Sharpe calculated from existing price data (no backend change); header card with Excellent/Good/Fair/Poor color tiers. Whale options detection — extended options-flow from 2 to 4 expiries; added premium = volume × lastPrice × 100 per contract; is_whale flag at $500K threshold; response gains whale_count and top_whale_premium; UI shows 🐋 badge when whales detected, highlighted rows with Premium column in amber.
           Tier 24 (2026-06-16, partial): ML-FUND-2 weekly fundamentals batch refresh — _refresh_fundamentals_batch() added to _weekly_full_refresh() in scheduler.py; runs after signals/rankings, before tune_all; rate-limited 3 req/s; also triggered immediately for all 138 symbols via fund_batch.py docker exec script. ML-FUND-3 feature importance panel — GET /ml/features/SYMBOL endpoint added to ml-prediction; collapsible "Top model drivers" section on stock detail with horizontal bars color-coded by category (green=technical, blue=macro, purple=fundamental). ML-FUND-4 fundamentals staleness warning — fetched_at added to FundamentalsOut and persisted in Redis cache; Company Financials header shows "as of [date]" / "⚠ Nd old" when &gt; 90 days. Open: ML-FUND-5 tune_all rerun with 42-feature pipeline (expected +3-8% CV AUC; schedule for next Sunday after fundamentals batch populates).
+          Tier 30 (2026-06-17): SA-29 weekly RSI + weekly trend as ML features — daily closes resampled to weekly W-FRI bars; RSI-14w and price vs 10-week SMA trend (+1/0/−1) forward-filled to daily; added to WEEKLY_COLUMNS (NaN-optional like fundamentals); 42→44 features total. SA-30 minimum 3-pillar gate for SWING/LONG — min_pillars_for_buy=3; 2-pillar signals compressed ×0.70 toward neutral (breakeven fused ≥ 0.714); SHORT/GROWTH retain 2-pillar minimum; pillar_gate reason: "compressed_2_pillar_below_min3". ML-FUND-5 tune_all relaunched — 560 Optuna jobs (140 symbols × 4 styles, 60 trials each) running on EC2 ml-prediction; first tune run using the full 44-feature pipeline. INT-8 C research alignment panel in Signal Filter — ResearchAlignmentPanel component above condition summary bar; fetches outcomes/summary?horizon=&#123;style&#125;&amp;days=90; shows win-rate tiles (aligned/partial/divergent/no_research) with count + avg return; updates on style tab change; OutcomesSummary type extended with by_research_alignment + by_window fields.
           Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Remaining: walk-forward backtest, SUR-001, CV-001, WEIGHT-001, ENS-001 (ML training methodology items).
         </p>
       </div>
