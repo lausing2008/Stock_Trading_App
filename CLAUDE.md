@@ -177,6 +177,56 @@ including `python-jose[cryptography]`.
 
 ---
 
+## Recurring Issue: INT-7 Signal-Engine Research Divergence — Missing Auth Header
+
+**Symptom:** Research divergence log entries (`signal.research_divergence`) never appear in
+signal-engine logs even when a BUY signal conflicts with an AVOID/SELL research report.
+
+**Root cause:** `signal-engine/src/api/routes.py` `_bulk_persist()` calls
+`GET /research/{symbol}/summary` without an Authorization header. The research engine requires
+a JWT on that endpoint. The call silently returns 401 (swallowed by `except Exception: pass`).
+
+**Fix applied (2026-06-17):**
+Added `_service_token()` function at module level (same pattern as market-data scheduler):
+```python
+_service_token_cache: str = ""
+def _service_token() -> str:
+    global _service_token_cache
+    if _service_token_cache:
+        return _service_token_cache
+    import time
+    from jose import jwt as _jwt
+    payload = {"sub": "signal-engine", "exp": int(time.time()) + 365 * 86400, "jti": "signal-engine-service"}
+    _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+    return _service_token_cache
+```
+
+The research summary call now passes `headers={"Authorization": f"Bearer {_service_token()}"}`.
+Deploy: `docker cp routes.py stockai-signal-engine-1:/app/src/api/routes.py && docker restart stockai-signal-engine-1`
+
+---
+
+## Connectivity Audit Invariants (2026-06-17)
+
+After the full system connectivity review, these are the rules to maintain:
+
+1. **Any endpoint that uses `Depends(get_current_username)` must receive an Authorization header**
+   when called from another service. All scheduler → service calls use `_service_token()`.
+   Signal-engine → research-engine calls now also use `_service_token()`. Add the same pattern
+   to any new service-to-service call against an auth-protected endpoint.
+
+2. **The `/research/{symbol}/trigger` endpoint is intentionally unauthenticated** — do not add
+   auth to it. It is only reachable from the internal Docker network.
+
+3. **The `/stocks/conviction` endpoint is intentionally open** — it reads from Redis only
+   (no sensitive data), and signal-engine calls it without auth.
+
+4. **Dead component files to clean up** (not breaking):
+   `components/board.tsx`, `components/DonutChart.tsx`, `components/forecast.tsx`,
+   `components/PriceChart.tsx`, `components/screener.tsx`, `components/StrategyBuilder.tsx`
+
+---
+
 ## Known Ongoing Limitations
 
 - Broker commission: `commission_per_share` defaults to 0.0 (user's broker is commission-free)

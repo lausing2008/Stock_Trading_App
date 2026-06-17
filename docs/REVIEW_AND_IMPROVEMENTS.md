@@ -1427,6 +1427,100 @@ Will now appear in Signal Filter correctly.
 
 ---
 
+---
+
+## System Connectivity Audit — 2026-06-17
+
+Full component-to-component review. All 10 microservices, API gateway, and frontend verified.
+
+### Architecture map (all services)
+
+| Service | Port | Proxy prefix | Auth on routes |
+|---------|------|-------------|----------------|
+| market-data | 8001 | stocks, admin, auth, watchlist, watchlists, alerts, signal-alerts, journal, board, positions, app-notifications, portfolio-risk, paper-portfolio, broker, congress | Mixed — GET routes open, mutating/admin routes need JWT |
+| technical-analysis | 8002 | ta | All routes open (DB read-only) |
+| ml-prediction | 8003 | ml | train/tune/calibrate need JWT; predict open |
+| ranking-engine | 8004 | rankings | All routes open (DB + yfinance) |
+| signal-engine | 8005 | signals | refresh/reset/calibrate need JWT; all GET open |
+| strategy-engine | 8006 | strategies, backtest, backtests | All routes need JWT |
+| portfolio-optimizer | 8007 | portfolio | /optimize needs JWT |
+| research-engine | 8008 | research | All need JWT; /trigger intentionally open (internal only) |
+| api-gateway | 8000 | * (reverse proxy) | Gateway validates JWT before forwarding |
+| api-gateway aggregate | 8000 | /aggregate | No additional auth (already behind gateway JWT) |
+| api-gateway ai-proxy | 8000 | /ai | Needs JWT |
+
+### Service-to-service call inventory
+
+| Caller | Called | Auth method | Status |
+|--------|--------|-------------|--------|
+| scheduler (market-data) | signal-engine POST /signals/refresh | service JWT (sub=scheduler) | ✅ Working (jose fix 2026-06-17) |
+| scheduler | ranking-engine POST /rankings/refresh | service JWT (ignored — endpoint open) | ✅ OK |
+| scheduler | ml-prediction POST /ml/train_all | service JWT | ✅ OK |
+| scheduler | ml-prediction POST /ml/tune_all | service JWT | ✅ OK |
+| scheduler | signal-engine POST /signals/calibrate_ta_weights | service JWT | ✅ OK |
+| scheduler | signal-engine POST /signals/calibrate_conviction_weights | service JWT | ✅ OK |
+| scheduler | signal-engine POST /signals/outcomes/evaluate | service JWT | ✅ OK |
+| signal-engine | research-engine POST /research/{s}/trigger | no auth (endpoint open) | ✅ OK |
+| signal-engine | research-engine GET /research/{s}/summary | **service JWT (FIXED 2026-06-17)** | ✅ Fixed |
+| signal-engine | market-data GET /stocks/conviction | no auth (endpoint open) | ✅ OK |
+| signal-engine | market-data GET /stocks/{s}/prices | no auth (open) | ✅ OK |
+| ranking-engine | market-data GET /stocks/fundamentals_bulk | no auth (open) | ✅ OK |
+| portfolio-optimizer | market-data GET /stocks/{s}/prices | no auth (open) | ✅ OK |
+| portfolio-optimizer | ranking-engine GET /rankings/{s} | no auth (open) | ✅ OK |
+| strategy-engine | market-data GET /stocks/{s}/prices | no auth (open) | ✅ OK |
+| research-engine | market-data, TA, signal-engine, ranking-engine | user's forwarded JWT | ✅ OK |
+| aggregate endpoint | signal-engine, TA, ranking-engine, market-data | no auth (internal Docker) | ✅ OK |
+
+### Bug fixed: INT-7 research divergence check (signal-engine)
+
+`signal-engine/src/api/routes.py` line 246 called `GET /research/{symbol}/summary` without
+an Authorization header. The research engine requires auth on that endpoint. Every call returned
+401 silently swallowed by the outer `except Exception: pass`, meaning the divergence check
+(log a warning when the signal says BUY but the AI report says AVOID/SELL) never worked.
+
+**Fix:** Added `_service_token()` generator in routes.py (cached 365-day JWT with sub=signal-engine,
+same pattern as the market-data scheduler). The summary call now passes
+`Authorization: Bearer {token}` header.
+
+### Dead component files (non-breaking, cleanup candidates)
+
+Six component files in `frontend/src/components/` are not imported by any page file.
+Their functionality was re-implemented inline in the corresponding pages:
+
+| File | Superseded by |
+|------|--------------|
+| `components/board.tsx` | `pages/board.tsx` (inline implementation) |
+| `components/DonutChart.tsx` | Unused — no matching page section |
+| `components/forecast.tsx` | `pages/forecast.tsx` (inline) |
+| `components/PriceChart.tsx` | `pages/stock/[symbol].tsx` inline chart |
+| `components/screener.tsx` | `pages/screener.tsx` (inline) |
+| `components/StrategyBuilder.tsx` | `pages/strategies.tsx` (inline) |
+
+These are not deleted yet — verify before removing.
+
+### GROWTH style — high BUY signal count (2026-06-17)
+
+After the bulk signal refresh (post-jose fix), Signal Filter showed **83 GROWTH BUY** out of 159
+stocks = 52%. This is high but expected:
+
+**Why GROWTH fires more than other styles (by design):**
+- Buy threshold in bull: **0.57** vs SWING 0.62, SHORT 0.60, LONG 0.60
+- No RS compression (SWING: 0.85×, LONG: 0.80× when stock lags sector)
+- No weekly gate (SWING/LONG both blocked when weekly RSI > 70)
+- Lowest ADX minimum (12 vs SWING's 15, SHORT's 25)
+- Lightest breadth compression (0.95× vs 0.90× for SWING/SHORT)
+- `_growth_ta_adjustment()` adds up to +0.10 to TA score for momentum stocks
+
+**Assessment:** The high count reflects a combination of:
+1. Fresh refresh after 7 days of stale signals — current conditions captured for the first time
+2. Bull market regime → 0.57 threshold active
+3. Design intent: GROWTH was always meant to fire ~2× as often as SWING
+
+**Monitor:** Compare SWING count (expected 30-45). If SWING also shows 60+, reassess the ML
+model calibration. If SWING is in normal range, GROWTH at 83 is consistent with its design.
+
+---
+
 ## Tier 30 — Trade Journal, HSI Benchmark, Scale-in/Scale-out (2026-06-17)
 
 ### Changes shipped
