@@ -1,7 +1,7 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-17 (Tier 29 — signal pipeline single source of truth; Tier 30 — journal UI, HSI benchmark, scale-in/out; Bug: signal-engine jose missing → refresh 401 fixed; SA-28 — signal accuracy tightening)  
+**Last updated:** 2026-06-17 (SA-29 — weekly RSI/trend as ML features; BUG-2 — jose missing from 4 services; INT-8 — forward return tracking + research alignment; TA weight calibration post-SA-28)  
 **Perspective:** Data Analyst + Quantitative Trading  
 **Overall rating:** 9.2 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 — alert/UX improvements shipped 2026-06-10)*
 
@@ -1595,3 +1595,77 @@ model calibration. If SWING is in normal range, GROWTH at 83 is consistent with 
 - `frontend/src/lib/api.ts` — `exit_time`, `exit_price` added to `PaperDecisionItem`
 - `services/market-data/src/api/paper_portfolio.py` — expose `exit_time`/`exit_price` in `/decisions`
 - `services/market-data/src/services/paper_trading_engine.py` — two-level scale-out + scale-in logic
+
+---
+
+## SA-29 + INT-8 + BUG-2 (2026-06-17)
+
+### SA-29 — Weekly RSI + Weekly Trend as ML Features
+
+**Problem:** The weekly overbought/oversold gates (SA-28) were hand-coded rules. The XGBoost model
+had no visibility into weekly RSI or weekly trend, so it couldn't learn these patterns from data.
+This left a divergence between what the TA rule layer knew and what the ML model considered.
+
+**Fix:**
+- `ml-prediction/features/builder.py`: added `weekly_rsi` (14-week RSI) and `weekly_trend`
+  (+1/0/-1 encoding of price vs 10-week SMA) as two new features — 44 total (was 42).
+- New `WEEKLY_COLUMNS` constant (NaN-allowed, like `FUNDAMENTAL_COLUMNS`) so stocks with short
+  history (<15 weekly bars) still produce training rows.
+- Weekly features computed by resampling daily prices to weekly, then forward-filling to daily
+  frequency — no look-ahead: each daily bar sees only completed weeks.
+- Triggered full retrain: `POST /ml/train_all?style=SHORT/SWING/LONG/GROWTH` for all 140 stocks
+  (560 background jobs). Models will be updated as training completes.
+
+**Also:** Ran `POST /signals/calibrate_ta_weights` after SA-28 to update data-driven TA weights:
+- 4,630 historical signals, 3,951 usable, in-sample accuracy 57.7%
+- Strongest predictors: `macd_zero_cross_up` (0.64), `bullish_trend` (0.40), `rsi_sweet_spot`
+  (0.14), `rsi_divergence_bullish` (0.14), `rsi_mild_oversold` (0.13)
+- Zero-weighted (not predictive of 10d returns): above_sma50, sma50_above_sma200,
+  golden_cross_event, stoch_oversold, macd_strong, macd_positive, bb_mid_zone, price_above_vwap,
+  obv_trend_bullish, volume_surge
+
+### BUG-2 — jose library missing from 4 services
+
+**Discovery:** While deploying SA-29, found that `python-jose` was missing from `ml-prediction`,
+`ranking-engine`, `portfolio-optimizer`, and `technical-analysis` — the same bug that hit
+`signal-engine` (BUG-1, 2026-06-17). All authenticated endpoints on those services were silently
+401-ing.
+
+**Root cause:** `python-jose` is listed in signal-engine and ml-prediction `requirements.txt` but
+was never installed in the running containers (or was lost between image builds).
+
+**Fix:**
+1. Installed `python-jose[cryptography]==3.3.0` in all 4 containers immediately.
+2. Added to `requirements.txt` for ranking-engine, portfolio-optimizer, technical-analysis.
+3. Rebuilt and redeployed all 4 images (jose now baked into image; survives container restarts).
+
+**Verification:** `docker exec <container> python3 -c 'from jose import jwt; print("ok")'` — all OK.
+
+**Pattern to watch:** After any `docker compose build` for a new service, immediately check jose.
+
+### INT-8 — Forward Return Tracking + Research Alignment
+
+**Problem:** `signal_outcomes` tracked only the primary hold-window return (5/10/20d depending on
+horizon). Stocks that never flipped signal direction had sparse outcome data. No tracking of how
+signal accuracy varied when Research was aligned vs. divergent.
+
+**Fix:**
+- `shared/db/models.py`: added 11 nullable columns to `SignalOutcome`:
+  `price_5d`, `return_5d`, `is_correct_5d`, `price_10d`, `return_10d`, `is_correct_10d`,
+  `price_20d`, `return_20d`, `is_correct_20d`, `research_rec`, `research_score`
+- `evaluate_signal_outcomes` (routes.py): now fills all 3 window returns at outcome creation
+  time, plus a Phase 2 loop that backfills NULL windows on existing rows (500/run).
+- Research recommendation fetched from `GET /research/{symbol}/summary` at evaluation time
+  (one call per symbol per run, cached locally).
+- `GET /signals/outcomes/summary`: added `by_research_alignment` (aligned/partial/divergent/
+  no_research win rates) and `by_window` (5d/10d/20d accuracy stats).
+- `scripts/migrate_signal_outcomes_int8.sql`: idempotent migration applied to production.
+
+**Initial backfill (2026-06-17):** First evaluate run: 152 new outcomes created, 500 existing
+rows updated with multi-window data. Subsequent nightly runs drain the remaining backlog at 500
+rows/run. The `by_research_alignment` data will accumulate as signals mature.
+
+**Files changed:**
+- `shared/db/models.py`
+- `services/signal-engine/src/api/routes.py`
+- `scripts/migrate_signal_outcomes_int8.sql` (new)
