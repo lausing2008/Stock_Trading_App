@@ -1,12 +1,13 @@
-"""Feature engineering — 42 features (26 stock-specific + 8 macro + 8 fundamental).
+"""Feature engineering — 44 features (28 stock-specific + 8 macro + 8 fundamental).
 
-26 stock-specific:
+28 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
   Volatility: vol_20, vol_60, atr_14_pct, atr_ratio
   Trend     : sma_20_gap, sma_50_gap, sma_100_gap, sma_200_gap
   Oscillators: rsi_14, macd, macd_signal, macd_hist, bb_pct, stoch_k
   Volume    : volume_z, obv_z, cmf_20
   Range     : high_20_pct, dist_52w_high, dist_52w_low
+  Weekly    : weekly_rsi, weekly_trend  (SA-29 — longer-term regime context)
 
 8 macro (market-wide context):
   spy_ret_1, spy_ret_5  — S&P 500 short-term direction
@@ -56,6 +57,13 @@ FUNDAMENTAL_COLUMNS = [
     "price_to_book",        # P/B ratio
 ]
 
+# SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with
+# short history (<15 weekly bars) are not excluded from training entirely.
+WEEKLY_COLUMNS = [
+    "weekly_rsi",    # 14-week RSI; <40=oversold, >70=overbought on weekly timeframe
+    "weekly_trend",  # +1 if price > 10-week SMA by >1%, -1 if below by >1%, else 0
+]
+
 FEATURE_COLUMNS = [
     # Momentum
     "ret_1", "ret_5", "ret_10", "ret_20", "ret_60",
@@ -73,6 +81,8 @@ FEATURE_COLUMNS = [
     "high_20_pct",
     "dist_52w_high",       # breakout proximity; momentum strength signal
     "dist_52w_low",        # bounce proximity; mean-reversion/support signal
+    # Weekly context (SA-29) — longer-term regime; NaN-allowed for short histories
+    *WEEKLY_COLUMNS,
     # Macro — raw
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Macro — regime boolean flags
@@ -310,6 +320,26 @@ def build_features(
     out["dist_52w_high"] = (c - high252) / high252.replace(0, np.nan)
     out["dist_52w_low"]  = (c - low252)  / low252.replace(0, np.nan)
 
+    # --- Weekly technicals (SA-29) ---
+    # Resample to weekly (Friday closes). Each daily bar forward-fills from the most
+    # recent completed week (no look-ahead: Mon–Thu see last Friday's RSI; Friday sees
+    # the current Friday's RSI which is end-of-day, so still valid).
+    _ts_idx = pd.to_datetime(df["ts"]).dt.normalize()
+    _close_ts = pd.Series(c.values, index=_ts_idx)
+    _wclose = _close_ts.resample("W-FRI").last().dropna()
+    if len(_wclose) >= 15:
+        _wrsi     = _rsi(_wclose, w=14)
+        _wsma10   = _wclose.rolling(10, min_periods=5).mean()
+        _wtrend_r = (_wclose / _wsma10.replace(0, np.nan) - 1)
+        _wrsi_d   = _wrsi.reindex(_ts_idx).ffill().values
+        _wtrend_d = _wtrend_r.reindex(_ts_idx).ffill().values
+        out["weekly_rsi"]   = _wrsi_d
+        out["weekly_trend"] = np.where(_wtrend_d > 0.01, 1.0,
+                              np.where(_wtrend_d < -0.01, -1.0, 0.0))
+    else:
+        out["weekly_rsi"]   = np.nan
+        out["weekly_trend"] = np.nan
+
     # --- Macro features (market-wide context) ---
     # Date keys are "YYYY-MM-DD" strings to avoid timezone issues
     dates = pd.to_datetime(df["ts"]).dt.strftime("%Y-%m-%d")
@@ -350,10 +380,11 @@ def build_features(
 
     X = out[FEATURE_COLUMNS].replace([np.inf, -np.inf], np.nan)
 
-    # Fundamental columns are NaN until the stock is viewed (DB populated).
-    # XGBoost tree_method='hist' handles NaN natively — require only non-fundamental
-    # columns to be non-null so rows are not discarded when fundamentals are absent.
-    _required = [c for c in FEATURE_COLUMNS if c not in FUNDAMENTAL_COLUMNS]
+    # Fundamental and weekly columns are NaN-allowed — XGBoost handles NaN natively.
+    # Require only the core daily features to be non-null so rows aren't discarded
+    # when fundamentals are absent or history is too short for weekly bars.
+    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS)
+    _required = [c for c in FEATURE_COLUMNS if c not in _nan_ok]
 
     if inference_mode:
         # Keep all rows with valid features; label/dead-zone filtering skipped
