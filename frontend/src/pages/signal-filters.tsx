@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SuppressedSignalRow } from '@/lib/api';
+import { api, type SuppressedSignalRow, type ResearchAlignmentBand } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 // ── Static config ─────────────────────────────────────────────────────────────
@@ -196,6 +196,58 @@ function SummaryBar({ rows }: { rows: SuppressedSignalRow[] }) {
   );
 }
 
+// Research alignment win-rate panel (INT-8 data)
+const ALIGN_CONFIG: { key: 'aligned' | 'partial' | 'divergent' | 'no_research'; label: string; color: string; tip: string }[] = [
+  { key: 'aligned',     label: 'Aligned',     color: '#22c55e', tip: 'Signal BUY + research BUY/STRONG BUY — both agree' },
+  { key: 'partial',     label: 'Partial',      color: '#f59e0b', tip: 'Signal BUY + research WATCH — cautious alignment' },
+  { key: 'divergent',   label: 'Divergent',    color: '#ef4444', tip: 'Signal BUY + research AVOID/SELL — disagreement' },
+  { key: 'no_research', label: 'No research',  color: '#64748b', tip: 'No research report available at signal time' },
+];
+
+function ResearchAlignmentPanel({
+  data,
+}: {
+  data: Partial<Record<string, ResearchAlignmentBand>> | undefined;
+}) {
+  if (!data || Object.keys(data).length === 0) return null;
+  const hasAny = ALIGN_CONFIG.some(c => data[c.key]?.count);
+  if (!hasAny) return null;
+
+  return (
+    <div style={{
+      marginBottom: 16, padding: '10px 14px', background: '#0b1420',
+      borderRadius: 10, border: '1px solid #1e293b',
+    }}>
+      <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        Research alignment win-rates (90d BUY outcomes)
+      </p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {ALIGN_CONFIG.map(({ key, label, color, tip }) => {
+          const band = data[key];
+          if (!band?.count) return null;
+          const wr = band.win_rate != null ? Math.round(band.win_rate * 100) : null;
+          const ret = band.avg_return_pct;
+          return (
+            <div key={key} title={tip} style={{
+              padding: '6px 12px', borderRadius: 8, cursor: 'help',
+              background: `${color}12`, border: `1px solid ${color}33`,
+              display: 'flex', flexDirection: 'column', gap: 2, minWidth: 110,
+            }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: wr != null ? (wr >= 55 ? '#22c55e' : wr >= 45 ? '#f59e0b' : '#ef4444') : '#475569' }}>
+                {wr != null ? `${wr}%` : '—'}
+              </span>
+              <span style={{ fontSize: 10, color: '#475569' }}>
+                {band.count} signals{ret != null ? ` · ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% avg` : ''}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SignalFiltersPage() {
@@ -251,6 +303,12 @@ export default function SignalFiltersPage() {
   const { data, isLoading, error, mutate } = useSWR(
     authed ? ['suppressed', style] : null,
     () => api.suppressedSignals(style),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: outcomesSummary } = useSWR(
+    authed ? ['outcomes-summary', style] : null,
+    () => api.outcomesSummary(style, 90),
     { revalidateOnFocus: false },
   );
 
@@ -478,6 +536,9 @@ export default function SignalFiltersPage() {
           </button>
         )}
       </div>
+
+      {/* Research alignment win-rates */}
+      <ResearchAlignmentPanel data={outcomesSummary?.by_research_alignment} />
 
       {/* Summary bar */}
       {data && <SummaryBar rows={rows} />}

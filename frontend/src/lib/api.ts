@@ -609,6 +609,7 @@ export type FactorExposureReport = { lookback_days: number; signal_count: number
 export type MLWeightCurvePoint = { weight: number; accuracy: number | null; avg_return_pct: number | null };
 export type WalkForwardWindow = { start: string; end: string; n_signals: number; n_correct: number; accuracy: number; avg_return_pct: number; equity: number };
 export type OutcomesBand = { band: string; count: number; win_rate: number; avg_return_pct: number | null };
+export type ResearchAlignmentBand = { count: number; win_rate: number | null; avg_return_pct: number | null };
 export type OutcomesSummary = {
   total: number;
   days_lookback: number;
@@ -617,6 +618,8 @@ export type OutcomesSummary = {
   by_confidence_band?: OutcomesBand[];
   by_horizon?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
   by_market_regime?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
+  by_research_alignment?: Record<'aligned' | 'partial' | 'divergent' | 'no_research', ResearchAlignmentBand>;
+  by_window?: Record<'5d' | '10d' | '20d', { count: number; win_rate: number; avg_return_pct: number | null } | null>;
 };
 export type AlphaDecayCurvePoint = { day: number; avg_return_pct: number | null; p25: number | null; p75: number | null; n: number };
 export type AlphaDecayReport = { horizon: string; signal_count: number; lookback_days: number; optimal_hold_days: number | null; optimal_return_pct: number | null; curve: AlphaDecayCurvePoint[] };
