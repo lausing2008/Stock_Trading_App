@@ -45,6 +45,9 @@ Signal accuracy improvements (SA-1 through SA-7):
   SA-5: Data-driven TA weights via ta_weights.json (POST /signals/calibrate_ta_weights)
   SA-6: Filter interaction audit endpoint (GET /signals/filter_audit)
   SA-7: Regime-aware earnings compression — bull+beater≥70%: skip, +3% boost; bull+50-70%: halve; bear/hv: tighten×0.85
+  SA-28: SWING bull threshold raised 0.62→0.65 (reverts SA-8); GROWTH bull threshold raised 0.57→0.60.
+         Weekly overbought gate added (SWING/LONG): weekly_rsi > 75 AND trend UP → ×0.85 compress.
+         Prevents chasing extended rallies in bull markets. Mirrors the existing oversold gate.
 """
 from __future__ import annotations
 
@@ -966,9 +969,10 @@ _STYLE_PROFILES: dict[str, dict] = {
     "SWING": {
         "ml_weight_cap": 0.75,
         "ml_weight_floor": 0.15,
-        # SA-12: keep bull/neutral thresholds unchanged; only tighten bear/high_vol.
+        # SA-28: SWING bull threshold raised 0.62→0.65 (reverts SA-8 over-relaxation).
+        # SA-12: only tighten bear/high_vol — keep those unchanged.
         # fused_prob ≈ 0.75×ml + 0.25×ta; 0.72 ≈ ML>0.78 target for stressed regimes.
-        "buy_threshold":  {"bull": 0.62, "high_vol": 0.72, "bear": 0.72, "unknown": 0.62},
+        "buy_threshold":  {"bull": 0.65, "high_vol": 0.72, "bear": 0.72, "unknown": 0.65},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
         "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
@@ -1007,7 +1011,8 @@ _STYLE_PROFILES: dict[str, dict] = {
     "GROWTH": {
         "ml_weight_cap": 0.70,
         "ml_weight_floor": 0.20,
-        "buy_threshold":  {"bull": 0.57, "high_vol": 0.65, "bear": 0.68, "unknown": 0.57},
+        # SA-28: GROWTH bull threshold raised 0.57→0.60 — aligns with SHORT/LONG in bull markets.
+        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.60},
         "hold_threshold": {"bull": 0.45, "high_vol": 0.50, "bear": 0.52, "unknown": 0.45},
         "adx_min": 12, "adx_compression": 0.92,
         "high_vol_compression": 0.88,
@@ -1531,6 +1536,23 @@ def _apply_style_signal(
         reasons["weekly_gate_fired"] = True
     else:
         reasons["weekly_gate_fired"] = False
+
+    # SA-28: Weekly overbought extension gate (SWING/LONG, mirrors the oversold gate above).
+    # When weekly RSI > 75 and the weekly trend is up, the stock is in an extended rally —
+    # buying here has historically lower forward returns. Compress 15% toward neutral so
+    # the bar for a BUY is higher. GROWTH skips this via skip_weekly_gate (momentum names
+    # run "overbought" by traditional standards for months). Applied post-cap same as the
+    # oversold gate so it cannot be neutralised by accumulated filter boosts.
+    if (style_key in ("SWING", "LONG")
+            and not p.get("skip_weekly_gate")
+            and weekly_rsi is not None
+            and weekly_rsi > 75
+            and weekly_trend == "up"):
+        fused = 0.5 + (fused - 0.5) * 0.85
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["weekly_overbought_gate"] = True
+    else:
+        reasons["weekly_overbought_gate"] = False
 
     signal, horizon, threshold_tier = _decide_style(fused, style_key, market_regime)
     reasons["threshold_tier"] = threshold_tier  # SA-12: log which regime threshold was applied
