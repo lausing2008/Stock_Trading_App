@@ -712,6 +712,8 @@ class FundamentalsOut(BaseModel):
     eps_avg_surprise_pct: float | None = None   # mean surprise % across available quarters
     eps_surprise_trend: str | None = None       # "improving" | "declining" | "stable"
     eps_history: list[dict] = []                # [{quarter, actual, estimate, surprise_pct}]
+    # Data freshness
+    fetched_at: str | None = None               # ISO datetime when yfinance data was last fetched
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
@@ -969,6 +971,9 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
             ]
     except Exception:
         pass
+
+    from datetime import datetime as _dt
+    data.fetched_at = _dt.utcnow().isoformat() + "Z"
 
     try:
         _get_redis().setex(cache_key, _FUND_TTL, data.model_dump_json())
@@ -1518,7 +1523,7 @@ def get_options_flow(symbol: str):
         total_put_vol = 0
         unusual: list[dict] = []
 
-        for exp in expiries[:2]:  # nearest two expiries
+        for exp in expiries[:4]:  # nearest four expiries
             try:
                 chain = t.option_chain(exp)
             except Exception:
@@ -1536,15 +1541,20 @@ def get_options_flow(symbol: str):
             for df, side in [(calls, "call"), (puts, "put")]:
                 mask = (df["openInterest"] > 50) & (df["volume"] > df["openInterest"] * 0.30)
                 for _, row in df[mask].sort_values("volume", ascending=False).head(3).iterrows():
+                    vol = int(row["volume"])
+                    last_price = float(row.get("lastPrice", 0))
+                    premium = vol * last_price * 100
                     unusual.append({
-                        "expiry":   exp,
-                        "side":     side,
-                        "strike":   float(row["strike"]),
-                        "volume":   int(row["volume"]),
-                        "oi":       int(row["openInterest"]),
-                        "vol_oi":   round(float(row["volume"]) / max(float(row["openInterest"]), 1), 2),
-                        "iv":       round(float(row["impliedVolatility"]) * 100, 1),
-                        "itm":      bool(row["inTheMoney"]),
+                        "expiry":    exp,
+                        "side":      side,
+                        "strike":    float(row["strike"]),
+                        "volume":    vol,
+                        "oi":        int(row["openInterest"]),
+                        "vol_oi":    round(float(row["volume"]) / max(float(row["openInterest"]), 1), 2),
+                        "iv":        round(float(row["impliedVolatility"]) * 100, 1),
+                        "itm":       bool(row["inTheMoney"]),
+                        "premium":   round(premium, 2),
+                        "is_whale":  premium > 500_000,
                     })
 
         if total_call_vol == 0 and total_put_vol == 0:
@@ -1568,19 +1578,21 @@ def get_options_flow(symbol: str):
         else:
             sentiment = "neutral"
 
-        # Sort unusual by volume desc, keep top 8
-        unusual.sort(key=lambda x: x["volume"], reverse=True)
+        # Sort unusual by premium desc, keep top 10
+        unusual.sort(key=lambda x: x["premium"], reverse=True)
 
         result = {
-            "symbol":          sym,
-            "available":       True,
-            "call_volume":     total_call_vol,
-            "put_volume":      total_put_vol,
-            "cp_ratio":        cp_ratio,
-            "sentiment":       sentiment,
-            "unusual_count":   len(unusual),
-            "unusual":         unusual[:8],
-            "expiries_used":   list(expiries[:2]),
+            "symbol":            sym,
+            "available":         True,
+            "call_volume":       total_call_vol,
+            "put_volume":        total_put_vol,
+            "cp_ratio":          cp_ratio,
+            "sentiment":         sentiment,
+            "unusual_count":     len(unusual),
+            "unusual":           unusual[:10],
+            "expiries_used":     list(expiries[:4]),
+            "whale_count":       sum(1 for c in unusual if c.get("is_whale")),
+            "top_whale_premium": max((c["premium"] for c in unusual), default=0),
         }
 
         try:

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5017,33 +5017,39 @@ const ITEMS: Item[] = [
   // ── Tier 24 — Forward Improvements: Fundamentals Depth & ML Quality ──────────
   {
     id: 'ml-fund-2-batch-refresh',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — scheduler.py: added _refresh_fundamentals_batch(symbols) helper that iterates all active symbols and calls GET /stocks/{symbol}/fundamentals with service JWT auth, rate-limited to 3 req/s (sleep 0.33s). Called from _weekly_full_refresh() after signals/rankings refresh and before tune_all kick-off so Sunday\'s tune_all has fresh fundamentals. Also triggered immediately for all 138 symbols via manual docker exec script (fund_batch.py) on 2026-06-16 to populate the DB ahead of next training cycle. _record_job_status("fundamentals_batch", ...) written to Redis for health monitoring.',
     tier: 24, severity: 'high',
     title: 'ML-FUND-2: Weekly fundamentals batch refresh — populate all active stocks without requiring manual views',
-    file: 'services/market-data/src/services/scheduler.py · services/market-data/src/api/routes.py',
+    file: 'services/market-data/src/services/scheduler.py',
     effort: '2 hours',
-    impact: 'High — currently fundamentals only accumulate as stocks are viewed one-by-one in the UI. With 138 active symbols, the models for stocks you haven\'t visited will continue training on NaN fundamental columns until viewed. A weekly batch refresh (Sunday with tune_all) would populate fundamentals for all watchlisted stocks at once, so the next train_all uses real values everywhere. Typical benefit: fundamental features start appearing in top_features for your most-watched stocks within days of this running; within 1-2 tune_all cycles, the model learns which fundamental patterns predict price action.',
-    what: '_weekly_full_refresh() in scheduler.py runs Sunday at 02:00 ET but only refreshes signals and rankings. The /stocks/{symbol}/fundamentals endpoint exists and upserts to DB — it just needs to be called for each active symbol. Without this batch job, fundamentals accumulate only through user-initiated views, which may take weeks to cover the full universe.',
-    fix: 'In _weekly_full_refresh(): after signals/rankings refresh, iterate over all active symbols and call POST /market-data/stocks/{symbol}/fundamentals (or call the underlying _fetch_fundamentals() function directly). Rate-limit to ~3 symbols/second to avoid yfinance throttling. Log fundamentals.batch_refresh_complete with count and failures. Total time: ~46 seconds for 138 symbols at 3/s.',
+    impact: 'High — without this, fundamentals only accumulate as stocks are viewed one-by-one in the UI. With 138 active symbols, models for unvisited stocks continue training on NaN fundamental columns indefinitely. The weekly batch (Sunday, before tune_all) ensures ALL models use real revenue_growth, ROE, short_ratio, etc. in the same cycle. Practical effect: by the next Sunday after deployment, all 138 symbols will have fundamentals → 42-feature models → tune_all re-optimizes hyperparameters for the full feature set. Expected to surface fundamental factors in top_features for quality-driven stocks (MSFT, AAPL, etc.).',
+    what: '_weekly_full_refresh() in scheduler.py only refreshed signals and rankings. /stocks/{symbol}/fundamentals existed and upserted to DB but was never called in batch. Fundamentals accumulated only through UI views.',
+    fix: 'Added _refresh_fundamentals_batch(symbols) function. Called after signals/rankings refresh in _weekly_full_refresh(). Rate-limited to ~3 req/s. Logs progress and writes job status to Redis.',
   },
   {
     id: 'ml-fund-3-feature-importance-ui',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — (1) services/ml-prediction/src/api/routes.py: GET /ml/features/{symbol} endpoint added. Reads the joblib bundle\'s feature_importance dict (already saved by trainer.py since earlier session), classifies each feature as fundamental/macro/technical using FUNDAMENTAL_COLUMNS/MACRO_COLUMNS sets, returns sorted list. (2) frontend/src/lib/api.ts: FeatureImportanceItem and FeatureImportanceResult types + api.mlFeatureImportance(symbol, model). (3) frontend/src/pages/stock/[symbol].tsx: "Top model drivers" collapsible section below training controls — horizontal bars per feature colored by category (green=technical, blue=macro, purple=fundamental) with inline legend. Loads on demand; click toggles open/closed.',
     tier: 24, severity: 'medium',
     title: 'ML-FUND-3: Show top feature importances per symbol on stock detail ML section',
     file: 'frontend/src/pages/stock/[symbol].tsx · services/ml-prediction/src/api/routes.py',
     effort: '3 hours',
-    impact: 'Medium — after retraining with 42 features, the train.top_features log shows which features drive each model (e.g., AAPL: high_20_pct, macd_hist, momentum_12_1, obv_z, ret_60 — all TA). Once fundamentals are populated, you may see revenue_growth or short_ratio appear in the top 5 for specific stocks. Surfacing this in the UI lets you understand WHY the model is bullish: "momentum-driven" vs "fundamental-quality driven" — and whether the fundamental thesis supports the trade. A stock where the top feature is short_ratio (negative contribution) is a very different risk profile than one driven by revenue_growth.',
-    what: 'train_model() logs train.top_features and saves the model bundle to disk, but feature_importances_ from XGBoost are not exposed via any API endpoint. The stock detail ML section shows bull_prob, confidence, auc — but no feature breakdown.',
-    fix: 'Save feature_importances_ dict (top 10 features + importances) in the model bundle JSON alongside metrics. Expose via GET /ml/features/{symbol} endpoint. On stock detail page, add a collapsible "Model drivers" section below the ML confidence bar: horizontal bars showing the top 5 feature names and relative importance. Highlight fundamental features in a different color (e.g., amber) vs TA features (blue).',
+    impact: 'Medium — surfacing top model drivers lets you understand WHY the model is bullish for each stock: "momentum-driven" (ret_20, macd_hist dominate) vs "fundamental-quality driven" (revenue_growth, ROE dominate) vs "squeeze setup" (short_ratio drives probability). Practical examples: if short_ratio is the top feature for a stock showing BUY, that\'s a high-risk squeeze setup — you may want to size smaller. If revenue_growth is top feature, the model found an accelerating business, which is a safer long. The color coding (green/blue/purple) immediately shows the signal type at a glance.',
+    what: 'train_model() saves feature_importances_ in the bundle and logs top5, but no API exposed it. The ML section showed bull_prob and confidence only — no explanation of which signals drove the prediction.',
+    fix: 'GET /ml/features/{symbol} endpoint reads bundle, classifies features, returns sorted list. Collapsible UI panel with horizontal bars. Feature categories: technical (TA indicators), macro (VIX, yield curve, SPY momentum), fundamental (revenue_growth, ROE, etc.).',
   },
   {
     id: 'ml-fund-4-fundamentals-freshness',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — (1) routes.py FundamentalsOut schema: added fetched_at: str | None = None field. Set to datetime.utcnow().isoformat()+"Z" immediately before Redis cache write — so cached responses preserve the original fetch timestamp, not the cache-hit time. (2) frontend/src/lib/api.ts: added fetched_at: string | null to Fundamentals type. (3) frontend/src/pages/stock/[symbol].tsx: Company Financials header now shows "as of [date]" for recent data and "⚠ Nd old" in amber when fetched_at > 90 days. Redis cache TTL is 24h so the warning triggers on the next day\'s page load when cache expires and fundamentals are re-fetched.',
     tier: 24, severity: 'low',
     title: 'ML-FUND-4: Fundamentals staleness warning on stock detail — show age of fundamental data fed to ML model',
     file: 'frontend/src/pages/stock/[symbol].tsx · services/market-data/src/api/routes.py',
     effort: '1 hour',
-    impact: 'Low-Medium — yfinance fundamentals update quarterly (earnings season). If Fundamental.fetched_at is > 90 days old when training runs, the ML model is using stale data. This is especially relevant for high-growth stocks where one bad quarter can flip revenue_growth from +30% to -5%. Currently there is no indication of how fresh the fundamentals data is that the model used for training. A staleness warning lets you know when to manually refresh (visit the stock detail page to trigger a new fetch).',
-    what: 'The Fundamental table stores fetched_at but this timestamp is never surfaced in the UI or model metadata. The fundamentals section of stock detail shows metrics from the Redis cache (24h TTL) with no indication of underlying data age.',
-    fix: 'In GET /stocks/{symbol}/fundamentals: include as_of (the date of the DB row) and fetched_at in the response. On stock detail: show "Fundamentals as of [as_of date]" below the P/E and other metrics. If as_of > 90 days old: show amber "Data may be stale — click to refresh". Clicking re-calls the fundamentals endpoint (triggering yfinance fetch + DB upsert).',
+    impact: 'Low-Medium — yfinance fundamentals update quarterly (earnings season). If fundamentals are > 90 days old when a model trains, revenue_growth may reflect a stale quarter where the business has since accelerated or deteriorated. Now the Company Financials header shows the data age at a glance, so you can tell whether the 62% gross_margin is from last week or from 4 months ago. The amber ⚠ warning tells you the ML model may have trained on outdated fundamental features for this stock — visit the page to trigger a fresh fetch.',
+    what: 'The Fundamental table stored fetched_at but this was never surfaced in the UI. No indication of data freshness in the fundamentals panel.',
+    fix: 'Added fetched_at to FundamentalsOut and set it before Redis cache write. Frontend shows inline age indicator next to the Company Financials header.',
   },
   {
     id: 'ml-fund-5-tune-all-with-fundamentals',
@@ -5054,6 +5060,144 @@ const ITEMS: Item[] = [
     impact: 'High — the stored hyperparameters (max_depth, learning_rate, subsample, etc.) were tuned when FEATURE_COLUMNS had 34 features. Adding 8 new features changes the optimal regularization: more features typically benefits from lower learning_rate, higher min_child_weight, and more aggressive colsample_bytree to prevent individual fundamental features from dominating. Running tune_all re-optimizes all 138 symbols\' hyperparameters against the 42-feature pipeline. Expected improvement: +3-8% CV AUC for symbols with fundamentals data. Trigger: POST /ml/tune_all (takes ~4-8h to run through all symbols at 60 Optuna trials each).',
     what: 'Hyperparameter files in /data/models/xgboost/{symbol}_params.json were generated when the pipeline had 34 features. The new fundamentals add 8 NaN columns initially, changing the effective information density. As fundamentals populate, colsample_bytree and min_child_weight tuned for 34 features will be suboptimal for 42. The CV AUC will improve after tune_all re-optimizes on the current feature space.',
     fix: 'Run POST /ml/tune_all via API (once admin auth is resolved). Or trigger directly: replicate the train_trigger.py approach but import tune_symbol instead of train_model. Schedule to run every Sunday night after the weekly fundamentals batch refresh (ML-FUND-2) so hyperparameters stay current as new fundamentals data accumulates.',
+  },
+
+  // ── Tier 25 — Risk Metrics & Whale Options Intelligence (2026-06-16) ─────────
+  {
+    id: 'sharpe-ratio-stock-detail',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — [symbol].tsx: sharpeRatio1y IIFE calculates annualised Sharpe from data.prices daily closes (1-year rolling window, min 20 samples, risk-free ≈ 0). Formula: (mean_daily_return / std_daily_return) × √252. Rendered as a card in the header row (alongside Fair Value and AI Signal): color-coded Excellent ≥1.5 (green), Good ≥1.0 (light green), Fair ≥0.5 (amber), Poor <0.5 (red). Pure frontend calculation — no new backend endpoint needed.',
+    tier: 25, severity: 'medium',
+    title: 'Sharpe Ratio on stock detail — risk-adjusted return quality in the header',
+    file: 'frontend/src/pages/stock/[symbol].tsx',
+    effort: '30 minutes',
+    impact: 'Medium — Sharpe ratio tells you how much return the stock has delivered per unit of volatility over the past year. Practical uses: (1) Position sizing: a stock with Sharpe 1.8 can carry a larger position than one with Sharpe 0.3 because its trend is smoother and drawdowns are smaller. (2) Trade quality: your AI Signal may say BUY, but if Sharpe is 0.2 (very choppy), the signal is fighting against a stock that has historically been difficult to time. A Sharpe > 1.0 BUY is a much higher-confidence setup. (3) Complement to volatility: Sharpe combines return AND risk into one number — a high-return volatile stock can have the same Sharpe as a lower-return but smoother stock. Both have similar risk-adjusted quality. (4) Benchmark context: the S&P 500 typically runs ~0.7–1.0 Sharpe over bull markets. A stock with Sharpe > 1.5 is beating the market on a risk-adjusted basis — rare and worth noting.',
+    what: 'The stock detail page had no risk-adjusted return metric. K-Score measures relative technical/fundamental quality but not return-per-unit-risk. Users had no way to compare position quality across stocks on a volatility-adjusted basis.',
+    fix: 'Calculate from existing data.prices (already loaded). Annualised Sharpe = (mean_daily_ret / std_daily_ret) × √252. Show as header card next to Fair Value and AI Signal, color-coded by quality tier.',
+  },
+  {
+    id: 'whale-options-upgrade',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — (1) routes.py: options-flow endpoint extended from 2 to 4 nearest expiries; added premium = volume × lastPrice × 100 per contract; is_whale = premium > $500K; sort unusual by premium descending (not volume); keep top 10; added whale_count and top_whale_premium to response. (2) api.ts: OptionsFlowContract gains premium, is_whale; OptionsFlow gains whale_count, top_whale_premium. (3) [symbol].tsx: Options Flow header shows "🐋 N whale trades" badge when whale_count > 0; unusual table gains Premium column; whale rows highlighted in amber; Premium cell shows $M / $K / $ formatting with 🐋 emoji.',
+    tier: 25, severity: 'high',
+    title: 'Whale Options detection — identify institutional-sized options bets ($500K+ premium)',
+    file: 'services/market-data/src/api/routes.py · frontend/src/pages/stock/[symbol].tsx · frontend/src/lib/api.ts',
+    effort: '2 hours',
+    impact: 'High — "whale" options trades (large institutional bets > $500K premium) are among the most reliable short-term directional signals available. Whales buy options when they have high conviction about an upcoming move — either from research, insider-adjacent knowledge (legal mosaic theory), or macro positioning. Practical uses: (1) Confirmation signal: your AI Signal says BUY and the options flow shows a 🐋 $2M call sweep expiring in 2 weeks — this is the strongest possible confirmation. Someone bet $2M that the stock is going up in 14 days. (2) Contradiction signal: AI Signal says BUY but options flow shows 🐋 $3M put sweep — reason to pause. Institutional money is positioned against the trade. (3) Event bet: large OTM calls bought cheaply before earnings = someone expects an upside surprise. (4) Sweep detection: vol/OI >> 1 (e.g. 5.2×) means someone swept through all available contracts across multiple strikes, paying market price — urgency indicates conviction. Previously the options table showed only volume/OI without any dollar context, making it impossible to distinguish a whale from retail noise.',
+    what: 'The existing options-flow endpoint showed volume and vol/OI ratio but no dollar premium. A 10,000-contract trade on a $0.05 option ($50K notional) looked the same as a 1,000-contract trade on a $50 option ($5M notional). Without dollar sizing, whale detection was impossible. Also only looked at 2 expiries, missing longer-dated institutional positions.',
+    fix: 'Added premium = volume × lastPrice × 100, is_whale flag (premium > $500K), whale_count and top_whale_premium to API response. Extended to 4 expiries. Sorted by premium not volume. Frontend shows whale badge + highlighted rows + Premium column.',
+  },
+
+  // ── Tier 26 — Full Risk Profile + Squeeze Score (2026-06-16) ─────────────────
+  {
+    id: 'risk-profile-sortino-maxdd',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — [symbol].tsx: riskMetrics1y IIFE calculates Sharpe, Sortino, and Max Drawdown from the same 1-year price window. Sortino uses downside-only std (returns < 0); Max Drawdown tracks running peak and largest peak-to-trough decline. Displayed as three compact cards in a flex row in the header: Sharpe 1Y / Sortino 1Y / Max DD 1Y, each color-coded independently. Sortino thresholds: ≥2.0 excellent, ≥1.2 good, ≥0.6 fair, else poor. Max DD thresholds: ≤10% green, ≤20% amber, ≤35% orange, else red.',
+    tier: 26, severity: 'medium',
+    title: 'Sortino Ratio + Max Drawdown on stock detail — complete risk profile alongside Sharpe',
+    file: 'frontend/src/pages/stock/[symbol].tsx',
+    effort: '30 minutes',
+    impact: 'Medium-High — the three metrics together give a complete 1-year risk picture: (1) Sharpe = return per unit of total volatility — punishes upside spikes too, which is useful for ranking but not for trading decisions. (2) Sortino = return per unit of downside volatility only — a stock with high Sortino has smooth uptrends but sharp occasional dips. This is the metric you actually care about for long trades: you want asymmetric returns where upside is smooth and downside is rare. A stock with Sharpe 1.2 but Sortino 2.5 is a clean uptrending stock worth holding. Sharpe 1.2, Sortino 0.8 means the volatility is symmetric — choppy. (3) Max Drawdown = worst-case scenario you would have experienced over the past year. A 45% max drawdown means there was a period where buy-and-hold would have wiped out nearly half your position. This sets your mental stop expectations: a stock that previously dropped 40% may do so again.',
+    what: 'Only Sharpe ratio was displayed. Sortino and Max Drawdown were available from the price history already loaded but not surfaced.',
+    fix: 'Consolidated into riskMetrics1y IIFE that returns {sharpe, sortino, maxDrawdown}. Three compact cards in a flex row.',
+  },
+  {
+    id: 'squeeze-score-short-interest',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — [symbol].tsx: squeeze score calculated inline in the Short Interest section using three components: (1) float_pts = 40/25/15/0 based on short_percent_of_float thresholds (20%/15%/10%); (2) ratio_pts = 30/20/10/0 based on short_ratio (8/5/3 days to cover); (3) options_pts = 30/20/10/0 based on optionsFlow.cp_ratio + whale_count. Total score 0-100. Badge shown next to "Short Interest & Ownership" header: 🔥 HIGH SQUEEZE (≥70, orange), ⚡ MODERATE (≥40, amber), LOW (gray). Badge only appears when score > 0.',
+    tier: 26, severity: 'high',
+    title: 'Short Squeeze Score — composite indicator combining short float, days-to-cover, and options flow',
+    file: 'frontend/src/pages/stock/[symbol].tsx',
+    effort: '45 minutes',
+    impact: 'High — short squeeze potential is one of the most powerful short-term catalysts. A stock with HIGH SQUEEZE potential (score ≥70) has: (1) ≥20% of float short (many traders will be forced to buy to cover their losses if the stock rises), (2) ≥8 days to cover (covering shorts would require 8 days of average volume — a slow-motion squeeze that can sustain a trend), (3) options flow showing bullish call buying, possibly with whale bets (institutional money betting on the squeeze). Real examples: GameStop Jan 2021 (136% float short), AMC, CLOV — all had these three factors simultaneously. Practical use: if your AI Signal says BUY and the squeeze score is HIGH, the trade has additional fuel from forced short covering. If the AI Signal says HOLD but squeeze score is HIGH, it may be worth a small position for the squeeze potential alone.',
+    what: 'The short interest section showed raw numbers (short % of float, days to cover) but no synthesis into a squeeze potential score. Users had to mentally combine the numbers and separately check options flow.',
+    fix: 'Three-component score (40+30+30 = 100 max) from existing fundamentals and options data already loaded on the page. Inline badge requires no new API call.',
+  },
+  // ── Tier 27 — Signal Gate Tuning & Backtest Tool (2026-06-16) ───────────────
+  {
+    id: 'tier-dropdown-ui',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — improvements.tsx: replaced 27 individual tier buttons (overflowing single row) with a styled <select> dropdown. Border and background color dynamically reflect the selected tier color from TIER_COLOR. Status pills (All status / Todo / In progress / Done) remain as buttons. Scales to any number of tiers with no layout changes.',
+    tier: 27, severity: 'low',
+    title: 'Improvements tracker — tier filter dropdown replaces overflowing button row',
+    file: 'frontend/src/pages/improvements.tsx',
+    effort: '15 minutes',
+    impact: 'Low — UX only. With 27 tiers the button row was overflowing and clipping off the right edge of the screen.',
+    what: '27 tier filter buttons in a single non-wrapping flex row exceeded the page width.',
+    fix: 'Single <select> dropdown with tier label (full name) per option. Styled to match dark theme with dynamic border/background from TIER_COLOR.',
+  },
+  {
+    id: 'macd-gate-relaxation',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — scheduler.py _is_conviction_buy() Layer 4c: old condition was (macd_hist > 0 AND macd_rising) OR zero_cross — required both histogram positive and rising simultaneously. New condition: macd_hist > 0 OR macd_rising OR zero_cross — passes if any one is true. Rationale: MACD is a lagging indicator; requiring it to be both positive and rising blocks alerts at the beginning of moves when histogram is still negative but clearly improving (rising toward zero). A stock with 100% bullish probability and 4/4 horizon agreement was routinely blocked by this single lagging check.',
+    tier: 27, severity: 'high',
+    title: 'MACD gate relaxation — histogram > 0 OR rising OR crossover (was both required)',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '20 minutes',
+    impact: 'High — the old AND requirement was the primary reason alerts were not firing for high-conviction BUY signals. Stocks with 90–100% bullish probability and all other layers passing were blocked because MACD histogram happened to be positive but slightly declining, or rising but still just negative. Both are valid momentum states that should not hard-block an alert.',
+    what: 'Old: (hist > 0 AND rising) OR crossover. Blocked 14/17 BUY signals that had already passed all other layers.',
+    fix: 'New: hist > 0 OR rising OR crossover. Fails only when histogram is negative AND falling — clearly deteriorating momentum.',
+  },
+  {
+    id: 'macd-soft-failure',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — scheduler.py _is_conviction_buy(): added "MACD" to _SOFT_LAYER_KEYWORDS tuple. Previously soft failures were only OBV, ADX, ML. Now the near-conviction tier (allows exactly 1 soft failure) covers MACD as well. Consequence: if MACD is the only failing layer and all other layers pass, the alert fires with "near" conviction tier. If MACD + any other soft layer fail (e.g. MACD + ADX), that is 2 soft failures — still blocked. Hard failures (uptrend structure, RSI range, K-Score, RSI divergence, Stoch overbought) remain unchanged.',
+    tier: 27, severity: 'high',
+    title: 'MACD reclassified as soft failure — no longer vetoes near-conviction alerts alone',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '10 minutes',
+    impact: 'High — a lagging indicator (12/26 EMA) should not have veto power over a signal where TA structure, RSI, ML, and K-Score all align. The OBV and ADX were already soft for the same reason. MACD was inconsistently hard.',
+    what: 'MACD failure was treated as hard — same weight as "price below SMA50" or "RSI divergence". Blocked alerts even when it was the sole disagreeing indicator.',
+    fix: 'Added to _SOFT_LAYER_KEYWORDS. Now: MACD fail + all else pass = near tier = alert fires. MACD + ADX fail = 2 soft = blocked.',
+  },
+  {
+    id: 'growth-rsi-lower-bound',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — scheduler.py _is_conviction_buy() Layer 4b: GROWTH style RSI lower bound changed from 55.0 to 50.0. Range is now 50–85 instead of 55–85. RSI 50–55 is neutral-to-slightly-bullish momentum territory, which is a valid entry zone for high-volatility growth stocks — especially at the start of a breakout before RSI has had time to accelerate. The 55 floor was borrowed from SWING style logic and was too conservative for GROWTH.',
+    tier: 27, severity: 'medium',
+    title: 'GROWTH style RSI lower bound: 55 → 50 (50–85 range)',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '5 minutes',
+    impact: 'Medium — small but targeted. Growth stocks in an early breakout phase will often have RSI in the 50–55 range before the momentum accelerates. The old 55 floor was catching valid early entries.',
+    what: 'RSI 53 on a GROWTH-style stock was being rejected as "outside 55–85" even though RSI 53 is not overbought, oversold, or in any problematic range.',
+    fix: 'Changed threshold from 55.0 to 50.0 in the GROWTH branch of Layer 4b.',
+  },
+  {
+    id: 'gate-backtest-tool',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — signal-engine routes.py: GET /signals/gate_backtest?lookback_days=90&style=SWING&hold_days=10. Replays old and new _is_conviction_buy gate logic against every historical BUY signal in the lookback window. For each signal applies both gate versions and looks up actual forward price return (hold_days later). Returns: old_gate stats (count, win_rate, avg_return), new_gate stats, newly_unblocked stats broken down by which specific change caused the unblock (macd_condition_relaxed / macd_soft_reclassified / growth_rsi_50_54), still_blocked stats, and a sample of 20 newly-unblocked signals sorted by return. Results cached 1h in Redis.',
+    tier: 27, severity: 'medium',
+    title: 'Gate backtest endpoint — replay old vs new conviction gate against historical signals',
+    file: 'services/signal-engine/src/api/routes.py',
+    effort: '2 hours',
+    impact: 'Medium — enables data-driven gate tuning. Without a backtest, gate parameter changes are guesses. With it, you can verify that newly unblocked signals have win_rate > 50% (beneficial) and the avg_return is comparable to already-passing signals before shipping any gate change to production.',
+    what: 'No way to measure whether gate changes improve or degrade signal quality. Gate parameters were tuned by intuition.',
+    fix: 'Inline replay of all gate layers (K-Score, uptrend, RSI, MACD, OBV, ADX, ML, disqualifiers) using the stored reasons JSON from the signals table. Attribution per change lets you see exactly which relaxation drove which additional signals.',
+  },
+  // ── Tier 28 — Kelly Criterion + Conviction Gate on Stock Detail (2026-06-16) ─
+  {
+    id: 'kelly-criterion-stock-detail',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — [symbol].tsx: Kelly Criterion sizing hint added below the ML probability bar in the ML Prediction card. Formula: f = (p × b − q) / b where p = bullish_probability (0–1), q = 1 − p, b = 2.5 (standard SWING R:R). Full Kelly capped at 25% (realistic maximum). Shows both full-Kelly and half-Kelly (recommended for practical use). Color-coded: green ≥15%, amber ≥7%, gray below. Negative Kelly (p < breakeven) shows "edge insufficient" note. No new API call — uses existing signal data already loaded by the page.',
+    tier: 28, severity: 'medium',
+    title: 'Kelly Criterion position sizing on stock detail — optimal allocation from ML probability',
+    file: 'frontend/src/pages/stock/[symbol].tsx',
+    effort: '30 minutes',
+    impact: 'Medium — Kelly Criterion translates a raw win probability into an actionable position size: f = (p×b − q)/b. If ML says 75% bullish at 2.5:1 R:R, full Kelly = 40% → use half-Kelly = 20% of portfolio. Below 28.6% probability at 2.5:1 R:R, Kelly is negative meaning the edge is not sufficient to take the trade. This gives a principled sizing rule rather than arbitrary dollar amounts.',
+    what: 'ML probability was shown as a percentage bar with no connection to position sizing. User had to mentally translate "75% bullish" into a trade size.',
+    fix: 'Single inline IIFE after the probability bar: computes Kelly fraction from bullish_probability + default 2.5:1 R:R, renders full/half-Kelly percentages with color coding.',
+  },
+  {
+    id: 'conviction-gate-stock-detail',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — [symbol].tsx: Conviction Gate panel added below each horizon signal card. Shows all 7 gate layers as a compact pass/fail list using signal.reasons already loaded on the page: K-Score (hard), Uptrend (hard), RSI range (hard, style-aware: 45–72 SWING, 50–85 GROWTH), MACD (soft: hist>0 OR rising OR crossover), OBV (soft), ADX (soft), ML probability (soft, regime-adaptive: 65%–78%). Overall verdict: FULL conviction (all pass), NEAR conviction (exactly 1 soft failure), or Gate not met. Disqualifiers (bearish RSI divergence, Stoch RSI overbought) shown as additional hard blocks. Changes dynamically when you switch horizon tabs. No new API call.',
+    tier: 28, severity: 'high',
+    title: 'Conviction gate panel on stock detail — per-layer pass/fail for all 7 gate conditions',
+    file: 'frontend/src/pages/stock/[symbol].tsx',
+    effort: '45 minutes',
+    impact: 'High — previously the only way to see why a stock was not triggering an alert was to check the Signal Filter Monitor page. Now you can see the full gate breakdown per-horizon directly on the stock detail page. Changes dynamically when you switch between SHORT / SWING / LONG / GROWTH tabs so you can instantly compare which horizon is closest to conviction.',
+    what: 'Stock detail showed signal direction (BUY/HOLD/etc.) and confidence but gave no insight into which specific gate layers were passing or failing. You had to cross-reference the Signal Filter Monitor separately.',
+    fix: 'Frontend-only IIFE below SignalCard: mirrors the Python _is_conviction_buy logic exactly (same thresholds, same soft/hard classification, same GROWTH-aware RSI range) using signal.reasons that is already included in the signal API response.',
   },
 ];
 
@@ -5090,6 +5234,10 @@ const TIER_LABEL: Record<Tier, string> = {
   22: 'Tier 22 — Pattern Alert System: Recurring + Bulk + Fixes (2026-06-16)',
   23: 'Tier 23 — ML Fundamentals + Paper Trading Cutoff Fix (2026-06-15/16)',
   24: 'Tier 24 — Forward Improvements: Fundamentals Depth & ML Quality',
+  25: 'Tier 25 — Risk Metrics & Whale Options Intelligence (2026-06-16)',
+  26: 'Tier 26 — Full Risk Profile + Squeeze Score (2026-06-16)',
+  27: 'Tier 27 — Signal Gate Tuning & Backtest Tool (2026-06-16)',
+  28: 'Tier 28 — Kelly Criterion + Conviction Gate on Stock Detail (2026-06-16)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5117,6 +5265,10 @@ const TIER_COLOR: Record<Tier, string> = {
   22: '#2dd4bf',
   23: '#fcd34d',
   24: '#6ee7b7',
+  25: '#fb923c',
+  26: '#38bdf8',
+  27: '#84cc16',
+  28: '#e879f9',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5188,7 +5340,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -5235,20 +5387,29 @@ export default function ImprovementsPage() {
       </div>
 
       {/* Filters */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24] as const).map(t => (
-            <button key={t} onClick={() => setFilterTier(t as Tier | 0)}
-              style={{ padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
-                borderColor: filterTier === t ? TIER_COLOR[t as Tier] ?? '#6366f1' : '#1e293b',
-                background: filterTier === t ? `${TIER_COLOR[t as Tier] ?? '#6366f1'}18` : 'transparent',
-                color: filterTier === t ? TIER_COLOR[t as Tier] ?? '#818cf8' : '#475569',
-              }}>
-              {t === 0 ? 'All tiers' : `Tier ${t}`}
-            </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+        <select
+          value={filterTier}
+          onChange={e => setFilterTier(Number(e.target.value) as Tier | 0)}
+          style={{
+            padding: '5px 32px 5px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+            border: `1px solid ${filterTier === 0 ? '#1e293b' : TIER_COLOR[filterTier as Tier] ?? '#6366f1'}`,
+            background: filterTier === 0 ? '#0f172a' : `${TIER_COLOR[filterTier as Tier] ?? '#6366f1'}18`,
+            color: filterTier === 0 ? '#475569' : TIER_COLOR[filterTier as Tier] ?? '#818cf8',
+            appearance: 'none', WebkitAppearance: 'none',
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23475569'/%3E%3C/svg%3E")`,
+            backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center',
+            minWidth: 160,
+          }}
+        >
+          <option value={0} style={{ background: '#0f172a', color: '#cbd5e1' }}>All tiers</option>
+          {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28] as Tier[]).map(t => (
+            <option key={t} value={t} style={{ background: '#0f172a', color: '#cbd5e1' }}>
+              {TIER_LABEL[t]}
+            </option>
           ))}
-        </div>
-        <div style={{ width: 1, background: '#1e293b' }} />
+        </select>
+        <div style={{ width: 1, height: 24, background: '#1e293b' }} />
         <div style={{ display: 'flex', gap: 4 }}>
           {(['all', 'todo', 'in-progress', 'done'] as const).map(s => (
             <button key={s} onClick={() => setFilterStatus(s)}
@@ -5388,14 +5549,14 @@ export default function ImprovementsPage() {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
-            { label: 'Data pipeline',   score: 8.8, target: 9.0, note: '↑ ML-FUND-1: fundamentals auto-persist to DB on every stock view; 42-feature pipeline live. ↑ ML-FUND-2 batch refresh pending.' },
-            { label: 'ML methodology',  score: 9.2, target: 9.3, note: '↑ 42-feature XGBoost with fundamental signals (revenue growth, ROE, FCF yield, short ratio, analyst score, P/B, earnings growth, gross margin). ↑ ML-FUND-5 tune_all with new feature space pending.' },
+            { label: 'Data pipeline',   score: 9.0, target: 9.2, note: '↑ ML-FUND-2 weekly fundamentals batch refresh live (all 138 symbols Sunday, rate-limited 3/s). ↑ ML-FUND-4 staleness warning on Company Financials. ↑ fetched_at persisted in Redis cache so data age survives 24h TTL.' },
+            { label: 'ML methodology',  score: 9.2, target: 9.4, note: '↑ ML-FUND-3 feature importance panel on stock detail (top 8 drivers, color-coded fundamental/macro/technical). ↑ ML-FUND-5 tune_all rerun with 42-feature pipeline pending (expected +3-8% CV AUC).' },
             { label: 'Signal logic',    score: 9.1, target: 9.2, note: '↑ INT-7 divergence alert + INT-8 forward return tracking pending' },
             { label: 'K-Score ranking', score: 8.5, target: 8.5, note: '✓ SCR-1 multi-factor screener + RES-4 sector context (target met)' },
             { label: 'Research engine', score: 8.2, target: 8.8, note: '↑ RES-FIX-1 data fallback + INT-4 auto-trigger + INT-6 composite score' },
             { label: 'Frontend / UX',   score: 9.7, target: 9.8, note: '↑ Tier 16: chart overhaul (EMA200, VWAP, 52W H/L, signal markers, pattern strip), signal history sidebar, screener filters' },
             { label: 'Risk management', score: 8.8, target: 9.2, note: '↑ CB-W1 paper trading cutoff fixed (was 0 trades/week). INT-3 research-gated sizing + PT-M1/M2/M4/M5 all live.' },
-            { label: 'Overall',         score: 9.6, target: 9.7, note: '↑ Tier 23: fundamental ML pipeline (42 features), paper trading cutoff fix, NaN mask fix. Pending: ML-FUND-2/5, tune_all rerun.' },
+            { label: 'Overall',         score: 9.7, target: 9.8, note: '↑ Tier 26: Sortino + Max Drawdown alongside Sharpe (3-card risk profile header), Squeeze Score badge in short interest (0-100, three-factor: float % + days-to-cover + options flow). Pending: ML-FUND-5 tune_all.' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -5431,7 +5592,11 @@ export default function ImprovementsPage() {
           Tier 21 (2026-06-15/16): Audit wave 3 — 13 items: AUTH-02 (reset-password rate limiting); AUTH-08 (research engine GET routes auth); RISK-1 (null-sector sector cap bypass); RISK-3 (per-sector position count cap); F-2 (force-ingest two-transaction gap → atomic DELETE+INSERT); F-3 (auto_adjust=False→True mismatch in live price fetch); STALE-001 (model staleness detection + trained_at in bundle); RACE-001 (atomic ML model write via os.replace); STY-001 (TA weights wired into _ta_score, volume_surge→volume_z rename); REG-002 (SHORT style breadth_compression=0.90); CVG-002 (pillar gate None sentinel with warning); FIN-07 (min_shares guard); live price cache 1-min refresh (routes.py refresh_live_price_cache() + scheduler job).
           Tier 22 (2026-06-16): Pattern Alert System — (1) Recurring alerts: price_alerts.recurring + last_sent_at columns (migration 007); check_technical_alerts() same-day dedup (_already_fired_today); recurring alerts stamp last_sent_at instead of triggered=True; once/↻ recurring toggle on alert forms. (2) Double bottom recency fix: b2_idx &gt;= len(window)-10 guard prevents stale W-pattern firing daily. (3) Bulk pattern alert: BulkPatternAlertCard on /alerts — pick watchlist + pattern + mode, creates alerts for all stocks in one click. (4) System health: MORNING DIGESTS section (09:00 ET / 08:55 HKT), SCHEDULE REFERENCE card with full US/HK timetable; JOB_META expanded from 8 to 22 entries.
           Tier 23 (2026-06-15/16): CB-W1 paper trading signal cutoff bug — 26h window excluded all Friday signals every Monday (engine ran all week with 0 trades); changed to 5-day window + latest_signal_ts_subq subquery. ML-FUND-1 fundamental signals — Fundamental DB table (16 fields, auto-upserted on every /fundamentals view); 8 new FEATURE_COLUMNS: revenue_growth, earnings_growth, gross_margin, return_on_equity, fcf_yield, short_ratio, recommendation_mean, price_to_book (34→42 features total). ML-FUND-NaN critical fix — mask was dropping all rows with NaN fundamentals (0 clean samples); changed to only require non-fundamental columns to be non-null so XGBoost handles missing values natively. All 138 symbols retrained with 42-feature pipeline on 2026-06-16.
-          Tier 24 (open): ML-FUND-2 weekly fundamentals batch refresh (populate all 138 symbols Sunday with tune_all instead of waiting for manual views). ML-FUND-3 feature importance UI (show top-5 model drivers per stock — fundamental vs TA — on stock detail). ML-FUND-4 fundamentals staleness warning (amber badge if as_of &gt; 90d). ML-FUND-5 tune_all rerun with 42-feature pipeline (current hyperparams were tuned for 34 features; re-tuning expected +3-8% CV AUC improvement).
+          Tier 28 (2026-06-16): Kelly Criterion + Conviction Gate on stock detail — (1) Kelly Criterion sizing hint added below ML probability bar: f = (p × b − q) / b using bullish_probability and 2.5:1 R:R; full-Kelly capped at 25%, half-Kelly shown as recommended; color-coded green/amber/gray; negative Kelly shows "edge insufficient". (2) Conviction Gate panel below each horizon signal card mirrors the full Python _is_conviction_buy logic (7 layers: K-Score hard, Uptrend hard, RSI hard, MACD soft, OBV soft, ADX soft, ML soft); style-aware RSI range (45-72 SWING, 50-85 GROWTH); regime-adaptive ML threshold (65%-78%); per-layer ✓/✗ with soft/hard badge; overall verdict FULL / NEAR / FAILED; disqualifier checks (bearish RSI divergence, Stoch RSI overbought); updates dynamically when switching horizon tabs. No new API calls.
+          Tier 27 (2026-06-16): Signal gate tuning — (1) Improvements tracker tier filter replaced 27 overflowing buttons with a <code>&lt;select&gt;</code> dropdown. (2) MACD gate condition relaxed: old = (hist &gt; 0 AND rising) OR crossover; new = hist &gt; 0 OR rising OR crossover — passes if any one is true, fails only when histogram is both negative AND falling. (3) MACD reclassified as soft failure (joins OBV, ADX, ML in _SOFT_LAYER_KEYWORDS) — alone it triggers "near" conviction tier and still fires the alert; combined with another soft fail it blocks as before. (4) GROWTH RSI lower bound: 55 → 50. (5) Gate backtest endpoint: GET /signals/gate_backtest replays old vs new gate logic against historical BUY signals and reports win-rate by gate version and by specific change.
+          Tier 26 (2026-06-16): Sortino Ratio + Max Drawdown on stock detail — riskMetrics1y calculates Sharpe/Sortino/MaxDD from 1Y price window in one IIFE; three compact color-coded cards in header. Squeeze Score — 3-component score (40+30+30) from short_percent_of_float, short_ratio, and optionsFlow.cp_ratio + whale_count; badge shown in Short Interest header: 🔥 HIGH (≥70), ⚡ MODERATE (≥40), no badge below 40. No new API calls — uses already-loaded fundamentals and options data.
+          Tier 25 (2026-06-16): Sharpe ratio on stock detail — 1-year annualised Sharpe calculated from existing price data (no backend change); header card with Excellent/Good/Fair/Poor color tiers. Whale options detection — extended options-flow from 2 to 4 expiries; added premium = volume × lastPrice × 100 per contract; is_whale flag at $500K threshold; response gains whale_count and top_whale_premium; UI shows 🐋 badge when whales detected, highlighted rows with Premium column in amber.
+          Tier 24 (2026-06-16, partial): ML-FUND-2 weekly fundamentals batch refresh — _refresh_fundamentals_batch() added to _weekly_full_refresh() in scheduler.py; runs after signals/rankings, before tune_all; rate-limited 3 req/s; also triggered immediately for all 138 symbols via fund_batch.py docker exec script. ML-FUND-3 feature importance panel — GET /ml/features/SYMBOL endpoint added to ml-prediction; collapsible "Top model drivers" section on stock detail with horizontal bars color-coded by category (green=technical, blue=macro, purple=fundamental). ML-FUND-4 fundamentals staleness warning — fetched_at added to FundamentalsOut and persisted in Redis cache; Company Financials header shows "as of [date]" / "⚠ Nd old" when &gt; 90 days. Open: ML-FUND-5 tune_all rerun with 42-feature pipeline (expected +3-8% CV AUC; schedule for next Sunday after fundamentals batch populates).
           Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Remaining: walk-forward backtest, SUR-001, CV-001, WEIGHT-001, ENS-001 (ML training methodology items).
         </p>
       </div>

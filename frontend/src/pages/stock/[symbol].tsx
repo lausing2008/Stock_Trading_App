@@ -37,7 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -163,6 +163,8 @@ export default function StockDetail() {
   const [mlLoading, setMlLoading] = useState(false);
   const [mlError, setMlError] = useState('');
   const [mlTrainOpen, setMlTrainOpen] = useState(false);
+  const [featureImportance, setFeatureImportance] = useState<FeatureImportanceResult | null>(null);
+  const [fiLoading, setFiLoading] = useState(false);
 
   // Research summary (INT-1, INT-2, INT-6)
   const [researchSummary, setResearchSummary] = useState<ResearchSummary | null>(null);
@@ -730,6 +732,42 @@ Return ONLY valid JSON — no markdown, no prose:
     ? ((ranking.fair_price - curPrice) / curPrice) * 100
     : null;
 
+  // Risk metrics (annualised, 1-year rolling) — calculated from existing price data
+  const riskMetrics1y: { sharpe: number; sortino: number; maxDrawdown: number } | null = (() => {
+    const prices = data.prices;
+    if (!prices || prices.length < 30) return null;
+    const closes = prices.map((p: { close: number }) => p.close);
+    const cutoff = closes.length - 252;
+    const window = closes.slice(Math.max(0, cutoff));
+    if (window.length < 20) return null;
+    const returns: number[] = [];
+    for (let i = 1; i < window.length; i++) {
+      returns.push((window[i] - window[i - 1]) / window[i - 1]);
+    }
+    const n = returns.length;
+    const mean = returns.reduce((a, b) => a + b, 0) / n;
+    const std = Math.sqrt(returns.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+    // Sortino: downside std (returns below 0 only)
+    const downside = returns.filter(r => r < 0);
+    const downsideStd = downside.length > 1
+      ? Math.sqrt(downside.reduce((a, b) => a + b ** 2, 0) / downside.length)
+      : std;
+    // Max drawdown over the window
+    let peak = window[0], maxDD = 0;
+    for (const p of window) {
+      if (p > peak) peak = p;
+      const dd = (peak - p) / peak;
+      if (dd > maxDD) maxDD = dd;
+    }
+    if (std === 0) return null;
+    return {
+      sharpe:      parseFloat(((mean / std) * Math.sqrt(252)).toFixed(2)),
+      sortino:     parseFloat(((mean / downsideStd) * Math.sqrt(252)).toFixed(2)),
+      maxDrawdown: parseFloat((maxDD * 100).toFixed(1)),
+    };
+  })();
+  const sharpeRatio1y = riskMetrics1y?.sharpe ?? null;
+
   const levels = data.levels;
   const srLevels = levels?.support_resistance ?? [];
   const fibLevels = levels?.fibonacci ?? {};
@@ -821,6 +859,41 @@ Return ONLY valid JSON — no markdown, no prose:
               </div>
             );
           })()}
+          {/* Risk Metrics — Sharpe / Sortino / Max Drawdown */}
+          {riskMetrics1y !== null && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              {(() => {
+                const sr = riskMetrics1y.sharpe;
+                const color = sr >= 1.5 ? '#4ade80' : sr >= 1.0 ? '#86efac' : sr >= 0.5 ? '#fbbf24' : '#f87171';
+                return (
+                  <div style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${color}33`, background: `${color}08`, textAlign: 'center', minWidth: '72px' }}>
+                    <div style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Sharpe 1Y</div>
+                    <div style={{ fontSize: '16px', fontWeight: 800, color, marginTop: '2px' }}>{sr.toFixed(2)}</div>
+                  </div>
+                );
+              })()}
+              {(() => {
+                const so = riskMetrics1y.sortino;
+                const color = so >= 2.0 ? '#4ade80' : so >= 1.2 ? '#86efac' : so >= 0.6 ? '#fbbf24' : '#f87171';
+                return (
+                  <div style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${color}33`, background: `${color}08`, textAlign: 'center', minWidth: '72px' }}>
+                    <div style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Sortino 1Y</div>
+                    <div style={{ fontSize: '16px', fontWeight: 800, color, marginTop: '2px' }}>{so.toFixed(2)}</div>
+                  </div>
+                );
+              })()}
+              {(() => {
+                const dd = riskMetrics1y.maxDrawdown;
+                const color = dd <= 10 ? '#4ade80' : dd <= 20 ? '#fbbf24' : dd <= 35 ? '#fb923c' : '#f87171';
+                return (
+                  <div style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${color}33`, background: `${color}08`, textAlign: 'center', minWidth: '72px' }}>
+                    <div style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Max DD 1Y</div>
+                    <div style={{ fontSize: '16px', fontWeight: 800, color, marginTop: '2px' }}>-{dd.toFixed(1)}%</div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
           {/* Earnings warning badge */}
           {data.fundamentals?.next_earnings_date && (() => {
             const d = data.fundamentals!.days_to_earnings;
@@ -1252,6 +1325,29 @@ Return ONLY valid JSON — no markdown, no prose:
                     {isFresh ? '↻ Fresh model run · may differ from AI Signal' : 'From AI Signal — same value used by the dashboard'}
                   </div>
                   {mlError && <div style={{ fontSize: 11, color: '#fbbf24', marginTop: 4 }}>{mlError}</div>}
+                  {/* Kelly Criterion position sizing hint */}
+                  {(() => {
+                    const p = displayResult.bullish_probability;
+                    const b = 2.5; // standard SWING R:R
+                    const f = (p * b - (1 - p)) / b;
+                    if (f <= 0) return (
+                      <div style={{ marginTop: 8, fontSize: 10, color: '#475569', borderTop: '1px solid #1e293b', paddingTop: 6 }}>
+                        Kelly sizing: negative edge at 2.5:1 R:R — below breakeven probability ({((1/(1+b))*100).toFixed(0)}%)
+                      </div>
+                    );
+                    const fullK = Math.min(f * 100, 25);
+                    const halfK = fullK / 2;
+                    const kColor = fullK > 15 ? '#4ade80' : fullK > 7 ? '#fbbf24' : '#94a3b8';
+                    return (
+                      <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, borderTop: '1px solid #1e293b', paddingTop: 6, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 10, color: '#475569' }}>Kelly (2.5:1 R:R):</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: kColor }}>{fullK.toFixed(1)}% full</span>
+                        <span style={{ fontSize: 10, color: '#334155' }}>·</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: kColor }}>{halfK.toFixed(1)}% half-Kelly</span>
+                        <span style={{ fontSize: 9, color: '#334155' }}>(half-Kelly recommended)</span>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })()}
@@ -1268,6 +1364,55 @@ Return ONLY valid JSON — no markdown, no prose:
                   <button onClick={trainML} disabled={mlLoading} style={{ borderRadius: 6, background: 'transparent', border: '1px solid #334155', padding: '6px', fontSize: 12, color: '#94a3b8', cursor: mlLoading ? 'not-allowed' : 'pointer', opacity: mlLoading ? 0.5 : 1 }}>
                     {mlLoading ? 'Training…' : 'Train model for this stock'}
                   </button>
+                </div>
+              )}
+            </div>
+            {/* ML-FUND-3: Feature importance — collapsed, loaded on demand */}
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #1e293b' }}>
+              <button
+                onClick={async () => {
+                  if (featureImportance) { setFeatureImportance(null); return; }
+                  setFiLoading(true);
+                  try {
+                    const fi = await api.mlFeatureImportance(symbol, mlModel);
+                    setFeatureImportance(fi);
+                  } catch { /* no model yet */ }
+                  setFiLoading(false);
+                }}
+                style={{ fontSize: 11, color: '#334155', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, padding: 0 }}
+              >
+                <span style={{ fontSize: 9 }}>{featureImportance ? '▾' : '▸'}</span> {fiLoading ? 'Loading…' : 'Top model drivers'}
+              </button>
+              {featureImportance && (
+                <div style={{ marginTop: 8 }}>
+                  {featureImportance.features.slice(0, 8).map((f, i) => {
+                    const catColor = f.category === 'fundamental' ? '#a78bfa' : f.category === 'macro' ? '#60a5fa' : '#4ade80';
+                    const barPct = Math.round((f.importance / (featureImportance.features[0]?.importance || 1)) * 100);
+                    return (
+                      <div key={f.name} style={{ marginBottom: 5 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: catColor, background: `${catColor}22`, borderRadius: 3, padding: '1px 4px', textTransform: 'uppercase' }}>{f.category.slice(0, 4)}</span>
+                            <span style={{ fontSize: 11, color: '#cbd5e1' }}>{f.name}</span>
+                          </div>
+                          <span style={{ fontSize: 10, color: '#475569' }}>{(f.importance * 100).toFixed(1)}%</span>
+                        </div>
+                        <div style={{ height: 4, borderRadius: 2, background: '#1e293b', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${barPct}%`, background: catColor, borderRadius: 2 }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ fontSize: 9, color: '#334155', marginTop: 6, display: 'flex', gap: 10 }}>
+                    <span style={{ color: '#4ade80' }}>■ technical</span>
+                    <span style={{ color: '#60a5fa' }}>■ macro</span>
+                    <span style={{ color: '#a78bfa' }}>■ fundamental</span>
+                  </div>
+                  {featureImportance.trained_at && (
+                    <div style={{ fontSize: 9, color: '#334155', marginTop: 4 }}>
+                      Trained {new Date(featureImportance.trained_at).toLocaleDateString()}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1411,6 +1556,62 @@ Return ONLY valid JSON — no markdown, no prose:
                       </div>
                     )}
                     <SignalCard signal={activeSig} />
+                    {/* Conviction Gate — per-layer pass/fail using signal.reasons */}
+                    {(() => {
+                      const r = activeSig.reasons as Record<string, unknown>;
+                      const kscore = data?.ranking?.score;
+                      const regime = (r.market_regime as string) || 'unknown';
+                      const mlThreshMap: Record<string, number> = { bull: 0.65, neutral: 0.70, high_vol: 0.78, bear: 0.78 };
+                      const mlThresh = mlThreshMap[regime] ?? 0.70;
+                      const mlProb = r.ml_probability != null ? Number(r.ml_probability) : null;
+                      const rsi = r.rsi != null ? Number(r.rsi) : null;
+                      const rsiLo = selectedHorizon === 'GROWTH' ? 50 : 45;
+                      const rsiHi = selectedHorizon === 'GROWTH' ? 85 : 72;
+                      const macdHist = Number(r.macd_hist || 0);
+                      const macdRising = Boolean(r.macd_rising);
+                      const macdCross = Boolean(r.macd_zero_cross_up);
+                      const layers = [
+                        { key: 'ks',  label: 'K-Score',  ok: kscore != null && kscore >= 55,  detail: kscore != null ? `${kscore.toFixed(0)} (min 55)` : 'unavailable', soft: false },
+                        { key: 'up',  label: 'Uptrend',  ok: selectedHorizon === 'GROWTH' ? Boolean(r.trend_above_sma50) : Boolean(r.sma50_above_sma200) && Boolean(r.trend_above_sma50), detail: selectedHorizon === 'GROWTH' ? 'price > SMA50' : 'SMA50>200 & price>SMA50', soft: false },
+                        { key: 'rsi', label: 'RSI',      ok: rsi != null && rsi >= rsiLo && rsi <= rsiHi, detail: rsi != null ? `${rsi.toFixed(0)} (${rsiLo}–${rsiHi})` : 'n/a', soft: false },
+                        { key: 'mac', label: 'MACD',     ok: macdHist > 0 || macdRising || macdCross, detail: `hist ${macdHist.toFixed(3)} ${macdRising ? '↑' : '↓'}`, soft: true },
+                        { key: 'obv', label: 'OBV',      ok: Boolean(r.obv_trend_bullish), detail: Boolean(r.obv_trend_bullish) ? 'confirming' : 'not confirming', soft: true },
+                        { key: 'adx', label: 'ADX',      ok: Boolean(r.adx_trending), detail: r.adx != null ? `ADX ${Number(r.adx).toFixed(0)} (min 25)` : 'n/a', soft: true },
+                        { key: 'ml',  label: 'ML Model', ok: mlProb == null || mlProb > mlThresh, detail: mlProb != null ? `${(mlProb*100).toFixed(0)}% vs ${(mlThresh*100).toFixed(0)}% (${regime})` : 'no model', soft: true },
+                      ];
+                      const failed = layers.filter(l => !l.ok);
+                      const softFailed = failed.filter(l => l.soft);
+                      const hardFailed = failed.filter(l => !l.soft);
+                      const hasRsiDiv = r.rsi_divergence === 'bearish';
+                      const hasStochOB = Boolean(r.stoch_rsi_overbought);
+                      let tier: 'FULL' | 'NEAR' | 'FAILED' = 'FAILED';
+                      if (!hasRsiDiv && !hasStochOB) {
+                        if (failed.length === 0) tier = 'FULL';
+                        else if (hardFailed.length === 0 && softFailed.length === 1) tier = 'NEAR';
+                      }
+                      const tierColor = tier === 'FULL' ? '#4ade80' : tier === 'NEAR' ? '#fbbf24' : '#ef4444';
+                      const tierLabel = tier === 'FULL' ? '✓ Full conviction' : tier === 'NEAR' ? '~ Near conviction (1 soft miss)' : '✗ Gate not met';
+                      return (
+                        <div style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(15,23,42,0.8)', border: `1px solid ${tierColor}33`, borderRadius: 6 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: '#334155', letterSpacing: '0.05em' }}>CONVICTION GATE</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: tierColor }}>{tierLabel}</span>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            {layers.map(l => (
+                              <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                <span style={{ fontSize: 10, color: l.ok ? '#4ade80' : l.soft ? '#fbbf24' : '#f87171', width: 10, flexShrink: 0 }}>{l.ok ? '✓' : '✗'}</span>
+                                <span style={{ fontSize: 10, color: '#64748b', width: 62, flexShrink: 0 }}>{l.label}</span>
+                                <span style={{ fontSize: 10, color: l.ok ? '#475569' : l.soft ? '#92400e' : '#7f1d1d' }}>{l.detail}</span>
+                                {!l.ok && l.soft && <span style={{ fontSize: 9, color: '#334155', marginLeft: 2 }}>(soft)</span>}
+                              </div>
+                            ))}
+                            {hasRsiDiv && <div style={{ fontSize: 10, color: '#f87171', marginTop: 2 }}>✗ Bearish RSI divergence — disqualifier</div>}
+                            {hasStochOB && <div style={{ fontSize: 10, color: '#f87171', marginTop: 2 }}>✗ Stoch RSI overbought — disqualifier</div>}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
                 {!activeSig && (
@@ -1983,7 +2184,18 @@ Return ONLY valid JSON — no markdown, no prose:
 
         return (
           <div>
-            <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', marginBottom: '12px' }}>Company Financials</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: '12px' }}>
+              <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Company Financials</h2>
+              {f.fetched_at && (() => {
+                const daysOld = Math.floor((Date.now() - new Date(f.fetched_at!).getTime()) / 86400000);
+                const stale = daysOld > 90;
+                return (
+                  <span style={{ fontSize: 10, color: stale ? '#fbbf24' : '#475569', background: stale ? 'rgba(251,191,36,0.1)' : 'transparent', border: stale ? '1px solid rgba(251,191,36,0.3)' : 'none', borderRadius: 4, padding: stale ? '1px 6px' : 0 }}>
+                    {stale ? `⚠ ${daysOld}d old` : `as of ${new Date(f.fetched_at!).toLocaleDateString()}`}
+                  </span>
+                );
+              })()}
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
               {/* Row 1 — Valuation */}
@@ -2076,26 +2288,55 @@ Return ONLY valid JSON — no markdown, no prose:
                 )}
               </div>
 
-              {/* Row 5 — Short Interest + Ownership */}
-              {(f.short_percent_of_float != null || f.held_percent_institutions != null) && (
-                <div>
-                  <div style={{ fontSize: '10px', fontWeight: 700, color: '#ef4444', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Short Interest &amp; Ownership</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
-                    {f.short_percent_of_float != null && (() => {
-                      const pct = f.short_percent_of_float! * 100;
-                      const color = pct >= 20 ? '#f87171' : pct >= 10 ? '#fbbf24' : '#4ade80';
-                      const label = pct >= 20 ? 'High — squeeze risk' : pct >= 10 ? 'Elevated' : 'Low';
-                      return card('Short % of Float', `${pct.toFixed(1)}%`, label, color);
-                    })()}
-                    {f.short_ratio != null && (() => {
-                      const color = f.short_ratio >= 5 ? '#f87171' : f.short_ratio >= 3 ? '#fbbf24' : '#94a3b8';
-                      return card('Days to Cover', `${f.short_ratio.toFixed(1)}d`, 'short ratio', color);
-                    })()}
-                    {f.held_percent_institutions != null && card('Institutional', `${(f.held_percent_institutions * 100).toFixed(1)}%`, 'of float held')}
-                    {f.held_percent_insiders != null && card('Insider Hold', `${(f.held_percent_insiders * 100).toFixed(1)}%`, 'of float held')}
+              {/* Row 5 — Short Interest + Ownership + Squeeze Score */}
+              {(f.short_percent_of_float != null || f.held_percent_institutions != null) && (() => {
+                // Squeeze score: 0–100 from short float %, days-to-cover, and options flow
+                const floatPct = (f.short_percent_of_float ?? 0) * 100;
+                const ratio    = f.short_ratio ?? 0;
+                const floatPts = floatPct >= 20 ? 40 : floatPct >= 15 ? 25 : floatPct >= 10 ? 15 : 0;
+                const ratioPts = ratio >= 8 ? 30 : ratio >= 5 ? 20 : ratio >= 3 ? 10 : 0;
+                const optPts   = optionsFlow?.available
+                  ? ((optionsFlow.whale_count ?? 0) > 0 && (optionsFlow.cp_ratio ?? 0) >= 1.5 ? 30
+                    : (optionsFlow.cp_ratio ?? 0) >= 1.5 ? 20
+                    : (optionsFlow.cp_ratio ?? 0) >= 1.2 ? 10 : 0)
+                  : 0;
+                const squeezeScore = floatPts + ratioPts + optPts;
+                const hasShortData = floatPct > 0 || ratio > 0;
+                return (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: '6px' }}>
+                      <div style={{ fontSize: '10px', fontWeight: 700, color: '#ef4444', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Short Interest &amp; Ownership</div>
+                      {hasShortData && squeezeScore > 0 && (() => {
+                        const sc = squeezeScore;
+                        const [bg, border, text, label] = sc >= 70
+                          ? ['rgba(251,146,60,0.12)', 'rgba(251,146,60,0.4)', '#fb923c', '🔥 HIGH SQUEEZE']
+                          : sc >= 40
+                          ? ['rgba(251,191,36,0.1)', 'rgba(251,191,36,0.35)', '#fbbf24', '⚡ MODERATE']
+                          : ['rgba(148,163,184,0.08)', 'rgba(148,163,184,0.2)', '#94a3b8', 'LOW'];
+                        return (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: text, background: bg, border: `1px solid ${border}`, borderRadius: 5, padding: '2px 8px' }}>
+                            {label} · {sc}/100
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
+                      {f.short_percent_of_float != null && (() => {
+                        const pct = f.short_percent_of_float! * 100;
+                        const color = pct >= 20 ? '#f87171' : pct >= 10 ? '#fbbf24' : '#4ade80';
+                        const label = pct >= 20 ? 'High — squeeze risk' : pct >= 10 ? 'Elevated' : 'Low';
+                        return card('Short % of Float', `${pct.toFixed(1)}%`, label, color);
+                      })()}
+                      {f.short_ratio != null && (() => {
+                        const color = f.short_ratio >= 5 ? '#f87171' : f.short_ratio >= 3 ? '#fbbf24' : '#94a3b8';
+                        return card('Days to Cover', `${f.short_ratio.toFixed(1)}d`, 'short ratio', color);
+                      })()}
+                      {f.held_percent_institutions != null && card('Institutional', `${(f.held_percent_institutions * 100).toFixed(1)}%`, 'of float held')}
+                      {f.held_percent_insiders != null && card('Insider Hold', `${(f.held_percent_insiders * 100).toFixed(1)}%`, 'of float held')}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Row 6 — EPS Surprise History */}
               {f.eps_history && f.eps_history.length > 0 && (
@@ -2984,9 +3225,14 @@ Return ONLY valid JSON — no markdown, no prose:
       {/* Options Flow */}
       {optionsFlow && optionsFlow.available && (
         <div style={{ marginBottom: 24 }}>
-          <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', marginBottom: '12px' }}>
-            Options Flow
-          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#cbd5e1', margin: 0 }}>Options Flow</h2>
+            {(optionsFlow.whale_count ?? 0) > 0 && (
+              <span style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 5, padding: '2px 8px' }}>
+                🐋 {optionsFlow.whale_count} whale {(optionsFlow.whale_count ?? 0) === 1 ? 'trade' : 'trades'}
+              </span>
+            )}
+          </div>
           <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
             {/* C/P ratio bar */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
@@ -3026,14 +3272,14 @@ Return ONLY valid JSON — no markdown, no prose:
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid #1e293b' }}>
-                        {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM'].map(h => (
+                        {['Side', 'Strike', 'Expiry', 'Volume', 'OI', 'Vol/OI', 'IV', 'ITM', 'Premium'].map(h => (
                           <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: '#475569', fontWeight: 500 }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {optionsFlow.unusual.map((c, i) => (
-                        <tr key={i} style={{ borderBottom: '1px solid #0f172a' }}>
+                        <tr key={i} style={{ borderBottom: '1px solid #0f172a', background: c.is_whale ? 'rgba(245,158,11,0.05)' : 'transparent', outline: c.is_whale ? '1px solid rgba(245,158,11,0.2)' : 'none' }}>
                           <td style={{ padding: '5px 8px' }}>
                             <span style={{ fontWeight: 700, color: c.side === 'call' ? '#4ade80' : '#f87171' }}>
                               {c.side.toUpperCase()}
@@ -3046,6 +3292,10 @@ Return ONLY valid JSON — no markdown, no prose:
                           <td style={{ padding: '5px 8px', color: c.vol_oi > 1 ? '#f59e0b' : '#94a3b8', fontWeight: c.vol_oi > 1 ? 700 : 400 }}>{c.vol_oi.toFixed(2)}×</td>
                           <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{c.iv.toFixed(0)}%</td>
                           <td style={{ padding: '5px 8px', color: c.itm ? '#4ade80' : '#475569' }}>{c.itm ? 'ITM' : 'OTM'}</td>
+                          <td style={{ padding: '5px 8px', color: c.is_whale ? '#f59e0b' : '#475569', fontWeight: c.is_whale ? 700 : 400 }}>
+                            {c.premium >= 1_000_000 ? `$${(c.premium / 1_000_000).toFixed(1)}M` : c.premium >= 1_000 ? `$${Math.round(c.premium / 1_000)}K` : c.premium > 0 ? `$${c.premium}` : '—'}
+                            {c.is_whale && ' 🐋'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

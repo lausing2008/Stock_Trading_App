@@ -1517,7 +1517,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     def _composite_priority(row):
         sig_r, _, rank_r = row
         conf_score   = float(sig_r.confidence or 0.0) / 100.0
-        kscore_score = float(rank_r.kscore or 50.0) / 100.0 if rank_r and rank_r.kscore else 0.5
+        kscore_score = float(rank_r.score or 50.0) / 100.0 if rank_r and rank_r.score else 0.5
         sr = (sig_r.reasons or {}).get("sr_context", "neutral")
         breakout_bonus = 1.0 if sr == "breakout" else 0.5 if sr == "at_support" else 0.0
         return 0.5 * conf_score + 0.3 * kscore_score + 0.2 * breakout_bonus

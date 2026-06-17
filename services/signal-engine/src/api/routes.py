@@ -2928,3 +2928,233 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         skipped_no_price=skipped_no_price,
     )
     return {"evaluated": evaluated, "skipped_open": skipped_open, "skipped_no_price": skipped_no_price}
+
+
+@router.get("/gate_backtest")
+def gate_backtest(
+    lookback_days: int = Query(90, ge=30, le=365),
+    style: str = Query("SWING", regex="^(SHORT|SWING|LONG|GROWTH)$"),
+    hold_days: int = Query(10, ge=1, le=60),
+    session: Session = Depends(get_session),
+):
+    """Compare old vs new conviction gate logic against historical BUY signals.
+
+    Replays _is_conviction_buy with old and new parameters to measure how many
+    more signals fire and whether the newly-unblocked signals actually perform well.
+
+    Gate changes evaluated:
+      1. MACD condition: old = (hist > 0 AND rising) OR crossover
+                         new = hist > 0 OR rising OR crossover
+      2. MACD soft tier: old = hard failure (blocks alone)
+                         new = soft failure (1 allowed per near-conviction tier)
+      3. GROWTH RSI lo:  old = 55  →  new = 50
+
+    Returns per-group win-rate and avg return so you can validate each change.
+    """
+    cache_key = f"signals:cache:gate_backtest:{lookback_days}:{style}:{hold_days}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    since = date.today() - timedelta(days=lookback_days)
+    try:
+        horizon_enum = SignalHorizon(style.upper())
+    except ValueError:
+        horizon_enum = SignalHorizon.SWING
+
+    rows = session.execute(
+        select(Signal.ts, Signal.reasons, Signal.stock_id, Stock.symbol, Signal.horizon)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .where(
+            Signal.signal == SignalType.BUY,
+            Signal.horizon == horizon_enum,
+            Signal.ts >= since,
+            Signal.reasons.isnot(None),
+        )
+        .order_by(Signal.ts)
+    ).all()
+
+    _REGIME_ML_THRESH = {"bull": 0.65, "neutral": 0.70, "high_vol": 0.78, "bear": 0.78}
+
+    def _apply_gate(r: dict, horizon: str, new_macd_cond: bool, new_macd_soft: bool, new_growth_rsi: bool):
+        """Inline replay of _is_conviction_buy. Returns (passes, tier, list[failed_keys])."""
+        failed: list[str] = []
+
+        # K-Score — may not be stored in reasons (fetched by scheduler); treat None as soft-pass
+        kscore = r.get("kscore")
+        if kscore is not None and float(kscore) < 55:
+            failed.append("KScore")
+
+        # 4a — Uptrend structure
+        if horizon == "GROWTH":
+            if not r.get("trend_above_sma50"):
+                failed.append("Uptrend")
+        else:
+            if not (r.get("sma50_above_sma200") and r.get("trend_above_sma50")):
+                failed.append("Uptrend")
+
+        # 4b — RSI range
+        rsi = r.get("rsi")
+        if rsi is not None:
+            rsi_f = float(rsi)
+            if horizon == "GROWTH":
+                lo = 50.0 if new_growth_rsi else 55.0
+                rsi_ok = lo <= rsi_f <= 85.0
+            else:
+                rsi_ok = 45.0 <= rsi_f <= 72.0
+            if not rsi_ok:
+                failed.append("RSI")
+
+        # 4c — MACD momentum
+        macd_hist = float(r.get("macd_hist") or 0)
+        macd_rising = bool(r.get("macd_rising"))
+        macd_cross = bool(r.get("macd_zero_cross_up"))
+        if new_macd_cond:
+            macd_ok = macd_hist > 0 or macd_rising or macd_cross
+        else:
+            macd_ok = (macd_hist > 0 and macd_rising) or macd_cross
+        if not macd_ok:
+            failed.append("MACD")
+
+        # 4d — OBV (always soft)
+        if not r.get("obv_trend_bullish"):
+            failed.append("OBV")
+
+        # 4e — ADX (always soft)
+        if not r.get("adx_trending"):
+            failed.append("ADX")
+
+        # 5 — ML probability (always soft)
+        ml_prob = r.get("ml_probability")
+        if ml_prob is not None:
+            regime = r.get("market_regime", "unknown")
+            thresh = _REGIME_ML_THRESH.get(regime, 0.70)
+            if float(ml_prob) <= thresh:
+                failed.append("ML")
+
+        # Disqualifiers — always hard
+        if r.get("rsi_divergence") == "bearish":
+            failed.append("RSI_DIV")
+        if r.get("stoch_rsi_overbought"):
+            failed.append("STOCH_OB")
+
+        soft_kw = {"OBV", "ADX", "ML"}
+        if new_macd_soft:
+            soft_kw.add("MACD")
+        soft_failed = [f for f in failed if f in soft_kw]
+        hard_failed = [f for f in failed if f not in soft_kw]
+
+        if not failed:
+            tier = "full"
+        elif not hard_failed and len(soft_failed) == 1:
+            tier = "near"
+        else:
+            tier = "failed"
+        return tier in ("full", "near"), tier, failed
+
+    # Build price lookup
+    stock_ids = list({r.stock_id for r in rows})
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(
+            Price.stock_id.in_(stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= since - timedelta(days=10),
+        )
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    from collections import defaultdict
+    prices_by_stock: dict = defaultdict(list)
+    for p in price_rows:
+        d = p.ts.date() if hasattr(p.ts, "date") else p.ts
+        prices_by_stock[p.stock_id].append((d, float(p.close)))
+
+    def _price_at(stock_id: int, target) -> float | None:
+        candidates = prices_by_stock.get(stock_id, [])
+        future = [(abs((d - target).days), c) for d, c in candidates if d >= target]
+        return min(future, key=lambda x: x[0])[1] if future else None
+
+    # Evaluate each signal under old and new gates
+    records = []
+    for row in rows:
+        r = row.reasons or {}
+        sig_date = row.ts.date() if hasattr(row.ts, "date") else row.ts
+        exit_date = sig_date + timedelta(days=hold_days)
+        horizon = row.horizon.value if hasattr(row.horizon, "value") else str(row.horizon)
+
+        entry = _price_at(row.stock_id, sig_date)
+        exit_ = _price_at(row.stock_id, exit_date)
+        ret = ((exit_ - entry) / entry) if (entry and exit_ and entry > 0) else None
+
+        old_pass, old_tier, old_failed = _apply_gate(r, horizon, new_macd_cond=False, new_macd_soft=False, new_growth_rsi=False)
+        new_pass, new_tier, new_failed = _apply_gate(r, horizon, new_macd_cond=True,  new_macd_soft=True,  new_growth_rsi=True)
+
+        # Attribute what change caused the unblock
+        change_reasons: list[str] = []
+        if not old_pass and new_pass:
+            macd_hist = float(r.get("macd_hist") or 0)
+            macd_rising = bool(r.get("macd_rising"))
+            macd_cross = bool(r.get("macd_zero_cross_up"))
+            old_macd_ok = (macd_hist > 0 and macd_rising) or macd_cross
+            new_macd_ok = macd_hist > 0 or macd_rising or macd_cross
+            if not old_macd_ok and new_macd_ok:
+                change_reasons.append("macd_condition_relaxed")
+            elif "MACD" in old_failed and "MACD" not in new_failed:
+                change_reasons.append("macd_soft_reclassified")
+            rsi = r.get("rsi")
+            if horizon == "GROWTH" and rsi is not None and 50.0 <= float(rsi) < 55.0:
+                change_reasons.append("growth_rsi_50_54")
+
+        records.append({
+            "symbol": row.symbol,
+            "signal_date": sig_date.isoformat(),
+            "old_pass": old_pass, "old_tier": old_tier, "old_failed": old_failed,
+            "new_pass": new_pass, "new_tier": new_tier, "new_failed": new_failed,
+            "ret_pct": round(ret * 100, 2) if ret is not None else None,
+            "win": (ret > 0) if ret is not None else None,
+            "change_reasons": change_reasons,
+        })
+
+    def _stats(items: list) -> dict:
+        with_ret = [x for x in items if x["ret_pct"] is not None]
+        wins = [x for x in with_ret if x["win"]]
+        return {
+            "count": len(items),
+            "count_with_returns": len(with_ret),
+            "win_rate_pct": round(len(wins) / len(with_ret) * 100, 1) if with_ret else None,
+            "avg_return_pct": round(sum(x["ret_pct"] for x in with_ret) / len(with_ret), 2) if with_ret else None,
+        }
+
+    old_pass_set = [x for x in records if x["old_pass"]]
+    new_pass_set = [x for x in records if x["new_pass"]]
+    newly_pass   = [x for x in records if x["new_pass"] and not x["old_pass"]]
+    always_fail  = [x for x in records if not x["new_pass"]]
+
+    by_change = {}
+    for reason in ("macd_condition_relaxed", "macd_soft_reclassified", "growth_rsi_50_54"):
+        grp = [x for x in newly_pass if reason in x["change_reasons"]]
+        by_change[reason] = _stats(grp)
+
+    sample = sorted(
+        [x for x in newly_pass if x["ret_pct"] is not None],
+        key=lambda x: x["ret_pct"], reverse=True,
+    )[:20]
+
+    result = {
+        "lookback_days": lookback_days,
+        "horizon": style,
+        "hold_days": hold_days,
+        "n_signals_total": len(records),
+        "old_gate": _stats(old_pass_set),
+        "new_gate": _stats(new_pass_set),
+        "newly_unblocked": {
+            **_stats(newly_pass),
+            "by_change": by_change,
+            "note": "win_rate_pct > 50% means newly unblocked signals go up more often than not — change is beneficial",
+        },
+        "still_blocked": _stats(always_fail),
+        "sample_newly_unblocked": sample,
+    }
+    _cache_set(cache_key, result, ttl=3600)
+    return result

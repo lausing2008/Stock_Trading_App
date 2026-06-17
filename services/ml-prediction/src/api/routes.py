@@ -258,6 +258,48 @@ def get_metrics(symbol: str, model: str = "xgboost"):
         raise HTTPException(500, f"Failed to load model bundle: {exc}") from exc
 
 
+@router.get("/features/{symbol}")
+def get_feature_importance(symbol: str, model: str = "xgboost"):
+    """Return feature importance for a symbol's trained model.
+
+    Each feature is classified as 'fundamental', 'macro', or 'technical'.
+    Results are sorted by importance descending so callers can render top-N.
+    """
+    from ..training.trainer import _artifact_path
+    from ..features import FUNDAMENTAL_COLUMNS, MACRO_COLUMNS
+    import joblib
+
+    path = _artifact_path(symbol.upper(), model)
+    if not path.exists():
+        raise HTTPException(404, f"No trained {model} model for {symbol.upper()}")
+    try:
+        bundle = joblib.load(path)
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to load model bundle: {exc}") from exc
+
+    fi = bundle.get("feature_importance", {})
+    if not fi:
+        raise HTTPException(404, f"No feature importance in model bundle for {symbol.upper()}")
+
+    fund_set = set(FUNDAMENTAL_COLUMNS)
+    macro_set = set(MACRO_COLUMNS)
+
+    features = [
+        {
+            "name": col,
+            "importance": score,
+            "category": "fundamental" if col in fund_set else ("macro" if col in macro_set else "technical"),
+        }
+        for col, score in sorted(fi.items(), key=lambda x: x[1], reverse=True)
+    ]
+    return {
+        "symbol": symbol.upper(),
+        "model": model,
+        "features": features,
+        "trained_at": bundle.get("trained_at"),
+    }
+
+
 @router.get("/metrics")
 def list_all_metrics(model: str = "xgboost"):
     """Return training metrics for every symbol that has a trained model."""

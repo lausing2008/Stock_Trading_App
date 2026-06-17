@@ -480,8 +480,8 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     rsi = reasons.get("rsi")
     stoch_k = float(reasons.get("stoch_rsi_k") or 50)
     if style == "GROWTH":
-        rsi_ok = rsi is not None and 55.0 <= float(rsi) <= 85.0
-        rsi_range_label = "55-85"
+        rsi_ok = rsi is not None and 50.0 <= float(rsi) <= 85.0
+        rsi_range_label = "50-85"
     else:
         rsi_ok = rsi is not None and 45.0 <= float(rsi) <= 72.0
         rsi_range_label = "45-72"
@@ -492,13 +492,21 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         failed.append(f"Entry timing: {rsi_str}")
 
     # Layer 4c — MACD momentum confirmed
+    # Pass if histogram is positive, rising (momentum building even if still negative),
+    # OR a zero-line crossover just occurred. Fail only when histogram is negative AND
+    # falling — clearly deteriorating momentum. Treated as soft failure so a single
+    # lagging-indicator miss does not veto a high-conviction TA+ML alignment.
     macd_hist = float(reasons.get("macd_hist") or 0)
     macd_rising = bool(reasons.get("macd_rising"))
     macd_zero_cross = bool(reasons.get("macd_zero_cross_up"))
-    if (macd_hist > 0 and macd_rising) or macd_zero_cross:
-        passed.append("MACD: histogram positive+rising" if not macd_zero_cross else "MACD: zero-line crossover")
+    if macd_zero_cross:
+        passed.append("MACD: zero-line crossover")
+    elif macd_hist > 0:
+        passed.append("MACD: histogram positive")
+    elif macd_rising:
+        passed.append("MACD: histogram rising (momentum building)")
     else:
-        failed.append("MACD: momentum not confirmed (histogram negative or falling)")
+        failed.append("MACD: momentum fading (histogram negative and falling)")
 
     # Layer 4d — Volume confirms direction
     if reasons.get("obv_trend_bullish"):
@@ -532,10 +540,10 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     if bool(reasons.get("stoch_rsi_overbought")):
         failed.append("Stoch RSI overbought: RSI itself overextended — pullback risk elevated")
 
-    # CB-4: Near-conviction tier — allow 1 soft failure (OBV, ADX, or ML) to still send
-    # ML added as soft: a model slightly below threshold (e.g. 67% in neutral 70% regime)
-    # should not hard-block an alert when all other 5 layers pass.
-    _SOFT_LAYER_KEYWORDS = ("OBV", "ADX", "ML probability")
+    # CB-4: Near-conviction tier — allow 1 soft failure (OBV, ADX, ML, or MACD) to still send.
+    # MACD is a lagging indicator; when all other layers (TA structure, RSI, ML, K-Score)
+    # align bullish, a single MACD lag should not hard-block the alert.
+    _SOFT_LAYER_KEYWORDS = ("OBV", "ADX", "ML probability", "MACD")
     soft_failed = [f for f in failed if any(kw in f for kw in _SOFT_LAYER_KEYWORDS)]
     hard_failed = [f for f in failed if f not in soft_failed]
 
@@ -1318,6 +1326,40 @@ def check_technical_alerts() -> None:
         log.error("tech_alert.error", error=str(exc))
 
 
+def _refresh_fundamentals_batch(symbols: list[str]) -> None:
+    """Fetch fresh fundamentals for every symbol and persist to DB.
+
+    Called from _weekly_full_refresh() after the daily ingest so the ML
+    retrain on Sunday night uses up-to-date revenue_growth, ROE, short_ratio
+    etc. Rate-limited to ~3 requests/second to stay within yfinance limits.
+    Each call is best-effort: failures are logged and skipped, not fatal.
+    """
+    _t0 = time.monotonic()
+    ok = failed = 0
+    tok = _service_token()
+    headers = {"Authorization": f"Bearer {tok}"} if tok else {}
+    for sym in symbols:
+        try:
+            r = httpx.get(
+                f"{_settings.market_data_url}/stocks/{sym}/fundamentals",
+                headers=headers,
+                timeout=15,
+            )
+            if r.status_code == 200:
+                ok += 1
+            else:
+                log.warning("scheduler.fund_batch.skip", symbol=sym, status=r.status_code)
+                failed += 1
+        except Exception as exc:
+            log.warning("scheduler.fund_batch.error", symbol=sym, error=str(exc))
+            failed += 1
+        time.sleep(0.33)  # ~3 req/s — stay under yfinance rate limit
+
+    elapsed = time.monotonic() - _t0
+    log.info("scheduler.fund_batch_done", ok=ok, failed=failed, elapsed_s=round(elapsed))
+    _record_job_status("fundamentals_batch", "ok" if failed == 0 else "partial", elapsed)
+
+
 def _weekly_full_refresh() -> None:
     """Force re-ingest 3 years of daily bars for every active stock.
 
@@ -1328,6 +1370,7 @@ def _weekly_full_refresh() -> None:
     tune_all runs in the background inside the ml-prediction container (~2–4 h).
     """
     _t0 = time.monotonic()
+    all_symbols: list[str] = []
     try:
         all_symbols = _symbols_for("US") + _symbols_for("HK")
         if not all_symbols:
@@ -1343,6 +1386,14 @@ def _weekly_full_refresh() -> None:
     except Exception as exc:
         log.error("scheduler.weekly_refresh_failed", error=str(exc))
         _record_job_status("weekly_refresh", "error", time.monotonic() - _t0, str(exc))
+
+    # ML-FUND-2: refresh fundamentals for all symbols so Sunday's ML retrain
+    # uses up-to-date revenue_growth, ROE, short_ratio, etc.  Runs after the
+    # price ingest (daily bars must exist before fundamentals are useful).
+    # ~46 seconds for 138 symbols at 3 req/s — completes well before tune_all starts.
+    if all_symbols:
+        log.info("scheduler.fund_batch_start", count=len(all_symbols))
+        _refresh_fundamentals_batch(all_symbols)
 
     # Kick off Optuna hyperparameter tuning for all symbols.
     # Runs as a background task in ml-prediction — returns immediately, tunes for ~2–4 h.

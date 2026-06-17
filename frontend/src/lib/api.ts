@@ -427,6 +427,8 @@ export const api = {
     ),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
   mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
+  mlFeatureImportance: (symbol: string, model = 'xgboost') =>
+    request<FeatureImportanceResult>(`/ml/features/${symbol}?model=${model}`),
 
   // ── Broker integration ──────────────────────────────────────────────────
   brokerList: () => request<BrokerConnection[]>('/broker/connections'),
@@ -627,8 +629,8 @@ export type WalkForwardReport = {
   benchmark: { symbol: string; windows: { end: string; equity: number; cumulative_return_pct: number }[]; total_return_pct: number } | null;
 };
 export type MLWeightValidation = { lookback_days: number; signal_count: number; optimal_weight: number | null; optimal_accuracy: number | null; current_formula_range: [number, number]; curve: MLWeightCurvePoint[] };
-export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean };
-export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number; sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[] };
+export type OptionsFlowContract = { expiry: string; side: 'call' | 'put'; strike: number; volume: number; oi: number; vol_oi: number; iv: number; itm: boolean; premium: number; is_whale: boolean };
+export type OptionsFlow = { symbol: string; available: boolean; reason?: string; call_volume?: number; put_volume?: number; cp_ratio?: number; sentiment?: string; unusual_count?: number; unusual?: OptionsFlowContract[]; expiries_used?: string[]; whale_count?: number; top_whale_premium?: number };
 export type QuickScanResult = { symbol: string; price: number; change_pct: number | null; change_5d: number | null; rsi: number | null; sma20: number | null; sma50: number | null; above_sma20: boolean | null; above_sma50: boolean | null; vol_ratio: number | null; range_pos_20d: number | null };
 export type FearGreed = { score: number; rating: string; previous_close: number | null; previous_1_week: number | null; previous_1_month: number | null; previous_1_year: number | null; sp500_regime?: 'bull' | 'bear'; sp500_vs_ma200_pct?: number | null; components?: { vix: number; sp500_vs_ma: number; momentum: number; vix_spike: number } };
 export type MarketBreadth = { breadth_pct: number | null; above_200ma: number; below_200ma: number; total: number; label: string; color: string; updated_at: string };
@@ -715,6 +717,8 @@ export type Fundamentals = {
   eps_avg_surprise_pct: number | null; // average % beat (positive = beating)
   eps_surprise_trend: string | null;   // "improving" | "declining" | "stable"
   eps_history: { quarter: string; actual: number | null; estimate: number | null; surprise_pct: number | null }[];
+  // Data freshness
+  fetched_at: string | null;
 };
 
 export type Overview = {
@@ -1238,6 +1242,19 @@ export type MlMetricsList = {
   model: string;
   count: number;
   symbols: MlModelMetric[];
+};
+
+export type FeatureImportanceItem = {
+  name: string;
+  importance: number;
+  category: 'fundamental' | 'macro' | 'technical';
+};
+
+export type FeatureImportanceResult = {
+  symbol: string;
+  model: string;
+  features: FeatureImportanceItem[];
+  trained_at: string | null;
 };
 
 // ── Broker integration ────────────────────────────────────────────────────────
