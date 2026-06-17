@@ -109,6 +109,74 @@ before building. This file is gitignored — never commit it.
 
 ---
 
+## Recurring Issue: Signal Refresh 401 — jose Library Missing from signal-engine
+
+**Symptom:** HK (and potentially US) stock signals go stale — DB signals table has entries that are
+days old even though the scheduler appears to be running. Users may receive BUY email alerts for a
+stock that shows SELL in Signal Filter, or the top "AI Signal" badge on the stock detail page
+disagrees with the 4-horizon tab signals. `POST /signals/refresh?market=HK` logs show 401.
+
+**Root cause:** `python-jose` was missing from the `stockai-signal-engine-1` container despite
+being listed in `requirements.txt`. The `shared/common/jwt_auth.py` `get_current_username()`
+dependency does `from jose import JWTError, jwt` at call time — if the import fails, the generic
+`except Exception` handler raises HTTP 401. This silently broke every authenticated endpoint on
+the signal engine, including `POST /signals/refresh`. The scheduled `_bulk_persist` background task
+was never registered so no signals were ever written.
+
+HK stocks appeared most affected because individual US stock page visits trigger auto-persist via
+the unauthenticated `GET /signals/{symbol}` endpoint, keeping US signals fresher. HK stocks with
+fewer page views sat stale.
+
+**Why the badge and tabs disagreed:** The top "AI Signal" badge comes from the aggregate overview
+endpoint (`/aggregate/overview/{symbol}`) which calls `GET /signals/{symbol}?persist=true` —
+unauthenticated, forces live computation. The 4 horizon tabs call `api.signal(symbol, style, false)`
+which reads stored DB signals (`live=false`). When DB signals are stale, these diverge.
+
+**Fix applied (2026-06-17):**
+1. Installed `python-jose[cryptography]==3.3.0` directly in running container (immediate).
+2. Rebuilt `stockai-signal-engine-1` image so it persists through future restarts.
+3. Triggered manual HK + US refresh to backfill stale signals.
+
+**What to check if signals go stale again:**
+```bash
+# Check if signal engine refresh is being rejected
+docker logs stockai-signal-engine-1 --since 2h | grep 'refresh.*401\|401.*refresh'
+
+# Verify jose is installed in the container
+docker exec stockai-signal-engine-1 python3 -c 'from jose import jwt; print("jose OK")'
+
+# If jose is missing, install it and rebuild:
+docker exec stockai-signal-engine-1 pip install 'python-jose[cryptography]==3.3.0'
+docker compose -f docker/docker-compose.yml build signal-engine && docker compose -f docker/docker-compose.yml up -d signal-engine
+
+# Check last signal timestamp across markets
+docker exec stockai-market-data-1 python3 -c "
+from db import SessionLocal; from sqlalchemy import text
+s = SessionLocal()
+rows = s.execute(text(\"SELECT market, MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id GROUP BY market\")).fetchall()
+print(rows); s.close()"
+```
+
+**After fix — trigger manual refresh:**
+```bash
+# Run from market-data container to trigger bulk signal refresh
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid; sys.path.insert(0,'/app/src'); sys.path.insert(0,'/app')
+from common.config import get_settings; from datetime import datetime, timezone, timedelta
+import httpx; from jose import jwt as _jwt; settings = get_settings()
+tok = _jwt.encode({'sub':'scheduler','jti':str(uuid.uuid4()),'exp':datetime.now(timezone.utc)+timedelta(days=365)}, settings.jwt_secret, algorithm='HS256')
+for mkt in ['HK','US']:
+    r = httpx.post(f'http://signal-engine:8005/signals/refresh?market={mkt}', headers={'Authorization':f'Bearer {tok}'}, timeout=15)
+    print(mkt, r.status_code, r.text[:60])
+"
+```
+
+**Deployment note:** After any rebuild of `stockai-signal-engine-1`, verify `jose` is installed
+before the next market open. The image build step must run `pip install -r requirements.txt`
+including `python-jose[cryptography]`.
+
+---
+
 ## Known Ongoing Limitations
 
 - Broker commission: `commission_per_share` defaults to 0.0 (user's broker is commission-free)

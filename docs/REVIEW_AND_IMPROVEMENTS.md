@@ -1,7 +1,7 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-16 (Tier 29 — signal pipeline single source of truth; RS centralised; conviction gate regime/ML-weight fixes; conv_gate TTL; auto-persist)  
+**Last updated:** 2026-06-17 (Tier 29 — signal pipeline single source of truth; Tier 30 — journal UI, HSI benchmark, scale-in/out; Bug: signal-engine jose missing → refresh 401 fixed)  
 **Perspective:** Data Analyst + Quantitative Trading  
 **Overall rating:** 9.2 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 — alert/UX improvements shipped 2026-06-10)*
 
@@ -1362,3 +1362,87 @@ suppressed      {s}?live=false     every 5 min       check_signal_
 - **Consistent regime:** conviction gate always evaluates in the regime stored in the signal's `reasons` dict.
 - **Consistent ML weight:** conviction ML layer mirrors the AUC-based weight from signal generation (zero weight → skip gate).
 - **Daily expiry:** `conv_gate` Redis keys expire each day so stale conviction status cannot linger across sessions.
+
+---
+
+## Bug Fix Log — 2026-06-17
+
+### BUG-1: signal-engine `jose` library missing → `POST /signals/refresh` 401 Unauthorized
+
+**Reported symptom:** User received a BUY email alert for 2382.HK but the stock did not appear in
+Signal Filter. The AI Signal badge on the stock detail page showed BUY while all 4 horizon tabs
+showed SELL. HK stock signals had not been updated since 2026-06-10 (7 days stale).
+
+**Root cause chain:**
+
+```
+requirements.txt lists python-jose[cryptography]==3.3.0
+  → Docker image build silently skipped install (likely layer cache issue)
+  → signal-engine container has no 'jose' package
+
+shared/common/jwt_auth.py get_current_username():
+  → from jose import JWTError, jwt   # ModuleNotFoundError
+  → except Exception: raise HTTPException(401, ...)  # silently returns 401
+
+POST /signals/refresh?market=HK  (called by scheduler every 5 min during HK hours)
+  → Depends(get_current_username) fires → ModuleNotFoundError → 401
+  → BackgroundTask never registered → _bulk_persist() never runs
+  → DB signals table not updated → HK signals go stale
+```
+
+**Why HK appeared worse than US:** Individual US stock page visits trigger auto-persist via
+`GET /signals/{symbol}?persist=true` (no auth required). Popular US stocks stayed fresh from user
+traffic. HK stocks with fewer page visits had no fallback refresh path.
+
+**Why the badge showed BUY while tabs showed SELL:**
+
+| Source | Endpoint | Auth | Signal returned |
+|--------|----------|------|-----------------|
+| AI Signal badge (top) | `/aggregate/overview/{s}` → `GET /signals/{s}?persist=true` | No auth (GET, public) | Live computation → BUY 84% |
+| 4 horizon tabs | `GET /signals/{s}?style=X&live=false` | No auth (GET, public) | DB read → stale SELL from Jun 10 |
+
+The aggregate endpoint forces live computation on every page load. The tab signals read DB with
+`live=false`. When DB is stale these two sources disagree.
+
+**Fix (2026-06-17):**
+1. Installed `python-jose[cryptography]==3.3.0` in running container (immediate).
+2. Rebuilt `stockai-signal-engine-1` image from `docker compose build signal-engine`.
+3. Triggered `POST /signals/refresh?market=HK` and `?market=US` manually → 36 HK + 104 US stocks
+   scheduled for refresh.
+4. Added the diagnosis pattern and manual-refresh command to `CLAUDE.md`.
+
+**Verification:**
+```bash
+docker exec stockai-signal-engine-1 python3 -c 'from jose import jwt; print("jose OK")'
+docker logs stockai-signal-engine-1 --since 2h | grep 'POST.*refresh'
+# Should now show 200 OK, not 401
+```
+
+**Signals after fix:** 2382.HK: BUY GROWTH 84%, BUY LONG 84%, BUY SWING 65%, BUY SHORT 63%.
+Will now appear in Signal Filter correctly.
+
+**Post-fix invariants added to CLAUDE.md:**
+- After any `signal-engine` image rebuild, verify `from jose import jwt` before next market open.
+- If `POST /signals/refresh` returns 401: check jose installation first before investigating JWT secrets.
+
+---
+
+## Tier 30 — Trade Journal, HSI Benchmark, Scale-in/Scale-out (2026-06-17)
+
+### Changes shipped
+
+| # | Feature | What changed |
+|---|---------|--------------|
+| 1 | **Trade Journal UI** (`/journal`) | Rebuilt as AI paper trade journal with expandable rows showing entry score, exit reason badges, AI decision notes, entry/exit reasons breakdown. Manual log kept as secondary tab. |
+| 2 | **Exit reasoning display** | `/decisions` API now returns `exit_time` + `exit_price`. Expanded rows in journal show full `exit_reasons` dict (not just categorical label). |
+| 3 | **HSI benchmark** | Hang Seng Index added as third benchmark overlay (orange dashed) on the equity curve chart in paper-portfolio. Data was already being collected by `snapshot_equity_curve()`; only frontend trace was missing. |
+| 4 | **Two-level scale-out** | Paper trading partial TP changed from single 50% at +7% to: 33% at +7% (stop → breakeven) then 50% of remaining at +12% (stop → +5%). Backward-compatible: old `PARTIAL_TAKEN` trades get level-2 applied if they reach +12%. |
+| 5 | **Scale-in** | When a BUY signal fires for an already-open position: if position is up >5% and signal confidence ≥60% and not already scaled, add 25% more shares. Logged as `SCALE_IN` + detail note in `entry_decision_notes`. |
+
+### Files changed
+
+- `frontend/src/pages/journal.tsx` — complete rewrite
+- `frontend/src/pages/paper-portfolio.tsx` — HSI trace in `EquityChart`
+- `frontend/src/lib/api.ts` — `exit_time`, `exit_price` added to `PaperDecisionItem`
+- `services/market-data/src/api/paper_portfolio.py` — expose `exit_time`/`exit_price` in `/decisions`
+- `services/market-data/src/services/paper_trading_engine.py` — two-level scale-out + scale-in logic
