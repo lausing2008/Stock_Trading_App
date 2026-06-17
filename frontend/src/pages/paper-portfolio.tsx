@@ -225,6 +225,17 @@ function EquityChart({ data, initialCapital }: { data: PaperEquityPoint[]; initi
           hovertemplate: '%{x}: $%{y:,.0f}<extra>QQQ</extra>',
         });
       }
+      const hsiStart = data.find(d => d.hsi_close != null)?.hsi_close;
+      if (hsiStart) {
+        traces.push({
+          x: dates,
+          y: data.map(d => d.hsi_close != null ? initialCapital * (d.hsi_close / hsiStart) : null),
+          name: 'HSI',
+          type: 'scatter', mode: 'lines',
+          line: { color: '#fb923c', width: 1.5, dash: 'dot' },
+          hovertemplate: '%{x}: $%{y:,.0f}<extra>HSI</extra>',
+        });
+      }
 
       // PT-A2: build regime shading shapes from consecutive same-regime spans
       const REGIME_COLORS: Record<string, string> = {

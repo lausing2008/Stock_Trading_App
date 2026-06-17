@@ -1200,6 +1200,8 @@ export type PaperDecisionItem = {
   rr_ratio_at_entry: number | null;
   market_regime_at_entry: string | null;
   stage: string;
+  exit_time: string | null;
+  exit_price: number | null;
   exit_reason: string | null;
   entry_reasons: Record<string, unknown>;
   exit_reasons: Record<string, unknown>;

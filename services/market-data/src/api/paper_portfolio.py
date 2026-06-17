@@ -458,6 +458,8 @@ def get_decisions(
                 "rr_ratio_at_entry": t.rr_ratio_at_entry,
                 "market_regime_at_entry": t.market_regime_at_entry,
                 "stage": t.stage,
+                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                "exit_price": t.exit_price,
                 "exit_reason": t.exit_reason,
                 "entry_reasons": t.entry_reasons or {},
                 "exit_reasons": t.exit_reasons or {},

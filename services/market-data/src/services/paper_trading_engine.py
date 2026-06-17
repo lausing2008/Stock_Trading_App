@@ -1111,39 +1111,62 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             })
             continue
 
-        # ── Partial profit taking — sell half position at configurable gain ──────
-        # Fires once per trade when pnl_pct crosses partial_tp_pct, then never again.
-        # Remaining half continues to ride with a breakeven floor on the stop.
+        # ── Two-level scale-out ────────────────────────────────────────────────
+        # Level 1: +7% → sell 33%, floor stop at breakeven
+        # Level 2: +12% → sell 50% of remaining (≈33% of original), move stop to +5%
+        # Backward compat: treats legacy "PARTIAL_TAKEN" marker as level-1 done.
 
-        partial_tp_pct = cfg.get("partial_tp_pct", 0.07)  # default: 7% gain
-        _partial_marker = "PARTIAL_TAKEN"
-        partial_already_done = _partial_marker in (trade.entry_decision_notes or [])
+        partial_tp_pct  = cfg.get("partial_tp_pct",  0.07)   # level-1 trigger
+        partial_tp2_pct = cfg.get("partial_tp2_pct", 0.12)   # level-2 trigger
+        _P1 = "PARTIAL1_TAKEN"
+        _P2 = "PARTIAL2_TAKEN"
+        notes_list = list(trade.entry_decision_notes or [])
+        p1_done = _P1 in notes_list or "PARTIAL_TAKEN" in notes_list
+        p2_done = _P2 in notes_list
+        slippage = cfg.get("entry_slippage_pct", 0.001)
 
-        if (not partial_already_done and partial_tp_pct and
-                pnl_pct >= partial_tp_pct and trade.shares > 0.01):
-            slippage = cfg.get("entry_slippage_pct", 0.001)
-            partial_shares = round(trade.shares / 2, 4)
+        if not p1_done and partial_tp_pct and pnl_pct >= partial_tp_pct and trade.shares > 0.01:
+            partial_shares = round(trade.shares * 0.33, 4)
             partial_price  = round(live_price * (1 - slippage), 4)
             partial_value  = round(partial_shares * partial_price, 2)
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
-
             partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
             trade.shares = round(trade.shares - partial_shares, 4)
             portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
-
-            # Floor stop at breakeven for remaining half
             if trade.current_stop < entry:
                 trade.current_stop = entry
-
-            notes_list = list(trade.entry_decision_notes or [])
-            notes_list.append(_partial_marker)
+            notes_list.append(_P1)
             notes_list.append(
-                f"Partial: sold {partial_shares:.4f}sh @ ${partial_price:.2f} "
+                f"Scale-out-1: sold {partial_shares:.4f}sh @ ${partial_price:.2f} "
                 f"(+{pnl_pct*100:.1f}%), remaining {trade.shares:.4f}sh, stop → breakeven"
             )
             trade.entry_decision_notes = notes_list
+            log.info("paper.partial1_profit_taken",
+                     symbol=trade.symbol, partial_shares=partial_shares,
+                     partial_price=partial_price, partial_value=partial_value,
+                     partial_pnl=partial_pnl, pnl_pct=round(pnl_pct * 100, 1),
+                     remaining_shares=trade.shares)
+            p1_done = True
 
-            log.info("paper.partial_profit_taken",
+        if p1_done and not p2_done and partial_tp2_pct and pnl_pct >= partial_tp2_pct and trade.shares > 0.01:
+            partial_shares = round(trade.shares * 0.50, 4)
+            partial_price  = round(live_price * (1 - slippage), 4)
+            partial_value  = round(partial_shares * partial_price, 2)
+            partial_pnl    = round((partial_price - entry) * partial_shares, 2)
+            partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
+            trade.shares = round(trade.shares - partial_shares, 4)
+            portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
+            lock_stop = round(entry * 1.05, 2)
+            if trade.current_stop < lock_stop:
+                trade.current_stop = lock_stop
+            notes_list2 = list(trade.entry_decision_notes or [])
+            notes_list2.append(_P2)
+            notes_list2.append(
+                f"Scale-out-2: sold {partial_shares:.4f}sh @ ${partial_price:.2f} "
+                f"(+{pnl_pct*100:.1f}%), remaining {trade.shares:.4f}sh, stop → +5%"
+            )
+            trade.entry_decision_notes = notes_list2
+            log.info("paper.partial2_profit_taken",
                      symbol=trade.symbol, partial_shares=partial_shares,
                      partial_price=partial_price, partial_value=partial_value,
                      partial_pnl=partial_pnl, pnl_pct=round(pnl_pct * 100, 1),
@@ -1532,6 +1555,41 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         if open_count + entries_made >= cfg["max_positions"]:
             break
         if stock.symbol in open_symbols:
+            # Scale-in: add to profitable position on fresh high-conviction signal
+            if cfg.get("scale_in_enabled", True):
+                _si_live = live_prices.get(stock.symbol)
+                if _si_live:
+                    _si_trade = session.execute(
+                        select(PaperTrade).where(
+                            PaperTrade.portfolio_id == portfolio.id,
+                            PaperTrade.symbol == stock.symbol,
+                            PaperTrade.stage == "open",
+                        )
+                    ).scalar_one_or_none()
+                    if _si_trade:
+                        _si_pnl_pct = (_si_live - _si_trade.entry_price) / _si_trade.entry_price
+                        _si_notes_list = _si_trade.entry_decision_notes or []
+                        _si_already = any("SCALE_IN" in str(n) for n in _si_notes_list)
+                        _si_conf = float(sig.confidence or 0.0)
+                        if not _si_already and _si_pnl_pct >= 0.05 and _si_conf >= 60.0:
+                            _si_add_value = _si_trade.entry_price * _si_trade.shares * 0.25
+                            if portfolio.current_cash >= _si_add_value * 1.1:
+                                _si_slippage = cfg.get("entry_slippage_pct", 0.001)
+                                _si_add_shares = round(_si_add_value / (_si_live * (1 + _si_slippage)), 4)
+                                _si_cost = round(_si_add_shares * _si_live * (1 + _si_slippage), 2)
+                                portfolio.current_cash = round(portfolio.current_cash - _si_cost, 2)
+                                _si_trade.shares = round(_si_trade.shares + _si_add_shares, 4)
+                                _si_new_notes = list(_si_notes_list)
+                                _si_new_notes.append("SCALE_IN")
+                                _si_new_notes.append(
+                                    f"Scale-in: +{_si_add_shares:.4f}sh @ ${_si_live:.2f} "
+                                    f"(+{_si_pnl_pct*100:.1f}%, conf {_si_conf:.0f}%)"
+                                )
+                                _si_trade.entry_decision_notes = _si_new_notes
+                                log.info("paper.scale_in",
+                                         symbol=stock.symbol, added_shares=_si_add_shares,
+                                         live_price=_si_live, pnl_pct=round(_si_pnl_pct * 100, 1),
+                                         confidence=_si_conf)
             continue
         # Optionally restrict to the GROWTH watchlist
         if growth_stock_ids and stock.id not in growth_stock_ids:
