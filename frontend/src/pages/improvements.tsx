@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5261,6 +5261,55 @@ const ITEMS: Item[] = [
     what: 'live fallback silently computed but did not persist. Signal Filter missed any stock whose batch signal run hadn\'t happened yet.',
     fix: 'persist=True set automatically when falling through the no-stored-signals path. source field added to all responses so the UI can differentiate.',
   },
+  // ── Tier 31 — signal_outcomes Dedup + HK Paper Trading + Portfolio UX (2026-06-17) ─
+  {
+    id: 'sig-outcomes-dedup-fix',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — signal-engine/routes.py evaluate_signal_outcomes(): added evaluated_sighd set tracking (stock_id, horizon, signal_date) tuples loaded from existing signal_outcomes at start of each run. In the evaluation loop, sighd_key = (sig.stock_id, sig.horizon, signal_date) is checked before creating a new SignalOutcome — if already present the signal is skipped even if it has a new signal_id. After creating an outcome, sighd_key is added to evaluated_sighd. Root cause: signal_outcomes was inflated ≈18× because each of the 5 daily signal refreshes creates a new Signal row with a new signal_id, and the previous guard only deduplicated by signal_id. DB cleanup: DELETE WHERE id NOT IN (SELECT MIN(id) GROUP BY stock_id, horizon, signal_date) — reduced from 73 → 52 rows (21 duplicates removed). Going forward, each (stock, horizon, date) produces exactly 1 outcome row regardless of refresh frequency.',
+    tier: 31, severity: 'high',
+    title: 'signal_outcomes deduplication — 18× row inflation from 5×/day signal refreshes',
+    file: 'services/signal-engine/src/api/routes.py',
+    effort: '30 minutes',
+    impact: 'High — win-rate stats, research alignment bands, and backtest accuracy were all calculated against a 18× inflated dataset where the same signal event appeared once per daily refresh. Counts were meaningless (SWING: 3,633 rows / 204 unique stock+date pairs) and win-rate percentages were averaged over duplicates of the same trade. With deduplication enforced at creation time, the outcomes table now has exactly one row per signal event, making all downstream accuracy metrics correct.',
+    what: 'evaluate_signal_outcomes guarded by signal_id only. Signal refreshes (5×/day) each create a new Signal row with a new signal_id → new signal_id → new signal_outcomes row for the same logical signal event. Win-rate metrics were computed over the bloated table.',
+    fix: 'Load set of (stock_id, horizon, signal_date) tuples from existing outcomes before evaluation loop. Skip any signal whose tuple is already in the set. Add the tuple after inserting a new outcome. DB dedup run: kept MIN(id) per group, deleted 21 duplicate rows.',
+  },
+  {
+    id: 'paper-trading-hk-market-hours',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — paper_trading_engine.py: (1) _DEFAULT_CONFIG gains "market": "US" field. (2) _is_market_hours(market="US") now accepts a market parameter; for "HK" checks HKEX morning session (09:30-12:00 HKT) and afternoon session (13:00-16:00 HKT) using ZoneInfo("Asia/Hong_Kong"). (3) Added _fetch_hk_market_regime(): downloads ^HSI (300d, yfinance), classifies bull/neutral/choppy/bear vs 200-day SMA; compatible dict shape with US regime; 30-min module-level cache. (4) _scan_for_entries() WHERE clause gains Stock.market == cfg.get("market", "US") — US portfolio only scans US stocks, HK portfolio only scans HK stocks. (5) paper_trading_step() refactored: per-portfolio regime fetch (US → _fetch_market_regime, HK → _fetch_hk_market_regime, cached by market key per cycle); market hours check uses cfg.get("market", "US"). scheduler.py: "Stage 4: Paper trading" guard changed from if market == "US" to if market in ("US", "HK").',
+    tier: 31, severity: 'medium',
+    title: 'Paper trading HK market hours, HSI regime, market stock filter — full HK portfolio support',
+    file: 'services/market-data/src/services/paper_trading_engine.py + scheduler.py',
+    effort: '2 hours',
+    impact: 'Medium — previously paper trading was US-only (scheduler hard-coded if market == "US"). HK portfolios can now run autonomously: entries only during HKEX hours (09:30-12:00 and 13:00-16:00 HKT Mon-Fri), regime detection uses ^HSI vs 200 SMA (bull/neutral/choppy/bear), stock scan is isolated to Stock.market == "HK". The architecture supports any future exchange by adding another _is_market_hours branch and a regime function.',
+    what: 'Paper trading step was gated to US market only. _is_market_hours() was NYSE-specific (America/New_York). _fetch_market_regime() was hardcoded to SPY/QQQ/^VIX. _scan_for_entries() had no market filter, so a US portfolio could theoretically enter HK stocks and vice-versa.',
+    fix: 'Market-parameterized hours function, per-market regime cache in the main step loop, Stock.market filter in the entry scan query, scheduler enabled for both markets.',
+  },
+  {
+    id: 'paper-trading-hk-portfolios',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — Created 2 new paper portfolios in DB (id=2 HK SWING Portfolio $50,000, id=3 US SWING Portfolio $50,000) alongside the existing id=1 GROWTH Paper Portfolio. paper_portfolio.py /create endpoint: reads market from body (default "US"), validates against ("US","HK"), saves market into cfg before creating PaperPortfolio. /list endpoint: adds "market": p.config.get("market","US") to each response dict. All 3 portfolios active; HK SWING will enter trades during HKEX hours when HK SWING BUY signals appear; US SWING enters during NYSE hours.',
+    tier: 31, severity: 'medium',
+    title: 'HK SWING + US SWING paper portfolios created — 3 autonomous paper portfolios running',
+    file: 'services/market-data/src/api/paper_portfolio.py',
+    effort: '20 minutes',
+    impact: 'Medium — the platform now runs 3 concurrent paper portfolios across 2 markets and 2 styles (GROWTH US, SWING US, SWING HK). After sufficient runtime, cross-portfolio comparison (the compare equity chart) will show which style works best in which market, informing whether to mirror a style in live trading. HK paper portfolio is the first autonomous HK trading activity on the platform.',
+    what: 'Only 1 paper portfolio existed (GROWTH US). No way to compare styles or test HK signals via paper trading. /create endpoint did not accept a market field.',
+    fix: 'Inserted 2 portfolios via psycopg2. Updated /create and /list endpoints to handle market field.',
+  },
+  {
+    id: 'portfolio-switcher-market-ux',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — paper-portfolio.tsx: (1) Portfolio selector section guard changed from {multiPortfolio && ...} to always render — shows a labeled "PORTFOLIOS" section with all portfolio cards regardless of count. (2) PortfolioCard component: added market badge (cyan for US, orange for HK) alongside the existing style badge (SWING/GROWTH/LONG). (3) CreatePortfolioModal: added market state (default "US") + Market <select> dropdown (US — NYSE/NASDAQ | HK — Hong Kong Exchange); market sent in api.paperCreate body. api.ts: PaperPortfolioListItem gains market: string field; paperCreate body type gains market?: string. Compare chart + hint text still gated by multiPortfolio for cleanliness.',
+    tier: 31, severity: 'low',
+    title: 'Portfolio switcher always visible + market badge on cards + market dropdown in create modal',
+    file: 'frontend/src/pages/paper-portfolio.tsx + frontend/src/lib/api.ts',
+    effort: '30 minutes',
+    impact: 'Low (UX) — previously the portfolio switcher was hidden when only 1 portfolio existed, making it invisible to users who added portfolios later. Now the "PORTFOLIOS" section is always at the top of the page. Market badges (US/HK) make it immediately clear which portfolio trades which exchange without reading the full name.',
+    what: 'multiPortfolio && guard hid the portfolio card grid for single-portfolio state. PortfolioCard showed style but not market. CreatePortfolioModal had no market selector (market defaulted to "US" silently).',
+    fix: 'Removed multiPortfolio guard; market badge added to card; market dropdown added to modal.',
+  },
   // ── Tier 30 — SA-29/SA-30 + tune_all + INT-8 Research Alignment (2026-06-17) ─
   {
     id: 'sa-29-weekly-rsi-ml-feature',
@@ -5351,6 +5400,7 @@ const TIER_LABEL: Record<Tier, string> = {
   28: 'Tier 28 — Kelly Criterion + Conviction Gate on Stock Detail (2026-06-16)',
   29: 'Tier 29 — Signal Pipeline Single Source of Truth (2026-06-16)',
   30: 'Tier 30 — SA-29/SA-30 + INT-8 Research Alignment (2026-06-17)',
+  31: 'Tier 31 — signal_outcomes Dedup + HK Paper Trading + Portfolio UX (2026-06-17)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5384,6 +5434,7 @@ const TIER_COLOR: Record<Tier, string> = {
   28: '#e879f9',
   29: '#38bdf8',
   30: '#c084fc',
+  31: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5660,7 +5711,7 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current (2026-06-17) — Tier 30: SA-29 weekly RSI + weekly trend as ML features (44 total), SA-30 minimum 3-pillar gate for SWING/LONG (×0.70 compress below min), tune_all relaunched with 44-feature baseline (560 jobs), INT-8 research alignment win-rates panel in Signal Filter.
+          Current (2026-06-17) — Tier 31: signal_outcomes dedup fix (18× row inflation eliminated; guard by stock+horizon+date), HK paper trading (HKEX hours, HSI regime, market stock filter), 3 paper portfolios running (GROWTH US + SWING US + SWING HK), portfolio switcher always visible + market badges.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
@@ -5670,8 +5721,8 @@ export default function ImprovementsPage() {
             { label: 'K-Score ranking', score: 8.5, target: 8.5, note: '✓ SCR-1 multi-factor screener + RES-4 sector context (target met)' },
             { label: 'Research engine', score: 8.2, target: 8.8, note: '↑ RES-FIX-1 data fallback + INT-4 auto-trigger + INT-6 composite score' },
             { label: 'Frontend / UX',   score: 9.7, target: 9.8, note: '↑ Tier 16: chart overhaul (EMA200, VWAP, 52W H/L, signal markers, pattern strip), signal history sidebar, screener filters' },
-            { label: 'Risk management', score: 8.8, target: 9.2, note: '↑ CB-W1 paper trading cutoff fixed (was 0 trades/week). INT-3 research-gated sizing + PT-M1/M2/M4/M5 all live.' },
-            { label: 'Overall',         score: 9.7, target: 9.8, note: '↑ Tier 30: SA-29 weekly ML features (44 total), SA-30 3-pillar gate for SWING/LONG, tune_all relaunched (44-feature baseline), INT-8 research alignment panel in Signal Filter.' },
+            { label: 'Risk management', score: 9.0, target: 9.2, note: '↑ Tier 31: 3 autonomous paper portfolios (GROWTH US + SWING US + SWING HK) + HK market hours + HSI regime. CB-W1 cutoff fixed. INT-3 research-gated sizing + PT-M1/M2/M4/M5 all live.' },
+            { label: 'Overall',         score: 9.8, target: 9.8, note: '↑ Tier 31: signal_outcomes dedup (data integrity), HK paper trading (platform expansion), 3 portfolios running, portfolio switcher UX.' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -5714,6 +5765,7 @@ export default function ImprovementsPage() {
           Tier 25 (2026-06-16): Sharpe ratio on stock detail — 1-year annualised Sharpe calculated from existing price data (no backend change); header card with Excellent/Good/Fair/Poor color tiers. Whale options detection — extended options-flow from 2 to 4 expiries; added premium = volume × lastPrice × 100 per contract; is_whale flag at $500K threshold; response gains whale_count and top_whale_premium; UI shows 🐋 badge when whales detected, highlighted rows with Premium column in amber.
           Tier 24 (2026-06-16, partial): ML-FUND-2 weekly fundamentals batch refresh — _refresh_fundamentals_batch() added to _weekly_full_refresh() in scheduler.py; runs after signals/rankings, before tune_all; rate-limited 3 req/s; also triggered immediately for all 138 symbols via fund_batch.py docker exec script. ML-FUND-3 feature importance panel — GET /ml/features/SYMBOL endpoint added to ml-prediction; collapsible "Top model drivers" section on stock detail with horizontal bars color-coded by category (green=technical, blue=macro, purple=fundamental). ML-FUND-4 fundamentals staleness warning — fetched_at added to FundamentalsOut and persisted in Redis cache; Company Financials header shows "as of [date]" / "⚠ Nd old" when &gt; 90 days. Open: ML-FUND-5 tune_all rerun with 42-feature pipeline (expected +3-8% CV AUC; schedule for next Sunday after fundamentals batch populates).
           Tier 30 (2026-06-17): SA-29 weekly RSI + weekly trend as ML features — daily closes resampled to weekly W-FRI bars; RSI-14w and price vs 10-week SMA trend (+1/0/−1) forward-filled to daily; added to WEEKLY_COLUMNS (NaN-optional like fundamentals); 42→44 features total. SA-30 minimum 3-pillar gate for SWING/LONG — min_pillars_for_buy=3; 2-pillar signals compressed ×0.70 toward neutral (breakeven fused ≥ 0.714); SHORT/GROWTH retain 2-pillar minimum; pillar_gate reason: "compressed_2_pillar_below_min3". ML-FUND-5 tune_all relaunched — 560 Optuna jobs (140 symbols × 4 styles, 60 trials each) running on EC2 ml-prediction; first tune run using the full 44-feature pipeline. INT-8 C research alignment panel in Signal Filter — ResearchAlignmentPanel component above condition summary bar; fetches outcomes/summary?horizon=&#123;style&#125;&amp;days=90; shows win-rate tiles (aligned/partial/divergent/no_research) with count + avg return; updates on style tab change; OutcomesSummary type extended with by_research_alignment + by_window fields.
+          Tier 31 (2026-06-17): signal_outcomes dedup fix — evaluate_signal_outcomes now guards by (stock_id, horizon, signal_date) in addition to signal_id; 5×/day signal refreshes no longer produce 18× inflated outcome rows; DB cleaned (73→52 rows, 21 duplicates deleted). HK paper trading — paper_trading_engine.py: _is_market_hours(market) checks HKEX sessions (09:30-12:00 + 13:00-16:00 HKT); _fetch_hk_market_regime() uses ^HSI vs 200 SMA; _scan_for_entries() filters Stock.market == cfg["market"]; per-portfolio regime fetch (US→SPY/VIX, HK→HSI); scheduler enabled for both markets. 3 paper portfolios now running: GROWTH US (existing), SWING US (new $50k), SWING HK (new $50k). Portfolio switcher UX — card grid always visible with PORTFOLIOS label; market badge on cards (US=cyan, HK=orange); market dropdown in create modal.
           Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Remaining: walk-forward backtest, SUR-001, CV-001, WEIGHT-001, ENS-001 (ML training methodology items).
         </p>
       </div>

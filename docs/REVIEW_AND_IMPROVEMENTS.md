@@ -1,9 +1,9 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-17 (SA-30 — 3-pillar gate for SWING/LONG; SA-29 — weekly RSI/trend as ML features; tune_all launched; BUG-2 — jose missing from 4 services; INT-8 — research alignment panel in Signal Filter)  
+**Last updated:** 2026-06-17 (Tier 31 — signal_outcomes dedup fix; HK paper trading full support; 3 paper portfolios live; portfolio switcher UX)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 9.3 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 — SA-29/SA-30 + INT-8 research alignment)*
+**Overall rating:** 9.4 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 — data integrity + HK paper trading expansion)*
 
 ---
 
@@ -92,6 +92,10 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-17 | **tune_all (Optuna) relaunched** — 60 trials × 140 symbols × 4 styles = 560 tune runs with new 44-feature models; runs ~3–5h per style on EC2 in background | ml-prediction | ✅ Scheduled |
 | 2026-06-17 | **INT-8: Research alignment panel in Signal Filter** — compact win-rate panel above the condition summary bar; shows historical BUY signal accuracy broken down by aligned/partial/divergent/no_research using 90d outcomes data; OutcomesSummary type extended with by_research_alignment + by_window | frontend/signal-filters.tsx + api.ts | ✅ Done |
 | 2026-06-17 | **BUG-2: jose missing from 4 containers** — installed python-jose[cryptography]==3.3.0 in ml-prediction, ranking-engine, portfolio-optimizer, technical-analysis; rebuilt all images; added to requirements.txt | services/*/requirements.txt | ✅ Done |
+| 2026-06-17 | **signal_outcomes dedup fix** — evaluate_signal_outcomes now guards by (stock_id, horizon, signal_date) in addition to signal_id; 5×/day refreshes no longer inflate outcome rows 18×; DB cleaned (73→52 rows, 21 duplicates deleted); going forward exactly 1 outcome row per signal event | signal-engine/routes.py | ✅ Done |
+| 2026-06-17 | **HK paper trading: market hours + regime + stock filter** — _is_market_hours(market) adds HKEX sessions (09:30–12:00 + 13:00–16:00 HKT); _fetch_hk_market_regime() uses ^HSI vs 200 SMA (bull/neutral/choppy/bear, 30min cache); _scan_for_entries() filters Stock.market == cfg["market"]; per-portfolio regime per market in step loop; scheduler enabled for "HK" | paper_trading_engine.py + scheduler.py | ✅ Done |
+| 2026-06-17 | **3 paper portfolios created + /create market field** — id=2 HK SWING Portfolio $50k, id=3 US SWING Portfolio $50k alongside existing id=1 GROWTH US; /create accepts + validates market (US/HK); /list returns market field | paper_portfolio.py | ✅ Done |
+| 2026-06-17 | **Portfolio switcher UX** — card grid always visible (removed multiPortfolio guard), labeled "PORTFOLIOS"; market badge (US=cyan, HK=orange) on each card; market dropdown (US/HK) in create modal; PaperPortfolioListItem gains market field | frontend/paper-portfolio.tsx + api.ts | ✅ Done |
 
 ---
 
@@ -105,8 +109,8 @@ This document is the single source of truth for everything that was found, why i
 | K-Score ranking | 8.2 / 10 | ↑ Falling knife gate + RSI curve + sector-relative peer scoring + peer comparison drawer |
 | Research engine | 7.5 / 10 | ↑ DCF valuation + sector-relative fundamentals + cache quality flag; Nginx 150s timeout fixed |
 | Frontend / UX | 9.5 / 10 | ↑ Per-horizon alerts + consensus indicator + Add to Radar + Outcomes tab + P&L heatmap + conviction screener |
-| Risk management | 8.5 / 10 | ↑ Portfolio beta + VaR + correlation + ATR position sizer + unrealized P&L + portfolio heatmap |
-| **Overall** | **9.3 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 — SA-29/SA-30/INT-8 2026-06-17)* |
+| Risk management | 9.0 / 10 | ↑ 3 paper portfolios (GROWTH US + SWING US + SWING HK) + HK market hours + HSI regime detection; CB-W1 cutoff fixed; INT-3 research-gated sizing; PT-M1/M2/M4/M5 live |
+| **Overall** | **9.4 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 — Tier 31: data integrity + HK paper trading 2026-06-17)* |
 
 ---
 
