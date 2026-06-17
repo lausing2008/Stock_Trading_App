@@ -33,6 +33,26 @@ def _cache_set(key: str, value, ttl: int = 3600) -> None:
     except Exception:
         pass
 
+
+_service_token_cache: str = ""
+
+
+def _service_token() -> str:
+    """Long-lived JWT for signal-engine → internal service calls (sub='signal-engine')."""
+    global _service_token_cache
+    if _service_token_cache:
+        return _service_token_cache
+    import time
+    from jose import jwt as _jwt
+    payload = {
+        "sub": "signal-engine",
+        "exp": int(time.time()) + 365 * 86400,
+        "jti": "signal-engine-service",
+    }
+    _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+    return _service_token_cache
+
+
 from ..generators import generate_signal, generate_all_signals
 
 log = get_logger("signals")
@@ -242,8 +262,13 @@ def _bulk_persist(symbols: list[str]) -> None:
                         _url = _settings.research_engine_url
                         # INT-4: trigger background research if stale
                         _httpx.post(f"{_url}/research/{symbol}/trigger", timeout=1.5)
-                        # INT-7: check divergence
-                        _sr = _httpx.get(f"{_url}/research/{symbol}/summary", timeout=1.5)
+                        # INT-7: check divergence (service token required — endpoint needs auth)
+                        _tok = _service_token()
+                        _sr = _httpx.get(
+                            f"{_url}/research/{symbol}/summary",
+                            timeout=1.5,
+                            headers={"Authorization": f"Bearer {_tok}"},
+                        )
                         if _sr.status_code == 200:
                             _rd = _sr.json()
                             _rec = _rd.get("recommendation", "")
