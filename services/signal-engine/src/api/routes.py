@@ -2420,6 +2420,62 @@ def outcomes_summary(
         for reg, v in regime_stats.items()
     }
 
+    # INT-8: Research alignment breakdown — how does research agreement affect win rate?
+    _ALIGNED_RECS   = {"BUY", "STRONG BUY", "STRONG_BUY"}
+    _PARTIAL_RECS   = {"WATCH"}
+    _DIVERGENT_RECS = {"AVOID", "SELL"}
+    research_groups: dict[str, dict] = {
+        "aligned": {"count": 0, "wins": 0, "returns": []},
+        "partial":  {"count": 0, "wins": 0, "returns": []},
+        "divergent": {"count": 0, "wins": 0, "returns": []},
+        "no_research": {"count": 0, "wins": 0, "returns": []},
+    }
+    for o in outcomes:
+        rec = (o.research_rec or "").upper().strip()
+        if rec in _ALIGNED_RECS:
+            grp = "aligned"
+        elif rec in _PARTIAL_RECS:
+            grp = "partial"
+        elif rec in _DIVERGENT_RECS:
+            grp = "divergent"
+        else:
+            grp = "no_research"
+        research_groups[grp]["count"] += 1
+        if o.is_correct:
+            research_groups[grp]["wins"] += 1
+        if o.pct_return is not None:
+            research_groups[grp]["returns"].append(o.pct_return)
+
+    research_summary = {
+        grp: {
+            "count": v["count"],
+            "win_rate": round(v["wins"] / v["count"], 3) if v["count"] else None,
+            "avg_return_pct": round(statistics.mean(v["returns"]) * 100, 2) if v["returns"] else None,
+        }
+        for grp, v in research_groups.items()
+        if v["count"] > 0
+    }
+
+    # Multi-window win rates (INT-8)
+    def _window_stats(outcomes, attr_correct, attr_return):
+        vals = [(getattr(o, attr_correct), getattr(o, attr_return)) for o in outcomes
+                if getattr(o, attr_correct) is not None]
+        if not vals:
+            return None
+        wr = sum(1 for c, _ in vals if c) / len(vals)
+        rets = [r for _, r in vals if r is not None]
+        return {
+            "count": len(vals),
+            "win_rate": round(wr, 3),
+            "avg_return_pct": round(statistics.mean(rets) * 100, 2) if rets else None,
+        }
+
+    multi_window = {
+        "5d":  _window_stats(outcomes, "is_correct_5d",  "return_5d"),
+        "10d": _window_stats(outcomes, "is_correct_10d", "return_10d"),
+        "20d": _window_stats(outcomes, "is_correct_20d", "return_20d"),
+    }
+
     return {
         "total": len(outcomes),
         "days_lookback": days,
@@ -2431,6 +2487,8 @@ def outcomes_summary(
         "by_confidence_band": band_stats,
         "by_horizon": horizon_stats,
         "by_market_regime": regime_summary,
+        "by_research_alignment": research_summary,
+        "by_window": multi_window,
     }
 
 
@@ -2827,10 +2885,19 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
     - pct_return  = (exit - entry) / entry
     - is_correct  = price went up for BUY, down for SELL
 
+    INT-8: Also fills multi-window columns (price_5d/10d/20d, return_5d/10d/20d,
+    is_correct_5d/10d/20d) and research_rec/research_score at evaluation time.
+    Phase 2 of the same run updates existing outcome rows where window columns
+    are NULL but sufficient time has now passed.
+
     Safe to re-run — already-evaluated signals (by UNIQUE signal_id) are skipped.
     Called automatically by the scheduler post-close.
     """
     from datetime import time as _time
+    import bisect
+    from collections import defaultdict
+    import httpx as _httpx
+    from sqlalchemy import or_
 
     today = date.today()
     min_hold = min(_OUTCOME_HOLD_DAYS.values())
@@ -2852,24 +2919,23 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         .order_by(Signal.ts)
     ).all()
 
-    import bisect
-    from collections import defaultdict
-
-    # Bulk-load all D1 prices for pending signals — avoids N+1 queries in loop
+    # Bulk-load D1 prices — always extend window to 20d for INT-8 multi-window
     pending_stock_ids = list({sig.stock_id for sig, _ in pending_signals})
-    max_hold = max(_OUTCOME_HOLD_DAYS.values())
     price_min_ts = min((sig.ts for sig, _ in pending_signals), default=datetime.now())
-    price_max_ts = datetime.now() + timedelta(days=max_hold + 10)
-    bulk_prices = session.execute(
-        select(Price.stock_id, Price.ts, Price.close)
-        .where(
-            Price.stock_id.in_(pending_stock_ids),
-            Price.timeframe == TimeFrame.D1,
-            Price.ts >= price_min_ts,
-            Price.ts <= price_max_ts,
-        )
-        .order_by(Price.stock_id, Price.ts)
-    ).all()
+    price_max_ts = datetime.now() + timedelta(days=30)
+    bulk_prices: list = []
+    if pending_stock_ids:
+        bulk_prices = session.execute(
+            select(Price.stock_id, Price.ts, Price.close)
+            .where(
+                Price.stock_id.in_(pending_stock_ids),
+                Price.timeframe == TimeFrame.D1,
+                Price.ts >= price_min_ts,
+                Price.ts <= price_max_ts,
+            )
+            .order_by(Price.stock_id, Price.ts)
+        ).all()
+
     _outcome_price_map: dict[int, list[tuple]] = defaultdict(list)
     for pr in bulk_prices:
         pr_date = pr.ts.date() if hasattr(pr.ts, "date") else pr.ts
@@ -2884,6 +2950,41 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         if idx >= len(bucket):
             return None
         return bucket[idx]
+
+    def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int):
+        """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None)."""
+        target = entry_date + timedelta(days=days)
+        if target >= today:
+            return None, None, None
+        result = _lookup_outcome_price(stock_id, target)
+        if result is None or entry_price <= 0:
+            return None, None, None
+        _, price = result
+        ret = (price - entry_price) / entry_price
+        return float(price), ret, ret > 0
+
+    # Research recommendation cache — one network fetch per symbol per run
+    _research_cache: dict[str, tuple] = {}
+
+    def _fetch_research(symbol: str) -> "tuple[str | None, float | None]":
+        if symbol in _research_cache:
+            return _research_cache[symbol]
+        try:
+            _tok = _service_token()
+            _r = _httpx.get(
+                f"{_settings.research_engine_url}/research/{symbol}/summary",
+                headers={"Authorization": f"Bearer {_tok}"},
+                timeout=2.0,
+            )
+            if _r.status_code == 200:
+                _d = _r.json()
+                result = (_d.get("recommendation"), float(_d.get("overall_score") or 0) or None)
+            else:
+                result = (None, None)
+        except Exception:
+            result = (None, None)
+        _research_cache[symbol] = result
+        return result
 
     evaluated, skipped_open, skipped_no_price = 0, 0, 0
 
@@ -2905,7 +3006,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
 
         if exit_target >= today:
             skipped_open += 1
-            continue  # Hold window not closed yet (need tomorrow's price at minimum)
+            continue
 
         exit_result = _lookup_outcome_price(sig.stock_id, exit_target)
         if exit_result is None:
@@ -2916,9 +3017,16 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         if entry_price <= 0:
             skipped_no_price += 1
             continue
+
         pct_return = (exit_price - entry_price) / entry_price
         hold_days_actual = (exit_date - entry_date).days
         is_correct = pct_return > 0 if sig.signal == SignalType.BUY else pct_return < 0
+
+        # INT-8: multi-window forward returns
+        p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5)
+        p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10)
+        p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20)
+        res_rec, res_score = _fetch_research(symbol)
 
         reasons = sig.reasons or {}
         outcome = SignalOutcome(
@@ -2941,19 +3049,94 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
             hold_days=hold_days_actual,
             pct_return=pct_return,
             is_correct=is_correct,
+            price_5d=p5, return_5d=r5, is_correct_5d=c5,
+            price_10d=p10, return_10d=r10, is_correct_10d=c10,
+            price_20d=p20, return_20d=r20, is_correct_20d=c20,
+            research_rec=res_rec,
+            research_score=res_score,
         )
         session.add(outcome)
         evaluated_ids.add(sig.id)
         evaluated += 1
 
     session.commit()
+
+    # ── Phase 2: Fill NULL window columns on existing outcome rows ─────────────
+    # Outcomes created before INT-8 (or where a window wasn't closed at create time)
+    # may have NULL price_5d/10d/20d. Fill them in as the windows mature.
+    needs_update = session.execute(
+        select(SignalOutcome)
+        .where(
+            SignalOutcome.entry_date.is_not(None),
+            SignalOutcome.entry_price.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+            or_(
+                SignalOutcome.price_5d.is_(None),
+                SignalOutcome.price_10d.is_(None),
+                SignalOutcome.price_20d.is_(None),
+            )
+        )
+        .limit(500)
+    ).scalars().all()
+
+    updated = 0
+    if needs_update:
+        # Extend price map with any stocks not already loaded
+        missing_ids = [o.stock_id for o in needs_update if o.stock_id not in _outcome_price_map]
+        if missing_ids:
+            upd_prices = session.execute(
+                select(Price.stock_id, Price.ts, Price.close)
+                .where(
+                    Price.stock_id.in_(missing_ids),
+                    Price.timeframe == TimeFrame.D1,
+                )
+                .order_by(Price.stock_id, Price.ts)
+            ).all()
+            for pr in upd_prices:
+                pr_date = pr.ts.date() if hasattr(pr.ts, "date") else pr.ts
+                _outcome_price_map[pr.stock_id].append((pr_date, float(pr.close)))
+
+        for out in needs_update:
+            changed = False
+            ep, ed = out.entry_price, out.entry_date
+            if out.price_5d is None:
+                p5, r5, c5 = _window_return(out.stock_id, ed, ep, 5)
+                if p5 is not None:
+                    out.price_5d, out.return_5d, out.is_correct_5d = p5, r5, c5
+                    changed = True
+            if out.price_10d is None:
+                p10, r10, c10 = _window_return(out.stock_id, ed, ep, 10)
+                if p10 is not None:
+                    out.price_10d, out.return_10d, out.is_correct_10d = p10, r10, c10
+                    changed = True
+            if out.price_20d is None:
+                p20, r20, c20 = _window_return(out.stock_id, ed, ep, 20)
+                if p20 is not None:
+                    out.price_20d, out.return_20d, out.is_correct_20d = p20, r20, c20
+                    changed = True
+            if out.research_rec is None:
+                rr, rs = _fetch_research(out.symbol)
+                if rr is not None:
+                    out.research_rec, out.research_score = rr, rs
+                    changed = True
+            if changed:
+                updated += 1
+
+        session.commit()
+
     log.info(
         "outcomes.evaluate_done",
         evaluated=evaluated,
         skipped_open=skipped_open,
         skipped_no_price=skipped_no_price,
+        updated_windows=updated,
     )
-    return {"evaluated": evaluated, "skipped_open": skipped_open, "skipped_no_price": skipped_no_price}
+    return {
+        "evaluated": evaluated,
+        "skipped_open": skipped_open,
+        "skipped_no_price": skipped_no_price,
+        "updated_windows": updated,
+    }
 
 
 @router.get("/gate_backtest")
