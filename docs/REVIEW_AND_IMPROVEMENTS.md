@@ -1,7 +1,7 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-17 (Tier 29 — signal pipeline single source of truth; Tier 30 — journal UI, HSI benchmark, scale-in/out; Bug: signal-engine jose missing → refresh 401 fixed)  
+**Last updated:** 2026-06-17 (Tier 29 — signal pipeline single source of truth; Tier 30 — journal UI, HSI benchmark, scale-in/out; Bug: signal-engine jose missing → refresh 401 fixed; SA-28 — signal accuracy tightening)  
 **Perspective:** Data Analyst + Quantitative Trading  
 **Overall rating:** 9.2 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 — alert/UX improvements shipped 2026-06-10)*
 
@@ -1497,6 +1497,61 @@ Their functionality was re-implemented inline in the corresponding pages:
 | `components/StrategyBuilder.tsx` | `pages/strategies.tsx` (inline) |
 
 These are not deleted yet — verify before removing.
+
+### SA-28 — Signal Accuracy Tightening (2026-06-17)
+
+**Trigger:** After the bulk signal refresh (post-jose fix), Signal Filter showed 59 SWING BUY and
+83 GROWTH BUY out of 159 stocks (37% and 52%). Too many marginal signals in a bull market.
+
+**Root cause analysis:**
+
+1. **SWING threshold was too low (SA-8 over-relaxed):** SWING bull threshold was lowered from
+   0.65→0.62 in SA-8. With the ML model producing probabilities of 0.62-0.65 for many stocks
+   in a bull market, this admitted too many weak signals.
+
+2. **GROWTH threshold (0.57) was 5-8 pp below all other styles:** SHORT/LONG use 0.60, SWING
+   now uses 0.65. GROWTH at 0.57 meant any stock with marginally bullish ML output got BUY.
+
+3. **No overbought gate for the upside:** The existing weekly gate only fires when
+   weekly RSI ≤ 38 AND trend DOWN (oversold/downtrend guard). In a bull market where most stocks
+   have weekly RSI > 60, no gate fires at all. There was no symmetrical gate for the upside
+   case: stocks with weekly RSI > 75 AND trend UP (extended rally) face no suppression.
+
+**Changes made (`signal-engine/src/generators/signals.py`):**
+
+| Change | Before | After | Effect |
+|--------|--------|-------|--------|
+| SWING bull threshold | 0.62 | **0.65** | Requires stronger signal in bull market |
+| SWING unknown threshold | 0.62 | **0.65** | Consistent with bull |
+| GROWTH bull threshold | 0.57 | **0.60** | Aligns with SHORT/LONG level |
+| GROWTH unknown threshold | 0.57 | **0.60** | Consistent with bull |
+| Weekly overbought gate (SWING/LONG) | — | **weekly_rsi > 75 AND trend UP → ×0.85** | 15% compress when chasing extended rallies |
+
+**Expected new signal counts (rough estimate):**
+- SWING: ~59 → ~30-38 BUYs
+- GROWTH: ~83 → ~45-55 BUYs
+
+**The overbought gate details:** Applied post-cap (same as the oversold gate) so it cannot
+be neutralised by accumulated boosts. GROWTH skips it via `skip_weekly_gate=True` since
+momentum names legitimately run "overbought" for months. The gate fires when weekly RSI > 75
+AND weekly_trend == "up" — the higher RSI bar (75 vs 70) prevents false triggers on normal
+bull market readings; it only fires on genuinely extended moves.
+
+**After deploying, trigger a manual signal refresh:**
+```bash
+# On EC2, after docker cp + restart
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid; sys.path.insert(0,'/app/src'); sys.path.insert(0,'/app')
+from common.config import get_settings; from datetime import datetime, timezone, timedelta
+import httpx; from jose import jwt as _jwt; settings = get_settings()
+tok = _jwt.encode({'sub':'scheduler','jti':str(uuid.uuid4()),'exp':datetime.now(timezone.utc)+timedelta(days=365)}, settings.jwt_secret, algorithm='HS256')
+for mkt in ['HK','US']:
+    r = httpx.post(f'http://signal-engine:8005/signals/refresh?market={mkt}', headers={'Authorization':f'Bearer {tok}'}, timeout=15)
+    print(mkt, r.status_code, r.text[:80])
+"
+```
+
+---
 
 ### GROWTH style — high BUY signal count (2026-06-17)
 
