@@ -1338,6 +1338,23 @@ suppressed      {s}?live=false     every 5 min       check_signal_
 | 4 | `conv_gate` 7-day TTL too long | Stocks that fired gates on Monday still showed "Sent: Mon" on Friday after signal reversed to HOLD. False impression of active conviction. | TTL reduced from `86400×7` to `86400` (1 day). Expires with the trading session. |
 | 5 | New stock gap (Signal Filter vs detail page) | Stock detail page's live fallback computed signal but did not persist to DB. Signal Filter showed nothing until next scheduled batch run. | Live fallback now sets `persist=True`. First page view of any new stock stores the signal immediately. |
 
+### Component data-source map (post Tier 29)
+
+| Component | Endpoint / trigger | What it reads | Cache / TTL |
+|-----------|-------------------|---------------|-------------|
+| **Signal generation (batch)** | Scheduler → `POST /signals/refresh` every 5 min | DB prices, market-data RS endpoint, ML ensemble, K-Score, TA patterns, news, options | Writes to DB signals table |
+| **Relative strength** | `GET /stocks/{s}/relative-strength` | Stock 20d return: DB prices. Sector ETF: yfinance → Redis 4h/ticker | Redis `stockai:rs:{s}` 1h |
+| **Stock detail page** | `GET /signals/{s}?live=false` | DB signals table (live fallback auto-persists) | `source="db"` or `"live"` in response |
+| **Signal Filter Monitor** | `GET /signals/suppressed?style=X` | DB signals table + Redis `conv_gate:{s}:{style}` | Redis TTL 1 day |
+| **Conviction gate (gate backtest)** | `GET /signals/gate_backtest` | DB signals.reasons (stored regime, ml_weight, all TA) | Redis 1h |
+| **Conviction gate (email)** | `check_signal_alerts()` in scheduler | DB signals.reasons — reads stored `market_regime`, `ml_weight` | Redis `conv_gate:{s}:{style}` TTL 1 day |
+| **Conviction gate panel (UI)** | Inline in stock detail page | Same `signal.reasons` dict already loaded — no extra API call | n/a |
+| **Paper trading engine** | `paper_trading_step()` every 5 min | DB signals table, DB prices, DB rankings (Ranking.score) | n/a |
+| **Email alert** | `check_signal_alerts()` after each signal refresh | DB signals.reasons; sends when conviction tier = full or near | Signal stored in `signal_alerts.last_sent_at` |
+| **Gate backtest** | `GET /signals/gate_backtest` | DB signals (historical BUY rows + stored reasons) | Redis 1h |
+| **ML probability** | `POST /ml/predict_ensemble_three` | Feature columns from DB prices + fundamentals | No cache (fresh per signal generation cycle) |
+| **K-Score** | `GET /rankings/{s}` | DB prices + ranking sub-scores | Recomputed each `POST /rankings/refresh` |
+
 ### Invariants (post-fix)
 
 - **One RS source:** market-data `/relative-strength` owns all RS computation. No other service calls yfinance for RS data.
