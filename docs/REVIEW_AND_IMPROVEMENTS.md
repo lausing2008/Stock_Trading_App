@@ -1,7 +1,7 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-10 (Per-horizon alerts, consensus indicator, Add to Radar, admin health expansion, AUC fix)  
+**Last updated:** 2026-06-16 (Tier 29 — signal pipeline single source of truth; RS centralised; conviction gate regime/ML-weight fixes; conv_gate TTL; auto-persist)  
 **Perspective:** Data Analyst + Quantitative Trading  
 **Overall rating:** 9.2 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 — alert/UX improvements shipped 2026-06-10)*
 
@@ -1242,3 +1242,106 @@ A P/E ratio only has meaning relative to alternatives. A utility company at 14×
 
 ### Why the value sub-score needs a momentum gate
 The value proxy (discount from 52-week high) is designed to find stocks that have pulled back from their highs temporarily. It works well when the pullback is caused by temporary sentiment or sector rotation. It fails when the pullback is caused by fundamental deterioration. The momentum sub-score is a proxy for whether the company's fundamentals are still intact — a company in fundamental decline will show sustained momentum below 25. Requiring a minimum momentum score before awarding value points prevents value-traps from surfacing.
+
+---
+
+## Tier 29 — Signal Pipeline: Single Source of Truth (2026-06-16)
+
+**Review methodology:** Full read of all 5 signal-producing services and their
+inter-service calls. 4 structural bugs found, 5 fixes implemented.
+
+### Architecture graph
+
+```
+External sources (single entry point per type)
+  yfinance prices          yfinance ETF data       Anthropic / VADER
+       │                         │                       │
+       ▼                         ▼                       ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                      market-data  (port 8000)                    │
+│                                                                  │
+│  APScheduler — every 5 min during market hours                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  ingest_universe() → DB prices table (D1 + 5M bars)    │    │
+│  │                                                         │    │
+│  │  GET /stocks/{s}/relative-strength  ← RS owner (NEW)   │    │
+│  │    stock 20d return ← DB prices (no yfinance call)      │    │
+│  │    sector ETF ret  ← yfinance, Redis cache 4h/ticker   │    │
+│  │    full result     ← Redis cache 1h/symbol              │    │
+│  │                                                         │    │
+│  │  check_signal_alerts()                                  │    │
+│  │    reads: DB signal.reasons (stored market_regime,      │    │
+│  │           ml_weight, all TA indicators)                  │    │
+│  │    regime: reads FROM stored reasons — NOT live fetch   │    │
+│  │    ML gate: skips if stored ml_weight = 0              │    │
+│  │             (AUC<0.50 model was zeroed in fusion)       │    │
+│  │    writes: Redis conv_gate:{s}:{style}  TTL 1 day      │    │
+│  │    sends: email alert if tier = full | near             │    │
+│  └─────────────────────────────────────────────────────────┘    │
+└──────────┬───────────────────────────────────────────────────────┘
+           │  POST /signals/refresh?market=US|HK
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                     signal-engine  (port 8001)                   │
+│                                                                  │
+│  generate_all_signals(symbol) — all inputs via internal HTTP     │
+│                                                                  │
+│  Data fetched once, shared across all 4 horizons:               │
+│    market-data: /prices, /relative-strength, /fear_greed,        │
+│                 /market_breadth, /fundamentals, /news/sentiment,  │
+│                 /options-flow                                     │
+│    ml-prediction: /ml/predict_ensemble_three (XGB+LGB+RF)        │
+│    ranking-engine: /rankings/{symbol}  (K-Score)                 │
+│    technical-analysis: /ta/{symbol}/patterns                     │
+│                                                                  │
+│  Fusion:  fused = ml_weight × ml_prob + (1−ml_weight) × ta_prob │
+│    ml_weight = AUC curve: 0% at AUC<0.50 → 75% at AUC=0.70+    │
+│    13+ compression/boost filters → BUY/HOLD/WAIT/SELL           │
+│                                                                  │
+│  reasons JSON (≈3 KB) stored per signal row:                    │
+│    market_regime · ml_weight · ml_probability · ml_test_auc     │
+│    rsi · macd_hist · macd_rising · obv_trend_bullish · adx      │
+│    sma50_above_sma200 · trend_above_sma50 · rs_score · rs_rank  │
+│    weekly_alignment · breadth_pct · active_patterns · +35 more  │
+│                                                                  │
+│  _bulk_persist(): INSERT if signal type changed OR new day      │
+│  live fallback: auto-persists when no stored signals exist      │
+│  source field: "db" (stored) | "live" (freshly computed)        │
+└──────────┬───────────────────────────────────────────────────────┘
+           │  INSERT INTO signals
+           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│            PostgreSQL: signals table  (canonical)                │
+│  stock_id · ts · signal · horizon · confidence                   │
+│  bullish_probability · reasons (JSON) · source                   │
+└──────────┬───────────────────────────────────────────────────────┘
+           │
+   ┌───────┴──────────────────────────────────────────────┐
+   │               │                   │                  │
+   ▼               ▼                   ▼                  ▼
+Signal Filter   Stock detail       Paper trading     Email alert
+GET /signals/   GET /signals/      reads DB signals  sent by
+suppressed      {s}?live=false     every 5 min       check_signal_
+  DB signals    DB-first; live     _composite_       alerts() when
+  + Redis       fallback auto-     priority() uses   conviction
+  conv_gate     persists to DB     Ranking.score     tier = full
+  per symbol    source="db"|"live"                   or near
+```
+
+### Bugs fixed
+
+| # | Bug | Root cause | Fix |
+|---|-----|-----------|-----|
+| 1 | RS direct yfinance in signal-engine | `_fetch_relative_strength()` called `yf.Ticker().history()` directly, bypassing market-data. 100+ redundant yfinance calls per signal run (one per symbol). | New `GET /stocks/{s}/relative-strength` in market-data. Stock return from DB prices; ETF cached 4h. signal-engine calls this endpoint. |
+| 2 | Conviction gate regime mismatch | `check_signal_alerts()` called `_get_current_regime()` once per run and applied it to signals computed up to 10 min ago in a potentially different regime. ML threshold could change mid-session. | `_is_conviction_buy()` now reads `market_regime` from the signal's stored `reasons` dict. Gate always runs in the same regime as signal generation. |
+| 3 | ML gate contradicts signal fusion | Gate required `ml_probability > 0.65–0.78` for all BUY signals including those where `ml_weight=0` (AUC<0.50 — model was intentionally excluded from fusion). TA-only signals penalised by a model they deliberately ignored. | Gate reads `ml_weight` from reasons. `ml_weight=0` → ML layer soft-passes. Consistent with signal-engine fusion logic. |
+| 4 | `conv_gate` 7-day TTL too long | Stocks that fired gates on Monday still showed "Sent: Mon" on Friday after signal reversed to HOLD. False impression of active conviction. | TTL reduced from `86400×7` to `86400` (1 day). Expires with the trading session. |
+| 5 | New stock gap (Signal Filter vs detail page) | Stock detail page's live fallback computed signal but did not persist to DB. Signal Filter showed nothing until next scheduled batch run. | Live fallback now sets `persist=True`. First page view of any new stock stores the signal immediately. |
+
+### Invariants (post-fix)
+
+- **One RS source:** market-data `/relative-strength` owns all RS computation. No other service calls yfinance for RS data.
+- **One signal source:** DB `signals` table. Stock detail, Signal Filter, paper trading, conviction gate all read from it.
+- **Consistent regime:** conviction gate always evaluates in the regime stored in the signal's `reasons` dict.
+- **Consistent ML weight:** conviction ML layer mirrors the AUC-based weight from signal generation (zero weight → skip gate).
+- **Daily expiry:** `conv_gate` Redis keys expire each day so stale conviction status cannot linger across sessions.

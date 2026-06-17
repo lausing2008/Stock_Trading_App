@@ -412,6 +412,128 @@ WAIT is distinct from HOLD: HOLD applies to existing holders; WAIT tells prospec
 - **New AI provider:** add a branch in `ai_proxy.py` and a provider option in `settings.tsx`
 - **New user role:** add enum value to `UserRole` in `shared/db/models.py` and add role checks in `services/market-data/src/api/auth.py`
 
+## Signal pipeline — single source of truth (updated 2026-06-16)
+
+The signal pipeline is a 5-layer system spanning 5 services with one canonical
+write path and multiple read consumers, all drawing from the DB signals table.
+
+```
+External data sources
+  yfinance (via market-data ingest)         Anthropic (news sentiment, optional)
+       │                                              │
+       ▼                                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                         market-data service                         │
+│                                                                     │
+│  Scheduled every 5 min during market hours via APScheduler          │
+│                                                                     │
+│  ingest_universe(symbols)                                           │
+│    └─ yfinance OHLCV → DB prices table (TimeFrame.D1, TimeFrame.5M) │
+│                                                                     │
+│  GET /stocks/{symbol}/relative-strength   ← single RS source        │
+│    ├─ stock 20d return: from DB prices (no yfinance call)            │
+│    ├─ sector ETF: yfinance, cached 4h per ticker in Redis            │
+│    └─ full result: cached 1h per symbol in Redis                     │
+│                                                                     │
+│  check_signal_alerts()  (runs after every signal refresh)           │
+│    ├─ reads: DB signal.reasons  (stored market_regime, ml_weight)   │
+│    ├─ runs: _is_conviction_buy(signal_data, kscore)                 │
+│    │    Layer 2: K-Score ≥ 55                                       │
+│    │    Layer 4a: Uptrend (SMA50/200, GROWTH-aware)                 │
+│    │    Layer 4b: RSI 45-72 (SWING) / 50-85 (GROWTH)               │
+│    │    Layer 4c: MACD hist>0 OR rising OR crossover  [soft]        │
+│    │    Layer 4d: OBV bullish                          [soft]        │
+│    │    Layer 4e: ADX > 25                             [soft]        │
+│    │    Layer 5:  ML prob > regime threshold           [soft]        │
+│    │              (skipped if ml_weight=0 — AUC<0.50 model)         │
+│    │    Regime: reads market_regime from stored signal.reasons        │
+│    │            (same context as signal generation — no live fetch)  │
+│    ├─ writes: Redis conv_gate:{symbol}:{style}  TTL 1 day           │
+│    └─ sends: email alert if conviction tier = full | near            │
+└─────────────────────────────────────────────────────────────────────┘
+       │  POST /signals/refresh?market={US|HK}
+       ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        signal-engine service                        │
+│                                                                     │
+│  generate_all_signals(symbol)  — called once per symbol             │
+│    All data fetched via internal HTTP (no direct external calls):   │
+│                                                                     │
+│    ┌── market-data service ─────────────────────────────────────┐  │
+│    │  GET /stocks/{symbol}/prices?timeframe=1d&limit=400        │  │
+│    │  GET /stocks/{symbol}/relative-strength  (RS score)        │  │
+│    │  GET /stocks/fear_greed            (market regime)         │  │
+│    │  GET /stocks/market_breadth                                │  │
+│    │  GET /stocks/{symbol}/fundamentals (earnings/short int)    │  │
+│    │  GET /stocks/{symbol}/news/sentiment                       │  │
+│    │  GET /stocks/{symbol}/options-flow                         │  │
+│    └────────────────────────────────────────────────────────────┘  │
+│    ┌── ml-prediction service ──────────────────────────────────┐   │
+│    │  POST /ml/predict_ensemble_three  (XGB+LGB+RF ensemble)   │   │
+│    └────────────────────────────────────────────────────────────┘   │
+│    ┌── ranking-engine service ─────────────────────────────────┐   │
+│    │  GET /rankings/{symbol}  (K-Score)                        │   │
+│    └────────────────────────────────────────────────────────────┘   │
+│    ┌── technical-analysis service ─────────────────────────────┐   │
+│    │  GET /ta/{symbol}/patterns                                │   │
+│    └────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  Fusion per horizon (SHORT / SWING / LONG / GROWTH):               │
+│    fused_prob = ml_weight × ml_prob + (1 - ml_weight) × ta_prob    │
+│    ml_weight = f(AUC): 0% at AUC<0.50, ramp to 75% at AUC=0.70+   │
+│    Apply 13+ compression/boost filters → BUY/HOLD/WAIT/SELL        │
+│                                                                     │
+│  reasons JSON stored per signal:                                    │
+│    market_regime, ml_weight, ml_probability, ml_test_auc,          │
+│    rsi, macd_hist, macd_rising, obv_trend_bullish, adx,            │
+│    sma50_above_sma200, trend_above_sma50, rs_score, rs_rank,       │
+│    weekly_alignment, breadth_pct, active_patterns, + 35 more       │
+│                                                                     │
+│  _bulk_persist(symbols):                                            │
+│    INSERT if signal type changed OR new calendar day               │
+│    source = "db" when reading stored; "live" when recomputed        │
+│    live fallback auto-persists (no stored signals → persist=True)   │
+└─────────────────────────────────────────────────────────────────────┘
+       │  INSERT INTO signals
+       ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     DB: signals table (canonical)                   │
+│  stock_id · ts · signal · horizon · confidence                      │
+│  bullish_probability · reasons (JSON ~3KB) · source                 │
+└──────────┬──────────────────────────────────────────────────────────┘
+           │
+    ┌──────┴────────────────────────────────────────────┐
+    │                                                   │
+    ▼                                                   ▼
+Signal Filter Monitor                        Stock detail page
+  GET /signals/suppressed?style=GROWTH         GET /signals/{symbol}?live=false
+  reads DB signals table                         live=false → DB-first
+  reads Redis conv_gate per symbol               fallback → live compute + persist
+  shows per-layer conviction status              source="db"|"live" in response
+  shows suppression conditions                   Conviction Gate panel uses
+                                                 stored reasons (market_regime,
+    ▼                                            ml_weight, all indicators)
+Paper trading engine
+  reads DB signals every 5 min
+  _composite_priority() uses Ranking.score
+  entries gated by regime + conviction
+
+    ▼
+Email alert
+  sent by check_signal_alerts()
+  conviction gate: "full" (all pass) or
+  "near" (exactly 1 soft failure)
+```
+
+**Key invariants (enforced 2026-06-16):**
+- All RS data flows through market-data `/relative-strength` — one yfinance dependency point for ETFs
+- Conviction gate regime = stored regime at signal generation time (never live-fetched for BUY gate)
+- ML gate skipped (soft pass) when `ml_weight=0` — consistent with how the signal was generated
+- `conv_gate` Redis TTL = 1 day (expires with trading session)
+- New stocks auto-persist on first page view — Signal Filter and stock detail always consistent
+
+---
+
 ## Scaling notes
 
 - **Horizontal:** each service scales independently; Fargate task count per service is a Terraform variable
