@@ -360,7 +360,7 @@ export const api = {
 
   // WF-2 Paper Portfolio
   paperList: () => request<PaperPortfolioListItem[]>('/paper-portfolio/list'),
-  paperCreate: (body: { name: string; trading_style: string; initial_capital: number }) =>
+  paperCreate: (body: { name: string; trading_style: string; market?: string; initial_capital: number }) =>
     request<{ ok: boolean; portfolio_id: number; name: string }>('/paper-portfolio/create', { method: 'POST', body: JSON.stringify(body) }),
   paperCompare: (days = 180) => request<PaperCompareData[]>(`/paper-portfolio/compare?days=${days}`),
   paperSummary: (portfolioId?: number | null) => {
@@ -1026,6 +1026,7 @@ export type PaperPortfolioListItem = {
   id: number;
   name: string;
   trading_style: string;
+  market: string;
   current_equity: number;
   initial_capital: number;
   total_return_pct: number;

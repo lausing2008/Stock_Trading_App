@@ -769,6 +769,7 @@ def list_portfolios(
             "id": p.id,
             "name": p.name,
             "trading_style": p.config.get("trading_style", "GROWTH"),
+            "market": p.config.get("market", "US"),
             "current_equity": round(equity, 2),
             "initial_capital": p.initial_capital,
             "total_return_pct": round((equity / p.initial_capital - 1) * 100, 2),
@@ -860,15 +861,18 @@ def create_portfolio(
     from services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
     name = str(body.get("name", "Paper Portfolio")).strip() or "Paper Portfolio"
     style = str(body.get("trading_style", "GROWTH")).upper()
+    market = str(body.get("market", "US")).upper()
     initial_capital = float(body.get("initial_capital", 100_000))
 
     if initial_capital <= 0:
         raise HTTPException(status_code=400, detail="initial_capital must be > 0")
     if style not in ("SWING", "GROWTH", "LONG", "SHORT"):
         raise HTTPException(status_code=400, detail="trading_style must be SWING, GROWTH, LONG, or SHORT")
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail="market must be US or HK")
 
     # PT-H1: Seed full config from engine defaults so new portfolios are always correct
-    cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {}), "trading_style": style}
+    cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {}), "trading_style": style, "market": market}
     p = PaperPortfolio(
         name=name,
         initial_capital=initial_capital,

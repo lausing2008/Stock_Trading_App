@@ -329,12 +329,19 @@ function PortfolioCard({
           position: 'absolute', top: 8, right: 8, fontSize: 13, color: '#f59e0b',
         }}>★</span>
       )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{
           fontSize: 10, fontWeight: 700, color: styleColor,
           background: styleColor + '22', border: `1px solid ${styleColor}44`,
           borderRadius: 4, padding: '2px 7px',
         }}>{portfolio.trading_style}</span>
+        <span style={{
+          fontSize: 10, fontWeight: 700,
+          color: portfolio.market === 'HK' ? '#fb923c' : '#22d3ee',
+          background: portfolio.market === 'HK' ? 'rgba(251,146,60,0.12)' : 'rgba(34,211,238,0.1)',
+          border: `1px solid ${portfolio.market === 'HK' ? 'rgba(251,146,60,0.3)' : 'rgba(34,211,238,0.25)'}`,
+          borderRadius: 4, padding: '2px 7px',
+        }}>{portfolio.market ?? 'US'}</span>
         <span style={{ fontSize: 10, color: stateColor, fontWeight: 600 }}>● {state}</span>
       </div>
       <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -428,6 +435,7 @@ function CompareEquityChart({ data }: { data: PaperCompareData[] }) {
 function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('');
   const [style, setStyle] = useState('SWING');
+  const [market, setMarket] = useState('US');
   const [capital, setCapital] = useState('100000');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
@@ -438,7 +446,7 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
     if (isNaN(cap) || cap <= 0) { setErr('Capital must be > 0'); return; }
     setSaving(true); setErr('');
     try {
-      await api.paperCreate({ name: name.trim(), trading_style: style, initial_capital: cap });
+      await api.paperCreate({ name: name.trim(), trading_style: style, market, initial_capital: cap });
       onCreated();
       onClose();
     } catch (e: any) {
@@ -476,6 +484,13 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
               <option value="SWING">SWING — medium-term momentum</option>
               <option value="GROWTH">GROWTH — high-volatility momentum</option>
               <option value="LONG">LONG — trend-following long-term</option>
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 5 }}>Market</div>
+            <select value={market} onChange={e => setMarket(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+              <option value="US">US — NYSE / NASDAQ</option>
+              <option value="HK">HK — Hong Kong Exchange</option>
             </select>
           </div>
           <div>
@@ -1022,31 +1037,34 @@ export default function PaperPortfolioPage() {
           </div>
         )}
 
-        {/* Multi-portfolio comparison grid */}
-        {multiPortfolio && (
-          <div style={{ marginBottom: 24 }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-              {portfolioList.map(p => (
-                <PortfolioCard
-                  key={p.id}
-                  portfolio={p}
-                  selected={p.id === selectedPortfolioId}
-                  isBestSharpe={p.id === bestSharpeId}
-                  onSelect={() => { setSelectedPortfolioId(p.id); setTab('Positions'); setTradesPage(1); setDecPage(1); }}
-                />
-              ))}
-            </div>
-            {compareData && compareData.some(d => d.curve.length > 0) && (
-              <div style={{ background: '#0f172a', borderRadius: 10, border: '1px solid #1e293b', padding: '14px 12px' }}>
-                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>Normalized return % — all portfolios vs SPY</div>
-                <CompareEquityChart data={compareData} />
-              </div>
-            )}
-            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, marginTop: 4 }}>
-              Click a portfolio card to view its detail below
-            </div>
+        {/* Portfolio selector — always visible */}
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: 10 }}>
+            Portfolios
           </div>
-        )}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: multiPortfolio ? 16 : 0 }}>
+            {portfolioList.map(p => (
+              <PortfolioCard
+                key={p.id}
+                portfolio={p}
+                selected={p.id === selectedPortfolioId}
+                isBestSharpe={p.id === bestSharpeId}
+                onSelect={() => { setSelectedPortfolioId(p.id); setTab('Positions'); setTradesPage(1); setDecPage(1); }}
+              />
+            ))}
+          </div>
+          {multiPortfolio && compareData && compareData.some(d => d.curve.length > 0) && (
+            <div style={{ background: '#0f172a', borderRadius: 10, border: '1px solid #1e293b', padding: '14px 12px' }}>
+              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>Normalized return % — all portfolios vs SPY</div>
+              <CompareEquityChart data={compareData} />
+            </div>
+          )}
+          {multiPortfolio && (
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
+              Click a portfolio card to switch view
+            </div>
+          )}
+        </div>
 
         {showCreateModal && (
           <CreatePortfolioModal
