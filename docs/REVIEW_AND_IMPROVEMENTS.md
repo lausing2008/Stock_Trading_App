@@ -1,9 +1,9 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-17 (SA-29 — weekly RSI/trend as ML features; BUG-2 — jose missing from 4 services; INT-8 — forward return tracking + research alignment; TA weight calibration post-SA-28)  
+**Last updated:** 2026-06-17 (SA-30 — 3-pillar gate for SWING/LONG; SA-29 — weekly RSI/trend as ML features; tune_all launched; BUG-2 — jose missing from 4 services; INT-8 — research alignment panel in Signal Filter)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 9.2 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 — alert/UX improvements shipped 2026-06-10)*
+**Overall rating:** 9.3 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 — SA-29/SA-30 + INT-8 research alignment)*
 
 ---
 
@@ -86,6 +86,12 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-10 | **Add to Radar button on Opportunities** — 📡 button per stock card; adds symbol to "Radar" watchlist (auto-created if missing); already-added stocks show as checked | frontend/opportunities.tsx | ✅ Done |
 | 2026-06-10 | **Admin health — SIGNAL REFRESH HEALTH** — BUY/SELL/WAIT/HOLD distribution, bull/bear ratio, fresh/stale counts, last US/HK refresh timestamps | frontend/admin-health.tsx | ✅ Done |
 | 2026-06-10 | **Admin health — ML TRAINING HEALTH** — Avg AUC, good/weak/overfit model counts, last US/HK retrain timestamps with pass/fail badges | frontend/admin-health.tsx | ✅ Done |
+| 2026-06-17 | **SA-29: Weekly RSI + weekly trend as ML features** — 44 features total; resample daily closes to weekly (W-FRI), compute RSI-14w and price vs 10-week SMA; forward-fill to daily; NaN-optional so short-history stocks not excluded | ml-prediction/builder.py | ✅ Done |
+| 2026-06-17 | **SA-30: Minimum 3-pillar gate for SWING/LONG** — SWING/LONG require ≥3 active pillars (trend, momentum, volume, structure ≥ 0.5) for BUY; 2-pillar signals get ×0.70 compress (not hard cap); very high-confidence 2-pillar stocks (fused ≥ 0.714) still pass | signal-engine/signals.py | ✅ Done |
+| 2026-06-17 | **TA weight calibration post-SA-28** — ran POST /signals/calibrate_ta_weights; dominant predictors: macd_zero_cross, bullish_trend; classic indicators (golden cross, SMA stack, MACD strong) not predictive of 10d returns; wrote ta_weights.json | signal-engine | ✅ Done |
+| 2026-06-17 | **tune_all (Optuna) relaunched** — 60 trials × 140 symbols × 4 styles = 560 tune runs with new 44-feature models; runs ~3–5h per style on EC2 in background | ml-prediction | ✅ Scheduled |
+| 2026-06-17 | **INT-8: Research alignment panel in Signal Filter** — compact win-rate panel above the condition summary bar; shows historical BUY signal accuracy broken down by aligned/partial/divergent/no_research using 90d outcomes data; OutcomesSummary type extended with by_research_alignment + by_window | frontend/signal-filters.tsx + api.ts | ✅ Done |
+| 2026-06-17 | **BUG-2: jose missing from 4 containers** — installed python-jose[cryptography]==3.3.0 in ml-prediction, ranking-engine, portfolio-optimizer, technical-analysis; rebuilt all images; added to requirements.txt | services/*/requirements.txt | ✅ Done |
 
 ---
 
@@ -94,13 +100,13 @@ This document is the single source of truth for everything that was found, why i
 | Dimension | Score | Summary |
 |-----------|-------|---------|
 | Data pipeline | 8.5 / 10 | ↑ Data freshness chip (UI-09) + zero-vol filter + split-adjust + adj_close consistent |
-| ML methodology | 9.0 / 10 | ↑ SA-3 boolean regime flags + SA-5 weekly TA weight calibration + SA-8 34 features + Optuna + AUC floor |
-| Signal logic | 9.0 / 10 | ↑ SA-1 conflict weighting + SA-2 style thresholds + SA-7 regime earnings + S/R context + walk-forward |
+| ML methodology | 9.3 / 10 | ↑ SA-29 weekly RSI/trend features (44 total) + tune_all relaunched with new features |
+| Signal logic | 9.2 / 10 | ↑ SA-30 3-pillar gate for SWING/LONG + TA weight calibration (macd_zero_cross dominant) |
 | K-Score ranking | 8.2 / 10 | ↑ Falling knife gate + RSI curve + sector-relative peer scoring + peer comparison drawer |
 | Research engine | 7.5 / 10 | ↑ DCF valuation + sector-relative fundamentals + cache quality flag; Nginx 150s timeout fixed |
 | Frontend / UX | 9.5 / 10 | ↑ Per-horizon alerts + consensus indicator + Add to Radar + Outcomes tab + P&L heatmap + conviction screener |
 | Risk management | 8.5 / 10 | ↑ Portfolio beta + VaR + correlation + ATR position sizer + unrealized P&L + portfolio heatmap |
-| **Overall** | **9.2 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 — alert intelligence + UX 2026-06-10)* |
+| **Overall** | **9.3 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 — SA-29/SA-30/INT-8 2026-06-17)* |
 
 ---
 
