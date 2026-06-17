@@ -157,7 +157,7 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
                 pass
         r.setex(
             f"conv_gate:{symbol}:{style}",
-            86400 * 7,  # 7-day TTL
+            86400,  # 1-day TTL — expires with the trading day so stale conviction data doesn't persist
             json.dumps({
                 "sent": sent,
                 "passed": passed,
@@ -416,7 +416,7 @@ def _confluence_score_full(
     )
 
 
-def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str = "unknown") -> tuple[bool, str, list[str], list[str]]:
+def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str | None = None) -> tuple[bool, str, list[str], list[str]]:
     """Check all conviction layers for a BUY signal across all 4 framework layers.
 
     Returns (all_passed, conviction_tier, passed_layers, failed_layers).
@@ -431,13 +431,23 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         4c. MACD momentum           — histogram positive+rising OR zero-line crossover
         4d. Volume confirms         — OBV bullish
         4e. Trend has real strength — ADX > 25 (signals reliable only in trending market)
-    Layer 5 — ML confirms TA       : ML probability > 70%
+    Layer 5 — ML confirms TA       : ML probability > regime-adaptive threshold, but only
+                                     when the ML model actually contributed to the signal
+                                     (ml_weight > 0). If the model was a no-op (AUC < 0.50)
+                                     the gate soft-passes ML — consistent with signal generation.
+
+    Regime is read from the stored signal's reasons dict (the regime at generation time),
+    so conviction and signal generation always operate in the same market context.
 
     Disqualifiers (false-BUY flags from FEATURES.md — block even if all layers pass):
         • Bearish RSI divergence (price rising but momentum fading)
         • Stoch RSI overbought (RSI itself overextended)
     """
     reasons = signal_data.get("reasons") or {}
+
+    # Use the regime stored in the signal's reasons (same context as signal generation).
+    # Explicit `regime` override kept for backward-compat with callers that pass it.
+    effective_regime = regime if regime is not None else reasons.get("market_regime", "unknown")
     passed: list[str] = []
     failed: list[str] = []
 
@@ -522,13 +532,21 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         adx = reasons.get("adx", 0)
         failed.append(f"ADX {float(adx):.0f} < 25: market choppy, signals unreliable")
 
-    # Layer 5 — ML model agrees with TA (regime-adaptive threshold — SA-12)
-    thresholds = _REGIME_THRESHOLDS.get(regime, _REGIME_THRESHOLDS["unknown"])
+    # Layer 5 — ML confirms TA (regime-adaptive threshold, AUC-aware — SA-12)
+    # Single source of truth: use the regime AND ml_weight stored in the signal's reasons
+    # so this gate is always consistent with how the signal was generated.
+    thresholds  = _REGIME_THRESHOLDS.get(effective_regime, _REGIME_THRESHOLDS["unknown"])
     ml_threshold = thresholds["ml"]
-    tier_label = thresholds["tier"]
-    ml_prob = reasons.get("ml_probability")
+    tier_label   = thresholds["tier"]
+    ml_prob      = reasons.get("ml_probability")
+    ml_weight    = float(reasons.get("ml_weight") or 0.0)
     if ml_prob is None:
+        # No model at all — signal is TA-only (soft pass)
         passed.append(f"ML: no model trained yet — TA-only signal (soft pass) [{tier_label} regime]")
+    elif ml_weight == 0.0:
+        # Model trained but AUC < 0.50 (inverse/random) — signal-engine assigned zero weight;
+        # gate mirrors that: model had no say, so don't penalise here (soft pass)
+        passed.append(f"ML: model AUC below random — zero weight in fusion, gate skipped (soft pass) [{tier_label} regime]")
     elif float(ml_prob) > ml_threshold:
         passed.append(f"ML: {float(ml_prob) * 100:.0f}% bullish probability (threshold {ml_threshold * 100:.0f}% for {tier_label} regime)")
     else:
@@ -849,7 +867,9 @@ def check_signal_alerts() -> None:
             except Exception:
                 pass
 
-            # SA-12: read regime once for the entire alert run
+            # Current live regime — used only for non-BUY confidence gate (lighter path).
+            # The BUY conviction gate now reads regime from each signal's stored reasons dict
+            # so gate and signal generation always operate in the same market context.
             current_regime = _get_current_regime()
             regime_thresholds = _REGIME_THRESHOLDS.get(current_regime, _REGIME_THRESHOLDS["unknown"])
 
@@ -872,7 +892,7 @@ def check_signal_alerts() -> None:
                     if current == "BUY":
                         sig_data = signal_details.get(key) or {}
                         all_pass, _tier, passed, failed = _is_conviction_buy(
-                            sig_data, kscore=kscores.get(alert.symbol), regime=current_regime
+                            sig_data, kscore=kscores.get(alert.symbol)
                         )
                         db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
                         _store_conviction(alert.symbol, style, True, passed, failed, current, sent_at=db_sent_at)
@@ -921,7 +941,7 @@ def check_signal_alerts() -> None:
                     if current == "BUY":
                         # Full 4-layer conviction gate (CB-4: "near" tier allows 1 soft fail)
                         all_pass, conviction_tier, passed, failed = _is_conviction_buy(
-                            sig_data, kscore=kscores.get(alert.symbol), regime=current_regime
+                            sig_data, kscore=kscores.get(alert.symbol)
                         )
                         if not all_pass:
                             log.info(
@@ -934,9 +954,10 @@ def check_signal_alerts() -> None:
                         conviction_passed = passed
                         near_conviction = conviction_tier == "near"
                         near_conviction_failed = [f for f in failed if near_conviction]
+                        sig_regime = (signal_details.get(key) or {}).get("reasons", {}).get("market_regime", "unknown")
                         log.info(
                             "signal_alert.conviction_met", symbol=alert.symbol,
-                            tier=conviction_tier, passed=passed, regime=current_regime,
+                            tier=conviction_tier, passed=passed, regime=sig_regime,
                         )
                     else:
                         # Non-BUY bullish improvement (e.g. WAIT→HOLD) — lighter gate:

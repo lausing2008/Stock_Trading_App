@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5199,6 +5199,67 @@ const ITEMS: Item[] = [
     what: 'Stock detail showed signal direction (BUY/HOLD/etc.) and confidence but gave no insight into which specific gate layers were passing or failing. You had to cross-reference the Signal Filter Monitor separately.',
     fix: 'Frontend-only IIFE below SignalCard: mirrors the Python _is_conviction_buy logic exactly (same thresholds, same soft/hard classification, same GROWTH-aware RSI range) using signal.reasons that is already included in the signal API response.',
   },
+  // ── Tier 29 — Signal Pipeline Single Source of Truth (2026-06-16) ─────────
+  {
+    id: 'rs-centralised-market-data',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — market-data routes.py: new GET /stocks/{symbol}/relative-strength endpoint. Uses DB prices for the stock\'s 20-day return (no yfinance call) and yfinance only for the sector ETF — cached 4h per ticker in Redis (stockai:etf_rs:{ticker}). Full result cached 1h per symbol (stockai:rs:{symbol}). _SECTOR_ETF_MAP defined once in market-data, removed from signal-engine. signals.py _fetch_relative_strength() now calls this endpoint via HTTP instead of importing yfinance directly — 20 lines of direct yfinance code removed from signal-engine.',
+    tier: 29, severity: 'high',
+    title: 'Centralise RS fetch in market-data — remove direct yfinance from signal-engine',
+    file: 'services/market-data/src/api/routes.py + services/signal-engine/src/generators/signals.py',
+    effort: '1 hour',
+    impact: 'High — signal-engine had a direct yfinance import for relative strength that bypassed the entire market-data ingest pipeline. Consequences: (1) 2+ second yfinance call per symbol per signal generation cycle; (2) RS score could diverge from market-data ingested prices since it fetched independently; (3) ETF tickers fetched once per symbol per run — with 100+ symbols, that\'s 100+ redundant yfinance calls for XLK/XLV/etc. New design: stock return uses DB prices (fast, consistent), ETF return shared across all symbols in same sector (4h cache), full RS result cached 1h per symbol.',
+    what: 'signals.py _fetch_relative_strength() used yf.Ticker(symbol).history() and yf.Ticker(etf_ticker).history() directly — adding a hidden yfinance dependency to a service that should only consume internal APIs.',
+    fix: 'New market-data endpoint owns all RS computation. signal-engine calls it via HTTP like all other data fetches. ETF data is now fetched once per 4 hours per sector, not once per symbol per signal run.',
+  },
+  {
+    id: 'conviction-gate-stored-regime',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — scheduler.py _is_conviction_buy(): regime parameter changed from required to optional (default None). When None, reads market_regime from the signal\'s reasons dict (stored at signal generation time). check_signal_alerts() no longer passes current_regime to _is_conviction_buy — the gate now runs in the same regime context as when the signal was generated. current_regime still fetched once per run but only used for the lighter non-BUY confidence gate path.',
+    tier: 29, severity: 'high',
+    title: 'Conviction gate uses signal\'s stored regime — eliminates live-regime vs stored-signal mismatch',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '30 minutes',
+    impact: 'High — the conviction gate was reading the DB signal (computed 5-10 min ago in regime X) but then checking it against the live current regime (which could have flipped to Y between signal generation and gate evaluation). In a volatile session where S&P crosses its 200-day MA, the regime flips bull↔bear, changing ML thresholds from 0.65 to 0.78. A signal generated 8 minutes ago at bull thresholds could fail or pass depending on timing — not on the signal\'s actual quality. Now both sides of the comparison use the same regime snapshot.',
+    what: 'check_signal_alerts() called _get_current_regime() once for the whole run and passed it to every _is_conviction_buy() call. The signal\'s reasons dict already stored market_regime at generation time — it was simply ignored.',
+    fix: '_is_conviction_buy() reads reasons.get("market_regime", "unknown") internally. regime parameter is now an optional override for backward-compat (used only in tests and the frontend panel).',
+  },
+  {
+    id: 'conviction-gate-ml-weight',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — scheduler.py _is_conviction_buy() Layer 5: reads ml_weight from the signal\'s reasons dict (stored by signal generation). If ml_weight == 0 (model AUC < 0.50 — inverse/random model that was intentionally zeroed out in fusion), the ML gate soft-passes instead of requiring ml_probability > regime_threshold. Mirrors the signal generation logic exactly: if the model had no say in the signal (weight=0), the gate does not penalise for its raw probability. Frontend conviction gate panel ([symbol].tsx) also updated to mirror this: mlWeight===0 shows "AUC<0.50 — zero weight, gate skipped" and counts as a pass.',
+    tier: 29, severity: 'high',
+    title: 'Conviction gate ML layer consistent with signal generation — AUC-aware skip when model was zeroed',
+    file: 'services/market-data/src/services/scheduler.py + frontend/src/pages/stock/[symbol].tsx',
+    effort: '30 minutes',
+    impact: 'High — the old gate required ml_probability > 0.65-0.78 (regime-dependent) for every BUY, regardless of whether the ML model actually contributed to the signal. A symbol with AUC=0.48 (inverse model) would have ml_weight=0% in signal generation (ML completely ignored, signal is pure TA) but then still fail the ML conviction gate if bullish_probability < 0.65. This meant TA-only signals were penalised for the probability output of a model they deliberately excluded. Now: ml_weight=0 → gate soft-passes ML layer.',
+    what: 'Fixed threshold 0.65-0.78 applied to all signals including those where ML had zero fusion weight.',
+    fix: 'Gate reads ml_weight from reasons. ml_weight=0 → soft pass (model was a no-op in generation, gate mirrors that). ml_weight > 0 → apply regime-adaptive threshold as before.',
+  },
+  {
+    id: 'conv-gate-ttl-1day',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — scheduler.py _store_conviction(): TTL changed from 86400×7 (7 days) to 86400 (1 day). conv_gate:{symbol}:{style} Redis keys now expire at end of trading day, preventing stale "Sent: Jun 10" timestamps from appearing days later in the Signal Filter after a signal has changed direction.',
+    tier: 29, severity: 'medium',
+    title: 'conv_gate Redis TTL reduced 7 days → 1 day — stale conviction status expires with the trading day',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '5 minutes',
+    impact: 'Medium — the 7-day TTL meant a stock that fired a conviction gate email on Monday and then deteriorated to HOLD by Tuesday would still show green "Sent: Mon" in the Signal Filter on Friday. This gave a false impression of active conviction when the underlying signal had long since reversed. With a 1-day TTL, the conviction display resets daily and is only shown for stocks that actively passed the gate today.',
+    what: 'conv_gate:{symbol}:{style} persisted for 7 calendar days regardless of signal changes.',
+    fix: 'setex TTL changed from 86400 * 7 to 86400.',
+  },
+  {
+    id: 'signal-auto-persist-live-fallback',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-16 — signal-engine routes.py GET /{symbol} endpoint: when no stored signals exist for a symbol and live=false is requested (the default), instead of silently falling through to live computation and returning without persisting, the endpoint now sets persist=True for the live fallback path. This ensures the first page view of any new stock also stores the signal to DB. Result also includes a source field: "db" for stored signals, "live" for freshly computed (including the auto-persist fallback). Previously, opening a new stock\'s detail page would compute and display the signal but the Signal Filter would continue showing nothing for that symbol until the next scheduled batch run.',
+    tier: 29, severity: 'medium',
+    title: 'Signal auto-persist on first view — new stocks appear in Signal Filter after first page visit',
+    file: 'services/signal-engine/src/api/routes.py',
+    effort: '20 minutes',
+    impact: 'Medium — when a new stock was added (e.g., TER today), the detail page correctly fell back to live generation and showed BUY GROWTH, but the signal was not stored to DB. Signal Filter showed nothing for TER despite the conviction gate having already fired and sent an email. Now the first detail page view auto-persists the signal so both views are consistent immediately.',
+    what: 'live fallback silently computed but did not persist. Signal Filter missed any stock whose batch signal run hadn\'t happened yet.',
+    fix: 'persist=True set automatically when falling through the no-stored-signals path. source field added to all responses so the UI can differentiate.',
+  },
 ];
 
 
@@ -5238,6 +5299,7 @@ const TIER_LABEL: Record<Tier, string> = {
   26: 'Tier 26 — Full Risk Profile + Squeeze Score (2026-06-16)',
   27: 'Tier 27 — Signal Gate Tuning & Backtest Tool (2026-06-16)',
   28: 'Tier 28 — Kelly Criterion + Conviction Gate on Stock Detail (2026-06-16)',
+  29: 'Tier 29 — Signal Pipeline Single Source of Truth (2026-06-16)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5269,6 +5331,7 @@ const TIER_COLOR: Record<Tier, string> = {
   26: '#38bdf8',
   27: '#84cc16',
   28: '#e879f9',
+  29: '#38bdf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5340,7 +5403,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -5403,7 +5466,7 @@ export default function ImprovementsPage() {
           }}
         >
           <option value={0} style={{ background: '#0f172a', color: '#cbd5e1' }}>All tiers</option>
-          {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28] as Tier[]).map(t => (
+          {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29] as Tier[]).map(t => (
             <option key={t} value={t} style={{ background: '#0f172a', color: '#cbd5e1' }}>
               {TIER_LABEL[t]}
             </option>
@@ -5592,6 +5655,7 @@ export default function ImprovementsPage() {
           Tier 21 (2026-06-15/16): Audit wave 3 — 13 items: AUTH-02 (reset-password rate limiting); AUTH-08 (research engine GET routes auth); RISK-1 (null-sector sector cap bypass); RISK-3 (per-sector position count cap); F-2 (force-ingest two-transaction gap → atomic DELETE+INSERT); F-3 (auto_adjust=False→True mismatch in live price fetch); STALE-001 (model staleness detection + trained_at in bundle); RACE-001 (atomic ML model write via os.replace); STY-001 (TA weights wired into _ta_score, volume_surge→volume_z rename); REG-002 (SHORT style breadth_compression=0.90); CVG-002 (pillar gate None sentinel with warning); FIN-07 (min_shares guard); live price cache 1-min refresh (routes.py refresh_live_price_cache() + scheduler job).
           Tier 22 (2026-06-16): Pattern Alert System — (1) Recurring alerts: price_alerts.recurring + last_sent_at columns (migration 007); check_technical_alerts() same-day dedup (_already_fired_today); recurring alerts stamp last_sent_at instead of triggered=True; once/↻ recurring toggle on alert forms. (2) Double bottom recency fix: b2_idx &gt;= len(window)-10 guard prevents stale W-pattern firing daily. (3) Bulk pattern alert: BulkPatternAlertCard on /alerts — pick watchlist + pattern + mode, creates alerts for all stocks in one click. (4) System health: MORNING DIGESTS section (09:00 ET / 08:55 HKT), SCHEDULE REFERENCE card with full US/HK timetable; JOB_META expanded from 8 to 22 entries.
           Tier 23 (2026-06-15/16): CB-W1 paper trading signal cutoff bug — 26h window excluded all Friday signals every Monday (engine ran all week with 0 trades); changed to 5-day window + latest_signal_ts_subq subquery. ML-FUND-1 fundamental signals — Fundamental DB table (16 fields, auto-upserted on every /fundamentals view); 8 new FEATURE_COLUMNS: revenue_growth, earnings_growth, gross_margin, return_on_equity, fcf_yield, short_ratio, recommendation_mean, price_to_book (34→42 features total). ML-FUND-NaN critical fix — mask was dropping all rows with NaN fundamentals (0 clean samples); changed to only require non-fundamental columns to be non-null so XGBoost handles missing values natively. All 138 symbols retrained with 42-feature pipeline on 2026-06-16.
+          Tier 29 (2026-06-16): Signal pipeline single source of truth — architectural review and consolidation of the 5-service signal pipeline: (1) RS centralised in market-data: new GET /stocks/&#123;symbol&#125;/relative-strength endpoint — stock 20d return from DB prices, ETF cached 4h per ticker in Redis; signal-engine _fetch_relative_strength() calls this endpoint instead of calling yfinance directly (20 lines of yfinance removed from signal-engine). (2) Conviction gate uses stored regime: _is_conviction_buy() now reads market_regime from the signal's reasons dict (the regime at generation time) instead of calling _get_current_regime() live — gate and signal always operate in the same market context. (3) ML gate consistent with fusion: reads ml_weight from reasons; if ml_weight=0 (AUC below random, model zeroed in fusion), ML gate soft-passes — no longer penalises TA-only signals for a model they deliberately excluded. (4) conv_gate Redis TTL: 7 days → 1 day — stale conviction status expires with the trading day. (5) Signal auto-persist on first view: stock detail page live-computation fallback (no stored signals yet) now auto-persists to DB so Signal Filter immediately shows the new stock; source field added to all signal responses ("db" vs "live"). Architecture graph: yfinance prices → market-data DB → POST /signals/refresh (scheduler every 5min) → signal-engine generate_all_signals() → 12 shared data fetches (TA/ML/RS/news/options/rankings) → reasons JSON + confidence → signals DB table → [Signal Filter reads DB] + [conviction gate reads DB reasons with stored regime] + [paper trading reads DB] + [stock detail reads DB first, live fallback auto-persists]. Single write path; multiple read consumers all from DB.
           Tier 28 (2026-06-16): Kelly Criterion + Conviction Gate on stock detail — (1) Kelly Criterion sizing hint added below ML probability bar: f = (p × b − q) / b using bullish_probability and 2.5:1 R:R; full-Kelly capped at 25%, half-Kelly shown as recommended; color-coded green/amber/gray; negative Kelly shows "edge insufficient". (2) Conviction Gate panel below each horizon signal card mirrors the full Python _is_conviction_buy logic (7 layers: K-Score hard, Uptrend hard, RSI hard, MACD soft, OBV soft, ADX soft, ML soft); style-aware RSI range (45-72 SWING, 50-85 GROWTH); regime-adaptive ML threshold (65%-78%); per-layer ✓/✗ with soft/hard badge; overall verdict FULL / NEAR / FAILED; disqualifier checks (bearish RSI divergence, Stoch RSI overbought); updates dynamically when switching horizon tabs. No new API calls.
           Tier 27 (2026-06-16): Signal gate tuning — (1) Improvements tracker tier filter replaced 27 overflowing buttons with a <code>&lt;select&gt;</code> dropdown. (2) MACD gate condition relaxed: old = (hist &gt; 0 AND rising) OR crossover; new = hist &gt; 0 OR rising OR crossover — passes if any one is true, fails only when histogram is both negative AND falling. (3) MACD reclassified as soft failure (joins OBV, ADX, ML in _SOFT_LAYER_KEYWORDS) — alone it triggers "near" conviction tier and still fires the alert; combined with another soft fail it blocks as before. (4) GROWTH RSI lower bound: 55 → 50. (5) Gate backtest endpoint: GET /signals/gate_backtest replays old vs new gate logic against historical BUY signals and reports win-rate by gate version and by specific change.
           Tier 26 (2026-06-16): Sortino Ratio + Max Drawdown on stock detail — riskMetrics1y calculates Sharpe/Sortino/MaxDD from 1Y price window in one IIFE; three compact color-coded cards in header. Squeeze Score — 3-component score (40+30+30) from short_percent_of_float, short_ratio, and optionsFlow.cp_ratio + whale_count; badge shown in Short Interest header: 🔥 HIGH (≥70), ⚡ MODERATE (≥40), no badge below 40. No new API calls — uses already-loaded fundamentals and options data.

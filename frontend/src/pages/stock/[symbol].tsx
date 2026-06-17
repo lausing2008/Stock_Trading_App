@@ -1564,6 +1564,9 @@ Return ONLY valid JSON — no markdown, no prose:
                       const mlThreshMap: Record<string, number> = { bull: 0.65, neutral: 0.70, high_vol: 0.78, bear: 0.78 };
                       const mlThresh = mlThreshMap[regime] ?? 0.70;
                       const mlProb = r.ml_probability != null ? Number(r.ml_probability) : null;
+                      // ml_weight=0 means model AUC<0.50 — signal-engine gave it zero weight,
+                      // so the gate mirrors that: soft-pass ML (same logic as Python gate)
+                      const mlWeight = r.ml_weight != null ? Number(r.ml_weight) : null;
                       const rsi = r.rsi != null ? Number(r.rsi) : null;
                       const rsiLo = selectedHorizon === 'GROWTH' ? 50 : 45;
                       const rsiHi = selectedHorizon === 'GROWTH' ? 85 : 72;
@@ -1577,7 +1580,7 @@ Return ONLY valid JSON — no markdown, no prose:
                         { key: 'mac', label: 'MACD',     ok: macdHist > 0 || macdRising || macdCross, detail: `hist ${macdHist.toFixed(3)} ${macdRising ? '↑' : '↓'}`, soft: true },
                         { key: 'obv', label: 'OBV',      ok: Boolean(r.obv_trend_bullish), detail: Boolean(r.obv_trend_bullish) ? 'confirming' : 'not confirming', soft: true },
                         { key: 'adx', label: 'ADX',      ok: Boolean(r.adx_trending), detail: r.adx != null ? `ADX ${Number(r.adx).toFixed(0)} (min 25)` : 'n/a', soft: true },
-                        { key: 'ml',  label: 'ML Model', ok: mlProb == null || mlProb > mlThresh, detail: mlProb != null ? `${(mlProb*100).toFixed(0)}% vs ${(mlThresh*100).toFixed(0)}% (${regime})` : 'no model', soft: true },
+                        { key: 'ml',  label: 'ML Model', ok: mlProb == null || mlWeight === 0 || mlProb > mlThresh, detail: mlProb != null ? (mlWeight === 0 ? `AUC<0.50 — zero weight, gate skipped` : `${(mlProb*100).toFixed(0)}% vs ${(mlThresh*100).toFixed(0)}% (${regime})`) : 'no model', soft: true },
                       ];
                       const failed = layers.filter(l => !l.ok);
                       const softFailed = failed.filter(l => l.soft);

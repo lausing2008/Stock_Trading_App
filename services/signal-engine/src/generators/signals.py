@@ -311,56 +311,28 @@ def _fetch_earnings_beat_rate(symbol: str) -> float | None:
 def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None, bool | None, float | None]:
     """Return (rs_score 0-100, rs_rank, sector_etf_above_sma50, stock_20d_ret) vs the stock's sector ETF.
 
-    Fetches the stock's sector from market-data, maps to the matching SPDR ETF
-    (or ^HSI for HK stocks), then computes the 20-day return ratio and whether
-    the ETF is currently above its 50-day SMA (SA-16 sector trend filter).
-    Returns (None, None, None, None) on any failure.
+    Delegates to market-data's /stocks/{symbol}/relative-strength endpoint which owns the
+    yfinance ETF fetches and caches results in Redis (1h per symbol, 4h per ETF ticker).
+    This makes market-data the single source of truth for RS data — no direct yfinance
+    calls from signal-engine.
     """
-    _SECTOR_ETF = {
-        "Technology": "XLK", "Health Care": "XLV", "Healthcare": "XLV",
-        "Financials": "XLF", "Financial Services": "XLF",
-        "Consumer Discretionary": "XLY", "Consumer Staples": "XLP",
-        "Energy": "XLE", "Utilities": "XLU", "Materials": "XLB",
-        "Industrials": "XLI", "Real Estate": "XLRE",
-        "Communication Services": "XLC", "Telecommunications": "XLC",
-    }
     try:
-        import yfinance as yf
-
-        url = f"{_settings.market_data_url}/stocks/{symbol}"
         with httpx.Client(timeout=8) as c:
-            r = c.get(url)
-            if r.status_code != 200:
-                return None, None, None, None
-        info = r.json()
-        market = info.get("market", "US")
-        sector = info.get("sector") or ""
-        etf_ticker = "^HSI" if str(market).upper() == "HK" else _SECTOR_ETF.get(sector, "SPY")
-
-        stock_hist = yf.Ticker(symbol).history(period="3mo")
-        etf_hist   = yf.Ticker(etf_ticker).history(period="3mo")
-        if stock_hist.empty or len(stock_hist) < 21:
+            r = c.get(f"{_settings.market_data_url}/stocks/{symbol}/relative-strength")
+        if r.status_code != 200:
             return None, None, None, None
-        if etf_hist.empty or len(etf_hist) < 21:
-            return None, None, None, None
-
-        stock_ret = float(stock_hist["Close"].iloc[-1] / stock_hist["Close"].iloc[-21] - 1)
-        etf_ret   = float(etf_hist["Close"].iloc[-1] / etf_hist["Close"].iloc[-21] - 1)
-        if abs(1 + etf_ret) < 0.01:
-            return None, None, None, None
-        rs_rank = (1 + stock_ret) / (1 + etf_ret)
-        rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
-        # SA-23: store absolute stock 20d return in reasons for floor check in compression gate
-        reasons_stock_ret = round(stock_ret * 100, 2)  # stored in reasons as stock_20d_return_pct
-
-        # SA-16: sector ETF trend — above 50-day SMA means sector is in an uptrend
-        etf_close = etf_hist["Close"]
-        etf_sma50 = etf_close.rolling(50).mean().iloc[-1] if len(etf_close) >= 50 else None
-        sector_etf_above_sma50: bool | None = None
-        if etf_sma50 is not None and not pd.isna(etf_sma50):
-            sector_etf_above_sma50 = bool(etf_close.iloc[-1] > etf_sma50)
-
-        return round(rs_score, 1), round(rs_rank, 4), sector_etf_above_sma50, round(stock_ret, 4)
+        d = r.json()
+        rs_score  = d.get("rs_score")
+        rs_rank   = d.get("rs_rank")
+        etf_above = d.get("sector_etf_above_sma50")
+        ret_pct   = d.get("stock_20d_return_pct")
+        stock_ret = ret_pct / 100.0 if ret_pct is not None else None
+        return (
+            float(rs_score)  if rs_score  is not None else None,
+            float(rs_rank)   if rs_rank   is not None else None,
+            bool(etf_above)  if etf_above is not None else None,
+            float(stock_ret) if stock_ret is not None else None,
+        )
     except Exception:
         return None, None, None, None
 

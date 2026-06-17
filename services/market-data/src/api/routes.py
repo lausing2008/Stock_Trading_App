@@ -1607,6 +1607,108 @@ def get_options_flow(symbol: str):
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
 
 
+# ── Per-symbol Relative Strength ─────────────────────────────────────────────
+
+_SECTOR_ETF_MAP: dict[str, str] = {
+    "Technology": "XLK", "Health Care": "XLV", "Healthcare": "XLV",
+    "Financials": "XLF", "Financial Services": "XLF",
+    "Consumer Discretionary": "XLY", "Consumer Staples": "XLP",
+    "Energy": "XLE", "Utilities": "XLU", "Materials": "XLB",
+    "Industrials": "XLI", "Real Estate": "XLRE",
+    "Communication Services": "XLC", "Telecommunications": "XLC",
+}
+_RS_TTL    = 3600      # 1h — refreshed each signal generation cycle
+_ETF_TTL   = 4 * 3600  # 4h — ETF data changes slowly
+
+
+@router.get("/{symbol}/relative-strength")
+def get_relative_strength(symbol: str, db: Session = Depends(get_session)):
+    """Return RS score vs sector ETF for a symbol.
+
+    Uses DB prices for the stock (20-day return) and yfinance for the sector ETF
+    (cached 4h in Redis so only one yfinance call per ETF ticker per session).
+    Full result cached 1h per symbol. Single source of truth for all signal consumers.
+    """
+    sym = symbol.upper()
+    rs_key = f"stockai:rs:{sym}"
+    try:
+        cached = _get_redis().get(rs_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    stock = db.execute(select(Stock).where(Stock.symbol == sym)).scalar_one_or_none()
+    if not stock:
+        raise HTTPException(404, f"Unknown symbol: {sym}")
+
+    # Stock 20-day return from DB prices (no yfinance call needed)
+    prices = db.execute(
+        select(Price.close, Price.ts)
+        .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1)
+        .order_by(Price.ts.desc())
+        .limit(21)
+    ).all()
+    if len(prices) < 21:
+        return {"symbol": sym, "rs_score": None, "rs_rank": None,
+                "sector_etf_above_sma50": None, "stock_20d_return_pct": None, "etf_ticker": None}
+
+    prices_sorted = sorted(prices, key=lambda r: r.ts)
+    stock_ret = float(prices_sorted[-1].close / prices_sorted[0].close - 1)
+
+    # Sector ETF — cached per ticker to avoid repeated yfinance calls across symbols
+    market = str(stock.market).upper() if stock.market else "US"
+    sector = stock.sector or ""
+    etf_ticker = "^HSI" if market == "HK" else _SECTOR_ETF_MAP.get(sector, "SPY")
+
+    etf_key = f"stockai:etf_rs:{etf_ticker}"
+    etf_data: dict | None = None
+    try:
+        cached_etf = _get_redis().get(etf_key)
+        if cached_etf:
+            etf_data = json.loads(cached_etf)
+    except Exception:
+        pass
+
+    if etf_data is None:
+        try:
+            import numpy as np
+            hist = yf.Ticker(etf_ticker).history(period="3mo")
+            if len(hist) >= 50:
+                etf_ret_val   = float(hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1)
+                etf_sma50_val = float(hist["Close"].rolling(50).mean().iloc[-1])
+                etf_above     = bool(hist["Close"].iloc[-1] > etf_sma50_val)
+                etf_data = {"ret": etf_ret_val, "above_sma50": etf_above}
+                try:
+                    _get_redis().setex(etf_key, _ETF_TTL, json.dumps(etf_data))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if etf_data is None or abs(1 + etf_data.get("ret", 0)) < 0.01:
+        return {"symbol": sym, "rs_score": None, "rs_rank": None,
+                "sector_etf_above_sma50": None, "stock_20d_return_pct": None, "etf_ticker": etf_ticker}
+
+    import numpy as np
+    etf_ret  = etf_data["ret"]
+    rs_rank  = (1 + stock_ret) / (1 + etf_ret)
+    rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
+    result   = {
+        "symbol":                sym,
+        "rs_score":              round(rs_score, 1),
+        "rs_rank":               round(rs_rank, 4),
+        "sector_etf_above_sma50": etf_data["above_sma50"],
+        "stock_20d_return_pct":  round(stock_ret * 100, 2),
+        "etf_ticker":            etf_ticker,
+    }
+    try:
+        _get_redis().setex(rs_key, _RS_TTL, json.dumps(result))
+    except Exception:
+        pass
+    return result
+
+
 # ── Per-symbol Dividends ──────────────────────────────────────────────────────
 
 @router.get("/{symbol}/dividends")

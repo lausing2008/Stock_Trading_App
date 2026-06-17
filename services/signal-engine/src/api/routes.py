@@ -2721,7 +2721,7 @@ def signal_for(
     stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
 
     if not live and not persist:
-        # Fast path: return stored signals from DB without running ML/TA
+        # DB-first path: return stored signals — matches Signal Filter exactly.
         if not stock:
             raise HTTPException(404, f"Stock {symbol} not found")
         all_styles = ["SHORT", "SWING", "LONG", "GROWTH"]
@@ -2730,19 +2730,19 @@ def signal_for(
             d = _stored_signal_for_style(session, stock.id, s_key)
             if d:
                 stored[s_key] = d
-        if not stored:
-            # No stored signals yet — fall through to live computation
-            pass
-        else:
+        if stored:
             if style:
                 s_key = style.upper()
                 data = stored.get(s_key)
                 if data:
-                    return {"symbol": symbol, **data}
+                    return {"symbol": symbol, "source": "db", **data}
             else:
-                return {"symbol": symbol, "signals": stored}
+                return {"symbol": symbol, "source": "db", "signals": stored}
+        # No stored signals for this stock yet — fall through to live generation
+        # and auto-persist so the Signal Filter picks it up on the next query.
+        persist = True
 
-    # Live computation (or fallback when no stored signals exist)
+    # Live computation (fresh ML/TA — used on Refresh or first-time stock)
     try:
         all_sig = generate_all_signals(symbol)
     except ValueError as exc:
@@ -2772,10 +2772,11 @@ def signal_for(
     if style:
         style_key = style.upper()
         ai = all_sig.get(style_key) or all_sig["SWING"]
-        return {"symbol": symbol, **asdict(ai)}
+        return {"symbol": symbol, "source": "live", **asdict(ai)}
 
     return {
         "symbol": symbol,
+        "source": "live",
         "signals": {k: asdict(v) for k, v in all_sig.items()},
     }
 
