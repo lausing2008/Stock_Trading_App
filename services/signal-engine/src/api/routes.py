@@ -2903,10 +2903,18 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
     min_hold = min(_OUTCOME_HOLD_DAYS.values())
     cutoff = today - timedelta(days=min_hold)
 
-    # IDs already in signal_outcomes — skip re-evaluation
+    # IDs already in signal_outcomes — skip re-evaluation by signal_id
     evaluated_ids: set[int] = set(session.execute(
         select(SignalOutcome.signal_id)
     ).scalars().all())
+
+    # Also track (stock_id, horizon, signal_date) to prevent duplicates from
+    # multiple same-day signal refreshes producing multiple outcome rows.
+    evaluated_sighd: set[tuple] = set(
+        session.execute(
+            select(SignalOutcome.stock_id, SignalOutcome.horizon, SignalOutcome.signal_date)
+        ).all()
+    )
 
     # BUY and SELL signals old enough that at least SHORT window could be closed
     pending_signals = session.execute(
@@ -2996,6 +3004,13 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         hold_days = _OUTCOME_HOLD_DAYS[horizon]
         signal_date = sig.ts.date()
 
+        # Skip if another signal_id for the same (stock, horizon, date) was already evaluated.
+        # This prevents 5×/day refreshes from creating duplicate outcome rows for the same
+        # logical signal event.
+        sighd_key = (sig.stock_id, sig.horizon, signal_date)
+        if sighd_key in evaluated_sighd:
+            continue
+
         entry_result = _lookup_outcome_price(sig.stock_id, signal_date)
         if entry_result is None:
             skipped_no_price += 1
@@ -3057,6 +3072,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         )
         session.add(outcome)
         evaluated_ids.add(sig.id)
+        evaluated_sighd.add(sighd_key)
         evaluated += 1
 
     session.commit()

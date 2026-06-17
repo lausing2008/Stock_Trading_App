@@ -317,8 +317,8 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     except Exception as _ae:
         log.error("scheduler.alerts_failed", error=str(_ae), exc_info=True)
 
-    # Stage 4: Paper trading — always runs (US only)
-    if market == "US":
+    # Stage 4: Paper trading — runs for both US and HK markets
+    if market in ("US", "HK"):
         _pt0 = time.monotonic()
         try:
             paper_trading_step()

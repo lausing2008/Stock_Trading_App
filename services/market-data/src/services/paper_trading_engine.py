@@ -50,6 +50,7 @@ log = get_logger("paper_trading_engine")
 
 _DEFAULT_CONFIG: dict[str, Any] = {
     "trading_style":        "GROWTH",  # which signal horizon to trade
+    "market":               "US",      # "US" or "HK" — determines market hours + stock universe
     "max_positions":        10,
     "max_sector_pct":       0.30,      # max 30% in one sector
     "max_sector_positions": 3,         # max positions per sector (RISK-3)
@@ -360,13 +361,23 @@ _NYSE_HOLIDAYS: frozenset[date] = frozenset([
 ])
 
 
-def _is_market_hours() -> bool:
-    """True if current time falls within US regular session (9:30–16:00 ET, Mon–Fri).
+def _is_market_hours(market: str = "US") -> bool:
+    """True if current time falls within the regular session for the given market.
 
-    Uses zoneinfo (Python 3.9+) for correct EDT/EST auto-switching.
-    Respects NYSE market holidays (AUD-M13).
+    US: 9:30–16:00 ET Mon–Fri (NYSE holidays respected).
+    HK: 09:30–12:00 and 13:00–16:00 HKT Mon–Fri.
     """
     from zoneinfo import ZoneInfo
+    if market == "HK":
+        now_hkt = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+        if now_hkt.weekday() >= 5:
+            return False
+        morning_open  = now_hkt.replace(hour=9,  minute=30, second=0, microsecond=0)
+        morning_close = now_hkt.replace(hour=12, minute=0,  second=0, microsecond=0)
+        aftnoon_open  = now_hkt.replace(hour=13, minute=0,  second=0, microsecond=0)
+        aftnoon_close = now_hkt.replace(hour=16, minute=0,  second=0, microsecond=0)
+        return (morning_open <= now_hkt < morning_close) or (aftnoon_open <= now_hkt < aftnoon_close)
+
     now_et = datetime.now(ZoneInfo("America/New_York"))
     if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
         return False
@@ -607,6 +618,75 @@ def _fetch_market_regime(cfg: dict) -> dict:
     import time as _time
     _regime_cache = dict(result)
     _regime_cache_ts = _time.time()
+    return result
+
+
+_hk_regime_cache: dict = {}
+_hk_regime_cache_ts: float = 0.0
+
+
+def _fetch_hk_market_regime(cfg: dict) -> dict:
+    """Basic HK regime detection: HSI vs 200-day SMA.
+
+    Returns a simplified regime dict compatible with the US version.
+    No VIX equivalent — uses HSI distance from 200SMA as the sole signal:
+      bull   : HSI > 200 SMA and 20d return > 0
+      neutral: HSI > 200 SMA but 20d return ≤ 0 (topping / momentum fade)
+      choppy : HSI within ±2% of 200 SMA
+      bear   : HSI < 200 SMA
+    """
+    global _hk_regime_cache, _hk_regime_cache_ts
+    import time as _time
+    if _hk_regime_cache and (_time.time() - _hk_regime_cache_ts) < 1800:
+        return dict(_hk_regime_cache)
+
+    result: dict = {
+        "state": "neutral", "vix": None, "spy_price": None,
+        "spy_ema20": None, "spy_ema50": None, "spy_ema200": None,
+        "spy_20d_ret": None, "qqq_price": None, "qqq_ema50": None,
+        "breadth_weak": False, "breadth_size_mult": 1.0,
+        "vix_term_inverted": False, "vix_5d_trend": None,
+        "spy_pct_above_ema20": None, "is_pre_choppy": False, "is_pre_risk_off": False,
+        "notes": [],
+    }
+    try:
+        import yfinance as yf
+        raw = yf.download("^HSI", period="300d", auto_adjust=True, progress=False)
+        closes = raw["Close"].dropna() if "Close" in raw.columns else raw.dropna()
+        if len(closes) < 50:
+            result["notes"].append("HSI data insufficient — defaulting to neutral")
+            return result
+
+        hsi_price = float(closes.iloc[-1])
+        sma200 = float(closes.tail(200).mean()) if len(closes) >= 200 else float(closes.mean())
+        sma20  = float(closes.tail(20).mean())
+        ret20  = (hsi_price / float(closes.iloc[-20]) - 1) if len(closes) >= 20 else 0.0
+
+        pct_above = (hsi_price / sma200 - 1) if sma200 else 0.0
+        result["spy_price"]   = hsi_price      # reuse field for UI compat
+        result["spy_ema200"]  = sma200
+        result["spy_ema20"]   = sma20
+        result["spy_20d_ret"] = round(ret20 * 100, 2)
+
+        if hsi_price < sma200 * 0.98:
+            result["state"] = "bear"
+            result["notes"].append(f"HSI {pct_above*100:.1f}% below 200 SMA → bear")
+        elif abs(pct_above) < 0.02:
+            result["state"] = "choppy"
+            result["notes"].append("HSI within ±2% of 200 SMA → choppy")
+        elif ret20 <= 0:
+            result["state"] = "neutral"
+            result["notes"].append(f"HSI above 200 SMA but 20d return {ret20*100:.1f}% → neutral")
+        else:
+            result["state"] = "bull"
+            result["notes"].append(f"HSI {pct_above*100:.1f}% above 200 SMA + positive 20d return → bull")
+
+    except Exception as exc:
+        log.warning("paper.hk_regime_fetch_failed", error=str(exc))
+        result["notes"].append(f"HSI fetch failed: {exc}")
+
+    _hk_regime_cache = dict(result)
+    _hk_regime_cache_ts = _time.time()
     return result
 
 
@@ -1415,6 +1495,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             Signal.confidence >= cfg["min_confidence"] * 0.90,
             Signal.ts >= cutoff,             # within 5-day window
             Stock.active.is_(True),
+            Stock.market == cfg.get("market", "US"),
         )
         .order_by(desc(Signal.confidence))
     ).all()
@@ -2094,26 +2175,35 @@ def paper_trading_step() -> None:
             all_symbols = list(set(open_symbols + candidate_symbols))
             live_prices = _fetch_live_prices(all_symbols) if all_symbols else {}
 
-            # Fetch market regime ONCE per cycle — shared across all portfolios.
-            # Uses first portfolio's config for threshold overrides; falls back to defaults.
-            _base_cfg = {**_DEFAULT_CONFIG, **(portfolios[0].config if portfolios else {})}
-            live_regime: dict | None = (
-                _fetch_market_regime(_base_cfg)
-                if _base_cfg.get("enable_regime_filter", True) else None
-            )
-            # Persist regime snapshot into each portfolio config (for UI + audit trail)
-            if live_regime:
-                for _p in portfolios:
-                    _p.config = {**_p.config,
-                                 "regime_state": live_regime["state"],
-                                 "regime_vix": live_regime.get("vix"),
-                                 "regime_spy": live_regime.get("spy_price"),
-                                 "regime_notes": live_regime.get("notes", [])}
+            # Fetch market regime per market — US uses SPY/QQQ/VIX; HK uses HSI.
+            # Cache the result per market so portfolios sharing a market reuse the same fetch.
+            _regime_by_market: dict[str, dict | None] = {}
+
+            def _get_regime_for(pcfg: dict) -> dict | None:
+                mkt = pcfg.get("market", "US")
+                if mkt not in _regime_by_market:
+                    if not pcfg.get("enable_regime_filter", True):
+                        _regime_by_market[mkt] = None
+                    elif mkt == "HK":
+                        _regime_by_market[mkt] = _fetch_hk_market_regime(pcfg)
+                    else:
+                        _regime_by_market[mkt] = _fetch_market_regime(pcfg)
+                return _regime_by_market[mkt]
 
             for portfolio in portfolios:
-                cfg = portfolio.config or {}
+                cfg = {**_DEFAULT_CONFIG, **portfolio.config} if portfolio.config else dict(_DEFAULT_CONFIG)
                 if not cfg.get("enabled", True):
                     continue  # fully stopped — do nothing
+
+                live_regime = _get_regime_for(cfg)
+
+                # Persist regime snapshot into portfolio config (for UI + audit trail)
+                if live_regime:
+                    portfolio.config = {**portfolio.config,
+                                        "regime_state": live_regime["state"],
+                                        "regime_vix": live_regime.get("vix"),
+                                        "regime_spy": live_regime.get("spy_price"),
+                                        "regime_notes": live_regime.get("notes", [])}
 
                 # Monitor + commit first so cash mutations are durable before scanning
                 closed_exits = _monitor_positions(session, portfolio, live_prices, live_regime)
@@ -2124,10 +2214,10 @@ def paper_trading_step() -> None:
                     _send_exit_emails(session, closed_exits)
 
                 if not cfg.get("paused", False):
-                    # Market hours guard: only enter new positions during regular US session
-                    market_open = cfg.get("enforce_market_hours", True)
-                    if market_open and not _is_market_hours():
-                        log.info("paper.entry_scan_skip", reason="outside_market_hours")
+                    # Market hours guard: check hours for this portfolio's market
+                    mkt = cfg.get("market", "US")
+                    if cfg.get("enforce_market_hours", True) and not _is_market_hours(mkt):
+                        log.info("paper.entry_scan_skip", reason="outside_market_hours", market=mkt)
                     else:
                         _scan_for_entries(session, portfolio, live_prices, live_regime)
                         session.commit()
