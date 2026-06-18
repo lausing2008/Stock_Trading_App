@@ -47,7 +47,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type SignalAccuracyReport, type AlphaDecayReport, type AlphaDecayCurvePoint } from '@/lib/api';
+import { api, type SignalAccuracyRow, type FactorRow, type MLWeightCurvePoint, type WalkForwardReport, type WalkForwardWindow, type OutcomesSummary, type OutcomesCalibration, type SignalAccuracyReport, type AlphaDecayReport, type AlphaDecayCurvePoint } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 type RollingPoint = { date: string; accuracy: number; signal_count: number };
@@ -839,6 +839,11 @@ export default function SignalAccuracyPage() {
     () => api.outcomesSummary(undefined, lookback, outcomesMarket === 'ALL' ? undefined : outcomesMarket),
     { revalidateOnFocus: false },
   );
+  const { data: calibrationData } = useSWR<OutcomesCalibration>(
+    authed ? 'outcomes-calibrate' : null,
+    () => api.calibrateOutcomes(180, 15),
+    { revalidateOnFocus: false },
+  );
 
   const { data: rollingData } = useSWR(
     authed ? 'rolling-accuracy' : null,
@@ -1159,6 +1164,79 @@ export default function SignalAccuracyPage() {
               <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
                 ℹ️ Outcomes use fixed hold windows: SHORT=7d, SWING=14d, LONG=28d. Entry = first close ≥ signal date. Exit = first close ≥ entry + hold days.
                 Once SWING outcomes exceed 500, run Optuna on signal parameters — see SIGNAL_ACCURACY.md for the tuning workflow.
+              </div>
+            </div>
+          )}
+
+          {/* Threshold Calibration */}
+          {calibrationData && calibrationData.calibrations.length > 0 && (
+            <div style={{ marginTop: 24 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>
+                Threshold Calibration
+                <span style={{ fontSize: 11, color: '#475569', fontWeight: 400, marginLeft: 8 }}>
+                  last {calibrationData.days}d · min {calibrationData.min_samples} samples · BUY signals only
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>
+                Sweeps confidence thresholds to find the cut that maximises expected value (win rate × avg return).
+                A green suggested threshold means raising the bar improves edge. Apply via SA-XX signal tuning.
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                      {['Style', 'Current Threshold', 'Suggested', 'Change', 'N Signals', 'Win Rate', 'Avg Return', 'Exp. Value', 'EV Lift'].map(h => (
+                        <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 11, color: '#64748b', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {calibrationData.calibrations.map(row => {
+                      const hasSuggestion = row.suggested_threshold != null && row.at_suggested_threshold != null;
+                      const diff = hasSuggestion ? row.suggested_threshold! - row.current_threshold : null;
+                      const lift = row.ev_lift_pct;
+                      const liftColor = lift == null ? '#475569' : lift > 0.1 ? '#4ade80' : lift < -0.1 ? '#f87171' : '#facc15';
+                      const diffColor = diff == null ? '#475569' : diff > 0 ? '#f87171' : diff < 0 ? '#4ade80' : '#475569';
+                      return (
+                        <tr key={row.horizon} style={{ borderBottom: '1px solid #0f172a' }}>
+                          <td style={{ padding: '8px 10px', fontWeight: 700, color: '#818cf8' }}>{row.horizon}</td>
+                          <td style={{ padding: '8px 10px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                            {(row.current_threshold * 100).toFixed(0)}%
+                            {row.at_current_threshold && (
+                              <div style={{ fontSize: 10, color: '#475569' }}>
+                                n={row.at_current_threshold.n} · {(row.at_current_threshold.win_rate * 100).toFixed(0)}% wr
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: hasSuggestion ? '#e2e8f0' : '#334155' }}>
+                            {hasSuggestion ? `${(row.suggested_threshold! * 100).toFixed(0)}%` : '—'}
+                            {row.at_suggested_threshold && (
+                              <div style={{ fontSize: 10, color: '#475569' }}>
+                                n={row.at_suggested_threshold.n} · {(row.at_suggested_threshold.win_rate * 100).toFixed(0)}% wr
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: diffColor, fontFamily: 'monospace', fontWeight: 700 }}>
+                            {diff == null ? '—' : diff === 0 ? '→ same' : `${diff > 0 ? '+' : ''}${(diff * 100).toFixed(0)}pp`}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: '#64748b' }}>{row.n_total}</td>
+                          <td style={{ padding: '8px 10px', color: '#94a3b8' }}>
+                            {row.at_suggested_threshold ? `${(row.at_suggested_threshold.win_rate * 100).toFixed(1)}%` : '—'}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: row.at_suggested_threshold?.avg_return_pct != null && row.at_suggested_threshold.avg_return_pct > 0 ? '#4ade80' : '#f87171' }}>
+                            {row.at_suggested_threshold?.avg_return_pct != null ? `${row.at_suggested_threshold.avg_return_pct > 0 ? '+' : ''}${row.at_suggested_threshold.avg_return_pct.toFixed(2)}%` : '—'}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: '#94a3b8' }}>
+                            {row.at_suggested_threshold?.expected_value_pct != null ? `${row.at_suggested_threshold.expected_value_pct.toFixed(3)}%` : '—'}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: liftColor, fontWeight: 700 }}>
+                            {lift != null ? `${lift > 0 ? '+' : ''}${lift.toFixed(3)}%` : row.note ?? '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}

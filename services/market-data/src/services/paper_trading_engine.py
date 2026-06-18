@@ -38,7 +38,7 @@ import pandas as pd
 
 from common.logging import get_logger
 from db import (
-    PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
+    Indicator, PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
     Ranking, SessionLocal, Signal, SignalAlert, Stock, User, Watchlist, WatchlistItem,
 )
 from sqlalchemy import desc, func, select
@@ -1026,6 +1026,28 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
     ]
     monitor_atr_cache: dict[str, float | None] = _batch_compute_atr(list(set(armed_symbols)))
 
+    # PT-H5: Batch-fetch latest RSI-14 for all armed positions to detect overbought peaks.
+    # Uses the pre-computed indicators table (cheaper than recomputing from prices).
+    _rsi_overbought: dict[str, bool] = {}
+    if armed_symbols:
+        try:
+            rsi_rows = session.execute(
+                select(Stock.symbol, Indicator.value)
+                .join(Indicator, Stock.id == Indicator.stock_id)
+                .where(
+                    Stock.symbol.in_(armed_symbols),
+                    Indicator.name == "rsi_14",
+                    Indicator.timeframe == TimeFrame.D1,
+                )
+                .order_by(Stock.symbol, Indicator.ts.desc())
+                .distinct(Stock.symbol)
+            ).all()
+            for sym, rsi_val in rsi_rows:
+                if rsi_val is not None and float(rsi_val) > 75:
+                    _rsi_overbought[sym] = True
+        except Exception:
+            pass
+
     now = datetime.now(timezone.utc)
 
     for trade in open_trades:
@@ -1377,6 +1399,21 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                             pnl_pct=round(pnl_pct * 100, 1),
                             new_stop=round(rs_trail, 2),
                             note="Stock lagging sector ETF by >10pp over 5d — sector RS weakness")
+
+        # PT-H5: RSI overbought trail tightening — when RSI > 75 AND we have a gain to
+        # protect (trail armed), tighten to 1.0× ATR to lock in profits near the peak.
+        # Only fires when profitable (pnl ≥ 5%) to avoid over-managing early-stage trades.
+        if (not earnings_near and trail_armed and atr is not None and atr > 0.01 and
+                pnl_pct >= 0.05 and _rsi_overbought.get(trade.symbol)):
+            rsi_mult  = 1.0 * regime_trail_adj
+            rsi_trail = max((trade.highest_price or live_price) - atr * rsi_mult, trade.stop_loss)
+            if rsi_trail > trade.current_stop:
+                trade.current_stop = round(rsi_trail, 4)
+                log.info("paper.rsi_overbought_trail_tightened",
+                         symbol=trade.symbol,
+                         pnl_pct=round(pnl_pct * 100, 1),
+                         new_stop=round(rsi_trail, 2),
+                         note="RSI > 75 with gain ≥5% — tightening trail to 1.0× ATR to lock in profits")
 
         # PA-A3: Breakeven stop — unconditional (not elif) so it fires even when trail
         # is armed but ATR trail is still below entry (e.g. large ATR, small gain so far)
@@ -1815,7 +1852,18 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             except Exception:
                 pass  # no research data → neutral 1.0×
 
-        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult
+        # 40-B: Cross-horizon consensus boost — when ≥2 other styles also fired BUY
+        # for this stock in the same signal batch, we have rare multi-timeframe alignment.
+        consensus_size_mult = 1.0
+        cross_buys = int((sig.reasons or {}).get("cross_style_buys", 0))
+        if cross_buys >= 2:
+            consensus_size_mult = 1.15
+            notes = notes + [f"Size 1.15× (multi-timeframe consensus: {cross_buys} other styles BUY)"]
+        elif cross_buys == 1:
+            consensus_size_mult = 1.07
+            notes = notes + [f"Size 1.07× (partial consensus: 1 other style BUY)"]
+
+        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult * consensus_size_mult
         shares         = risk_dollar / stop_distance
 
         # PA-C1: Max dollar loss per trade — prevents wide ATR stops from risking > 2% equity

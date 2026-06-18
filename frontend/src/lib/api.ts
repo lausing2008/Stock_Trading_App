@@ -249,6 +249,8 @@ export const api = {
     request<{ evaluated: number; skipped_open: number; skipped_no_price: number; updated_windows: number }>(
       '/signals/outcomes/evaluate', { method: 'POST' }
     ),
+  calibrateOutcomes: (days = 180, minSamples = 15) =>
+    request<OutcomesCalibration>(`/signals/outcomes/calibrate?days=${days}&min_samples=${minSamples}`),
   alphaDecay: (horizon = 'SWING', lookbackDays = 365, regime?: string) => {
     const params = new URLSearchParams({ horizon, lookback_days: String(lookbackDays) });
     if (regime) params.set('regime', regime);
@@ -629,6 +631,17 @@ export type OutcomesSummary = {
   by_research_alignment?: Record<'aligned' | 'partial' | 'divergent' | 'no_research', ResearchAlignmentBand>;
   by_window?: Record<'5d' | '10d' | '20d', { count: number; win_rate: number; avg_return_pct: number | null } | null>;
 };
+export type OutcomesCalibrationRow = {
+  horizon: string;
+  current_threshold: number;
+  suggested_threshold: number | null;
+  ev_lift_pct: number | null;
+  n_total: number;
+  note?: string;
+  at_current_threshold?: { n: number; win_rate: number; avg_return_pct: number; expected_value_pct: number } | null;
+  at_suggested_threshold?: { n: number; win_rate: number; avg_return_pct: number; expected_value_pct: number } | null;
+};
+export type OutcomesCalibration = { days: number; min_samples: number; calibrations: OutcomesCalibrationRow[] };
 export type AlphaDecayCurvePoint = { day: number; avg_return_pct: number | null; p25: number | null; p75: number | null; n: number };
 export type AlphaDecayReport = { horizon: string; signal_count: number; lookback_days: number; optimal_hold_days: number | null; optimal_return_pct: number | null; curve: AlphaDecayCurvePoint[] };
 export type WalkForwardReport = {

@@ -228,6 +228,18 @@ def _bulk_persist(symbols: list[str]) -> None:
     for symbol in symbols:
         try:
             all_sig = generate_all_signals(symbol)
+
+            # 40-B: Cross-horizon consensus — annotate each signal with how many other
+            # styles also fired BUY for this symbol in this same batch.
+            buy_styles = [sk for sk, ai in all_sig.items() if ai.signal == "BUY"]
+            for style_key, ai in all_sig.items():
+                if ai.reasons is None:
+                    ai.reasons = {}
+                others = [sk for sk in buy_styles if sk != style_key]
+                ai.reasons["cross_style_buys"] = len(others)
+                if others:
+                    ai.reasons["cross_style_buy_styles"] = others
+
             with SessionLocal() as s:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
                 if not stock:
@@ -2516,6 +2528,104 @@ def outcomes_summary(
         "by_market_regime": regime_summary,
         "by_research_alignment": research_summary,
         "by_window": multi_window,
+    }
+
+
+@router.get("/outcomes/calibrate")
+def outcomes_calibrate(
+    days: int = Query(180, description="Look-back window in calendar days"),
+    min_samples: int = Query(15, description="Minimum signals required to suggest a threshold"),
+    session: Session = Depends(get_session),
+):
+    """Sweep confidence thresholds per horizon to find the empirically optimal buy_threshold.
+
+    For each horizon × BUY, finds the confidence level (0-100 scale) that maximises
+    expected_value = win_rate × avg_return, subject to n >= min_samples.
+    Compares the suggested threshold against the current hardcoded thresholds in
+    _STYLE_PROFILES so you can see whether signal tuning is needed.
+    """
+    import statistics as _stats
+
+    # Current bull-regime thresholds from signals.py _STYLE_PROFILES (0-1 scale → 0-100)
+    CURRENT: dict[str, float] = {
+        "SHORT":  63.0,
+        "SWING":  67.0,
+        "LONG":   60.0,
+        "GROWTH": 60.0,
+    }
+
+    cutoff = date.today() - timedelta(days=days)
+    all_outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+        )
+    ).scalars().all()
+
+    calibrations = []
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        bucket = [o for o in all_outcomes if o.horizon.value == h]
+        current_t = CURRENT.get(h, 65.0)
+
+        def _stats_at(threshold: float, samples: list) -> dict | None:
+            sub = [o for o in samples if o.confidence >= threshold]
+            if len(sub) < min_samples:
+                return None
+            wins = sum(1 for o in sub if o.is_correct)
+            rets = [o.pct_return for o in sub if o.pct_return is not None]
+            acc = wins / len(sub)
+            avg_ret = _stats.mean(rets) if rets else 0.0
+            return {
+                "n": len(sub),
+                "win_rate": round(acc, 3),
+                "avg_return_pct": round(avg_ret * 100, 2),
+                "expected_value_pct": round(acc * avg_ret * 100, 2),
+            }
+
+        if len(bucket) < min_samples:
+            calibrations.append({
+                "horizon": h,
+                "current_threshold": current_t / 100,
+                "suggested_threshold": None,
+                "n_total": len(bucket),
+                "note": f"Insufficient data (need ≥{min_samples} evaluated BUY outcomes)",
+            })
+            continue
+
+        # Sweep thresholds on 0-100 scale from 40 to 85
+        best_ev = -999.0
+        best_t: float | None = None
+        best_stats: dict | None = None
+        for t_int in range(40, 86):
+            st = _stats_at(float(t_int), bucket)
+            if st is None:
+                continue
+            ev = st["expected_value_pct"]
+            if ev > best_ev:
+                best_ev = ev
+                best_t = float(t_int)
+                best_stats = st
+
+        at_current = _stats_at(current_t, bucket)
+        ev_lift = None
+        if best_stats and at_current:
+            ev_lift = round(best_stats["expected_value_pct"] - at_current["expected_value_pct"], 2)
+
+        calibrations.append({
+            "horizon": h,
+            "current_threshold": current_t / 100,
+            "suggested_threshold": round(best_t / 100, 2) if best_t else None,
+            "ev_lift_pct": ev_lift,
+            "n_total": len(bucket),
+            "at_current_threshold": at_current,
+            "at_suggested_threshold": best_stats,
+        })
+
+    return {
+        "days": days,
+        "min_samples": min_samples,
+        "calibrations": calibrations,
     }
 
 
