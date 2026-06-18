@@ -1,9 +1,9 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-18 (Tier 37 — signal engine IndexError fix + log quality + direction accuracy UI + bear regime banner)  
+**Last updated:** 2026-06-17 (Tier 38 — BRK.A DB dedup + position entry notes + outcomes date range + TA bar guard)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 9.6 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 → 9.5 → 9.6 — signal accuracy directional breakdown + regime visibility + bug fixes)*
+**Overall rating:** 9.7 / 10 *(was 8.5 → … → 9.6 → 9.7 — data quality dedup, audit visibility for position entry rationale, signal robustness)*
 
 ---
 
@@ -2403,16 +2403,95 @@ These are the two most important audit fields for verifying that new min_confide
 | 2026-06-18 | Tier 37-C | Outcomes by_direction: BUY vs SELL win rate per horizon | routes.py, api.ts, signal-accuracy.tsx | ✅ Done |
 | 2026-06-18 | Tier 37-D | Bear regime banner on paper portfolio — explains why HK is idle | paper-portfolio.tsx | ✅ Done |
 | 2026-06-18 | Tier 37-E | Closed Trades table: Style + Conf columns for entry-quality audit | paper-portfolio.tsx | ✅ Done |
+| 2026-06-17 | Tier 38-A | Remove BRK.A (id=94) duplicate — stops yfinance 2-min failure spam | DB: stocks, signals | ✅ Done |
+| 2026-06-17 | Tier 38-B | Position rows clickable — entry_decision_notes + signal factors expandable | paper_portfolio.py, api.ts, paper-portfolio.tsx | ✅ Done |
+| 2026-06-17 | Tier 38-C | OutcomesSummary: add date_range {oldest, newest} to API response | routes.py (signal-engine), api.ts | ✅ Done |
+| 2026-06-17 | Tier 38-D | Signal accuracy Outcomes tab: date range coverage note + SA-31 context | signal-accuracy.tsx | ✅ Done |
+| 2026-06-17 | Tier 38-E | _ta_score minimum bar guard raised from < 2 to < 14 (RSI needs 14 bars) | signals.py | ✅ Done |
+
+## Tier 38 — Data Quality + Audit Visibility + Signal Robustness (2026-06-17)
+
+**Context:** Post-Tier-37 operational audit. Key findings: BRK.A duplicate in stocks table causing
+yfinance failures every 2 minutes; position entry rationale (decision_notes + entry_reasons) stored
+in DB but invisible in UI; outcomes date range not surfaced (all data pre-SA-31, users cannot judge
+whether win rates reflect current tuning); _ta_score guard too low at < 2 (RSI needs 14 bars).
+
+---
+
+### A. Remove BRK.A Duplicate Stock (DATA-HIGH)
+
+**Symptom:** yfinance error logged every 2 minutes for ticker "BRK.A".
+
+**Root cause:** Three entries in stocks table: `BRK-A` (id=74, correct yfinance format), `BRK`
+(id=88), `BRK.A` (id=94, wrong format). yfinance requires the dash-separated form for Berkshire
+Hathaway. Every scheduled price/signal refresh attempted to fetch "BRK.A" from yfinance, failed,
+and logged an error. Produced persistent noise across all services.
+
+**Fix:** Deleted `BRK.A` (id=94) and its 76 associated signals from the DB. `BRK-A` (id=74)
+retained as the canonical entry. No watchlist_items pointed to id=94 (confirmed before deletion).
+
+---
+
+### B. Position Entry Notes — Expandable Row on Click (UX-MEDIUM)
+
+**Symptom:** Open positions table showed score, R:R, confidence but no explanation of why the
+trade was entered. `entry_decision_notes` (human-readable list) and `entry_reasons` (80-key dict)
+were stored in DB but `/positions` endpoint did not return them.
+
+**Fix:**
+- `/positions` endpoint now returns `decision_notes` and `entry_reasons` for each position
+- `PaperPosition` type in api.ts updated with `decision_notes: string[]` and `entry_reasons: Record<string, unknown>`
+- Positions table rows are now clickable — clicking toggles an expandable row showing:
+  - **Entry Notes**: bullet list (green checkmarks) of human-readable reasons
+  - **Signal Factors**: 6-field grid: TA Score, ML Prob, ML Agreement, Pillars, Weekly Trend, Regime
+
+---
+
+### C. Outcomes Date Range — Coverage Note (OBSERVABILITY-LOW)
+
+**Symptom:** Signal accuracy Outcomes tab showed aggregate win rates with no indication of which
+signal dates were included, or whether data reflected current signal parameters.
+
+**Root cause:** All outcomes data was pre-SA-31 (SWING buy_threshold raised 0.65→0.67 on Jun 17).
+Post-SA-31 data accumulates as June 3+ signals mature past their 14-day hold window. Without a
+date range display, users could not tell whether win rates reflected current or outdated tuning.
+
+**Fix:** Added `date_range: {oldest, newest}` to `/signals/outcomes/summary` response (from
+MIN/MAX of `signal_date` across evaluated outcomes). Outcomes tab now shows a 📅 coverage banner
+with the date range and an explanation that post-SA-31 SWING results will appear as Jun 3+ signals
+mature.
+
+---
+
+### D. Outcomes Tab — SA-31 Context Note (UX-LOW)
+
+Coverage note added inline at top of Outcomes tab:
+> "Evaluated signals: [oldest] → [newest]. SWING/LONG outcomes take 14–28 days to mature — post-SA-31 data (buy_threshold raised Jun 17) will appear as signals from Jun 3+ mature."
+
+---
+
+### E. Raise _ta_score Minimum Bar Guard to 14 (SIGNAL QUALITY-MEDIUM)
+
+**Root cause:** Tier 37-A fixed the crash (< 2 bars → IndexError). But 2–13 bars still produces
+NaN RSI (RSI requires exactly 14 bars for the initial calculation). With < 14 bars, RSI returns NaN
+which propagates into the TA score composite, producing a silently corrupted signal.
+
+**Fix:** Changed `len(df) < 2` to `len(df) < 14` in `_ta_score()`. Returns neutral (0.5) for any
+symbol with fewer than 14 daily bars.
+
+**File:** `services/signal-engine/src/generators/signals.py`
+
+---
 
 ## Scorecard (updated)
 
 | Dimension | Score | Summary |
 |-----------|-------|---------|
-| Data pipeline | 8.5 / 10 | Unchanged |
+| Data pipeline | 8.7 / 10 | ↑ Tier 38-A: BRK.A dedup eliminates 2-min yfinance failure noise |
 | ML methodology | 9.3 / 10 | Unchanged |
-| Signal logic | 9.2 / 10 | ↑ Tier 37-A: no more 500s on sparse-data stocks; directional accuracy now visible |
+| Signal logic | 9.3 / 10 | ↑ Tier 38-E: RSI-safe bar guard (< 14) prevents NaN propagation |
 | K-Score ranking | 8.2 / 10 | Unchanged |
 | Research engine | 7.5 / 10 | Unchanged |
-| Frontend / UX | 9.7 / 10 | ↑ Tier 37-D/E: bear regime banner + closed trades audit columns |
+| Frontend / UX | 9.8 / 10 | ↑ Tier 38-B: position entry notes expandable row; 38-C/D: outcomes date range |
 | Risk management | 9.3 / 10 | Unchanged |
-| **Overall** | **9.6 / 10** | *(was 9.6 — incremental: bug fix + log quality + visibility improvements)* |
+| **Overall** | **9.7 / 10** | *(was 9.6 → 9.7 — data quality dedup + audit visibility + signal robustness)* |

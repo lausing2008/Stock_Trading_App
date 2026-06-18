@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5587,6 +5587,56 @@ const ITEMS: Item[] = [
     what: 'Closed Trades tab had 11 columns but omitted the two most important audit fields: trading style and confidence at entry.',
     fix: 'Added Style column (t.trading_style, gray small text) after Symbol, and Conf column (t.confidence_at_entry, orange if <50) after Score.',
   },
+
+  // ── Tier 38 — Data Quality + Audit Visibility + Signal Robustness (2026-06-17) ──
+  {
+    id: 'brka-dup-removal',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — Removed BRK.A (id=94, wrong yfinance format) from stocks table. Also removed 76 stale signals associated with that stock_id. Correct entry BRK-A (id=74) remains. yfinance failure log spam every 2 minutes eliminated.',
+    tier: 38, severity: 'high',
+    title: '38-A: Remove BRK.A duplicate stock — stops yfinance 2-min failures',
+    file: 'DB: stocks table, watchlist_items, signals',
+    effort: '5 minutes (DB migration)',
+    impact: 'High (reliability) — 3 BRK entries in stocks table: BRK-A (id=74, correct), BRK (id=88), BRK.A (id=94, wrong format). yfinance rejects "BRK.A" as a ticker — correct format is "BRK-A". Every price/signal refresh logged a failure for id=94 every 2 minutes.',
+    what: 'stocks table had BRK.A (id=94) alongside the correct BRK-A (id=74). yfinance uses the dash-separated format; BRK.A failed every scheduled refresh, generating persistent error log spam and wasted API calls.',
+    fix: 'Ran targeted DB cleanup: DELETE FROM signals WHERE stock_id=94 (76 rows), DELETE FROM stocks WHERE id=94. BRK-A (id=74) retained as the canonical entry.',
+  },
+  {
+    id: 'position-entry-notes',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — Added decision_notes and entry_reasons to /positions endpoint response in paper_portfolio.py. Updated PaperPosition type in api.ts. Added expandedPositionId state and clickable rows in paper-portfolio.tsx. Expanded row shows entry_decision_notes as a bullet list (green checkmarks) and a 6-field signal factors grid: TA Score, ML Prob, ML Agreement, Pillars, Weekly Trend, Regime.',
+    tier: 38, severity: 'medium',
+    title: '38-B: Position rows: expandable entry notes + signal factor detail',
+    file: 'services/market-data/src/api/paper_portfolio.py, frontend/src/lib/api.ts, frontend/src/pages/paper-portfolio.tsx',
+    effort: '30 minutes',
+    impact: 'Medium (audit) — open positions showed score, R:R, and confidence but no explanation of why the trade was entered. The engine already stored entry_decision_notes (human-readable list) and entry_reasons (80-key signal dict) but neither was visible in the positions table.',
+    what: '/positions endpoint did not include entry_decision_notes or entry_reasons. Users had no way to see the rationale behind each open position without querying the DB directly.',
+    fix: 'Added decision_notes and entry_reasons fields to /positions response. Position rows are now clickable — clicking toggles an expanded row beneath showing Entry Notes (bullet list) and Signal Factors grid (TA Score, ML Prob, ML Agreement, Pillars, Weekly Trend, Regime).',
+  },
+  {
+    id: 'outcomes-date-range',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — Added date_range {oldest, newest} computation to /signals/outcomes/summary endpoint in routes.py. Updated OutcomesSummary type in api.ts. Signal-accuracy Outcomes tab now shows a "Evaluated signals: [date range]" coverage note at the top, explaining that SWING/LONG data takes 14–28 days to mature and that post-SA-31 results will appear as Jun 3+ signals mature.',
+    tier: 38, severity: 'low',
+    title: '38-C: Outcomes date range — show evaluated signal coverage',
+    file: 'services/signal-engine/src/api/routes.py, frontend/src/lib/api.ts, frontend/src/pages/signal-accuracy.tsx',
+    effort: '15 minutes',
+    impact: 'Low (observability) — all outcomes data pre-SA-31 (signal tuning applied Jun 17). Without a date range display, users cannot tell whether the win rates reflect current or outdated signal parameters. SA-31 raised SWING buy_threshold from 0.65→0.67; post-SA-31 data accumulates as Jun 3+ signals mature.',
+    what: 'OutcomesSummary had no date range field. The Outcomes tab showed aggregate win rates with no indication of what date range of signals was evaluated or whether the data reflected current signal tuning.',
+    fix: 'Added date_range: {oldest, newest} to /signals/outcomes/summary response (from MIN/MAX of signal_date). Outcomes tab now shows a 📅 coverage banner explaining the date range and SA-31 context.',
+  },
+  {
+    id: 'ta-score-min-bars',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-17 — Changed _ta_score guard from `len(df) < 2` to `len(df) < 14` in signals.py. RSI requires 14 bars to compute a valid value; computing it on fewer bars produces a meaningless score. Now returns neutral 0.5 for any symbol with fewer than 14 daily bars.',
+    tier: 38, severity: 'medium',
+    title: '38-E: Raise _ta_score minimum bar guard from 2 to 14 (RSI needs 14 bars)',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '2 minutes',
+    impact: 'Medium (signal quality) — RSI is a core TA component requiring exactly 14 bars for the initial calculation. With 2–13 bars, RSI returns NaN or meaningless values that pollute the TA score composite. Any newly-added stock with fewer than 14 days of price history would produce an unreliable TA score silently.',
+    what: 'Tier 37-A fixed the crash (IndexError at vwma_20 with <2 bars). But 2–13 bars still produces NaN RSI. The guard threshold should be 14 to match RSI\'s actual minimum data requirement.',
+    fix: 'Changed `if df.empty or len(df) < 2` to `if df.empty or len(df) < 14`. Returns (0.5, {"insufficient_data": True, "bar_count": len(df)}) — neutral score that degrades gracefully rather than corrupting downstream signal logic.',
+  },
 ];
 
 
@@ -5635,6 +5685,7 @@ const TIER_LABEL: Record<Tier, string> = {
   35: 'Tier 35 — Signal Health + HK Bear Regime Audit (2026-06-18)',
   36: 'Tier 36 — Position Quality Panel + Trail Status + Log Cleanup (2026-06-18)',
   37: 'Tier 37 — Bug Fixes + Signal Direction Visibility + Portfolio UX (2026-06-18)',
+  38: 'Tier 38 — Data Quality + Audit Visibility + Signal Robustness (2026-06-17)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5675,6 +5726,7 @@ const TIER_COLOR: Record<Tier, string> = {
   35: '#38bdf8',
   36: '#a3e635',
   37: '#60a5fa',
+  38: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5746,7 +5798,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
