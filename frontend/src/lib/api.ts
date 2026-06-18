@@ -1224,6 +1224,7 @@ export type PaperEquityPoint = {
 export type PaperDecisionItem = {
   id: number;
   symbol: string;
+  trading_style: string;
   decision: string;
   entry_time: string | null;
   entry_price: number;
