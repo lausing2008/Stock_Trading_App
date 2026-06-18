@@ -615,6 +615,7 @@ export type OutcomesSummary = {
   total: number;
   days_lookback: number;
   message?: string;
+  date_range?: { oldest: string | null; newest: string | null };
   overall?: { win_rate: number; avg_return_pct: number | null; median_return_pct: number | null };
   by_confidence_band?: OutcomesBand[];
   by_horizon?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
@@ -1169,6 +1170,8 @@ export type PaperPosition = {
   confidence_at_entry: number | null;
   kscore_at_entry: number | null;
   market_regime_at_entry: string | null;
+  decision_notes: string[];
+  entry_reasons: Record<string, unknown>;
 };
 
 export type PaperTrade = {

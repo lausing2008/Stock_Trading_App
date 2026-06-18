@@ -313,6 +313,8 @@ def get_positions(
             "confidence_at_entry": t.confidence_at_entry,
             "kscore_at_entry": t.kscore_at_entry,
             "market_regime_at_entry": t.market_regime_at_entry,
+            "decision_notes": t.entry_decision_notes or [],
+            "entry_reasons": t.entry_reasons or {},
         }
         for t in trades
     ]

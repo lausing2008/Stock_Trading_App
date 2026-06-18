@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import useSWR from 'swr';
@@ -857,6 +857,7 @@ export default function PaperPortfolioPage() {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [expandedDecisionId, setExpandedDecisionId] = useState<number | null>(null);
+  const [expandedPositionId, setExpandedPositionId] = useState<number | null>(null);
   // Broker assignment per portfolio
   const [portfolioBroker, setPortfolioBroker] = useState<{ broker_connection_id: number | null; broker: import('@/lib/api').BrokerConnection | null } | null>(null);
   const [brokerConnections, setBrokerConnections] = useState<import('@/lib/api').BrokerConnection[]>([]);
@@ -1279,10 +1280,17 @@ export default function PaperPortfolioPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {positions.map(p => (
-                    <tr key={p.id} style={{ borderBottom: '1px solid #1e293b' }}>
+                  {positions.map(p => {
+                    const isExpanded = expandedPositionId === p.id;
+                    const reasons = p.entry_reasons as Record<string, unknown> | null;
+                    return (
+                    <React.Fragment key={p.id}>
+                    <tr style={{ borderBottom: isExpanded ? 'none' : '1px solid #1e293b', cursor: 'pointer', background: isExpanded ? 'rgba(96,165,250,0.04)' : undefined }}
+                        onClick={() => setExpandedPositionId(isExpanded ? null : p.id)}>
                       <td style={{ padding: '9px 10px' }}>
-                        <Link href={`/stock/${p.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{p.symbol}</Link>
+                        <Link href={`/stock/${p.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}
+                              onClick={e => e.stopPropagation()}>{p.symbol}</Link>
+                        <span style={{ marginLeft: 6, fontSize: 10, color: '#475569' }}>{isExpanded ? '▲' : '▼'}</span>
                       </td>
                       <td style={{ padding: '9px 10px' }}>${p.entry_price.toFixed(2)}</td>
                       <td style={{ padding: '9px 10px' }}>{p.current_price != null ? `$${p.current_price.toFixed(2)}` : '—'}</td>
@@ -1330,7 +1338,50 @@ export default function PaperPortfolioPage() {
                         })()}
                       </td>
                     </tr>
-                  ))}
+                    {isExpanded && (
+                      <tr style={{ borderBottom: '1px solid #1e293b', background: 'rgba(15,23,42,0.6)' }}>
+                        <td colSpan={14} style={{ padding: '12px 16px' }}>
+                          <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+                            {p.decision_notes?.length > 0 && (
+                              <div>
+                                <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Entry Notes</div>
+                                <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                  {p.decision_notes.map((note, i) => (
+                                    <li key={i} style={{ fontSize: 11, color: '#94a3b8', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                      <span style={{ color: '#22c55e', marginTop: 1 }}>✓</span>
+                                      {note}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {reasons && (
+                              <div>
+                                <div style={{ fontSize: 10, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Signal Factors</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '4px 20px' }}>
+                                  {[
+                                    ['TA Score', typeof reasons.ta_score === 'number' ? (reasons.ta_score as number).toFixed(3) : null],
+                                    ['ML Prob', typeof reasons.ml_probability === 'number' ? (reasons.ml_probability as number).toFixed(3) : null],
+                                    ['ML Agree', reasons.ml_agreement as string | null],
+                                    ['Pillars', reasons.independent_pillars_active as string | null],
+                                    ['Weekly', reasons.weekly_trend as string | null],
+                                    ['Regime', reasons.market_regime as string | null],
+                                  ].filter(([, v]) => v !== null && v !== undefined).map(([label, val]) => (
+                                    <React.Fragment key={label as string}>
+                                      <span style={{ fontSize: 10, color: '#475569' }}>{label}</span>
+                                      <span style={{ fontSize: 11, color: '#cbd5e1' }}>{String(val)}</span>
+                                    </React.Fragment>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             )}

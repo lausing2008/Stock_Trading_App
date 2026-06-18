@@ -737,7 +737,7 @@ def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float,
 
 
 def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> tuple[float, dict]:
-    if df.empty or len(df) < 2:
+    if df.empty or len(df) < 14:
         return 0.5, {"insufficient_data": True, "bar_count": len(df)}
     close  = df["close"].astype(float)
     volume = df["volume"].astype(float)

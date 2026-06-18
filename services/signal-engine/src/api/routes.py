@@ -2490,9 +2490,16 @@ def outcomes_summary(
                 "avg_return_pct": round(statistics.mean(bucket_returns) * 100, 2) if bucket_returns else None,
             }
 
+    signal_dates = [o.signal_date for o in outcomes if o.signal_date is not None]
+    date_range = {
+        "oldest": min(signal_dates).isoformat() if signal_dates else None,
+        "newest": max(signal_dates).isoformat() if signal_dates else None,
+    }
+
     return {
         "total": len(outcomes),
         "days_lookback": days,
+        "date_range": date_range,
         "overall": {
             "win_rate": round(len(wins) / len(outcomes), 3),
             "avg_return_pct": round(statistics.mean(returns) * 100, 2) if returns else None,

@@ -963,6 +963,17 @@ export default function SignalAccuracyPage() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Data coverage note */}
+              {outcomesData.date_range?.oldest && (
+                <div style={{ background: 'rgba(15,23,42,0.8)', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', fontSize: 11, color: '#64748b', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ color: '#475569' }}>📅</span>
+                  <span>
+                    <strong style={{ color: '#94a3b8' }}>Evaluated signals:</strong>{' '}
+                    {outcomesData.date_range.oldest} → {outcomesData.date_range.newest}.{' '}
+                    SWING/LONG outcomes take 14–28 days to mature — post-SA-31 data (buy_threshold raised Jun 17) will appear as signals from Jun 3+ mature.
+                  </span>
+                </div>
+              )}
               {/* Overall */}
               {outcomesData.overall && (
                 <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
