@@ -221,9 +221,9 @@ After the full system connectivity review, these are the rules to maintain:
 3. **The `/stocks/conviction` endpoint is intentionally open** — it reads from Redis only
    (no sensitive data), and signal-engine calls it without auth.
 
-4. **Dead component files to clean up** (not breaking):
-   `components/board.tsx`, `components/DonutChart.tsx`, `components/forecast.tsx`,
-   `components/PriceChart.tsx`, `components/screener.tsx`, `components/StrategyBuilder.tsx`
+4. **Dead component files — cleaned up 2026-06-18 (Tier 36-F):**
+   Deleted: `board.tsx`, `forecast.tsx`, `screener.tsx`, `StrategyBuilder.tsx` — no imports anywhere.
+   Retained: `DonutChart.tsx` (used by positions.tsx), `PriceChart.tsx` (used by stock/[symbol].tsx).
 
 ---
 
