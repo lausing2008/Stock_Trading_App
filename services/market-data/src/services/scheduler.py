@@ -840,14 +840,17 @@ def check_signal_alerts() -> None:
                 for h in _ALL_HORIZONS:
                     style_sym_pairs.add((sym, h))
 
-            # Fetch current signals per unique (symbol, horizon) pair
+            # Fetch current signals per unique (symbol, horizon) pair.
+            # live=False: read stored DB signal — consistent with signal filter page.
+            # live=True (old default) caused intraday oscillation for threshold-boundary
+            # stocks: the signal would flip BUY↔HOLD on every 1-minute check.
             signals: dict[tuple[str, str], str] = {}
             signal_details: dict[tuple[str, str], dict] = {}
             for sym, style in style_sym_pairs:
                 try:
                     r = httpx.get(
                         f"{_settings.signal_engine_url}/signals/{sym}",
-                        params={"style": style}, timeout=10,
+                        params={"style": style, "live": "false"}, timeout=10,
                     )
                     if r.status_code == 200:
                         payload = r.json()
@@ -985,6 +988,22 @@ def check_signal_alerts() -> None:
                                 confidence=confidence,
                             )
                             continue  # last_signal NOT updated — retried next run
+
+                # Same-direction cooldown: if we already sent this exact direction within
+                # the last 4 hours, advance state but skip the email. Prevents BUY→HOLD→BUY
+                # oscillation spam when a stock is sitting right at the threshold boundary.
+                _SAME_DIR_COOLDOWN_HRS = 4
+                if alert.last_sent_at is not None:
+                    sent_ago = datetime.now(timezone.utc) - alert.last_sent_at.replace(tzinfo=timezone.utc) if alert.last_sent_at.tzinfo is None else datetime.now(timezone.utc) - alert.last_sent_at
+                    if sent_ago.total_seconds() < _SAME_DIR_COOLDOWN_HRS * 3600:
+                        # Allow BUY→SELL (genuine reversal) regardless of cooldown.
+                        is_reversal = (prev == "BUY" and current == "SELL") or (prev == "SELL" and current == "BUY")
+                        if not is_reversal:
+                            log.info("signal_alert.skipped_cooldown", symbol=alert.symbol,
+                                     prev=prev, current=current,
+                                     sent_ago_min=round(sent_ago.total_seconds() / 60, 1))
+                            alert.last_signal = current
+                            continue
 
                 # Guard: no email address → log and advance state to avoid infinite retry
                 if not (alert.email or "").strip():
