@@ -751,6 +751,10 @@ def _round_step(price: float) -> float:
 _alert_fail_counts: dict[int, int] = {}
 
 
+_SIGNAL_ALERT_LOCK_KEY = "stockai:lock:check_signal_alerts"
+_SIGNAL_ALERT_LOCK_TTL = 120  # seconds — prevents concurrent runs from US+HK scheduler overlap
+
+
 def check_signal_alerts() -> None:
     """Fire conviction BUY alerts when all 5 layers align; fire exit warnings unconditionally.
 
@@ -763,6 +767,15 @@ def check_signal_alerts() -> None:
     Bearish/exit transitions (BUY→HOLD/WAIT/SELL) bypass the gate — exit
     warnings are always sent regardless of scores.
     """
+    # Distributed lock: US + HK refreshes both call this function. NX+EX ensures only one
+    # run executes at a time — the second caller skips rather than sending duplicate emails.
+    try:
+        acquired = _get_redis().set(_SIGNAL_ALERT_LOCK_KEY, "1", nx=True, ex=_SIGNAL_ALERT_LOCK_TTL)
+        if not acquired:
+            log.info("signal_alert.skipped_locked", reason="another run in progress")
+            return
+    except Exception:
+        pass  # Redis unavailable — allow through; deduplication falls back to DB last_signal
     try:
         with SessionLocal() as session:
             alerts = session.execute(select(SignalAlert)).scalars().all()
@@ -1029,6 +1042,11 @@ def check_signal_alerts() -> None:
                 log.info("signal_alert.check_done", fired=fired)
     except Exception as exc:
         log.error("signal_alert.check_error", error=str(exc))
+    finally:
+        try:
+            _get_redis().delete(_SIGNAL_ALERT_LOCK_KEY)
+        except Exception:
+            pass
 
 
 def check_price_alerts() -> None:

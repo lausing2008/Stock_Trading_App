@@ -29,6 +29,14 @@ function fmtUSD(v: number | null | undefined): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(v);
 }
 
+function fmtCurrency(v: number | null | undefined, market?: string): string {
+  if (v == null) return '—';
+  if (market === 'HK') {
+    return 'HK$' + new Intl.NumberFormat('en-HK', { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v);
+  }
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(v);
+}
+
 function fmtTs(ts: string | null | undefined): string {
   if (!ts) return '—';
   try {
@@ -351,7 +359,7 @@ function PortfolioCard({
         {portfolio.total_return_pct >= 0 ? '+' : ''}{portfolio.total_return_pct.toFixed(1)}%
       </div>
       <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-        {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(portfolio.current_equity)}
+        {fmtCurrency(portfolio.current_equity, portfolio.market)}
       </div>
       <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: '#94a3b8' }}>
         <span>Win {portfolio.win_rate_pct.toFixed(0)}%</span>
@@ -941,6 +949,7 @@ export default function PaperPortfolioPage() {
   }
 
   const multiPortfolio = portfolioList.length > 1;
+  const selectedMarket = portfolioList.find(p => p.id === selectedPortfolioId)?.market ?? 'US';
   const bestSharpeId = portfolioList.reduce<number | null>((best, p) => {
     if (p.sharpe == null) return best;
     const bestSharpe = portfolioList.find(x => x.id === best)?.sharpe ?? null;
@@ -1075,12 +1084,12 @@ export default function PaperPortfolioPage() {
 
         {/* Stat strip */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 24 }}>
-          <StatCard label="Equity" value={fmtUSD(summary.current_equity)} sub={`Cash ${fmtUSD(summary.current_cash)}`} />
+          <StatCard label="Equity" value={fmtCurrency(summary.current_equity, selectedMarket)} sub={`Cash ${fmtCurrency(summary.current_cash, selectedMarket)}`} />
           <StatCard label="Total Return" value={fmtPct(summary.total_return_pct)} color={retColor}
-            sub={`Initial ${fmtUSD(summary.initial_capital)}`} />
-          <StatCard label="Realized P&L" value={fmtUSD(summary.total_realized_pnl)}
+            sub={`Initial ${fmtCurrency(summary.initial_capital, selectedMarket)}`} />
+          <StatCard label="Realized P&L" value={fmtCurrency(summary.total_realized_pnl, selectedMarket)}
             color={summary.total_realized_pnl >= 0 ? '#22c55e' : '#ef4444'} />
-          <StatCard label="Unrealized P&L" value={fmtUSD(summary.total_unrealized_pnl)}
+          <StatCard label="Unrealized P&L" value={fmtCurrency(summary.total_unrealized_pnl, selectedMarket)}
             color={summary.total_unrealized_pnl >= 0 ? '#22c55e' : '#ef4444'}
             sub={`${summary.open_positions} open positions`} />
           <StatCard label="Win Rate" value={summary.win_rate_pct.toFixed(1) + '%'}
@@ -1542,7 +1551,7 @@ export default function PaperPortfolioPage() {
           It scans for fresh GROWTH-style BUY signals, scores entry quality (R:R, RSI, regime, sector, conviction),
           and enters simulated positions when the score meets the threshold. It monitors all open positions each cycle,
           updating trailing stops and exiting when stops, targets, signal reversals, or time limits are reached.
-          Initial capital: {fmtUSD(summary.initial_capital)}. Risk per trade: {(summary.config.risk_per_trade_pct * 100).toFixed(0)}% of equity.
+          Initial capital: {fmtCurrency(summary.initial_capital, selectedMarket)}. Risk per trade: {(summary.config.risk_per_trade_pct * 100).toFixed(0)}% of equity.
         </div>
       </div>
     </main>

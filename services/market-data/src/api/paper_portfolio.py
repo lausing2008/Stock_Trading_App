@@ -802,7 +802,7 @@ def run_paper_trading_step(
     Set enforce_market_hours=false to run outside 9:30–16:00 ET (for testing only).
     """
     import time
-    from services.paper_trading_engine import paper_trading_step, _DEFAULT_CONFIG
+    from src.services.paper_trading_engine import paper_trading_step, _DEFAULT_CONFIG
     from db import PaperPortfolio, SessionLocal
     from sqlalchemy import select
 
@@ -815,7 +815,7 @@ def run_paper_trading_step(
 
     if not enforce_market_hours:
         # Temporarily patch the market hours check to always return True
-        import services.paper_trading_engine as _eng
+        import src.services.paper_trading_engine as _eng
         _orig = _eng._is_market_hours
         _eng._is_market_hours = lambda: True
         try:
@@ -858,7 +858,7 @@ def create_portfolio(
     Config is seeded from _DEFAULT_CONFIG + style overrides so all safety params
     (risk_per_trade_pct=0.01, max_position_pct=0.10 etc.) are correct by default.
     """
-    from services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+    from src.services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
     name = str(body.get("name", "Paper Portfolio")).strip() or "Paper Portfolio"
     style = str(body.get("trading_style", "GROWTH")).upper()
     market = str(body.get("market", "US")).upper()
