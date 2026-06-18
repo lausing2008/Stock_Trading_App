@@ -227,6 +227,46 @@ After the full system connectivity review, these are the rules to maintain:
 
 ---
 
+## Recurring Issue: Signal Alert Email Spam — BUY→HOLD→BUY Oscillation
+
+**Symptom:** User receives many signal change emails for the same stock within 1–2 hours,
+cycling BUY→HOLD→BUY→HOLD repeatedly. Happens for stocks sitting right at the buy_threshold.
+
+**Root cause (fixed 2026-06-18):** Two bugs compounded:
+
+1. **`check_signal_alerts()` in `scheduler.py` called `GET /signals/{sym}` without `live=False`.**
+   The signal endpoint defaults to `live=True` — it recomputes the signal fresh from current
+   intraday prices on every call. Since the alert checker runs every minute and the signal
+   endpoint recomputed live each time, a stock at the threshold boundary (e.g. 0981.HK) would
+   flip BUY↔HOLD on every minute tick, firing an email on each flip.
+
+2. **No same-direction cooldown.** Once a BUY email fired, if the signal dropped to HOLD and
+   then recovered to BUY within minutes, a second BUY email fired immediately.
+
+**Fix applied:**
+1. Pass `live=False` in the signal fetch: `params={"style": style, "live": "false"}`. Alert
+   checker now reads the stored DB signal — consistent with what the Signal Filter page shows.
+   DB signals only change when scheduled refreshes run (5×/day), eliminating intraday oscillation.
+2. Added 2-hour same-direction cooldown on `last_sent_at`. Even if DB signals oscillate between
+   scheduled refreshes, no more than one email per 2 hours per symbol+horizon. Full BUY↔SELL
+   reversals bypass the cooldown.
+
+**File:** `services/market-data/src/services/scheduler.py`, function `check_signal_alerts()`
+
+**What to check if oscillation recurs:**
+```bash
+# Check what signal the alert checker is actually reading
+docker logs stockai-market-data-1 --since 2h | grep 'signal_alert'
+# Confirm live=False is being passed (grep signal fetch in scheduler)
+docker exec stockai-market-data-1 grep -n 'live.*false' /app/src/services/scheduler.py
+```
+
+**Design invariant:** `check_signal_alerts()` must always read DB signals (`live=False`), not
+live-computed signals. The DB signal is the source of truth for the Signal Filter page — alerts
+and the filter must agree on what the current signal is.
+
+---
+
 ## Known Ongoing Limitations
 
 - Broker commission: `commission_per_share` defaults to 0.0 (user's broker is commission-free)

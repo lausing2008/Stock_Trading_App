@@ -2585,6 +2585,45 @@ without a hard cut — respects trend structure.
 
 ---
 
+---
+
+## Tier 42 — Signal Alert Oscillation Fix (2026-06-18)
+
+**Context:** User reported receiving many emails for 0981.HK cycling BUY→HOLD→BUY→HOLD within
+1–2 hours.
+
+---
+
+### A. Signal Alert Email Spam — live=True + No Cooldown (BUG-HIGH)
+
+**Symptom:** Dozens of signal change emails for the same stock within 1–2 hours, cycling
+BUY→HOLD→BUY→HOLD.
+
+**Root cause:** Two compounding bugs:
+
+1. `check_signal_alerts()` called `GET /signals/{sym}` without `live=False`. The signal endpoint
+   defaults to `live=True` — it recomputes the signal fresh from current intraday prices on every
+   call. Since the alert checker runs every minute and 0981.HK was sitting right at the
+   buy_threshold boundary, intraday price ticks flipped the fused signal BUY↔HOLD on every
+   minute check, firing an email on each flip.
+
+2. No same-direction cooldown. Once a BUY email fired, if the signal dropped to HOLD then
+   recovered to BUY within minutes, a second BUY email fired immediately.
+
+**Fix:**
+1. Pass `live=False` in signal fetch: `params={"style": style, "live": "false"}`. Alert checker
+   now reads the stored DB signal — same source of truth as the Signal Filter page. DB signals
+   only change during scheduled refreshes (5×/day), eliminating intraday oscillation.
+2. Added 2-hour same-direction cooldown on `last_sent_at`. Advances `last_signal` but skips the
+   email if the last send was within 2 hours. Full BUY↔SELL reversals bypass the cooldown.
+
+**Design invariant:** `check_signal_alerts()` must always read DB signals (`live=False`). The DB
+signal is the source of truth for the Signal Filter page — alerts and the filter must agree.
+
+**File:** `services/market-data/src/services/scheduler.py`, `check_signal_alerts()`
+
+---
+
 ## Scorecard (updated)
 
 | Dimension | Score | Summary |
@@ -2596,4 +2635,4 @@ without a hard cut — respects trend structure.
 | Research engine | 7.5 / 10 | Unchanged |
 | Frontend / UX | 9.9 / 10 | ↑ Tier 39-B: alert filter/pagination/bulk delete; 41-A: HSI benchmark |
 | Risk management | 9.5 / 10 | ↑ Tier 40-C: RSI overbought exit; 41-B: fundamental deterioration exit |
-| **Overall** | **9.8 / 10** | *(was 9.7 → 9.8 — signal calibration + consensus sizing + RSI/research exits + HSI benchmark)* |
+| **Overall** | **9.8 / 10** | *(Tier 42: alert spam bug fixed — live=False + cooldown)* |

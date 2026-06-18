@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5726,6 +5726,19 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-17 — short 1s timeout per symbol, fully fire-and-forget (swallowed on any error).',
     impact: 'Medium — exits deteriorating positions faster while still respecting trend structure (trail, not hard cut).',
   },
+
+  // ── Tier 42 — Signal Alert Oscillation Fix (2026-06-18) ──────────────────────
+
+  {
+    id: 'TIER42-A', tier: 42, severity: 'high', defaultStatus: 'done',
+    title: 'Signal alert BUY→HOLD→BUY email spam for threshold-boundary stocks',
+    effort: '1h',
+    what: 'User received many emails for 0981.HK cycling BUY→HOLD→BUY→HOLD within 1–2 hours. check_signal_alerts() called GET /signals/{sym} without live=False — the endpoint defaults to live=True, recomputing the signal fresh from intraday prices every minute. A stock sitting at the buy_threshold boundary flips BUY↔HOLD on every minute tick, firing an email each time. No same-direction cooldown existed to suppress the spam.',
+    fix: 'Two changes: (1) Pass live=False in signal fetch params so alert checker reads the stored DB signal (same source of truth as Signal Filter page). DB signals only change during scheduled refreshes (5×/day). (2) Added 2-hour same-direction cooldown on last_sent_at — advances last_signal but skips email if sent within past 2 hours. Full BUY↔SELL reversals bypass the cooldown.',
+    file: 'services/market-data/src/services/scheduler.py',
+    implementedNote: 'Done 2026-06-18 — deployed via docker cp + restart market-data.',
+    impact: 'HIGH (UX) — users were receiving dozens of alert emails per hour for a single stock. Design invariant: alert checker must always read DB signals, not live-computed signals.',
+  },
 ];
 
 
@@ -5778,6 +5791,7 @@ const TIER_LABEL: Record<Tier, string> = {
   39: 'Tier 39 — Alert UX Overhaul + Outcomes Visibility (2026-06-17)',
   40: 'Tier 40 — Signal Intelligence: Calibration + Consensus + RSI Exit (2026-06-17)',
   41: 'Tier 41 — HSI Benchmark + Fundamental Deterioration Exit (2026-06-17)',
+  42: 'Tier 42 — Signal Alert Oscillation Fix (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5822,6 +5836,7 @@ const TIER_COLOR: Record<Tier, string> = {
   39: '#f472b6',
   40: '#fb923c',
   41: '#38bdf8',
+  42: '#f87171',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5893,7 +5908,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;

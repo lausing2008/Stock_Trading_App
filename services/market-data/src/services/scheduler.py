@@ -992,7 +992,7 @@ def check_signal_alerts() -> None:
                 # Same-direction cooldown: if we already sent this exact direction within
                 # the last 4 hours, advance state but skip the email. Prevents BUY→HOLD→BUY
                 # oscillation spam when a stock is sitting right at the threshold boundary.
-                _SAME_DIR_COOLDOWN_HRS = 4
+                _SAME_DIR_COOLDOWN_HRS = 2
                 if alert.last_sent_at is not None:
                     sent_ago = datetime.now(timezone.utc) - alert.last_sent_at.replace(tzinfo=timezone.utc) if alert.last_sent_at.tzinfo is None else datetime.now(timezone.utc) - alert.last_sent_at
                     if sent_ago.total_seconds() < _SAME_DIR_COOLDOWN_HRS * 3600:
