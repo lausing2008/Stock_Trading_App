@@ -1,7 +1,7 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-18 (Tier 33 — signal outcomes analysis; SA-31 SWING/SHORT tuning; trail stop mechanism verified; BUG-3/4/5 fixes)  
+**Last updated:** 2026-06-18 (Tier 34 — Events Calendar: earnings + ex-dividends + FOMC/CPI/NFP/PCE/GDP macro events)  
 **Perspective:** Data Analyst + Quantitative Trading  
 **Overall rating:** 9.5 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 → 9.5 — paper trading decision quality + real-trade feedback loop 2026-06-18)*
 
@@ -110,6 +110,10 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-18 | **BUG-3: HK currency display** — paper-portfolio page was showing HK portfolio equity in USD format; added `fmtCurrency()` that renders HK$ for HK portfolios | frontend/paper-portfolio.tsx | ✅ Done |
 | 2026-06-18 | **BUG-4: Signal alert distributed lock** — US+HK schedulers both call `check_signal_alerts()`; Redis NX lock (120s TTL) prevents duplicate email sends when both run within the same minute | scheduler.py | ✅ Done |
 | 2026-06-18 | **BUG-5: Import path fix for manual paper trading step** — `/paper/run_step` endpoint used relative import `services.paper_trading_engine` which failed when called directly; fixed to `src.services.paper_trading_engine` | paper_portfolio.py | ✅ Done |
+| 2026-06-18 | **Events Calendar — ex_dividend_date in fundamentals** — added `ex_dividend_date` field to `FundamentalsOut` struct; `_parse_ex_div_date()` converts yfinance unix timestamp to YYYY-MM-DD string; field stored in Redis fundamentals cache per stock | market-data/routes.py | ✅ Done |
+| 2026-06-18 | **Events Calendar — _MACRO_2026 static calendar** — hard-coded 2026 macro schedule: 8 FOMC decisions, 12 CPI, 12 NFP, 12 PCE, 4 GDP advance estimates (sources: federalreserve.gov, bls.gov, bea.gov) | market-data/routes.py | ✅ Done |
+| 2026-06-18 | **Events Calendar — GET /stocks/events/calendar** — unified endpoint merging macro events with earnings + ex-dividend dates from Redis fundamentals cache; sorted by days_to_event; returns 40 events in 90d window at launch | market-data/routes.py | ✅ Done |
+| 2026-06-18 | **Events Calendar — frontend** — replaced earnings page with full Events Calendar; tabs (All/Earnings/Ex-Dividends/Macro), US/HK filter, search, color-coded legend (7 types), urgency badges, week-grouped card grid, per-type detail rows | frontend/earnings.tsx + api.ts | ✅ Done |
 
 ---
 
@@ -1947,3 +1951,130 @@ FastAPI app (Python path differs from scheduler context). Fixed to `from src.ser
 - `frontend/src/pages/paper-portfolio.tsx` — BUG-3 HK currency formatting
 - `services/market-data/src/services/scheduler.py` — BUG-4 distributed lock
 - `services/market-data/src/api/paper_portfolio.py` — BUG-5 import path fix
+
+---
+
+## Tier 34 — Events Calendar (2026-06-18)
+
+### Overview
+
+The existing `/earnings` page was extended into a full **Events Calendar** covering four event
+categories: earnings reports, ex-dividend dates, and macro events (FOMC, CPI, NFP, PCE, GDP).
+The page URL stays at `/earnings` — no navigation change required.
+
+Live snapshot (next 90 days at launch): **40 events** — 28 earnings, 3 CPI, 3 NFP, 3 PCE,
+2 FOMC, 1 GDP.
+
+---
+
+### Backend Changes
+
+#### 1. `ex_dividend_date` added to fundamentals cache
+
+`FundamentalsOut` gained a new field:
+```python
+ex_dividend_date: str | None = None   # YYYY-MM-DD
+```
+
+yfinance returns `exDividendDate` as a Unix timestamp integer. A new helper converts it:
+```python
+def _parse_ex_div_date(raw) -> str | None:
+    if isinstance(raw, (int, float)):
+        return datetime.utcfromtimestamp(raw).date().isoformat()
+    return str(raw)[:10]
+```
+
+This field is now stored in the `stockai:fundamentals:v2:{symbol}` Redis cache (24h TTL).
+All stocks refresh automatically as their fundamentals are fetched.
+
+#### 2. `_MACRO_2026` — Static macro event calendar
+
+57 hard-coded entries for the full 2026 schedule (sources: federalreserve.gov, bls.gov, bea.gov):
+
+| Type | Events | Schedule |
+|------|--------|----------|
+| FOMC | 8 | Jan 29, Mar 18, May 7, Jun 18, Jul 30, Sep 17, Oct 29, Dec 10 |
+| CPI  | 12 | Monthly (~2nd week; BLS) |
+| NFP  | 12 | Monthly (first Friday; BLS) |
+| PCE  | 12 | Monthly (~last Friday; BEA) |
+| GDP  | 4  | Quarterly advance estimates (BEA) — Jan 29, Apr 30, Jul 30, Oct 29 |
+
+#### 3. `GET /stocks/events/calendar?days_ahead=N`
+
+New unified endpoint that:
+1. Filters `_MACRO_2026` to events within the `days_ahead` window
+2. Iterates all active stocks, reads each stock's Redis fundamentals cache
+3. Extracts `next_earnings_date` (already stored) and `ex_dividend_date` (newly added)
+4. Returns a single sorted list by `days_to_event`, then by `type`
+
+Response shape per event:
+```json
+{
+  "type": "fomc | cpi | nfp | pce | gdp | earnings | dividend",
+  "date": "2026-07-15",
+  "days_to_event": 27,
+  "title": "CPI Release",
+  "description": "Consumer Price Index — Jun 2026 data (BLS)",
+  "impact": "high | medium | low",
+  "symbol": null,
+  "name": null,
+  "market": null,
+  "sector": null,
+  "dividend_rate": null,
+  "dividend_yield": null,
+  "eps_estimate": null,
+  "market_cap": null
+}
+```
+
+Stock events populate `symbol`, `name`, `market`, `sector` and the type-specific fields.
+Macro events leave all stock fields null.
+
+---
+
+### Frontend Changes
+
+#### Color coding
+
+Each event type has a distinct color used for the left border, badge, and legend dot:
+
+| Type | Color | Notes |
+|------|-------|-------|
+| Earnings | Indigo `#818cf8` | |
+| Ex-Dividend | Green `#4ade80` | |
+| FOMC | Amber `#f59e0b` | High impact |
+| CPI | Orange `#fb923c` | High impact |
+| NFP (Jobs) | Sky `#38bdf8` | High impact |
+| PCE | Violet `#a78bfa` | High impact |
+| GDP | Emerald `#34d399` | Medium impact |
+
+#### Page structure
+
+- **Header:** "Events Calendar" with 14d / 30d / 45d / 90d day-range selector
+- **Legend:** Colored dot + label for each of the 7 event types
+- **Tabs:** All · Earnings · Ex-Dividends · Macro — each with a live count badge
+- **Filters:** Search (symbol / name / title) and US/HK market filter (hidden on Macro tab)
+- **Cards:** Week-grouped (Today / Tomorrow / This Week / Next Week / 2–3 Weeks / 3+ Weeks), grid layout
+- **Urgency:** Badge color shifts red→orange→yellow→grey as the event approaches
+
+#### Per-type card detail rows
+
+| Type | Detail shown |
+|------|-------------|
+| Earnings | EPS estimate · Revenue growth · EPS growth · Market cap |
+| Dividend | Annual dividend rate · Dividend yield · Market cap |
+| Macro | Full description (e.g. "Consumer Price Index — Jun 2026 data") |
+
+#### Ex-dividend data availability note
+
+Ex-dividend dates populate from the fundamentals cache. Stocks recently visited in the UI
+or refreshed by the scheduler already show up. The rest fill in as fundamentals are fetched
+over time (24h TTL, refreshed on each stock page visit or scheduled batch).
+
+---
+
+### Files Changed
+
+- `services/market-data/src/api/routes.py` — `ex_dividend_date` in `FundamentalsOut`, `_parse_ex_div_date()`, `_MACRO_2026`, `GET /stocks/events/calendar`
+- `frontend/src/pages/earnings.tsx` — complete rewrite as Events Calendar page
+- `frontend/src/lib/api.ts` — `CalendarEvent` type + `eventsCalendar()` method
