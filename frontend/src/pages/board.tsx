@@ -981,14 +981,25 @@ export default function BoardPage() {
     const updates: Record<string, unknown> = { stage: 'closed' };
     if (!isNaN(exitPrice) && exitPrice > 0) updates.exit_price = exitPrice;
     await api.updateBoardPlan(closeConfirmId, updates);
-    // Remove from Positions if the card has a tracked position
+    // Remove from Positions and credit cash proceeds if the card has a tracked position
     if (closePlan?.symbol) {
       try {
         const positions = await api.listPositions();
         const existing = positions.find(p => p.symbol === closePlan.symbol.toUpperCase());
         if (existing) {
+          const isHK = /\.(HK|hk)$/.test(closePlan.symbol) || /^\d{4,5}$/.test(closePlan.symbol);
+          const currency: 'USD' | 'HKD' = isHK ? 'HKD' : 'USD';
           if (!isNaN(exitPrice) && exitPrice > 0 && (closePlan.shares ?? 0) > 0) {
-            await api.sellPosition(existing.id, { shares: Math.min(closePlan.shares!, existing.shares), price: exitPrice });
+            const soldShares = Math.min(closePlan.shares!, existing.shares);
+            await api.sellPosition(existing.id, { shares: soldShares, price: exitPrice });
+            // Credit proceeds back to cash balance
+            try {
+              const currentCash = await api.getCash();
+              await api.updateCash({
+                ...currentCash,
+                [currency]: Math.max(0, (currentCash[currency] ?? 0) + soldShares * exitPrice),
+              });
+            } catch { /* best-effort cash update */ }
           } else {
             await api.removePosition(existing.id);
           }
@@ -1014,12 +1025,21 @@ export default function BoardPage() {
       try {
         const positions = await api.listPositions();
         const existing = positions.find(p => p.symbol === activatingPlan.symbol.toUpperCase());
-        const currency = /\.(HK|hk)$/.test(activatingPlan.symbol) || /^\d{4,5}$/.test(activatingPlan.symbol) ? 'HKD' : 'USD';
+        const isHK = /\.(HK|hk)$/.test(activatingPlan.symbol) || /^\d{4,5}$/.test(activatingPlan.symbol);
+        const currency: 'USD' | 'HKD' = isHK ? 'HKD' : 'USD';
         if (existing) {
           await api.buyMorePosition(existing.id, { shares, price: fillPrice });
         } else {
           await api.addPosition({ symbol: activatingPlan.symbol, shares, price: fillPrice, currency });
         }
+        // Debit purchase cost from cash balance
+        try {
+          const currentCash = await api.getCash();
+          await api.updateCash({
+            ...currentCash,
+            [currency]: Math.max(0, (currentCash[currency] ?? 0) - shares * fillPrice),
+          });
+        } catch { /* best-effort cash debit */ }
         setFillSyncMsg(`✓ Added to Positions (${shares} shares @ ${fillPrice})`);
       } catch {
         setFillSyncMsg('⚠ Position sync failed — add manually in Positions');
