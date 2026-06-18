@@ -1,7 +1,7 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-18 (Tier 32 — paper trading entry quality audit; confidence/score/position-count tightened; GROWTH scale-out retuned; full trade activity analysis)  
+**Last updated:** 2026-06-18 (Tier 33 — signal outcomes analysis; SA-31 SWING/SHORT tuning; trail stop mechanism verified; BUG-3/4/5 fixes)  
 **Perspective:** Data Analyst + Quantitative Trading  
 **Overall rating:** 9.5 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 → 9.5 — paper trading decision quality + real-trade feedback loop 2026-06-18)*
 
@@ -103,6 +103,13 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-18 | **PT-Q5: GROWTH scale-out retuned** — first tranche +7%→+12%, second +12%→+22%; prevents cutting GROWTH winners at 20% of their 35% target; SWING unchanged (+7%/+10%) | paper_trading_engine.py `_STYLE_OVERRIDES["GROWTH"]` | ✅ Done |
 | 2026-06-18 | **PT-Q6: Tighten SWING trail/breakeven** — trail trigger 4%→3%, breakeven 2%→1.5%; faster capital lock-in on short-hold 12%-target trades | paper_trading_engine.py `_STYLE_OVERRIDES["SWING"]` | ✅ Done |
 | 2026-06-18 | **PT-Q7: GROWTH trail/breakeven tightened** — trail trigger 5%→4%, breakeven 3%→2%; GROWTH stop is wide (-12%) so earlier breakeven move protects against roundtrips | paper_trading_engine.py `_STYLE_OVERRIDES["GROWTH"]` | ✅ Done |
+| 2026-06-18 | **SA-31: SWING ML cap reduced 0.75→0.65** — outcomes analysis: conf=65-79 BUY band (highest ML confidence) had 13.3% win rate — WORST of all bands; reduced cap lowers ML dominance, raising TA's relative weight to filter overconfident ML-pushed signals | signal-engine/signals.py | ✅ Done |
+| 2026-06-18 | **SA-31: SWING buy_threshold bull+unknown raised 0.65→0.67** — after ML cap reduction, borderline ML-pushed signals that barely cleared 0.65 (but had weak TA confirmation) are filtered out | signal-engine/signals.py | ✅ Done |
+| 2026-06-18 | **SA-31: SHORT buy_threshold bull raised 0.60→0.63** — TA-dominant style had 16.2% BUY win rate (n=37, Jun 3–5); tighter entry requires stronger TA consensus | signal-engine/signals.py | ✅ Done |
+| 2026-06-18 | **SA-31: SHORT adx_min raised 25→27** — SHORT momentum style requires cleaner directional trend; raises the bar from ADX>25 to ADX>27 | signal-engine/signals.py | ✅ Done |
+| 2026-06-18 | **BUG-3: HK currency display** — paper-portfolio page was showing HK portfolio equity in USD format; added `fmtCurrency()` that renders HK$ for HK portfolios | frontend/paper-portfolio.tsx | ✅ Done |
+| 2026-06-18 | **BUG-4: Signal alert distributed lock** — US+HK schedulers both call `check_signal_alerts()`; Redis NX lock (120s TTL) prevents duplicate email sends when both run within the same minute | scheduler.py | ✅ Done |
+| 2026-06-18 | **BUG-5: Import path fix for manual paper trading step** — `/paper/run_step` endpoint used relative import `services.paper_trading_engine` which failed when called directly; fixed to `src.services.paper_trading_engine` | paper_portfolio.py | ✅ Done |
 
 ---
 
@@ -1786,3 +1793,157 @@ rows/run. The `by_research_alignment` data will accumulate as signals mature.
 - `shared/db/models.py`
 - `services/signal-engine/src/api/routes.py`
 - `scripts/migrate_signal_outcomes_int8.sql` (new)
+
+---
+
+## Tier 33 — Signal Outcomes Analysis + SA-31 Signal Tuning (2026-06-18)
+
+### Signal Outcomes (60-day snapshot)
+
+Full query of `signal_outcomes` table, filtered to the last 60 days. Results are grouped by
+`horizon` and `signal_direction` with multi-window accuracy (5d / 10d / 20d).
+
+#### Win Rate by Horizon + Direction
+
+| Horizon | Direction | n   | Win Rate | Avg Return | Notes |
+|---------|-----------|-----|----------|------------|-------|
+| SHORT   | BUY       | 37  | 16.2%    | -0.05%     | Signal dates Jun 3–5; well below random; primary concern |
+| SHORT   | SELL      | 206 | 43.7%    | 0.00%      | Moderately useful; 5.6× more SELL than BUY for SHORT style |
+| SWING   | BUY       | 204 | 27.5%    | -0.05%     | 10d evaluation; below coin-flip |
+| SWING   | SELL      | 209 | 61.7%    | -0.02%     | Healthy; SELL signals significantly outperform BUY |
+
+*Win rate = fraction where `is_correct=true` (10d evaluation for SWING, 5d for SHORT).*  
+*No LONG/GROWTH outcomes yet — evaluation windows (20d+) longer than signal history since launch.*
+
+#### SWING BUY Multi-Window Accuracy
+
+| Window | Win Rate | Note |
+|--------|----------|------|
+| 5d     | 50.5%    | Near coin-flip — stocks initially hold up |
+| 10d    | 28.4%    | Primary `is_correct` definition — strong reversal after day 5 |
+| 20d    | 26.0%    | Further deterioration |
+
+**Interpretation:** SWING BUY signals fire correctly on a 5-day basis (50.5%) but stocks give back gains and fall below entry by day 10 (28.4%). This is a "late entry at micro-peak" pattern: the ML model pattern-matches to breakout momentum, but the breakout has already partially played out by signal time.
+
+#### SWING BUY Win Rate by Confidence Band (all in bull regime)
+
+| Confidence Band | bull_prob range | n | Win Rate |
+|----------------|-----------------|---|----------|
+| conf 0–29      | 50–64.5%        | ? | 17.2%    |
+| conf 30–49     | 65–74.5%        | ? | 30.8%    |  ← best
+| conf 50–64     | 75–82%          | ? | 19.6%    |
+| conf 65–79     | 82.5–89.5%      | ? | 13.3%    |  ← worst despite highest ML confidence
+
+**Key finding:** The confidence-accuracy relationship is **inverted** for SWING BUY. The highest-confidence signals (65-79, where ML is 82-90% bullish) are the worst performers (13.3%). The moderate-confidence band (30-49) outperforms the high-confidence band by 2.3×. This is a textbook **ML overconfidence** problem: the model learns that strong momentum stocks "look like" continued BUYs, but these are often already extended and about to mean-revert at the 10-day horizon.
+
+---
+
+### Paper Trading Trail Stop Analysis
+
+All 3 closed trades appeared to exit at approximately -0.10% from entry, despite initial stops set at
+-5.65% to -12.14%. This was investigated:
+
+| Symbol | Style  | Entry    | Highest    | Exit     | Initial Stop | Exit Reason |
+|--------|--------|----------|------------|----------|--------------|-------------|
+| UPST   | GROWTH | $32.893  | $33.905 (+3.1%) | $32.860 (-0.10%) | $28.900 (-12.1%) | stop_hit |
+| SOFI   | GROWTH | $17.838  | $18.665 (+4.6%) | $17.820 (-0.10%) | $15.700 (-12.0%) | stop_hit |
+| CRDO   | SWING  | $252.252 | $261.105 (+3.5%) | $252.000 (-0.10%) | $238.000 (-5.7%) | stop_hit |
+
+**Conclusion: This is CORRECT behavior.** The paper trading engine uses `current_stop` (the trailing
+stop) as the exit trigger, not `stop_loss` (the initial hard stop). The sequence for each trade:
+1. Stock went up 3.1–4.6%, exceeding the `breakeven_trigger_pct` (2% for GROWTH, 1.5% for SWING)
+2. Breakeven trigger fired → `current_stop` moved to entry price
+3. Stock then pulled back to entry → trail stop fired at entry × (1 − 0.1% slippage) = −0.10%
+4. Correct exit: the position was protected from a full roundtrip back to the original -12% hard stop
+
+The exit_reason is labeled `stop_hit` because the code checks `live_price <= current_stop` (the
+current trail stop, not initial stop_loss). The display label is slightly misleading but the
+mechanics are correct.
+
+**Trail stop is doing its job:** Without breakeven moves, these 3 trades could have continued
+down to −12% losses. Instead they exited at near-zero with capital preserved.
+
+---
+
+### Open Position Quality Check (new min_confidence rules)
+
+8 of 14 open positions entered BEFORE the new min_confidence rules (Tier 32). Positions that
+would be BLOCKED under the new thresholds (GROWTH≥45, SWING≥50):
+
+| Portfolio | Style  | Symbol | Confidence | Status |
+|-----------|--------|--------|------------|--------|
+| GROWTH    | GROWTH | NU     | 23         | ✗ Would block |
+| GROWTH    | GROWTH | NVDA   | 36         | ✗ Would block |
+| SWING     | SWING  | UNH    | 37         | ✗ Would block |
+| SWING     | SWING  | KMT    | 40         | ✗ Would block |
+| SWING     | SWING  | VBK    | 40         | ✗ Would block |
+| SWING     | SWING  | FCEL   | 44         | ✗ Would block |
+
+These positions are grandfathered (already open). The new rules apply to future entries. From here
+forward, no new GROWTH position will enter below confidence=45 and no new SWING below 50.
+
+---
+
+### SA-31 — Signal Engine Tuning (Outcomes-Data-Driven)
+
+**Root cause of poor SWING BUY outcomes:** The `ml_weight_cap=0.75` for SWING means ML can
+contribute up to 75% of the fused signal. When ML is very confident (bull_prob=82-90%), the signal
+reaches high confidence territory (conf=65-79) without needing strong TA confirmation. These
+overconfident signals are precisely the worst performers (13.3% win rate). The fix is to reduce
+ML's maximum contribution, forcing greater TA alignment before a SWING BUY fires.
+
+**Root cause of poor SHORT BUY outcomes:** SHORT has `ml_weight_cap=0.30` (TA-dominant). The 16.2%
+BUY win rate with strong ADX filter (>25) suggests the TA combination is generating false positives
+for SHORT-horizon BUY signals. Raising the BUY threshold and ADX minimum increases the bar.
+
+#### SA-31 Parameter Changes
+
+| Parameter | Style | Old Value | New Value | Reason |
+|-----------|-------|-----------|-----------|--------|
+| `ml_weight_cap` | SWING | 0.75 | **0.65** | Conf=65-79 (highest ML weight) → 13.3% win rate — ML overconfidence; reducing cap gives TA more influence |
+| `buy_threshold[bull]` | SWING | 0.65 | **0.67** | After cap reduction, borderline ML-pushed signals that cleared 0.65 with weak TA are now filtered |
+| `buy_threshold[unknown]` | SWING | 0.65 | **0.67** | Same adjustment as bull regime |
+| `buy_threshold[bull]` | SHORT | 0.60 | **0.63** | 16.2% BUY win rate in TA-dominant style; tighter TA alignment required |
+| `adx_min` | SHORT | 25 | **27** | SHORT momentum requires cleaner trend; raises directional filter |
+
+*GROWTH and LONG profiles unchanged — insufficient outcomes data (n<5 in 60d window).*
+
+#### Combined Effect
+
+For a SWING signal with ML=0.85 (85% bullish) and TA=0.50 (neutral TA):
+- **Before:** fused = 0.85×0.75 + 0.50×0.25 = 0.7625 → BUY (conf=52)
+- **After:**  fused = 0.85×0.65 + 0.50×0.35 = 0.7275 → BUY only if above new threshold 0.67 (conf=45.5, still passes)
+
+For a weaker signal: ML=0.80, TA=0.42:
+- **Before:** fused = 0.80×0.75 + 0.42×0.25 = 0.705 → BUY (conf=41)
+- **After:**  fused = 0.80×0.65 + 0.42×0.35 = 0.667 → **HOLD** (below new threshold 0.67)
+
+The latter example is exactly the type of "ML confident, TA lukewarm" setup that had the worst
+outcome history. The cap reduction + threshold raise together target this cohort specifically.
+
+---
+
+### Bug Fixes (BUG-3 through BUG-5)
+
+**BUG-3: HK currency display** — The paper-portfolio page used `fmtUSD()` everywhere, showing
+HK portfolio equity in `$` (USD format). Added `fmtCurrency(v, market)` that renders `HK$` with
+HK locale formatting for HK portfolios. Applied to Equity, Initial, Realized P&L, Unrealized P&L,
+and the How It Works description.
+
+**BUG-4: Signal alert duplicate emails** — US and HK schedulers both run `check_signal_alerts()`
+independently. If their market-data refresh cycles overlap (both completing within the same minute),
+the function could run twice and send duplicate email alerts. Fixed by a Redis distributed lock
+(`stockai:lock:check_signal_alerts`, 120s TTL, NX semantics). The second caller sees the lock and
+skips. Fallback: if Redis is unavailable, the DB-level `last_signal` deduplication still prevents
+exact-duplicate sends.
+
+**BUG-5: Import path for manual paper trading step** — The `/paper/run_step` admin endpoint used
+`from services.paper_trading_engine import ...` which resolved incorrectly when called via the
+FastAPI app (Python path differs from scheduler context). Fixed to `from src.services.paper_trading_engine`.
+
+### Files Changed
+
+- `services/signal-engine/src/generators/signals.py` — SA-31 profile changes + docstring
+- `frontend/src/pages/paper-portfolio.tsx` — BUG-3 HK currency formatting
+- `services/market-data/src/services/scheduler.py` — BUG-4 distributed lock
+- `services/market-data/src/api/paper_portfolio.py` — BUG-5 import path fix

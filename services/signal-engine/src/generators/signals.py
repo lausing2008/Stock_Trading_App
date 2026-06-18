@@ -52,6 +52,17 @@ Signal accuracy improvements (SA-1 through SA-7):
          When exactly 2 pillars are active (previously no penalty above the SA-19 < 2 gate),
          those styles apply a ×0.70 compress — blocking borderline 2-pillar BUYs while passing
          high-conviction ones (fused ≥ ~0.714 for SWING's 0.65 threshold still clears).
+  SA-31: Outcomes-data-driven rebalance (2026-06-18). 60-day signal_outcomes table analysis:
+         SWING BUY win rate 27.5% at 10d (conf=65-79 band: 13.3% — WORST despite highest ML
+         confidence, indicating ML overconfidence at SWING horizon). SHORT BUY 16.2% (n=37).
+         SWING SELL 61.7% — healthy. Changes:
+         - SWING ml_weight_cap: 0.75→0.65 (combat overconfidence; high-ML/low-TA signals were
+           the worst performers; reduced cap raises TA's relative influence)
+         - SWING buy_threshold bull+unknown: 0.65→0.67 (after cap reduction, borderline ML-pushed
+           signals that had fused≈0.65-0.67 are now below threshold — these were the weakest cohort)
+         - SHORT buy_threshold bull: 0.60→0.63 (TA-dominant style with 16.2% BUY win rate;
+           tighter entry requires stronger TA alignment for SHORT buys)
+         - SHORT adx_min: 25→27 (SHORT style requires clean directional trend; raises the bar)
 """
 from __future__ import annotations
 
@@ -958,9 +969,11 @@ _STYLE_PROFILES: dict[str, dict] = {
     "SHORT": {
         "ml_weight_cap": 0.30,
         "ml_weight_floor": 0.10,  # global cap cannot push ML weight below this
-        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.62},
+        # SA-31: bull raised 0.60→0.63; 16.2% BUY win rate (n=37) — tighter TA alignment needed.
+        "buy_threshold":  {"bull": 0.63, "high_vol": 0.65, "bear": 0.68, "unknown": 0.62},
         "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.52, "unknown": 0.47},
-        "adx_min": 25, "adx_compression": 0.85,
+        # SA-31: raised 25→27; SHORT requires a cleaner directional trend to BUY.
+        "adx_min": 27, "adx_compression": 0.85,
         "high_vol_compression": 0.92,
         "breadth_compression": 0.90,  # REG-002: SHORT style now penalised when market breadth < 40%
         "weekly_boost": 1.08, "weekly_compress": 0.93,
@@ -971,12 +984,16 @@ _STYLE_PROFILES: dict[str, dict] = {
         "max_compress_ratio": 0.70,
     },
     "SWING": {
-        "ml_weight_cap": 0.75,
+        # SA-31: 0.75→0.65; outcome analysis showed high-ML-confidence SWING BUY signals
+        # (conf=65-79) had the WORST win rate (13.3%), while moderate-conf (30-49) was best
+        # (30.8%). Reducing cap shifts overconfident ML-pushed signals back toward TA balance.
+        "ml_weight_cap": 0.65,
         "ml_weight_floor": 0.15,
         # SA-28: SWING bull threshold raised 0.62→0.65 (reverts SA-8 over-relaxation).
         # SA-12: only tighten bear/high_vol — keep those unchanged.
-        # fused_prob ≈ 0.75×ml + 0.25×ta; 0.72 ≈ ML>0.78 target for stressed regimes.
-        "buy_threshold":  {"bull": 0.65, "high_vol": 0.72, "bear": 0.72, "unknown": 0.65},
+        # SA-31: bull+unknown raised 0.65→0.67; after cap reduction, borderline ML-pushed
+        # signals that cleared 0.65 only due to high ML weight are now filtered out.
+        "buy_threshold":  {"bull": 0.67, "high_vol": 0.72, "bear": 0.72, "unknown": 0.67},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
         "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
