@@ -1,7 +1,7 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-18 (Tier 34 — Events Calendar: earnings + ex-dividends + FOMC/CPI/NFP/PCE/GDP macro events)  
+**Last updated:** 2026-06-18 (Tier 35 — HK paper trading bear regime audit; signal health check: 40 SWING + 70 GROWTH BUY signals live)  
 **Perspective:** Data Analyst + Quantitative Trading  
 **Overall rating:** 9.5 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 → 9.5 — paper trading decision quality + real-trade feedback loop 2026-06-18)*
 
@@ -114,6 +114,8 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-18 | **Events Calendar — _MACRO_2026 static calendar** — hard-coded 2026 macro schedule: 8 FOMC decisions, 12 CPI, 12 NFP, 12 PCE, 4 GDP advance estimates (sources: federalreserve.gov, bls.gov, bea.gov) | market-data/routes.py | ✅ Done |
 | 2026-06-18 | **Events Calendar — GET /stocks/events/calendar** — unified endpoint merging macro events with earnings + ex-dividend dates from Redis fundamentals cache; sorted by days_to_event; returns 40 events in 90d window at launch | market-data/routes.py | ✅ Done |
 | 2026-06-18 | **Events Calendar — frontend** — replaced earnings page with full Events Calendar; tabs (All/Earnings/Ex-Dividends/Macro), US/HK filter, search, color-coded legend (7 types), urgency badges, week-grouped card grid, per-type detail rows | frontend/earnings.tsx + api.ts | ✅ Done |
+| 2026-06-18 | **Signal health audit** — Signal Filter Monitor shows 40 SWING BUY + 70 GROWTH BUY signals live across US and HK; HK names visible include 0005.HK, 6613.HK, 2513.HK, 2382.HK, 0992.HK, 6082.HK, 6651.HK etc.; signal engine producing quality output | signal-engine | ✅ Verified |
+| 2026-06-18 | **HK paper trading bear regime gate verified** — both HK portfolios (id=2 SWING $300k, id=4 GROWTH $300k) have full cash and zero open positions; regime_gate_bear log confirms HSI -6.5% below 200-day SMA → all new HK entries suspended by circuit breaker; correct behavior | scheduler.py + paper_trading_engine.py | ✅ Verified |
 
 ---
 
@@ -2078,3 +2080,73 @@ over time (24h TTL, refreshed on each stock page visit or scheduled batch).
 - `services/market-data/src/api/routes.py` — `ex_dividend_date` in `FundamentalsOut`, `_parse_ex_div_date()`, `_MACRO_2026`, `GET /stocks/events/calendar`
 - `frontend/src/pages/earnings.tsx` — complete rewrite as Events Calendar page
 - `frontend/src/lib/api.ts` — `CalendarEvent` type + `eventsCalendar()` method
+
+---
+
+## Tier 35 — Signal Health Check + HK Paper Trading Bear Regime Audit (2026-06-18)
+
+### Signal Health — Live Snapshot
+
+Signal Filter Monitor audit performed on 2026-06-18. Both signal styles producing healthy output:
+
+| Style | BUY signals | Markets covered |
+|-------|-------------|-----------------|
+| SWING | 40 | US + HK |
+| GROWTH | 70 | US + HK |
+
+Sample HK stocks with active SWING BUY signals: `0005.HK`, `6613.HK`, `2513.HK`, `2382.HK`,
+`0992.HK`, `0117.HK`, `6082.HK`, `6651.HK`, `9992.HK` — confirming the signal engine is
+computing and storing HK signals correctly.
+
+Research Alignment panel (90 BUY outcomes):
+- **Partial alignment:** 100% — avg return +11.35%
+- **Divergent:** 0%
+- **No research:** 45% — avg return −1.79%
+
+Active suppression filters at time of audit: ADX Choppy (1 stock), Bearish Options (21), Cap
+Applied (34). The ADX and Bearish Options gates are compression filters, not hard blocks — they
+reduce signal confidence rather than removing the stock from the BUY list.
+
+---
+
+### HK Paper Trading Bear Regime Audit
+
+**Finding:** Both HK paper portfolios have full cash balances and zero open positions since
+creation (2026-06-17). This is expected and correct.
+
+| Portfolio | Market | Style | Cash | Open Positions | Reason |
+|-----------|--------|-------|------|----------------|--------|
+| HK SWING Portfolio (id=2) | HK | SWING | $300,000 | 0 | Bear regime gate |
+| HK GROWTH Portfolio (id=4) | HK | GROWTH | $300,000 | 0 | Bear regime gate |
+
+**Root cause confirmed:** The `_fetch_hk_market_regime()` function (scheduler) computes the
+HSI vs its 200-day SMA every 30 minutes. At audit time, HSI was **−6.5% below its 200 SMA**,
+triggering `bear` regime.
+
+The paper trading engine's entry gate logs:
+```
+paper.regime_gate_bear  [HK SWING Portfolio]
+  notes: ["HSI -6.5% below 200 SMA → bear"]
+  note: "all new entries suspended in bear regime"
+
+paper.regime_gate_bear  [HK GROWTH Portfolio]
+  notes: ["HSI -6.5% below 200 SMA → bear"]
+  note: "all new entries suspended in bear regime"
+```
+
+**This is intentional and correct.** The circuit breaker prevents buying individual HK names
+into a broad market downtrend, protecting capital in both HK portfolios.
+
+**What triggers HK entries to resume:** The HSI must close above its 200-day SMA, at which
+point `_fetch_hk_market_regime()` will return `neutral` or `bull` and the entry gate will
+open. Individual stock signals (including the ≥10 currently showing HK SWING BUY) will then
+be evaluated against the min_confidence and min_entry_score gates.
+
+**No action required.** The system is behaving correctly. Monitoring: check
+`docker logs stockai-market-data-1 | grep regime_gate_bear` after any HSI recovery.
+
+---
+
+### No Files Changed
+
+This tier is a verification audit only — no code changes were made.
