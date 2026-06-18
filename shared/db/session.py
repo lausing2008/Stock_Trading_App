@@ -125,6 +125,9 @@ def _run_migrations() -> None:  # noqa: C901
         # We only add values here for existing AWS DBs that were created before new conditions were added.
         for _val in ('CROSS_ABOVE_EMA', 'CROSS_BELOW_EMA', 'NEW_52WK_HIGH', 'NEW_52WK_LOW', 'GOLDEN_CROSS', 'DEATH_CROSS'):
             conn.execute(text(f"ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS '{_val}'"))
+        # Pattern conditions added after initial DB creation (lowercase, matching Python enum values)
+        for _val in ('macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout'):
+            conn.execute(text(f"ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS '{_val}'"))
         # SA-13: add GROWTH horizon to the signalhorizon enum (idempotent on existing DBs)
         conn.execute(text("ALTER TYPE signalhorizon ADD VALUE IF NOT EXISTS 'GROWTH'"))
         conn.execute(text("""
@@ -147,6 +150,8 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_price_alerts_symbol ON price_alerts (symbol)"
         ))
+        conn.execute(text("ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS recurring BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMP"))
         # ── Signal alerts ──────────────────────────────────────────────────────
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS signal_alerts (

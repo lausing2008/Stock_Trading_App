@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
 import { api, type PriceAlert, type SignalAlertItem, type Stock, type SignalSummary, type WatchlistMeta, type WatchlistItem } from '@/lib/api';
@@ -32,6 +32,22 @@ function alertLabel(a: PriceAlert): string {
   return a.condition;
 }
 
+function conditionShortLabel(cond: string): string {
+  if (cond === 'above') return 'Above';
+  if (cond === 'below') return 'Below';
+  if (cond === 'cross_above_ema') return 'EMA Cross ↑';
+  if (cond === 'cross_below_ema') return 'EMA Cross ↓';
+  if (cond === 'new_52wk_high') return '52W High';
+  if (cond === 'new_52wk_low') return '52W Low';
+  if (cond === 'golden_cross') return 'Golden Cross';
+  if (cond === 'death_cross') return 'Death Cross';
+  if (cond === 'macd_bullish_cross') return 'MACD Cross';
+  if (cond === 'rsi_oversold_bounce') return 'RSI Bounce';
+  if (cond === 'double_bottom') return 'Double Bottom';
+  if (cond === 'breakout') return 'Breakout';
+  return cond;
+}
+
 function triggeredLabel(a: PriceAlert): string {
   if (a.condition === 'above') return `Price rose above ${a.threshold}`;
   if (a.condition === 'below') return `Price fell below ${a.threshold}`;
@@ -56,6 +72,12 @@ const SIGNAL_BG: Record<string, string> = {
   SELL: 'rgba(248,113,113,0.12)', WAIT: 'rgba(148,163,184,0.08)',
 };
 
+const ALL_CONDITIONS = [
+  'above', 'below', 'cross_above_ema', 'cross_below_ema',
+  'new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross',
+  'macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout',
+];
+
 // ── shared styles ──────────────────────────────────────────────────────────
 
 const inp: React.CSSProperties = {
@@ -71,6 +93,8 @@ const lbl: React.CSSProperties = {
 const NO_THRESHOLD = ['new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross', 'macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout'];
 const EMA_CONDITIONS = ['cross_above_ema', 'cross_below_ema'];
 
+const PAGE_SIZE = 20;
+
 // ── Bulk Pattern Alert card ────────────────────────────────────────────────
 
 function BulkPatternAlertCard({ onDone }: { onDone: () => void }) {
@@ -81,6 +105,7 @@ function BulkPatternAlertCard({ onDone }: { onDone: () => void }) {
   const [email, setEmail]         = useState('');
   const [applying, setApplying]   = useState(false);
   const [result, setResult]       = useState('');
+  const [errors, setErrors]       = useState<string[]>([]);
 
   useEffect(() => {
     const s = typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null;
@@ -90,21 +115,25 @@ function BulkPatternAlertCard({ onDone }: { onDone: () => void }) {
   async function handleApply(e: React.FormEvent) {
     e.preventDefault();
     if (!listId || !email) return;
-    setApplying(true); setResult('');
+    setApplying(true); setResult(''); setErrors([]);
     try {
       const items: WatchlistItem[] = await api.listWatchlist(Number(listId));
-      if (!items.length) { setResult('Watchlist is empty.'); return; }
+      if (!items.length) { setResult('Watchlist is empty.'); setApplying(false); return; }
       const threshold = ['cross_above_ema', 'cross_below_ema'].includes(condition) ? 20 : 0;
       let created = 0;
+      const errs: string[] = [];
       await Promise.all(items.map(async item => {
         try {
           await api.createAlert({ symbol: item.symbol, condition, threshold, email, recurring });
           created++;
-        } catch {}
+        } catch (err) {
+          errs.push(`${item.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }));
       localStorage.setItem('stockai_alert_email', email);
       setResult(`Created ${created} alert${created !== 1 ? 's' : ''} for ${items.length} stocks.`);
-      onDone();
+      if (errs.length) setErrors(errs.slice(0, 5));
+      if (created > 0) onDone();
     } catch (err) {
       setResult('Failed — ' + (err instanceof Error ? err.message : String(err)));
     } finally { setApplying(false); }
@@ -174,10 +203,16 @@ function BulkPatternAlertCard({ onDone }: { onDone: () => void }) {
               {applying ? `Creating…` : `Apply to ${selected ? selected.item_count + ' stocks' : 'watchlist'}`}
             </button>
             {result && (
-              <span style={{ fontSize: '12px', color: result.startsWith('Created') ? '#4ade80' : '#f87171' }}>{result}</span>
+              <span style={{ fontSize: '12px', color: result.startsWith('Created') && !result.startsWith('Created 0') ? '#4ade80' : '#f87171' }}>{result}</span>
             )}
           </div>
         </form>
+        {errors.length > 0 && (
+          <div style={{ marginTop: '10px', padding: '10px 14px', borderRadius: '8px', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)' }}>
+            <div style={{ fontSize: '11px', color: '#f87171', fontWeight: 700, marginBottom: '4px' }}>Failed for {errors.length} stocks (first 5 shown):</div>
+            {errors.map((e, i) => <div key={i} style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>{e}</div>)}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -189,6 +224,7 @@ function PriceAlertsTab() {
   const { data: stocks } = useSWR<Stock[]>('stocks-all', () => api.listStocks());
   const { data: alerts, mutate } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { refreshInterval: 30000 });
 
+  // Create form state
   const [symbol, setSymbol]       = useState('');
   const [condition, setCondition] = useState('above');
   const [threshold, setThreshold] = useState('');
@@ -200,6 +236,16 @@ function PriceAlertsTab() {
   const [saved, setSaved]         = useState(false);
   const [error, setError]         = useState('');
 
+  // Filter + pagination state
+  const [filterSymbol, setFilterSymbol]       = useState('');
+  const [filterCondition, setFilterCondition] = useState('');
+  const [filterMode, setFilterMode]           = useState<'all' | 'active' | 'triggered'>('active');
+  const [page, setPage]                       = useState(1);
+
+  // Selection for bulk delete
+  const [selected, setSelected]   = useState<Set<number>>(new Set());
+  const [deleting, setDeleting]   = useState(false);
+
   const isEma         = EMA_CONDITIONS.includes(condition);
   const isNoThreshold = NO_THRESHOLD.includes(condition);
 
@@ -207,6 +253,29 @@ function PriceAlertsTab() {
     const s = typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null;
     if (s) setEmail(s);
   }, []);
+
+  // Filter logic
+  const allAlerts = alerts ?? [];
+  const filtered = useMemo(() => {
+    return allAlerts.filter(a => {
+      if (filterMode === 'active' && a.triggered) return false;
+      if (filterMode === 'triggered' && !a.triggered) return false;
+      if (filterSymbol && !a.symbol.toLowerCase().includes(filterSymbol.toLowerCase())) return false;
+      if (filterCondition && a.condition !== filterCondition) return false;
+      return true;
+    });
+  }, [allAlerts, filterMode, filterSymbol, filterCondition]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Reset page when filters change
+  useEffect(() => { setPage(1); }, [filterSymbol, filterCondition, filterMode]);
+
+  // Unique conditions present in alerts (for filter dropdown)
+  const presentConditions = useMemo(() => {
+    return [...new Set(allAlerts.map(a => a.condition))].sort();
+  }, [allAlerts]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -229,8 +298,55 @@ function PriceAlertsTab() {
     try { await api.deleteAlert(id); await mutate(); } catch {}
   }
 
-  const active = (alerts ?? []).filter(a => !a.triggered);
-  const fired  = (alerts ?? []).filter(a => a.triggered);
+  // Bulk delete selected
+  async function handleBulkDelete() {
+    if (!selected.size || deleting) return;
+    setDeleting(true);
+    await Promise.all([...selected].map(id => api.deleteAlert(id).catch(() => {})));
+    setSelected(new Set());
+    await mutate();
+    setDeleting(false);
+  }
+
+  // Bulk delete all of a condition type
+  async function handleDeleteByCondition(cond: string) {
+    const ids = allAlerts.filter(a => a.condition === cond).map(a => a.id);
+    if (!ids.length) return;
+    if (!confirm(`Delete all ${ids.length} "${conditionShortLabel(cond)}" alerts?`)) return;
+    setDeleting(true);
+    await Promise.all(ids.map(id => api.deleteAlert(id).catch(() => {})));
+    await mutate();
+    setDeleting(false);
+  }
+
+  function toggleSelect(id: number) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectPage() {
+    const pageIds = paginated.map(a => a.id);
+    const allSelected = pageIds.every(id => selected.has(id));
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (allSelected) pageIds.forEach(id => next.delete(id));
+      else pageIds.forEach(id => next.add(id));
+      return next;
+    });
+  }
+
+  const active    = allAlerts.filter(a => !a.triggered).length;
+  const triggered = allAlerts.filter(a => a.triggered).length;
+
+  // Group counts by condition (for bulk-delete-by-type UI)
+  const conditionCounts = useMemo(() => {
+    const map: Record<string, number> = {};
+    allAlerts.forEach(a => { map[a.condition] = (map[a.condition] ?? 0) + 1; });
+    return map;
+  }, [allAlerts]);
 
   return (
     <div>
@@ -347,58 +463,157 @@ function PriceAlertsTab() {
 
       <BulkPatternAlertCard onDone={() => mutate()} />
 
-      {/* Active */}
-      <div style={{ marginBottom: '24px' }}>
-        <h2 style={{ fontSize: '13px', fontWeight: 700, color: '#94a3b8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-          Active ({active.length})
-        </h2>
-        {active.length === 0 ? (
-          <div style={{ padding: '32px', textAlign: 'center', borderRadius: '10px', border: '1px dashed #1e293b', color: '#334155', fontSize: '13px' }}>
-            No active alerts. Create one above.
+      {/* Bulk delete by type */}
+      {Object.keys(conditionCounts).length > 1 && (
+        <div style={{ marginBottom: '20px', padding: '14px 16px', borderRadius: '10px', background: 'rgba(15,23,42,0.8)', border: '1px solid #1e293b' }}>
+          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '10px' }}>
+            Bulk Delete by Type
           </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {active.map(a => (
-              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', borderRadius: '10px', border: `1px solid ${a.recurring ? 'rgba(251,191,36,0.2)' : 'rgba(99,102,241,0.2)'}`, background: 'rgba(15,23,42,0.8)' }}>
-                <Link href={`/stock/${a.symbol}`} style={{ fontSize: '13px', fontWeight: 800, color: '#818cf8', fontFamily: 'monospace', minWidth: '70px', textDecoration: 'none' }}>
-                  {a.symbol}
-                </Link>
-                <span style={{ fontSize: '13px', color: '#cbd5e1', flex: 1 }}>{alertLabel(a)}</span>
-                {a.note && <span style={{ fontSize: '11px', color: '#475569', fontStyle: 'italic' }}>{a.note}</span>}
-                {a.recurring && (
-                  <span style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '4px', background: 'rgba(251,191,36,0.08)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.2)', whiteSpace: 'nowrap' }}>↻ recurring</span>
-                )}
-                {a.recurring && a.last_sent_at && (
-                  <span style={{ fontSize: '11px', color: '#475569', whiteSpace: 'nowrap' }}>fired {relTime(a.last_sent_at)}</span>
-                )}
-                {!a.recurring && <span style={{ fontSize: '11px', color: '#475569' }}>{a.email}</span>}
-                <span style={{ fontSize: '11px', color: '#334155' }}>{relTime(a.created_at)}</span>
-                <button onClick={() => handleDelete(a.id)} title="Delete alert"
-                  style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px', padding: '2px 4px' }}>✕</button>
-              </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {Object.entries(conditionCounts).sort((a, b) => b[1] - a[1]).map(([cond, count]) => (
+              <button key={cond} onClick={() => handleDeleteByCondition(cond)} disabled={deleting}
+                style={{ padding: '5px 12px', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', border: '1px solid rgba(248,113,113,0.25)', background: 'rgba(248,113,113,0.06)', color: '#f87171', opacity: deleting ? 0.5 : 1 }}>
+                Delete all {conditionShortLabel(cond)} ({count})
+              </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Filter bar */}
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Status filter */}
+        <div style={{ display: 'flex', gap: '4px', background: 'rgba(15,23,42,0.6)', border: '1px solid #1e293b', borderRadius: '8px', padding: '4px' }}>
+          {([['all', `All (${allAlerts.length})`], ['active', `Active (${active})`], ['triggered', `Triggered (${triggered})`]] as const).map(([mode, label]) => (
+            <button key={mode} onClick={() => setFilterMode(mode)}
+              style={{ padding: '5px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: filterMode === mode ? '1px solid rgba(99,102,241,0.5)' : '1px solid transparent', background: filterMode === mode ? 'rgba(99,102,241,0.15)' : 'transparent', color: filterMode === mode ? '#818cf8' : '#64748b' }}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Symbol search */}
+        <input
+          type="text" value={filterSymbol} onChange={e => setFilterSymbol(e.target.value)}
+          placeholder="Filter symbol…"
+          style={{ ...inp, width: '140px', padding: '6px 10px', fontSize: '12px' }}
+        />
+
+        {/* Condition filter */}
+        <select value={filterCondition} onChange={e => setFilterCondition(e.target.value)}
+          style={{ ...inp, width: '180px', padding: '6px 10px', fontSize: '12px' }}>
+          <option value="">All conditions</option>
+          {presentConditions.map(c => (
+            <option key={c} value={c}>{conditionShortLabel(c)}</option>
+          ))}
+        </select>
+
+        {/* Bulk delete selected */}
+        {selected.size > 0 && (
+          <button onClick={handleBulkDelete} disabled={deleting}
+            style={{ padding: '6px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.1)', color: '#f87171', whiteSpace: 'nowrap', opacity: deleting ? 0.5 : 1 }}>
+            {deleting ? 'Deleting…' : `Delete ${selected.size} selected`}
+          </button>
         )}
+
+        <div style={{ marginLeft: 'auto', fontSize: '12px', color: '#475569' }}>
+          {filtered.length} alert{filtered.length !== 1 ? 's' : ''}
+          {filtered.length > PAGE_SIZE && ` · page ${page}/${totalPages}`}
+        </div>
       </div>
 
-      {/* Triggered */}
-      {fired.length > 0 && (
-        <div>
-          <h2 style={{ fontSize: '13px', fontWeight: 700, color: '#94a3b8', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            Triggered ({fired.length})
-          </h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {fired.map(a => (
-              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 16px', borderRadius: '10px', border: '1px solid #1e293b', background: 'rgba(15,23,42,0.4)', opacity: 0.7 }}>
-                <span style={{ fontSize: '12px', fontWeight: 700, color: '#22c55e', minWidth: '70px', fontFamily: 'monospace' }}>✓ {a.symbol}</span>
-                <span style={{ fontSize: '12px', color: '#64748b', flex: 1 }}>{triggeredLabel(a)}</span>
-                {a.note && <span style={{ fontSize: '11px', color: '#334155', fontStyle: 'italic' }}>{a.note}</span>}
-                <span style={{ fontSize: '11px', color: '#334155' }}>{a.triggered_at ? relTime(a.triggered_at) : ''}</span>
-                <button onClick={() => handleDelete(a.id)} title="Delete"
-                  style={{ background: 'none', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '16px', padding: '2px 4px' }}>✕</button>
-              </div>
-            ))}
-          </div>
+      {/* Alerts list */}
+      {filtered.length === 0 ? (
+        <div style={{ padding: '40px', textAlign: 'center', borderRadius: '10px', border: '1px dashed #1e293b', color: '#334155', fontSize: '13px' }}>
+          No alerts match the current filter.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {/* Select-all row */}
+          {filtered.length > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 12px', fontSize: '11px', color: '#475569' }}>
+              <input type="checkbox"
+                checked={paginated.length > 0 && paginated.every(a => selected.has(a.id))}
+                onChange={toggleSelectPage}
+                style={{ cursor: 'pointer', accentColor: '#6366f1' }}
+              />
+              <span>Select page ({paginated.length})</span>
+              {selected.size > 0 && <span style={{ color: '#818cf8', fontWeight: 600 }}>{selected.size} selected total</span>}
+            </div>
+          )}
+
+          {paginated.map(a => (
+            <div key={a.id} style={{
+              display: 'flex', alignItems: 'center', gap: '10px', padding: '11px 14px',
+              borderRadius: '10px',
+              border: `1px solid ${selected.has(a.id) ? 'rgba(99,102,241,0.4)' : a.triggered ? '#1e293b' : a.recurring ? 'rgba(251,191,36,0.2)' : 'rgba(99,102,241,0.2)'}`,
+              background: selected.has(a.id) ? 'rgba(99,102,241,0.06)' : a.triggered ? 'rgba(15,23,42,0.4)' : 'rgba(15,23,42,0.8)',
+              opacity: a.triggered ? 0.65 : 1,
+            }}>
+              <input type="checkbox" checked={selected.has(a.id)} onChange={() => toggleSelect(a.id)}
+                style={{ cursor: 'pointer', accentColor: '#6366f1', flexShrink: 0 }} />
+
+              {a.triggered && <span style={{ fontSize: '12px', color: '#22c55e', flexShrink: 0 }}>✓</span>}
+
+              <Link href={`/stock/${a.symbol}`} style={{ fontSize: '13px', fontWeight: 800, color: a.triggered ? '#64748b' : '#818cf8', fontFamily: 'monospace', minWidth: '70px', textDecoration: 'none', flexShrink: 0 }}>
+                {a.symbol}
+              </Link>
+
+              {/* Condition badge */}
+              <span style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '4px', background: 'rgba(99,102,241,0.1)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.2)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                {conditionShortLabel(a.condition)}
+              </span>
+
+              <span style={{ fontSize: '13px', color: a.triggered ? '#64748b' : '#cbd5e1', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {a.triggered ? triggeredLabel(a) : alertLabel(a)}
+              </span>
+
+              {a.note && <span style={{ fontSize: '11px', color: '#475569', fontStyle: 'italic', flexShrink: 0, maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.note}</span>}
+
+              {a.recurring && !a.triggered && (
+                <span style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '4px', background: 'rgba(251,191,36,0.08)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.2)', whiteSpace: 'nowrap', flexShrink: 0 }}>↻</span>
+              )}
+
+              {a.recurring && a.last_sent_at && (
+                <span style={{ fontSize: '11px', color: '#475569', whiteSpace: 'nowrap', flexShrink: 0 }}>fired {relTime(a.last_sent_at)}</span>
+              )}
+              {a.triggered && a.triggered_at && (
+                <span style={{ fontSize: '11px', color: '#334155', whiteSpace: 'nowrap', flexShrink: 0 }}>{relTime(a.triggered_at)}</span>
+              )}
+
+              <span style={{ fontSize: '11px', color: '#334155', whiteSpace: 'nowrap', flexShrink: 0 }}>{relTime(a.created_at)}</span>
+
+              <button onClick={() => handleDelete(a.id)} title="Delete alert"
+                style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px', padding: '2px 4px', flexShrink: 0 }}
+                onMouseEnter={e => (e.currentTarget.style.color = '#f87171')}
+                onMouseLeave={e => (e.currentTarget.style.color = '#475569')}>
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', gap: '6px', marginTop: '16px', justifyContent: 'center', alignItems: 'center' }}>
+          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+            style={{ padding: '6px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: page === 1 ? 'not-allowed' : 'pointer', border: '1px solid #1e293b', background: 'transparent', color: page === 1 ? '#334155' : '#94a3b8', opacity: page === 1 ? 0.5 : 1 }}>
+            ← Prev
+          </button>
+          {Array.from({ length: Math.min(7, totalPages) }, (_, i) => {
+            const p = totalPages <= 7 ? i + 1 : page <= 4 ? i + 1 : page >= totalPages - 3 ? totalPages - 6 + i : page - 3 + i;
+            return (
+              <button key={p} onClick={() => setPage(p)}
+                style={{ padding: '6px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${page === p ? 'rgba(99,102,241,0.5)' : '#1e293b'}`, background: page === p ? 'rgba(99,102,241,0.15)' : 'transparent', color: page === p ? '#818cf8' : '#64748b', minWidth: '32px' }}>
+                {p}
+              </button>
+            );
+          })}
+          <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+            style={{ padding: '6px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: page === totalPages ? 'not-allowed' : 'pointer', border: '1px solid #1e293b', background: 'transparent', color: page === totalPages ? '#334155' : '#94a3b8', opacity: page === totalPages ? 0.5 : 1 }}>
+            Next →
+          </button>
         </div>
       )}
     </div>
@@ -443,7 +658,6 @@ function SignalAlertsTab() {
   const sigMap: Record<string, SignalSummary> = {};
   for (const s of allSignals ?? []) sigMap[s.symbol] = s;
 
-  // Stocks not yet fully subscribed (show all for picker — user can add multiple horizons per stock)
   const available = stocks ?? [];
 
   async function handleAdd(e: React.FormEvent) {
