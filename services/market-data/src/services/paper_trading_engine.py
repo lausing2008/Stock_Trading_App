@@ -51,27 +51,27 @@ log = get_logger("paper_trading_engine")
 _DEFAULT_CONFIG: dict[str, Any] = {
     "trading_style":        "GROWTH",  # which signal horizon to trade
     "market":               "US",      # "US" or "HK" — determines market hours + stock universe
-    "max_positions":        10,
+    "max_positions":        6,         # max concurrent open positions (fewer = higher quality)
     "max_sector_pct":       0.30,      # max 30% in one sector
     "max_sector_positions": 3,         # max positions per sector (RISK-3)
     "risk_per_trade_pct":   0.01,      # risk 1% of equity per trade
     "max_position_pct":     0.10,      # cap any single position at 10% of equity
     # Signal.confidence = abs(bull_probability - 0.5) × 200
-    # e.g. bull_prob=62.7% → confidence=25.4; bull_prob=81% → confidence=62
-    # Old default 62 required bull_prob≥81% — nothing ever passed. Correct scale: 15=57.5%, 20=60%.
-    "min_confidence":       15.0,      # Signal.confidence threshold (bull_prob ≥ 57.5%)
+    # e.g. bull_prob=72.5%→conf=45; bull_prob=75%→conf=50; bull_prob=81%→conf=62.
+    # Style-specific minimums in _STYLE_OVERRIDES below.
+    "min_confidence":       45.0,      # Signal.confidence threshold (bull_prob ≥ 72.5%)
     "min_kscore":           48.0,      # Ranking.score threshold
     "min_rr_ratio":         2.0,       # minimum risk:reward at entry
-    "min_entry_score":      3,         # _should_enter() score threshold
+    "min_entry_score":      4,         # _should_enter() score threshold (raised from 3 → 4)
     "max_hold_days":        60,        # time-stop (GROWTH / LONG)
     "trail_atr_mult":       2.0,       # trailing stop = highest_price - ATR × mult
     "trail_trigger_pct":         0.05,  # arm trailing stop after +5% gain (once armed, trails every cycle)
     "breakeven_trigger_pct":     0.03,  # move stop to breakeven after +3% gain
-    "partial_tp_pct":            0.07,  # sell 50% of position at +7% gain; set 0 to disable
+    "partial_tp_pct":            0.10,  # sell first tranche at +10% gain (styles override this)
     "wait_exit_days":            5,     # exit if signal stays WAIT this many days
     "max_portfolio_drawdown_pct":0.20,  # pause entries if equity drops 20% from peak
     "max_daily_loss_pct":        0.04,  # pause entries if realized losses today > 4% of equity
-    "max_entries_per_day":       5,     # cap new positions opened in one trading day
+    "max_entries_per_day":       3,     # cap new positions opened in one trading day (quality > quantity)
     "require_kscore":            True,  # reject stocks with no ranking row (unknown quality)
     "max_open_risk_pct":         0.12,  # max aggregate open risk across all positions (12%)
     "max_loss_per_trade_pct":    0.02,  # cap dollar loss on any single trade at 2% of equity
@@ -152,18 +152,24 @@ def _round_step(price: float) -> float:
 _STYLE_OVERRIDES: dict[str, dict] = {
     "GROWTH": {
         "max_hold_days": 60, "trail_atr_mult": 2.0,
-        "trail_trigger_pct": 0.05, "breakeven_trigger_pct": 0.03,
-        "wait_exit_days": 5, "min_confidence": 15.0, "min_kscore": 48.0,
+        # Trail arms early so gains are protected; breakeven at +2% locks capital fast.
+        "trail_trigger_pct": 0.04, "breakeven_trigger_pct": 0.02,
+        # Scale out later for GROWTH (35% target) — don't cut winners short.
+        "partial_tp_pct": 0.12, "partial_tp2_pct": 0.22,
+        "wait_exit_days": 5, "min_confidence": 45.0, "min_kscore": 48.0,
     },
     "SWING": {
         "max_hold_days": 20, "trail_atr_mult": 1.5,
-        "trail_trigger_pct": 0.04, "breakeven_trigger_pct": 0.02,
-        "wait_exit_days": 3, "min_confidence": 20.0, "min_kscore": 52.0,
+        # Trail arms at +3%; breakeven at +1.5% for tighter SWING stops.
+        "trail_trigger_pct": 0.03, "breakeven_trigger_pct": 0.015,
+        # SWING target is +12%: scale at +7% and +10%.
+        "partial_tp_pct": 0.07, "partial_tp2_pct": 0.10,
+        "wait_exit_days": 3, "min_confidence": 50.0, "min_kscore": 52.0,
     },
     "LONG": {
         "max_hold_days": 90, "trail_atr_mult": 2.0,
         "trail_trigger_pct": 0.06, "breakeven_trigger_pct": 0.04,
-        "wait_exit_days": 7, "min_confidence": 18.0, "min_kscore": 50.0,
+        "wait_exit_days": 7, "min_confidence": 40.0, "min_kscore": 50.0,
     },
 }
 
