@@ -844,7 +844,7 @@ function TradeParamsPanel({ onDone }: { onDone: () => void }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-const TABS = ['Positions', 'Decisions', 'Closed Trades', 'Equity Curve', 'Attribution'] as const;
+const TABS = ['Positions', 'Decisions', 'Journal', 'Closed Trades', 'Equity Curve', 'Attribution'] as const;
 type Tab = typeof TABS[number];
 
 export default function PaperPortfolioPage() {
@@ -923,8 +923,8 @@ export default function PaperPortfolioPage() {
     () => api.paperEquityCurve(180, selectedPortfolioId)
   );
   const { data: decisions } = useSWR(
-    authed && tab === 'Decisions' && selectedPortfolioId != null ? ['paper-decisions', decPage, selectedPortfolioId] : null,
-    () => api.paperDecisions({ page: decPage, limit: 50, days_back: 90, portfolioId: selectedPortfolioId })
+    authed && (tab === 'Decisions' || tab === 'Journal') && selectedPortfolioId != null ? ['paper-decisions', decPage, selectedPortfolioId] : null,
+    () => api.paperDecisions({ page: decPage, limit: 50, days_back: 180, portfolioId: selectedPortfolioId })
   );
   const { data: attribution } = useSWR(
     authed && tab === 'Attribution' && selectedPortfolioId != null ? ['paper-attribution', selectedPortfolioId] : null,
@@ -1314,7 +1314,23 @@ export default function PaperPortfolioPage() {
                         })()}
                       </td>
                       <td style={{ padding: '9px 10px', color: '#94a3b8' }}>{p.take_profit != null ? `$${p.take_profit.toFixed(2)}` : '—'}</td>
-                      <td style={{ padding: '9px 10px' }}>{p.hold_days}d</td>
+                      <td style={{ padding: '9px 10px' }}>
+                        {(() => {
+                          const expected: Record<string, number> = { SHORT: 7, SWING: 14, LONG: 28, GROWTH: 20 };
+                          const exp = expected[p.trading_style] ?? 14;
+                          const pct = Math.min(1, p.hold_days / exp);
+                          const over = p.hold_days > exp;
+                          const barColor = over ? '#f87171' : pct > 0.7 ? '#facc15' : '#60a5fa';
+                          return (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span style={{ fontSize: 11, color: over ? '#f87171' : '#e2e8f0' }}>{p.hold_days}d / {exp}d</span>
+                              <div style={{ height: 3, width: 60, background: '#1e293b', borderRadius: 2 }}>
+                                <div style={{ height: '100%', width: `${pct * 100}%`, background: barColor, borderRadius: 2 }} />
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td style={{ padding: '9px 10px' }}>{p.entry_score ?? '—'}</td>
                       <td style={{ padding: '9px 10px' }}>{p.rr_ratio_at_entry != null ? `${p.rr_ratio_at_entry.toFixed(1)}:1` : '—'}</td>
                       <td style={{ padding: '9px 10px' }}>{p.confidence_at_entry != null ? `${p.confidence_at_entry.toFixed(0)}%` : '—'}</td>
@@ -1513,6 +1529,92 @@ export default function PaperPortfolioPage() {
                 <button disabled={decPage === decisions.pages} onClick={() => setDecPage(p => p + 1)}
                   style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: 5, padding: '5px 12px', cursor: 'pointer' }}>→</button>
               </div>
+            )}
+          </div>
+        )}
+
+        {/* Journal tab — chronological decision log with full entry+exit reasoning */}
+        {tab === 'Journal' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Portfolio label + switch hint */}
+            <div style={{ fontSize: 12, color: '#475569', padding: '4px 0', display: 'flex', gap: 16, alignItems: 'center' }}>
+              <span>Portfolio: <strong style={{ color: '#94a3b8' }}>{portfolioList.find(p => p.id === selectedPortfolioId)?.name ?? '—'}</strong></span>
+              <span style={{ fontSize: 11, color: '#334155' }}>Select a different portfolio from the list above to switch.</span>
+            </div>
+            {!(decisions?.items?.length) ? (
+              <div style={{ color: '#64748b', padding: 40, textAlign: 'center' }}>No trade records yet for this portfolio.</div>
+            ) : (
+              decisions.items.map(d => {
+                const er = d.entry_reasons as Record<string, unknown> ?? {};
+                const xr = d.exit_reasons as Record<string, unknown> ?? {};
+                const notes = (d.decision_notes as string[]) ?? [];
+                const isWin = d.pnl != null && d.pnl > 0;
+                const isClosed = d.stage === 'closed';
+                return (
+                  <div key={d.id} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 10, overflow: 'hidden' }}>
+                    {/* Header */}
+                    <div style={{ padding: '10px 14px', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                      <Link href={`/stock/${d.symbol}`} style={{ fontWeight: 700, fontSize: 14, color: '#60a5fa', textDecoration: 'none' }}>{d.symbol}</Link>
+                      <span style={{ fontSize: 10, background: 'rgba(148,163,184,0.1)', border: '1px solid #334155', borderRadius: 4, padding: '2px 6px', color: '#94a3b8' }}>{d.trading_style}</span>
+                      {isClosed ? (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: isWin ? '#22c55e' : '#ef4444', background: isWin ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', padding: '2px 8px', borderRadius: 4 }}>
+                          {isWin ? '✓ WIN' : '✗ LOSS'} {d.pct_return != null ? `${(d.pct_return * 100).toFixed(2)}%` : ''}
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: 10, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '2px 6px', borderRadius: 4 }}>OPEN</span>
+                      )}
+                      <span style={{ marginLeft: 'auto', fontSize: 11, color: '#475569' }}>
+                        {fmtTs(d.entry_time)}{d.exit_time ? ` → ${fmtTs(d.exit_time)}` : ''}{d.hold_days ? ` · ${d.hold_days}d` : ''}
+                      </span>
+                    </div>
+                    <div style={{ padding: '10px 14px', display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+                      {/* Entry reasoning */}
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: '#22c55e', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Entry — ${d.entry_price?.toFixed(2)}</div>
+                        {notes.length > 0 && (
+                          <ul style={{ margin: '0 0 8px', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            {notes.map((n, i) => <li key={i} style={{ fontSize: 11, color: '#94a3b8' }}>· {n}</li>)}
+                          </ul>
+                        )}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'auto auto', gap: '2px 16px' }}>
+                          {([
+                            ['TA Score', typeof er.ta_score === 'number' ? (er.ta_score as number).toFixed(3) : null],
+                            ['ML Prob', typeof er.ml_probability === 'number' ? (er.ml_probability as number).toFixed(3) : null],
+                            ['ML Agree', er.ml_agreement as string],
+                            ['Regime', er.market_regime as string],
+                            ['Weekly', er.weekly_trend as string],
+                            ['Pillars', er.independent_pillars_active as string],
+                          ] as [string, string | null][]).filter(([, v]) => v != null).map(([k, v]) => (
+                            <React.Fragment key={k}>
+                              <span style={{ fontSize: 10, color: '#475569' }}>{k}</span>
+                              <span style={{ fontSize: 10, color: '#cbd5e1' }}>{v}</span>
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Exit reasoning */}
+                      {isClosed && (
+                        <div style={{ flex: 1, minWidth: 200 }}>
+                          <div style={{ fontSize: 10, fontWeight: 600, color: isWin ? '#22c55e' : '#ef4444', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>
+                            Exit — {d.exit_price != null ? `$${d.exit_price.toFixed(2)}` : ''}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>{d.exit_reason ?? '—'}</div>
+                          {Object.keys(xr).length > 0 && (
+                            <div style={{ display: 'grid', gridTemplateColumns: 'auto auto', gap: '2px 16px' }}>
+                              {(Object.entries(xr).slice(0, 8) as [string, unknown][]).map(([k, v]) => (
+                                <React.Fragment key={k}>
+                                  <span style={{ fontSize: 10, color: '#475569' }}>{k.replace(/_/g, ' ')}</span>
+                                  <span style={{ fontSize: 10, color: '#cbd5e1' }}>{String(v)}</span>
+                                </React.Fragment>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
         )}

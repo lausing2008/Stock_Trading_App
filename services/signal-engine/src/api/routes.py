@@ -2335,6 +2335,7 @@ def detect_patterns(
 def outcomes_summary(
     horizon: str | None = Query(None, description="SHORT | SWING | LONG"),
     days: int = Query(90, description="Look-back window in calendar days"),
+    market: str | None = Query(None, description="US | HK — filter by stock market"),
     session: Session = Depends(get_session),
 ):
     """Return win-rate and return stats from the signal_outcomes table.
@@ -2355,6 +2356,10 @@ def outcomes_summary(
             q = q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))
         except ValueError:
             raise HTTPException(400, f"Unknown horizon: {horizon}")
+    if market:
+        q = q.join(Stock, Stock.id == SignalOutcome.stock_id).where(
+            Stock.market == market.upper()
+        )
 
     outcomes = session.execute(q).scalars().all()
 

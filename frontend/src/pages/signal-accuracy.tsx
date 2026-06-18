@@ -805,6 +805,8 @@ export default function SignalAccuracyPage() {
   const [sortBy, setSortBy] = useState<'date' | 'confidence' | 'pct_change'>('date');
   const [resetting, setResetting] = useState(false);
   const [resetMsg, setResetMsg] = useState('');
+  const [evaluating, setEvaluating] = useState(false);
+  const [evaluateMsg, setEvaluateMsg] = useState('');
   const [calibrating, setCalibrating] = useState(false);
   const [calibrateResult, setCalibrateResult] = useState<{ optimal_weight: number | null; optimal_accuracy: number; applied: boolean } | null>(null);
   const [fromDate, setFromDate] = useState('');
@@ -831,9 +833,10 @@ export default function SignalAccuracyPage() {
     { revalidateOnFocus: false },
   );
 
-  const { data: outcomesData } = useSWR<OutcomesSummary>(
-    authed ? ['outcomes-summary', lookback] : null,
-    () => api.outcomesSummary(undefined, lookback),
+  const [outcomesMarket, setOutcomesMarket] = useState<'ALL' | 'US' | 'HK'>('ALL');
+  const { data: outcomesData, mutate: mutateOutcomes } = useSWR<OutcomesSummary>(
+    authed ? ['outcomes-summary', lookback, outcomesMarket] : null,
+    () => api.outcomesSummary(undefined, lookback, outcomesMarket === 'ALL' ? undefined : outcomesMarket),
     { revalidateOnFocus: false },
   );
 
@@ -952,6 +955,19 @@ export default function SignalAccuracyPage() {
 
       {activeTab === 'outcomes' && (
         <div>
+          {/* Market filter */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+            {(['ALL', 'US', 'HK'] as const).map(m => (
+              <button key={m} onClick={() => setOutcomesMarket(m)}
+                style={{ padding: '5px 14px', borderRadius: 6, border: '1px solid',
+                  borderColor: outcomesMarket === m ? '#60a5fa' : '#334155',
+                  background: outcomesMarket === m ? 'rgba(96,165,250,0.12)' : 'transparent',
+                  color: outcomesMarket === m ? '#60a5fa' : '#64748b', fontSize: 12, cursor: 'pointer' }}>
+                {m}
+              </button>
+            ))}
+            <span style={{ fontSize: 11, color: '#475569', alignSelf: 'center', marginLeft: 4 }}>market</span>
+          </div>
           {!outcomesData || outcomesData.total === 0 ? (
             <div style={{ textAlign: 'center', padding: '60px 0', color: '#475569' }}>
               <div style={{ fontSize: 36, marginBottom: 8 }}>📊</div>
@@ -963,17 +979,35 @@ export default function SignalAccuracyPage() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {/* Data coverage note */}
-              {outcomesData.date_range?.oldest && (
-                <div style={{ background: 'rgba(15,23,42,0.8)', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', fontSize: 11, color: '#64748b', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ color: '#475569' }}>📅</span>
-                  <span>
-                    <strong style={{ color: '#94a3b8' }}>Evaluated signals:</strong>{' '}
-                    {outcomesData.date_range.oldest} → {outcomesData.date_range.newest}.{' '}
-                    SWING/LONG outcomes take 14–28 days to mature — post-SA-31 data (buy_threshold raised Jun 17) will appear as signals from Jun 3+ mature.
-                  </span>
-                </div>
-              )}
+              {/* Data coverage note + Evaluate Now button */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                {outcomesData.date_range?.oldest && (
+                  <div style={{ flex: 1, background: 'rgba(15,23,42,0.8)', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', fontSize: 11, color: '#64748b', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: '#475569' }}>📅</span>
+                    <span>
+                      <strong style={{ color: '#94a3b8' }}>Evaluated signals:</strong>{' '}
+                      {outcomesData.date_range.oldest} → {outcomesData.date_range.newest}.{' '}
+                      SWING/LONG outcomes take 14–28 days to mature — post-SA-31 data (buy_threshold raised Jun 17) will appear as signals from Jun 3+ mature.
+                    </span>
+                  </div>
+                )}
+                <button
+                  disabled={evaluating}
+                  onClick={async () => {
+                    setEvaluating(true); setEvaluateMsg('');
+                    try {
+                      const r = await api.evaluateOutcomes();
+                      setEvaluateMsg(`✓ ${r.evaluated} new, ${r.updated_windows} windows updated`);
+                      mutateOutcomes();
+                    } catch { setEvaluateMsg('Failed — check signal-engine logs'); }
+                    finally { setEvaluating(false); }
+                  }}
+                  style={{ padding: '8px 14px', background: evaluating ? '#1e293b' : 'rgba(96,165,250,0.1)', border: '1px solid #3b82f6', borderRadius: 6, color: '#60a5fa', fontSize: 12, cursor: evaluating ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
+                >
+                  {evaluating ? 'Evaluating…' : 'Evaluate Now'}
+                </button>
+                {evaluateMsg && <span style={{ fontSize: 11, color: evaluateMsg.startsWith('✓') ? '#4ade80' : '#f87171' }}>{evaluateMsg}</span>}
+              </div>
               {/* Overall */}
               {outcomesData.overall && (
                 <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>

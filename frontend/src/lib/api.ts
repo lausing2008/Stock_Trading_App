@@ -239,11 +239,16 @@ export const api = {
     request<WalkForwardReport>(`/signals/walkforward?test_days=${testDays}&hold_days=${holdDays}&lookback_days=${lookbackDays}`),
   dataFreshness: () =>
     request<{ last_bar_ts: string | null; hours_ago: number | null; status: string }>(`/stocks/data_freshness`),
-  outcomesSummary: (horizon?: string, days = 90) => {
+  outcomesSummary: (horizon?: string, days = 90, market?: string) => {
     const params = new URLSearchParams({ days: String(days) });
     if (horizon) params.set('horizon', horizon);
+    if (market) params.set('market', market);
     return request<OutcomesSummary>(`/signals/outcomes/summary?${params}`);
   },
+  evaluateOutcomes: () =>
+    request<{ evaluated: number; skipped_open: number; skipped_no_price: number; updated_windows: number }>(
+      '/signals/outcomes/evaluate', { method: 'POST' }
+    ),
   alphaDecay: (horizon = 'SWING', lookbackDays = 365, regime?: string) => {
     const params = new URLSearchParams({ horizon, lookback_days: String(lookbackDays) });
     if (regime) params.set('regime', regime);
