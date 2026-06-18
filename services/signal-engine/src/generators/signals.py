@@ -67,6 +67,7 @@ Signal accuracy improvements (SA-1 through SA-7):
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,6 +80,11 @@ from common.logging import get_logger
 
 log = get_logger("signal-generator")
 _settings = get_settings()
+
+# Suppress httpx INFO-level request logs — they produce a line per HTTP call
+# which fills logs with expected 404s from the ML endpoint cascade.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # ── TA component weights (SA-5) ───────────────────────────────────────────────
 # Defaults are the hand-tuned values used since launch.
@@ -250,8 +256,12 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
                         "ml_oos_suppressed": bool(data.get("oos_suppressed", False)),
                     }
                     return prob, test_auc, ml_meta
+                # 404 = no model for this endpoint — try next in cascade (expected, not an error)
+                if r.status_code != 404:
+                    log.warning("ml.fetch_unexpected_status", symbol=symbol, endpoint=endpoint, status=r.status_code)
         except Exception as exc:
             log.warning("ml.fetch_failed", symbol=symbol, endpoint=endpoint, error=str(exc))
+    log.debug("ml.no_model", symbol=symbol, note="all endpoints returned 404 — TA-only signal")
     return None, 0.0, {}
 
 

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5450,6 +5450,56 @@ const ITEMS: Item[] = [
     fix: 'Complete page rewrite. New data source: api.eventsCalendar(daysAhead) → GET /stocks/events/calendar. SWR with revalidateOnFocus: false. TypeBadge and EventCard components per event type.',
   },
 
+  // ── Tier 36 — Position Quality Panel + Trail Status + Log Cleanup (2026-06-18) ─
+  {
+    id: 'position-quality-panel',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — paper-portfolio.tsx: added confidence-band distribution panel above the portfolio tabs. Shows open positions grouped into 5 bands (0–29 red, 30–49 orange, 50–64 yellow, 65–79 slate, 80+ green). Flags grandfathered positions (below new Tier 32 thresholds: GROWTH≥45, SWING≥50, LONG≥40) vs positions meeting new standards. Computed client-side from the already-fetched positions array using confidence_at_entry + trading_style. At deploy time: 8 of 14 positions grandfathered (entered under old rules at conf=23–44); panel shows the transition state clearly as those positions exit.',
+    tier: 36, severity: 'medium',
+    title: 'Position quality transition panel — confidence band distribution + grandfathered count',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: '30 minutes',
+    impact: 'Medium — after Tier 32 raised min_confidence thresholds, 8 of 14 open positions are grandfathered. Without the panel, you must scan the entire table to count them. The panel makes the transition state visible at a glance and disappears automatically when all positions meet the new standard. The SA-31 outcomes analysis showed conf=65–79 is the worst-performing band (13.3% win rate) — the panel highlights concentration there.',
+    what: 'No visibility into how many open positions were entered under old (loose) confidence rules vs new rules. After threshold changes, the portfolio is in a mixed state during the natural position turnover period.',
+    fix: 'Added block above the Tabs div. Computes minConf per trading_style (SWING→50, GROWTH→45, LONG→40), counts positions in each confidence band (5 bands), shows grandfathered/passing counts as coloured chips.',
+  },
+  {
+    id: 'trail-stop-status-column',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — paper-portfolio.tsx: added "Status" column to open positions table between Stop and Target. Status logic: (1) ⬆ BE (amber): current_stop ≥ entry_price × 0.999 — trail has moved to breakeven. (2) ◎ TARGET (green): current_price within 5% of take_profit — approaching scale-out. (3) ⚠ STOP (red): current_price within 2% of current_stop and stop not at breakeven — near stop-out. (4) — (slate): normal monitoring. Computed per-position inline from current_stop, entry_price, current_price, take_profit fields already in the PaperPosition response.',
+    tier: 36, severity: 'low',
+    title: 'Trail stop status column — BE / TARGET / STOP / monitoring indicator in positions table',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: '20 minutes',
+    impact: 'Low (UX clarity) — the positions table showed current_stop price but no indication of whether the stop was still at the initial hard stop or had been moved to breakeven. The Tier 33 investigation found that all 3 closed trades exited at −0.10% because their trail stops moved to breakeven. The Status column makes this critical state change immediately visible without calculating it manually from entry vs. stop prices.',
+    what: 'current_stop price shown in the Stop column is ambiguous: $32.89 stop on a $32.89 entry could be initial stop OR breakeven stop. No way to tell which state a position is in without comparing stop_loss (initial) vs current_stop (trail).',
+    fix: 'Added Status cell computed from current_stop vs entry_price (breakeven detection), current_price vs current_stop (proximity to stop-out), current_price vs take_profit (proximity to target).',
+  },
+  {
+    id: 'ml-404-log-suppression',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — signals.py: (1) Added import logging + logging.getLogger("httpx").setLevel(logging.WARNING) + logging.getLogger("httpcore").setLevel(logging.WARNING) at module level — suppresses httpx INFO-level request/response log lines. (2) In _fetch_ml_data() endpoint cascade: 404 responses are now silent (expected — stock has no model for this endpoint version). Only unexpected non-404 errors emit log.warning. All endpoints exhausted emits log.debug("ml.no_model") instead of a warning.',
+    tier: 36, severity: 'low',
+    title: 'ML 404 log suppression — httpx INFO level + debug-only cascade in signal-engine',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '10 minutes',
+    impact: 'Low (observability) — the signal engine was emitting 3 WARNING lines per stock per signal cycle for stocks without ML models. With ~140 symbols and 5 refresh cycles/day, this generated ~2,100 spurious warning lines per day. These buried real errors (timeouts, unexpected status codes) in log noise. After fix: only genuine ML failures emit warnings; expected 404 fallthrough is silent.',
+    what: 'httpx logged every HTTP request/response at INFO level. The _fetch_ml_data() 3-endpoint cascade emits a 404 for each endpoint for stocks without models (new HK stocks, recently-added US names). These 404s are expected and handled by trying the next endpoint, but both httpx and the except handler were logging them.',
+    fix: 'Suppressed httpx/httpcore loggers to WARNING at module startup. Changed endpoint loop to only warn on unexpected non-404 status codes. Terminal case (all 404s) logs at debug level.',
+  },
+  {
+    id: 'dead-component-cleanup',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — deleted 4 files with no imports anywhere in the codebase: frontend/src/components/board.tsx, forecast.tsx, screener.tsx, StrategyBuilder.tsx. PriceChart.tsx retained (imported by stock/[symbol].tsx). DonutChart.tsx retained (imported by positions.tsx). tsc --noEmit confirmed no broken imports after deletion.',
+    tier: 36, severity: 'low',
+    title: 'Dead component removal — board, forecast, screener, StrategyBuilder deleted',
+    file: 'frontend/src/components/{board,forecast,screener,StrategyBuilder}.tsx (deleted)',
+    effort: '10 minutes',
+    impact: 'Low (codebase hygiene) — 4 component files with no callers anywhere in the frontend. These were legacy artifacts from earlier design iterations. Removing them reduces the surface area of the codebase and eliminates confusion about whether these components are used or maintained.',
+    what: 'Board.tsx, forecast.tsx, screener.tsx, StrategyBuilder.tsx had no import statements pointing to them in any page or component. They were noted in CLAUDE.md as dead component candidates.',
+    fix: 'Confirmed no imports via grep, then deleted. PriceChart and DonutChart are dynamically imported (Next.js dynamic()) and were excluded.',
+  },
+
   // ── Tier 35 — Signal Health Check + HK Bear Regime Audit (2026-06-18) ───
   {
     id: 'signal-health-audit-35',
@@ -5521,6 +5571,7 @@ const TIER_LABEL: Record<Tier, string> = {
   33: 'Tier 33 — SA-31 Signal Tuning + BUG-3/4/5 Fixes (2026-06-18)',
   34: 'Tier 34 — Events Calendar (2026-06-18)',
   35: 'Tier 35 — Signal Health + HK Bear Regime Audit (2026-06-18)',
+  36: 'Tier 36 — Position Quality Panel + Trail Status + Log Cleanup (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5559,6 +5610,7 @@ const TIER_COLOR: Record<Tier, string> = {
   33: '#fb923c',
   34: '#818cf8',
   35: '#38bdf8',
+  36: '#a3e635',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5630,7 +5682,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -5693,7 +5745,7 @@ export default function ImprovementsPage() {
           }}
         >
           <option value={0} style={{ background: '#0f172a', color: '#cbd5e1' }}>All tiers</option>
-          {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] as Tier[]).map(t => (
+          {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36] as Tier[]).map(t => (
             <option key={t} value={t} style={{ background: '#0f172a', color: '#cbd5e1' }}>
               {TIER_LABEL[t]}
             </option>

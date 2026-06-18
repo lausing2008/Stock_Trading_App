@@ -1193,6 +1193,50 @@ export default function PaperPortfolioPage() {
           )}
         </div>
 
+        {/* Position quality transition panel — shows confidence band distribution and grandfathered vs new-rule positions */}
+        {positions && positions.length > 0 && (() => {
+          const minConf: Record<string, number> = { SWING: 50, GROWTH: 45, LONG: 40, SHORT: 30 };
+          const bands = [
+            { label: '0–29',  min: 0,  max: 29,  color: '#ef4444', bg: 'rgba(239,68,68,0.12)' },
+            { label: '30–49', min: 30, max: 49,  color: '#f97316', bg: 'rgba(249,115,22,0.12)' },
+            { label: '50–64', min: 50, max: 64,  color: '#fbbf24', bg: 'rgba(251,191,36,0.1)'  },
+            { label: '65–79', min: 65, max: 79,  color: '#94a3b8', bg: 'rgba(100,116,139,0.1)' },
+            { label: '80+',   min: 80, max: 999, color: '#22c55e', bg: 'rgba(34,197,94,0.1)'   },
+          ];
+          const belowThresh = positions.filter(p => (p.confidence_at_entry ?? 0) < (minConf[p.trading_style] ?? 45)).length;
+          const aboveThresh = positions.length - belowThresh;
+          return (
+            <div style={{ marginBottom: 16, padding: '12px 16px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Position Quality</span>
+                {belowThresh > 0 && (
+                  <span style={{ fontSize: 11, color: '#f97316', background: 'rgba(249,115,22,0.1)', padding: '2px 8px', borderRadius: 4 }}>
+                    {belowThresh} grandfathered · below new threshold
+                  </span>
+                )}
+                {aboveThresh > 0 && (
+                  <span style={{ fontSize: 11, color: '#22c55e', background: 'rgba(34,197,94,0.1)', padding: '2px 8px', borderRadius: 4 }}>
+                    {aboveThresh} meeting new standards
+                  </span>
+                )}
+                <span style={{ fontSize: 10, color: '#334155', marginLeft: 'auto' }}>GROWTH ≥45 · SWING ≥50 · LONG ≥40</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {bands.map(b => {
+                  const count = positions.filter(p => (p.confidence_at_entry ?? 0) >= b.min && (p.confidence_at_entry ?? 0) <= b.max).length;
+                  if (count === 0) return null;
+                  return (
+                    <div key={b.label} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 5, background: b.bg, border: `1px solid ${b.color}30` }}>
+                      <span style={{ fontSize: 11, color: b.color, fontWeight: 700 }}>conf {b.label}</span>
+                      <span style={{ fontSize: 14, fontWeight: 800, color: b.color }}>{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '1px solid #1e293b', paddingBottom: 1 }}>
           {TABS.map(t => (
@@ -1216,7 +1260,7 @@ export default function PaperPortfolioPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ color: '#64748b', borderBottom: '1px solid #334155' }}>
-                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', 'P&L', 'Stop', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research'].map(h => (
+                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', 'P&L', 'Stop', 'Status', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research'].map(h => (
                       <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 500 }}>{h}</th>
                     ))}
                   </tr>
@@ -1235,6 +1279,19 @@ export default function PaperPortfolioPage() {
                         {fmtPct(p.unrealized_pct)} (${p.unrealized_pnl.toFixed(0)})
                       </td>
                       <td style={{ padding: '9px 10px', color: '#f59e0b' }}>${p.current_stop.toFixed(2)}</td>
+                      <td style={{ padding: '9px 10px' }}>
+                        {(() => {
+                          const isBreakeven = p.current_stop >= p.entry_price * 0.999;
+                          const distToStop = p.current_price != null ? (p.current_price - p.current_stop) / p.current_price : null;
+                          const isNearStop = distToStop != null && distToStop < 0.02 && !isBreakeven;
+                          const distToTarget = p.take_profit != null && p.current_price != null ? (p.take_profit - p.current_price) / p.take_profit : null;
+                          const isNearTarget = distToTarget != null && distToTarget < 0.05;
+                          if (isNearStop) return <span style={{ fontSize: 10, fontWeight: 700, color: '#ef4444', background: 'rgba(239,68,68,0.12)', padding: '2px 6px', borderRadius: 3 }}>⚠ STOP</span>;
+                          if (isNearTarget) return <span style={{ fontSize: 10, fontWeight: 700, color: '#22c55e', background: 'rgba(34,197,94,0.1)', padding: '2px 6px', borderRadius: 3 }}>◎ TARGET</span>;
+                          if (isBreakeven) return <span style={{ fontSize: 10, fontWeight: 700, color: '#f59e0b', background: 'rgba(251,191,36,0.1)', padding: '2px 6px', borderRadius: 3 }}>⬆ BE</span>;
+                          return <span style={{ fontSize: 10, color: '#475569' }}>—</span>;
+                        })()}
+                      </td>
                       <td style={{ padding: '9px 10px', color: '#94a3b8' }}>{p.take_profit != null ? `$${p.take_profit.toFixed(2)}` : '—'}</td>
                       <td style={{ padding: '9px 10px' }}>{p.hold_days}d</td>
                       <td style={{ padding: '9px 10px' }}>{p.entry_score ?? '—'}</td>
