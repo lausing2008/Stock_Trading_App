@@ -1934,11 +1934,11 @@ def start_scheduler() -> None:
     )
 
     # WF-2: ensure the default GROWTH paper portfolio exists on startup.
-    if _settings.enable_paper_trading:
-        try:
-            ensure_portfolio_exists()
-        except Exception as _ppe:
-            log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
+    # Runs regardless of enable_paper_trading so the UI works in local dev.
+    try:
+        ensure_portfolio_exists()
+    except Exception as _ppe:
+        log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
     log.info("scheduler.started", jobs=15)
