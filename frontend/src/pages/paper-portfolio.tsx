@@ -872,8 +872,7 @@ export default function PaperPortfolioPage() {
   useEffect(() => {
     const session = getSession();
     if (!session) { router.replace('/login'); return; }
-    if (session.role !== 'admin') { router.replace('/'); return; }
-    setIsAdmin(true);
+    setIsAdmin(session.role === 'admin');
     setAuthed(true);
   }, [router]);
 
