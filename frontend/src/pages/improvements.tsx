@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5359,6 +5359,122 @@ const ITEMS: Item[] = [
     what: 'INT-8 added research_rec + research_score to signal_outcomes and the by_research_alignment breakdown to the outcomes/summary endpoint, but that data was only visible on the /signal-accuracy outcomes tab — not where trading decisions are made (Signal Filter).',
     fix: 'Added a second SWR call per style tab on the Signal Filter page. ResearchAlignmentPanel component renders compact win-rate cards, hidden when no outcome data exists yet.',
   },
+
+  // ── Tier 32 — Paper Trading Activity Audit (2026-06-18) ─────────────────
+  {
+    id: 'paper-trading-confidence-audit',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — audit of live paper portfolios (GROWTH id=1: 6 open, US SWING id=3: 8 open, HK SWING id=2: idle bear regime). Root causes identified: min_confidence too low (GROWTH=15 = 57.5% bull prob, barely above coin flip); min_entry_score=3 allowed marginal setups; max_positions=10 over-diversified $50k. 7 of 14 open positions (NU=23, NVDA=36, UNH=37, KMT=40, VBK=40, FCEL=44, CORT=46) would have been blocked under new rules. All currently-profitable positions had confidence ≥60. 3 closed trades: UPST −0.10%, SOFI −0.10%, CRDO −0.10% — all correct breakeven-stop exits (trail moved to entry after +3-4.6% gain, then pulled back). Parameters changed: min_confidence GROWTH 15→45, SWING 20→50, LONG 18→40; min_entry_score 3→4; max_positions 10→6; max_entries_per_day 5→3; partial_tp_pct GROWTH 7→12%; partial_tp2_pct GROWTH 12→22%; trail_trigger_pct GROWTH 5→4%, SWING 4→3%; breakeven_trigger_pct GROWTH 3→2%, SWING 2→1.5%.',
+    tier: 32, severity: 'high',
+    title: 'Paper trading activity audit — confidence thresholds raised, position limits tightened',
+    file: 'services/market-data/src/services/paper_trading_engine.py (_DEFAULT_CONFIG)',
+    effort: '1.5 hours (audit + parameter changes)',
+    impact: 'High — before fix, paper trading was entering positions with bull probability as low as 57.5% (GROWTH min_confidence=15), barely above a coin flip. 7 of 14 live positions would have been blocked. GROWTH profits were being cut at +7%/+12% (20-34% of the +35% target). After fix: new entries require ≥72.5% bull probability (GROWTH) or ≥75% (SWING), confirmed by ≥4 scoring factors. Portfolio concentrates into ≤6 positions. GROWTH winners run to +12% before first partial exit.',
+    what: 'min_confidence defaults of 15 (GROWTH) and 20 (SWING) correspond to bull probability of 57.5% and 60% — marginally above random. With max_positions=10, $50k was spread into 6-8 concurrent $3,500-5,000 positions. GROWTH partial exits at +7%/+12% cut winners at 20-34% of the 35% target. 3 closed trades all hit breakeven stops (correct behavior, not bugs).',
+    fix: 'Updated _DEFAULT_CONFIG in paper_trading_engine.py with audited parameter values. min_confidence raised to 45/50/40 for GROWTH/SWING/LONG. max_positions reduced to 6. max_entries_per_day reduced to 3. GROWTH scale-out thresholds raised to 12%/22%. Trail and breakeven triggers tightened for both styles.',
+  },
+
+  // ── Tier 33 — Signal Outcomes Analysis + SA-31 Signal Tuning (2026-06-18) ─
+  {
+    id: 'sa-31-swing-ml-overcap',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — signal-engine/generators/signals.py: SWING ml_weight_cap 0.75→0.65; SWING buy_threshold[bull+unknown] 0.65→0.67; SHORT buy_threshold[bull] 0.60→0.63; SHORT adx_min 25→27. SA-31 docstring added explaining the outcomes-data rationale. SWING BUY with ML=0.85, TA=0.42: before fused=0.705 (BUY); after fused=0.667 (HOLD) — exactly the ML-confident/TA-lukewarm pattern that had 13.3% win rate at conf=65-79.',
+    tier: 33, severity: 'high',
+    title: 'SA-31: Signal tuning — SWING ml_weight_cap 0.75→0.65, SHORT threshold/ADX raised',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '45 minutes',
+    impact: 'High — 60-day signal_outcomes analysis revealed an inverted confidence-accuracy relationship for SWING BUY: highest ML-confidence band (conf=65-79, bull_prob 82-90%) had only 13.3% win rate — the WORST band, 2.3× worse than moderate-confidence band (30-49: 30.8%). Root cause: ml_weight_cap=0.75 allowed ML to dominate without TA confirmation; when ML is 85% bullish and TA is neutral, fused still cleared the 0.65 threshold. Cap reduction to 0.65 forces greater TA alignment. SHORT BUY at 16.2% win rate addressed by raising threshold 0.60→0.63 and ADX minimum 25→27.',
+    what: 'SWING ml_weight_cap=0.75 let ML contribute 75% of the fused signal. A stock with ML=85% bullish and TA=neutral reached conf=52, clearing the 0.65 BUY threshold with weak TA evidence. The conf=65-79 band (highest ML confidence) had 13.3% win rate vs 30.8% for the moderate band — textbook ML overconfidence where momentum stocks "look like" continued BUYs but are actually extended and about to mean-revert.',
+    fix: 'Reduced SWING ml_weight_cap from 0.75 to 0.65 so TA has 35% influence (was 25%). Raised SWING buy_threshold[bull+unknown] from 0.65 to 0.67 to filter borderline ML-pushed signals. Raised SHORT buy_threshold[bull] from 0.60 to 0.63 and adx_min from 25 to 27 for cleaner SHORT momentum entry.',
+  },
+  {
+    id: 'bug-3-hk-currency-display',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — frontend/src/pages/paper-portfolio.tsx: replaced fmtUSD() with fmtCurrency(v, market) that renders HK$ with en-HK locale formatting (integer, no decimals) when market==="HK", and USD with currency symbol otherwise. Applied to Equity, Initial, Realized P&L, Unrealized P&L, and the How It Works description.',
+    tier: 33, severity: 'medium',
+    title: 'BUG-3: HK paper portfolio showed USD $ instead of HK$',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: '15 minutes',
+    impact: 'Medium (UX accuracy) — the HK SWING portfolio displaying equity as "$300,000" is confusing: HK dollar amounts are roughly 7.8× the USD equivalent. Users could misread the portfolio value. Now displays "HK$300,000" with HK locale formatting.',
+    what: 'fmtUSD() used globally on the paper portfolio page with no market awareness. HK portfolios showed $ prefix regardless of currency.',
+    fix: 'Added fmtCurrency(v, market) helper. Applied across all monetary fields on the portfolio page.',
+  },
+  {
+    id: 'bug-4-signal-alert-lock',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — scheduler.py: added Redis distributed lock _SIGNAL_ALERT_LOCK_KEY="stockai:lock:check_signal_alerts" with TTL=120s and NX semantics. check_signal_alerts() acquires the lock at entry; if not acquired (another run in progress), logs signal_alert.skipped_locked and returns. Lock released in finally block. Fallback: if Redis unavailable, DB-level last_signal deduplication still prevents exact-duplicate sends.',
+    tier: 33, severity: 'medium',
+    title: 'BUG-4: Signal alert duplicate emails from concurrent US+HK scheduler runs',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '20 minutes',
+    impact: 'Medium — US and HK schedulers both call check_signal_alerts() on their own market-hours cycle. If both completed their market-data refresh within the same minute, the function could run twice in parallel and send duplicate email alerts for the same signal. The Redis lock ensures only one run proceeds; the second caller skips silently.',
+    what: 'check_signal_alerts() had no mutual exclusion. Two scheduler threads (US and HK) could both pass the market-hours check within the same scheduler tick and both call the function concurrently.',
+    fix: 'Redis SET NX EX lock on a shared key. Acquirer runs; non-acquirer skips with log entry. Lock auto-expires after 120s as a safety valve.',
+  },
+  {
+    id: 'bug-5-import-path',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — paper_portfolio.py /paper/run_step endpoint: changed from services.paper_trading_engine import to from src.services.paper_trading_engine import paper_trading_step, _DEFAULT_CONFIG. The scheduler context and the FastAPI app context resolve Python paths differently; using src. prefix is consistent with how all other imports in the service work.',
+    tier: 33, severity: 'low',
+    title: 'BUG-5: /paper/run_step import path failed outside scheduler context',
+    file: 'services/market-data/src/api/paper_portfolio.py',
+    effort: '5 minutes',
+    impact: 'Low — the /paper/run_step admin endpoint (used for manual paper trading step triggers) would raise ImportError when called via the API. The scheduler runs it correctly via its own path; the FastAPI handler used a different import style.',
+    what: 'from services.paper_trading_engine import ... resolved correctly in the scheduler module (which is at the services/ level) but failed in the FastAPI route handler (which is loaded by the app with src/ as root).',
+    fix: 'Changed to from src.services.paper_trading_engine import paper_trading_step, _DEFAULT_CONFIG — consistent with all other service imports in the file.',
+  },
+
+  // ── Tier 34 — Events Calendar (2026-06-18) ──────────────────────────────
+  {
+    id: 'events-calendar-backend',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — routes.py: (1) FundamentalsOut gains ex_dividend_date: str | None = None. _parse_ex_div_date() helper converts yfinance Unix timestamp int to YYYY-MM-DD. Field stored in Redis fundamentals cache (24h TTL). (2) _MACRO_2026 list: 57 entries — 8 FOMC (federalreserve.gov), 12 CPI, 12 NFP, 12 PCE, 4 GDP (bls.gov/bea.gov). (3) GET /stocks/events/calendar?days_ahead=N endpoint: filters _MACRO_2026 to window, iterates all active stocks and reads Redis fundamentals cache for next_earnings_date + ex_dividend_date, returns single sorted list by days_to_event then type. Response shape: {type, date, days_to_event, title, description, impact, symbol, name, market, sector, dividend_rate, dividend_yield, eps_estimate, market_cap}.',
+    tier: 34, severity: 'feature',
+    title: 'Events Calendar backend — ex_dividend_date in fundamentals, _MACRO_2026, GET /stocks/events/calendar',
+    file: 'services/market-data/src/api/routes.py',
+    effort: '2 hours',
+    impact: 'Feature — unified endpoint serving 40 events (28 earnings, 3 CPI, 3 NFP, 3 PCE, 2 FOMC, 1 GDP) in the first 90-day window at launch. Macro events are static (full 2026 schedule hardcoded from official sources). Stock events populate dynamically from the Redis fundamentals cache — ex-dividend dates appear as stocks are visited or refreshed. The endpoint powers the new Events Calendar page.',
+    what: 'The /earnings page previously loaded earnings dates from a direct DB query. No unified view of earnings + dividends + macro existed. ex_dividend_date was not stored in the fundamentals cache.',
+    fix: 'Added ex_dividend_date to FundamentalsOut and its construction. Added _MACRO_2026 static list. Added the /stocks/events/calendar endpoint that merges both sources and sorts by proximity.',
+  },
+  {
+    id: 'events-calendar-frontend',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — earnings.tsx completely rewritten as EventsCalendarPage. 7 event types each with distinct color: earnings=indigo #818cf8, dividend=green #4ade80, fomc=amber #f59e0b, cpi=orange #fb923c, nfp=sky #38bdf8, pce=violet #a78bfa, gdp=emerald #34d399. Layout: header + day-range selector (14/30/45/90d) + color legend + tabs (All/Earnings/Ex-Dividends/Macro with live counts) + search + US/HK market filter (hidden on Macro tab) + week-grouped cards (Today/Tomorrow/This Week/Next Week/2-3 Weeks/3+ Weeks). EventCard: urgency badge (red ≤3d / orange ≤7d / yellow ≤14d / gray 3+w), type-specific detail rows (Earnings: EPS est+rev growth+EPS growth+cap; Dividend: rate+yield+cap; Macro: description). api.ts: CalendarEvent type added; eventsCalendar() method added.',
+    tier: 34, severity: 'feature',
+    title: 'Events Calendar frontend — /earnings page rewritten, 7-type color coding, week grouping',
+    file: 'frontend/src/pages/earnings.tsx + frontend/src/lib/api.ts',
+    effort: '2 hours',
+    impact: 'Feature — replaces the bare earnings list with a full-featured calendar. Users can see all macro risk events (FOMC, CPI, NFP, PCE, GDP) alongside stock-specific earnings and ex-dividend dates in a single timeline. Week-grouping and urgency color shifts make it easy to spot near-term risks at a glance. US/HK filter isolates market-specific events. Macro tab shows the full economic calendar regardless of which stocks are in the universe.',
+    what: 'The /earnings page showed only a DB query of upcoming earnings with minimal formatting. No macro events, no dividends, no color coding, no search.',
+    fix: 'Complete page rewrite. New data source: api.eventsCalendar(daysAhead) → GET /stocks/events/calendar. SWR with revalidateOnFocus: false. TypeBadge and EventCard components per event type.',
+  },
+
+  // ── Tier 35 — Signal Health Check + HK Bear Regime Audit (2026-06-18) ───
+  {
+    id: 'signal-health-audit-35',
+    defaultStatus: 'done',
+    implementedNote: 'Audit 2026-06-18 — Signal Filter Monitor live snapshot: SWING 40 BUY signals, GROWTH 70 BUY signals (US + HK). Sample HK stocks with active SWING BUY: 0005.HK, 6613.HK, 2513.HK, 2382.HK, 0992.HK, 0117.HK, 6082.HK, 6651.HK, 9992.HK — confirming signal engine computing and storing HK signals correctly. Research Alignment panel (90 BUY outcomes): Partial alignment 100%, avg return +11.35%; No research 45%, avg return −1.79%; Divergent 0%. Active suppression filters: ADX Choppy (1), Bearish Options (21), Cap Applied (34) — all compression filters, not hard blocks. Signal pipeline confirmed healthy.',
+    tier: 35, severity: 'low',
+    title: 'Signal health audit — 40 SWING + 70 GROWTH BUY signals live, HK signals confirmed',
+    file: '(verification audit — no code changes)',
+    effort: '20 minutes',
+    impact: 'Low (monitoring) — confirms both US and HK signal pipelines are producing output post-SA-31 tuning. Research alignment data shows partial-aligned signals returning +11.35% avg vs −1.79% for no-research signals — early validation that research gate adds value. 21 Bearish Options suppressions and 34 confidence cap applications are expected normal filter activity.',
+    what: 'Post-deployment verification to confirm SA-31 signal tuning did not break signal generation for either market.',
+    fix: 'No fix needed. Signal pipeline healthy. Monitoring: use Signal Filter Monitor → By Style → check BUY counts after each SA deployment.',
+  },
+  {
+    id: 'hk-bear-regime-audit',
+    defaultStatus: 'done',
+    implementedNote: 'Audit 2026-06-18 — Both HK portfolios (id=2 SWING, id=4 GROWTH) show full cash balances and zero open positions since creation 2026-06-17. _fetch_hk_market_regime() computed HSI −6.5% below 200-day SMA → bear regime. paper_trading_step() logs: paper.regime_gate_bear [HK SWING Portfolio] notes HSI -6.5% below 200 SMA → bear, all new entries suspended. 10+ HK SWING BUY signals exist in Signal Filter but the circuit breaker overrides all entries. This is intentional and correct — prevents buying individual names into a broad HSI downtrend. Entries will resume when HSI closes above its 200 SMA (neutral or bull classification). Monitoring: docker logs stockai-market-data-1 | grep regime_gate_bear after HSI recovery.',
+    tier: 35, severity: 'low',
+    title: 'HK bear regime audit — portfolios correctly idle, circuit breaker confirmed working',
+    file: '(verification audit — no code changes)',
+    effort: '15 minutes',
+    impact: 'Low (monitoring) — confirms the HSI regime circuit breaker is protecting capital during the HK market downtrend (HSI −6.5% below 200 SMA). Zero entries despite 10+ HK BUY signals demonstrates the risk gate overrides individual-stock signals at the portfolio level, which is the intended behavior for capital preservation in a bear market.',
+    what: 'Post-deployment verification of HK paper trading behavior. Both HK portfolios had zero positions; user wanted confirmation this was expected vs. a bug.',
+    fix: 'No fix needed. Circuit breaker is working correctly. HK entries will open automatically when HSI regime transitions from bear to neutral/bull.',
+  },
 ];
 
 
@@ -5401,6 +5517,10 @@ const TIER_LABEL: Record<Tier, string> = {
   29: 'Tier 29 — Signal Pipeline Single Source of Truth (2026-06-16)',
   30: 'Tier 30 — SA-29/SA-30 + INT-8 Research Alignment (2026-06-17)',
   31: 'Tier 31 — signal_outcomes Dedup + HK Paper Trading + Portfolio UX (2026-06-17)',
+  32: 'Tier 32 — Paper Trading Activity Audit (2026-06-18)',
+  33: 'Tier 33 — SA-31 Signal Tuning + BUG-3/4/5 Fixes (2026-06-18)',
+  34: 'Tier 34 — Events Calendar (2026-06-18)',
+  35: 'Tier 35 — Signal Health + HK Bear Regime Audit (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5435,6 +5555,10 @@ const TIER_COLOR: Record<Tier, string> = {
   29: '#38bdf8',
   30: '#c084fc',
   31: '#34d399',
+  32: '#f472b6',
+  33: '#fb923c',
+  34: '#818cf8',
+  35: '#38bdf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5506,7 +5630,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -5569,7 +5693,7 @@ export default function ImprovementsPage() {
           }}
         >
           <option value={0} style={{ background: '#0f172a', color: '#cbd5e1' }}>All tiers</option>
-          {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29] as Tier[]).map(t => (
+          {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] as Tier[]).map(t => (
             <option key={t} value={t} style={{ background: '#0f172a', color: '#cbd5e1' }}>
               {TIER_LABEL[t]}
             </option>
