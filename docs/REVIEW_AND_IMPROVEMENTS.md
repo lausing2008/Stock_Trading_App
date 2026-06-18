@@ -1,9 +1,9 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-18 (Tier 35 — HK paper trading bear regime audit; signal health check: 40 SWING + 70 GROWTH BUY signals live)  
+**Last updated:** 2026-06-18 (Tier 37 — signal engine IndexError fix + log quality + direction accuracy UI + bear regime banner)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 9.5 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 → 9.5 — paper trading decision quality + real-trade feedback loop 2026-06-18)*
+**Overall rating:** 9.6 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 → 9.5 → 9.6 — signal accuracy directional breakdown + regime visibility + bug fixes)*
 
 ---
 
@@ -2270,3 +2270,149 @@ anywhere in the codebase were removed.
 | Frontend / UX | 9.6 / 10 | ↑ Tier 36: position quality panel + trail stop status column + dead component cleanup |
 | Risk management | 9.3 / 10 | ↑ Tier 36: position quality panel surfaces grandfathered vs new-threshold positions |
 | **Overall** | **9.6 / 10** | *(was 9.5 → 9.6 — Tier 36: position monitoring intelligence + codebase hygiene)* |
+
+---
+
+## Tier 37 — Bug Fixes + Signal Direction Visibility + Portfolio UX (2026-06-18)
+
+**Context:** System audit after Tier 36. Key findings: signal engine returning 500 on sparse-data
+stocks (SSNLF confirmed); HK bear regime gate logging WARNING every 5 minutes (~576 lines/day of
+expected behavior); SWING outcomes showing stark BUY/SELL asymmetry (27.5% vs 61.7%) not visible
+in existing UI; users unable to see why HK portfolios are idle; closed trades table missing style
+and confidence columns for entry-quality audit.
+
+---
+
+### A. _ta_score IndexError on Sparse-Data Stocks (BUG-HIGH)
+
+**Symptom:** `GET /signals/SSNLF?style=SWING` returns 500. Full traceback:
+```
+IndexError: single positional indexer is out-of-bounds
+  File signals.py line 822: vwma_val = vwma_20.iloc[-1]
+```
+This crash occurs when `df` has ≤1 row. `typical_price.iloc[:-1]` returns an empty Series;
+`.rolling(20).sum()` over an empty Series also returns empty; `.iloc[-1]` then throws.
+
+**Root cause:** `_ta_score()` had no minimum-data guard at entry. Any stock with 0 or 1 bar of
+price history (newly-added symbol, ticker lookup from a watchlist with no ingested data) would
+crash the entire signal endpoint, returning 500 to the frontend.
+
+**Fix:** Added guard at top of `_ta_score()`:
+```python
+if df.empty or len(df) < 2:
+    return 0.5, {"insufficient_data": True, "bar_count": len(df)}
+```
+Returns neutral TA score (0.5) with a flag rather than crashing. The caller (`generate_all_signals`)
+already checks `insufficient_history = len(df) < 50` downstream and degrades gracefully.
+
+**File:** `services/signal-engine/src/generators/signals.py`
+
+---
+
+### B. Regime Gate Log Spam Downgraded to INFO
+
+**Symptom:** `paper.regime_gate_bear` fires at WARNING level every 5 minutes for both HK
+portfolios — ~576 warning lines/day for expected, steady-state behavior (HK bear regime).
+
+**Root cause:** Same pattern as ML 404 noise fixed in Tier 36-E: a normal operating state was
+logged at WARNING level, drowning out genuine warnings in monitoring dashboards.
+
+**Fix:** Changed `log.warning(...)` to `log.info(...)` for the bear regime gate event in
+`paper_trading_engine.py`. The event is still emitted at every 5-minute cycle for observability,
+but at INFO level (filtered from warning dashboards).
+
+**File:** `services/market-data/src/services/paper_trading_engine.py`
+
+---
+
+### C. Signal Accuracy — BUY vs SELL Win Rate by Horizon
+
+**Motivation:** The 60-day outcomes table showed a stark directional asymmetry:
+- SWING BUY: 27.5% win rate (n=204) — well below random
+- SWING SELL: 61.7% win rate (n=209) — consistently correct
+- SHORT BUY: 16.2% (n=37), SHORT SELL: 43.7% (n=206)
+
+The existing Outcomes tab showed aggregate win rate per horizon, hiding this split. The
+`SignalAccuracyReport` showed BUY/SELL aggregate stat cards but not the per-horizon breakdown.
+
+**Backend:** Added `by_direction` computation to `GET /signals/outcomes/summary`:
+```python
+for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+    for direction in ("BUY", "SELL"):
+        key = f"{h}/{direction}"  # e.g. "SWING/BUY"
+        bucket = [o for o in outcomes if o.horizon.value == h and o.signal_direction == direction]
+        ...
+```
+Returned as `"by_direction"` dict in the response alongside existing `by_horizon`.
+
+**Frontend:** Added `by_direction` to `OutcomesSummary` type in `api.ts`. Added a new grid table
+in the Outcomes tab (after the by_horizon section) showing: Style | Dir (green BUY / red SELL) |
+n | Win% (color-coded) | Avg Return. Footer note: "BUY accuracy below 40% = signal too bullish;
+consider raising buy_threshold."
+
+**Files:** `services/signal-engine/src/api/routes.py`, `frontend/src/lib/api.ts`,
+`frontend/src/pages/signal-accuracy.tsx`
+
+---
+
+### D. Bear Regime Suspension Banner on Paper Portfolio
+
+**Problem:** When HK portfolios enter bear regime, no new trades are entered. Users had no
+visible indicator of why HK is idle — the Regime stat card showed "BEAR" but didn't explain
+that entries were suspended.
+
+**Fix:** Added a prominent banner just above the stat strip that appears when
+`summary.regime_state === 'bear'`:
+```tsx
+{summary.regime_state === 'bear' && (
+  <div style={{ ...red border and background... }}>
+    🐻 Bear Regime — New entries suspended
+    <span>{ summary.regime_notes?.join(' · ') }</span>
+  </div>
+)}
+```
+The `regime_notes` array (already in `PaperPortfolioSummary`) is joined to show e.g.
+"HSI -8.0% below 200 SMA → bear". Falls back to a generic message if notes is empty.
+
+**File:** `frontend/src/pages/paper-portfolio.tsx`
+
+---
+
+### E. Closed Trades Table — Style and Confidence Columns
+
+**Problem:** The Closed Trades tab showed 11 columns (Symbol, Entry, Exit, Entry $, Exit $,
+P&L%, P&L$, Days, Exit Reason, R:R, Score) but omitted trading style and confidence at entry.
+These are the two most important audit fields for verifying that new min_confidence thresholds
+(SWING ≥50, GROWTH ≥45, LONG ≥40) are actually filtering entries correctly over time.
+
+**Fix:** Added Style and Conf columns to the table header and row cells:
+- **Style**: shows `t.trading_style` in small gray text (SWING/GROWTH/LONG/SHORT)
+- **Conf**: shows `t.confidence_at_entry` — orange text if below 50 (below min threshold),
+  gray if above. Lets auditors quickly spot grandfathered low-confidence trades.
+
+**File:** `frontend/src/pages/paper-portfolio.tsx`
+
+---
+
+## Implementation Log (continued)
+
+| Date | Tier | Change | Files | Status |
+|------|------|--------|-------|--------|
+| 2026-06-18 | Tier 37-A | _ta_score IndexError fix — len(df) < 2 early return (0.5 neutral) | signals.py | ✅ Done |
+| 2026-06-18 | Tier 37-B | paper.regime_gate_bear downgraded WARNING → INFO | paper_trading_engine.py | ✅ Done |
+| 2026-06-18 | Tier 37-C | Outcomes by_direction: BUY vs SELL win rate per horizon | routes.py, api.ts, signal-accuracy.tsx | ✅ Done |
+| 2026-06-18 | Tier 37-D | Bear regime banner on paper portfolio — explains why HK is idle | paper-portfolio.tsx | ✅ Done |
+| 2026-06-18 | Tier 37-E | Closed Trades table: Style + Conf columns for entry-quality audit | paper-portfolio.tsx | ✅ Done |
+
+## Scorecard (updated)
+
+| Dimension | Score | Summary |
+|-----------|-------|---------|
+| Data pipeline | 8.5 / 10 | Unchanged |
+| ML methodology | 9.3 / 10 | Unchanged |
+| Signal logic | 9.2 / 10 | ↑ Tier 37-A: no more 500s on sparse-data stocks; directional accuracy now visible |
+| K-Score ranking | 8.2 / 10 | Unchanged |
+| Research engine | 7.5 / 10 | Unchanged |
+| Frontend / UX | 9.7 / 10 | ↑ Tier 37-D/E: bear regime banner + closed trades audit columns |
+| Risk management | 9.3 / 10 | Unchanged |
+| **Overall** | **9.6 / 10** | *(was 9.6 — incremental: bug fix + log quality + visibility improvements)* |

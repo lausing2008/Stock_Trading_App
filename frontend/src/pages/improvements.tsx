@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5525,6 +5525,68 @@ const ITEMS: Item[] = [
     what: 'Post-deployment verification of HK paper trading behavior. Both HK portfolios had zero positions; user wanted confirmation this was expected vs. a bug.',
     fix: 'No fix needed. Circuit breaker is working correctly. HK entries will open automatically when HSI regime transitions from bear to neutral/bull.',
   },
+
+  // ── Tier 37 — Bug Fixes + Signal Direction Visibility + Portfolio UX (2026-06-18) ──
+  {
+    id: 'ta-score-indexerror-fix',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — Added `if df.empty or len(df) < 2: return 0.5, {"insufficient_data": True}` at top of _ta_score(). Confirmed: SSNLF was causing IndexError at vwma_20.iloc[-1] (iloc[:-1] on a 1-row df returns empty Series). Fix returns neutral TA score (0.5) instead of crashing. Signal engine restarted, SSNLF no longer returns 500.',
+    tier: 37, severity: 'high',
+    title: 'Signal engine 500 on sparse-data stocks — _ta_score IndexError fix',
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '5 minutes',
+    impact: 'High (reliability) — any stock with ≤1 bar of price data (newly-added symbol, thinly-traded name) crashed the entire signal endpoint with 500. Affected SSNLF confirmed in logs. Fix makes _ta_score defensive at entry instead of crashing mid-computation.',
+    what: '_ta_score() assumed df had ≥2 rows. vwma_20 = (typical_price.iloc[:-1] * volume.iloc[:-1]).rolling(20).sum() returned empty Series for a 1-row df; .iloc[-1] then threw IndexError.',
+    fix: 'Added early return at top of _ta_score: `if df.empty or len(df) < 2: return 0.5, {"insufficient_data": True, "bar_count": len(df)}`. Neutral 0.5 TA score means downstream signal logic degrades gracefully rather than crashing.',
+  },
+  {
+    id: 'regime-gate-log-spam',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — Changed log.warning to log.info for paper.regime_gate_bear in paper_trading_engine.py line 1572. Verified: no WARNING-level regime_gate events in market-data logs after restart.',
+    tier: 37, severity: 'low',
+    title: 'Regime gate bear log spam — downgraded WARNING → INFO',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '2 minutes',
+    impact: 'Medium (observability) — ~576 warning lines/day for expected steady-state behavior (HK in bear). Same pattern as ML 404 noise fixed in Tier 36-E. Genuine warnings now stand out in monitoring.',
+    what: 'paper.regime_gate_bear emitted at WARNING level on every paper_trading_step() call for every HK portfolio — every 5 minutes, 2 portfolios = 576 lines/day of expected behavior drowning real errors.',
+    fix: 'Changed log.warning → log.info. Event is still emitted for observability but filtered from warning dashboards.',
+  },
+  {
+    id: 'outcomes-by-direction',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — Backend: added by_direction dict to /signals/outcomes/summary response (keys: "SWING/BUY", "SWING/SELL", etc). Frontend: added by_direction field to OutcomesSummary type in api.ts. Signal-accuracy Outcomes tab now shows a 5-column grid (Style | Dir | n | Win% | Avg Ret) after the by_horizon section, revealing SWING BUY 27.5% vs SWING SELL 61.7% clearly.',
+    tier: 37, severity: 'medium',
+    title: 'Signal accuracy: BUY vs SELL win rate breakdown by horizon',
+    file: 'services/signal-engine/src/api/routes.py, frontend/src/lib/api.ts, frontend/src/pages/signal-accuracy.tsx',
+    effort: '30 minutes',
+    impact: 'Medium (signal insight) — 60-day outcomes show SWING BUY at 27.5% win rate vs SWING SELL at 61.7%. This stark directional asymmetry was invisible in the existing UI (aggregate horizon win rate hid the split). Now surfaced with color-coded cells and a calibration note.',
+    what: 'outcomes/summary returned aggregate win_rate per horizon but no BUY/SELL split. The existing stat cards showed aggregate buy_accuracy/sell_accuracy but not broken down by style.',
+    fix: 'Added by_direction computation in routes.py (nested loop over horizon × direction). Added by_direction to OutcomesSummary type. Added grid table in Outcomes tab with style/direction/count/win%/avg_return columns.',
+  },
+  {
+    id: 'bear-regime-banner',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — Added bear regime suspension banner above stat strip in paper-portfolio.tsx. Conditional on summary.regime_state === "bear". Shows 🐻 + "Bear Regime — New entries suspended" + regime_notes joined by " · " (e.g. "HSI -8.0% below 200 SMA → bear"). Falls back to market-specific generic message if notes empty.',
+    tier: 37, severity: 'low',
+    title: 'Paper portfolio: bear regime suspension banner',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: '10 minutes',
+    impact: 'Medium (UX) — users had no visible indicator of why HK portfolios were idle. The Regime stat card showed "BEAR" but did not explain that new entries were suspended or why. Banner provides immediate context when monitoring the portfolio.',
+    what: 'summary.regime_state was displayed as a stat card with no explanatory text. Users opening the HK paper portfolio page saw zero positions and no explanation.',
+    fix: 'Added a red-bordered banner just above the stat strip, conditionally rendered when regime_state === "bear". Shows regime_notes array joined with " · ".',
+  },
+  {
+    id: 'closed-trades-style-conf',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-18 — Added Style and Conf columns to Closed Trades tab table in paper-portfolio.tsx. Style shows t.trading_style in small gray text. Conf shows t.confidence_at_entry with orange color if below 50 (below min threshold). Column headers updated: added Style after Symbol, added Conf after Score.',
+    tier: 37, severity: 'low',
+    title: 'Closed Trades table: Style and Confidence columns',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: '10 minutes',
+    impact: 'Low (audit) — as more trades close, the style and confidence columns enable quick verification that new min_confidence thresholds (SWING ≥50, GROWTH ≥45, LONG ≥40) are filtering entries correctly. Previously the closed trades table showed no way to identify grandfathered low-confidence positions.',
+    what: 'Closed Trades tab had 11 columns but omitted the two most important audit fields: trading style and confidence at entry.',
+    fix: 'Added Style column (t.trading_style, gray small text) after Symbol, and Conf column (t.confidence_at_entry, orange if <50) after Score.',
+  },
 ];
 
 
@@ -5572,6 +5634,7 @@ const TIER_LABEL: Record<Tier, string> = {
   34: 'Tier 34 — Events Calendar (2026-06-18)',
   35: 'Tier 35 — Signal Health + HK Bear Regime Audit (2026-06-18)',
   36: 'Tier 36 — Position Quality Panel + Trail Status + Log Cleanup (2026-06-18)',
+  37: 'Tier 37 — Bug Fixes + Signal Direction Visibility + Portfolio UX (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5611,6 +5674,7 @@ const TIER_COLOR: Record<Tier, string> = {
   34: '#818cf8',
   35: '#38bdf8',
   36: '#a3e635',
+  37: '#60a5fa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5682,7 +5746,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -5745,7 +5809,7 @@ export default function ImprovementsPage() {
           }}
         >
           <option value={0} style={{ background: '#0f172a', color: '#cbd5e1' }}>All tiers</option>
-          {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36] as Tier[]).map(t => (
+          {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37] as Tier[]).map(t => (
             <option key={t} value={t} style={{ background: '#0f172a', color: '#cbd5e1' }}>
               {TIER_LABEL[t]}
             </option>
