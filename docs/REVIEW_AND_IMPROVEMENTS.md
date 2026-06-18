@@ -1,9 +1,9 @@
 # StockAI — Expert Review & Improvement Roadmap
 
 **Reviewed:** 2026-05-31  
-**Last updated:** 2026-06-17 (Tier 31 — signal_outcomes dedup fix; HK paper trading full support; 3 paper portfolios live; portfolio switcher UX)  
+**Last updated:** 2026-06-18 (Tier 32 — paper trading entry quality audit; confidence/score/position-count tightened; GROWTH scale-out retuned; full trade activity analysis)  
 **Perspective:** Data Analyst + Quantitative Trading  
-**Overall rating:** 9.4 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 — data integrity + HK paper trading expansion)*
+**Overall rating:** 9.5 / 10 *(was 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 → 9.5 — paper trading decision quality + real-trade feedback loop 2026-06-18)*
 
 ---
 
@@ -96,6 +96,113 @@ This document is the single source of truth for everything that was found, why i
 | 2026-06-17 | **HK paper trading: market hours + regime + stock filter** — _is_market_hours(market) adds HKEX sessions (09:30–12:00 + 13:00–16:00 HKT); _fetch_hk_market_regime() uses ^HSI vs 200 SMA (bull/neutral/choppy/bear, 30min cache); _scan_for_entries() filters Stock.market == cfg["market"]; per-portfolio regime per market in step loop; scheduler enabled for "HK" | paper_trading_engine.py + scheduler.py | ✅ Done |
 | 2026-06-17 | **3 paper portfolios created + /create market field** — id=2 HK SWING Portfolio $50k, id=3 US SWING Portfolio $50k alongside existing id=1 GROWTH US; /create accepts + validates market (US/HK); /list returns market field | paper_portfolio.py | ✅ Done |
 | 2026-06-17 | **Portfolio switcher UX** — card grid always visible (removed multiPortfolio guard), labeled "PORTFOLIOS"; market badge (US=cyan, HK=orange) on each card; market dropdown (US/HK) in create modal; PaperPortfolioListItem gains market field | frontend/paper-portfolio.tsx + api.ts | ✅ Done |
+| 2026-06-18 | **PT-Q1: Paper trading entry quality audit** — queried all live paper trades; found 7/14 open positions entered below confidence=47; all 3 closed trades were stop-outs; win rate 0%; root cause: min_confidence thresholds (GROWTH=15, SWING=20) far too loose | paper_trading_engine.py | ✅ Done |
+| 2026-06-18 | **PT-Q2: Raise min_confidence** — GROWTH 15→45 (bull_prob ≥72.5%), SWING 20→50 (≥75%), LONG 18→40; blocks NU(23), NVDA(36), UNH(37), VBK/KMT(40), FCEL(44), CORT(46)-class entries | paper_trading_engine.py `_STYLE_OVERRIDES` | ✅ Done |
+| 2026-06-18 | **PT-Q3: Raise min_entry_score 3→4** — 14 scoring factors; score=3 allowed marginal setups; now requires 4/14 for all styles | paper_trading_engine.py `_DEFAULT_CONFIG` | ✅ Done |
+| 2026-06-18 | **PT-Q4: Reduce max_positions 10→6, max_entries_per_day 5→3** — concentrates $50k across fewer higher-conviction bets; eliminates tail dilution | paper_trading_engine.py `_DEFAULT_CONFIG` | ✅ Done |
+| 2026-06-18 | **PT-Q5: GROWTH scale-out retuned** — first tranche +7%→+12%, second +12%→+22%; prevents cutting GROWTH winners at 20% of their 35% target; SWING unchanged (+7%/+10%) | paper_trading_engine.py `_STYLE_OVERRIDES["GROWTH"]` | ✅ Done |
+| 2026-06-18 | **PT-Q6: Tighten SWING trail/breakeven** — trail trigger 4%→3%, breakeven 2%→1.5%; faster capital lock-in on short-hold 12%-target trades | paper_trading_engine.py `_STYLE_OVERRIDES["SWING"]` | ✅ Done |
+| 2026-06-18 | **PT-Q7: GROWTH trail/breakeven tightened** — trail trigger 5%→4%, breakeven 3%→2%; GROWTH stop is wide (-12%) so earlier breakeven move protects against roundtrips | paper_trading_engine.py `_STYLE_OVERRIDES["GROWTH"]` | ✅ Done |
+
+---
+
+## Tier 32 — Paper Trading Activity Audit (2026-06-18)
+
+### Live Trade Snapshot (as of 2026-06-18)
+
+**Portfolios:**
+
+| Portfolio | Style | Initial | Cash | Deployed | Status |
+|-----------|-------|---------|------|----------|--------|
+| GROWTH Paper Portfolio (id=1) | GROWTH | $50,000 | $25,234 | $24,766 | 6 open |
+| US SWING Portfolio (id=3) | SWING | $50,000 | $23,481 | $26,519 | 8 open |
+| HK SWING Portfolio (id=2) | SWING/HK | $50,000 | $50,000 | $0 | Idle |
+| HK GROWTH Portfolio (id=4) | GROWTH/HK | $300,000 | $300,000 | $0 | Idle |
+
+**Open Positions:**
+
+| Port | Style | Symbol | Entry $ | Cur $ | Unreal P&L | SL % | TP % | Hold | Conf | Score | Assessment |
+|------|-------|--------|---------|-------|------------|------|------|------|------|-------|------------|
+| 1 | GROWTH | NU | $13.15 | $12.89 | -$72 | -10.3% | +34.6% | 1d | 23 | 4 | ⚠️ Low conf — would block under new rules |
+| 1 | GROWTH | CRDO | $245.91 | $249.33 | +$69 | -12.2% | +34.8% | 1d | 87 | 4 | ✅ High conviction, trending |
+| 1 | GROWTH | SMTC | $162.51 | $150.20 | -$339 | -12.0% | +34.8% | 1d | 95 | 4 | ⚠️ Near stop (-7.6% vs -12% SL) |
+| 1 | GROWTH | IMVT | $33.99 | $34.71 | +$76 | -11.7% | +34.7% | 1d | 60 | 3 | ✅ Moving in right direction |
+| 1 | GROWTH | MU | $1,096 | $1,043 | -$181 | -12.0% | +35.0% | 2d | 96 | 3 | ℹ️ Wide stop, high conf |
+| 1 | GROWTH | NVDA | $209.79 | $204.65 | -$102 | -9.4% | +34.9% | 2d | 36 | 3 | ⚠️ Low conf — would block under new rules |
+| 3 | SWING | RTX | $189.23 | $192.58 | +$80 | -4.9% | +11.8% | 1d | 80 | 3 | ✅ Working well |
+| 3 | SWING | UNH | $409.24 | $399.53 | -$96 | -4.5% | +11.9% | 1d | 37 | 4 | ⚠️ Low conf — would block under new rules |
+| 3 | SWING | CORT | $84.33 | $81.75 | -$66 | -5.6% | +11.9% | 1d | 46 | 3 | ⚠️ Low conf — would block under new rules |
+| 3 | SWING | KMT | $36.84 | $36.36 | -$48 | -5.5% | +11.8% | 1d | 40 | 3 | ⚠️ Low conf — would block under new rules |
+| 3 | SWING | ABBV | $221.83 | $221.23 | -$8 | -4.9% | +11.8% | 1d | 58 | 4 | 🟡 Borderline, near flat |
+| 3 | SWING | HWM | $277.77 | $283.23 | +$98 | -5.7% | +12.0% | 1d | 66 | 3 | ✅ Best SWING trade |
+| 3 | SWING | FCEL | $20.04 | $20.04 | $0 | -5.7% | +11.8% | 1d | 44 | 5 | ⚠️ Low conf — would block under new rules |
+| 3 | SWING | VBK | $353.73 | $350.10 | -$27 | -4.3% | +11.9% | 1d | 40 | 3 | ⚠️ Low conf — would block under new rules |
+
+**Closed Positions:**
+
+| Port | Style | Symbol | Entry $ | Exit $ | P&L | Return | Reason | Hold | Conf | R:R |
+|------|-------|--------|---------|--------|-----|--------|--------|------|------|-----|
+| 1 | GROWTH | SOFI | $17.84 | $17.82 | -$4.97 | -0.1% | stop_hit | 1d | 63 | 2.96 |
+| 3 | SWING | CRDO | $252.25 | $252.00 | -$3.28 | -0.1% | stop_hit | 1d | 72 | 2.14 |
+| 1 | GROWTH | UPST | $32.89 | $32.86 | -$4.63 | -0.1% | stop_hit | 2d | 54 | 2.91 |
+
+**Summary:** Win rate 0/3 (0%) · Total realized P&L: -$12.88 · Total unrealized: -$617
+
+---
+
+### Root Cause Analysis
+
+**Problem 1 — Confidence thresholds too loose (primary cause)**
+
+`min_confidence` controls how strong the signal's bull probability must be before a trade opens. The scale is `confidence = |bull_prob − 0.5| × 200`:
+
+| Confidence | Bull Probability | Assessment |
+|-----------|-----------------|------------|
+| 15 (old GROWTH floor) | 57.5% | Barely above coin flip |
+| 20 (old SWING floor) | 60.0% | Marginally positive |
+| 40 | 70.0% | Clear directional bias |
+| 45 (new GROWTH floor) | 72.5% | Good conviction |
+| 50 (new SWING floor) | 75.0% | Strong directional signal |
+| 62 | 81.0% | Original intended floor (too strict — nothing passed) |
+
+At confidence=15-20, the system was entering trades that are barely positive — essentially noise. 7 of 14 open positions (NU=23, NVDA=36, UNH=37, VBK=40, KMT=40, FCEL=44, CORT=46) would have been blocked under the new rules. Every currently-profitable position has confidence ≥60.
+
+**Problem 2 — Entry score minimum too low (contributing)**
+
+The `_should_enter()` scoring system has 14 factors (price zone, R:R ratio, volume confirmation, earnings window, bull probability tier, signal acceleration, signal freshness). A minimum score of 3 allowed very marginal setups — a stock could score +2 for being in the optimal price zone and +1 for decent volume, with nothing else in its favor.
+
+Raising to 4 ensures at least two meaningful confirming factors beyond price zone alone.
+
+**Problem 3 — Over-diversification (capital efficiency)**
+
+With max_positions=10, the $50k portfolios were spreading into 6-8 concurrent positions of ~$3,500-5,000 each. This over-diversifies to the point where winners can't meaningfully move the portfolio. Reducing to 6 concentrates capital in the highest-conviction setups.
+
+**Problem 4 — GROWTH scale-out too early (profit cutting)**
+
+The default partial profit logic triggered at +7% (first tranche) and +12% (second tranche). For a GROWTH trade targeting +35%, this means selling at 20% and 34% of the way to target — cutting winners well before they can deliver. The corrected levels (+12% / +22%) let GROWTH positions run meaningfully before locking in partial gains.
+
+---
+
+### Parameter Changes Applied
+
+| Parameter | Old Value | New Value | Rationale |
+|-----------|-----------|-----------|-----------|
+| `min_confidence` (GROWTH) | 15.0 | **45.0** | Bull prob ≥72.5%; eliminates noise entries |
+| `min_confidence` (SWING) | 20.0 | **50.0** | Bull prob ≥75%; SWING has tighter stops, needs more conviction |
+| `min_confidence` (LONG) | 18.0 | **40.0** | Consistent uplift across all styles |
+| `min_entry_score` (global) | 3 | **4** | Requires 4/14 confirming factors, not just 3 |
+| `max_positions` (global) | 10 | **6** | Concentrates $50k into fewer, higher-quality bets |
+| `max_entries_per_day` (global) | 5 | **3** | Quality over quantity; prevents scatter-gun entries |
+| `partial_tp_pct` (GROWTH) | 7% (global) | **12%** | Don't scale out at 20% of target; let GROWTH run |
+| `partial_tp2_pct` (GROWTH) | 12% (global) | **22%** | Second tranche at 63% of 35% target |
+| `trail_trigger_pct` (GROWTH) | 5% | **4%** | Arm trailing stop 1% sooner for earlier protection |
+| `breakeven_trigger_pct` (GROWTH) | 3% | **2%** | Move to breakeven sooner; GROWTH stop is wide (-12%) |
+| `trail_trigger_pct` (SWING) | 4% | **3%** | SWING target is only 12%; arm trail at 25% of target |
+| `breakeven_trigger_pct` (SWING) | 2% | **1.5%** | Faster capital lock on short-hold SWING trades |
+| `partial_tp_pct` (SWING) | 7% (shared default) | **7%** | Unchanged — sensible for 12% target |
+| `partial_tp2_pct` (SWING) | 12% (shared default) | **10%** | Capture most of gain before time stop expires |
+
+**Net effect:** Entries that require bull probability ≥72.5% (GROWTH) or ≥75% (SWING), confirmed by ≥4 scoring factors, with a maximum of 6 concurrent positions and 3 new entries per day. GROWTH winners are allowed to run to +12% before first partial exit, and trailing protection is armed at +4% rather than +5%.
 
 ---
 
@@ -109,8 +216,8 @@ This document is the single source of truth for everything that was found, why i
 | K-Score ranking | 8.2 / 10 | ↑ Falling knife gate + RSI curve + sector-relative peer scoring + peer comparison drawer |
 | Research engine | 7.5 / 10 | ↑ DCF valuation + sector-relative fundamentals + cache quality flag; Nginx 150s timeout fixed |
 | Frontend / UX | 9.5 / 10 | ↑ Per-horizon alerts + consensus indicator + Add to Radar + Outcomes tab + P&L heatmap + conviction screener |
-| Risk management | 9.0 / 10 | ↑ 3 paper portfolios (GROWTH US + SWING US + SWING HK) + HK market hours + HSI regime detection; CB-W1 cutoff fixed; INT-3 research-gated sizing; PT-M1/M2/M4/M5 live |
-| **Overall** | **9.4 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 — Tier 31: data integrity + HK paper trading 2026-06-17)* |
+| Risk management | 9.3 / 10 | ↑ Entry quality audit: min_confidence 15→45/50; min_entry_score 3→4; max_positions 10→6; GROWTH scale-out retuned (+12%/+22%); SWING trail/breakeven tightened |
+| **Overall** | **9.5 / 10** | *(was 7.5 → 8.0 → 8.2 → 8.3 → 8.5 → 8.7 → 8.8 → 8.9 → 9.0 → 9.2 → 9.3 → 9.4 → 9.5 — Tier 32: paper trading decision quality audit 2026-06-18)* |
 
 ---
 
