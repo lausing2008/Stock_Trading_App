@@ -2476,6 +2476,20 @@ def outcomes_summary(
         "20d": _window_stats(outcomes, "is_correct_20d", "return_20d"),
     }
 
+    # BUY vs SELL win rate by horizon — reveals directional bias in signal accuracy
+    direction_stats: dict = {}
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        for direction in ("BUY", "SELL"):
+            bucket = [o for o in outcomes if o.horizon.value == h and o.signal_direction == direction]
+            if not bucket:
+                continue
+            bucket_returns = [o.pct_return for o in bucket if o.pct_return is not None]
+            direction_stats[f"{h}/{direction}"] = {
+                "count": len(bucket),
+                "win_rate": round(sum(1 for o in bucket if o.is_correct) / len(bucket), 3),
+                "avg_return_pct": round(statistics.mean(bucket_returns) * 100, 2) if bucket_returns else None,
+            }
+
     return {
         "total": len(outcomes),
         "days_lookback": days,
@@ -2486,6 +2500,7 @@ def outcomes_summary(
         },
         "by_confidence_band": band_stats,
         "by_horizon": horizon_stats,
+        "by_direction": direction_stats,
         "by_market_regime": regime_summary,
         "by_research_alignment": research_summary,
         "by_window": multi_window,

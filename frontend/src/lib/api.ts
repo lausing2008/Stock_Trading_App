@@ -618,6 +618,7 @@ export type OutcomesSummary = {
   overall?: { win_rate: number; avg_return_pct: number | null; median_return_pct: number | null };
   by_confidence_band?: OutcomesBand[];
   by_horizon?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
+  by_direction?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
   by_market_regime?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
   by_research_alignment?: Record<'aligned' | 'partial' | 'divergent' | 'no_research', ResearchAlignmentBand>;
   by_window?: Record<'5d' | '10d' | '20d', { count: number; win_rate: number; avg_return_pct: number | null } | null>;

@@ -1060,6 +1060,38 @@ export default function SignalAccuracyPage() {
                     ))}
                   </div>
                 )}
+                {outcomesData.by_direction && Object.keys(outcomesData.by_direction).length > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Win Rate by Direction</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'auto auto auto auto auto', gap: '4px 12px', fontSize: 11, marginBottom: 6 }}>
+                      <span style={{ color: '#475569', fontWeight: 600 }}>Style</span>
+                      <span style={{ color: '#475569', fontWeight: 600 }}>Dir</span>
+                      <span style={{ color: '#475569', fontWeight: 600, textAlign: 'right' }}>n</span>
+                      <span style={{ color: '#475569', fontWeight: 600, textAlign: 'right' }}>Win %</span>
+                      <span style={{ color: '#475569', fontWeight: 600, textAlign: 'right' }}>Avg Ret</span>
+                    </div>
+                    {Object.entries(outcomesData.by_direction).map(([key, v]) => {
+                      const [h, dir] = key.split('/');
+                      const wr = v.win_rate * 100;
+                      return (
+                        <div key={key} style={{ display: 'grid', gridTemplateColumns: 'auto auto auto auto auto', gap: '4px 12px', fontSize: 12, padding: '4px 0', borderTop: '1px solid #1e293b', alignItems: 'center' }}>
+                          <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{h}</span>
+                          <span style={{ color: dir === 'BUY' ? '#4ade80' : '#f87171', fontWeight: 700, fontSize: 11 }}>{dir}</span>
+                          <span style={{ color: '#64748b', textAlign: 'right' }}>{v.count}</span>
+                          <span style={{ color: wr >= 55 ? '#4ade80' : wr >= 50 ? '#facc15' : '#f87171', fontWeight: 700, textAlign: 'right' }}>
+                            {wr.toFixed(1)}%
+                          </span>
+                          <span style={{ color: v.avg_return_pct != null ? (v.avg_return_pct >= 0 ? '#4ade80' : '#f87171') : '#475569', textAlign: 'right' }}>
+                            {v.avg_return_pct != null ? `${v.avg_return_pct >= 0 ? '+' : ''}${v.avg_return_pct.toFixed(2)}%` : '—'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    <div style={{ fontSize: 10, color: '#334155', marginTop: 8 }}>
+                      Large BUY/SELL gap = directional bias. BUY accuracy below 40% = signal too bullish; consider raising buy_threshold.
+                    </div>
+                  </div>
+                )}
                 {outcomesData.by_market_regime && Object.keys(outcomesData.by_market_regime).length > 0 && (
                   <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>Win Rate by Market Regime</div>

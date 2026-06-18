@@ -1569,12 +1569,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     regime_size_mult = 1.0
     if cfg.get("enable_regime_filter", True) and live_regime:
         if regime_state == "bear":
-            log.warning("paper.regime_gate_bear",
-                        portfolio=portfolio.name,
-                        vix=live_regime.get("vix"),
-                        spy=live_regime.get("spy_price"),
-                        notes=live_regime.get("notes"),
-                        note="all new entries suspended in bear regime")
+            log.info("paper.regime_gate_bear",
+                     portfolio=portfolio.name,
+                     vix=live_regime.get("vix"),
+                     spy=live_regime.get("spy_price"),
+                     notes=live_regime.get("notes"),
+                     note="all new entries suspended in bear regime")
             return
         regime_size_mult = {
             "bull":     cfg.get("regime_bull_size_mult", 1.0),

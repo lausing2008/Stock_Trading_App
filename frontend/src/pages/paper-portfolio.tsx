@@ -1082,6 +1082,19 @@ export default function PaperPortfolioPage() {
           />
         )}
 
+        {/* Bear regime suspension banner */}
+        {summary.regime_state === 'bear' && (
+          <div style={{ marginBottom: 16, padding: '10px 16px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 16 }}>🐻</span>
+            <div>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#f87171' }}>Bear Regime — New entries suspended</span>
+              <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 10 }}>
+                {(summary.regime_notes?.length ? summary.regime_notes.join(' · ') : null) ?? (selectedMarket === 'HK' ? 'HSI below 200-day SMA' : 'Market in bear regime')}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Stat strip */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 24 }}>
           <StatCard label="Equity" value={fmtCurrency(summary.current_equity, selectedMarket)} sub={`Cash ${fmtCurrency(summary.current_cash, selectedMarket)}`} />
@@ -1463,7 +1476,7 @@ export default function PaperPortfolioPage() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
                     <tr style={{ color: '#64748b', borderBottom: '1px solid #334155' }}>
-                      {['Symbol', 'Entry', 'Exit', 'Entry $', 'Exit $', 'P&L %', 'P&L $', 'Days', 'Exit Reason', 'R:R', 'Score'].map(h => (
+                      {['Symbol', 'Style', 'Entry', 'Exit', 'Entry $', 'Exit $', 'P&L %', 'P&L $', 'Days', 'Exit Reason', 'R:R', 'Score', 'Conf'].map(h => (
                         <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 500 }}>{h}</th>
                       ))}
                     </tr>
@@ -1474,6 +1487,7 @@ export default function PaperPortfolioPage() {
                         <td style={{ padding: '9px 10px' }}>
                           <Link href={`/stock/${t.symbol}`} style={{ color: '#60a5fa', fontWeight: 600, textDecoration: 'none' }}>{t.symbol}</Link>
                         </td>
+                        <td style={{ padding: '9px 10px', color: '#94a3b8', fontSize: 11 }}>{t.trading_style ?? '—'}</td>
                         <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.entry_date)}</td>
                         <td style={{ padding: '9px 10px', color: '#64748b' }}>{fmtDate(t.exit_time)}</td>
                         <td style={{ padding: '9px 10px' }}>${t.entry_price.toFixed(2)}</td>
@@ -1488,6 +1502,9 @@ export default function PaperPortfolioPage() {
                         <td style={{ padding: '9px 10px' }}><ExitBadge reason={t.exit_reason} /></td>
                         <td style={{ padding: '9px 10px' }}>{t.rr_ratio_at_entry != null ? `${t.rr_ratio_at_entry.toFixed(1)}:1` : '—'}</td>
                         <td style={{ padding: '9px 10px' }}>{t.entry_score ?? '—'}</td>
+                        <td style={{ padding: '9px 10px', color: t.confidence_at_entry != null ? (t.confidence_at_entry >= 50 ? '#94a3b8' : '#f97316') : '#475569', fontSize: 11 }}>
+                          {t.confidence_at_entry != null ? `${t.confidence_at_entry.toFixed(0)}` : '—'}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
