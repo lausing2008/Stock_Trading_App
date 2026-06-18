@@ -665,6 +665,7 @@ class FundamentalsOut(BaseModel):
     book_value: float | None = None
     dividend_yield: float | None = None
     dividend_rate: float | None = None
+    ex_dividend_date: str | None = None   # YYYY-MM-DD, from yfinance exDividendDate (unix ts → date)
     # Returns & risk
     return_on_equity: float | None = None
     return_on_assets: float | None = None
@@ -714,6 +715,19 @@ class FundamentalsOut(BaseModel):
     eps_history: list[dict] = []                # [{quarter, actual, estimate, surprise_pct}]
     # Data freshness
     fetched_at: str | None = None               # ISO datetime when yfinance data was last fetched
+
+
+def _parse_ex_div_date(raw) -> str | None:
+    """Convert yfinance exDividendDate (unix timestamp int) to YYYY-MM-DD string."""
+    if raw is None:
+        return None
+    try:
+        from datetime import date as _d, datetime as _dt
+        if isinstance(raw, (int, float)):
+            return _dt.utcfromtimestamp(raw).date().isoformat()
+        return str(raw)[:10]  # already a string
+    except Exception:
+        return None
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
@@ -909,6 +923,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         book_value=_safe(info, "bookValue"),
         dividend_yield=_safe(info, "dividendYield"),
         dividend_rate=_safe(info, "dividendRate"),
+        ex_dividend_date=_parse_ex_div_date(_safe(info, "exDividendDate")),
         return_on_equity=_safe(info, "returnOnEquity"),
         return_on_assets=_safe(info, "returnOnAssets"),
         revenue_growth=_safe(info, "revenueGrowth"),
@@ -1336,6 +1351,160 @@ def earnings_calendar(days_ahead: int = Query(45, ge=1, le=180), session: Sessio
             continue
     results.sort(key=lambda x: x["days_to_earnings"])
     return results
+
+
+# ── 2026 macro event calendar (pre-announced schedules) ───────────────────────
+# Sources: FOMC=federalreserve.gov; CPI/NFP/PCE=bls.gov/bea.gov
+_MACRO_2026: list[dict] = [
+    # FOMC decisions (second day of each meeting)
+    {"type": "fomc", "date": "2026-01-29", "title": "FOMC Rate Decision", "description": "Federal Reserve interest rate decision — Jan meeting", "impact": "high"},
+    {"type": "fomc", "date": "2026-03-18", "title": "FOMC Rate Decision", "description": "Federal Reserve interest rate decision — Mar meeting", "impact": "high"},
+    {"type": "fomc", "date": "2026-05-07", "title": "FOMC Rate Decision", "description": "Federal Reserve interest rate decision — May meeting", "impact": "high"},
+    {"type": "fomc", "date": "2026-06-18", "title": "FOMC Rate Decision", "description": "Federal Reserve interest rate decision — Jun meeting", "impact": "high"},
+    {"type": "fomc", "date": "2026-07-30", "title": "FOMC Rate Decision", "description": "Federal Reserve interest rate decision — Jul meeting", "impact": "high"},
+    {"type": "fomc", "date": "2026-09-17", "title": "FOMC Rate Decision", "description": "Federal Reserve interest rate decision — Sep meeting", "impact": "high"},
+    {"type": "fomc", "date": "2026-10-29", "title": "FOMC Rate Decision", "description": "Federal Reserve interest rate decision — Oct meeting", "impact": "high"},
+    {"type": "fomc", "date": "2026-12-10", "title": "FOMC Rate Decision", "description": "Federal Reserve interest rate decision — Dec meeting", "impact": "high"},
+    # CPI releases (BLS, ~2nd week of month for prior month)
+    {"type": "cpi", "date": "2026-01-15", "title": "CPI Release", "description": "Consumer Price Index — Dec 2025 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-02-12", "title": "CPI Release", "description": "Consumer Price Index — Jan 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-03-12", "title": "CPI Release", "description": "Consumer Price Index — Feb 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-04-10", "title": "CPI Release", "description": "Consumer Price Index — Mar 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-05-14", "title": "CPI Release", "description": "Consumer Price Index — Apr 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-06-11", "title": "CPI Release", "description": "Consumer Price Index — May 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-07-15", "title": "CPI Release", "description": "Consumer Price Index — Jun 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-08-13", "title": "CPI Release", "description": "Consumer Price Index — Jul 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-09-11", "title": "CPI Release", "description": "Consumer Price Index — Aug 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-10-14", "title": "CPI Release", "description": "Consumer Price Index — Sep 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-11-13", "title": "CPI Release", "description": "Consumer Price Index — Oct 2026 data (BLS)", "impact": "high"},
+    {"type": "cpi", "date": "2026-12-11", "title": "CPI Release", "description": "Consumer Price Index — Nov 2026 data (BLS)", "impact": "high"},
+    # NFP — Non-Farm Payrolls (BLS, first Friday of month)
+    {"type": "nfp", "date": "2026-01-09", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Dec 2025 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-02-06", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Jan 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-03-06", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Feb 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-04-03", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Mar 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-05-08", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Apr 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-06-05", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — May 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-07-02", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Jun 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-08-07", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Jul 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-09-04", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Aug 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-10-02", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Sep 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-11-06", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Oct 2026 data (BLS)", "impact": "high"},
+    {"type": "nfp", "date": "2026-12-04", "title": "Jobs Report (NFP)", "description": "Non-Farm Payrolls — Nov 2026 data (BLS)", "impact": "high"},
+    # PCE — Personal Consumption Expenditures (BEA, ~last Friday of month)
+    {"type": "pce", "date": "2026-01-30", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Nov 2025 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-02-27", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Dec 2025 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-03-27", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Jan 2026 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-04-30", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Feb 2026 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-05-29", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Mar 2026 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-06-26", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Apr 2026 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-07-31", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — May 2026 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-08-28", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Jun 2026 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-09-25", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Jul 2026 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-10-30", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Aug 2026 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-11-25", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Sep 2026 data (BEA)", "impact": "high"},
+    {"type": "pce", "date": "2026-12-18", "title": "PCE Inflation", "description": "Personal Consumption Expenditures — Oct 2026 data (BEA)", "impact": "high"},
+    # GDP advance estimates (BEA, ~4 weeks after quarter end)
+    {"type": "gdp", "date": "2026-01-29", "title": "GDP Advance Estimate", "description": "Q4 2025 GDP advance (BEA)", "impact": "medium"},
+    {"type": "gdp", "date": "2026-04-30", "title": "GDP Advance Estimate", "description": "Q1 2026 GDP advance (BEA)", "impact": "medium"},
+    {"type": "gdp", "date": "2026-07-30", "title": "GDP Advance Estimate", "description": "Q2 2026 GDP advance (BEA)", "impact": "medium"},
+    {"type": "gdp", "date": "2026-10-29", "title": "GDP Advance Estimate", "description": "Q3 2026 GDP advance (BEA)", "impact": "medium"},
+]
+
+
+@router.get("/events/calendar")
+def events_calendar(
+    days_ahead: int = Query(90, ge=1, le=365),
+    session: Session = Depends(get_session),
+):
+    """Return all upcoming events: earnings, ex-dividends, and macro events (FOMC, CPI, NFP, PCE, GDP)."""
+    from datetime import date as _date
+    today = _date.today()
+    cutoff = today + timedelta(days=days_ahead)
+    events = []
+
+    # ── Macro events ─────────────────────────────────────────────────────────
+    for ev in _MACRO_2026:
+        try:
+            ev_date = _date.fromisoformat(ev["date"])
+        except Exception:
+            continue
+        if today <= ev_date <= cutoff:
+            events.append({
+                **ev,
+                "days_to_event": (ev_date - today).days,
+                "symbol": None,
+                "name": None,
+                "market": None,
+                "sector": None,
+            })
+
+    # ── Stock events: earnings + ex-dividends ─────────────────────────────────
+    r = _get_redis()
+    stocks = session.execute(select(Stock).where(Stock.active.is_(True))).scalars().all()
+
+    for stock in stocks:
+        mkt = stock.market.value if hasattr(stock.market, "value") else str(stock.market)
+        cache_key = f"stockai:fundamentals:v2:{stock.symbol}"
+        try:
+            cached = r.get(cache_key)
+            if not cached:
+                continue
+            data = json.loads(cached)
+
+            # Earnings
+            ned = data.get("next_earnings_date")
+            if ned:
+                try:
+                    ned_date = _date.fromisoformat(ned)
+                    if today <= ned_date <= cutoff:
+                        events.append({
+                            "type": "earnings",
+                            "date": ned,
+                            "days_to_event": (ned_date - today).days,
+                            "title": f"{stock.symbol} Earnings",
+                            "description": stock.name,
+                            "impact": "high",
+                            "symbol": stock.symbol,
+                            "name": stock.name,
+                            "sector": stock.sector,
+                            "market": mkt,
+                            "eps_estimate": data.get("forward_eps"),
+                            "trailing_eps": data.get("trailing_eps"),
+                            "revenue_growth": data.get("revenue_growth"),
+                            "earnings_growth": data.get("earnings_growth"),
+                            "market_cap": data.get("market_cap"),
+                        })
+                except Exception:
+                    pass
+
+            # Ex-dividend
+            ex_div = data.get("ex_dividend_date")
+            if ex_div:
+                try:
+                    ex_date = _date.fromisoformat(str(ex_div)[:10])
+                    if today <= ex_date <= cutoff:
+                        events.append({
+                            "type": "dividend",
+                            "date": ex_div[:10],
+                            "days_to_event": (ex_date - today).days,
+                            "title": f"{stock.symbol} Ex-Dividend",
+                            "description": stock.name,
+                            "impact": "medium",
+                            "symbol": stock.symbol,
+                            "name": stock.name,
+                            "sector": stock.sector,
+                            "market": mkt,
+                            "dividend_rate": data.get("dividend_rate"),
+                            "dividend_yield": data.get("dividend_yield"),
+                        })
+                except Exception:
+                    pass
+        except Exception:
+            continue
+
+    events.sort(key=lambda x: (x["days_to_event"], x["type"]))
+    return events
 
 
 # ── Analyst Ratings Feed ──────────────────────────────────────────────────────
