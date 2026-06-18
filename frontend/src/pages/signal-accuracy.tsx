@@ -1165,6 +1165,44 @@ export default function SignalAccuracyPage() {
                 ℹ️ Outcomes use fixed hold windows: SHORT=7d, SWING=14d, LONG=28d. Entry = first close ≥ signal date. Exit = first close ≥ entry + hold days.
                 Once SWING outcomes exceed 500, run Optuna on signal parameters — see SIGNAL_ACCURACY.md for the tuning workflow.
               </div>
+
+              {/* Per-symbol breakdown */}
+              {outcomesData.by_symbol && outcomesData.by_symbol.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 8, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                    Per-Symbol Breakdown <span style={{ fontWeight: 400, fontSize: 11, color: '#475569' }}>· ≥2 signals · sorted by avg return</span>
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                          {['Symbol', 'Signals', 'Win Rate', 'W', 'L', 'Avg Return'].map(h => (
+                            <th key={h} style={{ padding: '4px 10px', textAlign: h === 'Symbol' ? 'left' : 'right', color: '#475569', fontWeight: 600, fontSize: 11 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {outcomesData.by_symbol.map(r => {
+                          const wrColor = r.win_rate >= 0.6 ? '#4ade80' : r.win_rate >= 0.5 ? '#facc15' : '#f87171';
+                          const retColor = r.avg_return_pct == null ? '#475569' : r.avg_return_pct >= 0 ? '#4ade80' : '#f87171';
+                          return (
+                            <tr key={r.symbol} style={{ borderBottom: '1px solid #0f172a' }}>
+                              <td style={{ padding: '5px 10px', color: '#60a5fa', fontWeight: 600 }}>{r.symbol}</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: '#94a3b8' }}>{r.count}</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: wrColor, fontWeight: 600 }}>{(r.win_rate * 100).toFixed(0)}%</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: '#4ade80' }}>{r.wins}</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: '#f87171' }}>{r.losses}</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'right', color: retColor, fontWeight: 600 }}>
+                                {r.avg_return_pct != null ? `${r.avg_return_pct >= 0 ? '+' : ''}${r.avg_return_pct.toFixed(2)}%` : '—'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

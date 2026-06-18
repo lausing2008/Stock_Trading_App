@@ -1621,6 +1621,48 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         note="new entries suspended for today")
             return
 
+    # ── Weekly realized-loss circuit breaker ─────────────────────────────────────
+    max_weekly_loss = cfg.get("max_weekly_loss_pct", 0.08)
+    if max_weekly_loss and max_weekly_loss > 0 and equity > 0:
+        from zoneinfo import ZoneInfo
+        week_start = datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)
+        weekly_net_pnl = session.execute(
+            select(func.sum(PaperTrade.pnl))
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_time >= week_start,
+            )
+        ).scalar() or 0.0
+        if weekly_net_pnl < 0 and abs(weekly_net_pnl) / equity > max_weekly_loss:
+            log.warning("paper.weekly_loss_limit",
+                        portfolio=portfolio.name,
+                        weekly_net_pnl=round(weekly_net_pnl, 2),
+                        weekly_net_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
+                        limit_pct=round(max_weekly_loss * 100, 1),
+                        note="new entries suspended for remainder of week")
+            return
+
+    # ── Consecutive-loss circuit breaker ─────────────────────────────────────────
+    max_consec_losses = cfg.get("max_consecutive_losses", 3)
+    if max_consec_losses and max_consec_losses > 0:
+        recent_closed = session.execute(
+            select(PaperTrade.pnl)
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.pnl.is_not(None),
+            )
+            .order_by(desc(PaperTrade.exit_time))
+            .limit(max_consec_losses)
+        ).scalars().all()
+        if len(recent_closed) >= max_consec_losses and all(p < 0 for p in recent_closed):
+            log.warning("paper.consecutive_loss_limit",
+                        portfolio=portfolio.name,
+                        consecutive_losses=max_consec_losses,
+                        note="new entries suspended until a trade closes positive")
+            return
+
     # ── Max entries per day ───────────────────────────────────────────────────────
     max_entries_day = cfg.get("max_entries_per_day", 5)
     if max_entries_day and max_entries_day > 0:

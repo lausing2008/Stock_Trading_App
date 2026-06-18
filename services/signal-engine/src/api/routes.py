@@ -2513,6 +2513,40 @@ def outcomes_summary(
         "newest": max(signal_dates).isoformat() if signal_dates else None,
     }
 
+    # Per-symbol breakdown — fetch symbol names in one query
+    stock_ids = list({o.stock_id for o in outcomes})
+    symbol_map: dict[int, str] = {}
+    if stock_ids:
+        rows = session.execute(select(Stock.id, Stock.symbol).where(Stock.id.in_(stock_ids))).all()
+        symbol_map = {r.id: r.symbol for r in rows}
+
+    sym_groups: dict[str, dict] = {}
+    for o in outcomes:
+        sym = symbol_map.get(o.stock_id, f"id:{o.stock_id}")
+        if sym not in sym_groups:
+            sym_groups[sym] = {"count": 0, "wins": 0, "returns": []}
+        sym_groups[sym]["count"] += 1
+        if o.is_correct:
+            sym_groups[sym]["wins"] += 1
+        if o.pct_return is not None:
+            sym_groups[sym]["returns"].append(o.pct_return)
+
+    by_symbol = sorted(
+        [
+            {
+                "symbol": sym,
+                "count": v["count"],
+                "win_rate": round(v["wins"] / v["count"], 3),
+                "avg_return_pct": round(statistics.mean(v["returns"]) * 100, 2) if v["returns"] else None,
+                "wins": v["wins"],
+                "losses": v["count"] - v["wins"],
+            }
+            for sym, v in sym_groups.items()
+            if v["count"] >= 2
+        ],
+        key=lambda x: -(x["avg_return_pct"] or -999),
+    )
+
     return {
         "total": len(outcomes),
         "days_lookback": days,
@@ -2528,6 +2562,7 @@ def outcomes_summary(
         "by_market_regime": regime_summary,
         "by_research_alignment": research_summary,
         "by_window": multi_window,
+        "by_symbol": by_symbol,
     }
 
 

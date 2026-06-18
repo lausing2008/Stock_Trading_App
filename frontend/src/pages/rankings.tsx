@@ -3,11 +3,12 @@ import useSWR from 'swr';
 import RankingsTable from '@/components/RankingsTable';
 import MarketClosedBanner from '@/components/MarketClosedBanner';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
-import { api, type Stock, type WatchlistItem, type LatestPrice, type RankingRow, type SignalSummary, type TradePlan } from '@/lib/api';
+import { api, type Stock, type WatchlistItem, type WatchlistMeta, type LatestPrice, type RankingRow, type SignalSummary, type TradePlan } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
 
 export default function RankingsPage() {
   const [market, setMarket] = useState<'US' | 'HK' | ''>('');
+  const [filterWatchlistId, setFilterWatchlistId] = useState<number | null>(null);
   const [compareSymbols, setCompareSymbols] = useState<Set<string>>(new Set());
   const [compareOpen, setCompareOpen] = useState(false);
 
@@ -23,9 +24,18 @@ export default function RankingsPage() {
     `rankings-${market}`,
     () => api.rankings(market || undefined),
   );
+  const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
   const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: filteredWatchlistItems } = useSWR<WatchlistItem[]>(
+    filterWatchlistId != null ? `watchlist-${filterWatchlistId}` : null,
+    () => api.listWatchlist(filterWatchlistId!),
+  );
   const { data: stocks } = useSWR<Stock[]>('stocks', () => api.listStocks());
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
+  const filteredSet = useMemo(
+    () => filterWatchlistId != null ? new Set(filteredWatchlistItems?.map(w => w.symbol) ?? []) : watchedSet,
+    [filterWatchlistId, filteredWatchlistItems, watchedSet],
+  );
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalList } = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()), { refreshInterval: 300_000 });
   const { data: boardData } = useSWR<TradePlan[]>('board', () => api.listBoard());
@@ -49,12 +59,10 @@ export default function RankingsPage() {
     if (!data) return [];
     const rankedSymbols = new Set(data.rankings.map(r => r.symbol));
 
-    // Ranked stocks filtered to user's watchlist
-    const ranked = data.rankings.filter(r => watchedSet.has(r.symbol));
+    const ranked = data.rankings.filter(r => filteredSet.has(r.symbol));
 
-    // Watchlisted stocks not yet in rankings (insufficient price history)
     const unranked: RankingRow[] = (stocks ?? [])
-      .filter(s => watchedSet.has(s.symbol) && !rankedSymbols.has(s.symbol))
+      .filter(s => filteredSet.has(s.symbol) && !rankedSymbols.has(s.symbol))
       .filter(s => !market || s.market === market.toUpperCase())
       .map(s => ({
         symbol: s.symbol,
@@ -73,7 +81,7 @@ export default function RankingsPage() {
       }));
 
     return [...ranked, ...unranked];
-  }, [data, watchedSet, stocks, market]);
+  }, [data, filteredSet, stocks, market]);
 
   const compareRows = useMemo(
     () => rows.filter(r => compareSymbols.has(r.symbol)),
@@ -137,6 +145,20 @@ export default function RankingsPage() {
           >
             ↓ CSV
           </button>
+          <select
+            value={filterWatchlistId ?? ''}
+            onChange={e => setFilterWatchlistId(e.target.value === '' ? null : Number(e.target.value))}
+            style={{
+              padding: '4px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+              border: '1px solid #334155', background: '#0f172a', color: filterWatchlistId ? '#a5b4fc' : '#475569',
+              appearance: 'none', WebkitAppearance: 'none',
+            }}
+          >
+            <option value="">All watchlists</option>
+            {(watchlists ?? []).map(w => (
+              <option key={w.id} value={w.id}>{w.name} ({w.item_count})</option>
+            ))}
+          </select>
           {(['', 'US', 'HK'] as const).map((m) => (
             <button
               key={m || 'all'}
