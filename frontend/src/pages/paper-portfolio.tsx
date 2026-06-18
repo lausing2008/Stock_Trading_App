@@ -1066,7 +1066,7 @@ export default function PaperPortfolioPage() {
                 portfolio={p}
                 selected={p.id === selectedPortfolioId}
                 isBestSharpe={p.id === bestSharpeId}
-                onSelect={() => { setSelectedPortfolioId(p.id); setTab('Positions'); setTradesPage(1); setDecPage(1); }}
+                onSelect={() => { setSelectedPortfolioId(p.id); setTradesPage(1); setDecPage(1); }}
               />
             ))}
           </div>
