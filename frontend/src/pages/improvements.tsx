@@ -5641,7 +5641,9 @@ const ITEMS: Item[] = [
   // ── Tier 39 — Alert UX Overhaul + Outcomes Visibility (2026-06-17) ──────────
 
   {
-    id: 'TIER39-A', tier: 39, severity: 'high', status: 'done',
+    id: 'TIER39-A', tier: 39, severity: 'high', defaultStatus: 'done',
+    title: 'Alert enum migration — 4 pattern types non-functional',
+    effort: '1h',
     what: 'Alert bulk-create silently returned "Created 0 alerts" for 4 pattern types (double_bottom, macd_bullish_cross, rsi_oversold_bounce, breakout) without any error message. The underlying cause was missing PostgreSQL enum values — these were added to the Python AlertCondition enum after DB creation but the DB schema was never migrated. The frontend catch block swallowed all 500 errors.',
     fix: 'Added ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS for all 4 missing values to shared/db/session.py idempotent migration block. Applied on EC2. Frontend BulkPatternAlertCard now surfaces first 5 failures instead of swallowing them.',
     file: 'shared/db/session.py + frontend/src/pages/alerts.tsx',
@@ -5649,7 +5651,9 @@ const ITEMS: Item[] = [
     impact: 'HIGH — 4 of 8 pattern alert types were silently non-functional. Users could select them but no alerts were ever created.',
   },
   {
-    id: 'TIER39-B', tier: 39, severity: 'feature', status: 'done',
+    id: 'TIER39-B', tier: 39, severity: 'feature', defaultStatus: 'done',
+    title: 'Alerts page — filter, pagination, bulk delete',
+    effort: '3h',
     what: 'Alerts page had no filtering, no pagination, no bulk delete — every operation required scrolling through the full list.',
     fix: 'Complete rewrite: filter bar (Active/All/Triggered tabs + symbol search + condition dropdown), pagination (20 per page), checkbox row selection + select-page + bulk delete, Bulk Delete by Type section with per-type counts and confirm dialog.',
     file: 'frontend/src/pages/alerts.tsx',
@@ -5657,7 +5661,9 @@ const ITEMS: Item[] = [
     impact: 'Medium (UX) — alerts page now scales to 100+ alerts without becoming unusable.',
   },
   {
-    id: 'TIER39-C', tier: 39, severity: 'feature', status: 'done',
+    id: 'TIER39-C', tier: 39, severity: 'feature', defaultStatus: 'done',
+    title: 'Outcomes — Evaluate Now button + date-range coverage banner',
+    effort: '1h',
     what: 'Signal accuracy Outcomes tab showed outcomes data with no way to trigger a manual re-evaluation or see how post-SA-31 data was accumulating.',
     fix: 'Added "Evaluate Now" button (POST /signals/outcomes/evaluate) and a date-range banner showing oldest→newest evaluated signal date, explaining that post-SA-31 SWING results mature after Jun 3+ signals pass their 14-day hold window.',
     file: 'frontend/src/pages/signal-accuracy.tsx + services/signal-engine/src/api/routes.py',
@@ -5668,7 +5674,9 @@ const ITEMS: Item[] = [
   // ── Tier 40 — Signal Intelligence: Calibration + Consensus + RSI Exit (2026-06-17) ──
 
   {
-    id: 'TIER40-A', tier: 40, severity: 'feature', status: 'done',
+    id: 'TIER40-A', tier: 40, severity: 'feature', defaultStatus: 'done',
+    title: 'Outcomes calibration endpoint — data-driven threshold suggestions',
+    effort: '2h',
     what: 'No data-driven way to know whether current buy_threshold values are at their optimal expected-value point. Thresholds were tuned in SA-31 but drift as market conditions change.',
     fix: 'Added GET /signals/outcomes/calibrate endpoint: sweeps thresholds 40–85 on 0-100 scale for each style, computes win_rate × avg_return (expected value), returns current vs suggested threshold + EV lift %. Calibration table shown in Signal Accuracy Outcomes tab.',
     file: 'services/signal-engine/src/api/routes.py + frontend/src/pages/signal-accuracy.tsx',
@@ -5676,7 +5684,9 @@ const ITEMS: Item[] = [
     impact: 'Medium — enables monthly threshold tuning from data instead of manual judgment.',
   },
   {
-    id: 'TIER40-B', tier: 40, severity: 'feature', status: 'done',
+    id: 'TIER40-B', tier: 40, severity: 'feature', defaultStatus: 'done',
+    title: 'Cross-horizon consensus annotation + position size boost',
+    effort: '2h',
     what: 'When multiple styles (SWING, GROWTH, LONG, SHORT) all fire BUY for the same stock in the same batch, this cross-horizon consensus signal was not annotated or used for position sizing.',
     fix: 'Added cross-horizon consensus annotation in _bulk_persist(): counts how many other styles also fired BUY, adds cross_style_buys and cross_style_buy_styles to signal.reasons. Paper trading engine reads consensus_size_mult: ≥2 other buys = 1.15×, 1 other = 1.07×.',
     file: 'services/signal-engine/src/api/routes.py + services/market-data/src/services/paper_trading_engine.py',
@@ -5684,7 +5694,9 @@ const ITEMS: Item[] = [
     impact: 'Medium — sizes up positions when multiple signal styles agree, improving capital deployment on high-conviction trades.',
   },
   {
-    id: 'TIER40-C', tier: 40, severity: 'feature', status: 'done',
+    id: 'TIER40-C', tier: 40, severity: 'feature', defaultStatus: 'done',
+    title: 'PT-H5: RSI overbought trail tightening',
+    effort: '2h',
     what: 'Paper trading did not tighten the trailing stop when RSI went overbought on a profitable position — opportunities to lock in gains at peaks were missed.',
     fix: 'PT-H5: When RSI-14 > 75 AND trail armed AND pnl ≥ 5%, tighten trailing stop to 1.0× ATR (vs default 2.0×). Batch-fetches RSI from Indicator table per monitor cycle to avoid per-symbol queries.',
     file: 'services/market-data/src/services/paper_trading_engine.py',
@@ -5695,7 +5707,9 @@ const ITEMS: Item[] = [
   // ── Tier 41 — HSI Benchmark + Fundamental Deterioration Exit (2026-06-17) ──
 
   {
-    id: 'TIER41-A', tier: 41, severity: 'feature', status: 'done',
+    id: 'TIER41-A', tier: 41, severity: 'feature', defaultStatus: 'done',
+    title: 'HSI benchmark in BenchmarkTable + vs HSI StatCard',
+    effort: '2h',
     what: 'Benchmark comparison table and outperformance StatCards showed only SPY and QQQ. HK portfolio performance had no relevant benchmark — HSI data was already stored in PaperEquityPoint but never surfaced.',
     fix: 'Added HSI column to BenchmarkTable (conditionally shown when hsi_close data exists). Added outperformance_vs_hsi computation in paper_portfolio.py. Added vs HSI StatCard in portfolio summary. Added outperformance_vs_hsi to PaperSummary type.',
     file: 'services/market-data/src/api/paper_portfolio.py + frontend/src/pages/paper-portfolio.tsx + frontend/src/lib/api.ts',
@@ -5703,7 +5717,9 @@ const ITEMS: Item[] = [
     impact: 'Medium — HK portfolios now have a meaningful benchmark; the HSI column only renders when data is available so US-only portfolios are unaffected.',
   },
   {
-    id: 'TIER41-B', tier: 41, severity: 'feature', status: 'done',
+    id: 'TIER41-B', tier: 41, severity: 'feature', defaultStatus: 'done',
+    title: 'PT-I1: Fundamental deterioration trail tightening',
+    effort: '2h',
     what: 'Paper trading held positions even when the research engine had downgraded the stock to AVOID/SELL — no mechanism to exit deteriorating fundamentals faster.',
     fix: 'PT-I1: In _monitor_positions, batch-query research summary for all open symbols via research engine HTTP. When recommendation is AVOID or SELL AND trail armed AND pnl ≥ 2%, tighten trail to 1.5× ATR. Logs paper.research_deterioration_trail_tightened.',
     file: 'services/market-data/src/services/paper_trading_engine.py',
