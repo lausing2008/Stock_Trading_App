@@ -328,6 +328,7 @@ export const api = {
 
   // Earnings calendar
   earningsCalendar: (daysAhead = 45) => request<EarningsItem[]>(`/stocks/earnings_calendar?days_ahead=${daysAhead}`),
+  eventsCalendar: (daysAhead = 90) => request<CalendarEvent[]>(`/stocks/events/calendar?days_ahead=${daysAhead}`),
 
   // Analyst ratings feed
   analystRatings: (days = 30) => request<AnalystRating[]>(`/stocks/analyst_ratings?days=${days}`),
@@ -809,6 +810,26 @@ export type EarningsItem = {
   revenue_growth: number | null;
   earnings_growth: number | null;
   market_cap: number | null;
+};
+
+export type CalendarEvent = {
+  type: 'earnings' | 'dividend' | 'split' | 'fomc' | 'cpi' | 'nfp' | 'pce' | 'gdp';
+  date: string;
+  days_to_event: number;
+  title: string;
+  description?: string | null;
+  impact?: 'high' | 'medium' | 'low';
+  symbol?: string | null;
+  name?: string | null;
+  sector?: string | null;
+  market?: string | null;
+  dividend_rate?: number | null;
+  dividend_yield?: number | null;
+  eps_estimate?: number | null;
+  trailing_eps?: number | null;
+  revenue_growth?: number | null;
+  earnings_growth?: number | null;
+  market_cap?: number | null;
 };
 
 export type AnalystRating = {
