@@ -26,7 +26,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type WatchlistMeta, type Overview, type TradePlan, type EarningsItem } from '@/lib/api';
+import { api, type RankingRow, type LatestPrice, type SignalSummary, type WatchlistItem, type WatchlistMeta, type Overview, type TradePlan, type EarningsItem, type ResearchSummary } from '@/lib/api';
 import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 import { askAI, isAiConfigured } from '@/lib/ai';
 import { getSignalStyle } from '@/lib/settings';
@@ -471,6 +471,9 @@ export default function Opportunities() {
   );
   const radarSymbols = useMemo(() => new Set((radarItems ?? []).map(w => w.symbol)), [radarItems]);
 
+  // Research summaries for signal cards (INT-10) — state only; effect wired after opportunities is declared below
+  const [researchMap, setResearchMap] = useState<Record<string, ResearchSummary>>({});
+
   async function addToRadar(symbol: string) {
     setRadarAdding(symbol);
     try {
@@ -525,6 +528,13 @@ export default function Opportunities() {
       .sort((a, b) => b.stratScore - a.stratScore)
       .slice(0, 20);
   }, [rankData, priceMap, signalMap, strategy, market, watchedSet, earningsSoon, earningsSet]);
+
+  // Research batch fetch — must come after opportunities is declared
+  useEffect(() => {
+    if (!opportunities || opportunities.length === 0) return;
+    const syms = opportunities.slice(0, 30).map(o => o.row.symbol);
+    api.getResearchBatch(syms).then(r => setResearchMap(r ?? {})).catch(() => {});
+  }, [opportunities]);
 
   async function generateOutlook() {
     if (!isAiConfigured()) {
@@ -1149,6 +1159,17 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                           Earnings ≤14d
                         </span>
                       )}
+                      {/* Research chip — INT-10 */}
+                      {(() => {
+                        const rs = researchMap[r.symbol];
+                        const RC: Record<string, string> = { 'STRONG BUY': '#4ade80', BUY: '#86efac', WATCH: '#facc15', AVOID: '#fb923c', SELL: '#f87171' };
+                        if (!rs) return <span style={{ fontSize: '9px', color: '#334155' }}>R: —</span>;
+                        return (
+                          <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', color: RC[rs.recommendation] ?? '#94a3b8', background: `${RC[rs.recommendation] ?? '#475569'}18`, border: `1px solid ${RC[rs.recommendation] ?? '#475569'}44` }}>
+                            R: {rs.recommendation === 'STRONG BUY' ? 'S.BUY' : rs.recommendation}
+                          </span>
+                        );
+                      })()}
                     </div>
 
                     {/* Reason bullets */}

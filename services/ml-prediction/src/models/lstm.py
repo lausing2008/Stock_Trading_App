@@ -54,7 +54,7 @@ class LSTMModel(BaseModel):
         loss_fn = nn.BCELoss()
 
         ds = TensorDataset(torch.from_numpy(Xs), torch.from_numpy(ys))
-        dl = DataLoader(ds, batch_size=64, shuffle=True)
+        dl = DataLoader(ds, batch_size=64, shuffle=False)
         self.net.train()
         for _ in range(self.epochs):
             for xb, yb in dl:

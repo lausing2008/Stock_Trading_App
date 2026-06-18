@@ -251,6 +251,10 @@ def _run_migrations() -> None:  # noqa: C901
             CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_alerts_user_symbol_horizon
             ON signal_alerts (user_id, symbol, horizon)
         """))
+        # PT-A2: store market regime in equity curve for shading
+        conn.execute(text(
+            "ALTER TABLE paper_equity_curve ADD COLUMN IF NOT EXISTS market_regime VARCHAR(16)"
+        ))
 
 
 def _seed_admin() -> None:

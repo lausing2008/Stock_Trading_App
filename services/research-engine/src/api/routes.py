@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import httpx
 import pandas as pd
 import yfinance as yf
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from common.jwt_auth import get_current_username
 from pydantic import BaseModel
@@ -56,9 +56,25 @@ class ResearchRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def _get(client: httpx.AsyncClient, url: str) -> dict | list | None:
+_REDIS_CLAUDE_KEY   = "stockai:admin:claude_api_key"
+_REDIS_DEEPSEEK_KEY = "stockai:admin:deepseek_api_key"
+
+
+def _get_admin_ai_key(provider: str = "claude") -> str:
+    """Return the admin-stored AI API key from Redis, or '' if unavailable."""
+    rkey = _REDIS_CLAUDE_KEY if provider == "claude" else _REDIS_DEEPSEEK_KEY
     try:
-        r = await client.get(url, timeout=20)
+        import redis as redis_lib
+        r = redis_lib.from_url(_s.redis_url, decode_responses=True, socket_connect_timeout=1)
+        return r.get(rkey) or ""
+    except Exception:
+        return ""
+
+
+async def _get(client: httpx.AsyncClient, url: str, auth: str = "") -> dict | list | None:
+    try:
+        headers = {"Authorization": auth} if auth else {}
+        r = await client.get(url, timeout=20, headers=headers)
         if r.status_code == 200:
             return r.json()
     except Exception as exc:
@@ -888,8 +904,10 @@ def _dcf_fair_value(fund: dict, price: float, sector: str = "Unknown") -> dict |
 
 async def _call_claude(req: ResearchRequest, symbol: str, stock: dict, fund: dict,
                        tech: dict, fund_scores: dict, live_price: float = 0.0) -> dict:
-    if not req.api_key.strip():
+    api_key = req.api_key.strip() or _get_admin_ai_key(req.provider)
+    if not api_key:
         return _fallback_ai()
+    req = req.model_copy(update={"api_key": api_key})
     price = live_price or stock.get("price") or stock.get("last_price") or "N/A"
     name = stock.get("name", symbol)
     sector = stock.get("sector", "Unknown")
@@ -1085,12 +1103,17 @@ Use your knowledge of {symbol} to fill in qualitative sections accurately. Base 
     }
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        # 90s limit: the gateway allows 240s for research POST requests; keeping AI under 90s
+        # leaves buffer for data-gather (25s) and response serialisation.
+        async with httpx.AsyncClient(timeout=90) as client:
             r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=body)
     except Exception as exc:
         log.warning("claude.call.failed", error=str(exc))
         return _fallback_ai()
 
+    if r.status_code == 429:
+        log.warning("claude.rate_limited", status=r.status_code, body=r.text[:200])
+        return _fallback_ai()
     if r.status_code != 200:
         log.warning("claude.error", status=r.status_code, body=r.text[:200])
         return _fallback_ai()
@@ -1146,13 +1169,13 @@ def _fallback_ai() -> dict:
         "key_opportunities": ["Retry analysis when AI is available"],
         "trade_invalidation": ["Break below key support", "Earnings miss", "Macro deterioration"],
         "ai_verdict": {
-            "can_buy_today": "WAIT",
+            "can_buy_today": "INSUFFICIENT_DATA",
             "why": "AI analysis failed. Please check your API key and retry.",
             "biggest_risks": ["AI analysis unavailable"],
             "must_improve": ["Resolve AI connection"],
             "strong_buy_catalysts": ["Retry with valid API key"],
             "confidence_pct": 0,
-            "final_recommendation": "WATCH",
+            "final_recommendation": "INSUFFICIENT DATA",
         },
         "insider_status_checklist": "warning",
         "institutional_pct": 0,
@@ -1242,8 +1265,68 @@ def _yf_sync_fetch(sym: str):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@router.get("/batch")
+async def get_research_batch(symbols: str, _: str = Depends(get_current_username)):
+    """Return lightweight research summaries for multiple symbols (comma-separated).
+    INT-10: Used by Opportunities page to show research chips on signal cards.
+    Returns only: recommendation, overall_score, confidence, generated_at per symbol.
+    Symbols with no cached report are omitted (no 404, just absent from response).
+    """
+    results = {}
+    for raw in symbols.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            sym = _sanitise_symbol(raw)
+        except ValueError:
+            continue
+        entry = _cache.get(sym)
+        if not entry:
+            continue
+        report, ts = entry
+        quality = report.get("report_quality", "full")
+        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+        if (datetime.now(timezone.utc) - ts).total_seconds() >= ttl:
+            _cache.pop(sym, None)
+            continue
+        results[sym] = {
+            "recommendation": report.get("recommendation"),
+            "overall_score": report.get("overall_score"),
+            "confidence": report.get("confidence"),
+            "generated_at": report.get("generated_at"),
+        }
+    return results
+
+
+@router.get("/{symbol}/summary")
+async def get_research_summary(symbol: str, _: str = Depends(get_current_username)):
+    """Return lightweight cached research summary (INT-1: research badge on stock detail page).
+    Returns: recommendation, overall_score, confidence, generated_at.
+    404 if no cached report exists.
+    """
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        raise HTTPException(400, f"Invalid symbol: {symbol!r}")
+    entry = _cache.get(sym)
+    if entry:
+        report, ts = entry
+        quality = report.get("report_quality", "full")
+        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl:
+            return {
+                "recommendation": report.get("recommendation"),
+                "overall_score": report.get("overall_score"),
+                "confidence": report.get("confidence"),
+                "generated_at": report.get("generated_at"),
+            }
+        _cache.pop(sym, None)
+    raise HTTPException(404, "No cached research report.")
+
+
 @router.get("/{symbol}")
-async def get_research(symbol: str):
+async def get_research(symbol: str, _: str = Depends(get_current_username)):
     """Return cached research report (generated within last 24h)."""
     try:
         sym = _sanitise_symbol(symbol)
@@ -1272,13 +1355,57 @@ async def clear_research(symbol: str, _: str = Depends(get_current_username)):
     return {"status": "cleared", "symbol": sym}
 
 
+@router.post("/{symbol}/trigger", status_code=202)
+async def trigger_research(symbol: str, background_tasks: BackgroundTasks):
+    """INT-4: Auto-trigger background research if no fresh report exists.
+    No auth required — only reachable from internal Docker network.
+    Cooldown: skips if a report younger than 6 hours is cached.
+    """
+    try:
+        sym = _sanitise_symbol(symbol)
+    except ValueError:
+        return {"status": "skipped", "reason": "invalid symbol"}
+    entry = _cache.get(sym)
+    if entry:
+        _, ts = entry
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+        if age < 21_600:  # 6 hours
+            return {"status": "fresh", "symbol": sym, "age_hours": round(age / 3600, 1)}
+    background_tasks.add_task(_generate_with_service_token, sym)
+    return {"status": "triggered", "symbol": sym}
+
+
+async def _generate_with_service_token(sym: str) -> None:
+    """Generate research in background using a short-lived service JWT (no user context)."""
+    try:
+        from jose import jwt as _jwt
+        from datetime import timedelta
+        expire = datetime.utcnow() + timedelta(hours=1)
+        token = _jwt.encode(
+            {"sub": "service", "role": "admin", "exp": expire},
+            _s.jwt_secret, algorithm="HS256",
+        )
+        async with httpx.AsyncClient(timeout=35) as client:
+            await client.post(
+                f"{_s.research_engine_url}/research/{sym}",
+                json={"provider": "claude", "model": "claude-sonnet-4-6", "api_key": ""},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        log.info("research.auto_trigger.done", symbol=sym)
+    except Exception as exc:
+        log.warning("research.auto_trigger.failed", symbol=sym, error=str(exc))
+
+
 @router.post("/{symbol}")
-async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(get_current_username)):
+async def generate_research(symbol: str, req: ResearchRequest, request: Request, _: str = Depends(get_current_username)):
     """Generate a full Planning Stage Research Report for the given symbol."""
     try:
         sym = _sanitise_symbol(symbol)
     except ValueError:
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
+
+    # Forward the caller's JWT to services that require auth (e.g. signal-engine)
+    auth = request.headers.get("authorization", "")
 
     # Gather data from all services in parallel
     async with httpx.AsyncClient(timeout=25) as client:
@@ -1288,7 +1415,7 @@ async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(
             _get(client, f"{_s.market_data_url}/stocks/{sym}/prices?timeframe=1d&limit=260"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/indicators?days=400"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/levels"),
-            _get(client, f"{_s.signal_engine_url}/signals/{sym}"),
+            _get(client, f"{_s.signal_engine_url}/signals/{sym}", auth),
             _get(client, f"{_s.ranking_engine_url}/rankings/{sym}"),
             _get(client, f"{_s.market_data_url}/stocks/latest_prices?symbols={sym}"),
         )
@@ -1375,7 +1502,7 @@ async def generate_research(symbol: str, req: ResearchRequest, _: str = Depends(
     report = {
         "symbol": sym,
         "company_name": stock.get("name", sym),
-        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "generated_at": datetime.utcnow().isoformat() + "Z",
         "report_quality": report_quality,
         "current_price": price,
         "market_cap": fund.get("market_cap"),
@@ -1461,8 +1588,9 @@ async def chat_research(symbol: str, req: ChatRequest, _: str = Depends(get_curr
     if not entry:
         raise HTTPException(404, "No research report found. Generate a report first.")
 
-    if not req.api_key.strip():
-        raise HTTPException(400, "API key required for chat.")
+    chat_api_key = req.api_key.strip() or _get_admin_ai_key(req.provider)
+    if not chat_api_key:
+        raise HTTPException(400, "No AI API key configured. Ask the admin to set a shared key in Settings → AI Assistant, or add your own key in Settings.")
 
     report, _ = entry
     sc = report.get("scores", {})
@@ -1518,7 +1646,7 @@ Answer questions concisely and directly. Use the data above. Be honest about unc
 
     if req.provider == "deepseek":
         url = "https://api.deepseek.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {req.api_key}", "content-type": "application/json"}
+        headers = {"Authorization": f"Bearer {chat_api_key}", "content-type": "application/json"}
         body = {"model": req.model, "max_tokens": 1024, "temperature": 0.3,
                 "messages": [{"role": "system", "content": system_prompt}] + messages}
         try:
@@ -1533,7 +1661,7 @@ Answer questions concisely and directly. Use the data above. Be honest about unc
             raise HTTPException(500, f"Chat error: {exc}")
     else:
         url = "https://api.anthropic.com/v1/messages"
-        headers = {"x-api-key": req.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        headers = {"x-api-key": chat_api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
         body = {"model": req.model, "max_tokens": 1024, "temperature": 0.3,
                 "system": system_prompt, "messages": messages}
         try:

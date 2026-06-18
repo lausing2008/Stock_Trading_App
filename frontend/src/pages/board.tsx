@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import { api, type TradePlan, type PriceAlert, type SignalAlertItem } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
+import { getUsername } from '@/lib/auth';
 
 const STAGES = ['watch', 'planning', 'active', 'closed'] as const;
 type Stage = typeof STAGES[number];
@@ -349,6 +350,12 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
   const [alertOpen, setAlertOpen] = useState(false);
   const [exitInput, setExitInput] = useState('');
   const [savingExit, setSavingExit] = useState(false);
+  const [editingActive, setEditingActive] = useState(false);
+  const [editShares, setEditShares] = useState('');
+  const [editFillPrice, setEditFillPrice] = useState('');
+  const [editStop, setEditStop] = useState('');
+  const [editTarget, setEditTarget] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
   const meta = STAGE_META[plan.stage as Stage] ?? STAGE_META.watch;
   const gp = plan.game_plan as StoredGamePlan | null;
 
@@ -366,10 +373,63 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
     setSavingExit(true);
     try {
       await api.updateBoardPlan(plan.id, { exit_price: val });
+      // Sync SELL to positions when shares are known
+      if (plan.shares != null && plan.shares > 0) {
+        try {
+          const positions = await api.listPositions();
+          const existing = positions.find(p => p.symbol === plan.symbol);
+          if (existing && existing.shares > 0) {
+            await api.sellPosition(existing.id, { shares: Math.min(plan.shares, existing.shares), price: val });
+          }
+        } catch { /* best-effort */ }
+      }
       setExitInput('');
       onExitSaved();
     } finally {
       setSavingExit(false);
+    }
+  }
+
+  function openActiveEdit() {
+    setEditShares(plan.shares != null ? String(plan.shares) : '');
+    setEditFillPrice(plan.actual_entry_price != null ? plan.actual_entry_price.toFixed(2) : '');
+    setEditStop(plan.stop_loss != null ? plan.stop_loss.toFixed(2) : '');
+    setEditTarget(plan.take_profit != null ? plan.take_profit.toFixed(2) : '');
+    setEditingActive(true);
+  }
+
+  async function saveActiveEdit() {
+    setSavingEdit(true);
+    try {
+      const updates: Record<string, number> = {};
+      const s = parseFloat(editShares);
+      const p = parseFloat(editFillPrice);
+      const stop = parseFloat(editStop);
+      const target = parseFloat(editTarget);
+      if (!isNaN(s) && s > 0) updates.shares = s;
+      if (!isNaN(p) && p > 0) updates.actual_entry_price = p;
+      if (!isNaN(stop) && stop > 0) updates.stop_loss = stop;
+      if (!isNaN(target) && target > 0) updates.take_profit = target;
+      if (Object.keys(updates).length > 0) await api.updateBoardPlan(plan.id, updates);
+      // Sync shares delta to positions
+      const newShares = !isNaN(s) && s > 0 ? s : null;
+      const oldShares = plan.shares;
+      const fillPrice = (!isNaN(p) && p > 0 ? p : null) ?? plan.actual_entry_price;
+      if (newShares != null && oldShares != null && newShares !== oldShares && fillPrice != null) {
+        try {
+          const positions = await api.listPositions();
+          const existing = positions.find(pos => pos.symbol === plan.symbol);
+          if (existing) {
+            const delta = newShares - oldShares;
+            if (delta > 0) await api.buyMorePosition(existing.id, { shares: delta, price: fillPrice });
+            else await api.sellPosition(existing.id, { shares: Math.abs(delta), price: fillPrice });
+          }
+        } catch { /* best-effort */ }
+      }
+      setEditingActive(false);
+      onExitSaved();
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -457,41 +517,87 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
         )}
 
         {/* Prices */}
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' }}>
-          {plan.actual_entry_price != null && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>Fill </span>
-              <span style={{ color: '#4ade80', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.actual_entry_price)}</span>
-              {plan.shares != null && <span style={{ color: '#334155' }}> × {plan.shares}</span>}
+        <div style={{ marginBottom: '8px' }}>
+          {plan.stage === 'active' && editingActive ? (
+            <div style={{ padding: '10px 12px', borderRadius: '8px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)' }}>
+              <div style={{ fontSize: '10px', color: '#64748b', fontWeight: 700, letterSpacing: '0.06em', marginBottom: '8px', textTransform: 'uppercase' }}>Edit Position</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '8px' }}>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#475569', display: 'block', marginBottom: '3px' }}>Shares</label>
+                  <input type="number" step="1" value={editShares} onChange={e => setEditShares(e.target.value)}
+                    style={{ width: '100%', padding: '5px 8px', borderRadius: '5px', border: '1px solid #334155', background: '#060814', color: '#f1f5f9', fontSize: '12px', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#475569', display: 'block', marginBottom: '3px' }}>Fill Price</label>
+                  <input type="number" step="0.01" value={editFillPrice} onChange={e => setEditFillPrice(e.target.value)}
+                    style={{ width: '100%', padding: '5px 8px', borderRadius: '5px', border: '1px solid #334155', background: '#060814', color: '#4ade80', fontSize: '12px', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#475569', display: 'block', marginBottom: '3px' }}>Stop Loss</label>
+                  <input type="number" step="0.01" value={editStop} onChange={e => setEditStop(e.target.value)}
+                    style={{ width: '100%', padding: '5px 8px', borderRadius: '5px', border: '1px solid #334155', background: '#060814', color: '#f87171', fontSize: '12px', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#475569', display: 'block', marginBottom: '3px' }}>Take Profit</label>
+                  <input type="number" step="0.01" value={editTarget} onChange={e => setEditTarget(e.target.value)}
+                    style={{ width: '100%', padding: '5px 8px', borderRadius: '5px', border: '1px solid #334155', background: '#060814', color: '#4ade80', fontSize: '12px', fontFamily: 'monospace', boxSizing: 'border-box' }} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button onClick={saveActiveEdit} disabled={savingEdit}
+                  style={{ flex: 1, padding: '5px', borderRadius: '5px', border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.12)', color: '#818cf8', fontSize: '11px', fontWeight: 700, cursor: 'pointer' }}>
+                  {savingEdit ? '…' : 'Save'}
+                </button>
+                <button onClick={() => setEditingActive(false)}
+                  style={{ padding: '5px 12px', borderRadius: '5px', border: '1px solid #1e293b', background: 'transparent', color: '#475569', fontSize: '11px', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+              </div>
             </div>
-          )}
-          {plan.entry_price != null && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>{plan.actual_entry_price != null ? 'Plan ' : 'Entry '}</span>
-              <span style={{ color: plan.actual_entry_price != null ? '#334155' : '#818cf8', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.entry_price)}</span>
-            </div>
-          )}
-          {(plan.stop_loss != null || gp?.stop_loss?.price != null) && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>Stop </span>
-              <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>
-                {fmt(plan.stop_loss ?? gp!.stop_loss!.price)}
-              </span>
-              {plan.stop_loss == null && gp?.stop_loss?.price != null && (
-                <span style={{ fontSize: '9px', color: '#334155', marginLeft: '3px' }}>gp</span>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              {plan.actual_entry_price != null && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>Fill </span>
+                  <span style={{ color: '#4ade80', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.actual_entry_price)}</span>
+                  {plan.shares != null && <span style={{ color: '#334155' }}> × {plan.shares}</span>}
+                </div>
               )}
-            </div>
-          )}
-          {plan.take_profit != null && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>Target </span>
-              <span style={{ color: '#4ade80', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.take_profit)}</span>
-            </div>
-          )}
-          {plan.entry_price != null && plan.stop_loss != null && plan.take_profit != null && plan.entry_price > plan.stop_loss && (
-            <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#475569' }}>R:R </span>
-              <span style={{ color: '#facc15', fontWeight: 700 }}>{((plan.take_profit - plan.entry_price) / (plan.entry_price - plan.stop_loss)).toFixed(1)}x</span>
+              {plan.entry_price != null && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>{plan.actual_entry_price != null ? 'Plan ' : 'Entry '}</span>
+                  <span style={{ color: plan.actual_entry_price != null ? '#334155' : '#818cf8', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.entry_price)}</span>
+                </div>
+              )}
+              {(plan.stop_loss != null || gp?.stop_loss?.price != null) && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>Stop </span>
+                  <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>
+                    {fmt(plan.stop_loss ?? gp!.stop_loss!.price)}
+                  </span>
+                  {plan.stop_loss == null && gp?.stop_loss?.price != null && (
+                    <span style={{ fontSize: '9px', color: '#334155', marginLeft: '3px' }}>gp</span>
+                  )}
+                </div>
+              )}
+              {plan.take_profit != null && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>Target </span>
+                  <span style={{ color: '#4ade80', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(plan.take_profit)}</span>
+                </div>
+              )}
+              {plan.entry_price != null && plan.stop_loss != null && plan.take_profit != null && plan.entry_price > plan.stop_loss && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#475569' }}>R:R </span>
+                  <span style={{ color: '#facc15', fontWeight: 700 }}>{((plan.take_profit - plan.entry_price) / (plan.entry_price - plan.stop_loss)).toFixed(1)}x</span>
+                </div>
+              )}
+              {plan.stage === 'active' && (
+                <button onClick={openActiveEdit} title="Edit shares / prices"
+                  style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#334155', cursor: 'pointer', fontSize: '13px', padding: '0 2px', lineHeight: 1, flexShrink: 0 }}>
+                  ✎
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -811,20 +917,23 @@ const isHK = (symbol: string) => /\.(HK|hk)$/.test(symbol) || /^\d{4,5}$/.test(s
 
 /* ── Main ─────────────────────────────────────────────── */
 export default function BoardPage() {
-  const { data, mutate, isLoading, error } = useSWR<TradePlan[]>('board', () => api.listBoard(), { revalidateOnFocus: false });
-  const { data: priceAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { revalidateOnFocus: false });
-  const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { revalidateOnFocus: false });
+  const u = getUsername();
+  const { data, mutate, isLoading, error } = useSWR<TradePlan[]>(`${u}:board`, () => api.listBoard(), { revalidateOnFocus: false });
+  const { data: priceAlerts, mutate: mutateAlerts } = useSWR<PriceAlert[]>(`${u}:alerts`, () => api.listAlerts(), { revalidateOnFocus: false });
+  const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>(`${u}:signal-alerts`, () => api.listSignalAlerts(), { revalidateOnFocus: false });
   const [market, setMarket] = useState<MarketFilter>('US');
   const [dragId, setDragId] = useState<number | null>(null);
   const [dragOverStage, setDragOverStage] = useState<Stage | null>(null);
   type FillTarget = { id: number; defaultPrice: number | null };
   const [fillTarget, setFillTarget] = useState<FillTarget | null>(null);
   const [closeConfirmId, setCloseConfirmId] = useState<number | null>(null);
+  const [closeExitInput, setCloseExitInput] = useState('');
+  const [fillSyncMsg, setFillSyncMsg] = useState('');
 
   // Fetch live prices for board symbols only, refresh every 60 s
   const boardSymbols = useMemo(() => [...new Set((data ?? []).map(p => p.symbol))], [data]);
   const { data: livePrices } = useSWR(
-    boardSymbols.length > 0 ? ['board-live-prices', boardSymbols.join(',')] : null,
+    boardSymbols.length > 0 ? [`${u}:board-live-prices`, boardSymbols.join(',')] : null,
     () => api.latestPricesFor(boardSymbols),
     { refreshInterval: 60_000, revalidateOnFocus: false },
   );
@@ -867,19 +976,59 @@ export default function BoardPage() {
 
   async function handleCloseConfirmed() {
     if (closeConfirmId == null) return;
-    await api.updateBoardPlan(closeConfirmId, { stage: 'closed' });
+    const closePlan = (data ?? []).find(p => p.id === closeConfirmId);
+    const exitPrice = parseFloat(closeExitInput);
+    const updates: Record<string, unknown> = { stage: 'closed' };
+    if (!isNaN(exitPrice) && exitPrice > 0) updates.exit_price = exitPrice;
+    await api.updateBoardPlan(closeConfirmId, updates);
+    // Remove from Positions if the card has a tracked position
+    if (closePlan?.symbol) {
+      try {
+        const positions = await api.listPositions();
+        const existing = positions.find(p => p.symbol === closePlan.symbol.toUpperCase());
+        if (existing) {
+          if (!isNaN(exitPrice) && exitPrice > 0 && (closePlan.shares ?? 0) > 0) {
+            await api.sellPosition(existing.id, { shares: Math.min(closePlan.shares!, existing.shares), price: exitPrice });
+          } else {
+            await api.removePosition(existing.id);
+          }
+        }
+      } catch { /* best-effort */ }
+    }
     setCloseConfirmId(null);
+    setCloseExitInput('');
     mutate();
   }
 
   async function handleFillConfirm(fillPrice: number, shares: number | null) {
     if (!fillTarget) return;
+    const activatingPlan = (data ?? []).find(p => p.id === fillTarget.id);
     await api.updateBoardPlan(fillTarget.id, {
       stage: 'active',
       actual_entry_price: fillPrice,
       trading_style: getSignalStyle(),
       ...(shares != null ? { shares } : {}),
     });
+    // Auto-sync to Positions page when shares + fill price are provided
+    if (shares != null && activatingPlan) {
+      try {
+        const positions = await api.listPositions();
+        const existing = positions.find(p => p.symbol === activatingPlan.symbol.toUpperCase());
+        const currency = /\.(HK|hk)$/.test(activatingPlan.symbol) || /^\d{4,5}$/.test(activatingPlan.symbol) ? 'HKD' : 'USD';
+        if (existing) {
+          await api.buyMorePosition(existing.id, { shares, price: fillPrice });
+        } else {
+          await api.addPosition({ symbol: activatingPlan.symbol, shares, price: fillPrice, currency });
+        }
+        setFillSyncMsg(`✓ Added to Positions (${shares} shares @ ${fillPrice})`);
+      } catch {
+        setFillSyncMsg('⚠ Position sync failed — add manually in Positions');
+      }
+      setTimeout(() => setFillSyncMsg(''), 6000);
+    } else if (shares == null) {
+      setFillSyncMsg('No shares entered — open Positions to add manually');
+      setTimeout(() => setFillSyncMsg(''), 5000);
+    }
     setFillTarget(null);
     mutate();
   }
@@ -899,7 +1048,16 @@ export default function BoardPage() {
   }
 
   async function handleDelete(id: number) {
+    const plan = (data ?? []).find(p => p.id === id);
     await api.deleteBoardPlan(id);
+    // If active with fill price → also remove from Positions
+    if (plan?.stage === 'active' && plan.actual_entry_price != null) {
+      try {
+        const positions = await api.listPositions();
+        const existing = positions.find(p => p.symbol === plan.symbol.toUpperCase());
+        if (existing) await api.removePosition(existing.id);
+      } catch { /* best-effort */ }
+    }
     mutate();
   }
 
@@ -944,7 +1102,8 @@ export default function BoardPage() {
     return { count: closed.length, winRate: (wins / closed.length) * 100, avgReturn, best, worst, styleBreakdown };
   }, [byStage.closed]);
 
-  // Portfolio risk — compute from active positions with shares
+  // Portfolio risk — on-demand only (can be slow with many positions)
+  const [riskRequested, setRiskRequested] = useState(false);
   const riskPositions = useMemo(
     () => byStage.active.filter(p => p.shares != null && p.shares > 0 && (p.actual_entry_price ?? p.entry_price) != null),
     [byStage.active],
@@ -954,11 +1113,36 @@ export default function BoardPage() {
     () => riskPositions.map(p => p.shares! * (p.actual_entry_price ?? p.entry_price!)),
     [riskPositions],
   );
-  const { data: riskData } = useSWR(
-    riskSymbols.length >= 2 ? ['portfolio-risk', riskSymbols.join(','), riskWeights.join(',')] : null,
+  const { data: riskData, isLoading: riskLoading } = useSWR(
+    riskRequested && riskSymbols.length >= 2 ? [`${u}:portfolio-risk`, riskSymbols.join(','), riskWeights.join(',')] : null,
     () => api.portfolioRisk(riskSymbols, riskWeights),
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false, dedupingInterval: 300_000 },
   );
+
+  // Bulk sync: push all active cards → Positions (skips symbols already in positions)
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  async function syncActivePlans() {
+    setSyncMsg('Syncing…');
+    try {
+      const activePlans = byStage.active.filter(
+        p => (p.shares ?? 0) > 0 && (p.actual_entry_price ?? p.entry_price) != null
+      );
+      if (!activePlans.length) { setSyncMsg('No active cards with fill price/shares'); return; }
+      const existingPositions = await api.listPositions();
+      const existingSymbols = new Set(existingPositions.map(p => p.symbol.toUpperCase()));
+      let added = 0;
+      for (const plan of activePlans) {
+        if (existingSymbols.has(plan.symbol.toUpperCase())) continue;
+        const price = plan.actual_entry_price ?? plan.entry_price!;
+        const currency = plan.symbol.endsWith('.HK') ? 'HKD' : 'USD';
+        await api.addPosition({ symbol: plan.symbol, shares: plan.shares!, price, currency });
+        existingSymbols.add(plan.symbol.toUpperCase());
+        added++;
+      }
+      setSyncMsg(added > 0 ? `Synced ${added} position${added !== 1 ? 's' : ''}` : `Already in sync (${activePlans.length} cards)`);
+    } catch { setSyncMsg('Sync failed'); }
+    setTimeout(() => setSyncMsg(null), 5000);
+  }
 
   return (
     <div>
@@ -970,12 +1154,18 @@ export default function BoardPage() {
             {total > 0 ? `${total} idea${total !== 1 ? 's' : ''} · drag cards between columns` : 'Save game plans and forecast picks here'}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '8px', fontSize: '11px', color: '#334155' }}>
+        <div style={{ display: 'flex', gap: '8px', fontSize: '11px', color: '#334155', alignItems: 'center', flexWrap: 'wrap' }}>
           {STAGES.map(s => (
             <span key={s} style={{ padding: '4px 10px', borderRadius: '6px', background: STAGE_META[s].bg, border: `1px solid ${STAGE_META[s].border}`, color: STAGE_META[s].color, fontWeight: 600 }}>
               {STAGE_META[s].label} {byStage[s].length > 0 && `(${byStage[s].length})`}
             </span>
           ))}
+          <button
+            onClick={syncActivePlans}
+            title="Push all active cards (with shares + fill price) to Positions — skips symbols already there"
+            style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.25)', color: '#4ade80', fontWeight: 600, cursor: 'pointer' }}
+          >↑ Sync Active → Positions</button>
+          {syncMsg && <span style={{ color: syncMsg.startsWith('Sync') && !syncMsg.includes('failed') ? '#4ade80' : '#f59e0b', fontSize: 11 }}>{syncMsg}</span>}
         </div>
       </div>
 
@@ -1081,22 +1271,56 @@ export default function BoardPage() {
         />
       )}
 
+      {/* fill sync status toast */}
+      {fillSyncMsg && (
+        <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 2000, background: '#0f172a', border: `1px solid ${fillSyncMsg.startsWith('✓') ? 'rgba(74,222,128,0.4)' : 'rgba(251,191,36,0.4)'}`, borderRadius: 8, padding: '8px 18px', fontSize: 12, color: fillSyncMsg.startsWith('✓') ? '#4ade80' : '#fbbf24', fontWeight: 600, boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+          {fillSyncMsg}
+        </div>
+      )}
+
       {/* UI-5: close confirmation modal */}
       {closeConfirmId != null && (() => {
         const closePlan = (data ?? []).find(p => p.id === closeConfirmId);
+        const hasPosition = closePlan?.actual_entry_price != null;
+        const pnlPreview = (() => {
+          const exit = parseFloat(closeExitInput);
+          const entry = closePlan?.actual_entry_price ?? closePlan?.entry_price;
+          const shares = closePlan?.shares;
+          if (!isNaN(exit) && exit > 0 && entry != null && shares != null) {
+            const pnl = (exit - entry) * shares;
+            return { pnl, pct: ((exit - entry) / entry) * 100 };
+          }
+          return null;
+        })();
         return (
           <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
-            <div onClick={() => setCloseConfirmId(null)} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(6px)' }} />
-            <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '360px', borderRadius: '14px', background: 'linear-gradient(160deg,#0d1424 0%,#090e1a 100%)', border: '1px solid rgba(239,68,68,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.6)', padding: '24px 24px 20px' }}>
+            <div onClick={() => { setCloseConfirmId(null); setCloseExitInput(''); }} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(6px)' }} />
+            <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: '380px', borderRadius: '14px', background: 'linear-gradient(160deg,#0d1424 0%,#090e1a 100%)', border: '1px solid rgba(239,68,68,0.3)', boxShadow: '0 24px 48px rgba(0,0,0,0.6)', padding: '24px 24px 20px' }}>
               <div style={{ height: '3px', background: 'linear-gradient(90deg,#ef4444,#f87171)', borderRadius: '2px', marginBottom: '18px' }} />
               <div style={{ fontSize: '15px', fontWeight: 700, color: '#f1f5f9', marginBottom: '8px' }}>
                 Close trade{closePlan ? ` · ${closePlan.symbol}` : ''}?
               </div>
-              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '20px', lineHeight: 1.5 }}>
-                This will move the trade to <span style={{ color: '#94a3b8' }}>Closed</span>. Record an exit price on the card afterwards to log your P&amp;L.
+              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '16px', lineHeight: 1.5 }}>
+                Moves to <span style={{ color: '#94a3b8' }}>Closed</span>.{hasPosition ? ' Position will be removed from Positions page.' : ''}
               </div>
+              <label style={{ display: 'block', fontSize: '11px', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px' }}>
+                Exit price <span style={{ color: '#334155', fontWeight: 400, textTransform: 'none' }}>(optional — logs P&L)</span>
+              </label>
+              <input
+                autoFocus
+                type="number" step="0.01" placeholder="e.g. 165.00"
+                value={closeExitInput}
+                onChange={e => setCloseExitInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleCloseConfirmed()}
+                style={{ width: '100%', padding: '8px 12px', borderRadius: '7px', border: '1px solid #334155', background: '#060814', color: '#f1f5f9', fontSize: '14px', fontFamily: 'ui-monospace, monospace', outline: 'none', boxSizing: 'border-box', marginBottom: '10px' }}
+              />
+              {pnlPreview && (
+                <div style={{ fontSize: 12, marginBottom: 14, padding: '6px 10px', borderRadius: 6, background: pnlPreview.pnl >= 0 ? 'rgba(74,222,128,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${pnlPreview.pnl >= 0 ? 'rgba(74,222,128,0.2)' : 'rgba(239,68,68,0.2)'}`, color: pnlPreview.pnl >= 0 ? '#4ade80' : '#f87171' }}>
+                  P&L: {pnlPreview.pnl >= 0 ? '+' : ''}${Math.abs(pnlPreview.pnl).toFixed(0)} ({pnlPreview.pct >= 0 ? '+' : ''}{pnlPreview.pct.toFixed(1)}%)
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                <button onClick={() => setCloseConfirmId(null)} style={{ padding: '7px 16px', borderRadius: '6px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', fontSize: '12px', cursor: 'pointer' }}>
+                <button onClick={() => { setCloseConfirmId(null); setCloseExitInput(''); }} style={{ padding: '7px 16px', borderRadius: '6px', border: '1px solid #1e293b', background: 'transparent', color: '#64748b', fontSize: '12px', cursor: 'pointer' }}>
                   Cancel
                 </button>
                 <button onClick={handleCloseConfirmed} style={{ padding: '7px 18px', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.4)', background: 'rgba(239,68,68,0.12)', color: '#f87171', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>
@@ -1329,8 +1553,20 @@ export default function BoardPage() {
       )}
 
       {riskSymbols.length >= 2 && !riskData && (
-        <div style={{ marginTop: 24, padding: '12px 20px', borderRadius: 10, background: 'rgba(99,102,241,0.04)', border: '1px solid #1e293b', fontSize: 12, color: '#475569' }}>
-          Computing portfolio risk for {riskSymbols.length} active positions…
+        <div style={{ marginTop: 24, padding: '12px 20px', borderRadius: 10, background: 'rgba(99,102,241,0.04)', border: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: 12 }}>
+          {riskLoading ? (
+            <span style={{ fontSize: 12, color: '#475569' }}>Computing portfolio risk for {riskSymbols.length} positions… (may take ~20s)</span>
+          ) : (
+            <>
+              <span style={{ fontSize: 12, color: '#475569' }}>{riskSymbols.length} active positions with size data</span>
+              <button
+                onClick={() => setRiskRequested(true)}
+                style={{ padding: '4px 14px', borderRadius: 6, border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.1)', color: '#818cf8', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+              >
+                Compute Risk
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

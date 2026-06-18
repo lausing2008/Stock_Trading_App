@@ -147,9 +147,19 @@ export default function ResearchPage() {
   const [chatMessages, setChatMessages] = useState<{role: string; content: string}[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [printMode, setPrintMode] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const effectiveKey = customApiKey || apiKey;
+
+  useEffect(() => {
+    if (!printMode) return;
+    const prevTitle = document.title;
+    document.title = `${symbol} — Research Report`;
+    window.print();
+    document.title = prevTitle;
+    setPrintMode(false);
+  }, [printMode, symbol]);
 
   useEffect(() => {
     if (!symbol) return;
@@ -190,13 +200,44 @@ export default function ResearchPage() {
             <h1 style={{ fontSize: '26px', fontWeight: 800, color: '#818cf8', fontFamily: 'ui-monospace,monospace', margin: 0 }}>{symbol}</h1>
             {report && <span style={{ fontSize: '13px', color: '#475569' }}>{report.company_name}</span>}
           </div>
-          {report && (
-            <div style={{ fontSize: '11px', color: '#334155', marginTop: '4px' }}>
-              Generated {new Date(report.generated_at).toLocaleString()}
-              <button onClick={() => { setReport(null); api.clearResearch(symbol).catch(() => {}); }} style={{ marginLeft: '12px', fontSize: '10px', color: '#475569', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>Regenerate</button>
-            </div>
-          )}
+          {report && (() => {
+            const genDate = report.generated_at ? new Date(report.generated_at) : null;
+            const validDate = genDate && !isNaN(genDate.getTime());
+            const ageMs = validDate ? Date.now() - genDate!.getTime() : 0;
+            const ageDays = Math.floor(ageMs / 86400000);
+            const stale = ageDays >= 14;
+            const aging = !stale && ageDays >= 7;
+            return (
+              <div style={{ fontSize: '11px', color: '#334155', marginTop: '4px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <span>Generated {validDate ? genDate!.toLocaleString() : 'just now'}</span>
+                {aging && (
+                  <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                    {ageDays}d old — consider regenerating
+                  </span>
+                )}
+                {stale && (
+                  <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', color: '#f87171', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)' }}>
+                    STALE · {ageDays}d — data may not reflect current conditions
+                  </span>
+                )}
+                <span className="no-print">
+                  <button onClick={() => { setReport(null); api.clearResearch(symbol).catch(() => {}); }} style={{ fontSize: '10px', color: '#475569', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>Regenerate</button>
+                </span>
+              </div>
+            );
+          })()}
         </div>
+
+        {report && (
+          <div className="no-print">
+            <button
+              onClick={() => setPrintMode(true)}
+              style={{ padding: '8px 18px', borderRadius: '8px', border: '1px solid rgba(129,140,248,0.35)', background: 'rgba(129,140,248,0.08)', color: '#818cf8', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+            >
+              ↓ Export PDF
+            </button>
+          </div>
+        )}
 
         {!report && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
@@ -265,7 +306,7 @@ export default function ResearchPage() {
       {loading && (
         <div style={{ textAlign: 'center', padding: '60px 0' }}>
           <div style={{ fontSize: '32px', marginBottom: '16px', animation: 'spin 2s linear infinite', display: 'inline-block' }}>⚙</div>
-          <div style={{ color: '#64748b', fontSize: '14px' }}>Analyzing {symbol} — gathering data and running AI analysis…</div>
+          <div style={{ color: '#64748b', fontSize: '14px' }}>Analyzing {symbol} — gathering data and running AI analysis… (this can take 1–2 minutes)</div>
           <div style={{ color: '#334155', fontSize: '12px', marginTop: '8px' }}>This may take 20–40 seconds</div>
         </div>
       )}
@@ -383,7 +424,7 @@ export default function ResearchPage() {
           </div>
 
           {/* ── Tabs ─────────────────────────────────────────────────────────── */}
-          <div style={{ display: 'flex', gap: '2px', overflowX: 'auto', marginBottom: '16px', borderBottom: '1px solid #1e293b', paddingBottom: '1px' }}>
+          <div className="no-print" style={{ display: 'flex', gap: '2px', overflowX: 'auto', marginBottom: '16px', borderBottom: '1px solid #1e293b', paddingBottom: '1px' }}>
             {TABS.map(t => (
               <button key={t} onClick={() => setTab(t)} style={{ padding: '8px 14px', borderRadius: '6px 6px 0 0', border: 'none', background: tab === t ? 'rgba(129,140,248,0.15)' : 'transparent', color: tab === t ? '#818cf8' : '#475569', fontSize: '12px', fontWeight: tab === t ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap', borderBottom: tab === t ? '2px solid #818cf8' : '2px solid transparent' }}>
                 {t}
@@ -392,8 +433,8 @@ export default function ResearchPage() {
           </div>
 
           {/* ── Tab: Summary ─────────────────────────────────────────────────── */}
-          {tab === 'Summary' && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+          {(tab === 'Summary' || printMode) && (
+            <div className="research-tab-panel" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
               <Section title="Bullish Factors">
                 {report.executive_summary.bullish_factors.map((f, i) => (
                   <div key={i} style={{ display: 'flex', gap: '8px', padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.03)', fontSize: '13px', color: '#94a3b8', lineHeight: 1.4 }}>
@@ -426,7 +467,7 @@ export default function ResearchPage() {
           )}
 
           {/* ── Tab: Technical ───────────────────────────────────────────────── */}
-          {tab === 'Technical' && (() => {
+          {(tab === 'Technical' || printMode) && (() => {
             const t = report.technical;
             return (
               <div>
@@ -497,7 +538,7 @@ export default function ResearchPage() {
           })()}
 
           {/* ── Tab: Fundamental ─────────────────────────────────────────────── */}
-          {tab === 'Fundamental' && (() => {
+          {(tab === 'Fundamental' || printMode) && (() => {
             const f = report.fundamental;
             return (
               <div>
@@ -560,7 +601,7 @@ export default function ResearchPage() {
           })()}
 
           {/* ── Tab: Company ─────────────────────────────────────────────────── */}
-          {tab === 'Company' && (() => {
+          {(tab === 'Company' || printMode) && (() => {
             const c = report.company;
             return (
               <div>
@@ -611,7 +652,7 @@ export default function ResearchPage() {
           })()}
 
           {/* ── Tab: Industry ────────────────────────────────────────────────── */}
-          {tab === 'Industry' && (() => {
+          {(tab === 'Industry' || printMode) && (() => {
             const ind = report.industry_analysis;
             return (
               <div>
@@ -668,7 +709,7 @@ export default function ResearchPage() {
           })()}
 
           {/* ── Tab: Economic ────────────────────────────────────────────────── */}
-          {tab === 'Economic' && (() => {
+          {(tab === 'Economic' || printMode) && (() => {
             const eco = report.economic;
             const rc = eco?.recession_risk;
             return (
@@ -720,7 +761,7 @@ export default function ResearchPage() {
           })()}
 
           {/* ── Tab: Checklist ───────────────────────────────────────────────── */}
-          {tab === 'Checklist' && (() => {
+          {(tab === 'Checklist' || printMode) && (() => {
             const cl = report.checklist;
             const layers = [
               { title: 'Layer 1 — Company', items: cl.layer1_company },
@@ -750,7 +791,7 @@ export default function ResearchPage() {
           })()}
 
           {/* ── Tab: Trading Plan ────────────────────────────────────────────── */}
-          {tab === 'Trading Plan' && (() => {
+          {(tab === 'Trading Plan' || printMode) && (() => {
             const ep = report.entry_planning;
             const ps = report.position_sizing;
             return (
@@ -839,24 +880,37 @@ export default function ResearchPage() {
           })()}
 
           {/* ── Tab: AI Verdict ──────────────────────────────────────────────── */}
-          {tab === 'AI Verdict' && (() => {
+          {(tab === 'AI Verdict' || printMode) && (() => {
             const v = report.ai_verdict;
+            const isFallback = report.report_quality === 'fallback';
             const buyColor = v?.can_buy_today === 'YES' ? '#4ade80' : v?.can_buy_today === 'NO' ? '#f87171' : '#facc15';
             return (
               <div>
                 {/* Hero verdict */}
-                <div style={{ textAlign: 'center', padding: '32px', background: '#0d1829', borderRadius: '14px', border: `1px solid ${recColor(v?.final_recommendation ?? '')}40`, marginBottom: '16px' }}>
-                  <div style={{ fontSize: '14px', color: '#475569', marginBottom: '8px' }}>Can I Buy This Stock Today?</div>
-                  <div style={{ fontSize: '56px', fontWeight: 800, color: buyColor, lineHeight: 1 }}>{v?.can_buy_today ?? '—'}</div>
-                  <div style={{ marginTop: '16px', fontSize: '14px', color: '#94a3b8', maxWidth: '600px', margin: '16px auto 0', lineHeight: 1.7 }}>{v?.why}</div>
-                  <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                    <div style={{ padding: '8px 20px', borderRadius: '10px', background: recBg(v?.final_recommendation ?? ''), border: `1px solid ${recColor(v?.final_recommendation ?? '')}55`, color: recColor(v?.final_recommendation ?? ''), fontSize: '16px', fontWeight: 800, letterSpacing: '0.04em' }}>
-                      {v?.final_recommendation}
-                    </div>
-                    <div style={{ padding: '8px 20px', borderRadius: '10px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', color: '#818cf8', fontSize: '14px', fontWeight: 600 }}>
-                      Confidence: {v?.confidence_pct ?? 0}%
-                    </div>
-                  </div>
+                <div style={{ textAlign: 'center', padding: '32px', background: '#0d1829', borderRadius: '14px', border: `1px solid ${isFallback ? '#ef4444' : recColor(v?.final_recommendation ?? '')}40`, marginBottom: '16px' }}>
+                  {isFallback ? (
+                    <>
+                      <div style={{ fontSize: '14px', color: '#ef4444', marginBottom: '8px', fontWeight: 600 }}>AI Analysis Unavailable</div>
+                      <div style={{ fontSize: '32px', fontWeight: 800, color: '#ef4444', lineHeight: 1 }}>INSUFFICIENT DATA</div>
+                      <div style={{ marginTop: '12px', fontSize: '13px', color: '#94a3b8', maxWidth: '500px', margin: '12px auto 0', lineHeight: 1.6 }}>
+                        The AI analysis could not be completed. Please retry later or check your API configuration.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: '14px', color: '#475569', marginBottom: '8px' }}>Can I Buy This Stock Today?</div>
+                      <div style={{ fontSize: '56px', fontWeight: 800, color: buyColor, lineHeight: 1 }}>{v?.can_buy_today ?? '—'}</div>
+                      <div style={{ marginTop: '16px', fontSize: '14px', color: '#94a3b8', maxWidth: '600px', margin: '16px auto 0', lineHeight: 1.7 }}>{v?.why}</div>
+                      <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <div style={{ padding: '8px 20px', borderRadius: '10px', background: recBg(v?.final_recommendation ?? ''), border: `1px solid ${recColor(v?.final_recommendation ?? '')}55`, color: recColor(v?.final_recommendation ?? ''), fontSize: '16px', fontWeight: 800, letterSpacing: '0.04em' }}>
+                          {v?.final_recommendation}
+                        </div>
+                        <div style={{ padding: '8px 20px', borderRadius: '10px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', color: '#818cf8', fontSize: '14px', fontWeight: 600 }}>
+                          Confidence: {v?.confidence_pct ?? 0}%
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
@@ -894,7 +948,7 @@ export default function ResearchPage() {
           })()}
 
           {/* Regenerate button at bottom */}
-          <div style={{ textAlign: 'center', marginTop: '24px' }}>
+          <div className="no-print" style={{ textAlign: 'center', marginTop: '24px' }}>
             <button
               onClick={() => { setReport(null); setChatMessages([]); api.clearResearch(symbol).catch(() => {}); }}
               style={{ fontSize: '12px', color: '#475569', background: 'none', border: '1px solid #1e293b', borderRadius: '8px', padding: '8px 20px', cursor: 'pointer' }}
@@ -904,7 +958,7 @@ export default function ResearchPage() {
           </div>
 
           {/* ── AI Chatbot ────────────────────────────────────────────────── */}
-          <div style={{ marginTop: '32px', background: '#0d1829', border: '1px solid #1e293b', borderRadius: '14px', overflow: 'hidden' }}>
+          <div className="no-print" style={{ marginTop: '32px', background: '#0d1829', border: '1px solid #1e293b', borderRadius: '14px', overflow: 'hidden' }}>
             <div style={{ padding: '16px 20px', borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: '10px' }}>
               <span style={{ fontSize: '16px' }}>💬</span>
               <span style={{ fontSize: '13px', fontWeight: 700, color: '#94a3b8' }}>Ask the Analyst</span>
@@ -996,6 +1050,10 @@ export default function ResearchPage() {
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @media print {
+          .no-print { display: none !important; }
+          .research-tab-panel { display: block !important; margin-bottom: 28px; page-break-inside: avoid; }
+        }
       `}</style>
     </div>
   );

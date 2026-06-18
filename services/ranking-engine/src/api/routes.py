@@ -2,6 +2,7 @@
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import date, timedelta
+import time as _time
 
 import httpx
 import numpy as np
@@ -17,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from db import Price, Ranking, Stock, TimeFrame, get_session
+from db import Price, Ranking, Signal, SignalType, Stock, TimeFrame, get_session
 
 from ..scoring import compute_kscore
 
@@ -45,13 +46,15 @@ _HK_BENCHMARK = "^HSI"   # Hang Seng Index for HK stocks
 _US_FALLBACK  = "SPY"
 
 
-_ETF_CACHE: dict[str, float | None] = {}
+_ETF_CACHE_TTL = 3600  # 1 hour
+_ETF_CACHE: dict[str, tuple[float | None, float]] = {}  # ticker → (return, timestamp)
 
 
 def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | None:
     """Return 20-day price return for an ETF/index. Reads from DB when session provided."""
-    if ticker in _ETF_CACHE:
-        return _ETF_CACHE[ticker]
+    cached = _ETF_CACHE.get(ticker)
+    if cached is not None and _time.time() - cached[1] < _ETF_CACHE_TTL:
+        return cached[0]
     # DB path — ETFs are seeded as inactive stocks with full price history
     if session is not None and not ticker.startswith("^"):
         from sqlalchemy import select as sa_select
@@ -62,22 +65,22 @@ def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | No
             df = _load_prices(session, stock.id, lookback=60)
             if not df.empty and len(df) >= 21:
                 ret = float(df["close"].iloc[-1] / df["close"].iloc[-21] - 1)
-                _ETF_CACHE[ticker] = ret
+                _ETF_CACHE[ticker] = (ret, _time.time())
                 return ret
     # Fallback: yfinance (for ^HSI index and any ETF not yet in DB)
     if not _HAS_YF:
-        _ETF_CACHE[ticker] = None
+        _ETF_CACHE[ticker] = (None, _time.time())
         return None
     try:
         hist = yf.Ticker(ticker).history(period="2mo")
         if hist.empty or len(hist) < 21:
-            _ETF_CACHE[ticker] = None
+            _ETF_CACHE[ticker] = (None, _time.time())
             return None
         ret = float(hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1)
-        _ETF_CACHE[ticker] = ret
+        _ETF_CACHE[ticker] = (ret, _time.time())
         return ret
     except Exception:
-        _ETF_CACHE[ticker] = None
+        _ETF_CACHE[ticker] = (None, _time.time())
         return None
 
 
@@ -351,6 +354,126 @@ def sector_rotation(
 
     sectors.sort(key=lambda s: s["avg_rs"], reverse=True)
     return {"as_of": as_of, "sectors": sectors}
+
+
+@router.get("/screen")
+def screen(
+    market: str | None = Query(None),
+    sector: str | None = Query(None),
+    signal: str | None = Query(None, description="BUY | HOLD | WAIT | SELL"),
+    min_confidence: float | None = Query(None, ge=0, le=100),
+    min_score: float | None = Query(None, ge=0, le=100),
+    max_score: float | None = Query(None, ge=0, le=100),
+    min_momentum: float | None = Query(None, ge=0, le=100),
+    min_technical: float | None = Query(None, ge=0, le=100),
+    min_rs: float | None = Query(None, ge=0, le=100),
+    min_growth: float | None = Query(None, ge=0, le=100),
+    sort_by: str = Query("score", description="score | momentum | technical | rs_score | confidence"),
+    limit: int = Query(50, ge=1, le=200),
+    session: Session = Depends(get_session),
+):
+    """SCR-1: Multi-factor screener — filter stocks by K-Score, signal, and sub-scores.
+
+    All filter params are optional. Results sorted by `sort_by` descending.
+    Returns matching stocks with ranking sub-scores, latest signal, and confidence.
+    """
+    # Latest ranking per stock
+    latest_subq = (
+        select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .group_by(Ranking.stock_id)
+        .subquery()
+    )
+    stmt = (
+        select(Stock, Ranking)
+        .join(Ranking, Stock.id == Ranking.stock_id)
+        .join(latest_subq,
+              (Ranking.stock_id == latest_subq.c.stock_id)
+              & (Ranking.as_of == latest_subq.c.max_as_of))
+        .where(Stock.active.is_(True))
+    )
+
+    if market:
+        stmt = stmt.where(Stock.market == market.upper())
+    if sector:
+        stmt = stmt.where(Stock.sector.ilike(f"%{sector}%"))
+    if min_score is not None:
+        stmt = stmt.where(Ranking.score >= min_score)
+    if max_score is not None:
+        stmt = stmt.where(Ranking.score <= max_score)
+    if min_momentum is not None:
+        stmt = stmt.where(Ranking.momentum >= min_momentum)
+    if min_technical is not None:
+        stmt = stmt.where(Ranking.technical >= min_technical)
+    if min_rs is not None:
+        stmt = stmt.where(Ranking.rs_score >= min_rs)
+    if min_growth is not None:
+        stmt = stmt.where(Ranking.growth >= min_growth)
+
+    rows = session.execute(stmt).all()
+
+    # Latest signal per stock
+    sig_subq = (
+        select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+        .group_by(Signal.stock_id)
+        .subquery()
+    )
+    sig_rows = session.execute(
+        select(Signal.stock_id, Signal.signal, Signal.confidence, Signal.horizon)
+        .join(sig_subq,
+              (Signal.stock_id == sig_subq.c.stock_id)
+              & (Signal.ts == sig_subq.c.max_ts))
+    ).all()
+    sig_map: dict[int, dict] = {
+        r.stock_id: {"signal": r.signal.value, "confidence": float(r.confidence), "horizon": r.horizon.value}
+        for r in sig_rows
+    }
+
+    results = []
+    for stock, ranking in rows:
+        sig = sig_map.get(stock.id, {})
+        sig_value = sig.get("signal")
+        confidence = sig.get("confidence", 0.0)
+
+        if signal and sig_value != signal.upper():
+            continue
+        if min_confidence is not None and confidence < min_confidence:
+            continue
+
+        def _f(v):
+            if v is None:
+                return None
+            try:
+                f = float(v)
+                return None if (f != f or f == float("inf") or f == float("-inf")) else round(f, 1)
+            except (TypeError, ValueError):
+                return None
+
+        results.append({
+            "symbol": stock.symbol,
+            "name": stock.name,
+            "sector": stock.sector,
+            "market": stock.market.value if hasattr(stock.market, "value") else str(stock.market),
+            "score": _f(ranking.score),
+            "technical": _f(ranking.technical),
+            "momentum": _f(ranking.momentum),
+            "value": _f(ranking.value),
+            "growth": _f(ranking.growth),
+            "rs_score": _f(ranking.rs_score),
+            "signal": sig_value,
+            "confidence": _f(confidence) if confidence else None,
+            "horizon": sig.get("horizon"),
+        })
+
+    sort_fields = {
+        "score": lambda x: x["score"] or 0,
+        "momentum": lambda x: x["momentum"] or 0,
+        "technical": lambda x: x["technical"] or 0,
+        "rs_score": lambda x: x["rs_score"] or 0,
+        "confidence": lambda x: x["confidence"] or 0,
+    }
+    key_fn = sort_fields.get(sort_by, sort_fields["score"])
+    results.sort(key=key_fn, reverse=True)
+    return {"total": len(results), "items": results[:limit]}
 
 
 @router.get("/{symbol}")

@@ -318,14 +318,27 @@ function NavGroup({ group, currentPath, userRole }: { group: NavGroupDef; curren
 
 export default function App({ Component, pageProps }: AppProps) {
   const router = useRouter();
-  const [username, setUsername] = useState<string | null>(null);
-  const [role, setRole] = useState<string | null>(null);
-  const [checked, setChecked] = useState(false);
-  const [impersonating, setImpersonating] = useState<string | null>(null);
+  // Initialise synchronously from localStorage to prevent blank-flash on page load.
+  // getSession() is a pure localStorage read — safe to call during render.
+  const [username, setUsername] = useState<string | null>(() =>
+    typeof window !== 'undefined' ? (getSession()?.username ?? null) : null
+  );
+  const [role, setRole] = useState<string | null>(() =>
+    typeof window !== 'undefined' ? (getSession()?.role ?? null) : null
+  );
+  const [checked, setChecked] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const path = window.location.pathname;
+    return PUBLIC_PATHS.includes(path) || Boolean(getSession());
+  });
+  const [impersonating, setImpersonating] = useState<string | null>(() =>
+    typeof window !== 'undefined' ? getImpersonatedUser() : null
+  );
   const alertTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [freshness, setFreshness] = useState<{ hours_ago: number | null; status: string } | null>(null);
 
   useEffect(() => {
+    if (!username) return; // Only poll freshness when logged in to avoid 401s on public pages
     let mounted = true;
     function poll() {
       api.dataFreshness().then(f => { if (mounted) setFreshness(f); }).catch(() => {});
@@ -333,7 +346,7 @@ export default function App({ Component, pageProps }: AppProps) {
     poll();
     const t = setInterval(poll, 5 * 60 * 1000); // refresh every 5 min
     return () => { mounted = false; clearInterval(t); };
-  }, []);
+  }, [username]);
 
   useEffect(() => {
     if (PUBLIC_PATHS.includes(router.pathname)) {

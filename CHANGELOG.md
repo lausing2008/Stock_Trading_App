@@ -4,6 +4,40 @@ All notable changes are documented here, newest first.
 
 ---
 
+## [2026-06-14] — Morning Digest Email; Pattern Signals + Email Alerts; Research NetworkError Fix
+
+### Features
+- **Daily morning digest email**: Automated email at 9:00 AM ET every weekday to all users with email configured. Contains: market regime (SPY/VIX state), top 5 ranked opportunities by K-Score with signal + ML%, open paper positions with yesterday's close P&L and stop distance, and any pattern alerts fired in the last 28 hours. Admin can trigger manually via `POST /admin/send-morning-digest`. Registered as APScheduler job `morning_digest` (job count now 14).
+- **Live Pattern Signals widget on stock detail**: "Live Pattern Signals" badge strip appears automatically when one or more bullish technical patterns are detected in the last 3–5 sessions. Patterns detected: Golden Cross, MACD Bullish Cross, RSI Oversold Bounce, Double Bottom (W-pattern), and Volume Breakout. Data comes from a new `GET /signals/{symbol}/patterns` endpoint in the signal-engine.
+- **Pattern alert email subscriptions**: Four new alert conditions added to the stock detail alert dropdown under "Pattern Signals": MACD Bullish Crossover, RSI Oversold Bounce (crosses 30), Double Bottom, and Volume Breakout. These fire a one-shot email the day the pattern is first detected, using the same Gmail/SES infrastructure as price alerts.
+- **DB migration**: `alertcondition` PostgreSQL enum extended with `macd_bullish_cross`, `rsi_oversold_bounce`, `double_bottom`, `breakout` values. Run `scripts/migrations/add_pattern_alert_conditions.sql` on existing deployments.
+
+### Bug Fixes
+- **Research report NetworkError on EC2**: Nginx `proxy_read_timeout` for `/api/research/` was 150s (shared with all API routes). Claude can take up to 90s; combined with data-gathering latency this could exceed the limit. Added a dedicated `/api/research/` location block with `proxy_read_timeout 200s` in `docs/DEPLOY_EC2.md`. Apply to live server with: `sudo tee /etc/nginx/conf.d/stockai.conf` (see DEPLOY_EC2.md) then `sudo nginx -t && sudo systemctl reload nginx`.
+- **Research NetworkError local (Next.js proxy)**: `experimental.proxyTimeout` in `next.config.js` raised from 120,000ms to 200,000ms so the built-in rewrite proxy doesn't cut off long-running research requests.
+
+### Schema / API
+- `shared/db/models.py`: Added 4 new `AlertCondition` enum values: `MACD_BULLISH_CROSS`, `RSI_OVERSOLD_BOUNCE`, `DOUBLE_BOTTOM`, `BREAKOUT`
+- `services/signal-engine/src/api/routes.py`: New `GET /signals/{symbol}/patterns` endpoint — detects active patterns from 260 days of daily OHLCV price history; cached by SWR for 5 min in the frontend
+- `services/market-data/src/services/scheduler.py`: `check_technical_alerts()` extended with 4 new pattern branches; volume data now fetched alongside close prices for breakout detection
+- `scripts/migrations/add_pattern_alert_conditions.sql`: One-time migration for existing databases
+
+### Files Changed
+- `shared/db/models.py`
+- `services/signal-engine/src/api/routes.py`
+- `services/market-data/src/services/scheduler.py`
+- `frontend/src/lib/api.ts`
+- `frontend/src/pages/stock/[symbol].tsx`
+- `frontend/next.config.js`
+- `docs/DEPLOY_EC2.md`
+- `scripts/migrations/add_pattern_alert_conditions.sql` (new)
+- `services/market-data/src/services/email_service.py` (morning digest renderer)
+- `services/market-data/src/services/paper_trading_engine.py` (get_last_regime())
+- `services/market-data/src/services/scheduler.py` (morning digest job)
+- `services/market-data/src/api/admin.py` (manual trigger endpoint)
+
+---
+
 ## [2026-06-10] — Per-horizon signal alerts, consensus indicator, admin health, Add to Radar
 
 ### Features

@@ -1,0 +1,314 @@
+Feature Request: Autonomous Trading Intelligence & Portfolio Manager
+
+You are a senior quantitative developer, AI engineer, portfolio manager, and software architect.
+
+Extend the existing Stock Trading Platform to support a complete autonomous trading workflow that can:
+
+Analyze all stocks in the research universe.
+Rank opportunities daily.
+Allocate capital intelligently.
+Generate buy, hold, and sell decisions.
+Execute paper trades first.
+Maintain a complete audit trail.
+Measure performance and continuously improve models.
+Eventually support broker integration for live trading.
+
+The implementation must prioritize risk-adjusted returns, capital preservation, explainability, and reproducible results.
+
+Goal
+
+Given:
+
+Initial capital (e.g. $10,000, $50,000, $100,000)
+User-defined risk profile
+Trading universe (US, HK, ETFs)
+
+The system should:
+
+Identify the highest probability opportunities
+Determine position sizing
+Determine entry price
+Determine stop loss
+Determine take profit
+Determine hold duration
+Continuously evaluate positions
+Decide whether to buy, hold, scale in, scale out, or sell
+
+Every decision must be explainable.
+
+Trading Lifecycle
+Stage 1: Research
+
+Analyze all stocks using:
+
+Technical Signals
+Price vs EMA 20
+Price vs EMA 50
+Price vs EMA 200
+Golden Cross
+Death Cross
+MACD
+RSI
+Relative Strength
+Relative Volume
+Breakout Detection
+Support and Resistance
+Momentum Signals
+RSI
+ROC
+Relative Strength
+Trend Strength
+Volume Expansion
+Fundamental Signals
+Revenue Growth
+EPS Growth
+Free Cash Flow
+Debt Levels
+Gross Margin
+ROE
+Insider Activity
+Analyst Revisions
+Market Context
+SPY Trend
+Sector Trend
+VIX
+Interest Rate Environment
+
+Generate a stock score from 0-100.
+
+Stage 2: Opportunity Ranking
+
+Rank all candidates.
+
+Produce:
+
+Overall Score
+Risk Score
+Expected Return
+Expected Drawdown
+Confidence Score
+
+Only select top-ranked opportunities.
+
+Stage 3: Position Sizing
+
+Use portfolio risk management.
+
+Support:
+
+Fixed Allocation
+Kelly Fraction
+Risk-Based Allocation
+Maximum Drawdown Limits
+
+Rules:
+
+Risk per trade ≤ 1%
+Max exposure per position ≤ 10%
+Max sector concentration ≤ 25%
+Stage 4: Entry Engine
+
+Determine:
+
+Buy Now
+Buy on Pullback
+Buy on Breakout
+Avoid
+
+Generate:
+
+Entry Price
+Stop Loss
+Profit Targets
+Risk/Reward Ratio
+
+Only enter trades with:
+
+Risk/Reward ≥ 2:1
+Confidence ≥ configurable threshold
+Stage 5: Position Management
+
+Evaluate open positions daily.
+
+Decide:
+
+Hold
+Scale In
+Scale Out
+Move Stop Loss
+Take Partial Profit
+Exit Position
+
+Reasons must be logged.
+
+Stage 6: Exit Engine
+
+Exit when:
+
+Stop loss hit
+Target reached
+Trend breakdown
+Momentum deterioration
+Fundamental deterioration
+Better opportunity identified
+
+Generate a detailed explanation.
+
+Portfolio Dashboard
+
+Create views for:
+
+Active Positions
+Entry Price
+Current Price
+P/L
+Return %
+Days Held
+Confidence Score
+Closed Positions
+Gain/Loss
+Holding Period
+Exit Reason
+Portfolio Metrics
+Total Return
+CAGR
+Win Rate
+Profit Factor
+Sharpe Ratio
+Sortino Ratio
+Max Drawdown
+Average Winner
+Average Loser
+Trade Journal
+
+Log every event:
+
+Research generated
+Recommendation generated
+Buy decision
+Sell decision
+Position update
+Stop movement
+
+Store:
+
+Timestamp
+Indicators
+Scores
+Market conditions
+AI reasoning
+
+The journal must support auditing and replay.
+
+Machine Learning & Continuous Improvement
+
+Implement a learning pipeline.
+
+For every completed trade:
+
+Capture:
+
+Features at entry
+Features during hold
+Features at exit
+Outcome
+
+Train models to predict:
+
+Probability of Success
+Expected Return
+Expected Drawdown
+
+Support:
+
+XGBoost
+LightGBM
+Random Forest
+Neural Network
+
+Use:
+
+Walk-Forward Testing
+Out-of-Sample Validation
+Cross Validation
+
+Avoid look-ahead bias and overfitting.
+
+Backtesting Engine
+
+Support:
+
+5-year
+10-year
+20-year testing
+
+Metrics:
+
+Win Rate
+CAGR
+Sharpe Ratio
+Sortino Ratio
+Max Drawdown
+Calmar Ratio
+
+Generate reports and equity curves.
+
+Paper Trading Mode
+
+Before live trading:
+
+Run fully autonomous paper trading
+Track performance
+Compare against SPY
+Compare against QQQ
+Compare against Hang Seng Index
+
+Require configurable performance thresholds before live deployment.
+
+Broker Integration Layer
+
+Design abstraction interfaces for:
+
+Interactive Brokers
+Alpaca
+Moomoo
+Fidelity (if APIs become available)
+
+Support:
+
+Place Order
+Cancel Order
+Modify Order
+Retrieve Portfolio
+Retrieve Positions
+
+All executions must be logged.
+
+AI Explainability
+
+Every decision must answer:
+
+Why was this stock selected?
+Why buy now?
+Why hold?
+Why sell?
+What changed?
+
+Produce human-readable reasoning.
+
+Deliverables
+
+Generate:
+
+Complete system architecture
+Database schema changes
+Trading engine design
+Machine learning pipeline
+Backtesting framework
+Portfolio management module
+Trade journal module
+Paper trading implementation
+Broker integration layer
+Monitoring, alerting, and reporting system
+
+Focus first on paper trading and validation before enabling live trading. Optimize for risk-adjusted returns, robustness, explainability, and long-term capital growth rather than maximizing raw win rate.

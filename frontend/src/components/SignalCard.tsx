@@ -39,7 +39,7 @@
  * v3 signal engine enhancements reflected here:
  *   • weekly_alignment / weekly_ta_score  — ±12–15% confidence adjustment
  *   • active_patterns / pattern_adjustment — chart pattern fusion score
- *   • price_above_vwap / vwap_20          — institutional positioning context
+ *   • price_above_vwap / vwma_20          — volume-weighted trend context
  *   • days_to_earnings / earnings_warning — proximity penalty (critical/caution/note)
  */
 import type { Signal } from '@/lib/api';
@@ -68,14 +68,14 @@ type Reasons = {
   bb_pct_b?: number | null;
   adx?: number | null;
   adx_bullish?: boolean;
-  obv_bullish?: boolean;
+  obv_trend_bullish?: boolean;
   volume_z?: number | null;
   ml_probability?: number | null;
   market_regime?: string;
   ta_score?: number | null;
   // v3 additions
   price_above_vwap?: boolean | null;
-  vwap_20?: number | null;
+  vwma_20?: number | null;
   weekly_ta_score?: number | null;
   weekly_alignment?: boolean | null;
   weekly_rsi?: number | null;
@@ -209,11 +209,11 @@ function buildReasons(r: Reasons): Factor[] {
   // VWAP
   if (r.price_above_vwap != null) {
     factors.push({
-      label: 'VWAP (20d)',
+      label: 'VWMA (20d)',
       bullish: r.price_above_vwap,
       detail: r.price_above_vwap
-        ? `Price above 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — institutional support zone`
-        : `Price below 20-day VWAP${r.vwap_20 != null ? ` ($${r.vwap_20.toFixed(2)})` : ''} — below average transaction price`,
+        ? `Price above 20-day VWMA${r.vwma_20 != null ? ` ($${r.vwma_20.toFixed(2)})` : ''} — above volume-weighted average`
+        : `Price below 20-day VWMA${r.vwma_20 != null ? ` ($${r.vwma_20.toFixed(2)})` : ''} — below volume-weighted average`,
     });
   }
 
@@ -343,11 +343,11 @@ function buildReasons(r: Reasons): Factor[] {
   }
 
   // OBV
-  if (r.obv_bullish != null) {
+  if (r.obv_trend_bullish != null) {
     factors.push({
       label: 'OBV (Volume)',
-      bullish: r.obv_bullish,
-      detail: r.obv_bullish
+      bullish: r.obv_trend_bullish,
+      detail: r.obv_trend_bullish
         ? 'On-Balance Volume trending up — volume confirming price direction'
         : 'OBV trending down — volume not confirming the price move',
     });

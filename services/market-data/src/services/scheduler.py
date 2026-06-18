@@ -75,21 +75,47 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, Price, PriceAlert, SignalAlert, SessionLocal, Stock, Watchlist, WatchlistItem
+from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, Stock, User, Watchlist, WatchlistItem
+
 
 from .ingestion import ingest_universe
-from .email_service import send_price_alert_email, send_signal_alert_email
-from .paper_trading_engine import paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
+from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email
+from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
+from ..api.routes import refresh_live_price_cache
 
 log = get_logger("scheduler")
 _settings = get_settings()
 _scheduler: BackgroundScheduler | None = None
 _redis: redis_lib.Redis | None = None
+
+# Cache a service-to-service JWT so scheduler can call auth-protected internal endpoints.
+_service_token_cache: str | None = None
+
+
+def _service_token() -> str:
+    """Return a long-lived JWT for scheduler → internal service calls (sub='scheduler')."""
+    global _service_token_cache
+    if _service_token_cache:
+        return _service_token_cache
+    try:
+        from jose import jwt as _jwt
+        import uuid
+        payload = {
+            "sub": "scheduler",
+            "jti": str(uuid.uuid4()),
+            "exp": datetime.now(timezone.utc) + timedelta(days=365),
+        }
+        _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+        return _service_token_cache
+    except Exception as exc:
+        log.error("scheduler.service_token_failed", error=str(exc))
+        return ""
 
 
 def _get_redis() -> redis_lib.Redis:
@@ -131,7 +157,7 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
                 pass
         r.setex(
             f"conv_gate:{symbol}:{style}",
-            86400 * 7,  # 7-day TTL
+            86400,  # 1-day TTL — expires with the trading day so stale conviction data doesn't persist
             json.dumps({
                 "sent": sent,
                 "passed": passed,
@@ -213,6 +239,12 @@ def _post(url: str, **kwargs) -> None:
     Redis flag so that check_signal_alerts() can suppress stale-data alerts.
     """
     delays = [3, 8, 20]  # kept short — scheduler thread pool has limited slots
+    # Inject service-to-service auth token so endpoints protected by get_current_username work.
+    headers = kwargs.pop("headers", {})
+    tok = _service_token()
+    if tok:
+        headers = {"Authorization": f"Bearer {tok}", **headers}
+    kwargs["headers"] = headers
     last_exc: Exception | None = None
     for attempt, delay in enumerate(delays, start=1):
         try:
@@ -258,47 +290,57 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     _t0 = time.monotonic()
     _job_key = f"{market.lower()}_post_close" if post_close else f"{market.lower()}_refresh"
 
+    # Stage 1: Ingest — isolated so a yfinance blip doesn't kill alerts/paper trading
+    _ingest_ok = True
     try:
         ingest_universe(symbols, "1d")
+    except Exception as _ie:
+        _ingest_ok = False
+        log.error("scheduler.ingest_failed", market=market, error=str(_ie), exc_info=True)
 
+    # Stage 2: Rankings + signals — runs even if ingest partially failed (uses last good bar)
+    try:
         _post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": market})
         _post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": market})
 
         if post_close:
             _post(f"{_settings.ml_prediction_url}/ml/train_all")
-            # Evaluate any BUY/SELL signals whose hold window has now expired and
-            # persist their outcomes to signal_outcomes for accuracy tracking.
+            # Evaluate any BUY/SELL signals whose hold window has now expired.
             _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
+    except Exception as _re:
+        log.error("scheduler.rankings_signals_failed", market=market, error=str(_re), exc_info=True)
 
+    # Stage 3: Alerts — always runs regardless of ingest or signal failures
+    try:
         check_signal_alerts()
         check_technical_alerts()
+    except Exception as _ae:
+        log.error("scheduler.alerts_failed", error=str(_ae), exc_info=True)
 
-        # WF-2: paper trading engine — runs after signals are fresh.
-        # Only for US market (GROWTH watchlist is US stocks only).
-        if market == "US":
-            _pt0 = time.monotonic()
+    # Stage 4: Paper trading — runs for both US and HK markets
+    if market in ("US", "HK"):
+        _pt0 = time.monotonic()
+        try:
+            paper_trading_step()
+            _record_job_status("paper_trading", "ok", time.monotonic() - _pt0)
+        except Exception as _pte:
+            log.error("scheduler.paper_trading_step_failed", error=str(_pte), exc_info=True)
+            _record_job_status("paper_trading", "error", time.monotonic() - _pt0, str(_pte))
+        if post_close:
             try:
-                paper_trading_step()
-                _record_job_status("paper_trading", "ok", time.monotonic() - _pt0)
-            except Exception as _pte:
-                log.error("scheduler.paper_trading_step_failed", error=str(_pte), exc_info=True)
-                _record_job_status("paper_trading", "error", time.monotonic() - _pt0, str(_pte))
-            if post_close:
-                try:
-                    snapshot_equity_curve()
-                except Exception as _sec:
-                    log.error("scheduler.snapshot_equity_curve_failed", error=str(_sec), exc_info=True)
+                snapshot_equity_curve()
+            except Exception as _sec:
+                log.error("scheduler.snapshot_equity_curve_failed", error=str(_sec), exc_info=True)
 
+    if _ingest_ok:
         _record_job_status(_job_key, "ok", time.monotonic() - _t0)
-        # DP-4: clear the refresh-failed flag so alerts can resume
         try:
             _get_redis().delete(_REDIS_REFRESH_FAILED_KEY)
         except Exception:
             pass
-        log.info("scheduler.refresh_done", market=market, post_close=post_close)
-    except Exception as exc:
-        log.error("scheduler.refresh_failed", market=market, post_close=post_close, error=str(exc), exc_info=True)
-        _record_job_status(_job_key, "error", time.monotonic() - _t0, str(exc))
+    else:
+        _record_job_status(_job_key, "error", time.monotonic() - _t0, "ingest_failed")
+    log.info("scheduler.refresh_done", market=market, post_close=post_close, ingest_ok=_ingest_ok)
 
 
 _BULLISH_TRANSITIONS = {
@@ -374,7 +416,7 @@ def _confluence_score_full(
     )
 
 
-def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str = "unknown") -> tuple[bool, str, list[str], list[str]]:
+def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str | None = None) -> tuple[bool, str, list[str], list[str]]:
     """Check all conviction layers for a BUY signal across all 4 framework layers.
 
     Returns (all_passed, conviction_tier, passed_layers, failed_layers).
@@ -389,13 +431,23 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         4c. MACD momentum           — histogram positive+rising OR zero-line crossover
         4d. Volume confirms         — OBV bullish
         4e. Trend has real strength — ADX > 25 (signals reliable only in trending market)
-    Layer 5 — ML confirms TA       : ML probability > 70%
+    Layer 5 — ML confirms TA       : ML probability > regime-adaptive threshold, but only
+                                     when the ML model actually contributed to the signal
+                                     (ml_weight > 0). If the model was a no-op (AUC < 0.50)
+                                     the gate soft-passes ML — consistent with signal generation.
+
+    Regime is read from the stored signal's reasons dict (the regime at generation time),
+    so conviction and signal generation always operate in the same market context.
 
     Disqualifiers (false-BUY flags from FEATURES.md — block even if all layers pass):
         • Bearish RSI divergence (price rising but momentum fading)
         • Stoch RSI overbought (RSI itself overextended)
     """
     reasons = signal_data.get("reasons") or {}
+
+    # Use the regime stored in the signal's reasons (same context as signal generation).
+    # Explicit `regime` override kept for backward-compat with callers that pass it.
+    effective_regime = regime if regime is not None else reasons.get("market_regime", "unknown")
     passed: list[str] = []
     failed: list[str] = []
 
@@ -429,41 +481,45 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         else:
             failed.append("Uptrend structure not aligned (SMA50/SMA200/price)")
 
-    # Layer 4b — Entry timing: dip bought, not overextended
-    # RSI range is style-aware: GROWTH runs hot (55-85), SWING/LONG expect dip (45-65)
+    # Layer 4b — Entry timing: RSI in healthy range
+    # RSI upper bound extended to 72 (vs old 65): RSI 65-72 is healthy momentum,
+    # not overextended. Stoch overbought (>80) is already caught by the disqualifier
+    # below and is more precise than requiring stoch to recover from oversold — that
+    # old requirement only fired 1-2 days after a stoch cross and silently blocked
+    # the vast majority of valid BUY setups in normal trending conditions.
     rsi = reasons.get("rsi")
     stoch_k = float(reasons.get("stoch_rsi_k") or 50)
-    stoch_cross_up = bool(reasons.get("stoch_rsi_cross_up"))
-    stoch_oversold = bool(reasons.get("stoch_rsi_oversold"))
     if style == "GROWTH":
-        rsi_ok = rsi is not None and 55.0 <= float(rsi) <= 85.0
-        rsi_range_label = "55-85"
-        stoch_ok = True  # GROWTH momentum plays don't require oversold entry
+        rsi_ok = rsi is not None and 50.0 <= float(rsi) <= 85.0
+        rsi_range_label = "50-85"
     else:
-        rsi_ok = rsi is not None and 45.0 <= float(rsi) <= 65.0
-        rsi_range_label = "45-65"
-        stoch_ok = stoch_cross_up or (stoch_oversold and stoch_k < 60)
-    if rsi_ok and stoch_ok:
+        rsi_ok = rsi is not None and 45.0 <= float(rsi) <= 72.0
+        rsi_range_label = "45-72"
+    if rsi_ok:
         passed.append(f"Entry timing: RSI {float(rsi):.0f}, within {rsi_range_label} for {style}")
     else:
-        parts = []
-        if not rsi_ok:
-            parts.append(f"RSI {float(rsi):.0f} outside {rsi_range_label}" if rsi is not None else "RSI unavailable")
-        if not stoch_ok:
-            parts.append("Stoch RSI not recovering from oversold")
-        failed.append("Entry timing: " + "; ".join(parts))
+        rsi_str = f"RSI {float(rsi):.0f} outside {rsi_range_label}" if rsi is not None else "RSI unavailable"
+        failed.append(f"Entry timing: {rsi_str}")
 
     # Layer 4c — MACD momentum confirmed
+    # Pass if histogram is positive, rising (momentum building even if still negative),
+    # OR a zero-line crossover just occurred. Fail only when histogram is negative AND
+    # falling — clearly deteriorating momentum. Treated as soft failure so a single
+    # lagging-indicator miss does not veto a high-conviction TA+ML alignment.
     macd_hist = float(reasons.get("macd_hist") or 0)
     macd_rising = bool(reasons.get("macd_rising"))
     macd_zero_cross = bool(reasons.get("macd_zero_cross_up"))
-    if (macd_hist > 0 and macd_rising) or macd_zero_cross:
-        passed.append("MACD: histogram positive+rising" if not macd_zero_cross else "MACD: zero-line crossover")
+    if macd_zero_cross:
+        passed.append("MACD: zero-line crossover")
+    elif macd_hist > 0:
+        passed.append("MACD: histogram positive")
+    elif macd_rising:
+        passed.append("MACD: histogram rising (momentum building)")
     else:
-        failed.append("MACD: momentum not confirmed (histogram negative or falling)")
+        failed.append("MACD: momentum fading (histogram negative and falling)")
 
     # Layer 4d — Volume confirms direction
-    if reasons.get("obv_bullish"):
+    if reasons.get("obv_trend_bullish"):
         passed.append("OBV: volume confirming price direction")
     else:
         failed.append("OBV: volume not confirming direction")
@@ -476,13 +532,21 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
         adx = reasons.get("adx", 0)
         failed.append(f"ADX {float(adx):.0f} < 25: market choppy, signals unreliable")
 
-    # Layer 5 — ML model agrees with TA (regime-adaptive threshold — SA-12)
-    thresholds = _REGIME_THRESHOLDS.get(regime, _REGIME_THRESHOLDS["unknown"])
+    # Layer 5 — ML confirms TA (regime-adaptive threshold, AUC-aware — SA-12)
+    # Single source of truth: use the regime AND ml_weight stored in the signal's reasons
+    # so this gate is always consistent with how the signal was generated.
+    thresholds  = _REGIME_THRESHOLDS.get(effective_regime, _REGIME_THRESHOLDS["unknown"])
     ml_threshold = thresholds["ml"]
-    tier_label = thresholds["tier"]
-    ml_prob = reasons.get("ml_probability")
+    tier_label   = thresholds["tier"]
+    ml_prob      = reasons.get("ml_probability")
+    ml_weight    = float(reasons.get("ml_weight") or 0.0)
     if ml_prob is None:
+        # No model at all — signal is TA-only (soft pass)
         passed.append(f"ML: no model trained yet — TA-only signal (soft pass) [{tier_label} regime]")
+    elif ml_weight == 0.0:
+        # Model trained but AUC < 0.50 (inverse/random) — signal-engine assigned zero weight;
+        # gate mirrors that: model had no say, so don't penalise here (soft pass)
+        passed.append(f"ML: model AUC below random — zero weight in fusion, gate skipped (soft pass) [{tier_label} regime]")
     elif float(ml_prob) > ml_threshold:
         passed.append(f"ML: {float(ml_prob) * 100:.0f}% bullish probability (threshold {ml_threshold * 100:.0f}% for {tier_label} regime)")
     else:
@@ -494,8 +558,10 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
     if bool(reasons.get("stoch_rsi_overbought")):
         failed.append("Stoch RSI overbought: RSI itself overextended — pullback risk elevated")
 
-    # CB-4: Near-conviction tier — allow 1 soft failure (OBV or ADX only) to still send email
-    _SOFT_LAYER_KEYWORDS = ("OBV", "ADX")
+    # CB-4: Near-conviction tier — allow 1 soft failure (OBV, ADX, ML, or MACD) to still send.
+    # MACD is a lagging indicator; when all other layers (TA structure, RSI, ML, K-Score)
+    # align bullish, a single MACD lag should not hard-block the alert.
+    _SOFT_LAYER_KEYWORDS = ("OBV", "ADX", "ML probability", "MACD")
     soft_failed = [f for f in failed if any(kw in f for kw in _SOFT_LAYER_KEYWORDS)]
     hard_failed = [f for f in failed if f not in soft_failed]
 
@@ -642,7 +708,7 @@ def _build_game_plan(
             "SMA50 > SMA200 golden-cross structure intact" if sma50_above_sma200 else None,
             f"RSI {float(rsi):.0f} — recovering from oversold territory" if rsi is not None and float(rsi) < 50 else None,
             "MACD histogram rising — short-term momentum confirming" if reasons.get("macd_rising") else None,
-            "OBV bullish — volume confirming price direction" if reasons.get("obv_bullish") else None,
+            "OBV trend up — volume confirming price direction" if reasons.get("obv_trend_bullish") else None,
         ] if c is not None][:3]
         if not catalysts:
             catalysts = ["AI signal + analyst consensus aligned", "Technical structure improving", "Volume trend supporting move"]
@@ -714,9 +780,10 @@ def check_signal_alerts() -> None:
             except Exception:
                 pass
 
-            # DP-3: Build per-symbol price freshness map; skip symbols with stale bars (>2 days).
+            # DP-3: Build per-symbol price freshness map; skip symbols with stale bars.
+            # Use 4-day window to accommodate weekends (Fri close → Mon alert run = 3 calendar days).
             fresh_symbols: set[str] = set()
-            stale_cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+            stale_cutoff = datetime.now(timezone.utc) - timedelta(days=4)
             try:
                 price_rows = session.execute(
                     select(Stock.symbol, Price.ts)
@@ -800,7 +867,9 @@ def check_signal_alerts() -> None:
             except Exception:
                 pass
 
-            # SA-12: read regime once for the entire alert run
+            # Current live regime — used only for non-BUY confidence gate (lighter path).
+            # The BUY conviction gate now reads regime from each signal's stored reasons dict
+            # so gate and signal generation always operate in the same market context.
             current_regime = _get_current_regime()
             regime_thresholds = _REGIME_THRESHOLDS.get(current_regime, _REGIME_THRESHOLDS["unknown"])
 
@@ -823,7 +892,7 @@ def check_signal_alerts() -> None:
                     if current == "BUY":
                         sig_data = signal_details.get(key) or {}
                         all_pass, _tier, passed, failed = _is_conviction_buy(
-                            sig_data, kscore=kscores.get(alert.symbol), regime=current_regime
+                            sig_data, kscore=kscores.get(alert.symbol)
                         )
                         db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
                         _store_conviction(alert.symbol, style, True, passed, failed, current, sent_at=db_sent_at)
@@ -872,7 +941,7 @@ def check_signal_alerts() -> None:
                     if current == "BUY":
                         # Full 4-layer conviction gate (CB-4: "near" tier allows 1 soft fail)
                         all_pass, conviction_tier, passed, failed = _is_conviction_buy(
-                            sig_data, kscore=kscores.get(alert.symbol), regime=current_regime
+                            sig_data, kscore=kscores.get(alert.symbol)
                         )
                         if not all_pass:
                             log.info(
@@ -885,9 +954,10 @@ def check_signal_alerts() -> None:
                         conviction_passed = passed
                         near_conviction = conviction_tier == "near"
                         near_conviction_failed = [f for f in failed if near_conviction]
+                        sig_regime = (signal_details.get(key) or {}).get("reasons", {}).get("market_regime", "unknown")
                         log.info(
                             "signal_alert.conviction_met", symbol=alert.symbol,
-                            tier=conviction_tier, passed=passed, regime=current_regime,
+                            tier=conviction_tier, passed=passed, regime=sig_regime,
                         )
                     else:
                         # Non-BUY bullish improvement (e.g. WAIT→HOLD) — lighter gate:
@@ -1028,8 +1098,12 @@ def check_technical_alerts() -> None:
     Runs after each market refresh (when fresh daily bars are ingested).
     EMA period is stored in the threshold field (20, 50, or 200).
     52-week conditions store 0 in threshold.
+
+    Recurring alerts (recurring=True) re-fire every time the pattern is
+    detected, subject to a per-pattern cooldown to prevent spam.
     """
     import pandas as pd
+    from sqlalchemy import or_
 
     _TECHNICAL = {
         AlertCondition.CROSS_ABOVE_EMA,
@@ -1038,22 +1112,51 @@ def check_technical_alerts() -> None:
         AlertCondition.NEW_52WK_LOW,
         AlertCondition.GOLDEN_CROSS,
         AlertCondition.DEATH_CROSS,
+        AlertCondition.MACD_BULLISH_CROSS,
+        AlertCondition.RSI_OVERSOLD_BOUNCE,
+        AlertCondition.DOUBLE_BOTTOM,
+        AlertCondition.BREAKOUT,
     }
+
+    # (no cooldown dict needed — same-day dedup is sufficient; see _already_fired_today)
 
     try:
         with SessionLocal() as session:
+            # Include one-shot (triggered=False) AND recurring alerts
             alerts = session.execute(
                 select(PriceAlert).where(
-                    PriceAlert.triggered.is_(False),
                     PriceAlert.condition.in_(_TECHNICAL),
+                    or_(
+                        PriceAlert.triggered.is_(False),
+                        PriceAlert.recurring.is_(True),
+                    ),
                 )
             ).scalars().all()
             if not alerts:
                 return
 
-            # Fetch 260 bars per unique symbol (enough for EMA200 + 52-week)
+            now = datetime.now(timezone.utc)
+            today = now.date()
+
+            # For recurring alerts, skip if already fired today.
+            # Patterns use daily bars — the same bar is re-read every 5 min,
+            # so without this dedup the alert would fire all day on the same crossing.
+            def _already_fired_today(alert: PriceAlert) -> bool:
+                if not alert.recurring or alert.last_sent_at is None:
+                    return False
+                sent = alert.last_sent_at
+                if sent.tzinfo is None:
+                    sent = sent.replace(tzinfo=timezone.utc)
+                return sent.date() >= today
+
+            alerts = [a for a in alerts if not _already_fired_today(a)]
+            if not alerts:
+                return
+
+            # Fetch 260 bars per unique symbol (enough for EMA200 + 52-week + MACD + RSI)
             symbols = list({a.symbol for a in alerts})
             prices_by_sym: dict[str, pd.Series] = {}
+            volumes_by_sym: dict[str, pd.Series] = {}
             for sym in symbols:
                 try:
                     stock = session.execute(
@@ -1062,8 +1165,8 @@ def check_technical_alerts() -> None:
                     if not stock:
                         continue
                     rows = session.execute(
-                        select(Price.ts, Price.close)
-                        .where(Price.stock_id == stock.id)
+                        select(Price.ts, Price.close, Price.volume)
+                        .where(Price.stock_id == stock.id, Price.timeframe == "D1")
                         .order_by(Price.ts.asc())
                         .limit(260)
                     ).all()
@@ -1071,6 +1174,9 @@ def check_technical_alerts() -> None:
                         continue
                     prices_by_sym[sym] = pd.Series(
                         [float(r.close) for r in rows]
+                    )
+                    volumes_by_sym[sym] = pd.Series(
+                        [float(r.volume) for r in rows]
                     )
                 except Exception as exc:
                     log.warning("tech_alert.price_error", symbol=sym, error=str(exc))
@@ -1081,6 +1187,7 @@ def check_technical_alerts() -> None:
                 close = prices_by_sym.get(alert.symbol)
                 if close is None:
                     continue
+                volume = volumes_by_sym.get(alert.symbol, pd.Series(dtype=float))
                 cond = alert.condition
 
                 try:
@@ -1136,13 +1243,84 @@ def check_technical_alerts() -> None:
                             cond_label = f"Death Cross — EMA50 ({ema50.iloc[-1]:.2f}) crossed below EMA200 ({ema200.iloc[-1]:.2f})"
                         threshold_val = float(ema50.iloc[-1])
 
+                    elif cond == AlertCondition.MACD_BULLISH_CROSS:
+                        if len(close) < 35:
+                            continue
+                        ema12 = close.ewm(span=12, adjust=False).mean()
+                        ema26 = close.ewm(span=26, adjust=False).mean()
+                        macd = ema12 - ema26
+                        sig = macd.ewm(span=9, adjust=False).mean()
+                        if not (macd.iloc[-2] < sig.iloc[-2] and macd.iloc[-1] >= sig.iloc[-1]):
+                            continue
+                        cond_label = f"MACD Bullish Cross — MACD ({macd.iloc[-1]:.3f}) crossed above signal ({sig.iloc[-1]:.3f})"
+                        threshold_val = float(sig.iloc[-1])
+
+                    elif cond == AlertCondition.RSI_OVERSOLD_BOUNCE:
+                        if len(close) < 16:
+                            continue
+                        delta = close.diff()
+                        gain = delta.clip(lower=0).rolling(14).mean()
+                        loss = (-delta.clip(upper=0)).rolling(14).mean()
+                        rs = gain / loss.replace(0, float("nan"))
+                        rsi = 100 - (100 / (1 + rs))
+                        prev_rsi = float(rsi.iloc[-2]) if not pd.isna(rsi.iloc[-2]) else None
+                        curr_rsi = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else None
+                        if prev_rsi is None or curr_rsi is None or prev_rsi >= 30 or curr_rsi < 30:
+                            continue
+                        cond_label = f"RSI Oversold Bounce — RSI recovered from {prev_rsi:.1f} to {curr_rsi:.1f} (above 30)"
+                        threshold_val = curr_rsi
+
+                    elif cond == AlertCondition.DOUBLE_BOTTOM:
+                        if len(close) < 20:
+                            continue
+                        window = close.tail(60).values
+                        minima: list[tuple[int, float]] = []
+                        for i in range(2, len(window) - 2):
+                            if all(window[i] <= window[j] for j in range(i - 2, i + 3) if j != i):
+                                minima.append((i, float(window[i])))
+                        if len(minima) < 2:
+                            continue
+                        b1_idx, b1_val = minima[-2]
+                        b2_idx, b2_val = minima[-1]
+                        lower = min(b1_val, b2_val)
+                        if lower <= 0 or abs(b1_val - b2_val) / lower > 0.03 or b2_idx <= b1_idx + 3:
+                            continue
+                        # Second bottom must be within the last 10 bars — otherwise
+                        # the same old pattern stays in the 60-bar window for weeks
+                        if b2_idx < len(window) - 10:
+                            continue
+                        peak = float(max(window[b1_idx:b2_idx + 1]))
+                        if peak < lower * 1.05 or float(close.iloc[-1]) <= lower * 1.01:
+                            continue
+                        cond_label = f"Double Bottom (W-pattern) — two troughs near ${lower:.2f}, price now ${float(close.iloc[-1]):.2f}"
+                        threshold_val = lower
+
+                    elif cond == AlertCondition.BREAKOUT:
+                        if len(close) < 21:
+                            continue
+                        high_20 = float(close.iloc[-21:-1].max())
+                        avg_vol = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else 0.0
+                        curr_price = float(close.iloc[-1])
+                        curr_vol = float(volume.iloc[-1]) if len(volume) > 0 else 0.0
+                        if curr_price <= high_20 or avg_vol <= 0 or curr_vol < avg_vol * 1.4:
+                            continue
+                        cond_label = f"Volume Breakout — closed ${curr_price:.2f} above 20-day high ${high_20:.2f} with {curr_vol/avg_vol:.1f}x volume"
+                        threshold_val = high_20
+
                     else:
                         continue
 
-                    alert.triggered = True
-                    alert.triggered_at = datetime.now(timezone.utc)
+                    fire_time = datetime.now(timezone.utc)
+                    if alert.recurring:
+                        # Recurring: stamp last_sent_at but leave triggered=False so it stays active
+                        alert.last_sent_at = fire_time
+                        alert.triggered_at = fire_time
+                    else:
+                        # One-shot: mark done permanently
+                        alert.triggered = True
+                        alert.triggered_at = fire_time
                     fired += 1
-                    log.info("tech_alert.triggered", symbol=alert.symbol, condition=cond_label)
+                    log.info("tech_alert.triggered", symbol=alert.symbol, condition=cond_label, recurring=alert.recurring)
 
                     if alert.email:
                         pending_emails.append(dict(
@@ -1169,6 +1347,40 @@ def check_technical_alerts() -> None:
         log.error("tech_alert.error", error=str(exc))
 
 
+def _refresh_fundamentals_batch(symbols: list[str]) -> None:
+    """Fetch fresh fundamentals for every symbol and persist to DB.
+
+    Called from _weekly_full_refresh() after the daily ingest so the ML
+    retrain on Sunday night uses up-to-date revenue_growth, ROE, short_ratio
+    etc. Rate-limited to ~3 requests/second to stay within yfinance limits.
+    Each call is best-effort: failures are logged and skipped, not fatal.
+    """
+    _t0 = time.monotonic()
+    ok = failed = 0
+    tok = _service_token()
+    headers = {"Authorization": f"Bearer {tok}"} if tok else {}
+    for sym in symbols:
+        try:
+            r = httpx.get(
+                f"{_settings.market_data_url}/stocks/{sym}/fundamentals",
+                headers=headers,
+                timeout=15,
+            )
+            if r.status_code == 200:
+                ok += 1
+            else:
+                log.warning("scheduler.fund_batch.skip", symbol=sym, status=r.status_code)
+                failed += 1
+        except Exception as exc:
+            log.warning("scheduler.fund_batch.error", symbol=sym, error=str(exc))
+            failed += 1
+        time.sleep(0.33)  # ~3 req/s — stay under yfinance rate limit
+
+    elapsed = time.monotonic() - _t0
+    log.info("scheduler.fund_batch_done", ok=ok, failed=failed, elapsed_s=round(elapsed))
+    _record_job_status("fundamentals_batch", "ok" if failed == 0 else "partial", elapsed)
+
+
 def _weekly_full_refresh() -> None:
     """Force re-ingest 3 years of daily bars for every active stock.
 
@@ -1179,6 +1391,7 @@ def _weekly_full_refresh() -> None:
     tune_all runs in the background inside the ml-prediction container (~2–4 h).
     """
     _t0 = time.monotonic()
+    all_symbols: list[str] = []
     try:
         all_symbols = _symbols_for("US") + _symbols_for("HK")
         if not all_symbols:
@@ -1195,6 +1408,14 @@ def _weekly_full_refresh() -> None:
         log.error("scheduler.weekly_refresh_failed", error=str(exc))
         _record_job_status("weekly_refresh", "error", time.monotonic() - _t0, str(exc))
 
+    # ML-FUND-2: refresh fundamentals for all symbols so Sunday's ML retrain
+    # uses up-to-date revenue_growth, ROE, short_ratio, etc.  Runs after the
+    # price ingest (daily bars must exist before fundamentals are useful).
+    # ~46 seconds for 138 symbols at 3 req/s — completes well before tune_all starts.
+    if all_symbols:
+        log.info("scheduler.fund_batch_start", count=len(all_symbols))
+        _refresh_fundamentals_batch(all_symbols)
+
     # Kick off Optuna hyperparameter tuning for all symbols.
     # Runs as a background task in ml-prediction — returns immediately, tunes for ~2–4 h.
     # Best params are saved per-symbol JSON and used by all subsequent daily retrains.
@@ -1208,6 +1429,12 @@ def _weekly_full_refresh() -> None:
     log.info("scheduler.calibrate_ta_weights_start")
     _post(f"{_settings.signal_engine_url}/signals/calibrate_ta_weights")
     _record_job_status("calibrate_ta_weights_sent", "ok", 0.0)
+
+    # AL-3: calibrate conviction layer weights from signal_outcomes.
+    # Fits logistic regression on reason boolean flags; writes conviction_weights.json.
+    log.info("scheduler.calibrate_conviction_weights_start")
+    _post(f"{_settings.signal_engine_url}/signals/calibrate_conviction_weights")
+    _record_job_status("calibrate_conviction_weights_sent", "ok", 0.0)
 
 
 def _purge_old_data() -> None:
@@ -1271,6 +1498,202 @@ def _refresh_5m(market: str) -> None:
             _record_job_status(f"paper_trading_5m_{market.lower()}", "error", time.monotonic() - _pt0, str(_pte))
 
 
+def send_morning_digest(market: str = "US") -> None:
+    """Compile and email the daily pre-market digest to all users with an email configured.
+
+    Sections:
+      1. Market regime (SPY / VIX classification from last paper trading step)
+      2. Top 5 SWING + Top 5 GROWTH opportunities from the given market
+      3. Open paper positions (all portfolios, with yesterday's close P&L)
+      4. Pattern alerts triggered since yesterday
+
+    Called twice per day: 09:00 ET for US, 08:55 HK for HK.
+    """
+    _t0 = time.monotonic()
+    try:
+        regime = get_last_regime()
+        date_str = datetime.now(timezone.utc).strftime("%a, %b %-d")
+
+        with SessionLocal() as session:
+            # ── Recipients ────────────────────────────────────────────────────
+            users = session.execute(
+                select(User).where(User.email.isnot(None), User.email != "")
+            ).scalars().all()
+            if not users:
+                log.info("morning_digest.no_recipients")
+                return
+
+            # ── Top 5 opportunities per horizon (SWING + GROWTH) ─────────────
+            latest_rank_subq = (
+                select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+                .group_by(Ranking.stock_id)
+                .subquery()
+            )
+            latest_price_subq2 = (
+                select(Price.stock_id, func.max(Price.ts).label("max_ts"))
+                .where(Price.timeframe == "D1")
+                .group_by(Price.stock_id)
+                .subquery()
+            )
+
+            def _top5_for_horizon(horizon: str) -> list[dict]:
+                sig_subq = (
+                    select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+                    .where(Signal.horizon == horizon)
+                    .group_by(Signal.stock_id)
+                    .subquery()
+                )
+                stmt = (
+                    select(Stock, Ranking, Signal)
+                    .join(Ranking, Stock.id == Ranking.stock_id)
+                    .join(latest_rank_subq,
+                          (Ranking.stock_id == latest_rank_subq.c.stock_id) &
+                          (Ranking.as_of == latest_rank_subq.c.max_as_of))
+                    .outerjoin(sig_subq, Stock.id == sig_subq.c.stock_id)
+                    .outerjoin(Signal,
+                               (Signal.stock_id == sig_subq.c.stock_id) &
+                               (Signal.ts == sig_subq.c.max_ts) &
+                               (Signal.horizon == horizon))
+                    .where(Stock.active.is_(True), Stock.market == market.upper())
+                    .order_by(Ranking.score.desc())
+                    .limit(50)
+                )
+                rows = session.execute(stmt).all()
+                # Prefer BUY-signal stocks; fall back to highest K-Score
+                buy_rows = [r for r in rows if r[2] and r[2].signal == "BUY"]
+                other_rows = [r for r in rows if not (r[2] and r[2].signal == "BUY")]
+                top_rows = (buy_rows + other_rows)[:5]
+
+                symbols = [r[0].symbol for r in top_rows]
+                price_map: dict[str, float] = {}
+                if symbols:
+                    prows = session.execute(
+                        select(Stock.symbol, Price.close)
+                        .join(Stock, Price.stock_id == Stock.id)
+                        .join(latest_price_subq2,
+                              (Price.stock_id == latest_price_subq2.c.stock_id) &
+                              (Price.ts == latest_price_subq2.c.max_ts))
+                        .where(Stock.symbol.in_(symbols), Price.timeframe == "D1")
+                    ).all()
+                    price_map = {sym: float(close) for sym, close in prows}
+
+                result = []
+                for stock, ranking, signal in top_rows:
+                    ml_prob = None
+                    if signal and signal.reasons:
+                        try:
+                            ml_prob = float(signal.reasons.get("ml_probability") or 0) or None
+                        except (TypeError, ValueError):
+                            ml_prob = None
+                    result.append({
+                        "symbol":  stock.symbol,
+                        "name":    stock.name or "",
+                        "score":   float(ranking.score) if ranking.score is not None else None,
+                        "signal":  signal.signal if signal else None,
+                        "ml_prob": ml_prob,
+                        "sector":  stock.sector or "",
+                        "market":  stock.market.value if stock.market else "",
+                        "price":   price_map.get(stock.symbol),
+                    })
+                return result
+
+            swing_opportunities = _top5_for_horizon("SWING")
+            growth_opportunities = _top5_for_horizon("GROWTH")
+
+            # ── Open paper positions (filtered to this market's stocks) ──────
+            market_symbols_set = set(
+                session.execute(
+                    select(Stock.symbol).where(Stock.active.is_(True), Stock.market == market.upper())
+                ).scalars().all()
+            )
+            open_trades = [
+                t for t in
+                session.execute(select(PaperTrade).where(PaperTrade.stage == "open")).scalars().all()
+                if t.symbol in market_symbols_set
+            ]
+
+            # Last daily close per symbol
+            open_symbols = list({t.symbol for t in open_trades})
+            close_map: dict[str, float] = {}
+            if open_symbols:
+                c_rows = session.execute(
+                    select(Stock.symbol, Price.close)
+                    .join(Stock, Price.stock_id == Stock.id)
+                    .join(latest_price_subq2,
+                          (Price.stock_id == latest_price_subq2.c.stock_id) &
+                          (Price.ts == latest_price_subq2.c.max_ts))
+                    .where(Stock.symbol.in_(open_symbols), Price.timeframe == "D1")
+                ).all()
+                close_map = {sym: float(close) for sym, close in c_rows}
+
+
+            open_positions = []
+            for trade in open_trades:
+                last_price = close_map.get(trade.symbol) or trade.current_price
+                pnl_pct = None
+                if last_price and trade.entry_price:
+                    pnl_pct = (last_price - trade.entry_price) / trade.entry_price * 100
+                stop_dist_pct = None
+                if last_price and trade.current_stop:
+                    stop_dist_pct = (last_price - trade.current_stop) / last_price * 100
+                open_positions.append({
+                    "symbol":       trade.symbol,
+                    "entry_price":  float(trade.entry_price),
+                    "last_price":   last_price,
+                    "pnl_pct":      pnl_pct,
+                    "current_stop": float(trade.current_stop) if trade.current_stop else None,
+                    "stop_dist_pct": stop_dist_pct,
+                    "hold_days":    trade.hold_days or 0,
+                })
+            open_positions.sort(key=lambda p: p.get("pnl_pct") or 0, reverse=True)
+
+            # ── Pattern alerts triggered since yesterday ──────────────────────
+            _PATTERN_CONDITIONS = {
+                "golden_cross", "macd_bullish_cross",
+                "rsi_oversold_bounce", "double_bottom", "breakout",
+            }
+            yesterday = datetime.now(timezone.utc) - timedelta(hours=28)
+            pa_rows = session.execute(
+                select(PriceAlert.symbol, PriceAlert.condition)
+                .where(
+                    PriceAlert.triggered.is_(True),
+                    PriceAlert.triggered_at >= yesterday,
+                )
+                .distinct()
+            ).all()
+            pattern_alerts = [
+                {"symbol": sym, "condition": str(cond.value if hasattr(cond, "value") else cond)}
+                for sym, cond in pa_rows
+                if str(cond.value if hasattr(cond, "value") else cond) in _PATTERN_CONDITIONS
+            ]
+
+        # ── Send to all recipients ────────────────────────────────────────────
+        sent = 0
+        for user in users:
+            ok = send_morning_digest_email(
+                to=user.email,
+                date_str=date_str,
+                regime=regime,
+                swing_opportunities=swing_opportunities,
+                growth_opportunities=growth_opportunities,
+                open_positions=open_positions,
+                pattern_alerts=pattern_alerts,
+                market=market,
+            )
+            if ok:
+                sent += 1
+
+        job_key = f"morning_digest_{market.lower()}"
+        _record_job_status(job_key, "ok", time.monotonic() - _t0)
+        log.info("morning_digest.done", market=market, sent=sent, recipients=len(users),
+                 swing=len(swing_opportunities), growth=len(growth_opportunities),
+                 positions=len(open_positions))
+
+    except Exception as exc:
+        log.error("morning_digest.failed", market=market, error=str(exc), exc_info=True)
+        _record_job_status(f"morning_digest_{market.lower()}", "error", time.monotonic() - _t0, str(exc))
+
+
 def start_scheduler() -> None:
     """Register all APScheduler jobs and start the background scheduler.
 
@@ -1296,7 +1719,7 @@ def start_scheduler() -> None:
     ready for the week ahead; subsequent daily retrains pick them up automatically.
 
     Job count: 4 US + 4 HK + 2 5m intraday + 1 weekly full refresh + tune_all
-               + 1 price alert checker + 1 db purge = 13.
+               + 2 morning digests (US + HK) + 1 price alert checker + 1 db purge = 15.
     """
     global _scheduler
     if _scheduler is not None:
@@ -1305,11 +1728,13 @@ def start_scheduler() -> None:
 
     # ── US Market (America/New_York — DST handled automatically) ────────────
 
+    _JOB_DEFAULTS = dict(max_instances=1, coalesce=True, misfire_grace_time=60)
+
     # Open burst: 9:25–9:45 every 5 min
     _scheduler.add_job(
         lambda: _refresh_market("US"),
         CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="America/New_York"),
-        id="us_open_burst", replace_existing=True,
+        id="us_open_burst", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Regular hours: every 5 min 10:00–15:00
     _scheduler.add_job(
@@ -1318,7 +1743,7 @@ def start_scheduler() -> None:
             CronTrigger(hour="10,11,12,13,14", minute="0,5,10,15,20,25,30,35,40,45,50,55", day_of_week="mon-fri", timezone="America/New_York"),
             CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
         ]),
-        id="us_intra", replace_existing=True,
+        id="us_intra", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Close burst: 15:30–16:15 every 5 min
     _scheduler.add_job(
@@ -1327,13 +1752,13 @@ def start_scheduler() -> None:
             CronTrigger(hour=15, minute="30,35,40,45,50,55", day_of_week="mon-fri", timezone="America/New_York"),
             CronTrigger(hour=16, minute="0,5,10,15", day_of_week="mon-fri", timezone="America/New_York"),
         ]),
-        id="us_close_burst", replace_existing=True,
+        id="us_close_burst", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Post-close: final bar confirmed + ML retrain
     _scheduler.add_job(
         lambda: _refresh_market("US", post_close=True),
         CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
-        id="us_post_close", replace_existing=True,
+        id="us_post_close", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── HK Market (Asia/Hong_Kong — UTC+8, no DST) ──────────────────────────
@@ -1342,16 +1767,16 @@ def start_scheduler() -> None:
     _scheduler.add_job(
         lambda: _refresh_market("HK"),
         CronTrigger(hour=9, minute="25,30,35,40,45", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="hk_open_burst", replace_existing=True,
+        id="hk_open_burst", replace_existing=True, **_JOB_DEFAULTS,
     )
-    # Regular hours: every 5 min 10:00–15:00
+    # Regular hours: every 5 min 10:00–11:55 and 13:00–15:00 (skip 12:00–13:00 HKEX lunch)
     _scheduler.add_job(
         lambda: _refresh_market("HK"),
         OrTrigger([
-            CronTrigger(hour="10,11,12,13,14", minute="0,5,10,15,20,25,30,35,40,45,50,55", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+            CronTrigger(hour="10,11,13,14", minute="0,5,10,15,20,25,30,35,40,45,50,55", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
             CronTrigger(hour=15, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         ]),
-        id="hk_intra", replace_existing=True,
+        id="hk_intra", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Close burst: 15:30–16:15 every 5 min (HK market closes 16:00, bar settles by 16:15)
     _scheduler.add_job(
@@ -1360,20 +1785,20 @@ def start_scheduler() -> None:
             CronTrigger(hour=15, minute="30,35,40,45,50,55", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
             CronTrigger(hour=16, minute="0,5,10,15", day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         ]),
-        id="hk_close_burst", replace_existing=True,
+        id="hk_close_burst", replace_existing=True, **_JOB_DEFAULTS,
     )
     # Post-close: final bar confirmed + ML retrain
     _scheduler.add_job(
         lambda: _refresh_market("HK", post_close=True),
         CronTrigger(hour=16, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="hk_post_close", replace_existing=True,
+        id="hk_post_close", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Weekly full refresh — Sunday 16:00 PST, before HK Monday open ───────
     _scheduler.add_job(
         _weekly_full_refresh,
         CronTrigger(day_of_week="sun", hour=14, minute=0, timezone="America/Los_Angeles"),
-        id="weekly_full_refresh", replace_existing=True,
+        id="weekly_full_refresh", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── 5-minute intraday bars — US market hours ────────────────────────────
@@ -1385,19 +1810,33 @@ def start_scheduler() -> None:
             day_of_week="mon-fri",
             timezone="America/New_York",
         ),
-        id="us_5m_intraday", replace_existing=True,
+        id="us_5m_intraday", replace_existing=True, **_JOB_DEFAULTS,
     )
 
-    # ── 5-minute intraday bars — HK market hours ────────────────────────────
+    # ── 5-minute intraday bars — HK market hours (skip 12:00–13:00 lunch break)
     _scheduler.add_job(
         lambda: _refresh_5m("HK"),
         CronTrigger(
-            hour="9,10,11,12,13,14,15",
+            hour="9,10,11,13,14,15",
             minute="30,35,40,45,50,55,0,5,10,15,20,25",
             day_of_week="mon-fri",
             timezone="Asia/Hong_Kong",
         ),
-        id="hk_5m_intraday", replace_existing=True,
+        id="hk_5m_intraday", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── Morning digests — pre-open for each market ───────────────────────────
+    # US: 09:00 ET (30 min before NYSE open)
+    _scheduler.add_job(
+        lambda: send_morning_digest("US"),
+        CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+        id="morning_digest_us", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    # HK: 08:55 HKT (30 min before HKEX open)
+    _scheduler.add_job(
+        lambda: send_morning_digest("HK"),
+        CronTrigger(hour=8, minute=55, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="morning_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Price alert checker — every minute ──────────────────────────────────
@@ -1407,6 +1846,33 @@ def start_scheduler() -> None:
         minutes=1,
         id="price_alert_check",
         replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── Live price cache refresh — every minute during market hours ──────────
+    # Lightweight: one yf.download() bulk call → Redis write. No DB writes,
+    # no ranking/signal computation. Keeps the UI price display current
+    # between the 5-minute full refresh cycles.
+    # Gated to US+HK combined market hours (09:00–17:00 ET or 09:00–17:00 HKT)
+    # so the job is a no-op outside trading hours and doesn't burn API quota.
+    def _live_price_refresh_job() -> None:
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+        weekday = now_et.weekday()  # Mon=0 … Fri=4
+        if weekday >= 5:
+            return  # weekend
+        us_open = now_et.hour >= 9 and now_et.hour < 17
+        hk_open = now_hk.hour >= 9 and now_hk.hour < 17
+        if us_open or hk_open:
+            refresh_live_price_cache()
+
+    _scheduler.add_job(
+        _live_price_refresh_job,
+        "interval",
+        minutes=1,
+        id="live_price_cache_refresh",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
     )
 
     # ── DB purge — Sunday 15:00 PST (before weekly full refresh) ────────────
@@ -1414,7 +1880,7 @@ def start_scheduler() -> None:
     _scheduler.add_job(
         _purge_old_data,
         CronTrigger(day_of_week="sun", hour=15, minute=0, timezone="America/Los_Angeles"),
-        id="db_purge_weekly", replace_existing=True,
+        id="db_purge_weekly", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── One-shot startup run to restore conviction/Redis data after restarts ─
@@ -1427,6 +1893,7 @@ def start_scheduler() -> None:
         run_date=datetime.now(timezone.utc) + timedelta(seconds=60),
         id="signal_alert_startup",
         replace_existing=True,
+        max_instances=1,
     )
 
     # WF-2: ensure the default GROWTH paper portfolio exists on startup.
@@ -1436,4 +1903,4 @@ def start_scheduler() -> None:
         log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=13)
+    log.info("scheduler.started", jobs=15)

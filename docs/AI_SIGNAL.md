@@ -3,7 +3,7 @@
 Source: [`services/signal-engine/src/generators/signals.py`](../services/signal-engine/src/generators/signals.py)
 ML training: [`services/ml-prediction/src/training/trainer.py`](../services/ml-prediction/src/training/trainer.py)
 
-Last updated: 2026-06-06 (SA-8 accuracy improvements)
+Last updated: 2026-06-13 (SA-19 4-pillar TA scoring; added FAQ — scoring model, multi-style BUY, ML/TA conflict)
 
 ---
 
@@ -11,7 +11,7 @@ Last updated: 2026-06-06 (SA-8 accuracy improvements)
 
 The AI Signal is a **BUY / HOLD / WAIT / SELL** label backed by a **Bullish Probability** (0–100%) and a **Confidence** score (0–100). It fuses two independent layers of analysis:
 
-1. **Technical Analysis (TA)** — nine price-based indicators computed from up to 400 daily bars
+1. **Technical Analysis (TA)** — four independent pillars (Trend, Momentum, Volume, Structure) computed from up to 400 daily bars
 2. **Machine Learning (ML)** — an XGBoost + Random Forest ensemble trained per-symbol on the stock's own history
 
 Both layers produce a single number called the **fused bullish probability** (0–1). That probability is then filtered through style-specific compression factors and converted into a signal label based on the current market regime.
@@ -27,31 +27,45 @@ Every stock carries three signals simultaneously — one per trading style (SHOR
 | **SHORT** | 1 – 5 days | Pure technical momentum. No earnings or news compression. Ideal for volatile stocks where fundamentals don't apply short-term. |
 | **SWING** | 5 – 20 days | Balanced TA + ML. Standard earnings and news filters. Default for most stocks. |
 | **LONG** | 30 – 90 days | Fundamentals-heavy. K-Score boost applied. Strong weekly alignment required. Designed for position trades. |
+| **GROWTH** | 10 – 40 days | Relaxed thresholds designed for high-velocity momentum stocks. Corrects the base TA score for stocks that structurally score lower because of high RSI and missing golden cross — not actual weakness, just growth-name characteristics. Fires BUY more often than SWING by design. |
 
 ### Style profile parameters
 
-| Parameter | SHORT | SWING | LONG |
-|-----------|-------|-------|------|
-| **ML weight cap** | 30% | 75% | 45% |
-| **BUY threshold — bull market** | 0.60 | **0.62** | 0.60 |
-| **BUY threshold — high-vol** | 0.65 | **0.67** | 0.65 |
-| **BUY threshold — bear market** | 0.68 | **0.70** | 0.70 |
-| **HOLD threshold — bull** | 0.46 | 0.50 | 0.46 |
-| **HOLD threshold — bear** | 0.52 | 0.56 | 0.54 |
-| **ADX filter (min trending)** | 25 | **15** | off |
-| **ADX compression** | 0.85× | 0.90× | — |
-| **High-vol compression** | 0.92× | 0.85× | 0.90× |
-| **Breadth compression** | off | 0.90× | 0.92× |
-| **Weekly align boost / compress** | 1.08× / 0.93× | 1.12× / 0.85× | 1.18× / 0.80× |
-| **Earnings compression (≤2d / ≤5d / ≤10d)** | off | 0.50× / 0.75× / 0.90× | off |
-| **News compression (score < 25 / < 35)** | off | 0.75× / 0.85× | off |
-| **RS compression** | 0.90× | 0.85× | 0.80× |
-| **K-Score boost** | off | off | **on** |
-| **Max compression floor** | 0.70 | 0.55 | 0.65 |
+| Parameter | SHORT | SWING | LONG | GROWTH |
+|-----------|-------|-------|------|--------|
+| **ML weight cap** | 30% | 75% | 45% | 70% |
+| **BUY threshold — bull market** | 0.60 | **0.62** | 0.60 | **0.57** |
+| **BUY threshold — high-vol** | 0.65 | **0.67** | 0.65 | 0.65 |
+| **BUY threshold — bear market** | 0.68 | **0.70** | 0.70 | 0.68 |
+| **HOLD threshold — bull** | 0.46 | 0.50 | 0.46 | 0.45 |
+| **HOLD threshold — bear** | 0.52 | 0.56 | 0.54 | 0.52 |
+| **ADX filter (min trending)** | 25 | **15** | off | **12** |
+| **ADX compression** | 0.85× | 0.90× | — | 0.92× |
+| **High-vol compression** | 0.92× | 0.85× | 0.90× | 0.88× |
+| **Breadth compression** | off | 0.90× | 0.92× | 0.95× |
+| **Weekly align boost / compress** | 1.08× / 0.93× | 1.12× / 0.85× | 1.18× / 0.80× | 1.08× / 0.92× |
+| **Weekly RSI gate** | — | applies | applies | **skipped** |
+| **Earnings compression (≤2d / ≤5d / ≤10d)** | off | 0.50× / 0.75× / 0.90× | off | 0.60× / 0.80× / 0.92× |
+| **News compression (score < 25 / < 35)** | off | 0.75× / 0.85× | off | 0.80× / 0.90× |
+| **RS compression** | 0.90× | 0.85× | 0.80× | **off** |
+| **Short squeeze boost** | off | on | off | **on** |
+| **K-Score boost** | off | off | **on** | off |
+| **Max compression floor** | 0.70 | 0.55 | 0.65 | 0.60 |
+| **TA score adjustment** | — | — | — | **+0.10 (SMA20>SMA50), +0.04 (RSI 72–85)** |
 
-**ML weight cap** controls how much the ensemble probability can dominate. SHORT keeps ML at ≤ 30% because short-term price movements are noisier — TA momentum is more actionable. SWING allows ML up to 75% when the model has high AUC. LONG caps ML at 45% to let weekly alignment and K-Score have meaningful weight.
+**ML weight cap** controls how much the ensemble probability can dominate. SHORT keeps ML at ≤ 30% because short-term price movements are noisier — TA momentum is more actionable. SWING allows ML up to 75% when the model has high AUC. LONG caps ML at 45% to let weekly alignment and K-Score have meaningful weight. GROWTH uses 70% to leverage ML on momentum continuation patterns.
 
 **Max compression floor** prevents stacked filters from making a BUY mathematically impossible. If all filters combined would compress the fused probability below this floor, the system restores the probability to the floor before applying thresholds.
+
+**GROWTH TA score adjustment** (`_growth_ta_adjustment`): The base TA score penalises growth stocks for two normal characteristics — RSI above 65 and lacking a golden cross (SMA50 > SMA200). GROWTH corrects this with an additive bonus before fusion:
+- **SMA(20) > SMA(50)**: +0.10 — replaces the SMA50>SMA200 requirement at equal weight; growth names typically trade above their 20-day but haven't crossed the 200-day yet
+- **RSI 72–85**: +0.04 — momentum territory is a feature for growth stocks, not a flaw
+- **RSI 65–72**: +0.02 — mild extra credit beyond the base score
+- Bonus is capped at +0.10 total
+
+**RS compression off** — growth leaders outperform their sector by definition. Penalising them for lagging their peers would systematically suppress exactly the stocks this style is designed to find.
+
+**Weekly RSI gate skipped** — growth stocks frequently show weekly RSI readings that would fail the gate for SWING/LONG. The gate is disabled so high-flying names aren't blocked at the last filter.
 
 ---
 
@@ -60,7 +74,7 @@ Every stock carries three signals simultaneously — one per trading style (SHOR
 ```
 Daily price history (last 400 bars)
          │
-         ├─► Stage 1: TA Score  (9 indicators → probability 0–1)
+         ├─► Stage 1: TA Score  (4 independent pillars → probability 0–1)
          │
          ├─► Stage 2: ML Prediction  (XGBoost + RF ensemble → bullish_probability 0–1)
          │
@@ -82,83 +96,124 @@ Stage 6: Confidence  →  |fused − 0.5| × 200
 
 ## Stage 1 — Technical Analysis Score
 
-The TA score is a weighted sum of nine independent indicators, each scored 0→1 (bearish→bullish). The result is a single probability from 0–1, where 0.5 = perfectly neutral.
+**SA-19 (2026-06-12):** The TA score uses **four independent pillars** — Trend, Momentum, Volume, and Structure. Each pillar is scored 0–1 independently via its best-performing sub-indicator (`max()` rather than a sum). The final TA score is the **mean of the four pillar scores**, ranging from 0–1 where 0.5 = perfectly neutral.
 
-### 1. SMA trend alignment (up to +0.35)
+This replaces the old additive system where nine sub-scores were summed — that design allowed a stock with three correlated trend signals (all measuring the same thing) to outscore a stock with one strong signal per dimension.
 
-| Condition | Score | What it means |
-|-----------|-------|---------------|
-| Price above SMA(50) | +0.15 | Short-term trend is up |
-| SMA(50) above SMA(200) | +0.10 | Medium-term trend is up |
-| Golden cross just fired | +0.10 | SMA(50) crossed above SMA(200) |
-| Death cross just fired | −0.10 | SMA(50) crossed below SMA(200) |
+```
+TA score = mean([p_trend, p_momentum, p_volume, p_structure])
+```
 
-### 2. RSI 14-period (up to +0.15)
+An **active pillar** is one where the pillar score ≥ 0.5. The count of active pillars is used for a gate applied after fusion (see Stage 4 pillar gate below).
+
+---
+
+### Pillar 1 — Trend (0–1)
+
+Measures whether the stock is in a structurally upward trend. A death cross immediately forces this pillar to 0.0, overriding all other conditions.
+
+| Condition | Score |
+|-----------|-------|
+| Death cross just fired | 0.0 (hard override) |
+| Price above SMA(50), or SMA(50) above SMA(200), or trend is bullish | 1.0 |
+| Golden cross just fired with strong volume Z-score | 1.0 |
+| Golden cross just fired (no volume confirmation) | 0.7 |
+| None of the above | 0.0 |
+
+The pillar takes the **max** of all applicable scores — one strong trend condition is enough.
+
+---
+
+### Pillar 2 — Momentum (0–1)
+
+Measures the strength and direction of price momentum from three sub-indicators. The pillar takes the **max** of the three sub-scores before applying overbought penalties.
+
+**RSI sub-score:**
 
 Uses Wilder's exponential smoothing — matches TradingView, Bloomberg, ThinkOrSwim.
 
-| RSI range | Score | Zone |
-|-----------|-------|------|
-| 45–65 | +0.15 | Ideal entry zone |
-| 35–45 | +0.08 | Oversold recovery |
-| 65–72 | +0.06 | Extended but not extreme |
-| > 72 | 0 | Overbought — pullback risk |
-| < 35 | 0 | Extreme oversold — too early |
+| RSI range | Sub-score |
+|-----------|-----------|
+| 45 – 65 | 1.0 — ideal entry zone |
+| 35 – 45 | 0.8 — oversold recovery |
+| 65 – 72 | 0.5 — extended but not extreme |
+| > 72 or < 35 | 0.0 |
 
-### 3. Stochastic RSI (up to +0.10, down to −0.08)
+**MACD sub-score:**
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| Stoch RSI K < 0.20 | +0.10 | RSI at low extreme — potential dip entry |
-| Stoch RSI K just crossed up through 0.20 | +0.05 | Fresh oversold recovery |
-| Stoch RSI K > 0.80 | −0.08 | RSI stretched — upside may be limited |
+| Condition | Sub-score |
+|-----------|-----------|
+| Histogram > 0 AND rising | 1.0 |
+| MACD line just crossed zero from below | 0.9 |
+| Histogram > 0 (not rising) | 0.7 |
+| Otherwise | 0.0 |
 
-### 4. RSI divergence (up to ±0.10)
+**Stochastic RSI sub-score:**
 
-Detected over a 10-bar lookback. Only computed when ≥ 50 bars of history exist.
+| Condition | Sub-score |
+|-----------|-----------|
+| Stoch K < 0.20 (oversold) | 0.8 |
+| Stoch K just crossed up through 0.20 | 0.7 |
+| Otherwise | 0.0 |
 
-| Divergence | Score | What it means |
-|------------|-------|---------------|
-| Bearish: price higher, RSI lower | −0.10 | Momentum fading as price rises |
-| Bullish: price lower, RSI higher | +0.08 | Momentum recovering as price falls |
-| None | 0 | No divergence |
+**Overbought penalties (applied after max):**
 
-### 5. MACD (up to +0.20)
+| Condition | Effect |
+|-----------|--------|
+| Stoch K > 0.80 | p_momentum × 0.5 |
+| RSI ≥ 72 | p_momentum × 0.7 |
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| MACD histogram > 0 AND rising | +0.15 | Momentum accelerating upward |
-| MACD histogram > 0 (not rising) | +0.08 | Upward momentum, but slowing |
-| MACD line just crossed zero from below | +0.05 | Trend-direction confirmation |
+---
 
-### 6. Bollinger Bands %B (up to +0.10)
+### Pillar 3 — Volume (0–1)
 
-| %B | Score | Zone |
-|----|-------|------|
-| 0.20 to 0.80 | +0.10 | Middle zone — not at an extreme |
-| < 0.20 or > 0.80 | 0 | Near band — overextended or breaking down |
+Measures whether institutional money flow confirms price action.
 
-### 7. ADX — trend strength (up to +0.10)
+| Condition | Score |
+|-----------|-------|
+| OBV 10-day avg > OBV 30-day avg (bullish net flow) | 1.0 |
+| Volume Z-score > 0.5σ above 20-day avg | 0.7 |
+| Neither | 0.0 |
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| ADX > threshold AND DI+ > DI− | +0.10 | Strong upward trend |
-| ADX > threshold AND DI+ ≤ DI− | 0 | Strong trend, but downward |
-| ADX ≤ threshold | 0 (compressed) | Ranging — signals less reliable |
+Pillar takes the **max** of the two sub-scores.
 
-ADX threshold: 25 for SHORT, **15 for SWING** (captures early-trend entries), off entirely for LONG.
+---
 
-### 8. OBV (up to +0.10)
+### Pillar 4 — Structure (0–1)
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| OBV 10-day avg > OBV 30-day avg | +0.10 | Net volume flow is bullish |
+Measures price position relative to key structural levels. Below-VWAP applies a penalty regardless of Bollinger position.
 
-### 9. Volume Z-score (up to +0.05)
+| Condition | Score |
+|-----------|-------|
+| Price above VWAP | 1.0 |
+| VWAP unavailable | 0.4 |
+| Price below VWAP | 0.0 |
+| Bollinger %B in 0.20–0.80 range | 0.8 (sub-score) |
+| Bollinger %B outside that range | 0.0 (sub-score) |
 
-| Condition | Score | Signal |
-|-----------|-------|--------|
-| Volume > 0.5σ above 20-day average | +0.05 | Above-average participation |
+Pillar takes `max(VWAP score, BB score)`. If price is below VWAP, an additional −0.15 penalty is applied to the result (floored at 0.0).
+
+---
+
+### Pillar gate (applied in Stage 4, after fusion)
+
+After the TA and ML scores are fused, the active pillar count gates the result:
+
+| Active pillars | Effect |
+|----------------|--------|
+| 0 or 1 | Fused score compressed 15% toward 0.5 |
+| 2 or 3 | No change |
+| 4 (all pillars strong) | Fused score + 0.03 boost |
+
+This prevents a single dominant pillar (e.g., a very strong trend with weak momentum/volume/structure) from generating a BUY unilaterally.
+
+---
+
+### RSI Divergence — **DISABLED**
+
+> RSI divergence detection (`rsi_divergence`) was part of the original indicator set but is **currently disabled** in the engine. The function always returns `"none"` and applies no score adjustment. It may be re-enabled in a future update with a more robust pivot-high/low detection algorithm.
+
+The `rsi_divergence` key still appears in signal `reasons` dictionaries (as `"none"`) for schema compatibility.
 
 ---
 
@@ -177,6 +232,7 @@ The horizon varies by trading style — predictions are trained on data that mat
 | SHORT | 5 trading days | Matches the 1–5 day intended hold |
 | SWING | 10 trading days | Matches the 1–4 week intended hold |
 | LONG | 20 trading days | Matches the 1–3 month intended hold |
+| GROWTH | 10 trading days | Same window as SWING; model trained separately so it learns the momentum-continuation pattern for high-RSI names rather than the mean-reversion signal SWING learns |
 
 ```
 label = 1  if forward_return_N > threshold
@@ -617,6 +673,64 @@ All SHORT conditions, plus:
 3. ML probability > 65% — multi-week pattern recognised
 4. RS score above sector median — stock is outperforming peers
 5. No earnings in next 30 days (no compression)
+
+### GROWTH — highest conviction
+
+1. SMA(20) > SMA(50) — short-term momentum trend intact (replaces golden cross requirement)
+2. RSI 65–80 — momentum territory, not a flaw for growth names
+3. MACD histogram positive and rising — momentum accelerating
+4. Short interest ≥ 20% — squeeze potential amplifies bullish move
+5. ML probability > 65% — momentum-continuation model agrees
+6. Volume Z-score > 1.0 — above-average institutional participation
+7. No earnings in next 10 days (compression applied within that window)
+
+Note: GROWTH skips the weekly RSI gate and RS compression — growth leaders outperform their sector by definition and often have elevated weekly RSI as a structural feature.
+
+---
+
+## Reading the signal — common questions
+
+### "Not all indicators are green but the signal is still BUY. How?"
+
+This is the most common point of confusion. The AI Signal is **not a vote counter** — it is a **weighted continuous score**.
+
+Every indicator contributes a sub-score (0–1) that is multiplied by its weight and summed into the TA composite. Even if 4 of 10 displayed indicators are amber or red, the remaining 6 can outweigh them. The TA composite then gets blended with the ML model output, which is the dominant force when the model has a high AUC.
+
+**Example — ARMK:**
+
+| Layer | Value | Weight | Contribution |
+|-------|-------|--------|-------------|
+| Trend (SMA50 above SMA200, uptrend) | 1.0 | 25% | 0.25 |
+| Momentum (RSI 67 extended but not extreme) | 0.5 | 25% | 0.125 |
+| Volume (OBV confirming direction) | 1.0 | 25% | 0.25 |
+| Structure (above VWAP, at resistance) | 0.7 | 25% | 0.175 |
+| **TA composite** | | | **0.75** |
+| ML ensemble (84% bullish, 68.2% confident) | 0.84 | 70%+ | heavy pull |
+| **Fused result** | | | **~0.84** |
+| At Resistance compression | −15% toward neutral | | ~0.79 |
+| **Final fused** | | | **~0.79 → BUY** |
+
+MACD histogram at −0.21 is bearish-but-recovering: it contributes **0.0 to the momentum pillar sub-score** (histogram negative), but the RSI (45–65 range scores 1.0) takes the `max()` of all momentum sub-scores — so momentum pillar still passes. One passing sub-indicator per pillar is enough.
+
+"At Resistance" applies a **15% compression toward neutral** (`fused = 0.5 + (fused−0.5) × 0.85`) — it is a headwind, not a blocker. The signal is aware of resistance; that's why the UI says "signal compressed 15%."
+
+### "Why do all four styles show BUY simultaneously?"
+
+Each style runs its own independent calculation with different weights, thresholds, and ML models. All four can reach BUY when:
+
+1. The underlying stock is genuinely strong (strong trend, ML agreement, weekly alignment) — the raw fused score clears every style's threshold even before style-specific boosts.
+2. Regime is `bull` — all four styles use their lowest (easiest) thresholds.
+3. No per-style penalty applies — ARMK is 59 days from earnings (SWING earnings compression starts at 10 days), no negative news, ADX 38 (well above the trending threshold).
+
+The four confidence percentages differ because ML weight caps differ and TA adjustments differ per style (e.g., GROWTH adds +0.04 for RSI in momentum territory; LONG adds a K-Score boost if applicable).
+
+### "If all indicators were green would confidence be 100%?"
+
+No. Confidence is `|fused − 0.5| × 200`, which maxes at 100% only when `fused = 1.0`. Filters (weekly alignment at 1.12×, breadth, regime) boost the fused score toward 1.0 but never reach it in practice. A real 84% confidence (fused ≈ 0.92) represents an unusually strong setup — it means every filter pushed in the same direction with nothing compressing the result.
+
+### "The ML model disagrees with the TA score — what happens?"
+
+If the gap between `ml_probability` and `ta_prob` exceeds 35 percentage points, the ML weight is reduced by up to 25% (ML/TA conflict dampening). The signal won't ignore either layer — it just gives less trust to whichever one is the outlier. `reasons["ml_ta_conflict"] = true` will appear in the reasons panel. When this flag is set, treat the signal with extra skepticism regardless of the final label.
 
 ---
 

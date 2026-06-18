@@ -9,7 +9,7 @@
  * 1. My Stocks (my_stocks)
  *    Single AI call. Passes all tracked stocks in the selected market that have
  *    a BUY/HOLD signal, along with their K-Score, RSI, MACD, SMA position, and
- *    latest price. AI returns the top 10 swing picks ranked by predicted gain.
+ *    latest price. AI returns the top 30 swing picks ranked by predicted gain.
  *
  * 2. Broad Screen (broad_screen) — two-pass flow
  *    Pass 1 — SYSTEM_TICKERS prompt:
@@ -78,7 +78,7 @@ const CONF_STYLE = {
 
 // ── AI prompts ───────────────────────────────────────────────────────────────
 
-const SYSTEM_PICKS = `You are a professional swing trader. Analyze the stock data provided and pick the top 10 swing trade candidates for the next 10 business days.
+const SYSTEM_PICKS = `You are a professional swing trader. Analyze the stock data provided and pick the top 30 swing trade candidates for the next 10 business days.
 
 Return ONLY a raw JSON array — no markdown, no text, start immediately with [
 
@@ -105,13 +105,13 @@ function buildPicksPrompt(
         return `${s.symbol} | ${market === 'HK' ? 'HK$' : '$'}${s.price.toFixed(2)} ${s.change_pct != null ? `(${s.change_pct >= 0 ? '+' : ''}${s.change_pct.toFixed(1)}%)` : ''} | RSI:${s.rsi ?? '?'} | SMA20:${sma} | Vol:${s.vol_ratio != null ? s.vol_ratio.toFixed(1) + 'x' : '?'} | 5d:${s.change_5d != null ? (s.change_5d >= 0 ? '+' : '') + s.change_5d.toFixed(1) + '%' : '?'}`;
       })
       .join('\n');
-    return `Pick top 10 swing trades (10-day horizon) from these ${market} stocks. Prices are in ${currency}. Prefer: RSI 42-65, above SMA20, vol_ratio >1.0, positive 5d momentum. SYMBOL | PRICE | RSI | ABOVE_SMA20 | VOL_RATIO | 5D_CHG\n${rows}\n\nReturn JSON array now. Use ${currency} prices in entry_low, entry_high, stop_loss, take_profit fields.`;
+    return `Pick top 30 swing trades (10-day horizon) from these ${market} stocks. Prices are in ${currency}. Prefer: RSI 42-65, above SMA20, vol_ratio >1.0, positive 5d momentum. SYMBOL | PRICE | RSI | ABOVE_SMA20 | VOL_RATIO | 5D_CHG\n${rows}\n\nReturn JSON array now. Use ${currency} prices in entry_low, entry_high, stop_loss, take_profit fields.`;
   }
 
   const rows = (stocks as { symbol: string; price: string; signal: string; conf: string; bull: string; kscore: string; tech: string; mom: string; sector: string }[])
     .map(s => `${s.symbol} | ${s.price} | ${s.signal} | conf:${s.conf} | bull:${s.bull} | K:${s.kscore} | tech:${s.tech} | mom:${s.mom} | ${s.sector}`)
     .join('\n');
-  return `Pick top 10 swing trades from these tracked ${market} stocks (10-day horizon). Prices in ${currency}. SYMBOL | PRICE | SIGNAL | CONF | BULL_PROB | K-SCORE | TECH | MOM | SECTOR\n${rows}\n\nReturn JSON array now. Use ${currency} prices in entry_low, entry_high, stop_loss, take_profit fields.`;
+  return `Pick top 30 swing trades from these tracked ${market} stocks (10-day horizon). Prices in ${currency}. SYMBOL | PRICE | SIGNAL | CONF | BULL_PROB | K-SCORE | TECH | MOM | SECTOR\n${rows}\n\nReturn JSON array now. Use ${currency} prices in entry_low, entry_high, stop_loss, take_profit fields.`;
 }
 
 function buildMyStocksData(
@@ -158,18 +158,18 @@ Criteria:
 Return ONLY a JSON array of HKEX ticker strings: ["0700.HK","9988.HK","3690.HK","9999.HK","1810.HK","2318.HK"]`;
   }
 
-  return `List 65 US stock tickers that are good swing trading candidates right now.
+  return `List 100 US stock tickers that are good swing trading candidates right now.
 
 Criteria:
-- Share price roughly $${priceMin} to $${priceMax}
+- Share price MUST be strictly between $${priceMin} and $${priceMax} — do NOT include any ticker priced below $${priceMin} or above $${priceMax}
 - Small to mid-cap companies ($200M – $15B market cap)
 - Sectors with momentum: Technology, Healthcare, Biotech, Energy, Fintech, Consumer, Industrials, Defense, AI/ML
 - Companies with recent catalysts: earnings beats, product launches, sector rotation, analyst upgrades
 - Active traders, liquid (not thinly traded)
-- NOT mega-caps (no AAPL, MSFT, GOOGL, AMZN, NVDA, TSLA, META)
-- NOT penny stocks under $2
+- NOT mega-caps (no AAPL, MSFT, GOOGL, AMZN, NVDA, TSLA, META)${priceMin >= 2 ? '' : '\n- NOT penny stocks under $1'}
 
 Include a mix of: small caps with momentum, sector leaders in their niche, recent breakout candidates.
+Remember: ALL tickers must have a current stock price between $${priceMin} and $${priceMax}.
 
 Return ONLY a JSON array of ticker strings: ["SOFI","HOOD","DKNG","PLTR","AI","RXRX","DOCS","OPEN","IONQ","BBAI"]`;
 }
@@ -279,12 +279,12 @@ export default function ForecastPage() {
     // Step 2: fetch real data from yfinance
     addStep(`Fetching live data for ${tickers.length} tickers via yfinance…`);
     const scanned = await api.quickScan(tickers, priceRange.min || undefined, priceRange.max >= 9999 ? undefined : priceRange.max);
-    if (scanned.length === 0) throw new Error('No stocks passed the price filter. Try a wider range.');
+    if (scanned.length === 0) throw new Error(`No stocks passed the $${priceRange.min}–$${priceRange.max} price filter. The AI suggested ${tickers.length} tickers but none currently trade in this range. Try a different range or run again.`);
     setScanCount(scanned.length);
     completeLastStep();
 
     // Step 3: pass real data to AI for picks
-    addStep(`Analysing ${scanned.length} stocks for top 10 swing setups…`);
+    addStep(`Analysing ${scanned.length} stocks for top 30 swing setups…`);
     const picksRaw = await askAI(
       [{ role: 'user', content: buildPicksPrompt(scanned, market) }],
       SYSTEM_PICKS, 4096, 0,

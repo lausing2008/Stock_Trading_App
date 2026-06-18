@@ -1,12 +1,13 @@
-"""Feature engineering — 34 features (26 stock-specific + 8 macro).
+"""Feature engineering — 44 features (28 stock-specific + 8 macro + 8 fundamental).
 
-26 stock-specific:
+28 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
   Volatility: vol_20, vol_60, atr_14_pct, atr_ratio
   Trend     : sma_20_gap, sma_50_gap, sma_100_gap, sma_200_gap
   Oscillators: rsi_14, macd, macd_signal, macd_hist, bb_pct, stoch_k
   Volume    : volume_z, obv_z, cmf_20
   Range     : high_20_pct, dist_52w_high, dist_52w_low
+  Weekly    : weekly_rsi, weekly_trend  (SA-29 — longer-term regime context)
 
 8 macro (market-wide context):
   spy_ret_1, spy_ret_5  — S&P 500 short-term direction
@@ -16,6 +17,16 @@
   vix_spiking           — 1 if VIX > 20d MA × 1.3 (sudden fear spike)
   high_vol_regime       — 1 if spy_vol_20 > 2% annualised daily vol
   market_stress         — 1 if SPY 5d return < -3% AND VIX above its MA
+
+8 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
+  revenue_growth        — YoY revenue growth rate
+  earnings_growth       — YoY EPS growth rate
+  gross_margin          — gross profit margin
+  return_on_equity      — ROE (net income / book equity)
+  fcf_yield             — free cash flow / market cap (value quality signal)
+  short_ratio           — days-to-cover (short interest / avg daily volume)
+  recommendation_mean   — analyst consensus (1=strong buy … 5=strong sell)
+  price_to_book         — P/B ratio (value factor)
 
 Label: binary BUY / SELL only — rows where |fwd_ret| < label_threshold are
 excluded from training (dead zone). This removes noise-level moves that are
@@ -35,6 +46,24 @@ MACRO_COLUMNS = [
     "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
 ]
 
+FUNDAMENTAL_COLUMNS = [
+    "revenue_growth",       # YoY revenue growth rate
+    "earnings_growth",      # YoY EPS growth rate
+    "gross_margin",         # gross profit / revenue
+    "return_on_equity",     # net income / book equity
+    "fcf_yield",            # free cash flow / market cap
+    "short_ratio",          # days-to-cover (short interest / avg daily vol)
+    "recommendation_mean",  # 1=strong buy … 5=strong sell
+    "price_to_book",        # P/B ratio
+]
+
+# SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with
+# short history (<15 weekly bars) are not excluded from training entirely.
+WEEKLY_COLUMNS = [
+    "weekly_rsi",    # 14-week RSI; <40=oversold, >70=overbought on weekly timeframe
+    "weekly_trend",  # +1 if price > 10-week SMA by >1%, -1 if below by >1%, else 0
+]
+
 FEATURE_COLUMNS = [
     # Momentum
     "ret_1", "ret_5", "ret_10", "ret_20", "ret_60",
@@ -52,10 +81,14 @@ FEATURE_COLUMNS = [
     "high_20_pct",
     "dist_52w_high",       # breakout proximity; momentum strength signal
     "dist_52w_low",        # bounce proximity; mean-reversion/support signal
+    # Weekly context (SA-29) — longer-term regime; NaN-allowed for short histories
+    *WEEKLY_COLUMNS,
     # Macro — raw
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Macro — regime boolean flags
     "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
+    # Fundamentals — static per stock, broadcast to all price rows
+    *FUNDAMENTAL_COLUMNS,
 ]
 
 
@@ -189,6 +222,7 @@ def build_features(
     macro_df: pd.DataFrame | None = None,
     label_threshold: float = 0.01,
     inference_mode: bool = False,
+    fund_data: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (X, y_direction, y_return).
 
@@ -198,6 +232,11 @@ def build_features(
 
     inference_mode=True: skip label/dead-zone filtering so the latest bar (no
     known future return) is included in X for real-time prediction.
+
+    fund_data: dict mapping FUNDAMENTAL_COLUMNS names to scalar floats.
+    Values are broadcast to every row in X (fundamentals change quarterly;
+    using the most-recent snapshot as a static signal is standard practice).
+    Missing keys default to NaN — XGBoost handles NaN natively.
     """
     out = pd.DataFrame(index=df.index)
     c = df["close"].astype(float)
@@ -281,6 +320,26 @@ def build_features(
     out["dist_52w_high"] = (c - high252) / high252.replace(0, np.nan)
     out["dist_52w_low"]  = (c - low252)  / low252.replace(0, np.nan)
 
+    # --- Weekly technicals (SA-29) ---
+    # Resample to weekly (Friday closes). Each daily bar forward-fills from the most
+    # recent completed week (no look-ahead: Mon–Thu see last Friday's RSI; Friday sees
+    # the current Friday's RSI which is end-of-day, so still valid).
+    _ts_idx = pd.to_datetime(df["ts"]).dt.normalize()
+    _close_ts = pd.Series(c.values, index=_ts_idx)
+    _wclose = _close_ts.resample("W-FRI").last().dropna()
+    if len(_wclose) >= 15:
+        _wrsi     = _rsi(_wclose, w=14)
+        _wsma10   = _wclose.rolling(10, min_periods=5).mean()
+        _wtrend_r = (_wclose / _wsma10.replace(0, np.nan) - 1)
+        _wrsi_d   = _wrsi.reindex(_ts_idx).ffill().values
+        _wtrend_d = _wtrend_r.reindex(_ts_idx).ffill().values
+        out["weekly_rsi"]   = _wrsi_d
+        out["weekly_trend"] = np.where(_wtrend_d > 0.01, 1.0,
+                              np.where(_wtrend_d < -0.01, -1.0, 0.0))
+    else:
+        out["weekly_rsi"]   = np.nan
+        out["weekly_trend"] = np.nan
+
     # --- Macro features (market-wide context) ---
     # Date keys are "YYYY-MM-DD" strings to avoid timezone issues
     dates = pd.to_datetime(df["ts"]).dt.strftime("%Y-%m-%d")
@@ -301,10 +360,17 @@ def build_features(
     # In inference mode also backward-fill so the latest bar is never NaN
     if inference_mode:
         for col in MACRO_COLUMNS:
-            out[col] = out[col].bfill().fillna(0.0)
+            out[col] = out[col].ffill().fillna(0.0)
     else:
         for col in MACRO_COLUMNS:
             out[col] = out[col].fillna(0.0)
+
+    # --- Fundamental features (static per stock — broadcast from most-recent snapshot) ---
+    # XGBoost handles NaN natively; models trained before this data exists will
+    # see NaN for all fundamental columns and learn to ignore them gracefully.
+    for col in FUNDAMENTAL_COLUMNS:
+        val = (fund_data or {}).get(col)
+        out[col] = float(val) if val is not None else np.nan
 
     # --- Target ---
     fwd_ret = c.shift(-horizon) / c - 1
@@ -314,12 +380,18 @@ def build_features(
 
     X = out[FEATURE_COLUMNS].replace([np.inf, -np.inf], np.nan)
 
+    # Fundamental and weekly columns are NaN-allowed — XGBoost handles NaN natively.
+    # Require only the core daily features to be non-null so rows aren't discarded
+    # when fundamentals are absent or history is too short for weekly bars.
+    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS)
+    _required = [c for c in FEATURE_COLUMNS if c not in _nan_ok]
+
     if inference_mode:
         # Keep all rows with valid features; label/dead-zone filtering skipped
-        mask = X.notna().all(axis=1)
+        mask = X[_required].notna().all(axis=1)
     else:
         # Training: exclude dead-zone rows (|fwd_ret| < threshold) — only clear signals
         outside_deadzone = fwd_ret.abs() >= label_threshold
-        mask = X.notna().all(axis=1) & fwd_ret.notna() & outside_deadzone
+        mask = X[_required].notna().all(axis=1) & fwd_ret.notna() & outside_deadzone
 
     return X[mask], y_dir[mask], fwd_ret[mask]

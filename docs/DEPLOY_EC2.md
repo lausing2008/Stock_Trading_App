@@ -324,6 +324,17 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
+    # Research report generation calls Claude (up to 90s) — must come before /api/ catch-all
+    location /api/research/ {
+        rewrite ^/api/(.*) /$1 break;
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_read_timeout 200s;
+        proxy_send_timeout 200s;
+    }
+
     # AI endpoints can take up to 120s — must be listed before the catch-all
     location /api/ai/ {
         proxy_pass         http://127.0.0.1:3000;
@@ -380,6 +391,25 @@ curl -s -X POST http://localhost:8000/admin/ingest \
   -H "Content-Type: application/json" \
   -d '{"symbols": ["AAPL","TSLA","NVDA","0700.HK"]}' | python3 -m json.tool
 ```
+
+### Run DB migrations
+
+Run once after first deploy (and after any upgrade of an existing instance):
+
+```bash
+# From project root on the server
+bash scripts/migrations/run_migrations.sh
+```
+
+Migrations are idempotent — safe to re-run. On a fresh instance, migrations 001 and
+002 are no-ops (columns already created by `create_all()`). Migration 003 (portfolio
+config fix) must run on every instance.
+
+> **What each migration does:**
+> - `001` — adds `sector` column to `paper_trades` (back-fills from stocks table)
+> - `002` — adds `signal_at_exit_id`/`signal_at_exit_type` to `paper_trades`
+> - `003` — corrects paper portfolio config scale values: `risk_per_trade_pct=0.01`,
+>   `max_position_pct=0.10`, `max_hold_days=60`
 
 Visit `https://stockai.yourdomain.com` — it should load over HTTPS.
 

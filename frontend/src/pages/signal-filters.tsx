@@ -1,8 +1,8 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SuppressedSignalRow } from '@/lib/api';
+import { api, type SuppressedSignalRow, type ResearchAlignmentBand } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 // ── Static config ─────────────────────────────────────────────────────────────
@@ -196,6 +196,58 @@ function SummaryBar({ rows }: { rows: SuppressedSignalRow[] }) {
   );
 }
 
+// Research alignment win-rate panel (INT-8 data)
+const ALIGN_CONFIG: { key: 'aligned' | 'partial' | 'divergent' | 'no_research'; label: string; color: string; tip: string }[] = [
+  { key: 'aligned',     label: 'Aligned',     color: '#22c55e', tip: 'Signal BUY + research BUY/STRONG BUY — both agree' },
+  { key: 'partial',     label: 'Partial',      color: '#f59e0b', tip: 'Signal BUY + research WATCH — cautious alignment' },
+  { key: 'divergent',   label: 'Divergent',    color: '#ef4444', tip: 'Signal BUY + research AVOID/SELL — disagreement' },
+  { key: 'no_research', label: 'No research',  color: '#64748b', tip: 'No research report available at signal time' },
+];
+
+function ResearchAlignmentPanel({
+  data,
+}: {
+  data: Partial<Record<string, ResearchAlignmentBand>> | undefined;
+}) {
+  if (!data || Object.keys(data).length === 0) return null;
+  const hasAny = ALIGN_CONFIG.some(c => data[c.key]?.count);
+  if (!hasAny) return null;
+
+  return (
+    <div style={{
+      marginBottom: 16, padding: '10px 14px', background: '#0b1420',
+      borderRadius: 10, border: '1px solid #1e293b',
+    }}>
+      <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        Research alignment win-rates (90d BUY outcomes)
+      </p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {ALIGN_CONFIG.map(({ key, label, color, tip }) => {
+          const band = data[key];
+          if (!band?.count) return null;
+          const wr = band.win_rate != null ? Math.round(band.win_rate * 100) : null;
+          const ret = band.avg_return_pct;
+          return (
+            <div key={key} title={tip} style={{
+              padding: '6px 12px', borderRadius: 8, cursor: 'help',
+              background: `${color}12`, border: `1px solid ${color}33`,
+              display: 'flex', flexDirection: 'column', gap: 2, minWidth: 110,
+            }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: wr != null ? (wr >= 55 ? '#22c55e' : wr >= 45 ? '#f59e0b' : '#ef4444') : '#475569' }}>
+                {wr != null ? `${wr}%` : '—'}
+              </span>
+              <span style={{ fontSize: 10, color: '#475569' }}>
+                {band.count} signals{ret != null ? ` · ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% avg` : ''}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SignalFiltersPage() {
@@ -216,10 +268,47 @@ export default function SignalFiltersPage() {
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('suppression_count');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [copied, setCopied] = useState(false);
+
+  const urlReady = useRef(false);
+
+  // Restore filter state from URL on initial load (runs once when router is ready)
+  useEffect(() => {
+    if (!router.isReady || urlReady.current) return;
+    urlReady.current = true;
+    const q = router.query;
+    if (q.style && STYLES.includes(q.style as typeof STYLES[number])) setStyle(q.style as string);
+    if (q.sig && SIGNAL_OPTS.includes(q.sig as typeof SIGNAL_OPTS[number])) setSigFilter(q.sig as string);
+    if (q.cond) setCondFilters(new Set((q.cond as string).split(',').filter(Boolean) as CondKey[]));
+    if (q.sup === '1') setOnlySuppressed(true);
+    if (q.search) setSearch(q.search as string);
+    if (q.sort) setSortKey(q.sort as SortKey);
+    if (q.dir === 'asc' || q.dir === 'desc') setSortDir(q.dir as 'asc' | 'desc');
+  }, [router.isReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync filter state → URL whenever filters change (shallow replace = no history entry)
+  useEffect(() => {
+    if (!urlReady.current) return;
+    const q: Record<string, string> = {};
+    if (style !== 'SWING') q.style = style;
+    if (sigFilter !== 'ALL') q.sig = sigFilter;
+    if (condFilters.size > 0) q.cond = [...condFilters].join(',');
+    if (onlySuppressed) q.sup = '1';
+    if (search) q.search = search;
+    if (sortKey !== 'suppression_count') q.sort = sortKey;
+    if (sortDir !== 'desc') q.dir = sortDir;
+    router.replace({ pathname: router.pathname, query: q }, undefined, { shallow: true });
+  }, [style, sigFilter, condFilters, onlySuppressed, search, sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data, isLoading, error, mutate } = useSWR(
     authed ? ['suppressed', style] : null,
     () => api.suppressedSignals(style),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: outcomesSummary } = useSWR(
+    authed ? ['outcomes-summary', style] : null,
+    () => api.outcomesSummary(style, 90),
     { revalidateOnFocus: false },
   );
 
@@ -288,15 +377,56 @@ export default function SignalFiltersPage() {
             All active stocks with suppression conditions from the latest signal. Hover dots for descriptions. Click headers to sort.
           </p>
         </div>
-        <button
-          onClick={() => mutate()}
-          style={{
-            padding: '7px 16px', borderRadius: 8, border: '1px solid #1e293b',
-            background: '#0b1420', color: '#94a3b8', cursor: 'pointer', fontSize: 12,
-          }}
-        >
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => {
+              if (!rows.length) return;
+              const headers = ['Symbol','Name','Market','Signal','Horizon','Confidence','Bullish%','RSI','Weekly RSI','ADX','RS Score','Breadth%','Days to Earnings','Suppression Count','Regime'];
+              const csvRows = rows.map(r => [
+                r.symbol, r.name, '', r.signal, r.horizon,
+                r.confidence?.toFixed(1) ?? '',
+                r.bullish_probability != null ? (r.bullish_probability * 100).toFixed(1) : '',
+                r.rsi?.toFixed(1) ?? '', r.weekly_rsi?.toFixed(1) ?? '',
+                r.adx?.toFixed(1) ?? '', r.rs_score?.toFixed(1) ?? '',
+                r.breadth_pct?.toFixed(1) ?? '', r.days_to_earnings ?? '',
+                r.suppression_count, r.market_regime ?? '',
+              ].map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','));
+              const csv = [headers.join(','), ...csvRows].join('\n');
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+              a.download = `signal-filters-${new Date().toISOString().slice(0,10)}.csv`;
+              a.click();
+            }}
+            style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #1e293b', background: '#0b1420', color: '#64748b', cursor: 'pointer', fontSize: 12 }}
+          >
+            ↓ CSV
+          </button>
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(window.location.href).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              });
+            }}
+            style={{
+              padding: '7px 14px', borderRadius: 8, border: '1px solid #1e293b',
+              background: copied ? '#0f2a1a' : '#0b1420',
+              color: copied ? '#22c55e' : '#64748b', cursor: 'pointer', fontSize: 12,
+              transition: 'color 0.2s, background 0.2s',
+            }}
+          >
+            {copied ? '✓ Copied' : '🔗 Copy link'}
+          </button>
+          <button
+            onClick={() => mutate()}
+            style={{
+              padding: '7px 16px', borderRadius: 8, border: '1px solid #1e293b',
+              background: '#0b1420', color: '#94a3b8', cursor: 'pointer', fontSize: 12,
+            }}
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Stat pills */}
@@ -406,6 +536,9 @@ export default function SignalFiltersPage() {
           </button>
         )}
       </div>
+
+      {/* Research alignment win-rates */}
+      <ResearchAlignmentPanel data={outcomesSummary?.by_research_alignment} />
 
       {/* Summary bar */}
       {data && <SummaryBar rows={rows} />}
@@ -519,12 +652,30 @@ export default function SignalFiltersPage() {
                       </span>
                     </td>
 
-                    {/* Signal badge */}
+                    {/* Signal badge + SA-19 pillar mini-bars */}
                     <td style={TD}>
                       <span style={{
                         padding: '2px 8px', borderRadius: 5, fontSize: 11, fontWeight: 700,
                         background: sigColor + '22', color: sigColor, border: `1px solid ${sigColor}44`,
                       }}>{row.signal}</span>
+                      {row.pillar_trend != null && (
+                        <span
+                          style={{ display: 'flex', gap: 3, marginTop: 3, alignItems: 'center' }}
+                          title={`Pillars (SA-19): Trend ${(row.pillar_trend*100).toFixed(0)}% · Momentum ${((row.pillar_momentum??0)*100).toFixed(0)}% · Volume ${((row.pillar_volume??0)*100).toFixed(0)}% · Structure ${((row.pillar_structure??0)*100).toFixed(0)}%`}
+                        >
+                          {(['T','M','V','S'] as const).map((lbl, i) => {
+                            const v = [row.pillar_trend, row.pillar_momentum, row.pillar_volume, row.pillar_structure][i] ?? 0;
+                            const c = v >= 0.7 ? '#22c55e' : v >= 0.4 ? '#f59e0b' : '#475569';
+                            return (
+                              <span key={lbl} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                                <span style={{ width: 14, height: Math.round(v * 12) + 2, background: c, borderRadius: 2, minHeight: 2 }} />
+                                <span style={{ fontSize: 8, color: c, lineHeight: 1 }}>{lbl}</span>
+                              </span>
+                            );
+                          })}
+                          <span style={{ fontSize: 9, color: '#64748b', marginLeft: 2 }}>{row.pillars_active ?? 0}/4</span>
+                        </span>
+                      )}
                     </td>
 
                     {/* Alert / conviction gate */}

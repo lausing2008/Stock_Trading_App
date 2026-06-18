@@ -1,23 +1,37 @@
 """Shared JWT verification helper — usable by any service that has python-jose."""
+import time as _time
+
 from fastapi import Header, HTTPException
 
 from common.config import get_settings
+from common.redis_client import get_redis
 
 _settings = get_settings()
 _ALGORITHM = "HS256"
 _BLACKLIST_PREFIX = "auth:blacklist:"
 
+_BLACKLIST_MEM: dict[str, float] = {}   # jti → expiry unix timestamp
+_BLACKLIST_MEM_TTL = 3600               # 1 hour
+
 
 def _check_blacklist(jti: str) -> bool:
-    """Return True if the token JTI has been revoked. Fails open if Redis unavailable."""
+    """Return True if the token JTI has been revoked. Fail-closed for known-revoked JTIs even when Redis is down."""
     if not jti:
         return False
+    now = _time.time()
+    exp = _BLACKLIST_MEM.get(jti)
+    if exp is not None and exp > now:
+        return True
     try:
-        import redis as redis_lib
-        r = redis_lib.from_url(_settings.redis_url, decode_responses=True, socket_connect_timeout=1)
-        return bool(r.exists(f"{_BLACKLIST_PREFIX}{jti}"))
+        revoked = bool(get_redis().exists(f"{_BLACKLIST_PREFIX}{jti}"))
+        if revoked:
+            _BLACKLIST_MEM[jti] = now + _BLACKLIST_MEM_TTL
+            if len(_BLACKLIST_MEM) > 2000:
+                _BLACKLIST_MEM.clear()
+        return revoked
     except Exception:
-        return False
+        # Redis unavailable — rely on in-memory cache; unknown JTIs fail-open
+        return exp is not None and exp > now
 
 
 def get_current_username(authorization: str | None = Header(default=None)) -> str:

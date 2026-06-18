@@ -797,7 +797,7 @@ export default function SignalAccuracyPage() {
     setAuthed(true);
   }, [router]);
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward' | 'outcomes' | 'decay'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'walkforward' | 'outcomes' | 'decay' | 'ic' | 'attribution' | 'filter-audit'>('overview');
   const [lookback, setLookback] = useState(90);
   const [filterSymbol, setFilterSymbol] = useState('');
   const [signalFilter, setSignalFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
@@ -840,6 +840,28 @@ export default function SignalAccuracyPage() {
   const { data: rollingData } = useSWR(
     authed ? 'rolling-accuracy' : null,
     () => api.rollingAccuracy(30, 180),
+    { revalidateOnFocus: false },
+  );
+
+  const [icHorizon, setIcHorizon] = useState('SWING');
+  const { data: icData } = useSWR(
+    authed && activeTab === 'ic' ? ['ic', icHorizon] : null,
+    () => api.informationCoefficient(icHorizon, 365),
+    { revalidateOnFocus: false },
+  );
+
+  const [attrHorizon, setAttrHorizon] = useState('SWING');
+  const { data: attrData } = useSWR(
+    authed && activeTab === 'attribution' ? ['factor-attribution', attrHorizon] : null,
+    () => api.factorAttribution(attrHorizon, 365, 10),
+    { revalidateOnFocus: false },
+  );
+
+  const [faStyle, setFaStyle] = useState('SWING');
+  const [faHold, setFaHold] = useState(10);
+  const { data: filterAuditData } = useSWR(
+    authed && activeTab === 'filter-audit' ? ['filter-audit', faStyle, faHold, lookback] : null,
+    () => api.filterAudit(lookback, faStyle, faHold),
     { revalidateOnFocus: false },
   );
 
@@ -912,7 +934,7 @@ export default function SignalAccuracyPage() {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #1e293b', paddingBottom: 0 }}>
-        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward'], ['outcomes', 'Outcomes'], ['decay', 'Alpha Decay']] as const).map(([tab, label]) => (
+        {([['overview', 'Overview'], ['walkforward', 'Walk-Forward'], ['outcomes', 'Outcomes'], ['decay', 'Alpha Decay'], ['ic', 'IC Score'], ['attribution', 'Factor Attribution'], ['filter-audit', 'Filter Audit']] as const).map(([tab, label]) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             style={{ padding: '7px 18px', borderRadius: '6px 6px 0 0', fontSize: 13, fontWeight: 500, cursor: 'pointer',
               border: '1px solid', borderBottom: activeTab === tab ? '1px solid #0f172a' : '1px solid transparent',
@@ -1060,6 +1082,262 @@ export default function SignalAccuracyPage() {
               <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
                 ℹ️ Outcomes use fixed hold windows: SHORT=7d, SWING=14d, LONG=28d. Entry = first close ≥ signal date. Exit = first close ≥ entry + hold days.
                 Once SWING outcomes exceed 500, run Optuna on signal parameters — see SIGNAL_ACCURACY.md for the tuning workflow.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'ic' && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#64748b' }}>Horizon:</span>
+            {(['SHORT', 'SWING', 'LONG'] as const).map(h => (
+              <button key={h} onClick={() => setIcHorizon(h)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: '1px solid', borderColor: icHorizon === h ? '#6366f1' : '#1e293b',
+                  background: icHorizon === h ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: icHorizon === h ? '#818cf8' : '#64748b' }}>{h}</button>
+            ))}
+          </div>
+          {!icData ? (
+            <div style={{ color: '#475569', textAlign: 'center', padding: 40 }}>Loading IC data…</div>
+          ) : icData.message || !icData.monthly_ic?.length ? (
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 24, textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>📈</div>
+              <div style={{ color: '#64748b', fontSize: 13 }}>{icData.message || 'Not enough data yet'}</div>
+              <div style={{ color: '#334155', fontSize: 11, marginTop: 8 }}>IC requires at least 5 BUY signals with evaluated outcomes per month.</div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                {[
+                  { label: 'IC Mean', value: icData.ic_mean?.toFixed(4), target: '> 0.05 = good', color: (icData.ic_mean ?? 0) > 0.05 ? '#4ade80' : (icData.ic_mean ?? 0) > 0.02 ? '#facc15' : '#f87171' },
+                  { label: 'IC Std Dev', value: icData.ic_std?.toFixed(4), color: '#94a3b8' },
+                  { label: 'IC IR (mean/std)', value: icData.ic_ir?.toFixed(3) ?? '—', target: '> 0.5 = excellent', color: (icData.ic_ir ?? 0) > 0.5 ? '#4ade80' : '#94a3b8' },
+                  { label: 'Months', value: String(icData.total_periods), color: '#94a3b8' },
+                ].map(stat => (
+                  <div key={stat.label} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 18px', minWidth: 130 }}>
+                    <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', marginBottom: 4 }}>{stat.label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: stat.color }}>{stat.value ?? '—'}</div>
+                    {stat.target && <div style={{ fontSize: 10, color: '#334155', marginTop: 2 }}>{stat.target}</div>}
+                  </div>
+                ))}
+              </div>
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 12 }}>Monthly IC — {icHorizon}</div>
+                <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', height: 80 }}>
+                  {icData.monthly_ic.map(m => {
+                    const height = Math.abs(m.ic) * 800;
+                    const color = m.ic > 0.05 ? '#4ade80' : m.ic > 0 ? '#86efac' : '#f87171';
+                    return (
+                      <div key={m.month} title={`${m.month}: IC=${m.ic.toFixed(3)}, n=${m.n}`}
+                        style={{ flex: 1, background: color, height: `${Math.min(80, height)}px`, borderRadius: '2px 2px 0 0',
+                          opacity: 0.85, transition: 'height 0.3s', minWidth: 8 }} />
+                    );
+                  })}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#334155', marginTop: 4 }}>
+                  <span>{icData.monthly_ic[0]?.month}</span>
+                  <span>{icData.monthly_ic[icData.monthly_ic.length - 1]?.month}</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+                ℹ️ IC = Spearman rank correlation between predicted probability rank and actual return rank. IC &gt; 0.05 is considered good in quant finance. IC_IR (mean÷std) &gt; 0.5 indicates a consistent signal.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'attribution' && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#64748b' }}>Horizon:</span>
+            {(['SHORT', 'SWING', 'LONG'] as const).map(h => (
+              <button key={h} onClick={() => setAttrHorizon(h)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: '1px solid', borderColor: attrHorizon === h ? '#6366f1' : '#1e293b',
+                  background: attrHorizon === h ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: attrHorizon === h ? '#818cf8' : '#64748b' }}>{h}</button>
+            ))}
+          </div>
+          {!attrData ? (
+            <div style={{ color: '#475569', textAlign: 'center', padding: 40 }}>Loading factor attribution…</div>
+          ) : attrData.message || !attrData.factors?.length ? (
+            <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 24, textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>🔬</div>
+              <div style={{ color: '#64748b', fontSize: 13 }}>{attrData.message || 'No factor data yet'}</div>
+              <div style={{ color: '#334155', fontSize: 11, marginTop: 8 }}>Requires at least 10 evaluated outcomes per reason flag.</div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+                  <div style={{ fontSize: 10, color: '#475569' }}>WINNERS</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#4ade80' }}>{attrData.total_winners}</div>
+                </div>
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+                  <div style={{ fontSize: 10, color: '#475569' }}>LOSERS</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#f87171' }}>{attrData.total_losers}</div>
+                </div>
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+                  <div style={{ fontSize: 10, color: '#475569' }}>FACTORS ANALYSED</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#94a3b8' }}>{attrData.factors.length}</div>
+                </div>
+              </div>
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 12 }}>
+                  Factor Edge — Win% minus Loss% (green = more common in winners, red = more common in losers)
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {attrData.factors.map(f => {
+                    const maxEdge = Math.max(...attrData.factors.map(x => Math.abs(x.edge)));
+                    const barWidth = maxEdge > 0 ? Math.abs(f.edge) / maxEdge * 100 : 0;
+                    const color = f.edge > 0 ? '#4ade80' : '#f87171';
+                    return (
+                      <div key={f.factor} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ width: 200, fontSize: 11, color: '#94a3b8', textAlign: 'right', flexShrink: 0, textTransform: 'capitalize' }}>
+                          {f.factor.replace(/_/g, ' ')}
+                        </div>
+                        <div style={{ flex: 1, position: 'relative', height: 18, background: '#1e293b', borderRadius: 3 }}>
+                          <div style={{ position: 'absolute', left: f.edge >= 0 ? 0 : `${100 - barWidth}%`, width: `${barWidth}%`,
+                            height: '100%', background: color, borderRadius: 3, opacity: 0.8 }} />
+                        </div>
+                        <div style={{ width: 50, fontSize: 11, fontWeight: 600, color, textAlign: 'right', flexShrink: 0 }}>
+                          {f.edge > 0 ? '+' : ''}{f.edge.toFixed(1)}%
+                        </div>
+                        <div style={{ width: 120, fontSize: 10, color: '#475569', flexShrink: 0 }}>
+                          W:{f.win_pct.toFixed(0)}% L:{f.los_pct.toFixed(0)}% (n={f.win_count + f.los_count})
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+                ℹ️ Edge = win_pct − loss_pct. Positive edge means the factor appears more often in winning trades. Factors with near-zero edge are noise.
+                Feed high-edge factors into SA-13 conviction gate weights.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'filter-audit' && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: '#64748b' }}>Style:</span>
+            {(['SHORT', 'SWING', 'LONG', 'GROWTH'] as const).map(h => (
+              <button key={h} onClick={() => setFaStyle(h)}
+                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: '1px solid', borderColor: faStyle === h ? '#6366f1' : '#1e293b',
+                  background: faStyle === h ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: faStyle === h ? '#818cf8' : '#64748b' }}>{h}</button>
+            ))}
+            <span style={{ fontSize: 12, color: '#64748b', marginLeft: 8 }}>Hold days:</span>
+            {([7, 10, 14, 20] as const).map(d => (
+              <button key={d} onClick={() => setFaHold(d)}
+                style={{ padding: '4px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: '1px solid', borderColor: faHold === d ? '#6366f1' : '#1e293b',
+                  background: faHold === d ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: faHold === d ? '#818cf8' : '#64748b' }}>{d}d</button>
+            ))}
+          </div>
+          {!filterAuditData ? (
+            <div style={{ color: '#475569', textAlign: 'center', padding: 40 }}>Loading filter audit…</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {[
+                  ['Signals Analysed', filterAuditData.n_buy_signals_found, '#94a3b8'],
+                  ['With Return Data', filterAuditData.n_with_return_data, '#94a3b8'],
+                  ['Overall Win Rate', filterAuditData.overall_win_rate_pct != null ? `${filterAuditData.overall_win_rate_pct}%` : '—', (filterAuditData.overall_win_rate_pct ?? 0) >= 55 ? '#4ade80' : '#f87171'],
+                ].map(([label, val, color]) => (
+                  <div key={String(label)} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 16px' }}>
+                    <div style={{ fontSize: 10, color: '#475569' }}>{label}</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: String(color) }}>{String(val)}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Per-filter breakdown */}
+              {filterAuditData.by_filter_name?.length > 0 && (
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 4 }}>
+                    Per-Filter Win Rate Analysis
+                  </div>
+                  <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+                    Edge = win_rate_active − win_rate_inactive. Negative = filter correctly blocks weaker signals. Positive = filter is harmful (blocking better signals than it passes).
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                      <thead>
+                        <tr>
+                          {['Filter', 'N Active', 'WR Active', 'N Inactive', 'WR Inactive', 'Edge', 'Verdict'].map(h => (
+                            <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#475569', fontWeight: 600, borderBottom: '1px solid #1e293b', whiteSpace: 'nowrap' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filterAuditData.by_filter_name.map(f => {
+                          const verdictColor = f.verdict === 'predictive' ? '#4ade80' : f.verdict === 'harmful' ? '#f87171' : '#facc15';
+                          const edgeColor = f.edge_pct < -3 ? '#4ade80' : f.edge_pct > 3 ? '#f87171' : '#94a3b8';
+                          return (
+                            <tr key={f.filter} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                              <td style={{ padding: '6px 10px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: 10 }}>{f.filter}</td>
+                              <td style={{ padding: '6px 10px', color: '#64748b' }}>{f.n_active}</td>
+                              <td style={{ padding: '6px 10px', color: '#94a3b8', fontWeight: 600 }}>{f.win_rate_active != null ? `${f.win_rate_active}%` : '—'}</td>
+                              <td style={{ padding: '6px 10px', color: '#64748b' }}>{f.n_inactive}</td>
+                              <td style={{ padding: '6px 10px', color: '#94a3b8', fontWeight: 600 }}>{f.win_rate_inactive != null ? `${f.win_rate_inactive}%` : '—'}</td>
+                              <td style={{ padding: '6px 10px', color: edgeColor, fontWeight: 700 }}>{f.edge_pct > 0 ? '+' : ''}{f.edge_pct}%</td>
+                              <td style={{ padding: '6px 10px' }}>
+                                <span style={{ padding: '2px 8px', borderRadius: 4, background: `${verdictColor}22`, color: verdictColor, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{f.verdict}</span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* By filter count */}
+              {filterAuditData.by_filter_count?.length > 0 && (
+                <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 12 }}>
+                    Win Rate by Filter Count (0 = no suppressions active)
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead>
+                      <tr>
+                        {['Filters Active', 'N Trades', 'Win Rate', 'Avg Return'].map(h => (
+                          <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#475569', fontWeight: 600, borderBottom: '1px solid #1e293b' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filterAuditData.by_filter_count.map(row => (
+                        <tr key={row.filter_count} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                          <td style={{ padding: '6px 10px', color: '#94a3b8', fontWeight: 700 }}>{row.filter_count}</td>
+                          <td style={{ padding: '6px 10px', color: '#64748b' }}>{row.trade_count}</td>
+                          <td style={{ padding: '6px 10px', color: (row.win_rate_pct ?? 0) >= 55 ? '#4ade80' : '#f87171', fontWeight: 600 }}>
+                            {row.win_rate_pct != null ? `${row.win_rate_pct}%` : '—'}
+                          </td>
+                          <td style={{ padding: '6px 10px', color: (row.avg_return_pct ?? 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                            {row.avg_return_pct != null ? `${row.avg_return_pct > 0 ? '+' : ''}${row.avg_return_pct}%` : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
+                ℹ️ Run this analysis once you have 200+ evaluated BUY signals. Filters with positive edge (harmful) should be disabled or inverted in signals.py.
+                Filters with negative edge ≤ −5% are strongly predictive. Use SA-6 findings to inform TA weight calibration.
               </div>
             </div>
           )}

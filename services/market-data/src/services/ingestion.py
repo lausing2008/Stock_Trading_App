@@ -75,7 +75,8 @@ def ingest_symbol(
             session.execute(
                 delete(Price).where(Price.stock_id == stock.id, Price.timeframe == tf)
             )
-            session.commit()
+            # F-2: do NOT commit here — keep DELETE and INSERT in one transaction so no
+            # reader sees a gap window between the two operations.
             log.info("ingest.force_delete", symbol=symbol, tf=timeframe)
 
         head = None if force else _last_bar_ts(session, stock.id, tf)

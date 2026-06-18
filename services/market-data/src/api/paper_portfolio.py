@@ -1,32 +1,52 @@
 """WF-2 Paper Portfolio API — read-only views + admin controls."""
+import json
 import math
+import threading
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from db import PaperEquityCurve, PaperPortfolio, PaperTrade, get_session
+from db import PaperEquityCurve, PaperPortfolio, PaperTrade, SessionLocal, get_session
+from db.models import User, Stock, Price, TimeFrame
 from .auth import get_current_user, get_admin_user
-from db.models import User
+from common.config import get_settings
 from common.logging import get_logger
 
 log = get_logger("paper_portfolio_api")
 
 router = APIRouter(prefix="/paper-portfolio", tags=["paper-portfolio"])
 
+_settings = get_settings()
+_TRADE_PARAMS_PATH = Path(_settings.model_dir) / "trade_params.json"
+
+# Defaults if no tuned params exist yet
+_FALLBACK_PARAMS: dict[str, dict] = {
+    "SHORT":  {"stop_pct": 0.970, "tp_pct": 1.05, "max_hold_days": 10},
+    "SWING":  {"stop_pct": 0.945, "tp_pct": 1.12, "max_hold_days": 20},
+    "GROWTH": {"stop_pct": 0.900, "tp_pct": 1.25, "max_hold_days": 60},
+    "LONG":   {"stop_pct": 0.880, "tp_pct": 1.35, "max_hold_days": 90},
+}
+
+_tune_lock = threading.Lock()
+_tune_running: dict[str, bool] = {}  # style → is running
+
 
 _MIN_SHARPE_DAYS = 20  # annualizing < 20 days produces meaningless Sharpe/Calmar
 
 
 def _portfolio_risk_metrics(curve_rows: list) -> dict:
-    """Compute Sharpe, max drawdown, Calmar from equity curve rows (ordered by date)."""
-    equities = [r.equity for r in curve_rows if r.equity and r.equity > 0]
+    """Compute Sharpe, Sortino, CAGR, max drawdown, Calmar from equity curve rows (ordered by date)."""
+    valid_rows = [r for r in curve_rows if r.equity and r.equity > 0]
+    equities = [r.equity for r in valid_rows]
     data_days = len(equities)
 
     if data_days < 2:
-        return {"sharpe": None, "max_drawdown_pct": None, "calmar": None,
+        return {"sharpe": None, "sortino": None, "cagr_pct": None,
+                "max_drawdown_pct": None, "calmar": None,
                 "data_days": data_days, "insufficient_data": True}
 
     # Max drawdown — valid at any sample size
@@ -40,9 +60,19 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
             max_dd = dd
     max_dd_pct = round(max_dd * 100, 2)
 
-    # Sharpe and Calmar require enough data to annualize meaningfully
+    # CAGR — use actual calendar days when available, else trading-day estimate
+    e0, ef = equities[0], equities[-1]
+    try:
+        cal_days = max((valid_rows[-1].date - valid_rows[0].date).days, 1)
+        years = cal_days / 365.25
+    except Exception:
+        years = max(data_days, 1) / 252
+    cagr_pct = round(((ef / e0) ** (1.0 / years) - 1) * 100, 2) if e0 > 0 and years > 0 else None
+
+    # Sharpe, Sortino, and Calmar require enough data to annualize meaningfully
     if data_days < _MIN_SHARPE_DAYS:
-        return {"sharpe": None, "max_drawdown_pct": max_dd_pct, "calmar": None,
+        return {"sharpe": None, "sortino": None, "cagr_pct": cagr_pct,
+                "max_drawdown_pct": max_dd_pct, "calmar": None,
                 "data_days": data_days, "insufficient_data": True}
 
     # Daily returns
@@ -58,11 +88,18 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
     risk_free = 0.05
     sharpe = round((annualised_return - risk_free) / annualised_vol, 2) if annualised_vol > 0 else None
 
+    # Sortino — downside deviation (returns below 0)
+    downside_sq = [min(r, 0.0) ** 2 for r in daily_returns]
+    downside_dev = math.sqrt(sum(downside_sq) / max(n, 1)) * math.sqrt(252)
+    sortino = round((annualised_return - risk_free) / downside_dev, 2) if downside_dev > 0 else None
+
     # Calmar = annualised return / max drawdown
     calmar = round(annualised_return / max_dd, 2) if max_dd > 0 else None
 
     return {
         "sharpe": sharpe,
+        "sortino": sortino,
+        "cagr_pct": cagr_pct,
         "max_drawdown_pct": max_dd_pct,
         "calmar": calmar,
         "data_days": data_days,
@@ -112,9 +149,19 @@ def _compute_alpha_beta(curve_rows: list) -> dict:
     return {"alpha": alpha, "beta": round(beta, 2), "info_ratio": info_ratio}
 
 
-def _get_active_portfolio(session: Session) -> PaperPortfolio:
+def _get_portfolio(session: Session, portfolio_id: int | None = None) -> PaperPortfolio:
+    if portfolio_id is not None:
+        p = session.execute(
+            select(PaperPortfolio).where(
+                PaperPortfolio.id == portfolio_id,
+                PaperPortfolio.is_active.is_(True),
+            )
+        ).scalar_one_or_none()
+        if not p:
+            raise HTTPException(status_code=404, detail=f"Portfolio {portfolio_id} not found")
+        return p
     p = session.execute(
-        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).limit(1)
+        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).order_by(PaperPortfolio.id).limit(1)
     ).scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="No active paper portfolio found")
@@ -125,10 +172,11 @@ def _get_active_portfolio(session: Session) -> PaperPortfolio:
 
 @router.get("/summary")
 def get_summary(
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
 
     open_trades = session.execute(
         select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
@@ -147,6 +195,17 @@ def get_summary(
     avg_win  = round(sum(t.pct_return or 0 for t in wins) / max(len(wins), 1), 2)
     avg_loss = round(sum(t.pct_return or 0 for t in losses) / max(len(losses), 1), 2)
     total_realized = round(sum(t.pnl or 0 for t in closed_trades), 2)
+
+    gross_profit = sum(t.pnl for t in wins if t.pnl)
+    gross_loss   = abs(sum(t.pnl for t in losses if t.pnl))
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
+
+    hold_days_list = [t.hold_days for t in closed_trades if t.hold_days and t.hold_days > 0]
+    avg_hold_days = round(sum(hold_days_list) / len(hold_days_list), 1) if hold_days_list else None
+
+    expectancy = round(
+        (win_rate / 100) * avg_win + (1 - win_rate / 100) * avg_loss, 2
+    ) if closed_trades else None
     total_unrealized = round(
         sum(((t.current_price or t.entry_price) - t.entry_price) * t.shares for t in open_trades), 2
     )
@@ -190,7 +249,12 @@ def get_summary(
         "win_rate_pct": win_rate,
         "avg_win_pct": avg_win,
         "avg_loss_pct": avg_loss,
+        "profit_factor": profit_factor,
+        "avg_hold_days": avg_hold_days,
+        "expectancy_pct": expectancy,
         "sharpe": risk["sharpe"],
+        "sortino": risk.get("sortino"),
+        "cagr_pct": risk.get("cagr_pct"),
         "max_drawdown_pct": risk["max_drawdown_pct"],
         "calmar": risk["calmar"],
         "data_days": risk.get("data_days", 0),
@@ -216,10 +280,11 @@ def get_summary(
 
 @router.get("/positions")
 def get_positions(
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     trades = session.execute(
         select(PaperTrade)
         .where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
@@ -261,10 +326,11 @@ def get_trades(
     limit: int = Query(50, ge=1, le=200),
     symbol: str | None = Query(None),
     exit_reason: str | None = Query(None),
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     q = (
         select(PaperTrade)
         .where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "closed")
@@ -316,10 +382,11 @@ def get_trades(
 @router.get("/equity-curve")
 def get_equity_curve(
     days: int = Query(180, ge=7, le=730),
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     cutoff = date.today() - timedelta(days=days)
     rows = session.execute(
         select(PaperEquityCurve)
@@ -337,6 +404,7 @@ def get_equity_curve(
             "spy_close": r.spy_close,
             "qqq_close": r.qqq_close,
             "hsi_close": r.hsi_close,
+            "market_regime": r.market_regime,  # PT-A2: for regime shading overlay
         }
         for r in rows
     ]
@@ -351,11 +419,12 @@ def get_decisions(
     symbol: str | None = Query(None),
     decision: str | None = Query(None),   # ENTER | WAIT | SKIP
     days_back: int = Query(30, ge=1, le=180),
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
     """Return entry decisions (all trades, open + closed, as decision log)."""
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     cutoff = datetime.utcnow() - timedelta(days=days_back)
 
     q = select(PaperTrade).where(
@@ -389,7 +458,15 @@ def get_decisions(
                 "rr_ratio_at_entry": t.rr_ratio_at_entry,
                 "market_regime_at_entry": t.market_regime_at_entry,
                 "stage": t.stage,
+                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                "exit_price": t.exit_price,
                 "exit_reason": t.exit_reason,
+                "entry_reasons": t.entry_reasons or {},
+                "exit_reasons": t.exit_reasons or {},
+                "hold_days": t.hold_days,
+                "stop_loss": t.stop_loss,
+                "take_profit": t.take_profit,
+                "shares": t.shares,
                 "pnl": t.pnl,
                 "pct_return": t.pct_return,
             }
@@ -403,17 +480,50 @@ def get_decisions(
 @router.post("/configure")
 def configure_portfolio(
     body: dict,
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Merge body keys into the portfolio config (admin only)."""
-    p = _get_active_portfolio(session)
+    """Merge body keys into the portfolio config (admin only).
+
+    All percentage-based params expect decimal fractions (0.01 = 1%, NOT 1 = 1%).
+    The endpoint validates ranges and returns 400 if a value is out of bounds.
+    """
+    p = _get_portfolio(session, portfolio_id)
     allowed_keys = {
         "max_positions", "max_sector_pct", "risk_per_trade_pct", "max_position_pct",
         "min_confidence", "min_kscore", "min_rr_ratio", "min_entry_score",
         "max_hold_days", "trail_atr_mult", "trail_trigger_pct", "breakeven_trigger_pct",
         "wait_exit_days", "enabled", "paused",
     }
+    # PT-H1: Validate decimal fraction params — reject values that look like % integers
+    # (e.g. risk_per_trade_pct=1 meaning "1%" but engine expects 0.01).
+    _RANGE_CHECKS: dict[str, tuple[float, float, str]] = {
+        "risk_per_trade_pct":   (0.001, 0.05,  "Enter as decimal fraction (e.g. 0.01 for 1%). Max 5%."),
+        "max_position_pct":     (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.10 for 10%). Max 30%."),
+        "max_loss_per_trade_pct":(0.005, 0.10, "Enter as decimal fraction (e.g. 0.02 for 2%). Max 10%."),
+        "max_sector_pct":       (0.05,  0.60,  "Enter as decimal fraction (e.g. 0.30 for 30%). Range 5–60%."),
+        "max_portfolio_drawdown_pct":(0.05, 0.50, "Enter as decimal fraction (e.g. 0.20 for 20%)."),
+        "max_daily_loss_pct":   (0.005, 0.15,  "Enter as decimal fraction (e.g. 0.04 for 4%)."),
+        "trail_trigger_pct":    (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.05 for 5%)."),
+        "breakeven_trigger_pct":(0.005, 0.20,  "Enter as decimal fraction (e.g. 0.03 for 3%)."),
+        "max_open_risk_pct":    (0.02,  0.50,  "Enter as decimal fraction (e.g. 0.12 for 12%)."),
+        "hold_stall_max_gain":  (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.05 for 5%)."),
+    }
+    errors: list[str] = []
+    for key, val in body.items():
+        if key in _RANGE_CHECKS and val is not None:
+            lo, hi, hint = _RANGE_CHECKS[key]
+            try:
+                fval = float(val)
+            except (TypeError, ValueError):
+                errors.append(f"{key}: expected a number")
+                continue
+            if not (lo <= fval <= hi):
+                errors.append(f"{key}={fval}: out of valid range [{lo}, {hi}]. {hint}")
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+
     updated = {k: v for k, v in body.items() if k in allowed_keys and v is not None}
     old_vals = {k: p.config.get(k) for k in updated}
     p.config = {**p.config, **updated}
@@ -429,11 +539,12 @@ def configure_portfolio(
 
 @router.post("/reset")
 def reset_portfolio(
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
     """Close all open trades at current_price and reset cash to initial_capital."""
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     open_trades = session.execute(
         select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
     ).scalars().all()
@@ -464,6 +575,7 @@ def reset_portfolio(
 @router.post("/capital")
 def set_capital(
     body: dict,
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -472,7 +584,7 @@ def set_capital(
     Body: { initial_capital?: number, current_cash?: number }
     Setting current_cash lets you add/withdraw cash without a full reset.
     """
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
 
     new_initial = body.get("initial_capital")
     new_cash = body.get("current_cash")
@@ -502,6 +614,7 @@ def set_capital(
 @router.post("/engine")
 def set_engine_state(
     body: dict,
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -515,7 +628,7 @@ def set_engine_state(
     if state not in ("running", "paused", "stopped"):
         raise HTTPException(status_code=400, detail="state must be 'running', 'paused', or 'stopped'")
 
-    p = _get_active_portfolio(session)
+    p = _get_portfolio(session, portfolio_id)
     if state == "running":
         p.config = {**p.config, "enabled": True, "paused": False}
     elif state == "paused":
@@ -525,3 +638,512 @@ def set_engine_state(
 
     session.commit()
     return {"ok": True, "state": state, "config": p.config}
+
+
+@router.get("/attribution")
+def get_attribution(
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """PT-A1: Aggregate closed trades by entry_score, confidence, regime, and R:R bands.
+
+    Returns win_rate, avg_return, profit_factor, and count for each bucket so
+    traders can identify which entry profiles actually perform.
+    """
+    p = _get_portfolio(session, portfolio_id)
+    trades = session.execute(
+        select(PaperTrade).where(
+            PaperTrade.portfolio_id == p.id,
+            PaperTrade.stage == "closed",
+            PaperTrade.pnl.is_not(None),
+        )
+    ).scalars().all()
+
+    if not trades:
+        return {"message": "No closed trades yet", "by_score": [], "by_confidence": [], "by_regime": [], "by_rr": []}
+
+    def _stats(bucket: list) -> dict:
+        if not bucket:
+            return {"count": 0, "win_rate": None, "avg_return": None, "profit_factor": None}
+        wins = [t for t in bucket if (t.pnl or 0) > 0]
+        losses = [t for t in bucket if (t.pnl or 0) <= 0]
+        returns = [t.pct_return for t in bucket if t.pct_return is not None]
+        gross_win = sum(t.pnl for t in wins if t.pnl)
+        gross_loss = abs(sum(t.pnl for t in losses if t.pnl))
+        return {
+            "count": len(bucket),
+            "win_rate": round(len(wins) / len(bucket) * 100, 1),
+            "avg_return": round(sum(returns) / len(returns) * 100, 2) if returns else None,
+            "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
+        }
+
+    # By entry score band
+    score_bands = [
+        ("≤2", lambda t: (t.entry_score or 0) <= 2),
+        ("3", lambda t: (t.entry_score or 0) == 3),
+        ("4", lambda t: (t.entry_score or 0) == 4),
+        ("5+", lambda t: (t.entry_score or 0) >= 5),
+    ]
+    by_score = [{"band": label, **_stats([t for t in trades if fn(t)])} for label, fn in score_bands]
+
+    # By confidence band
+    conf_bands = [
+        ("<55%", lambda t: (t.confidence_at_entry or 0) < 55),
+        ("55–65%", lambda t: 55 <= (t.confidence_at_entry or 0) < 65),
+        ("65–75%", lambda t: 65 <= (t.confidence_at_entry or 0) < 75),
+        ("75%+", lambda t: (t.confidence_at_entry or 0) >= 75),
+    ]
+    by_confidence = [{"band": label, **_stats([t for t in trades if fn(t)])} for label, fn in conf_bands]
+
+    # By market regime at entry
+    regimes = sorted({t.market_regime_at_entry for t in trades if t.market_regime_at_entry})
+    by_regime = [{"band": r, **_stats([t for t in trades if t.market_regime_at_entry == r])} for r in regimes]
+    unknown_regime = [t for t in trades if not t.market_regime_at_entry]
+    if unknown_regime:
+        by_regime.append({"band": "unknown", **_stats(unknown_regime)})
+
+    # By R:R band
+    rr_bands = [
+        ("<1.5", lambda t: (t.rr_ratio_at_entry or 0) < 1.5),
+        ("1.5–2.5", lambda t: 1.5 <= (t.rr_ratio_at_entry or 0) < 2.5),
+        ("2.5+", lambda t: (t.rr_ratio_at_entry or 0) >= 2.5),
+    ]
+    by_rr = [{"band": label, **_stats([t for t in trades if fn(t)])} for label, fn in rr_bands]
+
+    # Best entry profile (score + confidence combo with ≥10 trades)
+    best_profile = None
+    best_wr = -1.0
+    for s_label, s_fn in score_bands:
+        for c_label, c_fn in conf_bands:
+            bucket = [t for t in trades if s_fn(t) and c_fn(t)]
+            if len(bucket) >= 10:
+                wr = sum(1 for t in bucket if (t.pnl or 0) > 0) / len(bucket)
+                if wr > best_wr:
+                    best_wr = wr
+                    best_profile = {"score_band": s_label, "conf_band": c_label, "win_rate": round(wr * 100, 1), "count": len(bucket)}
+
+    return {
+        "total_trades": len(trades),
+        "by_score": by_score,
+        "by_confidence": by_confidence,
+        "by_regime": by_regime,
+        "by_rr": by_rr,
+        "best_profile": best_profile,
+    }
+
+
+# ── Multi-portfolio: list ─────────────────────────────────────────────────────
+
+@router.get("/list")
+def list_portfolios(
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """Lightweight list of all active portfolios with summary stats."""
+    portfolios = session.execute(
+        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).order_by(PaperPortfolio.id)
+    ).scalars().all()
+
+    result = []
+    for p in portfolios:
+        open_trades = session.execute(
+            select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
+        ).scalars().all()
+        closed_trades = session.execute(
+            select(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "closed")
+        ).scalars().all()
+
+        open_value = sum((t.current_price or t.entry_price) * t.shares for t in open_trades)
+        equity = p.current_cash + open_value
+
+        wins = [t for t in closed_trades if (t.pnl or 0) > 0]
+        win_rate = round(len(wins) / max(len(closed_trades), 1) * 100, 1)
+
+        all_curve = session.execute(
+            select(PaperEquityCurve).where(PaperEquityCurve.portfolio_id == p.id).order_by(PaperEquityCurve.date)
+        ).scalars().all()
+        risk = _portfolio_risk_metrics(all_curve)
+
+        result.append({
+            "id": p.id,
+            "name": p.name,
+            "trading_style": p.config.get("trading_style", "GROWTH"),
+            "market": p.config.get("market", "US"),
+            "current_equity": round(equity, 2),
+            "initial_capital": p.initial_capital,
+            "total_return_pct": round((equity / p.initial_capital - 1) * 100, 2),
+            "win_rate_pct": win_rate,
+            "open_positions": len(open_trades),
+            "closed_trades": len(closed_trades),
+            "sharpe": risk["sharpe"],
+            "sortino": risk.get("sortino"),
+            "cagr_pct": risk.get("cagr_pct"),
+            "max_drawdown_pct": risk["max_drawdown_pct"],
+            "is_running": p.config.get("enabled", True) and not p.config.get("paused", False),
+            "is_paused": p.config.get("enabled", True) and bool(p.config.get("paused", False)),
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        })
+
+    return result
+
+
+# ── Multi-portfolio: create ───────────────────────────────────────────────────
+
+@router.post("/run-step")
+def run_paper_trading_step(
+    enforce_market_hours: bool = Query(True, description="Set false to test outside market hours"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """PT-H5: Manually trigger paper_trading_step() for testing and debugging.
+
+    Useful on weekends or holidays when the scheduler does not fire.
+    Rate-limited to one call per minute to avoid hammering yfinance.
+    Set enforce_market_hours=false to run outside 9:30–16:00 ET (for testing only).
+    """
+    import time
+    from services.paper_trading_engine import paper_trading_step, _DEFAULT_CONFIG
+    from db import PaperPortfolio, SessionLocal
+    from sqlalchemy import select
+
+    _last_run_key = "_run_step_last_called"
+    now_ts = time.time()
+    last = getattr(run_paper_trading_step, _last_run_key, 0.0)
+    if now_ts - last < 60:
+        raise HTTPException(status_code=429, detail="run-step rate limit: wait 60s between calls")
+    setattr(run_paper_trading_step, _last_run_key, now_ts)
+
+    if not enforce_market_hours:
+        # Temporarily patch the market hours check to always return True
+        import services.paper_trading_engine as _eng
+        _orig = _eng._is_market_hours
+        _eng._is_market_hours = lambda: True
+        try:
+            paper_trading_step()
+        finally:
+            _eng._is_market_hours = _orig
+    else:
+        paper_trading_step()
+
+    # Return a snapshot of current portfolio state after the step
+    with SessionLocal() as session:
+        portfolios = session.execute(
+            select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
+        ).scalars().all()
+        summary = [
+            {
+                "id": p.id,
+                "name": p.name,
+                "current_cash": round(p.current_cash, 2),
+                "regime_state": p.config.get("regime_state"),
+                "enabled": p.config.get("enabled"),
+                "paused": p.config.get("paused"),
+            }
+            for p in portfolios
+        ]
+
+    log.info("paper.run_step_manual", portfolios=len(summary),
+             enforce_market_hours=enforce_market_hours)
+    return {"ok": True, "portfolios": summary}
+
+
+@router.post("/create")
+def create_portfolio(
+    body: dict,
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Create a new paper portfolio (admin only).
+
+    Config is seeded from _DEFAULT_CONFIG + style overrides so all safety params
+    (risk_per_trade_pct=0.01, max_position_pct=0.10 etc.) are correct by default.
+    """
+    from services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+    name = str(body.get("name", "Paper Portfolio")).strip() or "Paper Portfolio"
+    style = str(body.get("trading_style", "GROWTH")).upper()
+    market = str(body.get("market", "US")).upper()
+    initial_capital = float(body.get("initial_capital", 100_000))
+
+    if initial_capital <= 0:
+        raise HTTPException(status_code=400, detail="initial_capital must be > 0")
+    if style not in ("SWING", "GROWTH", "LONG", "SHORT"):
+        raise HTTPException(status_code=400, detail="trading_style must be SWING, GROWTH, LONG, or SHORT")
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail="market must be US or HK")
+
+    # PT-H1: Seed full config from engine defaults so new portfolios are always correct
+    cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {}), "trading_style": style, "market": market}
+    p = PaperPortfolio(
+        name=name,
+        initial_capital=initial_capital,
+        current_cash=initial_capital,
+        config=cfg,
+        is_active=True,
+    )
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+
+    log.info("paper.portfolio_created", portfolio_id=p.id, name=name, style=style, capital=initial_capital)
+    return {"ok": True, "portfolio_id": p.id, "name": p.name}
+
+
+# ── Multi-portfolio: compare equity curves ────────────────────────────────────
+
+@router.get("/compare")
+def compare_portfolios(
+    days: int = Query(180, ge=7, le=730),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """Return equity curves for all active portfolios for the comparison overlay chart."""
+    portfolios = session.execute(
+        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).order_by(PaperPortfolio.id)
+    ).scalars().all()
+
+    cutoff = date.today() - timedelta(days=days)
+    result = []
+    for p in portfolios:
+        rows = session.execute(
+            select(PaperEquityCurve)
+            .where(PaperEquityCurve.portfolio_id == p.id, PaperEquityCurve.date >= cutoff)
+            .order_by(PaperEquityCurve.date)
+        ).scalars().all()
+        first_equity = rows[0].equity if rows and rows[0].equity and rows[0].equity > 0 else None
+        result.append({
+            "portfolio_id": p.id,
+            "name": p.name,
+            "trading_style": p.config.get("trading_style", "GROWTH"),
+            "initial_capital": p.initial_capital,
+            "curve": [
+                {
+                    "date": r.date.isoformat(),
+                    "equity": round(r.equity, 2),
+                    "indexed": round(r.equity / first_equity * 100, 4) if first_equity and r.equity else None,
+                    "spy_close": r.spy_close,
+                    "market_regime": r.market_regime,
+                }
+                for r in rows
+            ],
+        })
+    return result
+
+
+# ── AL-4: Trade parameter optimisation (Optuna) ───────────────────────────────
+
+def _load_trade_params() -> dict:
+    """Load tuned params from disk, fall back to hardcoded defaults."""
+    try:
+        if _TRADE_PARAMS_PATH.exists():
+            return json.loads(_TRADE_PARAMS_PATH.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _simulate_trade_sharpe(
+    trades: list,
+    price_map: dict,  # symbol → sorted list of (date, close)
+    stop_pct: float,
+    tp_pct: float,
+    max_hold_days: int,
+) -> float | None:
+    """Simulate exit outcomes for closed trades using given params. Returns annualised Sharpe."""
+    returns = []
+    for t in trades:
+        prices = price_map.get(t.symbol, [])
+        if not prices:
+            continue
+        entry_date = t.entry_date
+        entry_price = t.entry_price
+        stop_level = entry_price * stop_pct
+        tp_level   = entry_price * tp_pct
+        # Walk forward from entry_date
+        exit_return: float | None = None
+        days_held = 0
+        for d, close in prices:
+            if d < entry_date:
+                continue
+            if d == entry_date:
+                continue  # skip entry day itself
+            days_held += 1
+            if close <= stop_level:
+                exit_return = (stop_level / entry_price) - 1
+                break
+            if close >= tp_level:
+                exit_return = (tp_level / entry_price) - 1
+                break
+            if days_held >= max_hold_days:
+                exit_return = (close / entry_price) - 1
+                break
+        if exit_return is None and prices:
+            # Use last available price
+            exit_return = (prices[-1][1] / entry_price) - 1
+        if exit_return is not None:
+            returns.append(exit_return)
+
+    if len(returns) < 5:
+        return None
+
+    n = len(returns)
+    mean_r = sum(returns) / n
+    variance = sum((r - mean_r) ** 2 for r in returns) / max(n - 1, 1)
+    std_r = math.sqrt(variance) if variance > 0 else 0.0
+    if std_r == 0:
+        return None
+    # Rough annualisation: assume mean hold = max_hold_days/2 trading days
+    ann_factor = math.sqrt(252 / max(max_hold_days / 2, 1))
+    return (mean_r / std_r) * ann_factor
+
+
+def _run_optuna_for_style(style: str, n_trials: int) -> dict:
+    """Run Optuna to tune stop_pct, tp_pct, max_hold_days for one style.
+
+    Uses all closed paper trades of the given style as the dataset.
+    Runs inline — call from a background thread.
+    """
+    try:
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+    except ImportError:
+        return {"error": "optuna not installed in market-data — run pip install optuna"}
+
+    from db import SessionLocal
+
+    with SessionLocal() as session:
+        trades = session.execute(
+            select(PaperTrade).where(
+                PaperTrade.stage == "closed",
+                PaperTrade.trading_style == style,
+                PaperTrade.entry_price.is_not(None),
+                PaperTrade.entry_date.is_not(None),
+            )
+        ).scalars().all()
+
+        if len(trades) < 10:
+            return {"error": f"Not enough closed {style} trades ({len(trades)}); need ≥ 10"}
+
+        # Pre-fetch price history for all unique symbols
+        symbols = list({t.symbol for t in trades})
+        max_hold = 120  # enough for any style
+        cutoff = min(t.entry_date for t in trades) - timedelta(days=1)
+        price_map: dict[str, list] = {}
+        for sym in symbols:
+            stock = session.execute(
+                select(Stock).where(Stock.symbol == sym)
+            ).scalar_one_or_none()
+            if not stock:
+                continue
+            rows = session.execute(
+                select(Price.ts, Price.close)
+                .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1, Price.ts >= cutoff)
+                .order_by(Price.ts)
+            ).all()
+            price_map[sym] = [(r.ts.date(), r.close) for r in rows]
+
+        # Snapshot trades list (detach from session)
+        trade_snapshots = [(t.symbol, t.entry_date, t.entry_price) for t in trades]
+
+    class _TradeProxy:
+        def __init__(self, symbol, entry_date, entry_price):
+            self.symbol = symbol
+            self.entry_date = entry_date
+            self.entry_price = entry_price
+
+    trade_objs = [_TradeProxy(s, d, p) for s, d, p in trade_snapshots]
+
+    fallback = _FALLBACK_PARAMS.get(style, _FALLBACK_PARAMS["SWING"])
+
+    def objective(trial: "optuna.Trial") -> float:
+        stop_pct     = trial.suggest_float("stop_pct",     0.88, 0.98)
+        tp_pct       = trial.suggest_float("tp_pct",       1.04, 1.40)
+        max_hold_days = trial.suggest_int("max_hold_days",  5,    90)
+        sharpe = _simulate_trade_sharpe(trade_objs, price_map, stop_pct, tp_pct, max_hold_days)
+        return sharpe if sharpe is not None else -999.0
+
+    study = optuna.create_study(direction="maximize")
+    # Seed with current fallback params so search starts near a known good point
+    study.enqueue_trial({
+        "stop_pct": fallback["stop_pct"],
+        "tp_pct": fallback["tp_pct"],
+        "max_hold_days": fallback["max_hold_days"],
+    })
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+
+    best = study.best_params
+    best_sharpe = round(study.best_value, 3)
+    return {
+        "style": style,
+        "n_trials": n_trials,
+        "n_trades": len(trade_objs),
+        "best_stop_pct": round(best["stop_pct"], 4),
+        "best_tp_pct": round(best["tp_pct"], 4),
+        "best_max_hold_days": int(best["max_hold_days"]),
+        "best_sharpe": best_sharpe,
+        "tuned_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _tune_and_save(style: str, n_trials: int) -> None:
+    """Background task: run Optuna for style, merge results into trade_params.json."""
+    try:
+        result = _run_optuna_for_style(style, n_trials)
+        if "error" not in result:
+            current = _load_trade_params()
+            current[style] = result
+            _TRADE_PARAMS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _TRADE_PARAMS_PATH.write_text(json.dumps(current, indent=2))
+            log.info("paper.tune_params.saved", style=style, sharpe=result.get("best_sharpe"))
+        else:
+            log.warning("paper.tune_params.failed", style=style, error=result["error"])
+    except Exception as exc:
+        log.exception("paper.tune_params.exception", style=style, exc=str(exc))
+    finally:
+        _tune_running.pop(style, None)
+
+
+@router.get("/trade-params")
+def get_trade_params(
+    _: User = Depends(get_current_user),
+) -> dict:
+    """Return current tuned trade parameters per style (or fallback defaults if not yet tuned)."""
+    saved = _load_trade_params()
+    result = {}
+    for style, fallback in _FALLBACK_PARAMS.items():
+        if style in saved:
+            result[style] = {
+                **saved[style],
+                "is_tuned": True,
+                "is_running": _tune_running.get(style, False),
+            }
+        else:
+            result[style] = {
+                **fallback,
+                "is_tuned": False,
+                "is_running": _tune_running.get(style, False),
+                "note": "Using default params — run Optuna to tune",
+            }
+    return result
+
+
+@router.post("/tune-params")
+def tune_trade_params(
+    background_tasks: BackgroundTasks,
+    style: str = Query("SWING"),
+    n_trials: int = Query(80, ge=20, le=300),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Start Optuna tuning for stop_pct / tp_pct / max_hold_days for one trading style.
+
+    Runs in the background. Poll GET /trade-params to see when is_running=False.
+    Uses all closed paper trades of the given style as the optimization dataset.
+    """
+    style = style.upper()
+    if style not in _FALLBACK_PARAMS:
+        raise HTTPException(400, f"style must be one of: {list(_FALLBACK_PARAMS)}")
+    with _tune_lock:
+        if _tune_running.get(style):
+            return {"status": "already_running", "style": style}
+        _tune_running[style] = True
+    background_tasks.add_task(_tune_and_save, style, n_trials)
+    return {"status": "started", "style": style, "n_trials": n_trials}

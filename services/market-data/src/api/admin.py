@@ -20,10 +20,11 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 log = get_logger("admin")
 _settings = get_settings()
 
-_REDIS_CLAUDE_KEY     = "stockai:admin:claude_api_key"
-_REDIS_DEEPSEEK_KEY   = "stockai:admin:deepseek_api_key"
-_REDIS_CLAUDE_MODEL   = "stockai:admin:claude_model"
-_REDIS_DEEPSEEK_MODEL = "stockai:admin:deepseek_model"
+_REDIS_CLAUDE_KEY       = "stockai:admin:claude_api_key"
+_REDIS_DEEPSEEK_KEY     = "stockai:admin:deepseek_api_key"
+_REDIS_CLAUDE_MODEL     = "stockai:admin:claude_model"
+_REDIS_DEEPSEEK_MODEL   = "stockai:admin:deepseek_model"
+_REDIS_BROKER_ENABLED   = "stockai:admin:feature:broker_enabled"
 
 def _get_redis():
     return redis_lib.from_url(_settings.redis_url, decode_responses=True)
@@ -69,6 +70,25 @@ class ConfigRequest(BaseModel):
     deepseek_api_key: str | None = None
     claude_model: str | None = None
     deepseek_model: str | None = None
+    broker_enabled: bool | None = None  # feature flag: show/hide broker integration UI
+
+
+@router.get("/feature-flags")
+def get_feature_flags(_: User = Depends(get_admin_user)):
+    """Return current feature flag states (admin only)."""
+    r = _get_redis()
+    return {
+        "broker_enabled": r.get(_REDIS_BROKER_ENABLED) == "1",
+    }
+
+
+@router.get("/feature-flags/public")
+def get_feature_flags_public():
+    """Return feature flags that the frontend needs without auth (e.g. for settings page)."""
+    r = _get_redis()
+    return {
+        "broker_enabled": r.get(_REDIS_BROKER_ENABLED) == "1",
+    }
 
 
 @router.post("/config")
@@ -82,7 +102,8 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         set_quiver_key(req.quiver_api_key)
     r = None
     if req.claude_api_key is not None or req.deepseek_api_key is not None or \
-       req.claude_model is not None or req.deepseek_model is not None:
+       req.claude_model is not None or req.deepseek_model is not None or \
+       req.broker_enabled is not None:
         r = _get_redis()
     if req.claude_api_key is not None:
         r.set(_REDIS_CLAUDE_KEY, req.claude_api_key)
@@ -92,7 +113,9 @@ def update_config(req: ConfigRequest, _: User = Depends(get_admin_user)):
         r.set(_REDIS_CLAUDE_MODEL, req.claude_model)
     if req.deepseek_model is not None:
         r.set(_REDIS_DEEPSEEK_MODEL, req.deepseek_model)
-    log.info("admin.config_updated")
+    if req.broker_enabled is not None:
+        r.set(_REDIS_BROKER_ENABLED, "1" if req.broker_enabled else "0")
+    log.info("admin.config_updated", broker_enabled=req.broker_enabled)
     return {"status": "ok"}
 
 
@@ -267,6 +290,18 @@ def admin_signal_log(
     }
 
 
+@router.post("/send-morning-digest")
+def trigger_morning_digest(
+    background_tasks: BackgroundTasks,
+    market: str = Query("US", regex="^(US|HK)$"),
+    _: User = Depends(get_admin_user),
+):
+    """Manually trigger the morning digest email for a market (admin only). Runs in background."""
+    from ..services.scheduler import send_morning_digest
+    background_tasks.add_task(send_morning_digest, market)
+    return {"status": "queued", "market": market, "message": f"Morning digest [{market}] is being sent to all users with email configured."}
+
+
 @router.get("/scheduler-status")
 def scheduler_status(_: User = Depends(get_admin_user)):
     """Return last-run status for all tracked scheduler jobs (from Redis)."""
@@ -281,3 +316,4 @@ def scheduler_status(_: User = Depends(get_admin_user)):
             except Exception:
                 pass
     return {"jobs": jobs}
+

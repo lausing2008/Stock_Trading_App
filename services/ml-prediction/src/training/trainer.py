@@ -1,13 +1,16 @@
 """Trainer — walks the DB for price history, builds features, fits & persists."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+import os
+import tempfile
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score, f1_score, precision_recall_curve,
     precision_score, recall_score, roc_auc_score,
@@ -19,9 +22,10 @@ from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Price, SessionLocal, Stock, TimeFrame
+from db import Fundamental, Price, SessionLocal, Stock, TimeFrame
+from sqlalchemy import desc as sa_desc
 
-from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS
+from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS
 from ..models import BaseModel, get_model
 
 log = get_logger("trainer")
@@ -65,6 +69,42 @@ def _load_prices(symbol: str, lookback_days: int = 365 * 5) -> pd.DataFrame:
             "volume": [r.volume for r in rows],
         }
     )
+
+
+def _load_fundamentals(symbol: str) -> dict | None:
+    """Fetch the most-recent Fundamental row for a symbol and return as a dict.
+
+    Returns None if no row exists (model will train with NaN fundamental features).
+    fcf_yield is computed here as free_cashflow / market_cap so builder.py
+    only needs to consume scalar values.
+    """
+    with SessionLocal() as session:
+        stock = session.execute(
+            select(Stock).where(Stock.symbol == symbol)
+        ).scalar_one_or_none()
+        if not stock:
+            return None
+        row = session.execute(
+            select(Fundamental)
+            .where(Fundamental.stock_id == stock.id)
+            .order_by(sa_desc(Fundamental.as_of))
+            .limit(1)
+        ).scalar_one_or_none()
+    if row is None:
+        return None
+    fcf = row.free_cashflow
+    mkt = row.market_cap
+    fcf_yield = (fcf / mkt) if (fcf and mkt and mkt > 0) else None
+    return {
+        "revenue_growth":      row.revenue_growth,
+        "earnings_growth":     row.earnings_growth,
+        "gross_margin":        row.gross_margin,
+        "return_on_equity":    row.return_on_equity,
+        "fcf_yield":           fcf_yield,
+        "short_ratio":         row.short_ratio,
+        "recommendation_mean": row.recommendation_mean,
+        "price_to_book":       row.price_to_book,
+    }
 
 
 def _artifact_path(symbol: str, model_name: str) -> Path:
@@ -147,18 +187,24 @@ def _recency_weights(n: int, newest_to_oldest_ratio: float = 5.0) -> np.ndarray:
 
 
 def _blend_weights(y: np.ndarray, recency_w: np.ndarray) -> np.ndarray:
-    """ML-FIX-2: Blend recency weights with balanced class weights.
+    """Blend recency weights with balanced class weights, then enforce equal class mass.
 
-    Combines two sources of importance:
-      - Recency: recent bars reflect current regime better than old bars.
-      - Class balance: minority-class samples (typically bullish) should not
-        be drowned out by the majority class in imbalanced datasets.
-
-    Element-wise product then renormalise to mean=1 so total effective sample
-    size is preserved (consistent with the rest of the training pipeline).
+    Three-step process (AUD-C1 fix):
+      1. Multiply recency weight by class balance weight per sample.
+      2. Rescale each class so its total weight equals half the grand total.
+         Without this step, recent bull-market samples can dominate even after
+         class balancing because the majority class gets more recent rows.
+      3. Normalise to mean=1 so total effective sample size is preserved.
     """
     class_w = compute_sample_weight("balanced", y)
     combined = recency_w * class_w
+    # Enforce equal class mass after blending.
+    target_per_class = combined.sum() / 2.0
+    for cls in np.unique(y):
+        mask = y == cls
+        cls_sum = combined[mask].sum()
+        if cls_sum > 0:
+            combined[mask] *= target_per_class / cls_sum
     return combined / combined.mean()
 
 
@@ -194,8 +240,15 @@ def train_model(
     # Per-symbol volatility-adjusted dead zone (0.5 × expected N-day move)
     label_threshold = compute_label_threshold(df, horizon)
 
+    fund_data: dict | None = None
+    try:
+        fund_data = _load_fundamentals(symbol)
+    except Exception:
+        pass
+
     X, y_dir, y_ret = build_features(
-        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold
+        df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
+        fund_data=fund_data,
     )
     if len(X) < 200:
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
@@ -215,8 +268,11 @@ def train_model(
     oos_precisions: list[float] = []
     oos_recalls: list[float] = []
     oos_ics: list[float] = []
+    # Compute split point before CV so the loop only sees the training portion —
+    # splitting on the full X would leak future rows into validation folds.
+    split_train = int(len(X) * 0.70)
     tscv = TimeSeriesSplit(n_splits=5)
-    for tr_idx, val_idx in tscv.split(X):
+    for tr_idx, val_idx in tscv.split(X.iloc[:split_train]):
         X_cv_tr, X_cv_val = X.iloc[tr_idx].values, X.iloc[val_idx].values
         y_cv_tr, y_cv_val = y_dir.iloc[tr_idx].values, y_dir.iloc[val_idx].values
         sc = StandardScaler()
@@ -245,11 +301,8 @@ def train_model(
                 oos_ics.append(float(ic))
 
     # --- Three-way split: train / calibration / threshold evaluation ---
-    # Separating calibration and threshold sets prevents double-dipping:
-    # the calibrator is fit on X_cal (unseen by threshold search), and the
-    # buy_threshold is optimised on X_test (unseen by calibrator).
-    split_train = int(len(X) * 0.70)
-    split_cal   = int(len(X) * 0.85)
+    # split_train already computed above (reused here for clarity).
+    split_cal = int(len(X) * 0.85)
     X_train = X.iloc[:split_train]
     X_cal   = X.iloc[split_train:split_cal]
     X_test  = X.iloc[split_cal:]
@@ -270,7 +323,7 @@ def train_model(
     _recency_w = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
     train_weights = _blend_weights(y_train.values, _recency_w)
 
-    # XGBoost early stopping on calibration set (separate from threshold eval set)
+    # Early stopping on calibration set for XGBoost; LightGBM handles via its own callbacks (AUD-M10).
     model = get_model(model_name, early_stopping_rounds=50, **(hyperparams or {}))
     if model_name == "xgboost":
         model.fit(
@@ -279,20 +332,38 @@ def train_model(
             eval_set=[(X_cal_s, y_cal.values)],
             verbose=False,
         )
+    elif model_name == "lightgbm":
+        # AUD-M10: LGBMClassifier.fit() accepts eval_set; early_stopping callback injected in lgb.py
+        model.fit(
+            X_train_s, y_train.values,
+            sample_weight=train_weights,
+            eval_set=[(X_cal_s, y_cal.values)],
+        )
     else:
         model.fit(X_train_s, y_train.values, sample_weight=train_weights)
 
-    # --- Probability calibration (isotonic regression on calibration set) ---
-    # Use positive-class probabilities only (shape (n,)) — IsotonicRegression expects 1D input.
+    # --- Probability calibration (on calibration set) ---
+    # Use positive-class probabilities only (shape (n,)) — both calibrators expect 1D input.
+    # Platt scaling (LogisticRegression) is more stable when the calibration set is small;
+    # IsotonicRegression needs ≥300 samples to avoid overfitting the monotone mapping.
     raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
-    calibrator: IsotonicRegression | None = None
+    calibrator: IsotonicRegression | LogisticRegression | None = None
     if len(np.unique(y_cal)) > 1 and len(y_cal) >= 20:
-        calibrator = IsotonicRegression(out_of_bounds="clip")
-        calibrator.fit(raw_cal_probs, y_cal.values)
+        if len(y_cal) < 300:
+            calibrator = LogisticRegression(C=1e6, solver="lbfgs")
+            calibrator.fit(raw_cal_probs.reshape(-1, 1), y_cal.values)
+        else:
+            calibrator = IsotonicRegression(out_of_bounds="clip")
+            calibrator.fit(raw_cal_probs, y_cal.values)
 
     # --- Precision-optimised BUY threshold (on held-out test set) ---
     raw_test_probs = model.predict_proba(X_test_s)[:, 1]  # shape (n,)
-    preds = calibrator.predict(raw_test_probs) if calibrator is not None else raw_test_probs
+    if calibrator is None:
+        preds = raw_test_probs
+    elif isinstance(calibrator, LogisticRegression):
+        preds = calibrator.predict_proba(raw_test_probs.reshape(-1, 1))[:, 1]
+    else:
+        preds = calibrator.predict(raw_test_probs)
     min_prec = _PRECISION_BY_STYLE.get(style.upper(), _MIN_PRECISION)
     buy_threshold = _precision_threshold(y_test.values, preds, min_precision=min_prec, symbol=symbol)
 
@@ -344,7 +415,7 @@ def train_model(
     }
 
     # SA-9: suppress signals when OOS accuracy < 52% (coin-flip model)
-    oos_suppressed = oos_acc_mean is not None and oos_acc_mean < 0.52
+    oos_suppressed = cv_auc_mean is not None and cv_auc_mean < 0.52
     if oos_suppressed:
         log.warning(
             "train.oos_suppressed",
@@ -369,7 +440,7 @@ def train_model(
     path = _artifact_path(symbol, model_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     import joblib
-    joblib.dump({
+    bundle = {
         "model": model,
         "scaler": scaler,
         "calibrator": calibrator,
@@ -379,7 +450,22 @@ def train_model(
         "feature_columns": list(FEATURE_COLUMNS),
         "feature_importance": feature_importance,
         "oos_suppressed": oos_suppressed,
-    }, path)
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # RACE-001: atomic write — write to a temp file in the same directory, then rename.
+    # joblib.dump to the final path directly can produce a corrupt read if a prediction
+    # request hits joblib.load mid-write. os.replace() is atomic on POSIX.
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        os.close(tmp_fd)
+        joblib.dump(bundle, tmp_path)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     log.info("train.done", symbol=symbol, model=model_name, **{k: v for k, v in metrics.items() if v is not None})
     return {"symbol": symbol, "model": model_name, "path": str(path), "metrics": metrics}
@@ -394,8 +480,13 @@ def load_trained(symbol: str, model_name: str) -> tuple[BaseModel, StandardScale
     return bundle["model"], bundle["scaler"], bundle["metrics"]
 
 
+_MODEL_STALE_DAYS = 30  # warn when a model artifact is older than this
+
+
 def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -> dict:
     import joblib
+    import structlog as _slog
+    _log = _slog.get_logger()
     path = _artifact_path(symbol, model_name)
     if not path.exists():
         raise FileNotFoundError(f"No trained model at {path}")
@@ -405,6 +496,21 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     calibrator = bundle.get("calibrator")
     buy_threshold = bundle.get("buy_threshold", 0.5)
     saved_cols = bundle.get("feature_columns", list(FEATURE_COLUMNS))
+
+    # STALE-001: warn when the model artifact is older than _MODEL_STALE_DAYS
+    trained_at_str = bundle.get("trained_at")
+    model_age_days: int | None = None
+    if trained_at_str:
+        try:
+            trained_at = datetime.fromisoformat(trained_at_str)
+            if trained_at.tzinfo is None:
+                trained_at = trained_at.replace(tzinfo=timezone.utc)
+            model_age_days = (datetime.now(timezone.utc) - trained_at).days
+            if model_age_days > _MODEL_STALE_DAYS:
+                _log.warning("model.stale", symbol=symbol, model=model_name,
+                             trained_at=trained_at_str, age_days=model_age_days)
+        except Exception:
+            pass
 
     df = _load_prices(symbol, lookback_days=400)
 
@@ -416,10 +522,17 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     except Exception:
         pass
 
+    infer_fund_data: dict | None = None
+    try:
+        infer_fund_data = _load_fundamentals(symbol)
+    except Exception:
+        pass
+
     # inference_mode=True: keeps the latest bar even without a known future return
     X, _, _ = build_features(
         df, horizon=horizon, macro_df=macro_df,
         label_threshold=0.0, inference_mode=True,
+        fund_data=infer_fund_data,
     )
     if X.empty:
         return {"symbol": symbol, "bullish_probability": 0.5, "confidence": 0}
@@ -443,8 +556,12 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     proba = model.predict_proba(Xs)
     raw_prob = float(proba[-1, 1] if proba.ndim == 2 else proba[-1])
 
-    # Apply calibration if the model was trained with it
-    prob = float(calibrator.predict([raw_prob])[0]) if calibrator is not None else raw_prob
+    if calibrator is None:
+        prob = raw_prob
+    elif isinstance(calibrator, LogisticRegression):
+        prob = float(calibrator.predict_proba([[raw_prob]])[0, 1])
+    else:
+        prob = float(calibrator.predict([raw_prob])[0])
 
     return {
         "symbol": symbol,
@@ -454,6 +571,8 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
         "confidence": round(abs(prob - 0.5) * 200, 2),
         "horizon_days": horizon,
         "metrics": bundle.get("metrics", {}),
+        "trained_at": bundle.get("trained_at"),
+        "model_age_days": model_age_days,
     }
 
 
@@ -498,7 +617,7 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
         "ensemble": True,
         "weights": {"xgboost": round(w_xgb, 2), "random_forest": round(w_rf, 2)},
         "metrics": {
-            "test_auc_mean": round((xgb_auc + rf_auc) / 2, 4),
+            "mean_model_test_auc": round((xgb_auc + rf_auc) / 2, 4),
             "cv_auc_mean": round(
                 (((xgb.get("metrics") or {}).get("cv_auc_mean") or xgb_auc) +
                  ((rf.get("metrics") or {}).get("cv_auc_mean") or rf_auc)) / 2, 4
@@ -583,8 +702,11 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5) -> dict:
 
     model_name = f"ensemble_xgb{'_lgb' if lgb_res else ''}{'_rf' if rf_res else ''}"
 
-    # Use XGBoost buy_threshold as the ensemble threshold (primary model)
-    buy_threshold = float((xgb.get("metrics") or {}).get("buy_threshold") or 0.5)
+    # Weight-average thresholds by the same portfolio weights used for blending
+    buy_threshold = sum(
+        float((m.get("metrics") or {}).get("buy_threshold") or 0.5) * w / total_w
+        for m, w in available
+    )
 
     xgb_auc = float((xgb.get("metrics") or {}).get("auc") or (xgb.get("metrics") or {}).get("cv_auc_mean") or 0.55)
     auc_vals = [xgb_auc]
@@ -605,7 +727,7 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5) -> dict:
         "model_probabilities": model_probs,
         "ensemble_agreement": agreement,
         "metrics": {
-            "test_auc_mean": round(mean_auc, 4),
+            "mean_model_test_auc": round(mean_auc, 4),
             "cv_auc_mean": round(mean_auc, 4),
             "buy_threshold": buy_threshold,
         },

@@ -28,7 +28,9 @@ Style overrides (on top of _DEFAULT_CONFIG):
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -36,7 +38,7 @@ import pandas as pd
 
 from common.logging import get_logger
 from db import (
-    PaperEquityCurve, PaperPortfolio, PaperTrade,
+    PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
     Ranking, SessionLocal, Signal, SignalAlert, Stock, User, Watchlist, WatchlistItem,
 )
 from sqlalchemy import desc, func, select
@@ -48,30 +50,35 @@ log = get_logger("paper_trading_engine")
 
 _DEFAULT_CONFIG: dict[str, Any] = {
     "trading_style":        "GROWTH",  # which signal horizon to trade
-    "max_positions":        10,
+    "market":               "US",      # "US" or "HK" — determines market hours + stock universe
+    "max_positions":        6,         # max concurrent open positions (fewer = higher quality)
     "max_sector_pct":       0.30,      # max 30% in one sector
+    "max_sector_positions": 3,         # max positions per sector (RISK-3)
     "risk_per_trade_pct":   0.01,      # risk 1% of equity per trade
     "max_position_pct":     0.10,      # cap any single position at 10% of equity
     # Signal.confidence = abs(bull_probability - 0.5) × 200
-    # e.g. bull_prob=62.7% → confidence=25.4; bull_prob=81% → confidence=62
-    # Old default 62 required bull_prob≥81% — nothing ever passed. Correct scale: 15=57.5%, 20=60%.
-    "min_confidence":       15.0,      # Signal.confidence threshold (bull_prob ≥ 57.5%)
+    # e.g. bull_prob=72.5%→conf=45; bull_prob=75%→conf=50; bull_prob=81%→conf=62.
+    # Style-specific minimums in _STYLE_OVERRIDES below.
+    "min_confidence":       45.0,      # Signal.confidence threshold (bull_prob ≥ 72.5%)
     "min_kscore":           48.0,      # Ranking.score threshold
     "min_rr_ratio":         2.0,       # minimum risk:reward at entry
-    "min_entry_score":      3,         # _should_enter() score threshold
+    "min_entry_score":      4,         # _should_enter() score threshold (raised from 3 → 4)
     "max_hold_days":        60,        # time-stop (GROWTH / LONG)
     "trail_atr_mult":       2.0,       # trailing stop = highest_price - ATR × mult
     "trail_trigger_pct":         0.05,  # arm trailing stop after +5% gain (once armed, trails every cycle)
     "breakeven_trigger_pct":     0.03,  # move stop to breakeven after +3% gain
+    "partial_tp_pct":            0.10,  # sell first tranche at +10% gain (styles override this)
     "wait_exit_days":            5,     # exit if signal stays WAIT this many days
     "max_portfolio_drawdown_pct":0.20,  # pause entries if equity drops 20% from peak
     "max_daily_loss_pct":        0.04,  # pause entries if realized losses today > 4% of equity
-    "max_entries_per_day":       5,     # cap new positions opened in one trading day
+    "max_entries_per_day":       3,     # cap new positions opened in one trading day (quality > quantity)
     "require_kscore":            True,  # reject stocks with no ranking row (unknown quality)
     "max_open_risk_pct":         0.12,  # max aggregate open risk across all positions (12%)
     "max_loss_per_trade_pct":    0.02,  # cap dollar loss on any single trade at 2% of equity
     "entry_slippage_pct":        0.001, # 10 bps slippage on entry and exit (simulates spread)
     "commission_per_share":      0.0,   # per-share commission ($0 for most retail brokers)
+    "hold_stall_days":           30,    # exit if position gains < hold_stall_max_gain for this many days
+    "hold_stall_max_gain":       0.05,  # max unrealized gain threshold for stall detection (5%)
     "enforce_market_hours":      True,  # skip new entries outside 9:30–16:00 ET Mon–Fri
     # Regime engine
     "enable_regime_filter":      True,   # master on/off
@@ -98,6 +105,40 @@ _STYLE_PARAMS: dict[str, dict] = {
                "stop_pct": 0.880, "default_tp_pct": 1.35},
 }
 
+# AL-4: Load Optuna-tuned params from shared model dir; overlay onto _STYLE_PARAMS.
+# trade_params.json is written by POST /paper-portfolio/tune-params.
+_TRADE_PARAMS_FILE = Path("/data/models/trade_params.json")
+
+
+def _load_tuned_params() -> None:
+    """Merge Optuna-tuned stop/tp/hold params into _STYLE_PARAMS if the file exists."""
+    if not _TRADE_PARAMS_FILE.exists():
+        return
+    try:
+        data = json.loads(_TRADE_PARAMS_FILE.read_text())
+        for style, result in data.items():
+            if style in _STYLE_PARAMS:
+                if "best_stop_pct" in result:
+                    _STYLE_PARAMS[style]["stop_pct"] = result["best_stop_pct"]
+                if "best_tp_pct" in result:
+                    _STYLE_PARAMS[style]["default_tp_pct"] = result["best_tp_pct"]
+        log.info("paper_engine.tuned_params_loaded", styles=list(data.keys()))
+    except Exception as exc:
+        log.warning("paper_engine.tuned_params_load_failed", exc=str(exc))
+
+
+# Also update _STYLE_OVERRIDES max_hold_days from tuned params when loaded.
+def _apply_tuned_hold_days() -> None:
+    if not _TRADE_PARAMS_FILE.exists():
+        return
+    try:
+        data = json.loads(_TRADE_PARAMS_FILE.read_text())
+        for style, result in data.items():
+            if style in _STYLE_OVERRIDES and "best_max_hold_days" in result:
+                _STYLE_OVERRIDES[style]["max_hold_days"] = result["best_max_hold_days"]
+    except Exception:
+        pass
+
 
 def _round_step(price: float) -> float:
     if price >= 1000: return 5.0
@@ -111,18 +152,24 @@ def _round_step(price: float) -> float:
 _STYLE_OVERRIDES: dict[str, dict] = {
     "GROWTH": {
         "max_hold_days": 60, "trail_atr_mult": 2.0,
-        "trail_trigger_pct": 0.05, "breakeven_trigger_pct": 0.03,
-        "wait_exit_days": 5, "min_confidence": 15.0, "min_kscore": 48.0,
+        # Trail arms early so gains are protected; breakeven at +2% locks capital fast.
+        "trail_trigger_pct": 0.04, "breakeven_trigger_pct": 0.02,
+        # Scale out later for GROWTH (35% target) — don't cut winners short.
+        "partial_tp_pct": 0.12, "partial_tp2_pct": 0.22,
+        "wait_exit_days": 5, "min_confidence": 45.0, "min_kscore": 48.0,
     },
     "SWING": {
         "max_hold_days": 20, "trail_atr_mult": 1.5,
-        "trail_trigger_pct": 0.04, "breakeven_trigger_pct": 0.02,
-        "wait_exit_days": 3, "min_confidence": 20.0, "min_kscore": 52.0,
+        # Trail arms at +3%; breakeven at +1.5% for tighter SWING stops.
+        "trail_trigger_pct": 0.03, "breakeven_trigger_pct": 0.015,
+        # SWING target is +12%: scale at +7% and +10%.
+        "partial_tp_pct": 0.07, "partial_tp2_pct": 0.10,
+        "wait_exit_days": 3, "min_confidence": 50.0, "min_kscore": 52.0,
     },
     "LONG": {
         "max_hold_days": 90, "trail_atr_mult": 2.0,
         "trail_trigger_pct": 0.06, "breakeven_trigger_pct": 0.04,
-        "wait_exit_days": 7, "min_confidence": 18.0, "min_kscore": 50.0,
+        "wait_exit_days": 7, "min_confidence": 40.0, "min_kscore": 50.0,
     },
 }
 
@@ -202,27 +249,161 @@ def _batch_compute_atr(symbols: list[str], period: int = 14) -> dict[str, float 
     return result
 
 
+# ── Sector ETF mapping (PT-M1) ───────────────────────────────────────────────
+
+_SECTOR_ETF_MAP: dict[str, str] = {
+    "Technology":              "XLK",
+    "Health Care":             "XLV",
+    "Healthcare":              "XLV",
+    "Financials":              "XLF",
+    "Financial Services":      "XLF",
+    "Energy":                  "XLE",
+    "Consumer Discretionary":  "XLY",
+    "Consumer Staples":        "XLP",
+    "Industrials":             "XLI",
+    "Materials":               "XLB",
+    "Real Estate":             "XLRE",
+    "Utilities":               "XLU",
+    "Communication Services":  "XLC",
+    "Telecommunications":      "XLC",
+}
+
+
+def _batch_sector_rs_lag(sym_sector_pairs: list[tuple[str, str | None]]) -> dict[str, bool]:
+    """PT-M1: Detect stocks lagging their sector ETF by > 10pp over the last 5 trading days.
+
+    Uses a single yfinance download for all stocks + their mapped ETFs.
+    Returns {symbol: True} for stocks with confirmed sector relative weakness.
+    """
+    if not sym_sector_pairs:
+        return {}
+
+    stock_syms = [s for s, _ in sym_sector_pairs]
+    sector_to_etf = {(sec or ""): _SECTOR_ETF_MAP.get(sec or "", "SPY") for _, sec in sym_sector_pairs}
+    etf_syms = list(set(sector_to_etf.values()))
+    all_syms = list(set(stock_syms + etf_syms))
+
+    try:
+        import yfinance as yf
+        raw = yf.download(all_syms, period="15d", auto_adjust=True, progress=False)
+        closes = raw["Close"] if "Close" in raw.columns else raw
+
+        # Handle single-ticker edge case (yfinance returns Series, not DataFrame)
+        if hasattr(closes, "name"):
+            closes = closes.to_frame(name=closes.name)
+
+        returns_5d: dict[str, float] = {}
+        for sym in all_syms:
+            if sym in closes.columns:
+                s = closes[sym].dropna()
+                if len(s) >= 6:
+                    returns_5d[sym] = float(s.iloc[-1]) / float(s.iloc[-6]) - 1
+
+        result: dict[str, bool] = {}
+        for stock_sym, sector in sym_sector_pairs:
+            etf = _SECTOR_ETF_MAP.get(sector or "", "SPY")
+            stock_ret = returns_5d.get(stock_sym)
+            etf_ret   = returns_5d.get(etf)
+            if stock_ret is not None and etf_ret is not None:
+                if etf_ret - stock_ret > 0.10:  # stock lagging sector ETF by > 10pp
+                    result[stock_sym] = True
+        return result
+
+    except Exception as exc:
+        log.warning("paper.sector_rs_lag_failed", error=str(exc))
+        return {}
+
+
 # ── Market hours check ───────────────────────────────────────────────────────
 
-def _is_market_hours() -> bool:
-    """True if current UTC time falls within US regular session (9:30–16:00 ET, Mon–Fri).
+# AUD-M13: NYSE/NASDAQ market holiday calendar 2024–2027.
+# Static list avoids a pandas_market_calendars dependency.
+# Observed dates: when the holiday falls on Sat → Fri observed; Sun → Mon observed.
+_NYSE_HOLIDAYS: frozenset[date] = frozenset([
+    # 2024
+    date(2024,  1,  1),  # New Year's Day
+    date(2024,  1, 15),  # MLK Day
+    date(2024,  2, 19),  # Presidents' Day
+    date(2024,  3, 29),  # Good Friday
+    date(2024,  5, 27),  # Memorial Day
+    date(2024,  6, 19),  # Juneteenth
+    date(2024,  7,  4),  # Independence Day
+    date(2024,  9,  2),  # Labor Day
+    date(2024, 11, 28),  # Thanksgiving
+    date(2024, 12, 25),  # Christmas
+    # 2025
+    date(2025,  1,  1),  # New Year's Day
+    date(2025,  1, 20),  # MLK Day
+    date(2025,  2, 17),  # Presidents' Day
+    date(2025,  4, 18),  # Good Friday
+    date(2025,  5, 26),  # Memorial Day
+    date(2025,  6, 19),  # Juneteenth
+    date(2025,  7,  4),  # Independence Day
+    date(2025,  9,  1),  # Labor Day
+    date(2025, 11, 27),  # Thanksgiving
+    date(2025, 12, 25),  # Christmas
+    # 2026
+    date(2026,  1,  1),  # New Year's Day
+    date(2026,  1, 19),  # MLK Day
+    date(2026,  2, 16),  # Presidents' Day
+    date(2026,  4,  3),  # Good Friday
+    date(2026,  5, 25),  # Memorial Day
+    date(2026,  6, 19),  # Juneteenth
+    date(2026,  7,  3),  # Independence Day (observed, July 4 = Sat)
+    date(2026,  9,  7),  # Labor Day
+    date(2026, 11, 26),  # Thanksgiving
+    date(2026, 12, 25),  # Christmas
+    # 2027
+    date(2027,  1,  1),  # New Year's Day
+    date(2027,  1, 18),  # MLK Day
+    date(2027,  2, 15),  # Presidents' Day
+    date(2027,  3, 26),  # Good Friday
+    date(2027,  5, 31),  # Memorial Day
+    date(2027,  6, 18),  # Juneteenth (observed, June 19 = Sat)
+    date(2027,  7,  5),  # Independence Day (observed, July 4 = Sun)
+    date(2027,  9,  6),  # Labor Day
+    date(2027, 11, 25),  # Thanksgiving
+    date(2027, 12, 24),  # Christmas (observed, Dec 25 = Sat)
+])
 
-    ET = UTC-4 in summer (EDT) / UTC-5 in winter (EST). Using a fixed UTC-5 offset
-    is conservative — may allow entries up to 1 hour early in summer, which is acceptable.
-    Using pytz/zoneinfo would be more precise but adds a dependency.
+
+def _is_market_hours(market: str = "US") -> bool:
+    """True if current time falls within the regular session for the given market.
+
+    US: 9:30–16:00 ET Mon–Fri (NYSE holidays respected).
+    HK: 09:30–12:00 and 13:00–16:00 HKT Mon–Fri.
     """
-    from datetime import timezone as tz
-    now_utc = datetime.now(timezone.utc)
-    if now_utc.weekday() >= 5:  # Saturday=5, Sunday=6
+    from zoneinfo import ZoneInfo
+    if market == "HK":
+        now_hkt = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+        if now_hkt.weekday() >= 5:
+            return False
+        morning_open  = now_hkt.replace(hour=9,  minute=30, second=0, microsecond=0)
+        morning_close = now_hkt.replace(hour=12, minute=0,  second=0, microsecond=0)
+        aftnoon_open  = now_hkt.replace(hour=13, minute=0,  second=0, microsecond=0)
+        aftnoon_close = now_hkt.replace(hour=16, minute=0,  second=0, microsecond=0)
+        return (morning_open <= now_hkt < morning_close) or (aftnoon_open <= now_hkt < aftnoon_close)
+
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
         return False
-    # Convert to ET (UTC-5 conservative; EDT shifts by 1h which we accept)
-    now_et = now_utc - timedelta(hours=5)
+    if now_et.date() in _NYSE_HOLIDAYS:
+        return False
     market_open  = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
     market_close = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
     return market_open <= now_et < market_close
 
 
 # ── Market regime engine ─────────────────────────────────────────────────────
+
+_regime_cache: dict = {}          # last successful result
+_regime_cache_ts: float = 0.0     # epoch seconds of last successful fetch
+
+
+def get_last_regime() -> dict:
+    """Return the most recently cached market regime dict, or {} if not yet populated."""
+    return dict(_regime_cache)
+
 
 def _fetch_market_regime(cfg: dict) -> dict:
     """Download SPY/QQQ/VIX (300 days) and classify the current market regime.
@@ -239,27 +420,39 @@ def _fetch_market_regime(cfg: dict) -> dict:
       qqq_ema50   : float | None
       notes       : list[str]      (human-readable explanation)
     """
+    global _regime_cache, _regime_cache_ts
     result: dict = {
         "state": "neutral",
         "spy_price": None, "spy_ema20": None, "spy_ema50": None, "spy_ema200": None,
-        "spy_20d_ret": None, "vix": None, "qqq_price": None, "qqq_ema50": None,
+        "spy_20d_ret": None, "vix": None, "vix9d": None, "qqq_price": None, "qqq_ema50": None,
         "notes": [],
         # RE-9: early warning fields
         "spy_pct_above_ema20": None,  # how far SPY is above/below EMA20 as %
         "vix_5d_trend": None,         # "rising" | "falling" | "flat"
         "is_pre_choppy": False,       # True when neutral but showing deterioration signals
         "is_pre_risk_off": False,     # True when neutral/choppy with VIX trending toward risk_off
+        # PT-M4: VIX term structure — VIX9D/VIX > 1.10 means near-term fear > medium-term → panic spike
+        "vix_term_inverted": False,   # True when ^VIX9D / ^VIX > 1.10
+        # PT-M5: Market breadth via IWM (Russell 2000) + MDY (S&P 400 mid-cap) vs 200EMA
+        "breadth_weak": False,        # True when BOTH IWM and MDY below 200EMA
+        "breadth_size_mult": 1.0,     # 0.80 if one below 200EMA; 0.60 if both
+        "iwm_vs_ema200": None,        # IWM price / 200EMA (for logging)
+        "mdy_vs_ema200": None,        # MDY price / 200EMA (for logging)
     }
     try:
         import yfinance as yf
         # 300 days needed to warm up the 200EMA; group_by default = by column
-        raw = yf.download(["SPY", "QQQ", "^VIX"], period="300d",
+        # IWM (Russell 2000) + MDY (S&P 400) added for PT-M5 breadth check
+        raw = yf.download(["SPY", "QQQ", "^VIX", "^VIX9D", "IWM", "MDY"], period="300d",
                           auto_adjust=True, progress=False)
         closes = raw["Close"] if "Close" in raw.columns else raw
 
-        spy_s = closes["SPY"].dropna()   if "SPY"  in closes.columns else None
-        qqq_s = closes["QQQ"].dropna()   if "QQQ"  in closes.columns else None
-        vix_s = closes["^VIX"].dropna()  if "^VIX" in closes.columns else None
+        spy_s   = closes["SPY"].dropna()    if "SPY"    in closes.columns else None
+        qqq_s   = closes["QQQ"].dropna()    if "QQQ"    in closes.columns else None
+        vix_s   = closes["^VIX"].dropna()   if "^VIX"   in closes.columns else None
+        vix9d_s = closes["^VIX9D"].dropna() if "^VIX9D" in closes.columns else None
+        iwm_s   = closes["IWM"].dropna()    if "IWM"    in closes.columns else None
+        mdy_s   = closes["MDY"].dropna()    if "MDY"    in closes.columns else None
 
         if spy_s is not None and len(spy_s) >= 20:
             result["spy_price"] = float(spy_s.iloc[-1])
@@ -288,9 +481,46 @@ def _fetch_market_regime(cfg: dict) -> dict:
                 else:
                     result["vix_5d_trend"] = "flat"
 
+        # PT-M4: VIX9D (9-day VIX) vs VIX (30-day) term structure.
+        # Inverted term structure (short-term fear > medium-term) precedes risk-off regimes.
+        if vix9d_s is not None and len(vix9d_s) >= 1 and result["vix"]:
+            vix9d_val = float(vix9d_s.iloc[-1])
+            result["vix9d"] = vix9d_val
+            if vix9d_val / result["vix"] > 1.10:
+                result["vix_term_inverted"] = True
+
+        # PT-M5: Market breadth via IWM (Russell 2000) + MDY (S&P 400 mid-cap).
+        # Both below their 200EMA signals a narrow market — mega-caps masking widespread weakness.
+        iwm_below = False
+        mdy_below = False
+        if iwm_s is not None and len(iwm_s) >= 200:
+            iwm_price = float(iwm_s.iloc[-1])
+            iwm_e200  = float(iwm_s.ewm(span=200, adjust=False).mean().iloc[-1])
+            result["iwm_vs_ema200"] = round(iwm_price / iwm_e200, 4)
+            iwm_below = iwm_price < iwm_e200
+        if mdy_s is not None and len(mdy_s) >= 200:
+            mdy_price = float(mdy_s.iloc[-1])
+            mdy_e200  = float(mdy_s.ewm(span=200, adjust=False).mean().iloc[-1])
+            result["mdy_vs_ema200"] = round(mdy_price / mdy_e200, 4)
+            mdy_below = mdy_price < mdy_e200
+        # Two-tier breadth sizing: one below → 80%; both below → 60%
+        if iwm_below and mdy_below:
+            result["breadth_weak"]      = True
+            result["breadth_size_mult"] = 0.60
+        elif iwm_below or mdy_below:
+            result["breadth_size_mult"] = 0.80
+
     except Exception as exc:
-        log.warning("paper.regime_fetch_failed", error=str(exc))
-        return result  # fall through with default "neutral" — never block trading on data error
+        import time as _time
+        age = _time.time() - _regime_cache_ts
+        if _regime_cache and age < 14_400:  # use cache if < 4 hours old
+            log.warning("paper.regime_fallback_to_cached", error=str(exc), cache_age_min=round(age / 60, 1))
+            return dict(_regime_cache)
+        # cache stale or empty — default to choppy (conservative) not neutral (full-size)
+        log.warning("paper.regime_fallback_to_choppy", error=str(exc))
+        result["state"] = "choppy"
+        result["notes"] = ["regime fetch failed — conservative choppy default"]
+        return result
 
     spy   = result["spy_price"]
     e20   = result["spy_ema20"]
@@ -356,18 +586,113 @@ def _fetch_market_regime(cfg: dict) -> dict:
             result["is_pre_risk_off"] = True
             notes.append(f"RE-9 pre-risk_off warning: SPY {(spy/e50-1)*100:.1f}% above 50EMA, VIX {vix_cur:.1f}")
 
+        # PT-M4: Inverted VIX term structure (VIX9D/VIX > 1.10) in bull/neutral → elevate to pre_risk_off.
+        # Short-term fear spiking above medium-term fear is a reliable early panic signal even before
+        # SPY loses its EMAs — gives us a session head-start over the standard RE-9 trigger.
+        if result.get("vix_term_inverted") and state in ("bull", "neutral"):
+            result["is_pre_risk_off"] = True
+            vix9d_val = result.get("vix9d") or 0
+            notes.append(f"PT-M4 VIX term structure inverted: VIX9D {vix9d_val:.1f} / VIX {vix_cur:.1f} > 1.10")
+
+        # PT-M5: Breadth weakness (IWM + MDY below 200EMA) in bull/neutral → elevate to pre_risk_off.
+        # A bull-regime SPY reading is unreliable when small/mid caps are already in a downtrend.
+        if result.get("breadth_weak") and state in ("bull", "neutral"):
+            result["is_pre_risk_off"] = True
+            notes.append(
+                f"PT-M5 breadth weak: IWM/200EMA={result.get('iwm_vs_ema200', 0):.3f}, "
+                f"MDY/200EMA={result.get('mdy_vs_ema200', 0):.3f} — narrow market"
+            )
+
     log.info("paper.regime_classified",
              state=result["state"],
              spy=result["spy_price"],
              ema20=result["spy_ema20"] and round(result["spy_ema20"], 2),
              ema50=result["spy_ema50"] and round(result["spy_ema50"], 2),
              vix=result["vix"],
+             vix9d=result["vix9d"],
+             vix_term_inverted=result["vix_term_inverted"],
+             breadth_weak=result["breadth_weak"],
+             breadth_size_mult=result["breadth_size_mult"],
+             iwm_vs_ema200=result["iwm_vs_ema200"],
+             mdy_vs_ema200=result["mdy_vs_ema200"],
              spy_20d_ret=result["spy_20d_ret"],
              spy_pct_above_ema20=result["spy_pct_above_ema20"],
              vix_5d_trend=result["vix_5d_trend"],
              is_pre_choppy=result["is_pre_choppy"],
              is_pre_risk_off=result["is_pre_risk_off"],
              notes=notes)
+    import time as _time
+    _regime_cache = dict(result)
+    _regime_cache_ts = _time.time()
+    return result
+
+
+_hk_regime_cache: dict = {}
+_hk_regime_cache_ts: float = 0.0
+
+
+def _fetch_hk_market_regime(cfg: dict) -> dict:
+    """Basic HK regime detection: HSI vs 200-day SMA.
+
+    Returns a simplified regime dict compatible with the US version.
+    No VIX equivalent — uses HSI distance from 200SMA as the sole signal:
+      bull   : HSI > 200 SMA and 20d return > 0
+      neutral: HSI > 200 SMA but 20d return ≤ 0 (topping / momentum fade)
+      choppy : HSI within ±2% of 200 SMA
+      bear   : HSI < 200 SMA
+    """
+    global _hk_regime_cache, _hk_regime_cache_ts
+    import time as _time
+    if _hk_regime_cache and (_time.time() - _hk_regime_cache_ts) < 1800:
+        return dict(_hk_regime_cache)
+
+    result: dict = {
+        "state": "neutral", "vix": None, "spy_price": None,
+        "spy_ema20": None, "spy_ema50": None, "spy_ema200": None,
+        "spy_20d_ret": None, "qqq_price": None, "qqq_ema50": None,
+        "breadth_weak": False, "breadth_size_mult": 1.0,
+        "vix_term_inverted": False, "vix_5d_trend": None,
+        "spy_pct_above_ema20": None, "is_pre_choppy": False, "is_pre_risk_off": False,
+        "notes": [],
+    }
+    try:
+        import yfinance as yf
+        raw = yf.download("^HSI", period="300d", auto_adjust=True, progress=False)
+        closes = raw["Close"].dropna() if "Close" in raw.columns else raw.dropna()
+        if len(closes) < 50:
+            result["notes"].append("HSI data insufficient — defaulting to neutral")
+            return result
+
+        hsi_price = float(closes.iloc[-1])
+        sma200 = float(closes.tail(200).mean()) if len(closes) >= 200 else float(closes.mean())
+        sma20  = float(closes.tail(20).mean())
+        ret20  = (hsi_price / float(closes.iloc[-20]) - 1) if len(closes) >= 20 else 0.0
+
+        pct_above = (hsi_price / sma200 - 1) if sma200 else 0.0
+        result["spy_price"]   = hsi_price      # reuse field for UI compat
+        result["spy_ema200"]  = sma200
+        result["spy_ema20"]   = sma20
+        result["spy_20d_ret"] = round(ret20 * 100, 2)
+
+        if hsi_price < sma200 * 0.98:
+            result["state"] = "bear"
+            result["notes"].append(f"HSI {pct_above*100:.1f}% below 200 SMA → bear")
+        elif abs(pct_above) < 0.02:
+            result["state"] = "choppy"
+            result["notes"].append("HSI within ±2% of 200 SMA → choppy")
+        elif ret20 <= 0:
+            result["state"] = "neutral"
+            result["notes"].append(f"HSI above 200 SMA but 20d return {ret20*100:.1f}% → neutral")
+        else:
+            result["state"] = "bull"
+            result["notes"].append(f"HSI {pct_above*100:.1f}% above 200 SMA + positive 20d return → bull")
+
+    except Exception as exc:
+        log.warning("paper.hk_regime_fetch_failed", error=str(exc))
+        result["notes"].append(f"HSI fetch failed: {exc}")
+
+    _hk_regime_cache = dict(result)
+    _hk_regime_cache_ts = _time.time()
     return result
 
 
@@ -474,110 +799,18 @@ def _should_enter(
     else:
         notes.append(f"Acceptable R:R {rr:.1f}:1")
 
-    # ── Momentum / RSI (style-aware) ─────────────────────────────────────────
+    # ── Volume confirmation (CB-5: independent of signal engine — not in fused_prob) ──
+    # PA-B2: low-volume signals have higher false-positive rate for breakouts
 
-    rsi = reasons.get("rsi")
-    if rsi is not None:
-        rsi = float(rsi)
-        if style == "GROWTH":
-            # Tighter range checked first — elif order matters here
-            if 72 <= rsi <= 85:
-                score += 2
-                notes.append(f"RSI {rsi:.0f} — strong momentum (growth names run hot)")
-            elif 55 <= rsi < 72:
-                score += 1
-                notes.append(f"RSI {rsi:.0f} — momentum territory (valid for growth)")
-            elif 85 < rsi <= 88:
-                score += 1  # elevated but within tolerance for growth names
-                notes.append(f"RSI {rsi:.0f} — elevated, within growth tolerance")
-            elif rsi > 88:
-                score -= 2
-                notes.append(f"RSI {rsi:.0f} — potential exhaustion above 88")
-            elif rsi < 38:
-                score -= 1
-                notes.append(f"RSI {rsi:.0f} — below growth entry minimum (38)")
-        else:
-            if rsi > 72:
-                score -= 2
-                notes.append(f"RSI {rsi:.0f} overbought — wait for cooldown")
-            elif 40 <= rsi <= 65:
-                score += 1
-                notes.append(f"RSI {rsi:.0f} — healthy range")
-
-    # ── MACD / momentum confirmation ─────────────────────────────────────────
-
-    if reasons.get("macd_rising") and reasons.get("macd_zero_cross_up"):
-        score += 2
-        notes.append("MACD rising + zero-cross — momentum confirmed")
-    elif reasons.get("macd_rising"):
-        score += 1
-        notes.append("MACD rising — building momentum")
-
-    if reasons.get("obv_bullish"):
-        score += 1
-        notes.append("OBV bullish — volume confirming price direction")
-
-    # PA-B2: volume confirmation — penalise low-volume signals
     volume_z = reasons.get("volume_z")
     if volume_z is not None:
         vz = float(volume_z)
-        if vz < -0.5:
+        if vz > 1.0:
+            score += 1
+            notes.append(f"Above-average volume (z={vz:.1f}) — conviction confirmation")
+        elif vz < -0.5:
             score -= 1
             notes.append(f"Below-average volume (z={vz:.1f}) — breakout less reliable")
-
-    # ── Trend structure ───────────────────────────────────────────────────────
-
-    if style == "GROWTH":
-        # SMA20 > SMA50 sufficient for GROWTH (skip SMA50 > SMA200 requirement)
-        sma_above = reasons.get("trend_above_sma50")   # reuse as proxy
-        if sma_above:
-            score += 1
-            notes.append("Price above SMA50 — short-term uptrend intact")
-    else:
-        if reasons.get("sma50_above_sma200") and reasons.get("trend_above_sma50"):
-            score += 2
-            notes.append("SMA50>SMA200 golden-cross + price above SMA50")
-        elif reasons.get("trend_above_sma50"):
-            score += 1
-            notes.append("Price above SMA50 — trend intact")
-
-    # ── Market context ────────────────────────────────────────────────────────
-    # Live regime (fetched this cycle) takes precedence over stale signal-stored value
-
-    live_regime_state = live_regime.get("state") if live_regime else None
-    regime_state = live_regime_state or reasons.get("market_regime", "unknown")
-
-    if regime_state == "bull":
-        score += 1
-        notes.append("Bull regime — macro tailwind")
-    elif regime_state == "bear":
-        score -= 2
-        notes.append("Bear regime — higher false-signal rate")
-    elif regime_state in ("risk_off", "choppy"):
-        score -= 1
-        notes.append(f"{regime_state} regime — tighter entry standards applied")
-    elif regime_state == "high_vol":
-        score -= 1
-        notes.append("High-vol regime — wider stop already accommodates this")
-
-    breadth = reasons.get("breadth_pct")
-    if breadth is not None:
-        if float(breadth) >= 55:
-            score += 1
-            notes.append(f"Market breadth {float(breadth):.0f}% — broad participation healthy")
-        elif float(breadth) < 40:
-            score -= 1
-            notes.append(f"Market breadth {float(breadth):.0f}% — broad weakness, be selective")
-
-    # ── Sector context (GROWTH is exempt from sector headwind penalty) ────────
-
-    if style != "GROWTH":
-        if reasons.get("sector_headwind"):
-            score -= 1
-            notes.append("Sector ETF below SMA50 — sector headwind")
-        elif reasons.get("sector_etf_above_sma50"):
-            score += 1
-            notes.append("Sector ETF above SMA50 — sector tailwind")
 
     # ── Earnings window ───────────────────────────────────────────────────────
 
@@ -585,19 +818,18 @@ def _should_enter(
         score -= 1
         notes.append(f"Earnings in {dte} days — size conservatively")
 
-    # ── Signal conviction ─────────────────────────────────────────────────────
+    # ── Signal conviction summary (CB-5: single bonus replaces per-factor double-count) ──
+    # RSI, MACD, OBV, trend, regime, breadth, sector are all captured in bull_prob already.
+    # Score the fusion result ONCE rather than re-scoring each component individually.
 
-    bull_prob = signal_data.get("bullish_probability") or 0.0
-    confidence = signal_data.get("confidence") or 0.0
-    if float(bull_prob) >= 0.72:
-        score += 2
-        notes.append(f"High conviction {float(bull_prob)*100:.0f}% fused probability")
-    elif float(bull_prob) >= 0.62:
+    bull_prob = float(signal_data.get("bullish_probability") or 0.0)
+    confidence = float(signal_data.get("confidence") or 0.0)
+    if bull_prob >= 0.70:
         score += 1
-        notes.append(f"Moderate conviction {float(bull_prob)*100:.0f}% fused probability")
-    if float(confidence) >= 75:
-        score += 1
-        notes.append(f"Confidence {float(confidence):.0f}% above high-conviction threshold")
+        notes.append(f"Strong conviction {bull_prob*100:.0f}% fused probability")
+    elif bull_prob < 0.58:
+        score -= 1
+        notes.append(f"Weak conviction {bull_prob*100:.0f}% fused probability")
 
     # ── SA-26: Confidence trajectory — accelerating signals outperform decelerating ─
     conf_delta = signal_data.get("confidence_delta")
@@ -712,6 +944,70 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         for sig, stk in batch_sigs:
             latest_signals[stk.symbol] = sig
 
+    # PT-H3: Batch-fetch latest K-score per open symbol — ONE query for all positions
+    latest_kscores: dict[str, float] = {}
+    if symbols:
+        kscore_date_subq = (
+            select(Ranking.stock_id, func.max(Ranking.as_of).label("max_date"))
+            .join(Stock, Ranking.stock_id == Stock.id)
+            .where(Stock.symbol.in_(symbols))
+            .group_by(Ranking.stock_id)
+            .subquery()
+        )
+        for score, sym in session.execute(
+            select(Ranking.score, Stock.symbol)
+            .join(Stock, Ranking.stock_id == Stock.id)
+            .join(kscore_date_subq,
+                  (Ranking.stock_id == kscore_date_subq.c.stock_id) &
+                  (Ranking.as_of == kscore_date_subq.c.max_date))
+        ).all():
+            if score is not None:
+                latest_kscores[sym] = float(score)
+
+    # PT-H4: Batch-fetch last 15 daily bars per open symbol for OBV divergence detection.
+    # OBV divergence (price holding up but OBV declining) indicates quiet distribution.
+    _obv_divergence: dict[str, bool] = {}
+    if symbols:
+        cutoff_15d = datetime.now(timezone.utc) - timedelta(days=22)  # ~15 trading days
+        price_rows = session.execute(
+            select(Stock.symbol, Price.close, Price.volume)
+            .join(Stock, Price.stock_id == Stock.id)
+            .where(
+                Stock.symbol.in_(symbols),
+                Price.timeframe == TimeFrame.D1,
+                Price.ts >= cutoff_15d,
+            )
+            .order_by(Stock.symbol, Price.ts)
+        ).all()
+        _sym_bars: dict[str, list[tuple[float, float]]] = {}
+        for sym, close, volume in price_rows:
+            _sym_bars.setdefault(sym, []).append((float(close), float(volume or 0)))
+        for sym, bars in _sym_bars.items():
+            if len(bars) < 10:
+                continue
+            bars = bars[-10:]
+            closes  = [b[0] for b in bars]
+            volumes = [b[1] for b in bars]
+            # Cumulative OBV
+            obv = 0.0
+            obv_series = [0.0]
+            for i in range(1, len(closes)):
+                obv += volumes[i] if closes[i] > closes[i - 1] else (-volumes[i] if closes[i] < closes[i - 1] else 0)
+                obv_series.append(obv)
+            n = len(obv_series)
+            first_half_mean = sum(obv_series[:n // 2]) / (n // 2)
+            second_half_mean = sum(obv_series[n // 2:]) / (n - n // 2)
+            price_held = closes[-1] >= closes[0] * 0.98  # price flat or up over window
+            obv_declining = second_half_mean < first_half_mean  # OBV trending down
+            if price_held and obv_declining:
+                _obv_divergence[sym] = True
+
+    # PT-M1: Batch-compute sector relative-strength lag for all open positions.
+    # One yfinance download covers all stocks + their sector ETFs.
+    _rs_sector_lag: dict[str, bool] = _batch_sector_rs_lag(
+        [(t.symbol, t.sector) for t in open_trades]
+    )
+
     # Regime-adjusted trail multiplier — tighten stops in risk-off environments
     # so existing positions are protected even though new entries are paused/sized down
     regime_trail_adj = 1.0
@@ -734,7 +1030,8 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
     for trade in open_trades:
         # PT-B3: hold days in trading days (excludes weekends/holidays)
-        days_held = int(np.busday_count(trade.entry_date, date.today()))
+        # +1 so today counts as day 1 (busday_count is exclusive of end date)
+        days_held = int(np.busday_count(trade.entry_date, date.today() + timedelta(days=1)))
         trade.hold_days = days_held
 
         live_price = live_prices.get(trade.symbol)
@@ -751,7 +1048,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         pnl_pct = (live_price - entry) / entry
 
         current_sig = latest_signals.get(trade.symbol)
-        sig_type = current_sig.signal.value if current_sig else "UNKNOWN"
+        sig_type = current_sig.signal.value if current_sig and current_sig.signal else "UNKNOWN"
 
         exit_reason = None
         exit_notes: dict = {}
@@ -851,8 +1148,11 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
         if exit_reason:
             # PT-B6: apply exit slippage (sells at a slightly lower price than quoted)
+            # RISK-2: stop-hit exits fill at stop level (not gap price) — simulates stop-limit semantics
             slippage = cfg.get("entry_slippage_pct", 0.001)
-            exit_price = round(live_price * (1 - slippage), 4)
+            fill_base = stop if exit_reason == "stop_hit" else live_price
+            exit_price = round(fill_base * (1 - slippage), 4)
+            exit_commission = round(cfg.get("commission_per_share", 0.0) * trade.shares, 4)
             exit_value = round(exit_price * trade.shares, 2)
             pnl_dollar = round((exit_price - entry) * trade.shares, 2)
             pnl_pct    = (exit_price - entry) / entry  # recalc with slipped exit
@@ -866,7 +1166,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # PA-G3: record signal state at exit for walk-forward attribution
             trade.signal_at_exit_id   = current_sig.id   if current_sig else None
             trade.signal_at_exit_type = current_sig.signal.value if current_sig else None
-            portfolio.current_cash = max(0.0, round(portfolio.current_cash + exit_value, 2))
+            portfolio.current_cash = max(0.0, round(portfolio.current_cash + exit_value - exit_commission, 2))
             # PA-G4: rich attribution log — enables "why did this trade exit?" queries in logs
             log.info("paper.exit",
                      symbol=trade.symbol, reason=exit_reason,
@@ -897,15 +1197,87 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             })
             continue
 
+        # ── Two-level scale-out ────────────────────────────────────────────────
+        # Level 1: +7% → sell 33%, floor stop at breakeven
+        # Level 2: +12% → sell 50% of remaining (≈33% of original), move stop to +5%
+        # Backward compat: treats legacy "PARTIAL_TAKEN" marker as level-1 done.
+
+        partial_tp_pct  = cfg.get("partial_tp_pct",  0.07)   # level-1 trigger
+        partial_tp2_pct = cfg.get("partial_tp2_pct", 0.12)   # level-2 trigger
+        _P1 = "PARTIAL1_TAKEN"
+        _P2 = "PARTIAL2_TAKEN"
+        notes_list = list(trade.entry_decision_notes or [])
+        p1_done = _P1 in notes_list or "PARTIAL_TAKEN" in notes_list
+        p2_done = _P2 in notes_list
+        slippage = cfg.get("entry_slippage_pct", 0.001)
+
+        if not p1_done and partial_tp_pct and pnl_pct >= partial_tp_pct and trade.shares > 0.01:
+            partial_shares = round(trade.shares * 0.33, 4)
+            partial_price  = round(live_price * (1 - slippage), 4)
+            partial_value  = round(partial_shares * partial_price, 2)
+            partial_pnl    = round((partial_price - entry) * partial_shares, 2)
+            partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
+            trade.shares = round(trade.shares - partial_shares, 4)
+            portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
+            if trade.current_stop < entry:
+                trade.current_stop = entry
+            notes_list.append(_P1)
+            notes_list.append(
+                f"Scale-out-1: sold {partial_shares:.4f}sh @ ${partial_price:.2f} "
+                f"(+{pnl_pct*100:.1f}%), remaining {trade.shares:.4f}sh, stop → breakeven"
+            )
+            trade.entry_decision_notes = notes_list
+            log.info("paper.partial1_profit_taken",
+                     symbol=trade.symbol, partial_shares=partial_shares,
+                     partial_price=partial_price, partial_value=partial_value,
+                     partial_pnl=partial_pnl, pnl_pct=round(pnl_pct * 100, 1),
+                     remaining_shares=trade.shares)
+            p1_done = True
+
+        if p1_done and not p2_done and partial_tp2_pct and pnl_pct >= partial_tp2_pct and trade.shares > 0.01:
+            partial_shares = round(trade.shares * 0.50, 4)
+            partial_price  = round(live_price * (1 - slippage), 4)
+            partial_value  = round(partial_shares * partial_price, 2)
+            partial_pnl    = round((partial_price - entry) * partial_shares, 2)
+            partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
+            trade.shares = round(trade.shares - partial_shares, 4)
+            portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
+            lock_stop = round(entry * 1.05, 2)
+            if trade.current_stop < lock_stop:
+                trade.current_stop = lock_stop
+            notes_list2 = list(trade.entry_decision_notes or [])
+            notes_list2.append(_P2)
+            notes_list2.append(
+                f"Scale-out-2: sold {partial_shares:.4f}sh @ ${partial_price:.2f} "
+                f"(+{pnl_pct*100:.1f}%), remaining {trade.shares:.4f}sh, stop → +5%"
+            )
+            trade.entry_decision_notes = notes_list2
+            log.info("paper.partial2_profit_taken",
+                     symbol=trade.symbol, partial_shares=partial_shares,
+                     partial_price=partial_price, partial_value=partial_value,
+                     partial_pnl=partial_pnl, pnl_pct=round(pnl_pct * 100, 1),
+                     remaining_shares=trade.shares)
+
         # ── Trailing stop management (still open) ─────────────────────────────
 
         trail_trigger = cfg.get("trail_trigger_pct", 0.05)
         be_trigger    = cfg.get("breakeven_trigger_pct", 0.03)
 
+        # PT-M2: Earnings proximity — freeze trail updates within 2 trading days of earnings.
+        # Binary events gap both ways; stopping out 2 days before a blowout quarter is costly.
+        # Hard stop (stop_loss) remains active — only dynamic trail updates are paused.
+        _dte = (current_sig.reasons or {}).get("days_to_earnings") if current_sig else None
+        earnings_near = _dte is not None and int(_dte) <= 2
+        if earnings_near:
+            log.info("paper.earnings_proximity_stop_frozen",
+                     symbol=trade.symbol, dte=int(_dte),
+                     current_stop=round(trade.current_stop, 2),
+                     note="trail frozen — earnings binary event within 2 days")
+
         # Trail is armed once highest_price has ever cleared trail_trigger above entry.
         # After arming, update every cycle so stop ratchets up continuously on new highs.
         trail_armed = (trade.highest_price or entry) >= entry * (1 + trail_trigger)
-        if trail_armed:
+        if trail_armed and not earnings_near:
             atr = monitor_atr_cache.get(trade.symbol)
             if atr is not None and atr > 0.01:  # guard against None, NaN, or near-zero
                 mult = cfg.get("trail_atr_mult", 2.0) * regime_trail_adj
@@ -928,19 +1300,24 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                 log.warning("paper.trail_atr_invalid", symbol=trade.symbol, atr=atr,
                             note="skipping trail update this cycle")
 
+        # All tightening checks respect earnings proximity freeze — never tighten into a binary event.
+        if not earnings_near:
+            atr = monitor_atr_cache.get(trade.symbol)
+
         # Double-top neckline break mid-trade — tighten trail multiplier to 1.2× (from 2.0×)
         # A confirmed double-top breakdown while holding means the thesis is reversing
         sig_reasons = {}
-        try:
-            from sqlalchemy import text as sa_text
-            sig_reasons = session.execute(
-                sa_text("SELECT reasons FROM signals WHERE stock_id = :sid AND horizon = :h ORDER BY ts DESC LIMIT 1"),
-                {"sid": trade.stock_id, "h": trade.style or cfg.get("trading_style", "GROWTH")},
-            ).mappings().one_or_none()
-            sig_reasons = dict(sig_reasons["reasons"] or {}) if sig_reasons else {}
-        except Exception:
-            pass
-        if sig_reasons.get("double_top_breakdown") and trail_armed and atr is not None and atr > 0.01:
+        if not earnings_near:
+            try:
+                from sqlalchemy import text as sa_text
+                sig_reasons = session.execute(
+                    sa_text("SELECT reasons FROM signals WHERE stock_id = :sid AND horizon = :h ORDER BY ts DESC LIMIT 1"),
+                    {"sid": trade.stock_id, "h": trade.style or cfg.get("trading_style", "GROWTH")},
+                ).mappings().one_or_none()
+                sig_reasons = dict(sig_reasons["reasons"] or {}) if sig_reasons else {}
+            except Exception:
+                pass
+        if sig_reasons.get("double_top_breakdown") and trail_armed and not earnings_near and atr is not None and atr > 0.01:
             tight_mult = 1.2 * regime_trail_adj
             tight_trail = max((trade.highest_price or live_price) - atr * tight_mult, trade.stop_loss)
             if tight_trail > trade.current_stop:
@@ -948,6 +1325,58 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                 log.warning("paper.double_top_trail_tightened", symbol=trade.symbol,
                             new_stop=round(tight_trail, 2),
                             note="double-top neckline break detected — tightening trail to 1.2× ATR")
+
+        # PT-H3: K-score deterioration — tighten trail when institutional flow reverses.
+        # A 15-pt drop in K-score (out of 100) signals smart-money distribution.
+        # Apply only when trail is armed (we have a gain to protect) to avoid premature exits.
+        kscore_entry = trade.kscore_at_entry
+        if (not earnings_near and kscore_entry is not None and trail_armed and
+                atr is not None and atr > 0.01):
+            current_kscore = latest_kscores.get(trade.symbol)
+            if current_kscore is not None and current_kscore < kscore_entry - 15:
+                kdet_mult  = 1.5 * regime_trail_adj
+                kdet_trail = max((trade.highest_price or live_price) - atr * kdet_mult, trade.stop_loss)
+                if kdet_trail > trade.current_stop:
+                    trade.current_stop = round(kdet_trail, 4)
+                    log.warning("paper.kscore_deterioration_trail_tightened",
+                                symbol=trade.symbol,
+                                kscore_at_entry=round(kscore_entry, 1),
+                                kscore_now=round(current_kscore, 1),
+                                drop=round(kscore_entry - current_kscore, 1),
+                                new_stop=round(kdet_trail, 2),
+                                note="K-score drop >15 pts — possible institutional distribution")
+
+        # PT-H4: OBV divergence — price holding but volume declining (quiet distribution).
+        # Only tighten when we have a gain to protect AND price is above entry.
+        if (not earnings_near and trail_armed and atr is not None and atr > 0.01 and
+                pnl_pct >= 0.02 and _obv_divergence.get(trade.symbol)):
+            obv_mult  = 1.5 * regime_trail_adj
+            obv_trail = max((trade.highest_price or live_price) - atr * obv_mult, trade.stop_loss)
+            if obv_trail > trade.current_stop:
+                trade.current_stop = round(obv_trail, 4)
+                log.warning("paper.obv_divergence_trail_tightened",
+                            symbol=trade.symbol,
+                            pnl_pct=round(pnl_pct * 100, 1),
+                            new_stop=round(obv_trail, 2),
+                            note="OBV declining while price holds — possible distribution")
+
+        # PT-M1: Relative strength vs sector exit — stock lagging its sector ETF by > 10pp
+        # over the last 5 trading days signals idiosyncratic weakness, not market noise.
+        # Only tighten when trail is armed (protecting a gain), not earnings, and we have ATR.
+        if (not earnings_near and trail_armed and atr is not None and atr > 0.01 and
+                pnl_pct >= 0.02 and _rs_sector_lag.get(trade.symbol)):
+            rs_mult  = 1.5 * regime_trail_adj
+            rs_trail = max((trade.highest_price or live_price) - atr * rs_mult, trade.stop_loss)
+            if rs_trail > trade.current_stop:
+                trade.current_stop = round(rs_trail, 4)
+                etf_sym = _SECTOR_ETF_MAP.get(trade.sector or "", "SPY")
+                log.warning("paper.sector_rs_lag_trail_tightened",
+                            symbol=trade.symbol,
+                            sector=trade.sector,
+                            sector_etf=etf_sym,
+                            pnl_pct=round(pnl_pct * 100, 1),
+                            new_stop=round(rs_trail, 2),
+                            note="Stock lagging sector ETF by >10pp over 5d — sector RS weakness")
 
         # PA-A3: Breakeven stop — unconditional (not elif) so it fires even when trail
         # is armed but ATR trail is still below entry (e.g. large ATR, small gain so far)
@@ -987,12 +1416,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
     style   = cfg["trading_style"]
     now     = datetime.now(timezone.utc)
-    # CB-3 FIX: signals only write a new row on state *change* (dedup-on-change persistence).
-    # A persistent BUY held since the 9:30 open never writes a new row — its ts stays at 9:30.
-    # With a 2h cutoff, those signals are excluded by 11:31, silently blocking the best setups.
-    # 26h covers a full prior trading day, giving fresh + stale-but-unchanged BUYs equal access.
-    # The signal engine's own 3-day price-staleness compression already handles genuinely old data.
-    cutoff  = now - timedelta(hours=26)
+    # CB-3 FIX + CB-W1 FIX: signals use dedup-on-change persistence — a persistent BUY never
+    # writes a new row while unchanged. 26h was fine Mon–Thu but broke on Mondays: Friday's
+    # valid signals are 72h+ old and excluded entirely. 5 days (120h) covers any weekend or
+    # long-weekend gap. The signal engine's own 3-day price-staleness guard handles truly stale data.
+    cutoff  = now - timedelta(days=5)
 
     # Current portfolio state
     open_count = session.execute(
@@ -1039,10 +1467,24 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                     style=style, note="Add stocks to the GROWTH watchlist to enable entries")
         return
 
-    # Latest BUY signals for the style, updated recently
+    # CB-W1 FIX: use MOST RECENT signal per stock for this style. Without this, a stock
+    # that went BUY→SELL within the 5-day window would still appear in the candidates list
+    # (the old BUY row satisfies Signal.signal=="BUY" even though a newer SELL row exists).
+    latest_signal_ts_subq = (
+        select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+        .where(Signal.horizon == style)
+        .group_by(Signal.stock_id)
+        .subquery()
+    )
+
     buy_signals = session.execute(
         select(Signal, Stock, Ranking)
         .join(Stock, Signal.stock_id == Stock.id)
+        .join(
+            latest_signal_ts_subq,
+            (Signal.stock_id == latest_signal_ts_subq.c.stock_id) &
+            (Signal.ts == latest_signal_ts_subq.c.max_ts),
+        )
         .outerjoin(
             Ranking,
             (Ranking.stock_id == Stock.id) &
@@ -1054,14 +1496,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             )),
         )
         .where(
-            Signal.signal == "BUY",
+            Signal.signal == "BUY",          # only if LATEST signal is BUY
             Signal.horizon == style,
-            # Allow signals within 10% of threshold — let _should_enter() scoring decide.
-            # Hard SQL filter was too blunt: a 61% signal with great R:R + bull regime
-            # was rejected before scoring. A 55% floor still excludes obvious noise.
             Signal.confidence >= cfg["min_confidence"] * 0.90,
-            Signal.ts >= cutoff,
+            Signal.ts >= cutoff,             # within 5-day window
             Stock.active.is_(True),
+            Stock.market == cfg.get("market", "US"),
         )
         .order_by(desc(Signal.confidence))
     ).all()
@@ -1089,7 +1529,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # ── Daily realized-loss circuit breaker (net P&L — winners offset losers) ──────
     max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
     if max_daily_loss and max_daily_loss > 0 and equity > 0:
-        today_open = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        from zoneinfo import ZoneInfo
+        today_open = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
         daily_net_pnl = session.execute(
             select(func.sum(PaperTrade.pnl))
             .where(
@@ -1110,7 +1551,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # ── Max entries per day ───────────────────────────────────────────────────────
     max_entries_day = cfg.get("max_entries_per_day", 5)
     if max_entries_day and max_entries_day > 0:
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        from zoneinfo import ZoneInfo
+        today_start = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
         entries_today = session.execute(
             select(func.count()).select_from(PaperTrade)
             .where(
@@ -1167,11 +1609,25 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             log.warning("paper.pre_risk_off_warning", vix=live_regime.get("vix"),
                         note="applying risk_off sizing preemptively — VIX elevated near 50EMA")
 
+        # PT-M5: Breadth-adjusted position sizing — applied on top of regime sizing.
+        # Narrow markets (IWM/MDY below 200EMA) warrant smaller positions regardless of SPY regime.
+        breadth_mult = live_regime.get("breadth_size_mult", 1.0)
+        if breadth_mult < 1.0:
+            prev_mult = regime_size_mult
+            regime_size_mult = min(regime_size_mult, breadth_mult)
+            log.warning("paper.breadth_weakness_size_reduced",
+                        breadth_size_mult=breadth_mult,
+                        prev_regime_mult=round(prev_mult, 2),
+                        new_regime_mult=round(regime_size_mult, 2),
+                        iwm_vs_ema200=live_regime.get("iwm_vs_ema200"),
+                        mdy_vs_ema200=live_regime.get("mdy_vs_ema200"),
+                        note="IWM/MDY breadth below 200EMA — reducing position size")
+
     # PT-D6: Re-sort candidates by composite priority — confidence + K-Score + breakout context
     def _composite_priority(row):
         sig_r, _, rank_r = row
         conf_score   = float(sig_r.confidence or 0.0) / 100.0
-        kscore_score = float(rank_r.kscore or 50.0) / 100.0 if rank_r and rank_r.kscore else 0.5
+        kscore_score = float(rank_r.score or 50.0) / 100.0 if rank_r and rank_r.score else 0.5
         sr = (sig_r.reasons or {}).get("sr_context", "neutral")
         breakout_bonus = 1.0 if sr == "breakout" else 0.5 if sr == "at_support" else 0.0
         return 0.5 * conf_score + 0.3 * kscore_score + 0.2 * breakout_bonus
@@ -1186,6 +1642,41 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         if open_count + entries_made >= cfg["max_positions"]:
             break
         if stock.symbol in open_symbols:
+            # Scale-in: add to profitable position on fresh high-conviction signal
+            if cfg.get("scale_in_enabled", True):
+                _si_live = live_prices.get(stock.symbol)
+                if _si_live:
+                    _si_trade = session.execute(
+                        select(PaperTrade).where(
+                            PaperTrade.portfolio_id == portfolio.id,
+                            PaperTrade.symbol == stock.symbol,
+                            PaperTrade.stage == "open",
+                        )
+                    ).scalar_one_or_none()
+                    if _si_trade:
+                        _si_pnl_pct = (_si_live - _si_trade.entry_price) / _si_trade.entry_price
+                        _si_notes_list = _si_trade.entry_decision_notes or []
+                        _si_already = any("SCALE_IN" in str(n) for n in _si_notes_list)
+                        _si_conf = float(sig.confidence or 0.0)
+                        if not _si_already and _si_pnl_pct >= 0.05 and _si_conf >= 60.0:
+                            _si_add_value = _si_trade.entry_price * _si_trade.shares * 0.25
+                            if portfolio.current_cash >= _si_add_value * 1.1:
+                                _si_slippage = cfg.get("entry_slippage_pct", 0.001)
+                                _si_add_shares = round(_si_add_value / (_si_live * (1 + _si_slippage)), 4)
+                                _si_cost = round(_si_add_shares * _si_live * (1 + _si_slippage), 2)
+                                portfolio.current_cash = round(portfolio.current_cash - _si_cost, 2)
+                                _si_trade.shares = round(_si_trade.shares + _si_add_shares, 4)
+                                _si_new_notes = list(_si_notes_list)
+                                _si_new_notes.append("SCALE_IN")
+                                _si_new_notes.append(
+                                    f"Scale-in: +{_si_add_shares:.4f}sh @ ${_si_live:.2f} "
+                                    f"(+{_si_pnl_pct*100:.1f}%, conf {_si_conf:.0f}%)"
+                                )
+                                _si_trade.entry_decision_notes = _si_new_notes
+                                log.info("paper.scale_in",
+                                         symbol=stock.symbol, added_shares=_si_add_shares,
+                                         live_price=_si_live, pnl_pct=round(_si_pnl_pct * 100, 1),
+                                         confidence=_si_conf)
             continue
         # Optionally restrict to the GROWTH watchlist
         if growth_stock_ids and stock.id not in growth_stock_ids:
@@ -1296,7 +1787,35 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             confidence_size_mult = 0.75
             notes = notes + [f"Size 0.75× (confidence {sig_conf:.0f}% — marginal signal)"]
 
-        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult
+        # INT-3: Research-gated position sizing — reduce size when research disagrees
+        research_size_mult = 1.0
+        if cfg.get("research_gating_enabled", True):
+            try:
+                import httpx as _httpx
+                from common.config import get_settings as _gs
+                _res = _httpx.get(
+                    f"{_gs().research_engine_url}/research/{stock.symbol}/summary",
+                    timeout=1.5,
+                )
+                if _res.status_code == 200:
+                    _rs = _res.json()
+                    _rec = _rs.get("recommendation", "")
+                    _score = float(_rs.get("overall_score") or 0)
+                    if _rec == "STRONG BUY" and _score >= 75:
+                        research_size_mult = 1.2
+                        notes = notes + [f"Size 1.2× (Research: {_rec} {_score:.0f})"]
+                    elif _rec == "BUY" and _score >= 65:
+                        research_size_mult = 1.0
+                    elif _rec == "WATCH" and _score >= 60:
+                        research_size_mult = 0.8
+                        notes = notes + [f"Size 0.8× (Research: {_rec} {_score:.0f})"]
+                    elif _rec in ("WATCH", "AVOID", "SELL"):
+                        research_size_mult = 0.6
+                        notes = notes + [f"Size 0.6× (Research: {_rec} {_score:.0f})"]
+            except Exception:
+                pass  # no research data → neutral 1.0×
+
+        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult
         shares         = risk_dollar / stop_distance
 
         # PA-C1: Max dollar loss per trade — prevents wide ATR stops from risking > 2% equity
@@ -1312,6 +1831,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         shares         = round(shares, 4)
         position_value = round(shares * live_price, 2)
 
+        # FIN-07: skip near-zero share positions that would pollute the journal
+        if shares < 0.01 or position_value <= 0:
+            log.info("paper.skip_min_shares", symbol=stock.symbol,
+                     shares=shares, position_value=position_value)
+            continue
+
         # Cap position at max_position_pct of equity
         max_pos = equity * cfg["max_position_pct"] * earnings_size_mult
         if position_value > max_pos:
@@ -1322,7 +1847,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         max_open_risk = cfg.get("max_open_risk_pct", 0.12)
         if max_open_risk and equity > 0:
             open_risk = sum(
-                max(live_prices.get(t.symbol, t.entry_price) - t.current_stop, 0) * t.shares
+                abs(live_prices.get(t.symbol, t.entry_price) - t.current_stop) * t.shares
                 for t in session.execute(
                     select(PaperTrade).where(
                         PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open"
@@ -1336,13 +1861,19 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                          limit_pct=round(max_open_risk * 100, 1))
                 continue
 
-        # Sector concentration check using actual position_value
-        if stock.sector:
-            sector_value = _sector_value(session, portfolio, stock.sector, live_prices)
-            if (sector_value + position_value) / max(equity, 1) > cfg["max_sector_pct"]:
-                log.info("paper.skip_sector_cap", symbol=stock.symbol,
-                         sector=stock.sector, sector_pct=round((sector_value + position_value) / equity * 100, 1))
-                continue
+        # Sector concentration check — applies to ALL stocks, including null-sector ones
+        _sector = stock.sector  # may be None (unclassified stocks count against a shared bucket)
+        sector_value = _sector_value(session, portfolio, _sector, live_prices)
+        if (sector_value + position_value) / max(equity, 1) > cfg["max_sector_pct"]:
+            log.info("paper.skip_sector_cap", symbol=stock.symbol,
+                     sector=_sector or "unclassified",
+                     sector_pct=round((sector_value + position_value) / equity * 100, 1))
+            continue
+        max_sector_pos = int(cfg.get("max_sector_positions", 3))
+        if _sector_count(session, portfolio, _sector) >= max_sector_pos:
+            log.info("paper.skip_sector_count_cap", symbol=stock.symbol,
+                     sector=_sector or "unclassified", limit=max_sector_pos)
+            continue
 
         # Ensure we have the cash
         if position_value > portfolio.current_cash * 0.98:
@@ -1356,8 +1887,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         slipped_entry = round(live_price * (1 + slippage), 4)
         commission    = round(cfg.get("commission_per_share", 0.0) * shares, 4)
 
-        # Simulate entry — floor at 0 to prevent negative cash from slippage rounding
-        portfolio.current_cash = max(0.0, round(portfolio.current_cash - position_value, 2))
+        # Deduct cash at slipped price (not live_price) so cash and cost basis are consistent
+        position_value = round(shares * slipped_entry, 2)
+        portfolio.current_cash = max(0.0, round(portfolio.current_cash - position_value - commission, 2))
         trade = PaperTrade(
             portfolio_id          = portfolio.id,
             symbol                = stock.symbol,
@@ -1367,6 +1899,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             entry_time            = now,
             entry_price           = slipped_entry,   # slippage-adjusted entry
             sector                = stock.sector,    # H-SECTOR FIX: PA-D1 monitor reads trade.sector
+            stock_id              = stock.id,        # PT-H2: needed for double-top mid-trade detection
             shares                = shares,
             stop_loss             = stop,
             take_profit           = take_profit,
@@ -1383,9 +1916,6 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             stage                 = "open",
             hold_days             = 0,
         )
-        # Commission reduces cash immediately (round-trip cost paid at entry)
-        if commission > 0:
-            portfolio.current_cash = round(portfolio.current_cash - commission * 2, 2)
         session.add(trade)
         open_symbols.add(stock.symbol)
         entries_made += 1
@@ -1425,26 +1955,33 @@ def _compute_equity(session, portfolio: PaperPortfolio, live_prices: dict[str, f
     return portfolio.current_cash + positions_value
 
 
-def _sector_value(session, portfolio: PaperPortfolio, sector: str, live_prices: dict[str, float]) -> float:
-    """Dollar value of open trades in the given sector."""
-    rows = session.execute(
+def _sector_value(session, portfolio: PaperPortfolio, sector: str | None, live_prices: dict[str, float]) -> float:
+    """Dollar value of open trades in the given sector (None = unclassified stocks)."""
+    q = (
         select(PaperTrade, Stock)
         .join(Stock, PaperTrade.symbol == Stock.symbol)
-        .where(
-            PaperTrade.portfolio_id == portfolio.id,
-            PaperTrade.stage == "open",
-            Stock.sector == sector,
-        )
-    ).all()
-    return sum(
-        _best_price(t, live_prices) * t.shares for t, _ in rows
+        .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
     )
+    q = q.where(Stock.sector.is_(None)) if not sector else q.where(Stock.sector == sector)
+    return sum(_best_price(t, live_prices) * t.shares for t, _ in session.execute(q).all())
+
+
+def _sector_count(session, portfolio: PaperPortfolio, sector: str | None) -> int:
+    """Number of open positions in the given sector (None = unclassified)."""
+    q = (
+        select(func.count())
+        .select_from(PaperTrade)
+        .join(Stock, PaperTrade.symbol == Stock.symbol)
+        .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
+    )
+    q = q.where(Stock.sector.is_(None)) if not sector else q.where(Stock.sector == sector)
+    return session.execute(q).scalar() or 0
 
 
 # ── Equity curve snapshot ─────────────────────────────────────────────────────
 
 def snapshot_equity_curve(portfolio_id: int | None = None) -> None:
-    """Record EOD equity + benchmark closes. Called post-close from scheduler."""
+    """Record EOD equity + benchmark closes + market regime. Called post-close from scheduler."""
     try:
         import yfinance as yf
     except ImportError:
@@ -1463,6 +2000,14 @@ def snapshot_equity_curve(portfolio_id: int | None = None) -> None:
                 pass
     except Exception as exc:
         log.warning("paper.benchmark_fetch_failed", error=str(exc))
+
+    # PT-A2: fetch current regime for shading overlay
+    snapshot_regime: str | None = None
+    try:
+        regime_data = _fetch_market_regime(_DEFAULT_CONFIG)
+        snapshot_regime = regime_data.get("state")
+    except Exception:
+        pass
 
     with SessionLocal() as session:
         portfolios_q = select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
@@ -1502,6 +2047,8 @@ def snapshot_equity_curve(portfolio_id: int | None = None) -> None:
                 existing.spy_close = bench_prices.get("SPY")
                 existing.qqq_close = bench_prices.get("QQQ")
                 existing.hsi_close = bench_prices.get("^HSI")
+                if snapshot_regime:
+                    existing.market_regime = snapshot_regime
             else:
                 session.add(PaperEquityCurve(
                     portfolio_id         = portfolio.id,
@@ -1513,6 +2060,7 @@ def snapshot_equity_curve(portfolio_id: int | None = None) -> None:
                     spy_close            = bench_prices.get("SPY"),
                     qqq_close            = bench_prices.get("QQQ"),
                     hsi_close            = bench_prices.get("^HSI"),
+                    market_regime        = snapshot_regime,
                 ))
 
             session.commit()
@@ -1597,6 +2145,9 @@ def _send_exit_emails(session, closed_exits: list[dict]) -> None:
 
 def paper_trading_step() -> None:
     """One full monitor + scan cycle. Runs every 5-10 min during market hours."""
+    # AL-4: reload tuned params each cycle so they take effect without a restart
+    _load_tuned_params()
+    _apply_tuned_hold_days()
     try:
         with SessionLocal() as session:
             portfolios = session.execute(
@@ -1630,26 +2181,35 @@ def paper_trading_step() -> None:
             all_symbols = list(set(open_symbols + candidate_symbols))
             live_prices = _fetch_live_prices(all_symbols) if all_symbols else {}
 
-            # Fetch market regime ONCE per cycle — shared across all portfolios.
-            # Uses first portfolio's config for threshold overrides; falls back to defaults.
-            _base_cfg = {**_DEFAULT_CONFIG, **(portfolios[0].config if portfolios else {})}
-            live_regime: dict | None = (
-                _fetch_market_regime(_base_cfg)
-                if _base_cfg.get("enable_regime_filter", True) else None
-            )
-            # Persist regime snapshot into each portfolio config (for UI + audit trail)
-            if live_regime:
-                for _p in portfolios:
-                    _p.config = {**_p.config,
-                                 "regime_state": live_regime["state"],
-                                 "regime_vix": live_regime.get("vix"),
-                                 "regime_spy": live_regime.get("spy_price"),
-                                 "regime_notes": live_regime.get("notes", [])}
+            # Fetch market regime per market — US uses SPY/QQQ/VIX; HK uses HSI.
+            # Cache the result per market so portfolios sharing a market reuse the same fetch.
+            _regime_by_market: dict[str, dict | None] = {}
+
+            def _get_regime_for(pcfg: dict) -> dict | None:
+                mkt = pcfg.get("market", "US")
+                if mkt not in _regime_by_market:
+                    if not pcfg.get("enable_regime_filter", True):
+                        _regime_by_market[mkt] = None
+                    elif mkt == "HK":
+                        _regime_by_market[mkt] = _fetch_hk_market_regime(pcfg)
+                    else:
+                        _regime_by_market[mkt] = _fetch_market_regime(pcfg)
+                return _regime_by_market[mkt]
 
             for portfolio in portfolios:
-                cfg = portfolio.config or {}
+                cfg = {**_DEFAULT_CONFIG, **portfolio.config} if portfolio.config else dict(_DEFAULT_CONFIG)
                 if not cfg.get("enabled", True):
                     continue  # fully stopped — do nothing
+
+                live_regime = _get_regime_for(cfg)
+
+                # Persist regime snapshot into portfolio config (for UI + audit trail)
+                if live_regime:
+                    portfolio.config = {**portfolio.config,
+                                        "regime_state": live_regime["state"],
+                                        "regime_vix": live_regime.get("vix"),
+                                        "regime_spy": live_regime.get("spy_price"),
+                                        "regime_notes": live_regime.get("notes", [])}
 
                 # Monitor + commit first so cash mutations are durable before scanning
                 closed_exits = _monitor_positions(session, portfolio, live_prices, live_regime)
@@ -1660,10 +2220,10 @@ def paper_trading_step() -> None:
                     _send_exit_emails(session, closed_exits)
 
                 if not cfg.get("paused", False):
-                    # Market hours guard: only enter new positions during regular US session
-                    market_open = cfg.get("enforce_market_hours", True)
-                    if market_open and not _is_market_hours():
-                        log.info("paper.entry_scan_skip", reason="outside_market_hours")
+                    # Market hours guard: check hours for this portfolio's market
+                    mkt = cfg.get("market", "US")
+                    if cfg.get("enforce_market_hours", True) and not _is_market_hours(mkt):
+                        log.info("paper.entry_scan_skip", reason="outside_market_hours", market=mkt)
                     else:
                         _scan_for_entries(session, portfolio, live_prices, live_regime)
                         session.commit()

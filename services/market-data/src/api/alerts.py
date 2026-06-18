@@ -18,10 +18,11 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 class AlertCreate(BaseModel):
     symbol: str
-    condition: str        # "above" | "below"
+    condition: str
     threshold: float
-    email: str | None = None   # falls back to user's account email
+    email: str | None = None
     note: str | None = None
+    recurring: bool = False
 
 
 class AlertOut(BaseModel):
@@ -33,6 +34,8 @@ class AlertOut(BaseModel):
     note: str | None
     triggered: bool
     triggered_at: datetime | None
+    recurring: bool
+    last_sent_at: datetime | None
     created_at: datetime
 
     class Config:
@@ -60,11 +63,12 @@ def create_alert(
         threshold=body.threshold,
         email=email,
         note=body.note,
+        recurring=body.recurring,
     )
     session.add(alert)
     session.commit()
     session.refresh(alert)
-    log.info("alert.created", symbol=alert.symbol, condition=body.condition, threshold=body.threshold, user=user.username)
+    log.info("alert.created", symbol=alert.symbol, condition=body.condition, threshold=body.threshold, recurring=body.recurring, user=user.username)
     return alert
 
 

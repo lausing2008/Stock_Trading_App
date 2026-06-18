@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 import json
+import os as _os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -32,6 +33,26 @@ def _cache_set(key: str, value, ttl: int = 3600) -> None:
     except Exception:
         pass
 
+
+_service_token_cache: str = ""
+
+
+def _service_token() -> str:
+    """Long-lived JWT for signal-engine → internal service calls (sub='signal-engine')."""
+    global _service_token_cache
+    if _service_token_cache:
+        return _service_token_cache
+    import time
+    from jose import jwt as _jwt
+    payload = {
+        "sub": "signal-engine",
+        "exp": int(time.time()) + 365 * 86400,
+        "jti": "signal-engine-service",
+    }
+    _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+    return _service_token_cache
+
+
 from ..generators import generate_signal, generate_all_signals
 
 log = get_logger("signals")
@@ -54,7 +75,7 @@ def _compute_stability(session: Session, stock_id: int, horizon: SignalHorizon, 
             count += 1
         else:
             break
-    return max(count, 1)
+    return count
 
 
 @router.get("")
@@ -64,10 +85,12 @@ def all_latest_signals(
 ):
     """Return the most recently persisted signal for every active stock.
 
-    Optional ?style=SWING (default) filters to a specific trading horizon.
-    If omitted, returns the most recent signal regardless of style.
+    Optional ?style=SWING filters to a specific trading horizon.
+    If omitted, returns the best available signal per stock (SWING > LONG > GROWTH > SHORT).
     """
-    horizon_filter = style.upper() if style else "SWING"
+    # Preference order when no style specified: SWING wins if available, then LONG, GROWTH, SHORT.
+    _STYLE_PREFERENCE = ["SWING", "LONG", "GROWTH", "SHORT"]
+    horizon_filter = style.upper() if style else None
     # Subquery: latest ts per (stock_id, horizon)
     latest_subq = (
         select(Signal.stock_id, Signal.horizon, func.max(Signal.ts).label("max_ts"))
@@ -83,21 +106,39 @@ def all_latest_signals(
         .where(Stock.active.is_(True))
     )
     horizon_enum = None
-    try:
-        horizon_enum = SignalHorizon(horizon_filter)
-        q = q.where(Signal.horizon == horizon_enum)
-    except ValueError:
-        pass  # unknown style — return all
+    if horizon_filter:
+        try:
+            horizon_enum = SignalHorizon(horizon_filter)
+            q = q.where(Signal.horizon == horizon_enum)
+        except ValueError:
+            pass  # unknown style — return all
     rows = session.execute(q).all()
 
+    # When no style specified, apply preference order (SWING > LONG > GROWTH > SHORT)
+    # so each stock contributes at most one row (the best available style).
+    if horizon_filter is None:
+        _pref_idx = {s: i for i, s in enumerate(_STYLE_PREFERENCE)}
+        _best: dict[int, object] = {}
+        for row in rows:
+            style_val = row.horizon.value if hasattr(row.horizon, "value") else str(row.horizon)
+            cur = _best.get(row.stock_id)
+            if cur is None:
+                _best[row.stock_id] = row
+            else:
+                cur_style = cur.horizon.value if hasattr(cur.horizon, "value") else str(cur.horizon)
+                if _pref_idx.get(style_val, 99) < _pref_idx.get(cur_style, 99):
+                    _best[row.stock_id] = row
+        rows = list(_best.values())
+
     # Batch stability: one extra query for all stock_ids at this horizon
+    # Fetches ts so we can detect gaps in the streak (non-consecutive days don't count).
     stability_map: dict[int, int] = {}
     if rows and horizon_enum is not None:
         from collections import defaultdict
         stock_ids = list({row.stock_id for row in rows})
         cutoff = datetime.now(timezone.utc) - timedelta(days=35)
         recent = session.execute(
-            select(Signal.stock_id, Signal.signal)
+            select(Signal.stock_id, Signal.signal, Signal.ts)
             .where(
                 Signal.stock_id.in_(stock_ids),
                 Signal.horizon == horizon_enum,
@@ -105,19 +146,28 @@ def all_latest_signals(
             )
             .order_by(Signal.stock_id, Signal.ts.desc())
         ).all()
-        by_stock: dict[int, list[str]] = defaultdict(list)
+        by_stock: dict[int, list[tuple[str, object]]] = defaultdict(list)
         for r in recent:
-            by_stock[r.stock_id].append(r.signal.value)
+            by_stock[r.stock_id].append((r.signal.value, r.ts))
         latest_sig_map = {row.stock_id: row.signal.value for row in rows}
-        for sid, sigs in by_stock.items():
+        for sid, sig_ts_pairs in by_stock.items():
             cur = latest_sig_map.get(sid, "")
             count = 0
-            for s in sigs:
-                if s == cur:
-                    count += 1
-                else:
+            prev_ts = None
+            for sig_val, ts in sig_ts_pairs:
+                if sig_val != cur:
                     break
-            stability_map[sid] = max(count, 1)
+                if prev_ts is not None:
+                    gap_days = (prev_ts - ts).days if hasattr(prev_ts, "days") else 0
+                    try:
+                        gap_days = (prev_ts.date() - ts.date()).days
+                    except Exception:
+                        gap_days = 1
+                    if gap_days > 3:  # gap > 3 calendar days breaks the consecutive streak
+                        break
+                count += 1
+                prev_ts = ts
+            stability_map[sid] = count
 
     return [
         {
@@ -184,14 +234,15 @@ def _bulk_persist(symbols: list[str]) -> None:
                     continue
                 for style_key, ai in all_sig.items():
                     horizon_enum = SignalHorizon(ai.horizon)
-                    # Only insert if the signal type changed for this (stock, horizon) pair.
+                    # Only insert if the signal type changed for this (stock, horizon) pair,
+                    # or if a new signal of the same type is being generated on a different day.
                     last = s.execute(
-                        select(Signal.signal)
+                        select(Signal.signal, Signal.ts)
                         .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
                         .order_by(desc(Signal.ts))
                         .limit(1)
-                    ).scalar_one_or_none()
-                    if last is not None and last == SignalType(ai.signal):
+                    ).one_or_none()
+                    if last is not None and last[0] == SignalType(ai.signal) and last[1].date() == date.today():
                         continue
                     s.add(Signal(
                         stock_id=stock.id,
@@ -202,6 +253,38 @@ def _bulk_persist(symbols: list[str]) -> None:
                         reasons=ai.reasons,
                     ))
                 s.commit()
+
+                # INT-4: auto-trigger research on new BUY signal (fire-and-forget)
+                # INT-7: log divergence if research and signal disagree
+                if ai.signal in ("BUY", "STRONG BUY"):
+                    try:
+                        import httpx as _httpx
+                        _url = _settings.research_engine_url
+                        # INT-4: trigger background research if stale
+                        _httpx.post(f"{_url}/research/{symbol}/trigger", timeout=1.5)
+                        # INT-7: check divergence (service token required — endpoint needs auth)
+                        _tok = _service_token()
+                        _sr = _httpx.get(
+                            f"{_url}/research/{symbol}/summary",
+                            timeout=1.5,
+                            headers={"Authorization": f"Bearer {_tok}"},
+                        )
+                        if _sr.status_code == 200:
+                            _rd = _sr.json()
+                            _rec = _rd.get("recommendation", "")
+                            _score = float(_rd.get("overall_score") or 0)
+                            if _rec in ("AVOID", "SELL") or (_rec == "WATCH" and _score < 60):
+                                log.warning(
+                                    "signal.research_divergence",
+                                    symbol=symbol,
+                                    signal=ai.signal,
+                                    signal_conf=round(ai.confidence or 0, 1),
+                                    research_rec=_rec,
+                                    research_score=_score,
+                                )
+                    except Exception:
+                        pass  # never block signal generation on research calls
+
         except Exception as exc:
             log.warning("signals.refresh.skip", symbol=symbol, error=str(exc))
 
@@ -615,6 +698,7 @@ def ml_weight_validation(
 def calibrate_ml_weight(
     lookback_days: int = Query(180, ge=30, le=730),
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Find the empirically optimal ML fusion weight and apply it as the global cap.
 
@@ -820,6 +904,14 @@ def factor_exposure(
         idx = bisect.bisect_right(ts_list, d) - 1
         return _pclose[sid][idx] if idx >= 0 else None
 
+    def _first_close_after_fe(sid: int, after_date):
+        """Return the first close strictly after after_date (no lookahead)."""
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_right(ts_list, after_date)
+        return _pclose[sid][idx] if idx < len(ts_list) else None
+
     def most_recent_close_fe(sid: int):
         ts_list = _pts.get(sid)
         if not ts_list:
@@ -849,7 +941,7 @@ def factor_exposure(
         seen.add(key)
 
         reasons = sig.reasons or {}
-        entry = price_on_or_before(sig.stock_id, signal_date + timedelta(days=1))
+        entry = _first_close_after_fe(sig.stock_id, signal_date)
         if entry is None or entry <= 0:
             continue
         exit_p = most_recent_close_fe(sig.stock_id)
@@ -1318,6 +1410,12 @@ def suppressed_signals(
             "news_sentiment":      r.get("news_sentiment"),
             "rs_score":            r.get("rs_score"),
             "conviction":          conv,
+            # SA-19 pillar scores — 0-1 per dimension; None if signal pre-dates SA-19
+            "pillar_trend":        r.get("pillar_trend"),
+            "pillar_momentum":     r.get("pillar_momentum"),
+            "pillar_volume":       r.get("pillar_volume"),
+            "pillar_structure":    r.get("pillar_structure"),
+            "pillars_active":      r.get("independent_pillars_active"),
         })
 
     # Compute days_active per condition — how many consecutive days each flag has been True.
@@ -1513,6 +1611,53 @@ def filter_audit(
             "median_return_pct": round(float(sorted(rets)[len(rets) // 2]) * 100, 2) if rets else None,
         })
 
+    # Per-filter win rate: for each flag compare win rate when active vs inactive.
+    # edge_pct negative = filter correctly suppresses weaker signals (good).
+    # edge_pct positive = filter incorrectly suppresses stronger signals (harmful).
+    all_filter_names = list(SUPPRESSION_BOOLEAN) + list(SUPPRESSION_NAMED.keys())
+    filter_buckets: dict[str, dict[str, list[float]]] = {f: {"active": [], "inactive": []} for f in all_filter_names}
+
+    for row in rows:
+        r = row.reasons or {}
+        filter_flags: dict[str, bool] = {}
+        for k in SUPPRESSION_BOOLEAN:
+            filter_flags[k] = bool(r.get(k))
+        for k, test in SUPPRESSION_NAMED.items():
+            filter_flags[k] = test(r.get(k))
+
+        signal_date = row.ts if isinstance(row.ts, date) else row.ts.date()
+        exit_date   = signal_date + timedelta(days=hold_days)
+        entry_price = _nearest_price(row.stock_id, signal_date)
+        exit_price  = _nearest_price(row.stock_id, exit_date)
+        if not (entry_price and exit_price and entry_price > 0):
+            continue
+        ret = (exit_price - entry_price) / entry_price
+        for fname, is_active in filter_flags.items():
+            bucket = "active" if is_active else "inactive"
+            filter_buckets[fname][bucket].append(ret)
+
+    by_filter = []
+    for fname in all_filter_names:
+        act = filter_buckets[fname]["active"]
+        inact = filter_buckets[fname]["inactive"]
+        act_wr   = round(sum(1 for r in act   if r > 0) / len(act)   * 100, 1) if act   else None
+        inact_wr = round(sum(1 for r in inact if r > 0) / len(inact) * 100, 1) if inact else None
+        act_avg   = round(sum(act)   / len(act)   * 100, 2) if act   else None
+        inact_avg = round(sum(inact) / len(inact) * 100, 2) if inact else None
+        edge = round((act_wr or 0) - (inact_wr or 0), 1)  # negative = filter correctly suppresses bad trades
+        by_filter.append({
+            "filter":           fname,
+            "n_active":         len(act),
+            "n_inactive":       len(inact),
+            "win_rate_active":  act_wr,
+            "win_rate_inactive": inact_wr,
+            "avg_return_active":  act_avg,
+            "avg_return_inactive": inact_avg,
+            "edge_pct": edge,  # negative means filter correctly blocks worse signals; positive means filter is harmful
+            "verdict": "harmful" if edge > 5 else ("weak" if edge > -3 else "predictive"),
+        })
+    by_filter.sort(key=lambda x: x["edge_pct"])  # most predictive (most negative) first
+
     n_signals = len(rows)
     n_with_returns = len(per_trade)
     overall_wr = round(sum(1 for t in per_trade if t["win"]) / n_with_returns * 100, 1) if n_with_returns else None
@@ -1525,6 +1670,7 @@ def filter_audit(
         "overall_win_rate_pct":   overall_wr,
         "note": "n_with_return_data < n_buy_signals_found when exit date is in the future or price data is missing.",
         "by_filter_count":        summary,
+        "by_filter_name":         by_filter,
         "trades":                 per_trade,
     }
     _cache_set(cache_key, result)
@@ -1577,7 +1723,7 @@ def calibrate_ta_weights(
         "rsi_divergence_bullish",
         "macd_strong", "macd_positive", "macd_zero_cross_up",
         "bb_mid_zone", "price_above_vwap",
-        "bullish_trend", "obv_bullish", "volume_surge",
+        "bullish_trend", "obv_trend_bullish", "volume_surge",
     ]
 
     # Map feature name → extractor from stored reasons JSON.
@@ -1598,7 +1744,7 @@ def calibrate_ta_weights(
         "bb_mid_zone":            lambda r: 0.2 < (r.get("bb_pct_b") or 0) < 0.8,
         "price_above_vwap":       lambda r: r.get("price_above_vwap") is True,
         "bullish_trend":          lambda r: bool(r.get("adx_bullish")),
-        "obv_bullish":            lambda r: bool(r.get("obv_bullish")),
+        "obv_trend_bullish":      lambda r: bool(r.get("obv_trend_bullish")),
         "volume_surge":           lambda r: (r.get("volume_z") or 0) > 0.5,
     }
 
@@ -1686,7 +1832,9 @@ def calibrate_ta_weights(
     new_weights.update(fitted_scaled)
 
     Path(_TA_WEIGHTS_PATH).parent.mkdir(parents=True, exist_ok=True)
-    Path(_TA_WEIGHTS_PATH).write_text(json.dumps(new_weights, indent=2))
+    _tmp = Path(_TA_WEIGHTS_PATH).with_suffix(".tmp")
+    _tmp.write_text(json.dumps(new_weights, indent=2))
+    _os.replace(str(_tmp), str(_TA_WEIGHTS_PATH))
     log.info("calibrate_ta_weights: wrote %s (accuracy=%.3f, n=%d)", _TA_WEIGHTS_PATH, accuracy, len(X_rows))
 
     return {
@@ -1697,6 +1845,113 @@ def calibrate_ta_weights(
         "in_sample_accuracy": round(accuracy, 4),
         "weights":          new_weights,
     }
+
+
+@router.post("/calibrate_conviction_weights")
+def calibrate_conviction_weights(
+    lookback_days: int = Query(365, ge=90, le=730),
+    min_count: int = Query(10),
+    session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
+):
+    """AL-3: Fit logistic regression on conviction layer flags from signal_outcomes.
+
+    For each boolean reason flag, computes edge = presence_in_winners − presence_in_losers.
+    Writes conviction_weights.json with per-flag accuracy and edge data.
+    Flags with accuracy < 52% are marked as noise layers.
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        import numpy as np
+        from sklearn.linear_model import LogisticRegression
+    except ImportError:
+        raise HTTPException(500, "scikit-learn not installed")
+
+    from ..generators.signals import _CONVICTION_WEIGHTS_PATH
+
+    cutoff = date.today() - timedelta(days=lookback_days)
+
+    rows = session.execute(
+        select(SignalOutcome.is_correct, Signal.reasons)
+        .join(Signal, Signal.id == SignalOutcome.signal_id)
+        .where(
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            Signal.reasons.is_not(None),
+        )
+    ).all()
+
+    if len(rows) < 30:
+        raise HTTPException(400, f"Need ≥30 evaluated BUY outcomes, found {len(rows)}")
+
+    n_win = sum(1 for r in rows if r.is_correct)
+    n_los = sum(1 for r in rows if not r.is_correct)
+    key_wins: dict[str, int] = {}
+    key_los: dict[str, int] = {}
+
+    for r in rows:
+        reasons = r.reasons or {}
+        bucket = key_wins if r.is_correct else key_los
+        for k, v in reasons.items():
+            if isinstance(v, bool) and v:
+                bucket[k] = bucket.get(k, 0) + 1
+
+    all_keys = set(key_wins) | set(key_los)
+    layer_stats: dict[str, dict] = {}
+    for k in all_keys:
+        wc = key_wins.get(k, 0)
+        lc = key_los.get(k, 0)
+        if wc + lc < min_count:
+            continue
+        wp = wc / n_win if n_win > 0 else 0.0
+        lp = lc / n_los if n_los > 0 else 0.0
+        accuracy = wc / (wc + lc) if (wc + lc) > 0 else 0.5
+        layer_stats[k] = {
+            "win_pct": round(wp * 100, 1),
+            "los_pct": round(lp * 100, 1),
+            "edge_pct": round((wp - lp) * 100, 1),
+            "accuracy": round(accuracy * 100, 1),
+            "is_noise": accuracy < 0.52,
+            "win_count": wc,
+            "los_count": lc,
+        }
+
+    # Fit logistic regression for coefficient-based weights
+    features = sorted(layer_stats.keys())
+    if len(features) >= 3 and len(rows) >= 50:
+        X = np.array([[int(bool((r.reasons or {}).get(f))) for f in features] for r in rows])
+        y = np.array([int(r.is_correct) for r in rows])
+        try:
+            lr = LogisticRegression(max_iter=500, C=1.0, random_state=42)
+            lr.fit(X, y)
+            for feat, coef in zip(features, lr.coef_[0]):
+                if feat in layer_stats:
+                    layer_stats[feat]["logistic_coef"] = round(float(coef), 4)
+        except Exception:
+            pass
+
+    payload = {
+        "as_of": date.today().isoformat(),
+        "lookback_days": lookback_days,
+        "total_winners": n_win,
+        "total_losers": n_los,
+        "layer_count": len(layer_stats),
+        "noise_count": sum(1 for s in layer_stats.values() if s["is_noise"]),
+        "layers": layer_stats,
+        "edge_pct": {k: v["edge_pct"] for k, v in layer_stats.items()},
+    }
+
+    try:
+        Path(_CONVICTION_WEIGHTS_PATH).parent.mkdir(parents=True, exist_ok=True)
+        Path(_CONVICTION_WEIGHTS_PATH).write_text(json.dumps(payload, indent=2))
+    except Exception as exc:
+        log.warning("conviction_weights.write_failed", error=str(exc))
+
+    log.info("conviction_weights.calibrated", layers=len(layer_stats), noise=payload["noise_count"])
+    return payload
 
 
 @router.get("/walkforward")
@@ -1975,6 +2230,107 @@ def signal_history(
     ]
 
 
+@router.get("/{symbol}/patterns")
+def detect_patterns(
+    symbol: str,
+    session: Session = Depends(get_session),
+):
+    """Detect active technical chart patterns for a symbol.
+
+    Returns patterns detected within the last 3-5 bars so the UI shows
+    live "about to move" badges. Patterns checked: golden_cross,
+    macd_bullish_cross, rsi_oversold_bounce, double_bottom, breakout.
+    """
+    import pandas as pd
+
+    stock = session.execute(
+        select(Stock).where(Stock.symbol == symbol.upper())
+    ).scalar_one_or_none()
+    if not stock:
+        raise HTTPException(404, f"Stock {symbol} not found")
+
+    rows = session.execute(
+        select(Price.ts, Price.close, Price.high, Price.low, Price.volume)
+        .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1)
+        .order_by(Price.ts.asc())
+        .limit(260)
+    ).all()
+
+    if len(rows) < 30:
+        return {"symbol": symbol.upper(), "patterns": [], "as_of": datetime.now(timezone.utc).isoformat() + "Z"}
+
+    close = pd.Series([float(r.close) for r in rows])
+    volume = pd.Series([float(r.volume) for r in rows])
+
+    patterns: list[dict] = []
+
+    def _add(name: str, label: str, description: str, bullish: bool) -> None:
+        patterns.append({"name": name, "label": label, "description": description, "bullish": bullish})
+
+    # 1. Golden Cross — EMA50 crossed above EMA200 within last 5 bars
+    if len(close) >= 200:
+        ema50 = close.ewm(span=50, adjust=False).mean()
+        ema200 = close.ewm(span=200, adjust=False).mean()
+        for i in range(max(-5, -len(close) + 1), 0):
+            if ema50.iloc[i - 1] < ema200.iloc[i - 1] and ema50.iloc[i] >= ema200.iloc[i]:
+                _add("golden_cross", "Golden Cross", f"EMA50 crossed above EMA200 ({ema200.iloc[-1]:.2f})", True)
+                break
+
+    # 2. MACD Bullish Cross — MACD crossed above signal within last 3 bars
+    if len(close) >= 35:
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        sig = macd.ewm(span=9, adjust=False).mean()
+        for i in range(max(-3, -len(close) + 1), 0):
+            if macd.iloc[i - 1] < sig.iloc[i - 1] and macd.iloc[i] >= sig.iloc[i]:
+                _add("macd_bullish_cross", "MACD Cross ↑", f"MACD crossed above signal ({sig.iloc[-1]:.3f})", True)
+                break
+
+    # 3. RSI Oversold Bounce — RSI crossed above 30 within last 3 bars
+    if len(close) >= 16:
+        delta = close.diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = gain / loss.replace(0, float("nan"))
+        rsi = 100 - (100 / (1 + rs))
+        for i in range(max(-3, -len(close) + 1), 0):
+            prev_v = rsi.iloc[i - 1]
+            curr_v = rsi.iloc[i]
+            if pd.notna(prev_v) and pd.notna(curr_v) and prev_v < 30 and curr_v >= 30:
+                _add("rsi_oversold_bounce", "RSI Bounce", f"RSI recovered from oversold (now {rsi.iloc[-1]:.1f})", True)
+                break
+
+    # 4. Double Bottom — two troughs within 3% in last 60 bars, separated by 5%+ peak
+    if len(close) >= 20:
+        window = close.tail(60).values
+        minima: list[tuple[int, float]] = []
+        for i in range(2, len(window) - 2):
+            if all(window[i] <= window[j] for j in range(i - 2, i + 3) if j != i):
+                minima.append((i, float(window[i])))
+        if len(minima) >= 2:
+            b1_idx, b1_val = minima[-2]
+            b2_idx, b2_val = minima[-1]
+            lower = min(b1_val, b2_val)
+            if lower > 0 and abs(b1_val - b2_val) / lower <= 0.03 and b2_idx > b1_idx + 3:
+                peak = float(max(window[b1_idx:b2_idx + 1]))
+                if peak >= lower * 1.05 and float(close.iloc[-1]) > lower * 1.01:
+                    _add("double_bottom", "Double Bottom", f"W-pattern: two troughs near ${lower:.2f}", True)
+
+    # 5. Volume Breakout — close above 20-day high with elevated volume (1.4x avg)
+    if len(close) >= 21:
+        high_20 = float(close.iloc[-21:-1].max())
+        avg_vol = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else 0.0
+        if float(close.iloc[-1]) > high_20 and avg_vol > 0 and float(volume.iloc[-1]) >= avg_vol * 1.4:
+            _add("breakout", "Volume Breakout", f"Closed above 20-day high (${high_20:.2f}) on elevated volume", True)
+
+    return {
+        "symbol": symbol.upper(),
+        "patterns": patterns,
+        "as_of": datetime.now(timezone.utc).isoformat() + "Z",
+    }
+
+
 @router.get("/outcomes/summary")
 def outcomes_summary(
     horizon: str | None = Query(None, description="SHORT | SWING | LONG"),
@@ -2064,6 +2420,62 @@ def outcomes_summary(
         for reg, v in regime_stats.items()
     }
 
+    # INT-8: Research alignment breakdown — how does research agreement affect win rate?
+    _ALIGNED_RECS   = {"BUY", "STRONG BUY", "STRONG_BUY"}
+    _PARTIAL_RECS   = {"WATCH"}
+    _DIVERGENT_RECS = {"AVOID", "SELL"}
+    research_groups: dict[str, dict] = {
+        "aligned": {"count": 0, "wins": 0, "returns": []},
+        "partial":  {"count": 0, "wins": 0, "returns": []},
+        "divergent": {"count": 0, "wins": 0, "returns": []},
+        "no_research": {"count": 0, "wins": 0, "returns": []},
+    }
+    for o in outcomes:
+        rec = (o.research_rec or "").upper().strip()
+        if rec in _ALIGNED_RECS:
+            grp = "aligned"
+        elif rec in _PARTIAL_RECS:
+            grp = "partial"
+        elif rec in _DIVERGENT_RECS:
+            grp = "divergent"
+        else:
+            grp = "no_research"
+        research_groups[grp]["count"] += 1
+        if o.is_correct:
+            research_groups[grp]["wins"] += 1
+        if o.pct_return is not None:
+            research_groups[grp]["returns"].append(o.pct_return)
+
+    research_summary = {
+        grp: {
+            "count": v["count"],
+            "win_rate": round(v["wins"] / v["count"], 3) if v["count"] else None,
+            "avg_return_pct": round(statistics.mean(v["returns"]) * 100, 2) if v["returns"] else None,
+        }
+        for grp, v in research_groups.items()
+        if v["count"] > 0
+    }
+
+    # Multi-window win rates (INT-8)
+    def _window_stats(outcomes, attr_correct, attr_return):
+        vals = [(getattr(o, attr_correct), getattr(o, attr_return)) for o in outcomes
+                if getattr(o, attr_correct) is not None]
+        if not vals:
+            return None
+        wr = sum(1 for c, _ in vals if c) / len(vals)
+        rets = [r for _, r in vals if r is not None]
+        return {
+            "count": len(vals),
+            "win_rate": round(wr, 3),
+            "avg_return_pct": round(statistics.mean(rets) * 100, 2) if rets else None,
+        }
+
+    multi_window = {
+        "5d":  _window_stats(outcomes, "is_correct_5d",  "return_5d"),
+        "10d": _window_stats(outcomes, "is_correct_10d", "return_10d"),
+        "20d": _window_stats(outcomes, "is_correct_20d", "return_20d"),
+    }
+
     return {
         "total": len(outcomes),
         "days_lookback": days,
@@ -2075,6 +2487,8 @@ def outcomes_summary(
         "by_confidence_band": band_stats,
         "by_horizon": horizon_stats,
         "by_market_regime": regime_summary,
+        "by_research_alignment": research_summary,
+        "by_window": multi_window,
     }
 
 
@@ -2189,23 +2603,233 @@ def alpha_decay(
     }
 
 
+@router.get("/information_coefficient")
+def information_coefficient(
+    horizon: str = Query("SWING"),
+    lookback_days: int = Query(365, ge=90, le=730),
+    session: Session = Depends(get_session),
+):
+    """TM-3: Monthly IC — Spearman rank correlation between fused_prob rank and
+    actual return rank.  IC > 0.05 is good; IC_IR (mean/std) > 0.5 is excellent.
+    """
+    import statistics
+
+    cutoff = date.today() - timedelta(days=lookback_days)
+    try:
+        hz = SignalHorizon(horizon.upper())
+    except ValueError:
+        raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.horizon == hz,
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.fused_prob.is_not(None),
+            SignalOutcome.pct_return.is_not(None),
+        )
+    ).scalars().all()
+
+    from collections import defaultdict
+    monthly: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for o in outcomes:
+        monthly[o.signal_date.strftime("%Y-%m")].append(
+            (float(o.fused_prob), float(o.pct_return))
+        )
+
+    def _rank(lst: list[float]) -> list[float]:
+        order = sorted(range(len(lst)), key=lambda i: lst[i])
+        ranks = [0.0] * len(lst)
+        for r, i in enumerate(order):
+            ranks[i] = float(r + 1)
+        return ranks
+
+    series = []
+    for month in sorted(monthly):
+        pairs = monthly[month]
+        if len(pairs) < 5:
+            continue
+        probs = [p[0] for p in pairs]
+        rets = [p[1] for p in pairs]
+        rp = _rank(probs)
+        rr = _rank(rets)
+        n = len(rp)
+        mp, mr = sum(rp) / n, sum(rr) / n
+        cov = sum((a - mp) * (b - mr) for a, b in zip(rp, rr)) / n
+        sp = (sum((a - mp) ** 2 for a in rp) / n) ** 0.5
+        sr = (sum((b - mr) ** 2 for b in rr) / n) ** 0.5
+        ic = cov / (sp * sr) if sp > 0 and sr > 0 else 0.0
+        series.append({"month": month, "ic": round(ic, 4), "n": n})
+
+    if not series:
+        return {
+            "horizon": horizon, "lookback_days": lookback_days,
+            "monthly_ic": [], "ic_mean": None, "ic_std": None,
+            "ic_ir": None, "total_periods": 0,
+            "message": "Not enough data — at least 5 BUY outcomes per month required",
+        }
+
+    ics = [s["ic"] for s in series]
+    ic_mean = statistics.mean(ics)
+    ic_std = statistics.stdev(ics) if len(ics) > 1 else 0.0
+    ic_ir = round(ic_mean / ic_std, 3) if ic_std > 0 else None
+
+    return {
+        "horizon": horizon,
+        "lookback_days": lookback_days,
+        "monthly_ic": series,
+        "ic_mean": round(ic_mean, 4),
+        "ic_std": round(ic_std, 4),
+        "ic_ir": ic_ir,
+        "total_periods": len(series),
+        "quality": "excellent" if ic_mean > 0.05 else "good" if ic_mean > 0.02 else "poor",
+    }
+
+
+@router.get("/factor_attribution")
+def factor_attribution(
+    horizon: str = Query("SWING"),
+    lookback_days: int = Query(365, ge=90, le=730),
+    min_count: int = Query(10),
+    session: Session = Depends(get_session),
+):
+    """TM-4: For each boolean reason flag, compute presence in winners vs losers.
+    Edge = win_pct - los_pct.  Positive edge = factor predicts wins; negative = noise.
+    """
+    cutoff = date.today() - timedelta(days=lookback_days)
+    try:
+        hz = SignalHorizon(horizon.upper())
+    except ValueError:
+        raise HTTPException(400, f"Unknown horizon: {horizon}")
+
+    rows = session.execute(
+        select(SignalOutcome.is_correct, Signal.reasons)
+        .join(Signal, Signal.id == SignalOutcome.signal_id)
+        .where(
+            SignalOutcome.horizon == hz,
+            SignalOutcome.signal_direction == "BUY",
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            Signal.reasons.is_not(None),
+        )
+    ).all()
+
+    if not rows:
+        return {
+            "factors": [], "total_winners": 0, "total_losers": 0,
+            "message": "No evaluated outcomes with reason data yet",
+        }
+
+    n_win = sum(1 for r in rows if r.is_correct)
+    n_los = sum(1 for r in rows if not r.is_correct)
+    key_wins: dict[str, int] = {}
+    key_los: dict[str, int] = {}
+
+    for r in rows:
+        reasons = r.reasons or {}
+        bucket = key_wins if r.is_correct else key_los
+        for k, v in reasons.items():
+            if isinstance(v, bool) and v:
+                bucket[k] = bucket.get(k, 0) + 1
+
+    all_keys = set(key_wins) | set(key_los)
+    factors = []
+    for k in all_keys:
+        wc = key_wins.get(k, 0)
+        lc = key_los.get(k, 0)
+        if wc + lc < min_count:
+            continue
+        wp = wc / n_win if n_win > 0 else 0.0
+        lp = lc / n_los if n_los > 0 else 0.0
+        factors.append({
+            "factor": k,
+            "win_pct": round(wp * 100, 1),
+            "los_pct": round(lp * 100, 1),
+            "edge": round((wp - lp) * 100, 1),
+            "win_count": wc,
+            "los_count": lc,
+        })
+
+    factors.sort(key=lambda x: x["edge"], reverse=True)
+
+    return {
+        "horizon": horizon,
+        "lookback_days": lookback_days,
+        "total_winners": n_win,
+        "total_losers": n_los,
+        "factors": factors,
+    }
+
+
+def _stored_signal_for_style(session: Session, stock_id: int, style_key: str) -> dict | None:
+    """Return the latest persisted signal row for this stock+style as a plain dict."""
+    from sqlalchemy import desc as _desc
+    try:
+        horiz = SignalHorizon(style_key)
+    except ValueError:
+        return None
+    row = session.execute(
+        select(Signal.signal, Signal.confidence, Signal.bullish_probability, Signal.ts, Signal.reasons)
+        .where(Signal.stock_id == stock_id, Signal.horizon == horiz)
+        .order_by(_desc(Signal.ts))
+        .limit(1)
+    ).one_or_none()
+    if not row:
+        return None
+    reasons = dict(row.reasons) if row.reasons else {}
+    reasons["stability_days"] = _compute_stability(session, stock_id, horiz, row.signal.value)
+    return {
+        "signal": row.signal.value,
+        "horizon": style_key,
+        "confidence": row.confidence,
+        "bullish_probability": row.bullish_probability,
+        "reasons": reasons,
+        "ts": row.ts.isoformat() if row.ts else None,
+    }
+
+
 @router.get("/{symbol}")
 def signal_for(
     symbol: str,
     persist: bool = False,
+    live: bool = Query(True, description="False = return latest persisted DB signal (matches signal filter). True = compute fresh (may differ from DB)."),
     style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG, GROWTH. Returns all if omitted."),
     session: Session = Depends(get_session),
 ):
-    """Generate (and optionally persist) fresh signals for the given symbol.
+    """Return signal(s) for a symbol.
 
-    Returns all 3 style signals by default, or just the requested style.
+    live=False (default on detail page): reads latest stored DB signal — consistent with signal filter.
+    live=True + persist=True: recomputes fresh and overwrites DB — used by the Refresh button.
     """
+    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+
+    if not live and not persist:
+        # DB-first path: return stored signals — matches Signal Filter exactly.
+        if not stock:
+            raise HTTPException(404, f"Stock {symbol} not found")
+        all_styles = ["SHORT", "SWING", "LONG", "GROWTH"]
+        stored: dict[str, dict] = {}
+        for s_key in all_styles:
+            d = _stored_signal_for_style(session, stock.id, s_key)
+            if d:
+                stored[s_key] = d
+        if stored:
+            if style:
+                s_key = style.upper()
+                data = stored.get(s_key)
+                if data:
+                    return {"symbol": symbol, "source": "db", **data}
+            else:
+                return {"symbol": symbol, "source": "db", "signals": stored}
+        # No stored signals for this stock yet — fall through to live generation
+        # and auto-persist so the Signal Filter picks it up on the next query.
+        persist = True
+
+    # Live computation (fresh ML/TA — used on Refresh or first-time stock)
     try:
         all_sig = generate_all_signals(symbol)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
-
-    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
 
     if persist and stock:
         for ai in all_sig.values():
@@ -2231,11 +2855,11 @@ def signal_for(
     if style:
         style_key = style.upper()
         ai = all_sig.get(style_key) or all_sig["SWING"]
-        return {"symbol": symbol, **asdict(ai)}
+        return {"symbol": symbol, "source": "live", **asdict(ai)}
 
-    # Return all styles (SHORT, SWING, LONG, GROWTH)
     return {
         "symbol": symbol,
+        "source": "live",
         "signals": {k: asdict(v) for k, v in all_sig.items()},
     }
 
@@ -2261,19 +2885,36 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
     - pct_return  = (exit - entry) / entry
     - is_correct  = price went up for BUY, down for SELL
 
+    INT-8: Also fills multi-window columns (price_5d/10d/20d, return_5d/10d/20d,
+    is_correct_5d/10d/20d) and research_rec/research_score at evaluation time.
+    Phase 2 of the same run updates existing outcome rows where window columns
+    are NULL but sufficient time has now passed.
+
     Safe to re-run — already-evaluated signals (by UNIQUE signal_id) are skipped.
     Called automatically by the scheduler post-close.
     """
     from datetime import time as _time
+    import bisect
+    from collections import defaultdict
+    import httpx as _httpx
+    from sqlalchemy import or_
 
     today = date.today()
     min_hold = min(_OUTCOME_HOLD_DAYS.values())
     cutoff = today - timedelta(days=min_hold)
 
-    # IDs already in signal_outcomes — skip re-evaluation
+    # IDs already in signal_outcomes — skip re-evaluation by signal_id
     evaluated_ids: set[int] = set(session.execute(
         select(SignalOutcome.signal_id)
     ).scalars().all())
+
+    # Also track (stock_id, horizon, signal_date) to prevent duplicates from
+    # multiple same-day signal refreshes producing multiple outcome rows.
+    evaluated_sighd: set[tuple] = set(
+        session.execute(
+            select(SignalOutcome.stock_id, SignalOutcome.horizon, SignalOutcome.signal_date)
+        ).all()
+    )
 
     # BUY and SELL signals old enough that at least SHORT window could be closed
     pending_signals = session.execute(
@@ -2286,24 +2927,23 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         .order_by(Signal.ts)
     ).all()
 
-    import bisect
-    from collections import defaultdict
-
-    # Bulk-load all D1 prices for pending signals — avoids N+1 queries in loop
+    # Bulk-load D1 prices — always extend window to 20d for INT-8 multi-window
     pending_stock_ids = list({sig.stock_id for sig, _ in pending_signals})
-    max_hold = max(_OUTCOME_HOLD_DAYS.values())
     price_min_ts = min((sig.ts for sig, _ in pending_signals), default=datetime.now())
-    price_max_ts = datetime.now() + timedelta(days=max_hold + 10)
-    bulk_prices = session.execute(
-        select(Price.stock_id, Price.ts, Price.close)
-        .where(
-            Price.stock_id.in_(pending_stock_ids),
-            Price.timeframe == TimeFrame.D1,
-            Price.ts >= price_min_ts,
-            Price.ts <= price_max_ts,
-        )
-        .order_by(Price.stock_id, Price.ts)
-    ).all()
+    price_max_ts = datetime.now() + timedelta(days=30)
+    bulk_prices: list = []
+    if pending_stock_ids:
+        bulk_prices = session.execute(
+            select(Price.stock_id, Price.ts, Price.close)
+            .where(
+                Price.stock_id.in_(pending_stock_ids),
+                Price.timeframe == TimeFrame.D1,
+                Price.ts >= price_min_ts,
+                Price.ts <= price_max_ts,
+            )
+            .order_by(Price.stock_id, Price.ts)
+        ).all()
+
     _outcome_price_map: dict[int, list[tuple]] = defaultdict(list)
     for pr in bulk_prices:
         pr_date = pr.ts.date() if hasattr(pr.ts, "date") else pr.ts
@@ -2319,6 +2959,41 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
             return None
         return bucket[idx]
 
+    def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int):
+        """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None)."""
+        target = entry_date + timedelta(days=days)
+        if target >= today:
+            return None, None, None
+        result = _lookup_outcome_price(stock_id, target)
+        if result is None or entry_price <= 0:
+            return None, None, None
+        _, price = result
+        ret = (price - entry_price) / entry_price
+        return float(price), ret, ret > 0
+
+    # Research recommendation cache — one network fetch per symbol per run
+    _research_cache: dict[str, tuple] = {}
+
+    def _fetch_research(symbol: str) -> "tuple[str | None, float | None]":
+        if symbol in _research_cache:
+            return _research_cache[symbol]
+        try:
+            _tok = _service_token()
+            _r = _httpx.get(
+                f"{_settings.research_engine_url}/research/{symbol}/summary",
+                headers={"Authorization": f"Bearer {_tok}"},
+                timeout=2.0,
+            )
+            if _r.status_code == 200:
+                _d = _r.json()
+                result = (_d.get("recommendation"), float(_d.get("overall_score") or 0) or None)
+            else:
+                result = (None, None)
+        except Exception:
+            result = (None, None)
+        _research_cache[symbol] = result
+        return result
+
     evaluated, skipped_open, skipped_no_price = 0, 0, 0
 
     for sig, symbol in pending_signals:
@@ -2328,6 +3003,13 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         horizon = sig.horizon.value
         hold_days = _OUTCOME_HOLD_DAYS[horizon]
         signal_date = sig.ts.date()
+
+        # Skip if another signal_id for the same (stock, horizon, date) was already evaluated.
+        # This prevents 5×/day refreshes from creating duplicate outcome rows for the same
+        # logical signal event.
+        sighd_key = (sig.stock_id, sig.horizon, signal_date)
+        if sighd_key in evaluated_sighd:
+            continue
 
         entry_result = _lookup_outcome_price(sig.stock_id, signal_date)
         if entry_result is None:
@@ -2339,7 +3021,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
 
         if exit_target >= today:
             skipped_open += 1
-            continue  # Hold window not closed yet (need tomorrow's price at minimum)
+            continue
 
         exit_result = _lookup_outcome_price(sig.stock_id, exit_target)
         if exit_result is None:
@@ -2350,9 +3032,16 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         if entry_price <= 0:
             skipped_no_price += 1
             continue
+
         pct_return = (exit_price - entry_price) / entry_price
         hold_days_actual = (exit_date - entry_date).days
         is_correct = pct_return > 0 if sig.signal == SignalType.BUY else pct_return < 0
+
+        # INT-8: multi-window forward returns
+        p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5)
+        p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10)
+        p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20)
+        res_rec, res_score = _fetch_research(symbol)
 
         reasons = sig.reasons or {}
         outcome = SignalOutcome(
@@ -2375,16 +3064,322 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
             hold_days=hold_days_actual,
             pct_return=pct_return,
             is_correct=is_correct,
+            price_5d=p5, return_5d=r5, is_correct_5d=c5,
+            price_10d=p10, return_10d=r10, is_correct_10d=c10,
+            price_20d=p20, return_20d=r20, is_correct_20d=c20,
+            research_rec=res_rec,
+            research_score=res_score,
         )
         session.add(outcome)
         evaluated_ids.add(sig.id)
+        evaluated_sighd.add(sighd_key)
         evaluated += 1
 
     session.commit()
+
+    # ── Phase 2: Fill NULL window columns on existing outcome rows ─────────────
+    # Outcomes created before INT-8 (or where a window wasn't closed at create time)
+    # may have NULL price_5d/10d/20d. Fill them in as the windows mature.
+    needs_update = session.execute(
+        select(SignalOutcome)
+        .where(
+            SignalOutcome.entry_date.is_not(None),
+            SignalOutcome.entry_price.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+            or_(
+                SignalOutcome.price_5d.is_(None),
+                SignalOutcome.price_10d.is_(None),
+                SignalOutcome.price_20d.is_(None),
+            )
+        )
+        .limit(500)
+    ).scalars().all()
+
+    updated = 0
+    if needs_update:
+        # Extend price map with any stocks not already loaded
+        missing_ids = [o.stock_id for o in needs_update if o.stock_id not in _outcome_price_map]
+        if missing_ids:
+            upd_prices = session.execute(
+                select(Price.stock_id, Price.ts, Price.close)
+                .where(
+                    Price.stock_id.in_(missing_ids),
+                    Price.timeframe == TimeFrame.D1,
+                )
+                .order_by(Price.stock_id, Price.ts)
+            ).all()
+            for pr in upd_prices:
+                pr_date = pr.ts.date() if hasattr(pr.ts, "date") else pr.ts
+                _outcome_price_map[pr.stock_id].append((pr_date, float(pr.close)))
+
+        for out in needs_update:
+            changed = False
+            ep, ed = out.entry_price, out.entry_date
+            if out.price_5d is None:
+                p5, r5, c5 = _window_return(out.stock_id, ed, ep, 5)
+                if p5 is not None:
+                    out.price_5d, out.return_5d, out.is_correct_5d = p5, r5, c5
+                    changed = True
+            if out.price_10d is None:
+                p10, r10, c10 = _window_return(out.stock_id, ed, ep, 10)
+                if p10 is not None:
+                    out.price_10d, out.return_10d, out.is_correct_10d = p10, r10, c10
+                    changed = True
+            if out.price_20d is None:
+                p20, r20, c20 = _window_return(out.stock_id, ed, ep, 20)
+                if p20 is not None:
+                    out.price_20d, out.return_20d, out.is_correct_20d = p20, r20, c20
+                    changed = True
+            if out.research_rec is None:
+                rr, rs = _fetch_research(out.symbol)
+                if rr is not None:
+                    out.research_rec, out.research_score = rr, rs
+                    changed = True
+            if changed:
+                updated += 1
+
+        session.commit()
+
     log.info(
         "outcomes.evaluate_done",
         evaluated=evaluated,
         skipped_open=skipped_open,
         skipped_no_price=skipped_no_price,
+        updated_windows=updated,
     )
-    return {"evaluated": evaluated, "skipped_open": skipped_open, "skipped_no_price": skipped_no_price}
+    return {
+        "evaluated": evaluated,
+        "skipped_open": skipped_open,
+        "skipped_no_price": skipped_no_price,
+        "updated_windows": updated,
+    }
+
+
+@router.get("/gate_backtest")
+def gate_backtest(
+    lookback_days: int = Query(90, ge=30, le=365),
+    style: str = Query("SWING", regex="^(SHORT|SWING|LONG|GROWTH)$"),
+    hold_days: int = Query(10, ge=1, le=60),
+    session: Session = Depends(get_session),
+):
+    """Compare old vs new conviction gate logic against historical BUY signals.
+
+    Replays _is_conviction_buy with old and new parameters to measure how many
+    more signals fire and whether the newly-unblocked signals actually perform well.
+
+    Gate changes evaluated:
+      1. MACD condition: old = (hist > 0 AND rising) OR crossover
+                         new = hist > 0 OR rising OR crossover
+      2. MACD soft tier: old = hard failure (blocks alone)
+                         new = soft failure (1 allowed per near-conviction tier)
+      3. GROWTH RSI lo:  old = 55  →  new = 50
+
+    Returns per-group win-rate and avg return so you can validate each change.
+    """
+    cache_key = f"signals:cache:gate_backtest:{lookback_days}:{style}:{hold_days}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    since = date.today() - timedelta(days=lookback_days)
+    try:
+        horizon_enum = SignalHorizon(style.upper())
+    except ValueError:
+        horizon_enum = SignalHorizon.SWING
+
+    rows = session.execute(
+        select(Signal.ts, Signal.reasons, Signal.stock_id, Stock.symbol, Signal.horizon)
+        .join(Stock, Signal.stock_id == Stock.id)
+        .where(
+            Signal.signal == SignalType.BUY,
+            Signal.horizon == horizon_enum,
+            Signal.ts >= since,
+            Signal.reasons.isnot(None),
+        )
+        .order_by(Signal.ts)
+    ).all()
+
+    _REGIME_ML_THRESH = {"bull": 0.65, "neutral": 0.70, "high_vol": 0.78, "bear": 0.78}
+
+    def _apply_gate(r: dict, horizon: str, new_macd_cond: bool, new_macd_soft: bool, new_growth_rsi: bool):
+        """Inline replay of _is_conviction_buy. Returns (passes, tier, list[failed_keys])."""
+        failed: list[str] = []
+
+        # K-Score — may not be stored in reasons (fetched by scheduler); treat None as soft-pass
+        kscore = r.get("kscore")
+        if kscore is not None and float(kscore) < 55:
+            failed.append("KScore")
+
+        # 4a — Uptrend structure
+        if horizon == "GROWTH":
+            if not r.get("trend_above_sma50"):
+                failed.append("Uptrend")
+        else:
+            if not (r.get("sma50_above_sma200") and r.get("trend_above_sma50")):
+                failed.append("Uptrend")
+
+        # 4b — RSI range
+        rsi = r.get("rsi")
+        if rsi is not None:
+            rsi_f = float(rsi)
+            if horizon == "GROWTH":
+                lo = 50.0 if new_growth_rsi else 55.0
+                rsi_ok = lo <= rsi_f <= 85.0
+            else:
+                rsi_ok = 45.0 <= rsi_f <= 72.0
+            if not rsi_ok:
+                failed.append("RSI")
+
+        # 4c — MACD momentum
+        macd_hist = float(r.get("macd_hist") or 0)
+        macd_rising = bool(r.get("macd_rising"))
+        macd_cross = bool(r.get("macd_zero_cross_up"))
+        if new_macd_cond:
+            macd_ok = macd_hist > 0 or macd_rising or macd_cross
+        else:
+            macd_ok = (macd_hist > 0 and macd_rising) or macd_cross
+        if not macd_ok:
+            failed.append("MACD")
+
+        # 4d — OBV (always soft)
+        if not r.get("obv_trend_bullish"):
+            failed.append("OBV")
+
+        # 4e — ADX (always soft)
+        if not r.get("adx_trending"):
+            failed.append("ADX")
+
+        # 5 — ML probability (always soft)
+        ml_prob = r.get("ml_probability")
+        if ml_prob is not None:
+            regime = r.get("market_regime", "unknown")
+            thresh = _REGIME_ML_THRESH.get(regime, 0.70)
+            if float(ml_prob) <= thresh:
+                failed.append("ML")
+
+        # Disqualifiers — always hard
+        if r.get("rsi_divergence") == "bearish":
+            failed.append("RSI_DIV")
+        if r.get("stoch_rsi_overbought"):
+            failed.append("STOCH_OB")
+
+        soft_kw = {"OBV", "ADX", "ML"}
+        if new_macd_soft:
+            soft_kw.add("MACD")
+        soft_failed = [f for f in failed if f in soft_kw]
+        hard_failed = [f for f in failed if f not in soft_kw]
+
+        if not failed:
+            tier = "full"
+        elif not hard_failed and len(soft_failed) == 1:
+            tier = "near"
+        else:
+            tier = "failed"
+        return tier in ("full", "near"), tier, failed
+
+    # Build price lookup
+    stock_ids = list({r.stock_id for r in rows})
+    price_rows = session.execute(
+        select(Price.stock_id, Price.ts, Price.close)
+        .where(
+            Price.stock_id.in_(stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= since - timedelta(days=10),
+        )
+        .order_by(Price.stock_id, Price.ts)
+    ).all()
+
+    from collections import defaultdict
+    prices_by_stock: dict = defaultdict(list)
+    for p in price_rows:
+        d = p.ts.date() if hasattr(p.ts, "date") else p.ts
+        prices_by_stock[p.stock_id].append((d, float(p.close)))
+
+    def _price_at(stock_id: int, target) -> float | None:
+        candidates = prices_by_stock.get(stock_id, [])
+        future = [(abs((d - target).days), c) for d, c in candidates if d >= target]
+        return min(future, key=lambda x: x[0])[1] if future else None
+
+    # Evaluate each signal under old and new gates
+    records = []
+    for row in rows:
+        r = row.reasons or {}
+        sig_date = row.ts.date() if hasattr(row.ts, "date") else row.ts
+        exit_date = sig_date + timedelta(days=hold_days)
+        horizon = row.horizon.value if hasattr(row.horizon, "value") else str(row.horizon)
+
+        entry = _price_at(row.stock_id, sig_date)
+        exit_ = _price_at(row.stock_id, exit_date)
+        ret = ((exit_ - entry) / entry) if (entry and exit_ and entry > 0) else None
+
+        old_pass, old_tier, old_failed = _apply_gate(r, horizon, new_macd_cond=False, new_macd_soft=False, new_growth_rsi=False)
+        new_pass, new_tier, new_failed = _apply_gate(r, horizon, new_macd_cond=True,  new_macd_soft=True,  new_growth_rsi=True)
+
+        # Attribute what change caused the unblock
+        change_reasons: list[str] = []
+        if not old_pass and new_pass:
+            macd_hist = float(r.get("macd_hist") or 0)
+            macd_rising = bool(r.get("macd_rising"))
+            macd_cross = bool(r.get("macd_zero_cross_up"))
+            old_macd_ok = (macd_hist > 0 and macd_rising) or macd_cross
+            new_macd_ok = macd_hist > 0 or macd_rising or macd_cross
+            if not old_macd_ok and new_macd_ok:
+                change_reasons.append("macd_condition_relaxed")
+            elif "MACD" in old_failed and "MACD" not in new_failed:
+                change_reasons.append("macd_soft_reclassified")
+            rsi = r.get("rsi")
+            if horizon == "GROWTH" and rsi is not None and 50.0 <= float(rsi) < 55.0:
+                change_reasons.append("growth_rsi_50_54")
+
+        records.append({
+            "symbol": row.symbol,
+            "signal_date": sig_date.isoformat(),
+            "old_pass": old_pass, "old_tier": old_tier, "old_failed": old_failed,
+            "new_pass": new_pass, "new_tier": new_tier, "new_failed": new_failed,
+            "ret_pct": round(ret * 100, 2) if ret is not None else None,
+            "win": (ret > 0) if ret is not None else None,
+            "change_reasons": change_reasons,
+        })
+
+    def _stats(items: list) -> dict:
+        with_ret = [x for x in items if x["ret_pct"] is not None]
+        wins = [x for x in with_ret if x["win"]]
+        return {
+            "count": len(items),
+            "count_with_returns": len(with_ret),
+            "win_rate_pct": round(len(wins) / len(with_ret) * 100, 1) if with_ret else None,
+            "avg_return_pct": round(sum(x["ret_pct"] for x in with_ret) / len(with_ret), 2) if with_ret else None,
+        }
+
+    old_pass_set = [x for x in records if x["old_pass"]]
+    new_pass_set = [x for x in records if x["new_pass"]]
+    newly_pass   = [x for x in records if x["new_pass"] and not x["old_pass"]]
+    always_fail  = [x for x in records if not x["new_pass"]]
+
+    by_change = {}
+    for reason in ("macd_condition_relaxed", "macd_soft_reclassified", "growth_rsi_50_54"):
+        grp = [x for x in newly_pass if reason in x["change_reasons"]]
+        by_change[reason] = _stats(grp)
+
+    sample = sorted(
+        [x for x in newly_pass if x["ret_pct"] is not None],
+        key=lambda x: x["ret_pct"], reverse=True,
+    )[:20]
+
+    result = {
+        "lookback_days": lookback_days,
+        "horizon": style,
+        "hold_days": hold_days,
+        "n_signals_total": len(records),
+        "old_gate": _stats(old_pass_set),
+        "new_gate": _stats(new_pass_set),
+        "newly_unblocked": {
+            **_stats(newly_pass),
+            "by_change": by_change,
+            "note": "win_rate_pct > 50% means newly unblocked signals go up more often than not — change is beneficial",
+        },
+        "still_blocked": _stats(always_fail),
+        "sample_newly_unblocked": sample,
+    }
+    _cache_set(cache_key, result, ttl=3600)
+    return result

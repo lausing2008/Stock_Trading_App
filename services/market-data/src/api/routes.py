@@ -41,7 +41,7 @@ import yfinance as yf
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Price, Stock, TimeFrame, get_session
+from db import Fundamental, Price, Stock, TimeFrame, get_session
 from .auth import get_current_user
 
 log = get_logger("routes")
@@ -57,7 +57,7 @@ def _get_redis() -> redis_lib.Redis:
     return _redis
 
 _LIVE_KEY = "stockai:live_prices"
-_LIVE_TTL = 60  # seconds
+_LIVE_TTL = 90  # seconds — refreshed every 1 min by scheduler; 90s gives a 30s buffer
 
 
 class StockOut(BaseModel):
@@ -118,7 +118,7 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
             prev_close = getattr(fi, "previous_close", None)
         except Exception as fallback_exc:
             log.info("yfinance.fast_info.fallback", symbol=symbol, error=str(fallback_exc))
-            hist = ticker.history(period="2d", interval="1d", auto_adjust=False)
+            hist = ticker.history(period="2d", interval="1d", auto_adjust=True)
             if hist is not None and not hist.empty and "Close" in hist.columns:
                 if isinstance(hist.index, pd.MultiIndex):
                     hist.index = hist.index.droplevel(0)
@@ -126,6 +126,7 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
                 prev_close = hist["Close"].iloc[-2] if len(hist) > 1 else None
 
         if price is None:
+            log.info("live_price.not_found", symbol=symbol, error="no_price_data")
             return None
 
         volume = None
@@ -147,7 +148,7 @@ def _fetch_live_one(symbol: str, currency: str) -> dict | None:
             "avg_volume": avg_volume,
         }
     except Exception as exc:
-        log.warning("live_price.failed", symbol=symbol, error=str(exc))
+        log.warning("live_price.unavailable", symbol=symbol, error=str(exc))
         return None
 
 
@@ -169,7 +170,7 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
             symbols,
             period="2d",
             interval="1d",
-            auto_adjust=False,
+            auto_adjust=True,
             progress=False,
             group_by="ticker",
         )
@@ -609,6 +610,32 @@ def latest_prices(
     return bulk_results
 
 
+def refresh_live_price_cache() -> int:
+    """Fetch live prices for all active stocks and write to Redis.
+
+    Designed to be called by the scheduler every minute during market hours.
+    Returns the number of symbols successfully refreshed, or 0 on failure.
+    Intentionally lightweight — no DB writes, no ranking/signal computation.
+    """
+    from db import SessionLocal
+    try:
+        with SessionLocal() as session:
+            stocks = list(session.execute(
+                select(Stock.symbol, Stock.currency).where(Stock.active.is_(True))
+            ).all())
+        if not stocks:
+            return 0
+        results = _fetch_live_bulk(stocks)
+        if results:
+            _get_redis().setex(_LIVE_KEY, _LIVE_TTL, json.dumps(results))
+            log.info("live_prices.cache_refresh", count=len(results))
+            return len(results)
+        return 0
+    except Exception as exc:
+        log.warning("live_prices.cache_refresh_failed", error=str(exc))
+        return 0
+
+
 class FundamentalsOut(BaseModel):
     # Valuation
     market_cap: int | None = None
@@ -685,6 +712,8 @@ class FundamentalsOut(BaseModel):
     eps_avg_surprise_pct: float | None = None   # mean surprise % across available quarters
     eps_surprise_trend: str | None = None       # "improving" | "declining" | "stable"
     eps_history: list[dict] = []                # [{quarter, actual, estimate, surprise_pct}]
+    # Data freshness
+    fetched_at: str | None = None               # ISO datetime when yfinance data was last fetched
 
 
 _FUND_TTL = 60 * 60 * 24  # 24 hours — fundamentals change quarterly
@@ -732,7 +761,7 @@ def fundamentals_bulk(session: Session = Depends(get_session)):
 
 
 @router.get("/{symbol}/fundamentals", response_model=FundamentalsOut)
-def get_fundamentals(symbol: str, refresh: bool = False):
+def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(get_session)):
     """Live company fundamentals from yfinance, Redis-cached for 24 h.
     Pass ?refresh=true to bypass the cache and force a fresh fetch."""
     cache_key = f"stockai:fundamentals:v2:{symbol.upper()}"
@@ -943,10 +972,68 @@ def get_fundamentals(symbol: str, refresh: bool = False):
     except Exception:
         pass
 
+    from datetime import datetime as _dt
+    data.fetched_at = _dt.utcnow().isoformat() + "Z"
+
     try:
         _get_redis().setex(cache_key, _FUND_TTL, data.model_dump_json())
     except Exception:
         pass
+
+    # Persist key fields to DB for ML feature use — upsert on (stock_id, today)
+    try:
+        from datetime import date as _date
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        stock_row = db.execute(
+            select(Stock).where(Stock.symbol == symbol.upper())
+        ).scalar_one_or_none()
+        if stock_row:
+            mkt_cap = info.get("marketCap")
+            fcf = data.free_cashflow
+            stmt = pg_insert(Fundamental).values(
+                stock_id=stock_row.id,
+                as_of=_date.today(),
+                trailing_pe=data.trailing_pe,
+                forward_pe=data.forward_pe,
+                price_to_book=data.price_to_book,
+                gross_margin=data.gross_margin,
+                profit_margin=data.profit_margin,
+                return_on_equity=data.return_on_equity,
+                return_on_assets=data.return_on_assets,
+                revenue_growth=data.revenue_growth,
+                earnings_growth=data.earnings_growth,
+                free_cashflow=fcf,
+                market_cap=int(mkt_cap) if mkt_cap else None,
+                short_percent_of_float=data.short_percent_of_float,
+                short_ratio=data.short_ratio,
+                recommendation_mean=data.recommendation_mean,
+                number_of_analysts=data.number_of_analysts,
+            ).on_conflict_do_update(
+                constraint="uq_fundamentals_stock_date",
+                set_=dict(
+                    trailing_pe=data.trailing_pe,
+                    forward_pe=data.forward_pe,
+                    price_to_book=data.price_to_book,
+                    gross_margin=data.gross_margin,
+                    profit_margin=data.profit_margin,
+                    return_on_equity=data.return_on_equity,
+                    return_on_assets=data.return_on_assets,
+                    revenue_growth=data.revenue_growth,
+                    earnings_growth=data.earnings_growth,
+                    free_cashflow=fcf,
+                    market_cap=int(mkt_cap) if mkt_cap else None,
+                    short_percent_of_float=data.short_percent_of_float,
+                    short_ratio=data.short_ratio,
+                    recommendation_mean=data.recommendation_mean,
+                    number_of_analysts=data.number_of_analysts,
+                    fetched_at=func.now(),
+                ),
+            )
+            db.execute(stmt)
+            db.commit()
+    except Exception as exc:
+        log.warning("fundamentals.db_persist_failed", symbol=symbol, error=str(exc))
+        db.rollback()
 
     log.info("fundamentals.ok", symbol=symbol)
     return data
@@ -1105,6 +1192,107 @@ def sector_performance(session: Session = Depends(get_session)):
         })
     result.sort(key=lambda x: x["avg_change_pct"] or -999, reverse=True)
     return result
+
+
+# ── Sector Rotation Heatmap (RES-4) ──────────────────────────────────────────
+
+_SECTOR_ETFS = {
+    "XLK": "Technology",
+    "XLV": "Healthcare",
+    "XLF": "Financials",
+    "XLE": "Energy",
+    "XLI": "Industrials",
+    "XLY": "Consumer Discretionary",
+    "XLP": "Consumer Staples",
+    "XLU": "Utilities",
+    "XLRE": "Real Estate",
+    "XLC": "Communication Services",
+    "XLB": "Materials",
+}
+_SECTOR_ROTATION_TTL = 3_600  # 1-hour cache
+
+
+@router.get("/sector_rotation")
+def sector_rotation():
+    """RES-4: Returns 1w / 1m / 3m returns for US sector ETFs vs SPY.
+
+    Classification vs SPY 1m return:
+      leading      — sector >= SPY + 3%
+      in-line      — within 3% of SPY
+      lagging      — sector < SPY - 1%
+      distributing — sector < SPY - 5%
+    """
+    r = _get_redis()
+    cache_key = "sector_rotation"
+    try:
+        cached = r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    tickers = list(_SECTOR_ETFS.keys()) + ["SPY"]
+    try:
+        raw = yf.download(tickers, period="4mo", interval="1d", progress=False, auto_adjust=True)
+        # Multi-ticker download returns MultiIndex columns (field, ticker) — select Close level
+        try:
+            closes = raw["Close"]
+        except KeyError:
+            closes = raw  # single-ticker fallback (shouldn't happen here)
+    except Exception as exc:
+        log.warning("sector_rotation.yf_failed", error=str(exc))
+        return {"error": "Unable to fetch sector data", "sectors": []}
+
+    results = []
+    spy_closes = closes["SPY"].dropna() if "SPY" in closes.columns else None
+
+    def _ret(series, days: int) -> float | None:
+        clean = series.dropna()
+        if len(clean) < days + 1:
+            return None
+        return round((float(clean.iloc[-1]) / float(clean.iloc[-days - 1]) - 1) * 100, 2)
+
+    spy_1m = _ret(spy_closes, 21) if spy_closes is not None else None
+
+    for etf, sector_name in _SECTOR_ETFS.items():
+        if etf not in closes.columns:
+            continue
+        s = closes[etf]
+        ret_1w = _ret(s, 5)
+        ret_1m = _ret(s, 21)
+        ret_3m = _ret(s, 63)
+
+        vs_spy = (ret_1m - spy_1m) if ret_1m is not None and spy_1m is not None else None
+        if vs_spy is None:
+            status = "unknown"
+        elif vs_spy >= 3:
+            status = "leading"
+        elif vs_spy >= -1:
+            status = "in-line"
+        elif vs_spy >= -5:
+            status = "lagging"
+        else:
+            status = "distributing"
+
+        results.append({
+            "etf": etf,
+            "sector": sector_name,
+            "ret_1w": ret_1w,
+            "ret_1m": ret_1m,
+            "ret_3m": ret_3m,
+            "vs_spy_1m": round(vs_spy, 2) if vs_spy is not None else None,
+            "status": status,
+        })
+
+    results.sort(key=lambda x: x["ret_1m"] or -999, reverse=True)
+    payload = {"spy_1m": spy_1m, "sectors": results, "ts": datetime.now(timezone.utc).isoformat()}
+
+    try:
+        r.setex(cache_key, _SECTOR_ROTATION_TTL, json.dumps(payload))
+    except Exception:
+        pass
+
+    return payload
 
 
 # ── Earnings Calendar ─────────────────────────────────────────────────────────
@@ -1335,7 +1523,7 @@ def get_options_flow(symbol: str):
         total_put_vol = 0
         unusual: list[dict] = []
 
-        for exp in expiries[:2]:  # nearest two expiries
+        for exp in expiries[:4]:  # nearest four expiries
             try:
                 chain = t.option_chain(exp)
             except Exception:
@@ -1353,15 +1541,20 @@ def get_options_flow(symbol: str):
             for df, side in [(calls, "call"), (puts, "put")]:
                 mask = (df["openInterest"] > 50) & (df["volume"] > df["openInterest"] * 0.30)
                 for _, row in df[mask].sort_values("volume", ascending=False).head(3).iterrows():
+                    vol = int(row["volume"])
+                    last_price = float(row.get("lastPrice", 0))
+                    premium = vol * last_price * 100
                     unusual.append({
-                        "expiry":   exp,
-                        "side":     side,
-                        "strike":   float(row["strike"]),
-                        "volume":   int(row["volume"]),
-                        "oi":       int(row["openInterest"]),
-                        "vol_oi":   round(float(row["volume"]) / max(float(row["openInterest"]), 1), 2),
-                        "iv":       round(float(row["impliedVolatility"]) * 100, 1),
-                        "itm":      bool(row["inTheMoney"]),
+                        "expiry":    exp,
+                        "side":      side,
+                        "strike":    float(row["strike"]),
+                        "volume":    vol,
+                        "oi":        int(row["openInterest"]),
+                        "vol_oi":    round(float(row["volume"]) / max(float(row["openInterest"]), 1), 2),
+                        "iv":        round(float(row["impliedVolatility"]) * 100, 1),
+                        "itm":       bool(row["inTheMoney"]),
+                        "premium":   round(premium, 2),
+                        "is_whale":  premium > 500_000,
                     })
 
         if total_call_vol == 0 and total_put_vol == 0:
@@ -1385,19 +1578,21 @@ def get_options_flow(symbol: str):
         else:
             sentiment = "neutral"
 
-        # Sort unusual by volume desc, keep top 8
-        unusual.sort(key=lambda x: x["volume"], reverse=True)
+        # Sort unusual by premium desc, keep top 10
+        unusual.sort(key=lambda x: x["premium"], reverse=True)
 
         result = {
-            "symbol":          sym,
-            "available":       True,
-            "call_volume":     total_call_vol,
-            "put_volume":      total_put_vol,
-            "cp_ratio":        cp_ratio,
-            "sentiment":       sentiment,
-            "unusual_count":   len(unusual),
-            "unusual":         unusual[:8],
-            "expiries_used":   list(expiries[:2]),
+            "symbol":            sym,
+            "available":         True,
+            "call_volume":       total_call_vol,
+            "put_volume":        total_put_vol,
+            "cp_ratio":          cp_ratio,
+            "sentiment":         sentiment,
+            "unusual_count":     len(unusual),
+            "unusual":           unusual[:10],
+            "expiries_used":     list(expiries[:4]),
+            "whale_count":       sum(1 for c in unusual if c.get("is_whale")),
+            "top_whale_premium": max((c["premium"] for c in unusual), default=0),
         }
 
         try:
@@ -1410,6 +1605,108 @@ def get_options_flow(symbol: str):
     except Exception as exc:
         log.warning("options_flow.error", symbol=sym, error=str(exc))
         return {"symbol": sym, "available": False, "reason": "fetch_error"}
+
+
+# ── Per-symbol Relative Strength ─────────────────────────────────────────────
+
+_SECTOR_ETF_MAP: dict[str, str] = {
+    "Technology": "XLK", "Health Care": "XLV", "Healthcare": "XLV",
+    "Financials": "XLF", "Financial Services": "XLF",
+    "Consumer Discretionary": "XLY", "Consumer Staples": "XLP",
+    "Energy": "XLE", "Utilities": "XLU", "Materials": "XLB",
+    "Industrials": "XLI", "Real Estate": "XLRE",
+    "Communication Services": "XLC", "Telecommunications": "XLC",
+}
+_RS_TTL    = 3600      # 1h — refreshed each signal generation cycle
+_ETF_TTL   = 4 * 3600  # 4h — ETF data changes slowly
+
+
+@router.get("/{symbol}/relative-strength")
+def get_relative_strength(symbol: str, db: Session = Depends(get_session)):
+    """Return RS score vs sector ETF for a symbol.
+
+    Uses DB prices for the stock (20-day return) and yfinance for the sector ETF
+    (cached 4h in Redis so only one yfinance call per ETF ticker per session).
+    Full result cached 1h per symbol. Single source of truth for all signal consumers.
+    """
+    sym = symbol.upper()
+    rs_key = f"stockai:rs:{sym}"
+    try:
+        cached = _get_redis().get(rs_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    stock = db.execute(select(Stock).where(Stock.symbol == sym)).scalar_one_or_none()
+    if not stock:
+        raise HTTPException(404, f"Unknown symbol: {sym}")
+
+    # Stock 20-day return from DB prices (no yfinance call needed)
+    prices = db.execute(
+        select(Price.close, Price.ts)
+        .where(Price.stock_id == stock.id, Price.timeframe == TimeFrame.D1)
+        .order_by(Price.ts.desc())
+        .limit(21)
+    ).all()
+    if len(prices) < 21:
+        return {"symbol": sym, "rs_score": None, "rs_rank": None,
+                "sector_etf_above_sma50": None, "stock_20d_return_pct": None, "etf_ticker": None}
+
+    prices_sorted = sorted(prices, key=lambda r: r.ts)
+    stock_ret = float(prices_sorted[-1].close / prices_sorted[0].close - 1)
+
+    # Sector ETF — cached per ticker to avoid repeated yfinance calls across symbols
+    market = str(stock.market).upper() if stock.market else "US"
+    sector = stock.sector or ""
+    etf_ticker = "^HSI" if market == "HK" else _SECTOR_ETF_MAP.get(sector, "SPY")
+
+    etf_key = f"stockai:etf_rs:{etf_ticker}"
+    etf_data: dict | None = None
+    try:
+        cached_etf = _get_redis().get(etf_key)
+        if cached_etf:
+            etf_data = json.loads(cached_etf)
+    except Exception:
+        pass
+
+    if etf_data is None:
+        try:
+            import numpy as np
+            hist = yf.Ticker(etf_ticker).history(period="3mo")
+            if len(hist) >= 50:
+                etf_ret_val   = float(hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1)
+                etf_sma50_val = float(hist["Close"].rolling(50).mean().iloc[-1])
+                etf_above     = bool(hist["Close"].iloc[-1] > etf_sma50_val)
+                etf_data = {"ret": etf_ret_val, "above_sma50": etf_above}
+                try:
+                    _get_redis().setex(etf_key, _ETF_TTL, json.dumps(etf_data))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if etf_data is None or abs(1 + etf_data.get("ret", 0)) < 0.01:
+        return {"symbol": sym, "rs_score": None, "rs_rank": None,
+                "sector_etf_above_sma50": None, "stock_20d_return_pct": None, "etf_ticker": etf_ticker}
+
+    import numpy as np
+    etf_ret  = etf_data["ret"]
+    rs_rank  = (1 + stock_ret) / (1 + etf_ret)
+    rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
+    result   = {
+        "symbol":                sym,
+        "rs_score":              round(rs_score, 1),
+        "rs_rank":               round(rs_rank, 4),
+        "sector_etf_above_sma50": etf_data["above_sma50"],
+        "stock_20d_return_pct":  round(stock_ret * 100, 2),
+        "etf_ticker":            etf_ticker,
+    }
+    try:
+        _get_redis().setex(rs_key, _RS_TTL, json.dumps(result))
+    except Exception:
+        pass
+    return result
 
 
 # ── Per-symbol Dividends ──────────────────────────────────────────────────────

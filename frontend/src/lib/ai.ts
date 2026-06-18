@@ -100,9 +100,13 @@ export async function askAI(
   // Send whatever key we have (may be empty); backend falls back to Redis admin key.
 
   const base = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+  const token = typeof window !== 'undefined' ? localStorage.getItem('stockai_jwt')?.trim() : null;
   const res = await fetch(`${base}/ai/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({
       provider: s.aiProvider,
       model,

@@ -157,17 +157,17 @@ class Signal(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
-    ts: Mapped[datetime] = mapped_column(DateTime, index=True, default=func.now())
-    __table_args__ = (
-        Index("ix_signals_stock_ts", "stock_id", "ts"),
-        Index("ix_signals_stock_horizon_ts", "stock_id", "horizon", "ts"),
-    )
+    ts: Mapped[datetime] = mapped_column(DateTime, index=True, server_default=func.now())
     signal: Mapped[SignalType] = mapped_column(SAEnum(SignalType))
     horizon: Mapped[SignalHorizon] = mapped_column(SAEnum(SignalHorizon))
     confidence: Mapped[float] = mapped_column(Float)  # 0-100
     bullish_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
     reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(64), default="signal-engine")
+    __table_args__ = (
+        Index("ix_signals_stock_ts", "stock_id", "ts"),
+        Index("ix_signals_stock_horizon_ts", "stock_id", "horizon", "ts"),
+    )
 
 
 class Ranking(Base):
@@ -290,8 +290,12 @@ class AlertCondition(str, enum.Enum):
     CROSS_BELOW_EMA = "cross_below_ema"
     NEW_52WK_HIGH   = "new_52wk_high"     # threshold unused (store 0)
     NEW_52WK_LOW    = "new_52wk_low"
-    GOLDEN_CROSS    = "golden_cross"      # EMA50 crosses above EMA200; threshold unused
-    DEATH_CROSS     = "death_cross"       # EMA50 crosses below EMA200; threshold unused
+    GOLDEN_CROSS         = "golden_cross"          # EMA50 crosses above EMA200; threshold unused
+    DEATH_CROSS          = "death_cross"           # EMA50 crosses below EMA200; threshold unused
+    MACD_BULLISH_CROSS   = "macd_bullish_cross"    # MACD line crosses above signal; threshold unused
+    RSI_OVERSOLD_BOUNCE  = "rsi_oversold_bounce"   # RSI crosses above 30 from below; threshold unused
+    DOUBLE_BOTTOM        = "double_bottom"         # W-pattern detected; threshold unused
+    BREAKOUT             = "breakout"              # Price closes above 20-day high with volume surge
 
 
 class PriceAlert(Base):
@@ -306,6 +310,8 @@ class PriceAlert(Base):
     note: Mapped[str | None] = mapped_column(String(512), nullable=True)
     triggered: Mapped[bool] = mapped_column(Boolean, default=False)
     triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    recurring: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="price_alerts")
@@ -330,6 +336,10 @@ class SignalAlert(Base):
 
     user: Mapped["User"] = relationship(back_populates="signal_alerts")
 
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", "horizon", name="uq_signal_alerts_user_symbol_horizon"),
+    )
+
 
 class UserPosition(Base):
     __tablename__ = "user_positions"
@@ -345,6 +355,11 @@ class UserPosition(Base):
     user: Mapped["User"] = relationship(back_populates="positions")
     trades: Mapped[list["PositionTrade"]] = relationship(
         back_populates="position", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", name="uq_user_positions_user_symbol"),
+        Index("ix_user_positions_user_symbol", "user_id", "symbol"),
     )
 
 
@@ -446,6 +461,19 @@ class SignalOutcome(Base):
     hold_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pct_return: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # INT-8: Multi-window forward returns (filled independently as windows close)
+    price_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_5d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_10d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    price_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_correct_20d: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # INT-8: Research alignment at signal time (from research engine cache)
+    research_rec: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    research_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     ts_evaluated: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (
@@ -478,6 +506,37 @@ class TradePlan(Base):
     user: Mapped["User"] = relationship(back_populates="trade_plans")
 
 
+# ── Broker Integration ────────────────────────────────────────────────────────
+
+class BrokerConnection(Base):
+    """A user's configured connection to a real brokerage account.
+
+    broker_type values:
+      'etrade'          — E*Trade production API (OAuth 1.0a)
+      'etrade_sandbox'  — E*Trade sandbox (paper money, same API)
+      'fidelity_manual' — No API; trade instructions shown for manual execution
+    config stores OAuth credentials and account info as JSON:
+      E*Trade: {consumer_key, consumer_secret, oauth_token, oauth_token_secret,
+                request_token, request_token_secret, account_id_key}
+      Fidelity manual: {account_number, notes}
+    Credentials are stored at-rest in the DB (same security boundary as the
+    JWT secret). Do NOT expose them through any API endpoint response.
+    """
+    __tablename__ = "broker_connections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))          # display label, e.g. "My E*Trade"
+    broker_type: Mapped[str] = mapped_column(String(32))    # 'etrade' | 'etrade_sandbox' | 'fidelity_manual'
+    account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)   # broker account ID (public)
+    config: Mapped[dict] = mapped_column(JSON, default=dict) # credentials — never return to frontend
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_authorized: Mapped[bool] = mapped_column(Boolean, default=False)  # OAuth complete?
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship()
+
+
 # ── WF-2: Paper Trading Engine ────────────────────────────────────────────────
 
 class PaperPortfolio(Base):
@@ -491,6 +550,10 @@ class PaperPortfolio(Base):
     # JSON config — see paper_trading_engine.py _DEFAULT_CONFIG
     config: Mapped[dict] = mapped_column(JSON)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Broker connection — null means paper-only simulation
+    broker_connection_id: Mapped[int | None] = mapped_column(
+        ForeignKey("broker_connections.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     trades: Mapped[list["PaperTrade"]] = relationship(back_populates="portfolio", cascade="all, delete-orphan")
@@ -505,6 +568,7 @@ class PaperTrade(Base):
     portfolio_id: Mapped[int] = mapped_column(ForeignKey("paper_portfolios.id", ondelete="CASCADE"), index=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
+    stock_id: Mapped[int | None] = mapped_column(ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)  # PT-H2: for double-top mid-trade detection
     trading_style: Mapped[str] = mapped_column(String(16), default="GROWTH")  # GROWTH|SWING|LONG|SHORT
     sector: Mapped[str | None] = mapped_column(String(128), nullable=True)    # H-SECTOR: snapshotted at entry for PA-D1
 
@@ -543,12 +607,16 @@ class PaperTrade(Base):
     signal_at_exit_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
     signal_at_exit_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # BUY/HOLD/SELL/WAIT
 
+    # Real-broker execution tracking (null for paper-only portfolios)
+    broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     portfolio: Mapped["PaperPortfolio"] = relationship(back_populates="trades")
 
     __table_args__ = (
         Index("ix_paper_trades_portfolio_stage", "portfolio_id", "stage"),
+        Index("ix_paper_trades_signal_at_exit", "signal_at_exit_id"),
     )
 
 
@@ -566,9 +634,52 @@ class PaperEquityCurve(Base):
     spy_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     qqq_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     hsi_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_regime: Mapped[str | None] = mapped_column(String(16), nullable=True)  # PT-A2
 
     portfolio: Mapped["PaperPortfolio"] = relationship(back_populates="equity_curve")
 
     __table_args__ = (
         UniqueConstraint("portfolio_id", "date", name="uq_paper_equity_portfolio_date"),
+    )
+
+
+class Fundamental(Base):
+    """Snapshot of company fundamentals — one row per stock per fetch date.
+
+    Persisted from yfinance whenever the /fundamentals endpoint is called.
+    Used as static ML features (broadcast to all price rows for a stock during
+    training/inference). Updated at most once per day via the (stock_id, as_of)
+    unique constraint.
+    """
+    __tablename__ = "fundamentals"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    # Valuation
+    trailing_pe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    forward_pe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_to_book: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Profitability
+    gross_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    profit_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_on_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_on_assets: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Growth
+    revenue_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Cash flow / valuation
+    free_cashflow: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_cap: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Sentiment
+    short_percent_of_float: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Analyst consensus
+    recommendation_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    number_of_analysts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", "as_of", name="uq_fundamentals_stock_date"),
     )

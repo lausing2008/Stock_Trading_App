@@ -946,8 +946,9 @@ Every watchlist can be assigned its own trading style, overriding the global set
 | Short Term | SHORT signals — 1–5 day pure TA |
 | Swing Trade | SWING signals — 5–20 day balanced (default) |
 | Long Term | LONG signals — 30–90 day fundamentals-heavy |
+| Growth / Momentum | GROWTH signals — relaxed thresholds for high-vol AI/tech names |
 
-**Changing style on an existing list** — each tab shows a small colored badge when a style is assigned (`SHORT` in red / `SWING` in indigo / `LONG` in green). Click the badge to cycle to the next style. On the active tab with no style set, a `+style` prompt appears as a reminder.
+**Changing style on an existing list** — each tab shows a small colored badge when a style is assigned (`SHORT` in red / `SWING` in indigo / `LONG` in green / `GROWTH` in purple). Click the badge to cycle to the next style. On the active tab with no style set, a `+style` prompt appears as a reminder.
 
 When you switch between lists, all signal columns (BUY/HOLD/WAIT/SELL, confidence, bullish probability) immediately reload using that list's style — no manual switching needed.
 
@@ -955,6 +956,7 @@ When you switch between lists, all signal columns (BUY/HOLD/WAIT/SELL, confidenc
 - "Swing Trades" → SWING signals (earnings compression active, balanced TA+ML)
 - "Long Holds" → LONG signals (K-Score boost, fundamentals weight, no earnings filter)
 - "Spec Plays" → SHORT signals (pure TA, no news/earnings filter, ideal for small caps)
+- "Growth Watch" → GROWTH signals (relaxed ADX/RSI thresholds, no RS penalty, ideal for NVDA-style momentum names)
 
 ### Per-stock card
 - Price + day change, signal badge, K-Score bar, fair value, note preview, price alert banner
@@ -1012,6 +1014,25 @@ Both values are saved to the card and displayed in the prices row as "Fill $X ×
 
 The fill can be skipped — clicking "Skip, use plan price" moves the card to Active without recording fill data.
 
+**Auto-sync to Positions:** If shares are entered in the Fill modal, the position is automatically created on the Positions page (`/positions`) the moment you confirm. If a position for that symbol already exists, a BUY trade is added and the average cost is recalculated. No manual re-entry required.
+
+### Editing an Active card
+
+Active cards show a **✎** button at the right of the price chip row. Clicking it opens a 2-column inline edit panel directly on the card — no modal, no page navigation:
+
+| Field | What it changes |
+|---|---|
+| Shares | `shares` on the trade plan — updates the dollar P&L and risk calculations live |
+| Fill Price | `actual_entry_price` — the real fill price used for P&L |
+| Stop Loss | `stop_loss` — updates the Stop chip and all stop-monitoring alerts |
+| Take Profit | `take_profit` — updates the Target chip and "near target" warnings |
+
+Press **Save** to write all changed fields in a single `PUT /board/{id}` call. Press **Cancel** to discard. Fields left blank are not overwritten — only non-empty inputs are sent.
+
+**Position sync on edit:** If shares are changed (e.g., 100 → 150 for an add-on, or 100 → 50 after a partial close), the difference is applied to the linked position automatically — a BUY is added for an increase, a SELL is recorded for a decrease. The fill price in the edit form is used as the trade price.
+
+> This is useful when you partially filled a position, adjusted your stop after entry, or need to correct a mis-typed fill price.
+
 ### Closed trade P&L tracking
 
 When a card is moved to **Closed**:
@@ -1021,9 +1042,11 @@ When a card is moved to **Closed**:
 - **% of target reached** — shown when a take_profit level was set.
 - `closed_at` timestamp is set automatically the first time a card enters the Closed stage.
 
+**Auto-sync SELL to Positions:** When exit price is saved and the card has `shares` recorded, a SELL trade is automatically posted to the Positions page for the full share count at the exit price. If shares in the position are fewer than the board quantity (e.g., a partial close was recorded earlier), the sell is capped at the available position size.
+
 ### Trading style badge on closed cards
 
-Each closed card shows a small colored badge in the P&L section — **SHORT** (red) / **SWING** (indigo) / **LONG** (green) — recording which trading style was active when the position was opened. This lets you compare performance across different signal approaches at a glance.
+Each closed card shows a small colored badge in the P&L section — **SHORT** (red) / **SWING** (indigo) / **LONG** (green) / **GROWTH** (purple) — recording which trading style was active when the position was opened. This lets you compare performance across different signal approaches at a glance.
 
 The style is captured automatically when a card is activated (from the global or per-list style setting at that moment). It can only be set once — it records historical context, not current state.
 
@@ -1049,7 +1072,7 @@ For each style that has at least one closed trade, a chip shows:
 - Win rate %
 - Average return %
 
-This lets you evaluate whether SHORT, SWING, or LONG signals have been more accurate for your actual trades over time.
+This lets you evaluate whether SHORT, SWING, LONG, or GROWTH signals have been more accurate for your actual trades over time.
 
 ### Adding cards
 
@@ -1060,14 +1083,30 @@ Four ways to create a board card:
 3. **Manual** — click **+ Add** in the Radar column header on the board itself. Enter a symbol and optional notes.
 4. **Unified + Add ▾ button** — appears on Screener results and Forecast cards. Opens a dropdown with two sections: **Watchlists** (add to any named watchlist with item count shown) and **Trade Board** (add to Radar). A checkmark appears once added — prevents duplicates within the same session.
 
-### Adding cards
+### Portfolio Risk Dashboard
 
-Four ways to create a board card:
+Shown below the Kanban board when ≥ 2 active positions have shares and an entry price recorded. Click **Compute Risk** to trigger the calculation — it is on-demand because fetching correlation data for a large position set takes 15–30 seconds.
 
-1. **Stock detail page** — after the AI generates a game plan, click **📌 Save to Board** in the game plan card header. Saves with stage = Planning, entry/stop/target prices pre-filled.
-2. **Forecast page** — each AI pick has a **📌 Save to Board** button. Saves with stage = Radar, notes from the pick's setup/catalyst/risk text.
-3. **Manual** — click **+ Add** in the Radar column header on the board itself. Enter a symbol and optional notes.
-4. **Unified + Add ▾ button** — appears on Screener results and Forecast cards. Opens a dropdown with two sections: **Watchlists** (add to any named watchlist with item count shown) and **Trade Board** (add to Radar). A checkmark appears once added — prevents duplicates within the same session.
+| Stat | Description |
+|---|---|
+| Portfolio β | Weighted-average beta vs S&P 500. >1.5 = high market sensitivity (red), <0.8 = defensive (green) |
+| 1-day VaR 95% | Value-at-Risk: estimated max 1-day loss in 95% of scenarios |
+| Sector weights | Donut chart of sector concentration |
+| Correlation matrix | Heatmap of pairwise return correlations |
+| Individual betas | Beta for each position vs the benchmark |
+
+Results are cached for 5 minutes — clicking Compute Risk again within that window returns the cached result instantly.
+
+### Bulk Sync: Active → Positions
+
+The **↑ Sync Active → Positions** button in the board header (top-right of column labels) pushes all Active-stage cards to the Positions page in one click.
+
+**Rules:**
+- Only Active cards with `shares > 0` and a fill price (actual entry price or entry price) are synced.
+- Symbols already in Positions are skipped — safe to click multiple times.
+- A brief feedback message confirms how many positions were created.
+
+This is useful after activating many cards from the Fill modal before the auto-sync feature was introduced, or after importing a batch of trades manually.
 
 ### Drag-and-drop between columns
 
@@ -1088,7 +1127,7 @@ Key columns on `trade_plans`:
 | `entry_price` | float | Planned limit/target price from the game plan |
 | `actual_entry_price` | float | Real fill price, captured via the Fill modal |
 | `shares` | float | Shares filled — enables dollar P&L |
-| `trading_style` | varchar(16) | SHORT / SWING / LONG — style active at activation time |
+| `trading_style` | varchar(16) | SHORT / SWING / LONG / GROWTH — style active at activation time |
 | `exit_price` | float | Closing price, entered manually on the closed card |
 | `closed_at` | timestamp | Set automatically the first time `stage = "closed"` is submitted |
 
@@ -2632,11 +2671,11 @@ Response (when available):
 
 ## Trading Style System
 
-The trading style system lets you match AI signal criteria to your actual holding horizon — SHORT (1–5 days), SWING (5–20 days), or LONG (30–90 days). All three signal profiles are computed in a single data pass for every stock on every refresh cycle, so switching style is instant.
+The trading style system lets you match AI signal criteria to your actual holding horizon — SHORT (1–5 days), SWING (5–20 days), LONG (30–90 days), or GROWTH (10–40 days, relaxed thresholds for high-velocity momentum stocks). All four signal profiles are computed in a single data pass for every stock on every refresh cycle, so switching style is instant.
 
 ### How it works
 
-All three signals are generated by `generate_all_signals(symbol)` in `services/signal-engine/src/generators/signals.py` and stored as separate rows in the `signals` table with `horizon = SHORT / SWING / LONG`. The frontend reads whichever horizon matches the active style.
+All four signals are generated by `generate_all_signals(symbol)` in `services/signal-engine/src/generators/signals.py` and stored as separate rows in the `signals` table with `horizon = SHORT / SWING / LONG / GROWTH`. The frontend reads whichever horizon matches the active style.
 
 ### Where the style setting is resolved
 
@@ -2658,11 +2697,11 @@ Each watchlist carries a `trading_style` column (nullable). When you view a watc
 - If the list has a style set, signal columns use that style
 - If the list has no style, the global setting is used as fallback
 
-**Create** — the New Watchlist modal has a style picker (Global default / Short Term / Swing Trade / Long Term). Stored via `POST /watchlists` with `trading_style` in the body.
+**Create** — the New Watchlist modal has a style picker (Global default / Short Term / Swing Trade / Long Term / Growth / Momentum). Stored via `POST /watchlists` with `trading_style` in the body.
 
-**Change** — the tab badge cycles through `null → SHORT → SWING → LONG → null` on each click. Stored via `PUT /watchlists/{id}` with `trading_style` in the body. Sending an empty string clears the style back to null (inherits global).
+**Change** — the tab badge cycles through `null → SHORT → SWING → LONG → GROWTH → null` on each click. Stored via `PUT /watchlists/{id}` with `trading_style` in the body. Sending an empty string clears the style back to null (inherits global).
 
-**Display** — the tab shows a small colored chip: `SHORT` (red), `SWING` (indigo), `LONG` (green). Lists with no style show a `+style` prompt on the active tab only.
+**Display** — the tab shows a small colored chip: `SHORT` (red), `SWING` (indigo), `LONG` (green), `GROWTH` (purple). Lists with no style show a `+style` prompt on the active tab only.
 
 ### Historical style capture (Trade Board)
 
@@ -2687,10 +2726,11 @@ All three styles are computed and persisted in one call. The `?style=` parameter
 | Value | Meaning |
 |-------|---------|
 | `SHORT` | 1–5 day signal — pure TA, no earnings/news compression, ADX floor = 25 |
-| `SWING` | 5–20 day signal — balanced, earnings + news compression, ADX floor = 20 |
+| `SWING` | 5–20 day signal — balanced, earnings + news compression, ADX floor = 15 |
 | `LONG` | 30–90 day signal — K-Score boost, heavy weekly alignment, ADX filter off |
+| `GROWTH` | 10–40 day signal — relaxed thresholds, no RS compression, TA score adjusted for momentum names |
 
-The unique "latest signal" per stock is defined by `MAX(ts)` grouped on `(stock_id, horizon)` — not just `stock_id`. Each stock therefore has up to three current signals simultaneously.
+The unique "latest signal" per stock is defined by `MAX(ts)` grouped on `(stock_id, horizon)` — not just `stock_id`. Each stock therefore has up to four current signals simultaneously.
 
 ### `watchlists` table — `trading_style` column
 
@@ -2700,6 +2740,7 @@ The unique "latest signal" per stock is defined by `MAX(ts)` grouped on `(stock_
 | `'SHORT'` | Force SHORT signals for this list |
 | `'SWING'` | Force SWING signals for this list |
 | `'LONG'` | Force LONG signals for this list |
+| `'GROWTH'` | Force GROWTH signals for this list |
 
 ### `trade_plans` table — `trading_style` column
 
@@ -2707,17 +2748,20 @@ Records which style was active at the time the position was opened. Set once at 
 
 ### Style profile parameter summary
 
-| Parameter | SHORT | SWING | LONG |
-|-----------|-------|-------|------|
-| ML weight cap | 30% | 75% | 45% |
-| BUY threshold (bull) | 0.60 | 0.65 | 0.60 |
-| BUY threshold (bear) | 0.68 | 0.73 | 0.70 |
-| ADX filter | 25 min | 20 min | off |
-| Earnings compression | off | 0.50× / 0.75× / 0.90× | off |
-| News compression | off | 0.75× / 0.85× | off |
-| K-Score boost | off | off | on |
-| Max compression floor | 0.70 | 0.55 | 0.65 |
-| Weekly align boost/compress | 1.08× / 0.93× | 1.12× / 0.85× | 1.18× / 0.80× |
+| Parameter | SHORT | SWING | LONG | GROWTH |
+|-----------|-------|-------|------|--------|
+| ML weight cap | 30% | 75% | 45% | 70% |
+| BUY threshold (bull) | 0.60 | 0.62 | 0.60 | **0.57** |
+| BUY threshold (bear) | 0.68 | 0.70 | 0.70 | 0.68 |
+| ADX filter | 25 min | 15 min | off | **12 min** |
+| Earnings compression | off | 0.50× / 0.75× / 0.90× | off | 0.60× / 0.80× / 0.92× |
+| News compression | off | 0.75× / 0.85× | off | 0.80× / 0.90× |
+| RS compression | 0.90× | 0.85× | 0.80× | **off** |
+| K-Score boost | off | off | on | off |
+| Max compression floor | 0.70 | 0.55 | 0.65 | 0.60 |
+| Weekly align boost/compress | 1.08× / 0.93× | 1.12× / 0.85× | 1.18× / 0.80× | 1.08× / 0.92× |
+| Weekly RSI gate | — | applies | applies | **skipped** |
+| TA score adjustment | — | — | — | **SMA20>SMA50 +0.10, RSI 72–85 +0.04** |
 
 For the complete parameter table and compression pipeline walkthrough, see [AI_SIGNAL.md](AI_SIGNAL.md).
 
@@ -2977,3 +3021,123 @@ The **Research page** (`/research/[symbol]`) shows the DCF chip in the signal + 
 |------|------|
 | `services/research-engine/src/api/routes.py` | `_WACC` dict, `_TERMINAL_GROWTH`, `_dcf_fair_value()`, injected into `generate_research()` |
 | `frontend/src/pages/research/[symbol].tsx` | DCF chip + HIGH CONVICTION badge in signal row |
+
+---
+
+## Paper Portfolio (`/paper-portfolio`)
+
+A live paper trading simulator that runs concurrently with real market data. Admin-only. The engine executes the same signal pipeline used for real signals — every trade decision is driven by the same BUY signals, K-Score thresholds, and conviction gate logic, just without real capital.
+
+### How it works
+
+The scheduler calls `paper_trading_step()` every 5–10 minutes during market hours. Each step:
+
+1. **Monitor open positions** — check stop-loss breach, take-profit hit, trailing stop, signal decay, stall detection
+2. **Scan for new entries** — query fresh BUY signals, score each via the conviction gate, size via ATR, enter if all checks pass
+
+All decisions are logged to `paper_decisions` with full context (why entered, why skipped, why exited).
+
+### Tabs
+
+| Tab | Content |
+|---|---|
+| **Positions** | Open trades with entry price, current price, unrealised P&L, stop/target distances |
+| **Decisions** | Entry decision log — every signal considered, with pass/fail reason per conviction gate layer |
+| **Closed Trades** | All completed trades with entry/exit price, hold days, P&L %, exit reason |
+| **Equity Curve** | Equity vs SPY/QQQ with market regime shading (bull=green, bear=red, choppy=amber) |
+| **Attribution** | Win rate broken down by entry score band, confidence band, market regime, R:R ratio |
+
+### Summary stats
+
+| Stat | Description |
+|---|---|
+| Total Return % | `(current_equity − initial_capital) / initial_capital × 100` |
+| Sharpe Ratio | Annualised `(mean_return − risk_free) / std_return` over equity curve |
+| Max Drawdown | Largest peak-to-trough decline in equity curve |
+| Calmar Ratio | `annualised_return / max_drawdown` |
+| Alpha | Excess return above `beta × SPY_return` (CAPM alpha) |
+| Beta | `cov(portfolio, SPY) / var(SPY)` over equity curve |
+| Information Ratio | `alpha / tracking_error` |
+| Win Rate | Closed trades with `pnl > 0` / total closed |
+| vs SPY / vs QQQ | Equity return minus benchmark return over same period |
+
+### Engine config (admin)
+
+Editable from the page footer. Key parameters:
+
+| Param | Default | Effect |
+|---|---|---|
+| `max_positions` | 10 | Hard cap on simultaneous open trades |
+| `risk_per_trade_pct` | 1% | Position size = `risk_pct × equity / stop_distance` |
+| `min_confidence` | 62% | Signal confidence floor for entry |
+| `min_entry_score` | 3 | Minimum conviction gate score (0–10+) |
+| `trading_style` | GROWTH | Which style profile to use for signal filtering |
+
+### Database tables
+
+| Table | Purpose |
+|---|---|
+| `paper_portfolios` | Portfolio config, cash balance, is_active flag |
+| `paper_trades` | Every trade — entry/exit price, size, reasons, P&L |
+| `paper_equity_curve` | Daily EOD snapshot of equity + benchmark closes + market regime |
+| `paper_decisions` | Every entry/skip/exit decision with full reasoning |
+
+---
+
+## Multi-Portfolio A/B Testing (`/paper-portfolio`)
+
+> **Status: Done (2026-06-12) — AL-2 / PT-A4**
+
+Run SWING, GROWTH, and LONG paper portfolios simultaneously on the same signals and compare their live performance empirically.
+
+### Why
+
+A single paper portfolio can't tell you whether GROWTH parameters outperform SWING under the same market conditions. Running them sequentially (reset and restart) gives different time periods — not a fair comparison. Running them in parallel on identical signal universes is the only valid A/B test.
+
+### Page layout
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Paper Portfolios                             [+ New Portfolio]  │
+│  3 strategies running in parallel                               │
+├──────────────────┬──────────────────┬───────────────────────────┤
+│  SWING           │  GROWTH ★ best   │  LONG                     │
+│  $54,200         │  $56,100         │  $49,800                   │
+│  +8.4%           │  +12.2% ▲        │  -0.4% ▼                  │
+│  Win 64%         │  Win 71%         │  Win 55%                   │
+│  Sharpe 1.2      │  Sharpe 1.8      │  Sharpe 0.4               │
+│  8 open          │  6 open          │  3 open                    │
+│  ● Running       │  ● Running       │  ● Running                 │
+├──────────────────┴──────────────────┴───────────────────────────┤
+│  Normalized return % — all portfolios vs SPY (Plotly overlay)   │
+├─────────────────────────────────────────────────────────────────┤
+│  ▼ SWING Portfolio  (click a card above to switch)              │
+│  [Positions] [Decisions] [Closed Trades] [Equity] [Attribution] │
+│                  [existing tab content, unchanged]              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key UI features
+
+**Portfolio comparison cards** — one card per active portfolio showing style, state badge, equity, total return %, win rate, Sharpe, open positions. `★` badge on the portfolio with the best Sharpe. Click any card to switch the detail panel below.
+
+**Overlaid equity chart** — all portfolio return % curves on the same Plotly chart with SPY dashed. Shows divergence points where one strategy started outperforming.
+
+**`+ New Portfolio` modal (admin)** — Name, Style (SWING / GROWTH / LONG), Initial Capital. The engine already loops over all `is_active=True` portfolios — creating a new one is sufficient to start running it automatically.
+
+**Backwards compatible** — with only 1 portfolio, the page looks identical to before. Comparison grid and overlay chart only appear with 2+ portfolios.
+
+### Backend endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /paper-portfolio/list` | All active portfolios: id, name, style, equity, return %, sharpe, win rate, open count, state |
+| `POST /paper-portfolio/create` | Admin — create portfolio with `{name, trading_style, initial_capital}` |
+| `GET /paper-portfolio/compare?days=N` | Equity curves for all portfolios in one call for the overlay chart |
+| All existing endpoints | Accept optional `?portfolio_id=N` query param; fall back to first active (backwards compatible) |
+
+The scheduler's `paper_trading_step()` already iterates over all `is_active=True` portfolios — no scheduler change was needed.
+
+### Admin controls per portfolio
+
+Engine start/stop/pause, capital settings, and config panel all operate on the currently selected portfolio (the clicked card). All POST endpoints accept `?portfolio_id=N`.

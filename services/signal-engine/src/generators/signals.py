@@ -14,7 +14,7 @@ Accuracy improvements (v2):
 
 Accuracy improvements (v3):
   - Multi-timeframe confirmation: weekly TA alignment boosts/compresses signal
-  - Rolling 20-day VWAP: price above VWAP = institutional support
+  - Rolling 20-day VWMA: price above VWMA = volume-weighted trend filter
   - Earnings proximity penalty: compresses signal when earnings < 10 days away
   - Chart pattern fusion: bull_flag/cup_and_handle/double_bottom boost signal;
     head_and_shoulders/double_top/bear_flag reduce it
@@ -45,6 +45,13 @@ Signal accuracy improvements (SA-1 through SA-7):
   SA-5: Data-driven TA weights via ta_weights.json (POST /signals/calibrate_ta_weights)
   SA-6: Filter interaction audit endpoint (GET /signals/filter_audit)
   SA-7: Regime-aware earnings compression — bull+beater≥70%: skip, +3% boost; bull+50-70%: halve; bear/hv: tighten×0.85
+  SA-28: SWING bull threshold raised 0.62→0.65 (reverts SA-8); GROWTH bull threshold raised 0.57→0.60.
+         Weekly overbought gate added (SWING/LONG): weekly_rsi > 75 AND trend UP → ×0.85 compress.
+         Prevents chasing extended rallies in bull markets. Mirrors the existing oversold gate.
+  SA-30: Minimum pillar requirement per style. SWING and LONG now set min_pillars_for_buy=3.
+         When exactly 2 pillars are active (previously no penalty above the SA-19 < 2 gate),
+         those styles apply a ×0.70 compress — blocking borderline 2-pillar BUYs while passing
+         high-conviction ones (fused ≥ ~0.714 for SWING's 0.65 threshold still clears).
 """
 from __future__ import annotations
 
@@ -79,8 +86,7 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "stoch_oversold":           0.10,
     "stoch_overbought_penalty": 0.08,
     "stoch_cross_up":           0.05,
-    "rsi_divergence_bearish_penalty": 0.10,
-    "rsi_divergence_bullish":   0.08,
+    # rsi_divergence keys removed — detection was hard-zeroed (argmax bug); dead weight in denominator
     "macd_strong":              0.15,
     "macd_positive":            0.08,
     "macd_zero_cross_up":       0.05,
@@ -88,11 +94,12 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "price_above_vwap":         0.08,
     "price_below_vwap_penalty": 0.05,
     "bullish_trend":            0.10,
-    "obv_bullish":              0.10,
-    "volume_surge":             0.05,
+    "obv_trend_bullish":              0.10,
+    "volume_z":                 0.05,  # renamed from volume_surge to match reasons dict key
 }
 _TA_WEIGHTS_PATH = Path(_settings.model_dir) / "ta_weights.json"
 _ML_WEIGHT_OVERRIDE_PATH = Path(_settings.model_dir) / "ml_weight_override.json"
+_CONVICTION_WEIGHTS_PATH = Path(_settings.model_dir) / "conviction_weights.json"
 
 # Global ML weight cap override: None means use the per-style profile default.
 # Set by calibrate_ml_weight(); loaded at import time from disk if present.
@@ -137,11 +144,37 @@ def _load_ta_weights() -> dict[str, float]:
         if _TA_WEIGHTS_PATH.exists():
             with open(_TA_WEIGHTS_PATH) as f:
                 saved = json.load(f)
+            # Key migration: old files used 'volume_surge'; rename to 'volume_z'
+            if "volume_surge" in saved and "volume_z" not in saved:
+                saved["volume_z"] = saved.pop("volume_surge")
             # Merge: saved values override defaults; new keys in defaults keep their value
             return {**_TA_WEIGHTS_DEFAULT, **saved}
     except Exception:
         pass
     return dict(_TA_WEIGHTS_DEFAULT)
+
+
+# STY-001: Load calibrated TA weights; used in _ta_score to blend with pillar score.
+# Only the blended path is active when the ta_weights.json file actually exists
+# (i.e. after admin runs POST /signals/calibrate_ta_weights). Default weights are
+# loaded for all cases so the dict is always populated.
+_ta_weights: dict[str, float] = _load_ta_weights()
+_ta_weights_calibrated: bool = _TA_WEIGHTS_PATH.exists()
+
+
+def load_conviction_weights() -> dict[str, float]:
+    """Load calibrated conviction layer weights from disk (AL-3).
+
+    Returns a dict of {reason_flag: accuracy_vs_baseline} where values > 0 mean the
+    flag is more common in winning trades.  Returns empty dict if not yet calibrated.
+    """
+    try:
+        if _CONVICTION_WEIGHTS_PATH.exists():
+            with open(_CONVICTION_WEIGHTS_PATH) as f:
+                return json.load(f).get("edge_pct", {})
+    except Exception:
+        pass
+    return {}
 
 
 @dataclass
@@ -198,7 +231,7 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
                     data = r.json()
                     prob = float(data.get("bullish_probability", 0.5))
                     m = data.get("metrics") or {}
-                    test_auc = float(m.get("test_auc_mean") or m.get("auc") or m.get("cv_auc_mean") or 0.55)
+                    test_auc = float(m.get("mean_model_test_auc") or m.get("auc") or m.get("cv_auc_mean") or 0.55)
                     ml_meta = {
                         "ml_model": data.get("model", "xgboost"),
                         "ml_agreement": data.get("ensemble_agreement"),
@@ -208,7 +241,7 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
                     return prob, test_auc, ml_meta
         except Exception as exc:
             log.warning("ml.fetch_failed", symbol=symbol, endpoint=endpoint, error=str(exc))
-    return None, 0.55, {}
+    return None, 0.0, {}
 
 
 def _fetch_market_regime() -> tuple[str, float | None]:
@@ -285,56 +318,28 @@ def _fetch_earnings_beat_rate(symbol: str) -> float | None:
 def _fetch_relative_strength(symbol: str) -> tuple[float | None, float | None, bool | None, float | None]:
     """Return (rs_score 0-100, rs_rank, sector_etf_above_sma50, stock_20d_ret) vs the stock's sector ETF.
 
-    Fetches the stock's sector from market-data, maps to the matching SPDR ETF
-    (or ^HSI for HK stocks), then computes the 20-day return ratio and whether
-    the ETF is currently above its 50-day SMA (SA-16 sector trend filter).
-    Returns (None, None, None, None) on any failure.
+    Delegates to market-data's /stocks/{symbol}/relative-strength endpoint which owns the
+    yfinance ETF fetches and caches results in Redis (1h per symbol, 4h per ETF ticker).
+    This makes market-data the single source of truth for RS data — no direct yfinance
+    calls from signal-engine.
     """
-    _SECTOR_ETF = {
-        "Technology": "XLK", "Health Care": "XLV", "Healthcare": "XLV",
-        "Financials": "XLF", "Financial Services": "XLF",
-        "Consumer Discretionary": "XLY", "Consumer Staples": "XLP",
-        "Energy": "XLE", "Utilities": "XLU", "Materials": "XLB",
-        "Industrials": "XLI", "Real Estate": "XLRE",
-        "Communication Services": "XLC", "Telecommunications": "XLC",
-    }
     try:
-        import yfinance as yf
-
-        url = f"{_settings.market_data_url}/stocks/{symbol}"
         with httpx.Client(timeout=8) as c:
-            r = c.get(url)
-            if r.status_code != 200:
-                return None, None, None, None
-        info = r.json()
-        market = info.get("market", "US")
-        sector = info.get("sector") or ""
-        etf_ticker = "^HSI" if str(market).upper() == "HK" else _SECTOR_ETF.get(sector, "SPY")
-
-        stock_hist = yf.Ticker(symbol).history(period="3mo")
-        etf_hist   = yf.Ticker(etf_ticker).history(period="3mo")
-        if stock_hist.empty or len(stock_hist) < 21:
+            r = c.get(f"{_settings.market_data_url}/stocks/{symbol}/relative-strength")
+        if r.status_code != 200:
             return None, None, None, None
-        if etf_hist.empty or len(etf_hist) < 21:
-            return None, None, None, None
-
-        stock_ret = float(stock_hist["Close"].iloc[-1] / stock_hist["Close"].iloc[-21] - 1)
-        etf_ret   = float(etf_hist["Close"].iloc[-1] / etf_hist["Close"].iloc[-21] - 1)
-        if abs(1 + etf_ret) < 0.01:
-            return None, None, None, None
-        rs_rank = (1 + stock_ret) / (1 + etf_ret)
-        rs_score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
-        # SA-23: store absolute stock 20d return in reasons for floor check in compression gate
-        reasons_stock_ret = round(stock_ret * 100, 2)  # stored in reasons as stock_20d_return_pct
-
-        # SA-16: sector ETF trend — above 50-day SMA means sector is in an uptrend
-        etf_close = etf_hist["Close"]
-        etf_sma50 = etf_close.rolling(50).mean().iloc[-1] if len(etf_close) >= 50 else None
-        sector_etf_above_sma50: bool | None = None
-        if etf_sma50 is not None and not pd.isna(etf_sma50):
-            sector_etf_above_sma50 = bool(etf_close.iloc[-1] > etf_sma50)
-
-        return round(rs_score, 1), round(rs_rank, 4), sector_etf_above_sma50, round(stock_ret, 4)
+        d = r.json()
+        rs_score  = d.get("rs_score")
+        rs_rank   = d.get("rs_rank")
+        etf_above = d.get("sector_etf_above_sma50")
+        ret_pct   = d.get("stock_20d_return_pct")
+        stock_ret = ret_pct / 100.0 if ret_pct is not None else None
+        return (
+            float(rs_score)  if rs_score  is not None else None,
+            float(rs_rank)   if rs_rank   is not None else None,
+            bool(etf_above)  if etf_above is not None else None,
+            float(stock_ret) if stock_ret is not None else None,
+        )
     except Exception:
         return None, None, None, None
 
@@ -513,8 +518,8 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
         elif pct < -0.01:
             weekly_trend = "down"
 
-    macd_line = close.ewm(span=12).mean() - close.ewm(span=26).mean()
-    hist = macd_line - macd_line.ewm(span=9).mean()
+    macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    hist = macd_line - macd_line.ewm(span=9, adjust=False).mean()
     macd_positive = bool(hist.iloc[-1] > 0)
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
     weekly_macd_bull = macd_positive and macd_rising
@@ -660,7 +665,7 @@ def _pullback_recovery(df: pd.DataFrame) -> tuple[float, dict]:
         return 0.0, reasons
 
     # Condition 3: volume expansion on recovery
-    vol_avg = volume.rolling(20).mean().iloc[-1]
+    vol_avg = volume.iloc[:-1].rolling(20).mean().iloc[-1]
     vol_confirms = bool(
         not pd.isna(vol_avg) and vol_avg > 0 and volume.iloc[-1] > vol_avg * 1.10
     )
@@ -710,7 +715,7 @@ def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float,
     return float(np.clip(adj, -0.15, 0.15)), active
 
 
-def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
+def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> tuple[float, dict]:
     close  = df["close"].astype(float)
     volume = df["volume"].astype(float)
     reasons: dict = {}
@@ -769,8 +774,8 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     reasons["rsi_divergence"] = rsi_divergence
 
     # ── MACD histogram + zero-line crossover ──────────────────────────────
-    macd_line = close.ewm(span=12).mean() - close.ewm(span=26).mean()
-    hist = macd_line - macd_line.ewm(span=9).mean()
+    macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    hist = macd_line - macd_line.ewm(span=9, adjust=False).mean()
     macd_hist  = float(hist.iloc[-1])
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
     macd_zero_cross_up = False
@@ -789,15 +794,16 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     bb_pct_b = float((close.iloc[-1] - bb_lower.iloc[-1]) / band_width) if band_width > 0 else 0.5
     reasons["bb_pct_b"] = round(bb_pct_b, 3)
 
-    # ── Rolling 20-day VWAP ───────────────────────────────────────────────
+    # ── Rolling 20-day VWMA (Volume-Weighted Moving Average, not session-reset VWAP) ──
+    # Use iloc[:-1] to exclude today's bar from the rolling window (avoid self-contamination)
     typical_price = (df["high"].astype(float) + df["low"].astype(float) + close) / 3
-    vwap_20 = (typical_price * volume).rolling(20).sum() / volume.rolling(20).sum()
-    vwap_val = vwap_20.iloc[-1]
+    vwma_20 = (typical_price.iloc[:-1] * volume.iloc[:-1]).rolling(20).sum() / volume.iloc[:-1].rolling(20).sum()
+    vwma_val = vwma_20.iloc[-1]
     price_above_vwap: bool | None = None
-    if not pd.isna(vwap_val) and vwap_val > 0:
-        price_above_vwap = bool(close.iloc[-1] > vwap_val)
+    if not pd.isna(vwma_val) and not np.isinf(vwma_val) and vwma_val > 0:
+        price_above_vwap = bool(close.iloc[-1] > vwma_val)
     reasons["price_above_vwap"] = price_above_vwap
-    reasons["vwap_20"] = float(vwap_val) if not pd.isna(vwap_val) else None
+    reasons["vwma_20"] = float(vwma_val) if not pd.isna(vwma_val) else None
 
     # ── ADX — trend strength ──────────────────────────────────────────────
     adx_val, di_plus, di_minus = _adx(df)
@@ -811,67 +817,122 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
     # ── OBV trend (volume-confirmed direction) ────────────────────────────
     direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
     obv = (volume * direction).cumsum()
-    obv_bullish = bool(obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1])
-    reasons["obv_bullish"] = obv_bullish
+    obv_trend_bullish = bool(obv.rolling(10).mean().iloc[-1] > obv.rolling(30).mean().iloc[-1])
+    reasons["obv_trend_bullish"] = obv_trend_bullish
 
     # ── Volume expansion ──────────────────────────────────────────────────
-    vol_std = volume.rolling(20).std().iloc[-1]
-    vol_z = (volume.iloc[-1] - volume.rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0
+    vol_std = volume.iloc[:-1].rolling(20).std().iloc[-1]
+    vol_z = (volume.iloc[-1] - volume.iloc[:-1].rolling(20).mean().iloc[-1]) / vol_std if vol_std and vol_std > 0 else 0.0
     reasons["volume_z"] = float(vol_z) if not pd.isna(vol_z) else None
 
-    # ── Score (data-driven weights via ta_weights.json, SA-5) ─────────────
-    w = _load_ta_weights()
-    score = 0.0
+    # ── SA-19: Pillar-based TA score — 4 independent dimensions ─────────────
+    # Each pillar scores 0–1 using the BEST signal within that dimension (max,
+    # not sum). Correlated indicators (above_sma50 + sma50_above_sma200 + adx)
+    # all reflect the same underlying trend, so stacking them overstates edge.
+    # TA score = mean of the 4 pillar scores; independent_pillars_active counts
+    # how many pillars reach ≥ 0.5 (used by _apply_style_signal for gate/boost).
 
-    # SA-15: volume_z used for confirmation weighting (safe float)
     _vz = float(reasons.get("volume_z") or 0.0)
 
-    if above_sma50:        score += w["above_sma50"]
-    if sma50_above_sma200: score += w["sma50_above_sma200"]
-    # SA-15: golden cross on shrinking volume is unreliable — half credit
-    if golden_cross_event: score += w["golden_cross_event"] * (1.0 if _vz > 0.5 else 0.5)
-    if death_cross_event:  score -= w["death_cross_penalty"]
+    # TREND pillar — structural price direction
+    # Weighted average (not max) so all 4 inputs contribute proportionally.
+    if death_cross_event:
+        p_trend = 0.0  # confirmed downtrend; hard override regardless of SMAs
+    else:
+        _gc_score = 1.0 if (golden_cross_event and _vz > 0.5) else (0.7 if golden_cross_event else 0.0)
+        p_trend = (
+            (1.0 if above_sma50 else 0.0)      * 0.35 +
+            (1.0 if sma50_above_sma200 else 0.0) * 0.25 +
+            (1.0 if bullish_trend else 0.0)      * 0.25 +
+            _gc_score                            * 0.15
+        )
 
-    if rsi_val is not None:
-        if 45 < rsi_val < 65:    score += w["rsi_sweet_spot"]
-        elif 35 < rsi_val <= 45: score += w["rsi_mild_oversold"]
-        elif 65 <= rsi_val < 72: score += w["rsi_mild_overbought"]
+    # MOMENTUM pillar — oscillator-based rate of change
+    # Weighted average (not max) so overbought RSI/Stoch meaningfully reduce the pillar
+    # even when MACD is strong. Overbought penalties applied before averaging.
+    rsi_score = (
+        1.0 if (rsi_val is not None and 45 < rsi_val < 65) else
+        0.8 if (rsi_val is not None and 35 < rsi_val <= 45) else
+        0.5 if (rsi_val is not None and 65 <= rsi_val < 72) else
+        0.0
+    )
+    macd_score = (
+        1.0 if (macd_hist > 0 and macd_rising) else
+        0.9 if macd_zero_cross_up else
+        0.7 if macd_hist > 0 else
+        0.0
+    )
+    stoch_score = 0.8 if stoch_oversold else (0.7 if stoch_cross_up else 0.0)
+    # Apply overbought penalties to individual components before averaging
+    if stoch_overbought:
+        stoch_score *= 0.0   # overbought stoch is bearish — zero it
+        macd_score  *= 0.7   # reduce MACD conviction when stoch overbought
+    if rsi_val is not None and rsi_val >= 72:
+        rsi_score   *= 0.0   # extreme overbought RSI is a warning, not a bullish signal
+    p_momentum = rsi_score * 0.35 + macd_score * 0.40 + stoch_score * 0.25
 
-    if stoch_oversold:      score += w["stoch_oversold"]
-    elif stoch_overbought:  score -= w["stoch_overbought_penalty"]
-    if stoch_cross_up:      score += w["stoch_cross_up"]
+    # VOLUME pillar — demand confirmation
+    p_volume = max(
+        1.0 if obv_trend_bullish else 0.0,
+        0.7 if _vz > 0.5 else 0.0,
+    )
 
-    # SA-15: divergence weighted by volume confirmation
-    if rsi_divergence == "bearish":
-        # High volume on a divergence day CONFIRMS price move, making bearish divergence LESS reliable
-        # Low/declining volume = divergence is more meaningful → full penalty
-        score -= w["rsi_divergence_bearish_penalty"] * (0.5 if _vz > 0.3 else 1.0)
-    elif rsi_divergence == "bullish":
-        # Bullish divergence requires volume to be credible
-        score += w["rsi_divergence_bullish"] * (1.0 if _vz > 0.3 else 0.5)
+    # STRUCTURE pillar — price position (VWAP + Bollinger Band)
+    bb_score = 0.8 if (0.2 < bb_pct_b < 0.8) else 0.0
+    vwap_score = (
+        1.0 if price_above_vwap is True else
+        0.0 if price_above_vwap is False else
+        0.4  # unknown — treat as mildly neutral
+    )
+    p_structure = max(vwap_score, bb_score)
+    if price_above_vwap is False:
+        p_structure = max(0.0, p_structure - 0.15)  # below VWAP pulls structure down
 
-    if macd_hist > 0 and macd_rising:  score += w["macd_strong"]
-    elif macd_hist > 0:                score += w["macd_positive"]
-    # SA-17: MACD zero-cross gets full credit only when price is above SMA50
-    if macd_zero_cross_up:
-        score += w["macd_zero_cross_up"] * (1.0 if above_sma50 else 0.4)
+    pillar_scores = [p_trend, p_momentum, p_volume, p_structure]
+    independent_pillars_active = sum(1 for ps in pillar_scores if ps >= 0.5)
+    reasons["independent_pillars_active"] = independent_pillars_active
+    reasons["pillar_trend"]     = round(p_trend, 2)
+    reasons["pillar_momentum"]  = round(p_momentum, 2)
+    reasons["pillar_volume"]    = round(p_volume, 2)
+    reasons["pillar_structure"] = round(p_structure, 2)
 
-    if 0.2 < bb_pct_b < 0.8:   score += w["bb_mid_zone"]
+    base = float(np.mean(pillar_scores))
 
-    if price_above_vwap is True:    score += w["price_above_vwap"]
-    elif price_above_vwap is False: score -= w["price_below_vwap_penalty"]
+    # STY-001: If calibrated TA weights were loaded from ta_weights.json, blend a
+    # weighted flag score (15%) with the pillar mean (85%).  Only active when the
+    # calibration file exists so production behaviour is unchanged until an admin
+    # explicitly runs POST /signals/calibrate_ta_weights.
+    _weights = ta_weights if ta_weights is not None else _ta_weights
+    if _ta_weights_calibrated or ta_weights is not None:
+        _flag_map = {
+            "above_sma50":              +1 if above_sma50 else 0,
+            "sma50_above_sma200":       +1 if sma50_above_sma200 else 0,
+            "golden_cross_event":       +1 if golden_cross_event else 0,
+            "death_cross_penalty":      -1 if death_cross_event else 0,
+            "rsi_sweet_spot":           +1 if (rsi_val is not None and 45 < rsi_val < 65) else 0,
+            "rsi_mild_oversold":        +1 if (rsi_val is not None and 35 < rsi_val <= 45) else 0,
+            "rsi_mild_overbought":      -1 if (rsi_val is not None and 65 <= rsi_val < 72) else 0,
+            "stoch_oversold":           +1 if stoch_oversold else 0,
+            "stoch_overbought_penalty": -1 if stoch_overbought else 0,
+            "stoch_cross_up":           +1 if stoch_cross_up else 0,
+            "macd_strong":              +1 if (macd_hist > 0 and macd_rising) else 0,
+            "macd_positive":            +1 if macd_hist > 0 else 0,
+            "macd_zero_cross_up":       +1 if macd_zero_cross_up else 0,
+            "bb_mid_zone":              +1 if (0.2 < bb_pct_b < 0.8) else 0,
+            "price_above_vwap":         +1 if price_above_vwap is True else 0,
+            "price_below_vwap_penalty": -1 if price_above_vwap is False else 0,
+            "bullish_trend":            +1 if bullish_trend else 0,
+            "obv_trend_bullish":        +1 if obv_trend_bullish else 0,
+            "volume_z":                 +1 if _vz > 0.5 else 0,
+        }
+        _max_w = sum(abs(v) for v in _weights.values())
+        if _max_w > 0:
+            _weighted = sum(_flag_map.get(k, 0) * v for k, v in _weights.items())
+            _calibrated = float(np.clip(0.5 + _weighted / (2 * _max_w), 0.0, 1.0))
+            base = base * 0.85 + _calibrated * 0.15
+            reasons["calibrated_ta_score"] = round(_calibrated, 3)
 
-    if bullish_trend:                                       score += w["bullish_trend"]
-    if obv_bullish:                                         score += w["obv_bullish"]
-    if reasons["volume_z"] and reasons["volume_z"] > 0.5:  score += w["volume_surge"]
-
-    # Normalise by sum of all positive weights so score stays in [0,1].
-    _TA_MAX_SCORE = sum(v for k, v in w.items() if not k.endswith("_penalty"))
-    if _TA_MAX_SCORE <= 0:
-        return 0.5, reasons  # degenerate calibration; return neutral
-    base = float(np.clip(score / _TA_MAX_SCORE, 0.0, 1.0))
-
-    # SA-14: pullback + recovery boost applied after normalisation
+    # SA-14: pullback + recovery boost applied after pillar mean
     pr_delta, pr_reasons = _pullback_recovery(df)
     reasons.update(pr_reasons)
 
@@ -896,11 +957,12 @@ def _ta_score(df: pd.DataFrame) -> tuple[float, dict]:
 _STYLE_PROFILES: dict[str, dict] = {
     "SHORT": {
         "ml_weight_cap": 0.30,
+        "ml_weight_floor": 0.10,  # global cap cannot push ML weight below this
         "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.62},
         "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.52, "unknown": 0.47},
         "adx_min": 25, "adx_compression": 0.85,
         "high_vol_compression": 0.92,
-        "breadth_compression": None,
+        "breadth_compression": 0.90,  # REG-002: SHORT style now penalised when market breadth < 40%
         "weekly_boost": 1.08, "weekly_compress": 0.93,
         "earnings_compression": None,
         "news_compression": None,
@@ -910,9 +972,11 @@ _STYLE_PROFILES: dict[str, dict] = {
     },
     "SWING": {
         "ml_weight_cap": 0.75,
-        # SA-12: keep bull/neutral thresholds unchanged; only tighten bear/high_vol.
+        "ml_weight_floor": 0.15,
+        # SA-28: SWING bull threshold raised 0.62→0.65 (reverts SA-8 over-relaxation).
+        # SA-12: only tighten bear/high_vol — keep those unchanged.
         # fused_prob ≈ 0.75×ml + 0.25×ta; 0.72 ≈ ML>0.78 target for stressed regimes.
-        "buy_threshold":  {"bull": 0.62, "high_vol": 0.72, "bear": 0.72, "unknown": 0.62},
+        "buy_threshold":  {"bull": 0.65, "high_vol": 0.72, "bear": 0.72, "unknown": 0.65},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
         "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
@@ -925,9 +989,11 @@ _STYLE_PROFILES: dict[str, dict] = {
         "rs_compression": 0.85,
         "kscore_boost": False,
         "max_compress_ratio": 0.55,
+        "min_pillars_for_buy": 3,  # SA-30: require 3+ active pillars; 2-pillar BUYs get ×0.70 compress
     },
     "LONG": {
         "ml_weight_cap": 0.45,
+        "ml_weight_floor": 0.12,
         "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.70, "unknown": 0.62},
         "hold_threshold": {"bull": 0.46, "high_vol": 0.50, "bear": 0.54, "unknown": 0.46},
         "adx_min": None, "adx_compression": None,
@@ -939,6 +1005,7 @@ _STYLE_PROFILES: dict[str, dict] = {
         "rs_compression": 0.80,
         "kscore_boost": True,
         "max_compress_ratio": 0.65,
+        "min_pillars_for_buy": 3,  # SA-30: LONG requires broad agreement before committing to 20d hold
     },
     # SA-13: Growth/Momentum style for high-volatility, high-return stocks (AI, tech hypergrowth).
     # Key differences from SWING:
@@ -949,7 +1016,9 @@ _STYLE_PROFILES: dict[str, dict] = {
     #   - No weekly BUY gate: weekly RSI can be high without being a sell signal for growth names
     "GROWTH": {
         "ml_weight_cap": 0.70,
-        "buy_threshold":  {"bull": 0.57, "high_vol": 0.65, "bear": 0.68, "unknown": 0.57},
+        "ml_weight_floor": 0.20,
+        # SA-28: GROWTH bull threshold raised 0.57→0.60 — aligns with SHORT/LONG in bull markets.
+        "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.60},
         "hold_threshold": {"bull": 0.45, "high_vol": 0.50, "bear": 0.52, "unknown": 0.45},
         "adx_min": 12, "adx_compression": 0.92,
         "high_vol_compression": 0.88,
@@ -1056,7 +1125,7 @@ def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tupl
     Returns (signal, style_key, threshold_tier).
     """
     p = _STYLE_PROFILES[style_key]
-    reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "unknown"
+    reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "high_vol"
     buy_t  = p["buy_threshold"][reg]
     hold_t = p["hold_threshold"][reg]
     tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")
@@ -1112,7 +1181,9 @@ def _apply_style_signal(
             # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
             raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
         eff_cap = _ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"]
-        ml_w  = min(raw_w, eff_cap)
+        ml_w = min(raw_w, eff_cap)
+        if raw_w > 0:  # floor only applies to non-zero weights — don't resurrect a zero-weighted inverse model
+            ml_w = max(ml_w, p.get("ml_weight_floor", 0.0))
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
             # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).
@@ -1133,25 +1204,44 @@ def _apply_style_signal(
         reasons["ml_weight"] = 0.0
 
     fused = float(np.clip(fused, 0.0, 1.0))
+    fused_before_filters = fused  # snapshot before weekly blend + compression — used for cap enforcement
 
-    # ── SA-18: Blend weekly TA score into fused probability (SWING/LONG only) ─
-    # Daily signals can fire on short-term noise that contradicts the medium-term
-    # weekly picture. For SWING/LONG, shift 15% weight to the weekly TA composite
-    # score so the fused probability always reflects both timeframes.
-    # weekly_score of 0.5 = neutral; the blend gently pulls toward weekly bias.
-    # GROWTH and SHORT are excluded: SHORT is pure daily momentum; GROWTH uses
-    # a different weekly gate (skip_weekly_gate=True).
-    weekly_score_blend = weekly_tech.get("weekly_score", 0.5)
-    if style_key in ("SWING", "LONG") and weekly_tech.get("weekly_rsi") is not None:
-        wc = weekly_tech.get("weekly_confidence", 1.0)
-        blend_weight = 0.15 * wc  # scale blend by data confidence (SA-4 convention)
-        fused = fused * (1.0 - blend_weight) + weekly_score_blend * blend_weight
-        reasons["weekly_blend_applied"] = True
+    # SA-18 (additive 15% weekly blend) was removed: the weekly alignment filter
+    # below (lines ~1205-1227) already integrates the weekly picture via boost/compress.
+    # Double-applying the same weekly_score data (once as absolute blend, once as
+    # directional amplifier) produced compounding effects larger than documented.
+    # The alignment filter is the sole weekly integration mechanism.
+    reasons["weekly_blend_applied"] = False
+
+    # ── SA-19 / SA-30: Independent pillar gate ───────────────────────────────
+    # Compress signals where only 1 dimension agrees (likely market-beta noise);
+    # boost where all 4 pillars converge (rare, high-confidence setup).
+    # SA-30: styles with min_pillars_for_buy=3 (SWING, LONG) apply a stronger
+    # ×0.70 compress when exactly 2 pillars are active, blocking borderline BUYs
+    # that lack broad TA confirmation (breakeven fused ≈ 0.714 at 0.65 threshold).
+    # CVG-002: use None sentinel so missing key is detected and logged instead of
+    # silently defaulting to 2 (which masks data-quality issues).
+    _pillars_raw = base_reasons.get("independent_pillars_active")
+    if _pillars_raw is None:
+        import structlog as _sl
+        _sl.get_logger().warning("pillar_gate.missing_key", symbol=stock_symbol if 'stock_symbol' in dir() else "?")
+        _pillars = 2  # neutral fallback: no gate, no boost
     else:
-        reasons["weekly_blend_applied"] = False
+        _pillars = int(_pillars_raw)
+    _min_pillars = int(p.get("min_pillars_for_buy", 2))
+    if _pillars < 2:
+        fused = 0.5 + (fused - 0.5) * 0.85
+        reasons["pillar_gate"] = f"compressed_{_pillars}_pillar"
+    elif _pillars < _min_pillars:
+        # SA-30: active pillars below style requirement — strong compress
+        fused = 0.5 + (fused - 0.5) * 0.70
+        reasons["pillar_gate"] = f"compressed_{_pillars}_pillar_below_min{_min_pillars}"
+    elif _pillars >= 4:
+        fused = float(np.clip(fused + 0.03, 0.0, 1.0))
+        reasons["pillar_gate"] = "boosted_4_pillar_confluence"
+    else:
+        reasons["pillar_gate"] = f"{_pillars}_pillars"
     fused = float(np.clip(fused, 0.0, 1.0))
-
-    fused_before_filters = fused  # snapshot before compression — used for cap enforcement
 
     # ── Weekly multi-timeframe alignment ──────────────────────────────────────
     weekly_score = weekly_tech.get("weekly_score", 0.5)
@@ -1217,12 +1307,20 @@ def _apply_style_signal(
     # Unknown / no history: original ±20% beat_rate adjustment.
     ec = p.get("earnings_compression")
 
-    # SA-25: SHORT style binary-event guard — even though earnings_compression=None (earnings treated
-    # as catalyst), DTE≤2 is a coin-flip event that can wipe a 5-day trade; apply hard compress.
+    # SA-25: SHORT style binary-event guard — DTE≤2 is a coin-flip event that can wipe a 5-day trade.
+    # Uses beat_rate scaling (same logic as other styles) so reliable earnings beaters get less compression.
     if style_key == "SHORT" and days_to_earnings is not None and 0 <= days_to_earnings <= 2:
-        fused = 0.5 + (fused - 0.5) * 0.40
+        ebr_short = earnings_beat_rate
+        if ebr_short is not None and ebr_short >= 0.70 and market_regime == "bull":
+            beat_scale_short = 2.0  # reliable beater — halve compression
+        elif market_regime in ("bear", "high_vol"):
+            beat_scale_short = 0.85 if ebr_short is None else float(np.clip(0.75 + 0.25 * ebr_short, 0.75, 1.0))
+        else:
+            beat_scale_short = 1.0 if ebr_short is None else float(np.clip(1.0 + 0.20 * (ebr_short - 0.50) / 0.50, 0.80, 1.20))
+        adj_short = float(np.clip(0.40 * beat_scale_short, 0.0, 1.0))
+        fused = 0.5 + (fused - 0.5) * adj_short
         reasons["earnings_warning"] = "short_imminent_event"
-        reasons["earnings_beat_rate"] = round(earnings_beat_rate, 2) if earnings_beat_rate is not None else None
+        reasons["earnings_beat_rate"] = round(ebr_short, 2) if ebr_short is not None else None
 
     if ec is not None and days_to_earnings is not None:
         ebr = earnings_beat_rate
@@ -1439,12 +1537,36 @@ def _apply_style_signal(
     # The 0.40× compression is intentionally exempt from max_compress_ratio so a SWING/LONG
     # BUY truly cannot fire in this condition without an overwhelming daily signal (≥0.90+).
     # GROWTH style skips this gate: growth names often have abnormal weekly RSI readings.
-    if style_key in ("SWING", "LONG") and not p.get("skip_weekly_gate") and weekly_rsi is not None and weekly_rsi < 40 and weekly_trend == "down":
+    # None weekly_trend (missing history) safely skips the gate — no data = no penalty.
+    # Threshold ≤ 38 (not < 40) reduces boundary sensitivity; RSI 38-40 is neutral, not bearish.
+    if (style_key in ("SWING", "LONG")
+            and not p.get("skip_weekly_gate")
+            and weekly_rsi is not None
+            and weekly_trend is not None
+            and weekly_rsi <= 38
+            and weekly_trend == "down"):
         fused = 0.5 + (fused - 0.5) * 0.40
         fused = float(np.clip(fused, 0.0, 1.0))
         reasons["weekly_gate_fired"] = True
     else:
         reasons["weekly_gate_fired"] = False
+
+    # SA-28: Weekly overbought extension gate (SWING/LONG, mirrors the oversold gate above).
+    # When weekly RSI > 75 and the weekly trend is up, the stock is in an extended rally —
+    # buying here has historically lower forward returns. Compress 15% toward neutral so
+    # the bar for a BUY is higher. GROWTH skips this via skip_weekly_gate (momentum names
+    # run "overbought" by traditional standards for months). Applied post-cap same as the
+    # oversold gate so it cannot be neutralised by accumulated filter boosts.
+    if (style_key in ("SWING", "LONG")
+            and not p.get("skip_weekly_gate")
+            and weekly_rsi is not None
+            and weekly_rsi > 75
+            and weekly_trend == "up"):
+        fused = 0.5 + (fused - 0.5) * 0.85
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["weekly_overbought_gate"] = True
+    else:
+        reasons["weekly_overbought_gate"] = False
 
     signal, horizon, threshold_tier = _decide_style(fused, style_key, market_regime)
     reasons["threshold_tier"] = threshold_tier  # SA-12: log which regime threshold was applied
@@ -1476,7 +1598,7 @@ def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
         from datetime import timezone as _tz
         today_utc = __import__("datetime").datetime.now(_tz.utc).date()
         days_old = (today_utc - last_ts_utc.date()).days
-        if days_old > 3:
+        if days_old > 5:
             log.warning(
                 "signal.stale_price_data",
                 symbol=symbol,
@@ -1505,7 +1627,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     insufficient_history = len(df) < 50
 
     is_stale = _check_price_staleness(df, symbol)
-    ta_prob, reasons = _ta_score(df)
+    ta_prob, reasons = _ta_score(df, ta_weights=_ta_weights)
     sr_data = _sr_context(df)
     ml_prob, ml_test_auc, ml_meta = _fetch_ml_data(symbol)
     market_regime, fg_score = _fetch_market_regime()
@@ -1587,7 +1709,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             ml_test_auc=ml_test_auc,
             style_key=style_key,
             market_regime=market_regime,
-            adx_val=float(reasons.get("adx") or 0.0),
+            adx_val=reasons.get("adx"),
             weekly_tech=weekly_tech,
             pattern_adj=pattern_adj,
             days_to_earnings=days_to_earnings,

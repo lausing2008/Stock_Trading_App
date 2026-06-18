@@ -22,6 +22,8 @@ class BacktestResult:
     total_return: float
     cagr: float
     sharpe: float
+    sortino: float
+    calmar: float
     max_drawdown: float
     win_rate: float
     profit_factor: float
@@ -77,7 +79,11 @@ class BacktestEngine:
         years = max((feat["ts"].iloc[-1] - feat["ts"].iloc[0]).days / 365.25, 1e-6)
         cagr = (equity.iloc[-1]) ** (1 / years) - 1 if equity.iloc[-1] > 0 else -1.0
         ann_vol = rets.std() * np.sqrt(252) or 1e-9
-        sharpe = float(rets.mean() * 252 / ann_vol)
+        rf_annual = 0.05  # current T-bill rate; sharpe was overstated by ~1pt at rf=0
+        sharpe = float((rets.mean() * 252 - rf_annual) / ann_vol)
+        sortino_vol = rets[rets < 0].std() * np.sqrt(252) or 1e-9
+        sortino = float((rets.mean() * 252 - rf_annual) / sortino_vol)
+        calmar = float(cagr / dd.max()) if dd.max() > 0 else 0.0
 
         wins = [t for t in trades if "ret" in t and t["ret"] > 0]
         losses = [t for t in trades if "ret" in t and t["ret"] <= 0]
@@ -94,11 +100,13 @@ class BacktestEngine:
             total_return=round(total_return, 4),
             cagr=round(float(cagr), 4),
             sharpe=round(sharpe, 4),
+            sortino=round(sortino, 4),
+            calmar=round(calmar, 4),
             max_drawdown=round(float(dd.max()), 4),
             win_rate=round(win_rate, 4),
             profit_factor=round(profit_factor, 4),
             n_trades=len(trades),
             equity_curve=equity_curve,
             trades=trades,
-            metrics_raw={"ann_vol": float(ann_vol)},
+            metrics_raw={"ann_vol": float(ann_vol), "rf_annual": rf_annual},
         )
