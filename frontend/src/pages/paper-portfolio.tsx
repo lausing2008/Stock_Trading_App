@@ -105,7 +105,7 @@ function BenchmarkTable({ data }: { data: PaperEquityPoint[] }) {
   const latest = sorted[sorted.length - 1];
   if (!latest) return null;
 
-  function periodReturn(daysBack: number, field: 'equity' | 'spy_close' | 'qqq_close'): number | null {
+  function periodReturn(daysBack: number, field: 'equity' | 'spy_close' | 'qqq_close' | 'hsi_close'): number | null {
     const cutoff = new Date(latest.date);
     cutoff.setDate(cutoff.getDate() - daysBack);
     const cutoffStr = cutoff.toISOString().slice(0, 10);
@@ -130,7 +130,10 @@ function BenchmarkTable({ data }: { data: PaperEquityPoint[] }) {
     portfolio: periodReturn(p.days, 'equity'),
     spy: periodReturn(p.days, 'spy_close'),
     qqq: periodReturn(p.days, 'qqq_close'),
+    hsi: periodReturn(p.days, 'hsi_close'),
   })).filter(r => r.portfolio !== null || r.spy !== null);
+
+  const hasHsi = rows.some(r => r.hsi != null);
 
   if (!rows.length) return null;
 
@@ -163,8 +166,10 @@ function BenchmarkTable({ data }: { data: PaperEquityPoint[] }) {
               <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>Portfolio</th>
               <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>SPY</th>
               <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>QQQ</th>
+              {hasHsi && <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>HSI</th>}
               <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>vs SPY</th>
               <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>vs QQQ</th>
+              {hasHsi && <th style={{ padding: '6px 14px', textAlign: 'right', color: '#64748b', fontWeight: 600, fontSize: 11 }}>vs HSI</th>}
             </tr>
           </thead>
           <tbody>
@@ -174,8 +179,10 @@ function BenchmarkTable({ data }: { data: PaperEquityPoint[] }) {
                 <td style={cellStyle(r.portfolio, true)}>{r.portfolio != null ? (r.portfolio >= 0 ? '+' : '') + r.portfolio.toFixed(2) + '%' : '—'}</td>
                 <td style={cellStyle(r.spy)}>{r.spy != null ? (r.spy >= 0 ? '+' : '') + r.spy.toFixed(2) + '%' : '—'}</td>
                 <td style={cellStyle(r.qqq)}>{r.qqq != null ? (r.qqq >= 0 ? '+' : '') + r.qqq.toFixed(2) + '%' : '—'}</td>
+                {hasHsi && <td style={cellStyle(r.hsi)}>{r.hsi != null ? (r.hsi >= 0 ? '+' : '') + r.hsi.toFixed(2) + '%' : '—'}</td>}
                 <td style={outStyle(r.portfolio, r.spy)}>{r.portfolio != null && r.spy != null ? (r.portfolio - r.spy >= 0 ? '+' : '') + (r.portfolio - r.spy).toFixed(2) + '%' : '—'}</td>
                 <td style={outStyle(r.portfolio, r.qqq)}>{r.portfolio != null && r.qqq != null ? (r.portfolio - r.qqq >= 0 ? '+' : '') + (r.portfolio - r.qqq).toFixed(2) + '%' : '—'}</td>
+                {hasHsi && <td style={outStyle(r.portfolio, r.hsi)}>{r.portfolio != null && r.hsi != null ? (r.portfolio - r.hsi >= 0 ? '+' : '') + (r.portfolio - r.hsi).toFixed(2) + '%' : '—'}</td>}
               </tr>
             ))}
           </tbody>
@@ -1158,6 +1165,14 @@ export default function PaperPortfolioPage() {
               label="vs QQQ"
               value={(summary.outperformance_vs_qqq >= 0 ? '+' : '') + summary.outperformance_vs_qqq.toFixed(1) + '%'}
               color={summary.outperformance_vs_qqq >= 0 ? '#22c55e' : '#ef4444'}
+              sub="portfolio excess return"
+            />
+          )}
+          {summary.outperformance_vs_hsi != null && (
+            <StatCard
+              label="vs HSI"
+              value={(summary.outperformance_vs_hsi >= 0 ? '+' : '') + summary.outperformance_vs_hsi.toFixed(1) + '%'}
+              color={summary.outperformance_vs_hsi >= 0 ? '#22c55e' : '#ef4444'}
               sub="portfolio excess return"
             />
           )}

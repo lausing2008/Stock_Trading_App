@@ -2483,15 +2483,117 @@ symbol with fewer than 14 daily bars.
 
 ---
 
+---
+
+## Tier 39 — Alert UX Overhaul + Outcomes Visibility (2026-06-17)
+
+**Context:** Alert bulk-create was silently failing for 4 of 8 pattern types. Alerts page had no
+filtering, pagination, or bulk delete. Signal accuracy Outcomes tab needed a manual trigger and
+date-range coverage banner.
+
+---
+
+### A. Alert Enum Migration — 4 Pattern Types Non-Functional (BUG-HIGH)
+
+**Symptom:** Bulk apply for Double Bottom, MACD Bullish Cross, RSI Oversold Bounce, and Breakout
+returned "Created 0 alerts" with no error shown. Frontend silently swallowed all 500 errors.
+
+**Root cause:** `double_bottom`, `macd_bullish_cross`, `rsi_oversold_bounce`, `breakout` were added
+to the Python `AlertCondition` enum after the DB was created. The PostgreSQL `alertcondition` type
+was never migrated to include these values. INSERT attempts got a DB error on the enum cast.
+
+**Fix:** Added `ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS` for all 4 values to
+`shared/db/session.py` idempotent migration block. Applied on EC2 via docker cp + restart.
+Frontend `BulkPatternAlertCard` now surfaces first 5 failures instead of swallowing them.
+
+---
+
+### B. Alert Page — Filter, Pagination, Bulk Delete (UX-FEATURE)
+
+Complete rewrite of `frontend/src/pages/alerts.tsx` (324→556 lines):
+- Filter bar: Active/All/Triggered status tabs + symbol text search + condition dropdown
+- Pagination: 20 per page with prev/next + page number buttons
+- Checkbox row selection + select-page + bulk delete
+- "Bulk Delete by Type" section with per-type counts and confirm dialog
+
+---
+
+### C. Outcomes — Evaluate Now + Date Range Banner (OBSERVABILITY)
+
+Added manual "Evaluate Now" button (POST /signals/outcomes/evaluate) and a date-range banner
+showing oldest→newest evaluated signal date. Banner explains that post-SA-31 SWING results
+mature after Jun 3+ signals pass their 14-day hold window.
+
+---
+
+## Tier 40 — Signal Intelligence: Calibration + Consensus + RSI Exit (2026-06-17)
+
+**Context:** Three new signal intelligence improvements approved after audit of additional_features.txt
+gaps: data-driven threshold calibration, cross-horizon consensus sizing, RSI overbought trail tightening.
+
+---
+
+### A. Outcomes Calibration Endpoint (SIGNAL QUALITY-MEDIUM)
+
+Added `GET /signals/outcomes/calibrate` to signal-engine. Sweeps thresholds 40–85 (on 0–100 scale)
+for each style, computes expected_value = win_rate × avg_return at each point, returns:
+`current_threshold`, `suggested_threshold`, `ev_lift_pct`, `at_current_threshold` stats,
+`at_suggested_threshold` stats. Shown as a calibration table in Signal Accuracy Outcomes tab.
+
+---
+
+### B. Cross-Horizon Consensus Annotation + Size Boost (SIGNAL QUALITY-MEDIUM)
+
+`_bulk_persist()` in signal-engine now counts how many other styles also fired BUY for the same
+symbol in the same batch, annotates `signal.reasons["cross_style_buys"]` and
+`signal.reasons["cross_style_buy_styles"]`. Paper trading engine uses `consensus_size_mult`:
+≥2 other styles = 1.15×, 1 other = 1.07× applied to position size.
+
+---
+
+### C. RSI Overbought Trail Tightening — PT-H5 (RISK MANAGEMENT-MEDIUM)
+
+When RSI-14 > 75 AND trail armed AND pnl ≥ 5%, tighten trailing stop to 1.0× ATR (vs 2.0×
+default) to lock in profits near the peak. Batch-fetches RSI from `Indicator` table per monitor
+cycle. Logs `paper.rsi_overbought_trail_tightened`.
+
+---
+
+## Tier 41 — HSI Benchmark + Fundamental Deterioration Exit (2026-06-17)
+
+**Context:** Two gaps identified in additional_features.txt audit: HK portfolios lacked an HSI
+benchmark column; paper trading had no mechanism to exit deteriorating fundamental positions.
+
+---
+
+### A. HSI Benchmark in Benchmark Table + Summary StatCard (UX-FEATURE)
+
+`paper_portfolio.py` now computes `outperformance_vs_hsi` alongside SPY/QQQ outperformance.
+`BenchmarkTable` in `paper-portfolio.tsx` conditionally shows HSI column and vs HSI column
+(only when `hsi_close` data exists in the equity curve — US-only portfolios unaffected).
+vs HSI StatCard added to portfolio summary section. `PaperSummary` type updated in `api.ts`.
+
+---
+
+### B. Fundamental Deterioration Exit — PT-I1 (RISK MANAGEMENT-MEDIUM)
+
+In `_monitor_positions`, batch-queries research summary for all open position symbols via
+`research_engine_url/research/{symbol}/summary` (1s timeout, fire-and-forget).
+When recommendation is AVOID or SELL AND trail armed AND pnl ≥ 2%, tightens trail to 1.5× ATR.
+Logs `paper.research_deterioration_trail_tightened`. Exits deteriorating positions faster
+without a hard cut — respects trend structure.
+
+---
+
 ## Scorecard (updated)
 
 | Dimension | Score | Summary |
 |-----------|-------|---------|
-| Data pipeline | 8.7 / 10 | ↑ Tier 38-A: BRK.A dedup eliminates 2-min yfinance failure noise |
+| Data pipeline | 8.7 / 10 | Unchanged |
 | ML methodology | 9.3 / 10 | Unchanged |
-| Signal logic | 9.3 / 10 | ↑ Tier 38-E: RSI-safe bar guard (< 14) prevents NaN propagation |
+| Signal logic | 9.5 / 10 | ↑ Tier 40-A/B: calibration endpoint + cross-horizon consensus |
 | K-Score ranking | 8.2 / 10 | Unchanged |
 | Research engine | 7.5 / 10 | Unchanged |
-| Frontend / UX | 9.8 / 10 | ↑ Tier 38-B: position entry notes expandable row; 38-C/D: outcomes date range |
-| Risk management | 9.3 / 10 | Unchanged |
-| **Overall** | **9.7 / 10** | *(was 9.6 → 9.7 — data quality dedup + audit visibility + signal robustness)* |
+| Frontend / UX | 9.9 / 10 | ↑ Tier 39-B: alert filter/pagination/bulk delete; 41-A: HSI benchmark |
+| Risk management | 9.5 / 10 | ↑ Tier 40-C: RSI overbought exit; 41-B: fundamental deterioration exit |
+| **Overall** | **9.8 / 10** | *(was 9.7 → 9.8 — signal calibration + consensus sizing + RSI/research exits + HSI benchmark)* |

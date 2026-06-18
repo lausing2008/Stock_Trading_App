@@ -1154,6 +1154,7 @@ export type PaperPortfolioSummary = {
   insufficient_data: boolean;
   outperformance_vs_spy: number | null;
   outperformance_vs_qqq: number | null;
+  outperformance_vs_hsi: number | null;
   spy_close: number | null;
   qqq_close: number | null;
   regime_state: 'bull' | 'neutral' | 'choppy' | 'risk_off' | 'bear' | null;

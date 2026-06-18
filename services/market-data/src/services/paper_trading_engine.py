@@ -1008,6 +1008,27 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         [(t.symbol, t.sector) for t in open_trades]
     )
 
+    # PT-I1: Fundamental deterioration — if research recommendation is now AVOID or SELL
+    # for a held position, tighten the trail to exit faster. Fire-and-forget http calls
+    # (short timeout), swallowed on any error so monitor is never blocked.
+    _research_deteriorated: dict[str, bool] = {}
+    try:
+        from common.config import get_settings as _gs_mon
+        _res_url = _gs_mon().research_engine_url
+        import httpx as _hx_mon
+        symbols_to_check = list({t.symbol for t in open_trades if t.stage == "open"})
+        for _sym in symbols_to_check:
+            try:
+                _rr = _hx_mon.get(f"{_res_url}/research/{_sym}/summary", timeout=1.0)
+                if _rr.status_code == 200:
+                    _rd = _rr.json()
+                    if (_rd.get("recommendation") or "").upper() in ("AVOID", "SELL"):
+                        _research_deteriorated[_sym] = True
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Regime-adjusted trail multiplier — tighten stops in risk-off environments
     # so existing positions are protected even though new entries are paused/sized down
     regime_trail_adj = 1.0
@@ -1414,6 +1435,21 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                          pnl_pct=round(pnl_pct * 100, 1),
                          new_stop=round(rsi_trail, 2),
                          note="RSI > 75 with gain ≥5% — tightening trail to 1.0× ATR to lock in profits")
+
+        # PT-I1: Fundamental deterioration exit — if research now says AVOID/SELL and we
+        # have a profit to protect, tighten trail to 1.5× ATR to exit faster without a
+        # hard cut. Only fires when trail is armed and pnl ≥ 2%.
+        if (not earnings_near and trail_armed and atr is not None and atr > 0.01 and
+                pnl_pct >= 0.02 and _research_deteriorated.get(trade.symbol)):
+            det_mult  = 1.5 * regime_trail_adj
+            det_trail = max((trade.highest_price or live_price) - atr * det_mult, trade.stop_loss)
+            if det_trail > trade.current_stop:
+                trade.current_stop = round(det_trail, 4)
+                log.info("paper.research_deterioration_trail_tightened",
+                         symbol=trade.symbol,
+                         pnl_pct=round(pnl_pct * 100, 1),
+                         new_stop=round(det_trail, 2),
+                         note="Research AVOID/SELL with gain ≥2% — tightening trail to 1.5× ATR")
 
         # PA-A3: Breakeven stop — unconditional (not elif) so it fires even when trail
         # is armed but ATR trail is still below entry (e.g. large ATR, small gain so far)

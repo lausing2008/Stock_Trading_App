@@ -224,6 +224,7 @@ def get_summary(
     total_return_pct = round((equity / p.initial_capital - 1) * 100, 2)
     outperformance_vs_spy: float | None = None
     outperformance_vs_qqq: float | None = None
+    outperformance_vs_hsi: float | None = None
     if all_curve:
         first = all_curve[0]
         if first.spy_close and latest_curve and latest_curve.spy_close:
@@ -232,6 +233,9 @@ def get_summary(
         if first.qqq_close and latest_curve and latest_curve.qqq_close:
             qqq_return = round((latest_curve.qqq_close / first.qqq_close - 1) * 100, 2)
             outperformance_vs_qqq = round(total_return_pct - qqq_return, 2)
+        if first.hsi_close and latest_curve and latest_curve.hsi_close:
+            hsi_return = round((latest_curve.hsi_close / first.hsi_close - 1) * 100, 2)
+            outperformance_vs_hsi = round(total_return_pct - hsi_return, 2)
 
     return {
         "portfolio_id": p.id,
@@ -264,6 +268,7 @@ def get_summary(
         "info_ratio": ab["info_ratio"],
         "outperformance_vs_spy": outperformance_vs_spy,
         "outperformance_vs_qqq": outperformance_vs_qqq,
+        "outperformance_vs_hsi": outperformance_vs_hsi,
         "spy_close": latest_curve.spy_close if latest_curve else None,
         "qqq_close": latest_curve.qqq_close if latest_curve else None,
         # Regime engine — current market state (written by engine each cycle)
