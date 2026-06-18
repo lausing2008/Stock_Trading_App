@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     portfolio_optimizer_url: str = "http://portfolio-optimizer:8007"
     research_engine_url: str = "http://research-engine:8008"
 
+    # Paper trading — disabled by default in development; set ENABLE_PAPER_TRADING=true in production .env
+    enable_paper_trading: bool = False
+
     # Storage
     parquet_dir: str = "/data/parquet"
     model_dir: str = "/data/models"

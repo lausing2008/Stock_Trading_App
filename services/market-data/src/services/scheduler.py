@@ -318,7 +318,7 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
         log.error("scheduler.alerts_failed", error=str(_ae), exc_info=True)
 
     # Stage 4: Paper trading — runs for both US and HK markets
-    if market in ("US", "HK"):
+    if market in ("US", "HK") and _settings.enable_paper_trading:
         _pt0 = time.monotonic()
         try:
             paper_trading_step()
@@ -1525,7 +1525,7 @@ def _refresh_5m(market: str) -> None:
 
     # PT-5M: paper trading position monitor runs after every 5m bar ingest.
     # Entry scan reads the latest BUY signal from DB, refreshed by _refresh_market.
-    if market in ("US", "HK"):
+    if market in ("US", "HK") and _settings.enable_paper_trading:
         _pt0 = time.monotonic()
         try:
             paper_trading_step()
@@ -1934,10 +1934,11 @@ def start_scheduler() -> None:
     )
 
     # WF-2: ensure the default GROWTH paper portfolio exists on startup.
-    try:
-        ensure_portfolio_exists()
-    except Exception as _ppe:
-        log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
+    if _settings.enable_paper_trading:
+        try:
+            ensure_portfolio_exists()
+        except Exception as _ppe:
+            log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
     log.info("scheduler.started", jobs=15)

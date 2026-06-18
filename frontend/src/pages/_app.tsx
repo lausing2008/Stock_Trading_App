@@ -49,11 +49,12 @@ const NAV_GROUPS: NavGroupDef[] = [
   {
     label: 'Portfolio',
     items: [
-      { label: 'Watchlist',    href: '/watchlist' },
-      { label: 'Positions',    href: '/positions' },
-      { label: 'Portfolio',    href: '/portfolio' },
-      { label: 'Trade Board',  href: '/board',    color: '#818cf8' },
-      { label: 'Journal',      href: '/journal',  color: '#34d399' },
+      { label: 'Watchlist',       href: '/watchlist' },
+      { label: 'Positions',       href: '/positions' },
+      { label: 'Portfolio',       href: '/portfolio' },
+      { label: 'Trade Board',     href: '/board',          color: '#818cf8' },
+      { label: 'Journal',         href: '/journal',        color: '#34d399' },
+      { label: 'Paper Portfolio', href: '/paper-portfolio', color: '#22c55e' },
     ],
   },
   {
@@ -69,7 +70,6 @@ const NAV_GROUPS: NavGroupDef[] = [
     label: 'Admin',
     adminOnly: true,
     items: [
-      { label: 'Paper Portfolio',  href: '/paper-portfolio',  color: '#22c55e' },
       { label: 'Signal Accuracy',  href: '/signal-accuracy',  color: '#a78bfa' },
       { label: 'Signal Filters',   href: '/signal-filters',   color: '#f97316' },
       { label: 'Trade Performance', href: '/trade-performance', color: '#34d399' },
