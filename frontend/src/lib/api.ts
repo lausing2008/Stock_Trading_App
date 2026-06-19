@@ -428,6 +428,12 @@ export const api = {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return request<{ ok: boolean; state: string; config: PaperPortfolioConfig }>(`/paper-portfolio/engine${q}`, { method: 'POST', body: JSON.stringify({ state }) });
   },
+  paperManualExit: (tradeId: number, portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<{ symbol: string; exit_price: number; pnl: number; pnl_pct: number; cash_after: number }>(
+      `/paper-portfolio/trades/${tradeId}/exit${q}`, { method: 'POST' }
+    );
+  },
   paperTradeParams: () => request<Record<string, PaperTradeParamResult>>('/paper-portfolio/trade-params'),
   paperTuneParams: (style: string, nTrials = 80) =>
     request<{ status: string; style: string; n_trials: number }>(

@@ -908,10 +908,13 @@ export default function PaperPortfolioPage() {
     authed && selectedPortfolioId != null ? ['paper-summary', selectedPortfolioId] : null,
     () => api.paperSummary(selectedPortfolioId), { refreshInterval: 60_000 }
   );
-  const { data: positions } = useSWR(
+  const { data: positions, mutate: mutatePositions } = useSWR(
     authed && tab === 'Positions' && selectedPortfolioId != null ? ['paper-positions', selectedPortfolioId] : null,
     () => api.paperPositions(selectedPortfolioId), { refreshInterval: 60_000 }
   );
+  const [exitConfirm, setExitConfirm] = useState<{ tradeId: number; symbol: string } | null>(null);
+  const [exitBusy, setExitBusy] = useState(false);
+  const [exitMsg, setExitMsg] = useState('');
 
   // INT-9: research verdicts for open positions
   const [posResearchMap, setPosResearchMap] = useState<Record<string, ResearchSummary>>({});
@@ -1087,6 +1090,44 @@ export default function PaperPortfolioPage() {
             onClose={() => setShowCreateModal(false)}
             onCreated={() => { mutateList(); }}
           />
+        )}
+
+        {/* Manual exit confirmation modal */}
+        {exitConfirm && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+            <div style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 12, padding: 28, width: 340 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#f1f5f9', marginBottom: 8 }}>Exit {exitConfirm.symbol}?</div>
+              <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 20 }}>
+                This will force-close the position at the current live price (with exit slippage). The trade will appear in Closed Trades.
+              </div>
+              {exitMsg && <div style={{ fontSize: 12, color: exitMsg.startsWith('Error') ? '#f87171' : '#4ade80', marginBottom: 12 }}>{exitMsg}</div>}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  disabled={exitBusy}
+                  onClick={async () => {
+                    setExitBusy(true);
+                    setExitMsg('');
+                    try {
+                      const res = await api.paperManualExit(exitConfirm.tradeId, selectedPortfolioId);
+                      setExitMsg(`Exited at $${res.exit_price.toFixed(2)} · P&L: ${res.pnl >= 0 ? '+' : ''}$${res.pnl.toFixed(2)} (${res.pnl_pct.toFixed(1)}%)`);
+                      mutatePositions();
+                      mutateSummary();
+                      setTimeout(() => { setExitConfirm(null); setExitMsg(''); }, 2000);
+                    } catch (e: unknown) {
+                      setExitMsg('Error: ' + (e instanceof Error ? e.message : 'Failed'));
+                    } finally {
+                      setExitBusy(false);
+                    }
+                  }}
+                  style={{ flex: 1, padding: '8px 0', background: '#ef4444', color: '#fff', border: 'none', borderRadius: 6, fontWeight: 700, cursor: exitBusy ? 'not-allowed' : 'pointer', opacity: exitBusy ? 0.6 : 1 }}
+                >{exitBusy ? 'Exiting…' : 'Confirm Exit'}</button>
+                <button
+                  onClick={() => { setExitConfirm(null); setExitMsg(''); }}
+                  style={{ flex: 1, padding: '8px 0', background: '#1e293b', color: '#94a3b8', border: '1px solid #334155', borderRadius: 6, cursor: 'pointer' }}
+                >Cancel</button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Bear regime suspension banner */}
@@ -1310,7 +1351,7 @@ export default function PaperPortfolioPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ color: '#64748b', borderBottom: '1px solid #334155' }}>
-                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', '% Port', 'P&L', 'Range', 'Stop', 'Status', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research'].map(h => (
+                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', '% Port', 'P&L', 'Range', 'Stop', 'Status', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research', ''].map(h => (
                       <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 500 }} title={h === 'Range' ? 'Entry → Current → Target progress bar. Shows how far current price has moved toward take-profit.' : undefined}>{h}</th>
                     ))}
                   </tr>
@@ -1424,10 +1465,16 @@ export default function PaperPortfolioPage() {
                           );
                         })()}
                       </td>
+                      <td style={{ padding: '9px 10px' }} onClick={e => e.stopPropagation()}>
+                        <button
+                          onClick={() => setExitConfirm({ tradeId: p.id, symbol: p.symbol })}
+                          style={{ padding: '3px 8px', fontSize: 11, fontWeight: 600, background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 4, cursor: 'pointer' }}
+                        >Exit</button>
+                      </td>
                     </tr>
                     {isExpanded && (
                       <tr style={{ borderBottom: '1px solid #1e293b', background: 'rgba(15,23,42,0.6)' }}>
-                        <td colSpan={14} style={{ padding: '12px 16px' }}>
+                        <td colSpan={15} style={{ padding: '12px 16px' }}>
                           <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
                             {p.decision_notes?.length > 0 && (
                               <div>

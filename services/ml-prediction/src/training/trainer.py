@@ -239,8 +239,10 @@ def train_model(
     except Exception:
         macro_df = None
 
-    # Per-symbol volatility-adjusted dead zone (0.5 × expected N-day move)
-    label_threshold = compute_label_threshold(df, horizon)
+    # Per-symbol volatility-adjusted dead zone — computed on training rows only
+    # to prevent future volatility from leaking into the label dead-zone boundary.
+    _train_rows = int(len(df) * 0.70)
+    label_threshold = compute_label_threshold(df.iloc[:max(_train_rows, 60)], horizon)
 
     fund_data: dict | None = None
     try:

@@ -325,6 +325,68 @@ def get_positions(
     ]
 
 
+# ── Manual exit ───────────────────────────────────────────────────────────────
+
+@router.post("/trades/{trade_id}/exit")
+def manual_exit_trade(
+    trade_id: int,
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Force-close an open paper trade at the current live price."""
+    import yfinance as yf
+    p = _get_portfolio(session, portfolio_id)
+    trade = session.get(PaperTrade, trade_id)
+    if not trade or trade.portfolio_id != p.id:
+        raise HTTPException(status_code=404, detail="Trade not found")
+    if trade.stage != "open":
+        raise HTTPException(status_code=400, detail="Trade is already closed")
+
+    # Fetch live price
+    exit_price: float | None = None
+    try:
+        info = yf.Ticker(trade.symbol).fast_info
+        exit_price = float(info.last_price)
+    except Exception:
+        pass
+    if not exit_price:
+        exit_price = trade.current_price or trade.entry_price
+
+    cfg = p.config or {}
+    slippage  = cfg.get("exit_slippage_pct", 0.001)
+    commission = cfg.get("commission_per_share", 0.0)
+    exit_p    = round(exit_price * (1 - slippage), 4)
+    exit_value = round(exit_p * trade.shares, 2)
+    exit_commission = round(commission * trade.shares, 4)
+
+    pnl      = round((exit_p - trade.entry_price) * trade.shares, 2)
+    pnl_pct  = round((exit_p / trade.entry_price - 1) * 100, 2)
+
+    now = datetime.utcnow()
+    trade.stage        = "closed"
+    trade.exit_date    = now.date()
+    trade.exit_time    = now
+    trade.exit_price   = exit_p
+    trade.exit_reason  = "manual_exit"
+    trade.realized_pnl = pnl
+    trade.current_price = exit_p
+
+    # Credit cash back
+    p.current_cash = max(0.0, round(p.current_cash + exit_value - exit_commission, 2))
+
+    session.commit()
+    log.info("paper.manual_exit", symbol=trade.symbol, exit_price=exit_p,
+             pnl=pnl, pnl_pct=pnl_pct, trade_id=trade_id)
+    return {
+        "symbol": trade.symbol,
+        "exit_price": exit_p,
+        "pnl": pnl,
+        "pnl_pct": pnl_pct,
+        "cash_after": round(p.current_cash, 2),
+    }
+
+
 # ── Closed trades ─────────────────────────────────────────────────────────────
 
 @router.get("/trades")

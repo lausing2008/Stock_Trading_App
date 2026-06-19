@@ -321,7 +321,7 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     if market in ("US", "HK") and _settings.enable_paper_trading:
         _pt0 = time.monotonic()
         try:
-            paper_trading_step()
+            _run_paper_trading_step(label="refresh_market")
             _record_job_status("paper_trading", "ok", time.monotonic() - _pt0)
         except Exception as _pte:
             log.error("scheduler.paper_trading_step_failed", error=str(_pte), exc_info=True)
@@ -753,6 +753,35 @@ _alert_fail_counts: dict[int, int] = {}
 
 _SIGNAL_ALERT_LOCK_KEY = "stockai:lock:check_signal_alerts"
 _SIGNAL_ALERT_LOCK_TTL = 120  # seconds — prevents concurrent runs from US+HK scheduler overlap
+
+_PAPER_TRADING_LOCK_KEY = "stockai:lock:paper_trading_step"
+_PAPER_TRADING_LOCK_TTL = 90  # seconds — typical step runs in 20-40s; 90s prevents double-exec
+
+
+def _run_paper_trading_step(label: str = "refresh") -> None:
+    """Run paper_trading_step() with a distributed Redis lock.
+
+    Both _refresh_market() and _refresh_5m() call paper_trading_step(). During the
+    15:30–16:15 ET close burst, both fire within the same minute, creating a race where
+    two concurrent executions can each observe the same open positions and double-credit
+    cash on exit. The SET NX EX lock ensures only one execution runs at a time.
+    """
+    acquired = False
+    try:
+        acquired = bool(_get_redis().set(_PAPER_TRADING_LOCK_KEY, label, nx=True, ex=_PAPER_TRADING_LOCK_TTL))
+        if not acquired:
+            log.info("paper.step_skipped_locked", label=label, reason="another run in progress")
+            return
+    except Exception:
+        pass  # Redis unavailable — allow through; double-execution is unlikely without it
+    try:
+        paper_trading_step()
+    finally:
+        if acquired:
+            try:
+                _get_redis().delete(_PAPER_TRADING_LOCK_KEY)
+            except Exception:
+                pass
 
 
 def check_signal_alerts() -> None:
@@ -1528,7 +1557,7 @@ def _refresh_5m(market: str) -> None:
     if market in ("US", "HK") and _settings.enable_paper_trading:
         _pt0 = time.monotonic()
         try:
-            paper_trading_step()
+            _run_paper_trading_step(label="refresh_5m")
             _record_job_status(f"paper_trading_5m_{market.lower()}", "ok", time.monotonic() - _pt0)
         except Exception as _pte:
             log.error("scheduler.paper_trading_5m_failed", market=market, error=str(_pte), exc_info=True)

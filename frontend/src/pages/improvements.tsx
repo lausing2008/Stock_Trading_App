@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -2741,6 +2741,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud-h12-test-auc-mean-rename',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — renamed to mean_model_test_auc in trainer.py predict_latest_ensemble() and predict_latest_ensemble_three()',
     tier: 10, severity: 'low',
     title: 'AUD-H12: test_auc_mean misleadingly named — it\'s arithmetic mean of individual model AUCs, not ensemble OOS AUC',
     file: 'services/ml-prediction/src/training/trainer.py',
@@ -3942,6 +3944,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-cv-leakage',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 — tscv.split(X.iloc[:split_train]) in trainer.py restricts CV to training window only. Label threshold now computed on train-only df (2026-06-19).',
     tier: 14, severity: 'critical',
     title: 'CV folds overlap test set — all ML AUC, precision, recall metrics inflated',
     file: 'services/ml-prediction/src/training/trainer.py:218-258',
@@ -3962,6 +3966,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-paper-race',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — _run_paper_trading_step() wrapper with Redis SET NX EX 90 lock in scheduler.py; both refresh_market and refresh_5m call through the lock.',
     tier: 14, severity: 'critical',
     title: 'Double execution of paper_trading_step() in close burst window — cash can double-credit',
     file: 'services/market-data/src/services/scheduler.py:288-295,1278-1285',
@@ -4016,6 +4022,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-momentum-max',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 (Tier 15 fix15-momentum-weighted) — p_momentum = rsi_score×0.35 + macd_score×0.40 + stoch_score×0.25; per-component overbought penalties applied before averaging.',
     tier: 14, severity: 'high',
     title: 'Momentum pillar uses max() — single indicator produces perfect score despite two overbought warnings',
     file: 'services/signal-engine/src/generators/signals.py:858-876',
@@ -4026,6 +4034,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-rsi-div-dead',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 (Tier 15 fix15-rsi-div-weight) — removed rsi_divergence_bearish_penalty and rsi_divergence_bullish from _TA_WEIGHTS_DEFAULT; denominator now correct.',
     tier: 14, severity: 'high',
     title: 'RSI divergence hard-zeroed but weights remain in denominator — TA score silently underpowered',
     file: 'services/signal-engine/src/generators/signals.py:778-785',
@@ -4036,6 +4046,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-obv-mislabeled',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 (Tier 15 fix15-obv-label) — renamed to obv_trend_bullish throughout signals.py, routes.py, SignalCard.tsx, email_service.py.',
     tier: 14, severity: 'high',
     title: 'OBV divergence is actually OBV MA crossover — semantically wrong, mislabeled in reasons output',
     file: 'services/signal-engine/src/generators/signals.py:827-830',
@@ -4058,6 +4070,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-isotonic-small',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 — trainer.py uses LogisticRegression(C=1e6) when len(y_cal) < 300; IsotonicRegression otherwise. Reduces calibration variance for HK small-caps.',
     tier: 14, severity: 'high',
     title: 'Isotonic calibration with ~135 samples likely overfitting — switch to Platt when n_cal < 300',
     file: 'services/ml-prediction/src/training/trainer.py:251-298',
@@ -4068,6 +4082,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-macd-adjust',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 — both builder.py and signals.py use adjust=False (Wilder EWM) for all EMA computations; training/inference now use identical MACD formula.',
     tier: 14, severity: 'high',
     title: 'MACD adjust=False in feature builder vs adjust=True in TA engine — training-inference skew',
     file: 'services/ml-prediction/src/features/builder.py:241-248 · services/signal-engine/src/generators/signals.py:532,788-789',
@@ -4078,6 +4094,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-label-lookahead',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — compute_label_threshold() now called with df.iloc[:max(train_rows, 60)] (first 70% of rows only) in trainer.py; future volatility no longer leaks into label dead-zone.',
     tier: 14, severity: 'high',
     title: 'label_threshold computed over full DataFrame including future test bars — look-ahead in labels',
     file: 'services/ml-prediction/src/training/trainer.py:195 · services/ml-prediction/src/features/builder.py:159-175',
@@ -4088,6 +4106,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-gbm-lstm-crash',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — gbm.py already had **kwargs; lstm.py fit() signature updated to fit(self, X, y, **kwargs). Both now accept sample_weight from trainer.',
     tier: 14, severity: 'high',
     title: 'GBM and LSTM fit() raise TypeError for sample_weight — training has never succeeded',
     file: 'services/ml-prediction/src/models/gbm.py:20 · services/ml-prediction/src/models/lstm.py:48',
@@ -4098,6 +4118,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-slippage',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 (Tier 15 fix15-slippage-cash) — cash deducted at slipped_entry; exit commission deducted at close; entry and cost basis are now consistent.',
     tier: 14, severity: 'high',
     title: 'Cash deducted at unslipped price, entry_price stored as slipped — PnL systematically overstated',
     file: 'services/market-data/src/services/paper_trading_engine.py:1659-1681',
@@ -4108,6 +4130,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-regime-default-neutral',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 (Tier 15 fix15-regime-fallback) — _regime_cache + _regime_cache_ts; exception falls back to cached regime if < 4h old, else defaults to choppy (not neutral).',
     tier: 14, severity: 'high',
     title: 'Regime fetch failure defaults to neutral — full-size entries during yfinance outages',
     file: 'services/market-data/src/services/paper_trading_engine.py:483-485',
@@ -4138,6 +4162,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-no-exit-button',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — per-row Exit button in Positions table; POST /paper-portfolio/trades/{id}/exit endpoint fetches live price, applies exit slippage, marks trade closed, credits cash.',
     tier: 14, severity: 'high',
     title: 'No manual exit button in paper portfolio positions view',
     file: 'frontend/src/pages/paper-portfolio.tsx:999-1038',
@@ -4162,6 +4188,8 @@ const ITEMS: Item[] = [
   // ── MEDIUM — Infrastructure & Architecture ────────────────────────────────────
   {
     id: 'aud14-redis-per-call',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-15 (Tier 15 fix15-redis-pool) — shared/common/redis_client.py ConnectionPool max_connections=20; all services use get_redis() from the shared pool.',
     tier: 14, severity: 'medium',
     title: 'Redis connection created per call across all services — no connection pool',
     file: 'shared/common/jwt_auth.py · services/signal-engine/src/api/routes.py · services/research-engine/src/api/routes.py',
@@ -4172,6 +4200,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-cors-wildcard',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 (Tier 15 fix15-cors-lockdown) — CORS_ORIGINS env var replaces wildcard; config.py warns on wildcard in production. Set CORS_ORIGINS=https://lausing.com in EC2 .env.',
     tier: 14, severity: 'medium',
     title: 'CORS wildcard default (allow_origins=["*"]) applies to all 8 services in production',
     file: 'shared/common/service.py',
@@ -4192,6 +4222,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-apscheduler-pile',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-13 (Tier 15 fix15-apscheduler-limits) — _JOB_DEFAULTS = dict(max_instances=1, coalesce=True, misfire_grace_time=60) applied to all 13 jobs in scheduler.py.',
     tier: 14, severity: 'medium',
     title: 'APScheduler jobs have no max_instances=1 — long-running jobs silently pile up',
     file: 'services/market-data/src/services/scheduler.py',
@@ -5859,6 +5891,51 @@ const ITEMS: Item[] = [
     impact: 'High — prevents over-concentration in a single sector. A sector crash (e.g. tech selloff) now can cause at most 25% portfolio damage from that sector.',
   },
 
+  // ── Tier 51 — Audit Bug Fixes Wave 2 (2026-06-19) ────────────────────────────
+  // Fixing the remaining confirmed-open items from Tier 14 adversarial audit.
+  // Focus: ML training correctness + paper trading safety + portfolio UX.
+
+  {
+    id: 'TIER51-A', tier: 51, severity: 'high', defaultStatus: 'done',
+    title: '51-A: LSTM fit() missing **kwargs — sample_weight crashes training',
+    effort: '5m',
+    what: 'LSTMModel.fit() signature was def fit(self, X, y) with no **kwargs. The trainer passes sample_weight as a keyword argument. LSTM training crashed immediately on every train_all_ensemble call — the model was registered in the ensemble but never actually trained.',
+    fix: 'Added **kwargs to LSTMModel.fit() signature. sample_weight is accepted but currently unused for LSTM (BCE loss weighting would require custom training loop changes). This unblocks training; the GBMModel already had **kwargs and worked.',
+    file: 'services/ml-prediction/src/models/lstm.py',
+    implementedNote: 'Done 2026-06-19. 1-line change: def fit(self, X, y, **kwargs).',
+    impact: 'High — LSTM training was completely broken for every symbol. The ensemble_three endpoint was silently running without LSTM contribution.',
+  },
+  {
+    id: 'TIER51-B', tier: 51, severity: 'high', defaultStatus: 'done',
+    title: '51-B: Label threshold look-ahead — compute on train portion only',
+    effort: '20m',
+    what: 'compute_label_threshold(df, horizon) was called with the full price DataFrame before any train/test split. The rolling volatility at bars near the split boundary saw future volatility. Labels near the boundary were biased by future price data — a subtle but real look-ahead leak.',
+    fix: 'Changed trainer.py to compute _train_rows = int(len(df) * 0.70) first, then call compute_label_threshold(df.iloc[:max(_train_rows, 60)], horizon). The same threshold is applied to label the full dataset — threshold comes from train only, applied everywhere.',
+    file: 'services/ml-prediction/src/training/trainer.py',
+    implementedNote: 'Done 2026-06-19. Eliminates future volatility from label boundary computation.',
+    impact: 'High — affects all model training. Labels near the train/test split are now computed correctly without future information.',
+  },
+  {
+    id: 'TIER51-C', tier: 51, severity: 'critical', defaultStatus: 'done',
+    title: '51-C: Paper trading race condition — Redis lock on paper_trading_step',
+    effort: '30m',
+    what: 'Both _refresh_market() and _refresh_5m() called paper_trading_step() independently. During the 15:30–16:15 ET close burst, both fire within the same minute. Two concurrent executions could each observe the same open positions and independently exit them, double-crediting cash and creating duplicate exit records — a data integrity risk.',
+    fix: 'Added _run_paper_trading_step() wrapper in scheduler.py with a Redis SET NX EX 90 distributed lock (key: stockai:lock:paper_trading_step). On lock failure: logs paper.step_skipped_locked and returns immediately. Lock is released in a finally block. Both call sites replaced with _run_paper_trading_step(label=...).',
+    file: 'services/market-data/src/services/scheduler.py',
+    implementedNote: 'Done 2026-06-19. Same pattern as check_signal_alerts() Redis lock.',
+    impact: 'Critical — prevents double-cash-credit and duplicate exit records during close burst window.',
+  },
+  {
+    id: 'TIER51-D', tier: 51, severity: 'high', defaultStatus: 'done',
+    title: '51-D: Manual exit button in paper portfolio positions view',
+    effort: '1h',
+    what: 'The Positions tab had no per-row exit control. Traders wanting to cut a position ahead of earnings, override a trailing stop, or exit before a regime shift had to wait for the automated system — no manual override path existed in the UI.',
+    fix: 'Added POST /paper-portfolio/trades/{trade_id}/exit endpoint in paper_portfolio.py: fetches live price via yfinance fast_info, applies exit slippage, marks trade closed, credits cash with exit commission deducted. Added per-row "Exit" button (red, small) in the positions table. On click: shows a confirmation modal with symbol name and warning text. On confirm: calls the API, refreshes positions + summary, auto-dismisses after 2s showing P&L result.',
+    file: 'services/market-data/src/api/paper_portfolio.py · frontend/src/pages/paper-portfolio.tsx',
+    implementedNote: 'Done 2026-06-19. Frontend: exitConfirm state + modal. Backend: /trades/{id}/exit POST.',
+    impact: 'High — essential paper trading UX feature. Users can now override automated stops without DB manipulation.',
+  },
+
   // ── Tier 48 — Signal Filter + Portfolio Sizing + Rankings Filter (2026-06-18) ──
 
   {
@@ -6084,6 +6161,7 @@ const TIER_LABEL: Record<Tier, string> = {
   48: 'Tier 48 — Signal Filter + Portfolio Sizing + Rankings Filter (2026-06-18)',
   49: 'Tier 49 — Board Style Picker + Signal Counts + Position Range Bar (2026-06-18)',
   50: 'Tier 50 — Phase 1 Spec Compliance: Supertrend + ROC + Sortino + PEG + D/E + Sector Cap (2026-06-18)',
+  51: 'Tier 51 — Audit Bug Fixes Wave 2: LSTM + Label Lookahead + Paper Lock + Manual Exit (2026-06-19)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6137,6 +6215,7 @@ const TIER_COLOR: Record<Tier, string> = {
   48: '#818cf8',
   49: '#fb923c',
   50: '#4ade80',
+  51: '#f472b6',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -6208,7 +6287,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
