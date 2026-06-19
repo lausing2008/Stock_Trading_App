@@ -42,6 +42,14 @@ import numpy as np
 import pandas as pd
 
 
+def _adj_close(df: pd.DataFrame) -> pd.Series:
+    """Return adj_close when available (filling gaps with close), else close."""
+    ac = df.get("adj_close")
+    if ac is not None and not ac.isna().all():
+        return ac.fillna(df["close"]).astype(float)
+    return df["close"].astype(float)
+
+
 MACRO_COLUMNS = [
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Regime boolean flags (SA-3)
@@ -205,7 +213,7 @@ def compute_label_threshold(df: pd.DataFrame, horizon: int = 5) -> float:
       1.0% daily → 1.12% threshold  (average large-cap)
       2.0% daily → 2.24% threshold  (high-beta / HK small-cap)
     """
-    daily_ret = df["close"].astype(float).pct_change()
+    daily_ret = _adj_close(df).pct_change()
     vol_series = daily_ret.rolling(20).std().dropna()
     if not vol_series.empty:
         return float(np.clip(0.5 * float(vol_series.median()) * np.sqrt(horizon), 0.005, 0.03))
@@ -243,7 +251,7 @@ def build_features(
     Missing keys default to NaN — XGBoost handles NaN natively.
     """
     out = pd.DataFrame(index=df.index)
-    c = df["close"].astype(float)
+    c = _adj_close(df)
     h = df["high"].astype(float)
     lo = df["low"].astype(float)
     vol = df["volume"].astype(float)

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -3934,6 +3934,8 @@ const ITEMS: Item[] = [
   // ── CRITICAL ─────────────────────────────────────────────────────────────────
   {
     id: 'aud14-adj-close',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — added _adj_close() helper in signals.py and builder.py; replaced all 7 df["close"].astype(float) calls in signals.py + 2 in builder.py with _adj_close(df). Falls back to raw close when adj_close is absent or all-null.',
     tier: 14, severity: 'critical',
     title: 'Unadjusted close prices corrupt SMA, ATR, MACD, ML labels system-wide',
     file: 'services/signal-engine/src/generators/signals.py · services/ml-prediction/src/features/builder.py · services/market-data/src/services/paper_trading_engine.py',
@@ -6187,6 +6189,27 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-19. All services: grep X-Request-ID in docker logs to trace a full request chain.',
     impact: 'Medium — dramatically simplifies incident diagnosis; no user-visible change.',
   },
+  // ── Tier 53 ───────────────────────────────────────────────────────────────
+  {
+    id: 'TIER53-A', tier: 53, severity: 'critical', defaultStatus: 'done',
+    title: '53-A: Adj-close in signal engine — replace df["close"] with _adj_close() helper',
+    effort: '2h',
+    what: 'signals.py used raw df["close"] in all 7 indicator computation functions (supertrend, ADX, RSI/MACD, S/R context, TA score, ML adjustment). On any stock split or dividend ex-date, unadjusted close creates a false price discontinuity: artificial golden crosses, 2-3× mis-scaled ATR stops, spurious MACD spikes, and false ML training labels.',
+    fix: 'Added _adj_close(df) helper at module level: returns adj_close column (filling NaN gaps with close) when present and non-null, else falls back to df["close"]. Replaced all 7 occurrences of df["close"].astype(float) in signals.py indicators with _adj_close(df). The resample "close": "last" aggregation on line 536 was intentionally left unchanged (it is a column name, not a price read).',
+    file: 'services/signal-engine/src/generators/signals.py',
+    implementedNote: 'Done 2026-06-19. Deployed via docker cp + restart signal-engine.',
+    impact: 'Critical — every SMA, BB, MACD, and RSI signal was potentially corrupted around split/dividend events; affects ~any stock that split or paid a dividend in the price history window.',
+  },
+  {
+    id: 'TIER53-B', tier: 53, severity: 'critical', defaultStatus: 'done',
+    title: '53-B: Adj-close in ML feature builder — replace df["close"] in volatility and feature matrix',
+    effort: '1h',
+    what: 'builder.py used raw df["close"] in _label_threshold() (volatility for buy threshold calibration) and build_features() (all SMA gap, momentum, oscillator features). Split events create a spurious volatility spike in _label_threshold(), raising the buy threshold for the wrong reasons and suppressing valid BUY labels from training data.',
+    fix: 'Added same _adj_close(df) helper at module level. Replaced df["close"].astype(float).pct_change() in _label_threshold() and df["close"].astype(float) in build_features() with _adj_close(df).',
+    file: 'services/ml-prediction/src/features/builder.py',
+    implementedNote: 'Done 2026-06-19. Deployed via docker cp + restart ml-prediction.',
+    impact: 'Critical — ML training labels and all 28 stock-specific features were computed on unadjusted prices; models trained on split-affected history had mis-calibrated weights.',
+  },
 ];
 
 
@@ -6250,6 +6273,7 @@ const TIER_LABEL: Record<Tier, string> = {
   50: 'Tier 50 — Phase 1 Spec Compliance: Supertrend + ROC + Sortino + PEG + D/E + Sector Cap (2026-06-18)',
   51: 'Tier 51 — Audit Bug Fixes Wave 2: LSTM + Label Lookahead + Paper Lock + Manual Exit (2026-06-19)',
   52: 'Tier 52 — Audit Fix Wave 3: Backtest Lookahead + Benchmark + K-Score Labels + Research Fallback (2026-06-19)',
+  53: 'Tier 53 — Audit Fix Wave 4: Adj-Close in Signal Engine + ML Feature Builder (2026-06-19)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6305,6 +6329,7 @@ const TIER_COLOR: Record<Tier, string> = {
   50: '#4ade80',
   51: '#f472b6',
   52: '#a78bfa',
+  53: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -6376,7 +6401,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;

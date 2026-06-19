@@ -87,6 +87,18 @@ _settings = get_settings()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+
+def _adj_close(df: pd.DataFrame) -> pd.Series:
+    """Return adj_close when available (filling gaps with close), else close.
+
+    Dividend-adjusted prices prevent false SMA/ATR/MACD signals on ex-dividend
+    dates where unadjusted close drops by the dividend amount.
+    """
+    ac = df.get("adj_close")
+    if ac is not None and not ac.isna().all():
+        return ac.fillna(df["close"]).astype(float)
+    return df["close"].astype(float)
+
 # ── TA component weights (SA-5) ───────────────────────────────────────────────
 # Defaults are the hand-tuned values used since launch.
 # Run POST /signals/calibrate_ta_weights to compute logistic-regression-derived
@@ -430,7 +442,7 @@ def _supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> 
     """
     high  = df["high"].astype(float)
     low   = df["low"].astype(float)
-    close = df["close"].astype(float)
+    close = _adj_close(df)
     n = len(close)
     if n < period + 2:
         return 1, False, False
@@ -469,7 +481,7 @@ def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
     """Return (ADX, +DI, -DI). ADX > 25 = trending, > 40 = strong trend."""
     high = df["high"].astype(float)
     low  = df["low"].astype(float)
-    close = df["close"].astype(float)
+    close = _adj_close(df)
 
     prev_close = close.shift(1)
     tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
@@ -569,7 +581,7 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
     # Partial confidence for 15–25 bars (3–6 months): scales from 0.70→1.0 linearly.
     # Full confidence (1.0) requires 26+ bars (6 months).
     weekly_confidence = min(1.0, 0.70 + (len(df) - 15) / (26 - 15) * 0.30) if len(df) < 26 else 1.0
-    close = df["close"].astype(float)
+    close = _adj_close(df)
 
     d = close.diff()
     g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
@@ -620,7 +632,7 @@ def _sr_context(df: pd.DataFrame) -> dict:
     Uses swing high/low pivots from the last 60 bars plus 52-week high/low.
     Returns sr_context: 'breakout' | 'at_resistance' | 'at_support' | 'neutral'.
     """
-    close = df["close"].astype(float)
+    close = _adj_close(df)
     high  = df["high"].astype(float)
     low   = df["low"].astype(float)
     current = float(close.iloc[-1])
@@ -691,7 +703,7 @@ def _pullback_recovery(df: pd.DataFrame) -> tuple[float, dict]:
     Returns (score_delta, reasons_dict). Delta is 0.04–0.07 added to the
     normalised TA score when all conditions are met.
     """
-    close  = df["close"].astype(float)
+    close  = _adj_close(df)
     volume = df["volume"].astype(float)
     reasons: dict = {}
 
@@ -786,7 +798,7 @@ def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float,
 def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> tuple[float, dict]:
     if df.empty or len(df) < 14:
         return 0.5, {"insufficient_data": True, "bar_count": len(df)}
-    close  = df["close"].astype(float)
+    close  = _adj_close(df)
     volume = df["volume"].astype(float)
     reasons: dict = {}
 
@@ -1133,7 +1145,7 @@ def _growth_ta_adjustment(df: pd.DataFrame, base_reasons: dict) -> float:
     This function corrects for those biases so high-growth names are not
     systematically ranked below their true signal strength.
     """
-    close = df["close"].astype(float)
+    close = _adj_close(df)
     delta = 0.0
     sma20 = close.rolling(20).mean().iloc[-1]
     sma50 = close.rolling(50).mean().iloc[-1]
