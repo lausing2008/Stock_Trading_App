@@ -3840,6 +3840,8 @@ const ITEMS: Item[] = [
     impact: 'np.busday_count(entry_date, today) returns 0 on the day of entry. Exit conditions based on hold duration will not fire on the first day, even if max_hold_days=0 is configured for same-day exits. Stall detection also affected.',
     what: 'Line 944: days_held = int(np.busday_count(trade.entry_date, date.today())). busday_count counts business days BETWEEN dates, exclusive of end date. A trade entered Monday checked on Monday returns 0.',
     fix: 'Change to: days_held = int(np.busday_count(trade.entry_date, date.today() + timedelta(days=1))). Include today in the count. Also works correctly on weekends since busday_count skips non-business days.',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19. Engine step already has +timedelta(days=1). Positions endpoint now computes hold_days fresh on each request rather than reading the stale DB value.',
   },
   {
     id: 'aud19-etf-cache-no-ttl',
@@ -3850,6 +3852,8 @@ const ITEMS: Item[] = [
     impact: '_etf_20d_return() stores ETF returns in global _ETF_CACHE with no expiry. If SPY moves significantly, the cached value from hours ago is still returned. K-Score relative performance comparisons use this stale value, making stocks look better or worse than they are versus the benchmark.',
     what: '_ETF_CACHE: dict[str, float] stores returns once and never invalidates. Cache persists until process restart, which can be days or weeks.',
     fix: 'Add timestamp to cache: _ETF_CACHE: dict[str, tuple[float, float]] = {}. On read, check: if time.time() - ts > 3600: recalculate. Use 1-hour TTL.',
+    defaultStatus: 'done',
+    implementedNote: 'Already fixed — _ETF_CACHE stores (return, timestamp) tuples; _ETF_CACHE_TTL = 3600 is checked on every read. No code change needed.',
   },
   {
     id: 'aud19-signal-type-none-crash',
@@ -3860,6 +3864,8 @@ const ITEMS: Item[] = [
     impact: 'If a signal record has signal=None (DB corruption or race condition during write), paper_trading_step() crashes with AttributeError. All subsequent portfolio updates for that portfolio are skipped for the rest of the scheduler tick.',
     what: 'Line 961: sig_type = current_sig.signal.value if current_sig else "UNKNOWN". Does not guard against current_sig.signal being None — only guards against current_sig being None.',
     fix: 'Change to: sig_type = current_sig.signal.value if current_sig and current_sig.signal else "UNKNOWN"',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19. Added `and current_sig.signal` guard at line 1315 (signal_at_exit_type assignment on trade close). Both call sites now safe.',
   },
   {
     id: 'aud19-cash-negative-validation',
@@ -3870,6 +3876,8 @@ const ITEMS: Item[] = [
     impact: 'POST /positions/cash with {"USD": -1000000} creates a negative cash balance in the DB, breaking equity calculations. The paper portfolio equity curve and P&L become meaningless if cash can go to -$1M.',
     what: 'The CashIn Pydantic model has no field validators. USD and HKD fields accept any float including negative values.',
     fix: 'Add Field validators: USD: float = Field(ge=0, description="Cash balance in USD") and HKD: float = Field(ge=0). This rejects negative values with a 422 validation error.',
+    defaultStatus: 'done',
+    implementedNote: 'Already fixed — CashIn Pydantic model has Field(ge=0.0) on both USD and HKD. Pydantic raises HTTP 422 on negative input. No code change needed.',
   },
   {
     id: 'aud19-ml-model-missing-crash',

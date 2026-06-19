@@ -316,7 +316,7 @@ def get_positions(
             "current_stop": t.current_stop,
             "take_profit": t.take_profit,
             "highest_price": t.highest_price,
-            "hold_days": t.hold_days,
+            "hold_days": int(np.busday_count(t.entry_date, date.today() + timedelta(days=1))) if t.entry_date else t.hold_days,
             "unrealized_pnl": round(((t.current_price or t.entry_price) - t.entry_price) * t.shares, 2),
             "unrealized_pct": round(((t.current_price or t.entry_price) / t.entry_price - 1) * 100, 2),
             "rr_ratio_at_entry": t.rr_ratio_at_entry,

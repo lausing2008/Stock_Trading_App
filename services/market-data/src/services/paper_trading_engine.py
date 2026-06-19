@@ -1312,7 +1312,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             trade.pct_return          = round(pnl_pct * 100, 4)
             # PA-G3: record signal state at exit for walk-forward attribution
             trade.signal_at_exit_id   = current_sig.id   if current_sig else None
-            trade.signal_at_exit_type = current_sig.signal.value if current_sig else None
+            trade.signal_at_exit_type = current_sig.signal.value if current_sig and current_sig.signal else None
             portfolio.current_cash = max(0.0, round(portfolio.current_cash + exit_value - exit_commission, 2))
             # PT-J1: write actual trade result back to signal_outcomes for signal accuracy calibration
             if trade.signal_id is not None:
