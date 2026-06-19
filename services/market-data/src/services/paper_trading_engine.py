@@ -1210,6 +1210,24 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             trade.signal_at_exit_id   = current_sig.id   if current_sig else None
             trade.signal_at_exit_type = current_sig.signal.value if current_sig else None
             portfolio.current_cash = max(0.0, round(portfolio.current_cash + exit_value - exit_commission, 2))
+            # PT-J1: write actual trade result back to signal_outcomes for signal accuracy calibration
+            if trade.signal_id is not None:
+                try:
+                    from db.models import SignalOutcome
+                    _so = session.execute(
+                        select(SignalOutcome).where(SignalOutcome.signal_id == trade.signal_id)
+                    ).scalar_one_or_none()
+                    if _so is not None:
+                        _so.entry_price = entry
+                        _so.entry_date  = trade.entry_date
+                        _so.exit_price  = exit_price
+                        _so.exit_date   = now.date()
+                        _bucket = "5d" if days_held <= 7 else ("10d" if days_held <= 14 else "20d")
+                        setattr(_so, f"return_{_bucket}", round(pnl_pct * 100, 4))
+                        setattr(_so, f"is_correct_{_bucket}", pnl_dollar > 0)
+                        session.flush()
+                except Exception as _soe:
+                    log.warning("paper.signal_outcome_writeback_failed", signal_id=trade.signal_id, error=str(_soe))
             # PA-G4: rich attribution log — enables "why did this trade exit?" queries in logs
             log.info("paper.exit",
                      symbol=trade.symbol, reason=exit_reason,

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5727,6 +5727,39 @@ const ITEMS: Item[] = [
     impact: 'Medium — exits deteriorating positions faster while still respecting trend structure (trail, not hard cut).',
   },
 
+  // ── Tier 43 — Paper Trading & Alert Bug Fixes (2026-06-18) ─────────────────
+
+  {
+    id: 'TIER43-A', tier: 43, severity: 'high', defaultStatus: 'done',
+    title: 'Board: cash not debited on position entry (buy/buy-more)',
+    effort: '30m',
+    what: 'When opening a new position or adding to an existing one from the Trade Board (handleFillConfirm), the cash balance was never reduced. Only closing a position credited proceeds; buying never debited. Users could enter unlimited positions without seeing cash decrease.',
+    fix: 'After successful api.addPosition() / buyMorePosition() call, fetch current cash and debit (entry price × shares) for the correct currency. Best-effort: wrapped in try/catch so a cash fetch failure does not block the position open. Also applied same pattern in handleCloseConfirmed to credit proceeds on close.',
+    file: 'frontend/src/pages/board.tsx',
+    implementedNote: 'Done 2026-06-18 — frontend-side cash mutation immediately after position sync.',
+    impact: 'HIGH — cash balance is the primary risk guardrail on the paper trading board.',
+  },
+  {
+    id: 'TIER43-B', tier: 43, severity: 'high', defaultStatus: 'done',
+    title: 'Volume Breakout alert 400/500 — missing enum values in PostgreSQL',
+    effort: '1h',
+    what: 'Creating a Volume Breakout (or MACD_BULLISH_CROSS / RSI_OVERSOLD_BOUNCE / DOUBLE_BOTTOM) price alert returned 400 Bad Request. After copying updated models.py to all containers, it returned 500. Root cause: SQLAlchemy 2.0 sends enum NAMES (uppercase e.g. "BREAKOUT") to PostgreSQL, but the production alertcondition enum only had lowercase values ("breakout") added during migration. Postgres rejected the insert with "invalid input value for enum".',
+    fix: 'Run ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS for each missing uppercase variant: BREAKOUT, MACD_BULLISH_CROSS, RSI_OVERSOLD_BOUNCE, DOUBLE_BOTTOM. Also copied updated shared/db/models.py to all 4 EC2 containers (market-data, signal-engine, api-gateway, ranking-engine) and restarted market-data.',
+    file: 'shared/db/models.py',
+    implementedNote: 'Done 2026-06-18 — EC2 PostgreSQL enum patched; market-data container restarted.',
+    impact: 'HIGH — all new-style pattern alerts (breakout, MACD cross, RSI bounce) were blocked.',
+  },
+  {
+    id: 'TIER43-C', tier: 43, severity: 'medium', defaultStatus: 'done',
+    title: 'Paper portfolio stuck loading — admin redirect + ensure_portfolio gated',
+    effort: '45m',
+    what: 'Paper Portfolio page had a hard admin-only redirect that blocked non-admin users. Additionally, ensure_portfolio_exists() was guarded by enable_paper_trading=False in local dev, so no portfolio row existed for the page to load even for admins locally.',
+    fix: 'Removed hard admin redirect from paper-portfolio.tsx — isAdmin still controls admin-only panels (close all, equity chart). Made ensure_portfolio_exists() run unconditionally in scheduler startup regardless of enable_paper_trading flag — it creates the DB row the UI needs. Trading engine steps (entry scanning, position monitoring, 5m ingest) remain gated.',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    implementedNote: 'Done 2026-06-18 — also added ENABLE_PAPER_TRADING=true to EC2 .env.',
+    impact: 'Medium — local development now works end-to-end for paper portfolio UX testing.',
+  },
+
   // ── Tier 42 — Signal Alert Oscillation Fix (2026-06-18) ──────────────────────
 
   {
@@ -5738,6 +5771,39 @@ const ITEMS: Item[] = [
     file: 'services/market-data/src/services/scheduler.py',
     implementedNote: 'Done 2026-06-18 — deployed via docker cp + restart market-data.',
     impact: 'HIGH (UX) — users were receiving dozens of alert emails per hour for a single stock. Design invariant: alert checker must always read DB signals, not live-computed signals.',
+  },
+
+  // ── Tier 44 — Alert UX + Signal Calibration + Trade Board (2026-06-18) ───────
+
+  {
+    id: 'TIER44-A', tier: 44, severity: 'feature', defaultStatus: 'done',
+    title: '44-A: Alerts — bulk clear triggered + last-triggered timestamp column',
+    effort: '45m',
+    what: 'Triggered one-time alerts accumulated in the alerts list with no way to bulk remove them. Users had to delete them one at a time. The list also had no column showing when an alert was last triggered, making it hard to audit recent activity.',
+    fix: 'Added "Clear triggered (N)" button in the filter bar (visible only when no items are selected, count > 0). Clicking it deletes all triggered non-recurring alerts in parallel via api.deleteAlert(). Also added a "Last triggered" column to the table showing the last_sent_at timestamp when a triggered alert was last sent.',
+    file: 'frontend/src/pages/alerts.tsx',
+    implementedNote: 'Done 2026-06-18 — frontend-only change.',
+    impact: 'Medium (UX) — cleanup friction removed; triggered alert history now visible.',
+  },
+  {
+    id: 'TIER44-B', tier: 44, severity: 'feature', defaultStatus: 'done',
+    title: '44-B: Paper trade → signal_outcomes writeback on close (PT-J1)',
+    effort: '1h',
+    what: 'Paper trade results were never written back to the signal_outcomes table. The signal accuracy page showed hypothetical forward returns only (from signal_outcomes populated at signal time), not actual realized trade performance. This meant the calibration data did not reflect real execution quality.',
+    fix: 'In paper_trading_engine.py _close_position(), after computing realized P&L, lookup the signal_outcomes row by trade.signal_id. If found, update: entry_price, entry_date, exit_price, exit_date, and the appropriate return/is_correct bucket (5d if days_held ≤7, 10d if ≤14, else 20d). Wrapped in try/except — a failed writeback logs a warning but never blocks the close.',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    implementedNote: 'Done 2026-06-18 — deployed via docker cp + restart market-data.',
+    impact: 'Medium — signal accuracy metrics now reflect actual trade outcomes, not just signal predictions.',
+  },
+  {
+    id: 'TIER44-C', tier: 44, severity: 'feature', defaultStatus: 'done',
+    title: '44-C: Trade Board — capital deployed + style breakdown in active positions bar',
+    effort: '30m',
+    what: 'The TB-5 active positions summary bar showed unrealized P&L, total risk, and breach/target warnings, but not total capital deployed or how positions were distributed across trading styles. Users had no at-a-glance view of portfolio concentration.',
+    fix: 'Enhanced the TB-5 bar loop in board.tsx to track totalCapital (entry × shares) and a styleCounts map (SHORT/SWING/LONG/GROWTH per position). Added "Deployed $X,XXX" stat and a style breakdown row (color-coded chips: SHORT, SWING, LONG, GROWTH with counts) separated by a subtle divider. Chips are color-coded: SHORT=blue, SWING=indigo, LONG=green, GROWTH=orange.',
+    file: 'frontend/src/pages/board.tsx',
+    implementedNote: 'Done 2026-06-18 — frontend-only change.',
+    impact: 'Medium (UX) — at-a-glance capital allocation and style concentration visible without scrolling.',
   },
 ];
 
@@ -5792,6 +5858,8 @@ const TIER_LABEL: Record<Tier, string> = {
   40: 'Tier 40 — Signal Intelligence: Calibration + Consensus + RSI Exit (2026-06-17)',
   41: 'Tier 41 — HSI Benchmark + Fundamental Deterioration Exit (2026-06-17)',
   42: 'Tier 42 — Signal Alert Oscillation Fix (2026-06-18)',
+  43: 'Tier 43 — Paper Trading & Alert Bug Fixes (2026-06-18)',
+  44: 'Tier 44 — Alert UX + Signal Calibration + Trade Board (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5837,6 +5905,8 @@ const TIER_COLOR: Record<Tier, string> = {
   40: '#fb923c',
   41: '#38bdf8',
   42: '#f87171',
+  43: '#c084fc',
+  44: '#2dd4bf',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5908,7 +5978,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;

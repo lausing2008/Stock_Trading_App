@@ -2624,6 +2624,72 @@ signal is the source of truth for the Signal Filter page — alerts and the filt
 
 ---
 
+---
+
+## Tier 43 — Paper Trading & Alert Bug Fixes (2026-06-18)
+
+### A. Board: Cash Not Debited on Position Entry (BUG-HIGH)
+
+**Root cause:** `handleFillConfirm` in `board.tsx` never reduced the cash balance when opening or
+adding to a position. Only closing credited proceeds.
+
+**Fix:** After `api.addPosition()` / `buyMorePosition()` succeeds, fetch current cash and subtract
+`entry × shares` for the correct currency (USD for US stocks, HKD for HK). Best-effort: failure
+logs a warning but does not block the position.
+
+---
+
+### B. Volume Breakout Alert 400/500 — PostgreSQL Enum Case Mismatch (BUG-HIGH)
+
+**Root cause:** SQLAlchemy 2.0 sends enum NAMES (uppercase e.g. `"BREAKOUT"`) to PostgreSQL.
+The `alertcondition` enum had lowercase values (`breakout`, `macd_bullish_cross`, etc.) but not the
+uppercase variants — PostgreSQL rejected inserts with "invalid input value for enum".
+
+**Fix:** `ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS` for each missing uppercase variant:
+`BREAKOUT`, `MACD_BULLISH_CROSS`, `RSI_OVERSOLD_BOUNCE`, `DOUBLE_BOTTOM`. Also updated
+`shared/db/models.py` across all 4 EC2 containers.
+
+---
+
+### C. Paper Portfolio Stuck Loading — Admin Redirect + Gated ensure_portfolio (BUG-MED)
+
+**Root cause:** Page had a hard admin-only redirect. `ensure_portfolio_exists()` was gated behind
+`enable_paper_trading=False` in local dev, so no portfolio row existed.
+
+**Fix:** Removed hard redirect; `ensure_portfolio_exists()` now runs unconditionally at scheduler
+startup regardless of `enable_paper_trading`. Trading engine steps remain gated.
+
+---
+
+## Tier 44 — Alert UX + Signal Calibration + Trade Board (2026-06-18)
+
+### A. Alerts: Bulk Clear Triggered + Last-Triggered Column (FEATURE)
+
+Added "Clear triggered (N)" button in the filter bar — deletes all triggered non-recurring alerts
+in parallel. Also added a "Last triggered" column showing `last_sent_at` timestamp for triggered
+alerts. **File:** `frontend/src/pages/alerts.tsx`
+
+---
+
+### B. Paper Trade → Signal Outcome Writeback on Close — PT-J1 (FEATURE)
+
+After a paper position closes, the realized P&L is written back to `signal_outcomes` (matched by
+`trade.signal_id`). Updates `entry_price`, `exit_price`, `exit_date`, and the hold-day bucket
+return/is_correct field (5d if ≤7 days held, 10d if ≤14, else 20d). Signal accuracy metrics now
+reflect actual execution quality. **File:** `services/market-data/src/services/paper_trading_engine.py`
+
+---
+
+### C. Trade Board: Capital Deployed + Style Breakdown in Active Bar (FEATURE)
+
+Enhanced the TB-5 active positions summary bar with two additions:
+- **Deployed $X,XXX** — sum of `entry × shares` across all active positions
+- **By Style** row — color-coded chips showing count per trading style (SHORT/SWING/LONG/GROWTH)
+
+**File:** `frontend/src/pages/board.tsx`
+
+---
+
 ## Scorecard (updated)
 
 | Dimension | Score | Summary |
@@ -2633,6 +2699,7 @@ signal is the source of truth for the Signal Filter page — alerts and the filt
 | Signal logic | 9.5 / 10 | ↑ Tier 40-A/B: calibration endpoint + cross-horizon consensus |
 | K-Score ranking | 8.2 / 10 | Unchanged |
 | Research engine | 7.5 / 10 | Unchanged |
-| Frontend / UX | 9.9 / 10 | ↑ Tier 39-B: alert filter/pagination/bulk delete; 41-A: HSI benchmark |
+| Frontend / UX | 9.9 / 10 | ↑ Tier 44-A/C: alert bulk clear + board capital deployed + style breakdown |
 | Risk management | 9.5 / 10 | ↑ Tier 40-C: RSI overbought exit; 41-B: fundamental deterioration exit |
-| **Overall** | **9.8 / 10** | *(Tier 42: alert spam bug fixed — live=False + cooldown)* |
+| Paper trading | 9.6 / 10 | ↑ Tier 43-A: cash debit on entry; 44-B: signal outcome writeback |
+| **Overall** | **9.8 / 10** | *(Tier 43/44: bug fixes + alert UX + board header + calibration writeback)* |

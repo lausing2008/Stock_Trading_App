@@ -1239,7 +1239,9 @@ export default function BoardPage() {
         const activeWithEntry = byStage.active.filter(p => (p.actual_entry_price ?? p.entry_price) != null);
         if (activeWithEntry.length === 0) return null;
 
-        let totalPnl = 0, totalRisk = 0, pnlCount = 0, riskCount = 0, breachCount = 0, nearTargetCount = 0;
+        let totalPnl = 0, totalRisk = 0, capitalDeployed = 0;
+        let pnlCount = 0, riskCount = 0, capitalCount = 0, breachCount = 0, nearTargetCount = 0;
+        const styleCounts: Record<string, number> = {};
         for (const p of activeWithEntry) {
           const lp = livePriceMap[p.symbol];
           const entry = p.actual_entry_price ?? p.entry_price!;
@@ -1248,36 +1250,58 @@ export default function BoardPage() {
           const target = p.take_profit ?? gpj?.take_profit?.price ?? null;
           if (lp && p.shares) { totalPnl += (lp.price - entry) * p.shares; pnlCount++; }
           if (stop != null && p.shares) { totalRisk += Math.max(0, (entry - stop) * p.shares); riskCount++; }
+          if (p.shares) { capitalDeployed += entry * p.shares; capitalCount++; }
           if (lp && stop != null && lp.price < stop) breachCount++;
           if (lp && target != null && lp.price >= target * 0.98) nearTargetCount++;
+          const style = p.trading_style ?? 'OTHER';
+          styleCounts[style] = (styleCounts[style] ?? 0) + 1;
         }
+        const styleColors: Record<string, string> = { SHORT: '#38bdf8', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#fb923c', OTHER: '#64748b' };
 
         return (
-          <div style={{ marginBottom: '16px', padding: '8px 14px', borderRadius: '8px', background: '#080f1e', border: '1px solid #1e293b', display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>ACTIVE {activeWithEntry.length}</span>
-            {pnlCount > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{ fontSize: '10px', color: '#475569' }}>Unrealized P&amp;L</span>
-                <span style={{ fontSize: '14px', fontWeight: 800, fontFamily: 'monospace', color: totalPnl >= 0 ? '#4ade80' : '#f87171' }}>
-                  {totalPnl >= 0 ? '+' : ''}${Math.abs(totalPnl).toFixed(0)}
+          <div style={{ marginBottom: '16px', padding: '8px 14px', borderRadius: '8px', background: '#080f1e', border: '1px solid #1e293b' }}>
+            <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>ACTIVE {activeWithEntry.length}</span>
+              {pnlCount > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ fontSize: '10px', color: '#475569' }}>Unrealized P&amp;L</span>
+                  <span style={{ fontSize: '14px', fontWeight: 800, fontFamily: 'monospace', color: totalPnl >= 0 ? '#4ade80' : '#f87171' }}>
+                    {totalPnl >= 0 ? '+' : ''}${Math.abs(totalPnl).toFixed(0)}
+                  </span>
+                </div>
+              )}
+              {capitalCount > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ fontSize: '10px', color: '#475569' }}>Deployed</span>
+                  <span style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace', color: '#94a3b8' }}>${capitalDeployed.toFixed(0)}</span>
+                </div>
+              )}
+              {riskCount > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ fontSize: '10px', color: '#475569' }}>Total Risk</span>
+                  <span style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace', color: '#f87171' }}>-${totalRisk.toFixed(0)}</span>
+                </div>
+              )}
+              {breachCount > 0 && (
+                <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                  ⚠ {breachCount} stop breached
                 </span>
+              )}
+              {nearTargetCount > 0 && (
+                <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.25)' }}>
+                  ↑ {nearTargetCount} near target
+                </span>
+              )}
+            </div>
+            {Object.keys(styleCounts).length > 0 && (
+              <div style={{ display: 'flex', gap: '6px', marginTop: '6px', paddingTop: '6px', borderTop: '1px solid #0f172a', flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: '10px', fontWeight: 700, color: '#1e293b', letterSpacing: '0.06em' }}>BY STYLE</span>
+                {Object.entries(styleCounts).map(([style, count]) => (
+                  <span key={style} style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: styleColors[style] ?? '#64748b', background: `${styleColors[style] ?? '#64748b'}10`, border: `1px solid ${styleColors[style] ?? '#64748b'}25` }}>
+                    {style} {count}
+                  </span>
+                ))}
               </div>
-            )}
-            {riskCount > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{ fontSize: '10px', color: '#475569' }}>Total Risk</span>
-                <span style={{ fontSize: '14px', fontWeight: 800, fontFamily: 'monospace', color: '#f87171' }}>-${totalRisk.toFixed(0)}</span>
-              </div>
-            )}
-            {breachCount > 0 && (
-              <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)' }}>
-                ⚠ {breachCount} stop breached
-              </span>
-            )}
-            {nearTargetCount > 0 && (
-              <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.25)' }}>
-                ↑ {nearTargetCount} near target
-              </span>
             )}
           </div>
         );

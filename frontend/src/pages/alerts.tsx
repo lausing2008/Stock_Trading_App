@@ -308,6 +308,18 @@ function PriceAlertsTab() {
     setDeleting(false);
   }
 
+  // Delete all triggered one-time alerts
+  async function handleClearTriggered() {
+    const ids = (allAlerts ?? []).filter(a => a.triggered && !a.recurring).map(a => a.id);
+    if (!ids.length || deleting) return;
+    if (!confirm(`Delete all ${ids.length} triggered (one-time) alerts?`)) return;
+    setDeleting(true);
+    await Promise.all(ids.map(id => api.deleteAlert(id).catch(() => {})));
+    setSelected(new Set());
+    await mutate();
+    setDeleting(false);
+  }
+
   // Bulk delete all of a condition type
   async function handleDeleteByCondition(cond: string) {
     const ids = allAlerts.filter(a => a.condition === cond).map(a => a.id);
@@ -513,6 +525,14 @@ function PriceAlertsTab() {
           <button onClick={handleBulkDelete} disabled={deleting}
             style={{ padding: '6px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.1)', color: '#f87171', whiteSpace: 'nowrap', opacity: deleting ? 0.5 : 1 }}>
             {deleting ? 'Deleting…' : `Delete ${selected.size} selected`}
+          </button>
+        )}
+
+        {/* Clear all triggered one-timers */}
+        {(allAlerts ?? []).filter(a => a.triggered && !a.recurring).length > 0 && selected.size === 0 && (
+          <button onClick={handleClearTriggered} disabled={deleting}
+            style={{ padding: '6px 14px', borderRadius: '6px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(248,113,113,0.25)', background: 'rgba(248,113,113,0.06)', color: '#f87171', whiteSpace: 'nowrap', opacity: deleting ? 0.5 : 1 }}>
+            {deleting ? 'Clearing…' : `Clear triggered (${(allAlerts ?? []).filter(a => a.triggered && !a.recurring).length})`}
           </button>
         )}
 
