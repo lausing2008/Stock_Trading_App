@@ -46,6 +46,35 @@ from .email_service import send_trade_exit_email
 
 log = get_logger("paper_trading_engine")
 
+# ── PT-3: Entry score calibration — learned weights from closed paper trades ──
+
+_ENTRY_WEIGHTS_FILE = Path("/data/models/entry_weights.json")
+_entry_weights_cache: dict | None = None  # None = not loaded yet; {} = no file
+
+
+def _load_entry_weights() -> dict:
+    """Load calibrated entry weights from disk. Cached in memory after first load."""
+    global _entry_weights_cache
+    if _entry_weights_cache is not None:
+        return _entry_weights_cache
+    try:
+        if _ENTRY_WEIGHTS_FILE.exists():
+            _entry_weights_cache = json.loads(_ENTRY_WEIGHTS_FILE.read_text())
+            log.info("paper.entry_weights_loaded", n_trades=_entry_weights_cache.get("n_trades"))
+        else:
+            _entry_weights_cache = {}
+    except Exception as exc:
+        log.warning("paper.entry_weights_load_failed", error=str(exc))
+        _entry_weights_cache = {}
+    return _entry_weights_cache
+
+
+def reload_entry_weights() -> None:
+    """Force reload of entry weights on next _should_enter() call (called after calibration)."""
+    global _entry_weights_cache
+    _entry_weights_cache = None
+
+
 # ── Default portfolio config ──────────────────────────────────────────────────
 
 _DEFAULT_CONFIG: dict[str, Any] = {
@@ -727,6 +756,7 @@ def _should_enter(
     game_plan: dict,
     cfg: dict,
     live_regime: dict | None = None,
+    kscore: float | None = None,
 ) -> tuple[bool, int, list[str]]:
     """Score current conditions to decide if NOW is a good time to enter.
 
@@ -859,7 +889,26 @@ def _should_enter(
 
     # ── Decision ─────────────────────────────────────────────────────────────
 
-    should = score >= cfg.get("min_entry_score", 3)
+    # PT-3: Use calibrated logistic weights when available (>=100 closed trades).
+    # Falls back to raw additive threshold when no calibration data exists.
+    weights = _load_entry_weights()
+    if weights.get("intercept") is not None and weights.get("n_trades", 0) >= 100:
+        import math as _math
+        w = weights
+        ks = kscore if kscore is not None else 50.0
+        logit = (
+            w["intercept"]
+            + w["w_rr"]        * min(rr, 8.0)
+            + w["w_confidence"] * confidence
+            + w["w_score"]     * float(score)
+            + w["w_kscore"]    * ks
+        )
+        cal_prob = 1.0 / (1.0 + _math.exp(-logit))
+        should = cal_prob >= w.get("threshold", 0.52)
+        notes.append(f"Calibrated win-prob {cal_prob*100:.0f}% (threshold {w.get('threshold',0.52)*100:.0f}%)")
+    else:
+        should = score >= cfg.get("min_entry_score", 3)
+
     return should, score, notes
 
 
@@ -1876,7 +1925,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
         # Entry qualifier: "Is now a good time?"
         should_enter, score, notes = _should_enter(
-            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime
+            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
+            kscore=float(ranking.score) if ranking and ranking.score is not None else None,
         )
 
         if not should_enter:

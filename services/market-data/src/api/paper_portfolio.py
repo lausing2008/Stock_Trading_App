@@ -6,6 +6,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
@@ -33,6 +35,10 @@ _FALLBACK_PARAMS: dict[str, dict] = {
 
 _tune_lock = threading.Lock()
 _tune_running: dict[str, bool] = {}  # style → is running
+
+_ENTRY_WEIGHTS_PATH = Path(_settings.model_dir) / "entry_weights.json"
+_calibration_lock = threading.Lock()
+_calibration_running = False
 
 
 _MIN_SHARPE_DAYS = 20  # annualizing < 20 days produces meaningless Sharpe/Calmar
@@ -1216,3 +1222,153 @@ def tune_trade_params(
         _tune_running[style] = True
     background_tasks.add_task(_tune_and_save, style, n_trials)
     return {"status": "started", "style": style, "n_trials": n_trials}
+
+
+# ── PT-3: Entry score calibration — logistic regression on closed paper trades ──
+
+_MIN_CALIBRATION_TRADES = 100
+
+
+def calibrate_entry_weights() -> dict:
+    """Fit logistic regression on closed paper trades to learn entry factor weights.
+
+    Features: rr_ratio_at_entry, confidence_at_entry, entry_score, kscore_at_entry
+    Target: pnl > 0 (win = 1, loss = 0)
+
+    Returns a dict with weights and metadata, or {"error": ...} if insufficient data.
+    Saves to entry_weights.json on success.
+    """
+    try:
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.preprocessing import StandardScaler
+    except ImportError:
+        return {"error": "scikit-learn not installed in market-data"}
+
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(
+                PaperTrade.rr_ratio_at_entry,
+                PaperTrade.confidence_at_entry,
+                PaperTrade.entry_score,
+                PaperTrade.kscore_at_entry,
+                PaperTrade.pnl,
+            ).where(
+                PaperTrade.stage == "closed",
+                PaperTrade.pnl.is_not(None),
+                PaperTrade.rr_ratio_at_entry.is_not(None),
+                PaperTrade.confidence_at_entry.is_not(None),
+                PaperTrade.entry_score.is_not(None),
+            )
+        ).all()
+
+    if len(rows) < _MIN_CALIBRATION_TRADES:
+        return {"error": f"Need ≥{_MIN_CALIBRATION_TRADES} closed trades; have {len(rows)}"}
+
+    X_raw = np.array([
+        [
+            float(r.rr_ratio_at_entry),
+            float(r.confidence_at_entry),
+            float(r.entry_score),
+            float(r.kscore_at_entry) if r.kscore_at_entry is not None else 50.0,
+        ]
+        for r in rows
+    ])
+    y = np.array([1 if float(r.pnl) > 0 else 0 for r in rows])
+
+    win_rate = float(y.mean())
+    # Threshold calibration: use 52% floor to avoid over-filtering in choppy markets
+    threshold = max(0.50, min(0.60, win_rate + 0.02))
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X_raw)
+
+    model = LogisticRegression(max_iter=500, class_weight="balanced", random_state=42)
+    model.fit(X, y)
+
+    # Un-scale coefficients back to raw-feature space for use without scaler at runtime
+    coef = model.coef_[0]
+    intercept = float(model.intercept_[0])
+    means = scaler.mean_
+    stds = scaler.scale_
+
+    # raw_logit = intercept_raw + sum(coef_raw[i] * x_raw[i])
+    # where coef_raw[i] = coef[i] / stds[i]  and  intercept_raw adjusts for means
+    coef_raw = coef / stds
+    intercept_raw = intercept - float(np.sum(coef * means / stds))
+
+    result = {
+        "intercept":    float(intercept_raw),
+        "w_rr":         float(coef_raw[0]),
+        "w_confidence": float(coef_raw[1]),
+        "w_score":      float(coef_raw[2]),
+        "w_kscore":     float(coef_raw[3]),
+        "threshold":    threshold,
+        "win_rate":     win_rate,
+        "n_trades":     len(rows),
+        "calibrated_at": datetime.utcnow().isoformat(),
+    }
+
+    _ENTRY_WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ENTRY_WEIGHTS_PATH.write_text(json.dumps(result, indent=2))
+    log.info("paper.entry_weights_saved", n_trades=len(rows), win_rate=round(win_rate, 3), threshold=round(threshold, 3))
+
+    # Signal engine to reload weights on next call
+    try:
+        from .paper_trading_engine import reload_entry_weights  # type: ignore
+        reload_entry_weights()
+    except Exception:
+        pass
+
+    return result
+
+
+def _calibrate_and_save() -> None:
+    global _calibration_running
+    try:
+        result = calibrate_entry_weights()
+        if "error" in result:
+            log.warning("paper.entry_calibration_failed", error=result["error"])
+        else:
+            log.info("paper.entry_calibration_done", n_trades=result["n_trades"])
+    except Exception as exc:
+        log.exception("paper.entry_calibration_exception", exc=str(exc))
+    finally:
+        _calibration_running = False
+
+
+@router.get("/entry_factors")
+def get_entry_factors(
+    _: User = Depends(get_current_user),
+) -> dict:
+    """Return calibrated entry factor weights (or status if not yet calibrated)."""
+    if not _ENTRY_WEIGHTS_PATH.exists():
+        return {
+            "status": "not_calibrated",
+            "note": f"Need ≥{_MIN_CALIBRATION_TRADES} closed trades. POST /calibrate-entry to run.",
+            "is_running": _calibration_running,
+        }
+    try:
+        data = json.loads(_ENTRY_WEIGHTS_PATH.read_text())
+        data["status"] = "calibrated"
+        data["is_running"] = _calibration_running
+        return data
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@router.post("/calibrate-entry")
+def trigger_entry_calibration(
+    background_tasks: BackgroundTasks,
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Fit logistic regression on closed paper trades to calibrate entry factor weights.
+
+    Runs in the background. Check GET /entry_factors for results.
+    """
+    global _calibration_running
+    with _calibration_lock:
+        if _calibration_running:
+            return {"status": "already_running"}
+        _calibration_running = True
+    background_tasks.add_task(_calibrate_and_save)
+    return {"status": "started", "min_trades": _MIN_CALIBRATION_TRADES}

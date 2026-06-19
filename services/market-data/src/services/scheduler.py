@@ -1506,6 +1506,18 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.signal_engine_url}/signals/calibrate_conviction_weights")
     _record_job_status("calibrate_conviction_weights_sent", "ok", 0.0)
 
+    # PT-3: calibrate entry factor weights from closed paper trades.
+    # Fits logistic regression on (rr_ratio, confidence, entry_score, kscore) vs win/loss.
+    # Called directly (not via HTTP) because the service token has no DB user record.
+    try:
+        log.info("scheduler.calibrate_entry_weights_start")
+        from .paper_portfolio import calibrate_entry_weights as _cal_entry
+        result = _cal_entry()
+        status = "ok" if "error" not in result else result["error"]
+        _record_job_status("calibrate_entry_weights", status, 0.0)
+    except Exception as _exc:
+        log.error("scheduler.calibrate_entry_weights_failed", error=str(_exc))
+
 
 def _purge_old_data() -> None:
     """Delete rows older than 90 days from intraday price bars and signal outcomes.

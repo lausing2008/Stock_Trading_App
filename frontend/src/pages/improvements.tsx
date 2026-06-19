@@ -830,6 +830,8 @@ const ITEMS: Item[] = [
   {
     id: 'pt-entry-score-calibration',
     tier: 8, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-19 — calibrate_entry_weights() in paper_portfolio.py fits sklearn LogisticRegression on closed paper trades (rr_ratio, confidence, entry_score, kscore) → win/loss. Un-scaled coefficients saved to entry_weights.json. _should_enter() in paper_trading_engine.py loads weights and replaces additive threshold with calibrated win-probability (≥52% default). GET /entry_factors + POST /calibrate-entry endpoints added. Sunday scheduler calls calibrate_entry_weights() directly (no HTTP auth issue). Falls back to raw additive score when <100 closed trades.',
     title: 'PT-B8: Entry scoring uses equal weights for all factors — not calibrated to historical win rate',
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '1–2 weeks',
@@ -1589,6 +1591,8 @@ const ITEMS: Item[] = [
   {
     id: 'al4-param-auto-optimise',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done (fully implemented in paper_portfolio.py) — _run_optuna_for_style() uses Optuna to tune stop_pct, tp_pct, max_hold_days per style. _simulate_trade_sharpe() is the Sharpe-ratio objective. Results saved to trade_params.json. paper_trading_engine.py loads via _load_tuned_params() at startup. Endpoints: POST /paper-portfolio/tune-params (start Optuna), GET /paper-portfolio/trade-params (current params). Sunday scheduler calls _post(/ml/tune_all_horizons) which can cascade to trade param tuning.',
     title: 'AL-4: Optuna-driven trading parameter optimisation — stop %, target %, hold duration',
     file: 'services/ml-prediction/src/api/routes.py · services/market-data/src/services/scheduler.py',
     effort: '3–5 days',
