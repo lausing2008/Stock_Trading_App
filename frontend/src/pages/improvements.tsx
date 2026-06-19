@@ -6308,13 +6308,14 @@ const ITEMS: Item[] = [
     implementedNote: 'Fixed 2026-06-19. Single DB fetch before the loop replaces N×3 fetches inside it.',
   },
   {
-    id: 'AUD19-ARCH1', tier: 55, severity: 'high',
-    title: 'AUD19-ARCH1: RL/calibration endpoints require admin DB user — service token returns 401 via HTTP',
+    id: 'AUD19-ARCH1', tier: 55, severity: 'high', defaultStatus: 'done',
+    title: 'AUD19-ARCH1 (FIXED): RL/calibration endpoints require admin DB user — service token returns 401 via HTTP',
     file: 'api/rl.py · api/paper_portfolio.py · shared/db/session.py',
     effort: '1h',
     impact: 'Medium (operational gap) — POST /rl-agent/train and POST /calibrate-entry can only be triggered via direct function call (scheduler does this), not via HTTP with the service token. Developer debugging or manual triggering requires knowing to call functions directly. Misleading 401 when using service token via curl/HTTP.',
     what: 'get_admin_user does a DB lookup by username from the JWT sub. Service tokens have sub="scheduler" or sub="paper-engine" — no corresponding User row exists. Direct function calls bypass HTTP auth (scheduler does this). But the HTTP endpoint returns 401 for service tokens.',
     fix: 'Seed a "scheduler" service user row in _seed_admin() (no password, role=ADMIN, is_active=True). Service tokens with sub="scheduler" then resolve correctly via HTTP. The direct-call path from scheduler remains as a fallback.',
+    implementedNote: 'Fixed 2026-06-19. scheduler and paper-engine rows inserted in _seed_admin() with password_hash=SERVICE_ACCOUNT_NO_LOGIN (login impossible; only JWT service tokens work).',
   },
   {
     id: 'AUD19-SEC1', tier: 55, severity: 'medium', defaultStatus: 'done',
@@ -6347,13 +6348,14 @@ const ITEMS: Item[] = [
     implementedNote: 'Fixed 2026-06-19 (same commit as DB-1 fix). _RL_AVAILABLE flag set at module load.',
   },
   {
-    id: 'AUD19-ARCH2', tier: 55, severity: 'medium',
-    title: 'AUD19-ARCH2: CORS defaults to wildcard allow_origins when CORS_ORIGINS env var not set',
+    id: 'AUD19-ARCH2', tier: 55, severity: 'medium', defaultStatus: 'done',
+    title: 'AUD19-ARCH2 (FIXED): CORS defaults to wildcard allow_origins when CORS_ORIGINS env var not set',
     file: 'shared/common/service.py · EC2 .env',
     effort: '15min',
     impact: 'Medium security hardening — all 9 services respond with Access-Control-Allow-Origin: * when CORS_ORIGINS is not configured. Nginx partially mitigates, but defense-in-depth is missing. Cross-origin unauthenticated requests accepted from any domain.',
     what: 'service.py CORSMiddleware uses allow_origins=["*"] as fallback. No CORS_ORIGINS env var is set in EC2 .env. With allow_credentials=False (default), cookie CSRF is not a risk, but the policy is overly permissive.',
     fix: 'Add CORS_ORIGINS=https://lausing.com,https://www.lausing.com to EC2 .env file. No code change needed — service.py already reads settings.cors_origins. Verify with curl -H "Origin: https://evil.com" checking response headers.',
+    implementedNote: 'Fixed 2026-06-19. CORS_ORIGINS=https://lausing.com,https://www.lausing.com was already present in EC2 .env — confirmed no action needed.',
   },
   {
     id: 'AUD19-UX1', tier: 55, severity: 'medium', defaultStatus: 'done',
