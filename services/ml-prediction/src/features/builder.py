@@ -1,4 +1,4 @@
-"""Feature engineering — 44 features (28 stock-specific + 8 macro + 8 fundamental).
+"""Feature engineering — 46 features (28 stock-specific + 8 macro + 10 fundamental).
 
 28 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
@@ -18,7 +18,7 @@
   high_vol_regime       — 1 if spy_vol_20 > 2% annualised daily vol
   market_stress         — 1 if SPY 5d return < -3% AND VIX above its MA
 
-8 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
+10 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
   revenue_growth        — YoY revenue growth rate
   earnings_growth       — YoY EPS growth rate
   gross_margin          — gross profit margin
@@ -27,6 +27,8 @@
   short_ratio           — days-to-cover (short interest / avg daily volume)
   recommendation_mean   — analyst consensus (1=strong buy … 5=strong sell)
   price_to_book         — P/B ratio (value factor)
+  peg_ratio             — PE / forward EPS growth (growth at a reasonable price)
+  debt_to_equity        — total debt / total equity (solvency risk signal)
 
 Label: binary BUY / SELL only — rows where |fwd_ret| < label_threshold are
 excluded from training (dead zone). This removes noise-level moves that are
@@ -55,6 +57,8 @@ FUNDAMENTAL_COLUMNS = [
     "short_ratio",          # days-to-cover (short interest / avg daily vol)
     "recommendation_mean",  # 1=strong buy … 5=strong sell
     "price_to_book",        # P/B ratio
+    "peg_ratio",            # PE / forward EPS growth (Phase 1)
+    "debt_to_equity",       # total debt / total equity (Phase 1)
 ]
 
 # SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with

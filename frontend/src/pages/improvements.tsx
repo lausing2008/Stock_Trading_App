@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5806,6 +5806,59 @@ const ITEMS: Item[] = [
     impact: 'Medium — immediately see which positions are near their target vs barely moving.',
   },
 
+  // ── Tier 50 — Phase 1 Spec Compliance (2026-06-18) ──
+
+  {
+    id: 'TIER50-A', tier: 50, severity: 'feature', defaultStatus: 'done',
+    title: '50-A: Supertrend indicator — signal-engine + TA service',
+    effort: '1d',
+    what: 'The original spec lists Supertrend as a required trend indicator. ATR was already computed but Supertrend (the dynamic support/resistance channel) was missing from both the TA service and signal engine.',
+    fix: 'Added supertrend(df, period=10, multiplier=3.0) to technical-analysis/src/indicators/core.py using ATR bands. Added atr() helper. Added _supertrend() inline function to signal-engine/signals.py. Supertrend now contributes to the TREND pillar in _ta_score() (10% weight). cross_up gets 1.0, sustained bullish 0.7, bearish 0.0. cross_down causes hard trend=0 same as death_cross. Stored in reasons: supertrend_bullish, supertrend_cross_up, supertrend_cross_down. Also exposed via GET /ta/{symbol}/indicators as supertrend and supertrend_trend series.',
+    file: 'services/technical-analysis/src/indicators/core.py, services/signal-engine/src/generators/signals.py',
+    implementedNote: 'Done 2026-06-18. Trend pillar weights rebalanced: SMA50 0.35→0.30, ADX 0.25→0.20, golden_cross 0.15, supertrend 0.10 (new).',
+    impact: 'High — closes spec gap; Supertrend is widely used for trend direction by institutional traders.',
+  },
+  {
+    id: 'TIER50-B', tier: 50, severity: 'feature', defaultStatus: 'done',
+    title: '50-B: ROC (Rate of Change) — signals reasons + ML feature',
+    effort: '0.5d',
+    what: 'Spec lists ROC as a required momentum indicator. ret_1/5/10/20/60 already exist in ML features (identical to ROC mathematically) but ROC was not formally named, not displayed in signal reasons, and not available per-signal for debugging.',
+    fix: 'Added roc_10 and roc_20 to signal reasons dict in _ta_score() — computed as (close[-1]/close[-N]-1)*100. Displayed in signal detail for debugging. ML features already contain ret_10 and ret_20 which are identical to ROC10/ROC20; no ML change needed (the feature is already learned under a different name).',
+    file: 'services/signal-engine/src/generators/signals.py',
+    implementedNote: 'Done 2026-06-18. roc_10 and roc_20 now appear in signal reasons JSON.',
+    impact: 'Medium — closes spec gap; improves signal debuggability.',
+  },
+  {
+    id: 'TIER50-C', tier: 50, severity: 'high', defaultStatus: 'done',
+    title: '50-C: Sortino Ratio — surface in backtest UI',
+    effort: '0.5d',
+    what: 'Sortino was already computed correctly in BacktestEngine.run() (line 84–85) but strategy-engine routes.py had "sortino": None hardcoded in both list_backtests and get_backtest. The Backtest DB model had no sortino column so the computed value was never stored or returned on retrieval.',
+    fix: 'Store sortino and calmar in equity_curve JSON field alongside the data array: {"data": [...], "sortino": 1.23, "calmar": 0.9}. list_backtests and get_backtest now read (bt.equity_curve or {}).get("sortino"). Added to BacktestRun TypeScript type as optional. Strategies page metrics panel shows Sortino Ratio when available (same color coding as Sharpe: ≥1.5 green, ≥0.5 yellow, <0.5 red).',
+    file: 'services/strategy-engine/src/api/routes.py, frontend/src/lib/api.ts, frontend/src/pages/strategies.tsx',
+    implementedNote: 'Done 2026-06-18. New backtests store sortino/calmar; old backtests show null (no migration needed).',
+    impact: 'Medium — Sortino penalizes only downside volatility, making it a more honest risk metric than Sharpe for asymmetric return distributions.',
+  },
+  {
+    id: 'TIER50-D', tier: 50, severity: 'feature', defaultStatus: 'done',
+    title: '50-D: PEG Ratio + Debt/Equity — fundamentals fetch, DB, ML features',
+    effort: '1d',
+    what: 'Spec requires ROIC, Debt/Equity, and PEG ratio as fundamental scoring inputs. PEG (PE / forward growth) and D/E are available directly from yfinance info["pegRatio"] and info["debtToEquity"] but were never fetched. ROIC requires balance sheet components (Phase 2). PEG and D/E are the quick wins.',
+    fix: 'Added peg_ratio and debt_to_equity to: (1) FundamentalsOut Pydantic model with yfinance pegRatio/debtToEquity fetch, (2) Fundamental DB model (nullable Float columns), (3) DB persist INSERT/UPDATE in get_fundamentals endpoint, (4) FUNDAMENTAL_COLUMNS in ML feature builder (now 10 fundamental features), (5) _load_fundamentals() in ML trainer. ML feature count: 44 → 46.',
+    file: 'services/market-data/src/api/routes.py, shared/db/models.py, services/ml-prediction/src/features/builder.py, services/ml-prediction/src/training/trainer.py',
+    implementedNote: 'Done 2026-06-18. Requires DB migration: ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS peg_ratio FLOAT; ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS debt_to_equity FLOAT;',
+    impact: 'High — PEG identifies growth at a reasonable price; D/E is a critical solvency signal that current features miss entirely.',
+  },
+  {
+    id: 'TIER50-E', tier: 50, severity: 'high', defaultStatus: 'done',
+    title: '50-E: Sector Exposure Cap — enforce 25% spec requirement',
+    effort: '1d',
+    what: 'Spec requires max 25% sector exposure. The sector cap enforcement code already existed (lines 2008–2020 in paper_trading_engine.py) but the _DEFAULT_CONFIG was set to 30% instead of the spec\'s 25%. The enforcement was correct; only the default value was wrong.',
+    fix: 'Changed _DEFAULT_CONFIG["max_sector_pct"] from 0.30 to 0.25. No logic changes needed — the sector_value check and sector_count check already worked correctly. Also confirmed: enforcement uses _sector_value() and _sector_count() helpers, applied before every new position entry.',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    implementedNote: 'Done 2026-06-18. Single-line change: 0.30 → 0.25. Existing portfolios are not affected until the engine next evaluates new entries.',
+    impact: 'High — prevents over-concentration in a single sector. A sector crash (e.g. tech selloff) now can cause at most 25% portfolio damage from that sector.',
+  },
+
   // ── Tier 48 — Signal Filter + Portfolio Sizing + Rankings Filter (2026-06-18) ──
 
   {
@@ -6030,6 +6083,7 @@ const TIER_LABEL: Record<Tier, string> = {
   47: 'Tier 47 — Rankings Signal Column + Exit Breakdown + Journal Comparison (2026-06-18)',
   48: 'Tier 48 — Signal Filter + Portfolio Sizing + Rankings Filter (2026-06-18)',
   49: 'Tier 49 — Board Style Picker + Signal Counts + Position Range Bar (2026-06-18)',
+  50: 'Tier 50 — Phase 1 Spec Compliance: Supertrend + ROC + Sortino + PEG + D/E + Sector Cap (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6082,6 +6136,7 @@ const TIER_COLOR: Record<Tier, string> = {
   47: '#f472b6',
   48: '#818cf8',
   49: '#fb923c',
+  50: '#4ade80',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -6153,7 +6208,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;

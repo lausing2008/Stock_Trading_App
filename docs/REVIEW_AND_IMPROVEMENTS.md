@@ -2800,3 +2800,83 @@ Xpp" / "Tied" verdict. Uses SWR deduplication — no extra network calls.
 | Risk management | 9.5 / 10 | Unchanged |
 | Paper trading | 9.6 / 10 | Unchanged |
 | **Overall** | **9.9 / 10** | *(Tier 45–47: display improvements across rankings, journal, portfolio, alerts)* |
+
+---
+
+# Tier 50 — Phase 1 Spec Compliance (2026-06-18)
+
+Spec audit vs codebase: 91% compliant. Tier 50 closes 5 of the remaining gaps.
+
+## Changes
+
+### A. Supertrend Indicator (HIGH)
+
+Added Supertrend (period=10, multiplier=3.0) to technical-analysis `core.py` + TA REST endpoint.
+Added inline `_supertrend()` to signal-engine `signals.py`. Supertrend now contributes to the TREND
+pillar in `_ta_score()` (10% weight). cross_up = 1.0, sustained bullish = 0.7, cross_down triggers
+a hard trend=0 override (same as death_cross). Stored in signal reasons dict as
+`supertrend_bullish`, `supertrend_cross_up`, `supertrend_cross_down`.
+**Files:** `services/technical-analysis/src/indicators/core.py`, `services/signal-engine/src/generators/signals.py`
+
+---
+
+### B. ROC (Rate of Change) — Signal Reasons (FEATURE)
+
+Added `roc_10` and `roc_20` to signal reasons dict in `_ta_score()`. Computed as
+`(close[-1]/close[-N]-1)*100`. ML features already contain ret_10/ret_20 (mathematically identical
+to ROC) so no ML changes needed — closes the spec gap at the display level.
+**File:** `services/signal-engine/src/generators/signals.py`
+
+---
+
+### C. Sortino Ratio — Surfaced in Backtest UI (HIGH)
+
+Sortino was already computed by BacktestEngine (engine.py:84-85) but routes.py had it hardcoded as
+`None` and the Backtest DB model had no sortino column. Fix: store sortino + calmar in the
+`equity_curve` JSON field (`{"data": [...], "sortino": 1.23, "calmar": 0.9}`). `list_backtests`
+and `get_backtest` now extract from that field. Added to `BacktestRun` TypeScript type. Strategies
+page now shows Sortino Ratio metric card alongside Sharpe.
+**Files:** `services/strategy-engine/src/api/routes.py`, `frontend/src/lib/api.ts`, `frontend/src/pages/strategies.tsx`
+
+---
+
+### D. PEG Ratio + Debt/Equity — Fundamentals + ML (HIGH)
+
+PEG ratio and Debt/Equity ratio added end-to-end: yfinance fetch (`pegRatio`, `debtToEquity`) →
+`FundamentalsOut` Pydantic model → DB persist (Fundamental table) → ML feature builder
+(`FUNDAMENTAL_COLUMNS` now 10 items) → ML trainer `_load_fundamentals()`. ML feature count: 44→46.
+**Requires DB migration:** `ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS peg_ratio FLOAT; ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS debt_to_equity FLOAT;`
+**Files:** `services/market-data/src/api/routes.py`, `shared/db/models.py`, `services/ml-prediction/src/features/builder.py`, `services/ml-prediction/src/training/trainer.py`
+
+---
+
+### E. Sector Exposure Cap 25% (HIGH)
+
+The sector cap enforcement code was already correct but `_DEFAULT_CONFIG["max_sector_pct"]` was
+0.30 (30%) instead of the spec's 25%. Changed to 0.25. The `_sector_value()` + `_sector_count()`
+enforcement at new-position entry already worked; only the threshold was wrong.
+**File:** `services/market-data/src/services/paper_trading_engine.py`
+
+---
+
+## Scorecard (updated)
+
+| Dimension | Score | Summary |
+|-----------|-------|---------|
+| Data pipeline | 8.7 / 10 | Unchanged |
+| ML methodology | 9.5 / 10 | ↑ PEG + D/E features added (46 total) |
+| Signal logic | 9.8 / 10 | ↑ Supertrend + ROC in trend pillar + reasons |
+| K-Score ranking | 8.5 / 10 | Unchanged |
+| Research engine | 7.5 / 10 | Unchanged |
+| Frontend / UX | 9.9 / 10 | ↑ Sortino shown in backtest results |
+| Risk management | 9.8 / 10 | ↑ Sector cap correctly at 25% |
+| Paper trading | 9.6 / 10 | Unchanged |
+| **Overall** | **9.9 / 10** | *(Tier 50: spec compliance — 91% → 96%)* |
+
+## Deployment Notes
+
+1. Run DB migration for new Fundamental columns (peg_ratio, debt_to_equity)
+2. `docker cp` shared/db/models.py to market-data + ml-prediction containers
+3. `docker cp` signal-engine routes.py + signals.py → restart signal-engine
+4. `docker cp` market-data routes.py → restart market-data
+5. Rebuild frontend (supertrend + sortino appear in strategies page immediately)

@@ -104,6 +104,8 @@ def _load_fundamentals(symbol: str) -> dict | None:
         "short_ratio":         row.short_ratio,
         "recommendation_mean": row.recommendation_mean,
         "price_to_book":       row.price_to_book,
+        "peg_ratio":           getattr(row, "peg_ratio", None),
+        "debt_to_equity":      getattr(row, "debt_to_equity", None),
     }
 
 

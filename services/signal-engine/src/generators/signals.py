@@ -418,6 +418,50 @@ def _fetch_patterns_from_ta(symbol: str) -> list[dict]:
     return []
 
 
+def _supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> tuple[int, bool, bool]:
+    """Return (trend, cross_up, cross_down) from the last bar.
+
+    trend:      +1 if price above supertrend line (bullish), -1 if below
+    cross_up:   True if trend just flipped from -1 → +1 this bar
+    cross_down: True if trend just flipped from +1 → -1 this bar
+    """
+    high  = df["high"].astype(float)
+    low   = df["low"].astype(float)
+    close = df["close"].astype(float)
+    n = len(close)
+    if n < period + 2:
+        return 1, False, False
+
+    prev_c = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_c).abs(), (low - prev_c).abs()], axis=1).max(axis=1)
+    atr_s = tr.ewm(alpha=1 / period, adjust=False).mean()
+
+    hl2 = (high + low) / 2
+    basic_upper = (hl2 + multiplier * atr_s).values
+    basic_lower = (hl2 - multiplier * atr_s).values
+    close_v = close.values
+
+    final_upper = basic_upper.copy()
+    final_lower = basic_lower.copy()
+    trend = np.ones(n)
+
+    for i in range(1, n):
+        if np.isnan(basic_upper[i]) or np.isnan(basic_lower[i]):
+            trend[i] = trend[i - 1]
+            continue
+        final_upper[i] = basic_upper[i] if (basic_upper[i] < final_upper[i - 1] or close_v[i - 1] > final_upper[i - 1]) else final_upper[i - 1]
+        final_lower[i] = basic_lower[i] if (basic_lower[i] > final_lower[i - 1] or close_v[i - 1] < final_lower[i - 1]) else final_lower[i - 1]
+        trend[i] = 1.0 if (trend[i - 1] == -1 and close_v[i] > final_upper[i]) else (
+            -1.0 if (trend[i - 1] == 1 and close_v[i] < final_lower[i]) else trend[i - 1]
+        )
+
+    return (
+        int(trend[-1]),
+        bool(trend[-1] == 1 and trend[-2] == -1),
+        bool(trend[-1] == -1 and trend[-2] == 1),
+    )
+
+
 def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
     """Return (ADX, +DI, -DI). ADX > 25 = trending, > 40 = strong trend."""
     high = df["high"].astype(float)
@@ -828,6 +872,18 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     reasons["price_above_vwap"] = price_above_vwap
     reasons["vwma_20"] = float(vwma_val) if not pd.isna(vwma_val) else None
 
+    # ── Supertrend ────────────────────────────────────────────────────────
+    st_trend, st_cross_up, st_cross_down = _supertrend(df)
+    reasons["supertrend_bullish"] = bool(st_trend == 1)
+    reasons["supertrend_cross_up"] = st_cross_up
+    reasons["supertrend_cross_down"] = st_cross_down
+
+    # ── ROC (Rate of Change) — 10-day and 20-day ──────────────────────────
+    roc_10 = float((close.iloc[-1] / close.iloc[-11] - 1) * 100) if len(close) >= 11 else None
+    roc_20 = float((close.iloc[-1] / close.iloc[-21] - 1) * 100) if len(close) >= 21 else None
+    reasons["roc_10"] = round(roc_10, 2) if roc_10 is not None else None
+    reasons["roc_20"] = round(roc_20, 2) if roc_20 is not None else None
+
     # ── ADX — trend strength ──────────────────────────────────────────────
     adx_val, di_plus, di_minus = _adx(df)
     # C3 FIX: adx_val is now None when insufficient data — guard all comparisons
@@ -858,16 +914,19 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     _vz = float(reasons.get("volume_z") or 0.0)
 
     # TREND pillar — structural price direction
-    # Weighted average (not max) so all 4 inputs contribute proportionally.
-    if death_cross_event:
-        p_trend = 0.0  # confirmed downtrend; hard override regardless of SMAs
+    # Supertrend included (10%): complements SMA/ADX trend confirmation.
+    # Cross-up gets extra weight (1.0) vs sustained bullish (0.7).
+    if death_cross_event or st_cross_down:
+        p_trend = 0.0  # confirmed downtrend; hard override
     else:
         _gc_score = 1.0 if (golden_cross_event and _vz > 0.5) else (0.7 if golden_cross_event else 0.0)
+        _st_score = 1.0 if st_cross_up else (0.7 if st_trend == 1 else 0.0)
         p_trend = (
-            (1.0 if above_sma50 else 0.0)      * 0.35 +
-            (1.0 if sma50_above_sma200 else 0.0) * 0.25 +
-            (1.0 if bullish_trend else 0.0)      * 0.25 +
-            _gc_score                            * 0.15
+            (1.0 if above_sma50 else 0.0)        * 0.30 +
+            (1.0 if sma50_above_sma200 else 0.0)  * 0.25 +
+            (1.0 if bullish_trend else 0.0)        * 0.20 +
+            _gc_score                              * 0.15 +
+            _st_score                              * 0.10
         )
 
     # MOMENTUM pillar — oscillator-based rate of change

@@ -52,7 +52,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "trading_style":        "GROWTH",  # which signal horizon to trade
     "market":               "US",      # "US" or "HK" — determines market hours + stock universe
     "max_positions":        6,         # max concurrent open positions (fewer = higher quality)
-    "max_sector_pct":       0.30,      # max 30% in one sector
+    "max_sector_pct":       0.25,      # max 25% in one sector (spec requirement)
     "max_sector_positions": 3,         # max positions per sector (RISK-3)
     "risk_per_trade_pct":   0.01,      # risk 1% of equity per trade
     "max_position_pct":     0.10,      # cap any single position at 10% of equity

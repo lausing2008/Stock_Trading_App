@@ -677,6 +677,9 @@ class Fundamental(Base):
     # Analyst consensus
     recommendation_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
     number_of_analysts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Phase 1 additions — valuation
+    peg_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    debt_to_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

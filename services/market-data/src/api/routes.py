@@ -666,6 +666,9 @@ class FundamentalsOut(BaseModel):
     dividend_yield: float | None = None
     dividend_rate: float | None = None
     ex_dividend_date: str | None = None   # YYYY-MM-DD, from yfinance exDividendDate (unix ts → date)
+    # Valuation ratios (Phase 1 additions)
+    peg_ratio: float | None = None        # PE / forward earnings growth (yfinance pegRatio)
+    debt_to_equity: float | None = None   # total debt / total equity (yfinance debtToEquity)
     # Returns & risk
     return_on_equity: float | None = None
     return_on_assets: float | None = None
@@ -762,6 +765,7 @@ def fundamentals_bulk(session: Session = Depends(get_session)):
         "profit_margin", "operating_margin",
         "return_on_equity", "return_on_assets",
         "revenue_growth", "earnings_growth",
+        "peg_ratio", "debt_to_equity",
     )
     for symbol in active_symbols:
         try:
@@ -924,6 +928,8 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         dividend_yield=_safe(info, "dividendYield"),
         dividend_rate=_safe(info, "dividendRate"),
         ex_dividend_date=_parse_ex_div_date(_safe(info, "exDividendDate")),
+        peg_ratio=_safe(info, "pegRatio"),
+        debt_to_equity=_safe(info, "debtToEquity"),
         return_on_equity=_safe(info, "returnOnEquity"),
         return_on_assets=_safe(info, "returnOnAssets"),
         revenue_growth=_safe(info, "revenueGrowth"),
@@ -1023,6 +1029,8 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                 short_ratio=data.short_ratio,
                 recommendation_mean=data.recommendation_mean,
                 number_of_analysts=data.number_of_analysts,
+                peg_ratio=data.peg_ratio,
+                debt_to_equity=data.debt_to_equity,
             ).on_conflict_do_update(
                 constraint="uq_fundamentals_stock_date",
                 set_=dict(
@@ -1041,6 +1049,8 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                     short_ratio=data.short_ratio,
                     recommendation_mean=data.recommendation_mean,
                     number_of_analysts=data.number_of_analysts,
+                    peg_ratio=data.peg_ratio,
+                    debt_to_equity=data.debt_to_equity,
                     fetched_at=func.now(),
                 ),
             )

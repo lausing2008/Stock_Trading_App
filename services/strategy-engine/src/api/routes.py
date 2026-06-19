@@ -157,7 +157,7 @@ def backtest(
         cagr=result.cagr,
         profit_factor=result.profit_factor,
         total_return=result.total_return,
-        equity_curve={"data": result.equity_curve[-500:]},
+        equity_curve={"data": result.equity_curve[-500:], "sortino": result.sortino, "calmar": result.calmar},
         trades={"data": result.trades},
     )
     session.add(bt)
@@ -187,8 +187,8 @@ def list_backtests(
             "total_return": bt.total_return,
             "cagr": bt.cagr,
             "sharpe": bt.sharpe,
-            "sortino": None,
-            "calmar": None,
+            "sortino": (bt.equity_curve or {}).get("sortino"),
+            "calmar": (bt.equity_curve or {}).get("calmar"),
             "max_drawdown": bt.max_drawdown,
             "win_rate": bt.win_rate,
             "profit_factor": bt.profit_factor,

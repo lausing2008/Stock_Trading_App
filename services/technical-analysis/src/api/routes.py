@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from db import Price, Stock, TimeFrame, get_session
 
-from ..indicators import bollinger_bands, fibonacci_retracement, macd, rsi, sma, vwap
+from ..indicators import bollinger_bands, fibonacci_retracement, macd, rsi, sma, supertrend, vwap
 from ..indicators.trendlines import detect_support_resistance, detect_trendlines
 from ..patterns import detect_patterns
 
@@ -68,6 +68,10 @@ def get_indicators(
     out.update({c: macd_df[c] for c in macd_df.columns})
     bb = bollinger_bands(df["close"])
     out.update({c: bb[c] for c in bb.columns})
+
+    st = supertrend(df)
+    out["supertrend"] = st["supertrend"]
+    out["supertrend_trend"] = st["trend"]
 
     values = {
         k: [None if pd.isna(x) else float(x) for x in v.tolist()]
