@@ -845,11 +845,21 @@ function SignalAlertsTab() {
                     ) : <span style={{ color: '#334155' }}>—</span>}
                   </div>
 
-                  {/* Last triggered */}
-                  <div style={{ fontSize: '11px', color: '#475569' }}>
+                  {/* Last signal + sent time */}
+                  <div style={{ fontSize: '11px', color: '#475569', display: 'flex', flexDirection: 'column', gap: '2px' }}>
                     {sub.last_signal ? (
                       <span style={{ padding: '2px 8px', borderRadius: '4px', fontWeight: 600, background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>Last: {sub.last_signal}</span>
                     ) : <span style={{ color: '#334155' }}>Never sent</span>}
+                    {sub.last_sent_at && (
+                      <span style={{ fontSize: '10px', color: '#334155', paddingLeft: '2px' }}>
+                        {(() => {
+                          const diff = Date.now() - new Date(sub.last_sent_at).getTime();
+                          const h = Math.floor(diff / 3600000);
+                          const d = Math.floor(h / 24);
+                          return d > 0 ? `${d}d ago` : h > 0 ? `${h}h ago` : 'just now';
+                        })()}
+                      </span>
+                    )}
                   </div>
 
                   {/* Consensus toggle */}

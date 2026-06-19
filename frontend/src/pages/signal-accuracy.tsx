@@ -1161,8 +1161,37 @@ export default function SignalAccuracyPage() {
                 )}
               </div>
 
+              {/* Paper Trade Writeback — PT-J1 actual realized results by hold window */}
+              {outcomesData.by_window && Object.values(outcomesData.by_window).some(v => v !== null) && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 8, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                    Paper Trade Results <span style={{ fontWeight: 400, fontSize: 11, color: '#475569' }}>· actual closed trades written back by PT-J1</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    {(['5d', '10d', '20d'] as const).map(w => {
+                      const v = outcomesData.by_window?.[w];
+                      if (!v) return null;
+                      const wrColor = v.win_rate >= 0.6 ? '#4ade80' : v.win_rate >= 0.5 ? '#facc15' : '#f87171';
+                      return (
+                        <div key={w} style={{ flex: '1 1 120px', minWidth: 110, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: '#475569', letterSpacing: '0.06em', marginBottom: 6 }}>HOLD ≤{w.toUpperCase()}</div>
+                          <div style={{ fontSize: 20, fontWeight: 800, color: wrColor }}>{(v.win_rate * 100).toFixed(1)}%</div>
+                          <div style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>win rate · {v.count} trade{v.count !== 1 ? 's' : ''}</div>
+                          {v.avg_return_pct != null && (
+                            <div style={{ fontSize: 13, fontWeight: 700, color: v.avg_return_pct >= 0 ? '#4ade80' : '#f87171', marginTop: 4 }}>
+                              {v.avg_return_pct >= 0 ? '+' : ''}{v.avg_return_pct.toFixed(2)}% avg
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div style={{ fontSize: 11, color: '#334155', padding: '8px 12px', background: '#0a0f1a', borderRadius: 6 }}>
                 ℹ️ Outcomes use fixed hold windows: SHORT=7d, SWING=14d, LONG=28d. Entry = first close ≥ signal date. Exit = first close ≥ entry + hold days.
+                Paper trade results (above) reflect actual closes from the paper trading engine — written back on position close.
                 Once SWING outcomes exceed 500, run Optuna on signal parameters — see SIGNAL_ACCURACY.md for the tuning workflow.
               </div>
 

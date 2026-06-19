@@ -821,7 +821,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
                 {STAGE_META[s].label}
               </button>
             ))}
-            {plan.stage === 'planning' && (
+            {(plan.stage === 'planning' || plan.stage === 'active') && (
               <Link
                 href={`/research/${plan.symbol}`}
                 style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, cursor: 'pointer', border: '1px solid rgba(74,222,128,0.4)', background: 'rgba(74,222,128,0.1)', color: '#4ade80', marginLeft: '2px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
@@ -829,6 +829,19 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
                 Research
               </Link>
             )}
+            {plan.stage === 'active' && plan.trading_style && (() => {
+              const maxDays: Record<string, number> = { SHORT: 5, SWING: 14, LONG: 30, GROWTH: 20 };
+              const max = maxDays[plan.trading_style] ?? 14;
+              const daysHeld = Math.floor((Date.now() - new Date(plan.updated_at).getTime()) / 86400000);
+              const pct = Math.min(1, daysHeld / max);
+              const color = pct >= 0.9 ? '#f87171' : pct >= 0.7 ? '#fbbf24' : '#475569';
+              return (
+                <span title={`~${daysHeld}d in trade · ${plan.trading_style} max ~${max}d`}
+                  style={{ fontSize: '9px', fontWeight: 700, color, padding: '2px 6px', borderRadius: '4px', marginLeft: '2px', background: pct >= 0.9 ? 'rgba(248,113,113,0.1)' : 'transparent', border: pct >= 0.9 ? '1px solid rgba(248,113,113,0.25)' : '1px solid transparent' }}>
+                  {daysHeld}d
+                </span>
+              );
+            })()}
             {plan.stage === 'active' && (
               <button
                 onClick={() => setAlertOpen(o => !o)}

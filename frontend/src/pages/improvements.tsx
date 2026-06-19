@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5773,6 +5773,39 @@ const ITEMS: Item[] = [
     impact: 'HIGH (UX) — users were receiving dozens of alert emails per hour for a single stock. Design invariant: alert checker must always read DB signals, not live-computed signals.',
   },
 
+  // ── Tier 45 — Signal Accuracy PT-J1 Display + Board UX + Alert History (2026-06-18) ──
+
+  {
+    id: 'TIER45-A', tier: 45, severity: 'feature', defaultStatus: 'done',
+    title: '45-A: Signal Accuracy — show actual paper trade results by hold window',
+    effort: '30m',
+    what: 'The PT-J1 writeback (Tier 44-B) writes realized trade results into signal_outcomes (return_5d/10d/20d, is_correct_5d/10d/20d). The outcomes/summary API already returns this as by_window, and OutcomesSummary type already included it — but the Outcomes tab in signal-accuracy.tsx never displayed it. Users had no way to see whether paper trades were actually profitable by hold duration.',
+    fix: 'Added "Paper Trade Results" panel in the Outcomes tab showing 5d/10d/20d hold-window cards with actual win rate, trade count, and avg return. Rendered only when PT-J1 has written at least one bucket. Updated the info note to mention paper trade writeback.',
+    file: 'frontend/src/pages/signal-accuracy.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium — closes the loop between signal prediction accuracy and actual paper trade performance.',
+  },
+  {
+    id: 'TIER45-B', tier: 45, severity: 'feature', defaultStatus: 'done',
+    title: '45-B: Trade Board — Research link on active cards + hold-days counter',
+    effort: '20m',
+    what: 'The Research link was only shown on Planning stage cards. Active trades are subject to PT-I1 fundamental deterioration monitoring but users had no way to open the research page from an active card. Additionally, there was no indicator of how long a position had been held, making it hard to judge time-stop proximity.',
+    fix: 'Extended the Research link to both planning AND active stage cards. Added a hold-days counter ("Xd") next to the style chip using updated_at as a proxy for fill date. Color-codes: grey → amber (70% of style max) → red (90%+). Tooltip shows estimated max hold days per style (SHORT=5, SWING=14, LONG=30, GROWTH=20).',
+    file: 'frontend/src/pages/board.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium (UX) — time-stop awareness and research access on active positions.',
+  },
+  {
+    id: 'TIER45-C', tier: 45, severity: 'feature', defaultStatus: 'done',
+    title: '45-C: Signal Alerts — show last_sent_at timestamp in alert rows',
+    effort: '30m',
+    what: 'Signal alert subscription rows showed "Last: BUY/SELL/WAIT" badge but no timestamp for when the last alert email was sent. Users had no way to know if "Last: BUY" fired 10 minutes ago or 3 weeks ago. The DB model and API had last_sent_at but it was not included in SignalAlertOut or SignalAlertItem.',
+    fix: 'Added last_sent_at to SignalAlertOut Pydantic model (backend), to SignalAlertItem type (api.ts), and rendered it as "Xd ago" / "Xh ago" / "just now" below the last_signal badge in the signal alerts list.',
+    file: 'services/market-data/src/api/signal_alerts.py',
+    implementedNote: 'Done 2026-06-18 — backend + frontend change.',
+    impact: 'Low-medium — helps users see when their last signal email fired without digging through email history.',
+  },
+
   // ── Tier 44 — Alert UX + Signal Calibration + Trade Board (2026-06-18) ───────
 
   {
@@ -5860,6 +5893,7 @@ const TIER_LABEL: Record<Tier, string> = {
   42: 'Tier 42 — Signal Alert Oscillation Fix (2026-06-18)',
   43: 'Tier 43 — Paper Trading & Alert Bug Fixes (2026-06-18)',
   44: 'Tier 44 — Alert UX + Signal Calibration + Trade Board (2026-06-18)',
+  45: 'Tier 45 — Signal Accuracy PT-J1 Display + Board UX + Alert History (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5907,6 +5941,7 @@ const TIER_COLOR: Record<Tier, string> = {
   42: '#f87171',
   43: '#c084fc',
   44: '#2dd4bf',
+  45: '#818cf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -5978,7 +6013,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
