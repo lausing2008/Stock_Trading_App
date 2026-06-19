@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -3958,6 +3958,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-single-model',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — trainer.py: _artifact_path() now includes style suffix ({symbol}_short/swing/long/growth.joblib) with SWING fallback to legacy {symbol}.joblib. predict_latest/ensemble/ensemble_three all accept style param. routes.py: GROWTH=15 added to _HORIZON_BY_STYLE; PredictRequest.style field added; /ml/train_all_horizons endpoint trains all 4 styles per symbol. scheduler.py: calls /ml/train_all_horizons instead of /ml/train_all. signals.py: _fetch_ml_data(symbol, style_key) makes 4 per-style calls; _make_signal() uses style-specific (ml_prob, ml_test_auc).',
     tier: 14, severity: 'critical',
     title: 'Single SWING-horizon model drives SHORT, SWING, LONG, and GROWTH signals simultaneously',
     file: 'services/market-data/src/services/scheduler.py:275 · services/signal-engine/src/generators/signals.py:1564,1640',
@@ -3980,6 +3982,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-survivorship',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — models.py: Stock.delisted (Boolean, default=false) added. session.py: ALTER TABLE migration. routes.py: all train_all* queries now OR Stock.delisted. trainer.py: precision floors raised 3pp (SHORT 0.70→0.73, SWING 0.60→0.63, LONG 0.50→0.53, GROWTH 0.63 new) to compensate for known upward bullish bias; survivorship_bias_warning=True added to every bundle.',
     tier: 14, severity: 'critical',
     title: 'Survivorship bias — ML training universe contains only currently active stocks',
     file: 'services/ml-prediction/src/api/routes.py:88-89,119-120',
@@ -4222,6 +4226,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-float-financials',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — models.py: Numeric added to imports; PaperPortfolio.initial_capital/current_cash, PaperTrade.entry_price/shares/stop_loss/take_profit/current_stop/exit_price/pnl/current_price/highest_price, UserPosition.shares/avg_cost, UserCash.amount, PositionTrade.shares/price all changed from Float to Numeric(20,6). session.py: idempotent ALTER COLUMN TYPE migration for all 16 columns (checks information_schema first).',
     tier: 14, severity: 'medium',
     title: 'Financial values stored as IEEE 754 Float — cumulative rounding errors corrupt records',
     file: 'shared/db/models.py:124-129',
@@ -4244,6 +4250,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-two-migrations',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — Alembic infrastructure set up: alembic.ini at project root pointing to shared/db/migrations/; env.py reads DATABASE_URL at runtime; script.py.mako template; versions/001_baseline.py no-op revision stamps the existing schema. New schema changes should be added as Alembic revisions. Old _run_migrations() retained for backward compat (all idempotent IF NOT EXISTS). Run: cd project_root && DATABASE_URL=... alembic upgrade head.',
     tier: 14, severity: 'medium',
     title: 'Two parallel migration systems with no tracking table — ambiguous authoritative schema',
     file: 'shared/db/session.py · scripts/migrations/',
@@ -6210,6 +6218,47 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-19. Deployed via docker cp + restart ml-prediction.',
     impact: 'Critical — ML training labels and all 28 stock-specific features were computed on unadjusted prices; models trained on split-affected history had mis-calibrated weights.',
   },
+  // ── Tier 54 ───────────────────────────────────────────────────────────────
+  {
+    id: 'TIER54-A', tier: 54, severity: 'critical', defaultStatus: 'done',
+    title: '54-A: Per-horizon ML artifacts — 4 style-specific models instead of shared SWING',
+    effort: '3 days',
+    what: 'All 4 signal styles (SHORT/SWING/LONG/GROWTH) shared one SWING-horizon=10 XGBoost artifact. The same ml_prob and ml_test_auc was injected into _apply_style_signal() for all horizons — a 10-day trained model drove 5-day SHORT and 20-day LONG signals alike.',
+    fix: 'trainer.py: _artifact_path(symbol, model, style) writes {symbol}_short/swing/long/growth.joblib; SWING falls back to legacy {symbol}.joblib until retrained. predict_latest/ensemble/ensemble_three all accept style param. routes.py: GROWTH=15 added; PredictRequest.style field; /ml/train_all_horizons trains all 4 styles per stock. signals.py: 4 per-style _fetch_ml_data calls; _make_signal uses style-specific (ml_prob, ml_test_auc). Scheduler now calls /ml/train_all_horizons nightly.',
+    file: 'services/ml-prediction/src/training/trainer.py · services/ml-prediction/src/api/routes.py · services/signal-engine/src/generators/signals.py · services/market-data/src/services/scheduler.py',
+    implementedNote: 'Done 2026-06-19. Existing SWING artifacts continue to work (SWING fallback). New style artifacts created on next nightly train.',
+    impact: 'Critical — ML layer was adding noise to 3 of 4 styles; SHORT signals were driven by a 10d-horizon model instead of 5d.',
+  },
+  {
+    id: 'TIER54-B', tier: 54, severity: 'critical', defaultStatus: 'done',
+    title: '54-B: Survivorship bias — tightened precision floors + delisted flag + training query fix',
+    effort: '2 days',
+    what: 'ML training included only active stocks (Stock.active=True). Stocks removed after large losses were never in the training set, inflating bullish recall by 10–20%.',
+    fix: 'Stock.delisted (Boolean default=false) added to model + migration. All train_all* endpoints now OR Stock.delisted.is_(True). Precision floors raised 3pp across all styles (SHORT 0.73, SWING 0.63, LONG 0.53, GROWTH 0.63) to compensate for upward bias until delisted history is populated. survivorship_bias_warning=True added to every model bundle.',
+    file: 'shared/db/models.py · shared/db/session.py · services/ml-prediction/src/training/trainer.py · services/ml-prediction/src/api/routes.py',
+    implementedNote: 'Done 2026-06-19. Precision tightening is immediate. Delisted stock data must be added manually to the stocks table + price history for full bias removal.',
+    impact: 'Critical — buy_threshold was calibrated against a winners-only dataset; 3pp tightening reduces false BUY rate.',
+  },
+  {
+    id: 'TIER54-C', tier: 54, severity: 'medium', defaultStatus: 'done',
+    title: '54-C: Cash ledger Float → Numeric(20,6) — eliminate cumulative rounding drift',
+    effort: '2 days',
+    what: 'PaperTrade, PaperPortfolio, UserCash, UserPosition, PositionTrade financial columns were IEEE 754 DOUBLE PRECISION. Summing 1000+ trades can drift the cash ledger by $0.10–$5.',
+    fix: 'Added Numeric to SQLAlchemy imports. Changed 16 financial columns across 5 tables to Numeric(20,6). session.py: idempotent ALTER COLUMN TYPE migration using information_schema check to avoid re-running on Numeric columns.',
+    file: 'shared/db/models.py · shared/db/session.py',
+    implementedNote: 'Done 2026-06-19. Migration auto-runs on next container start via _run_migrations(). PostgreSQL NUMERIC is exact decimal — no more binary rounding drift.',
+    impact: 'Medium — eliminates cash drift in paper portfolio; required before live broker integration.',
+  },
+  {
+    id: 'TIER54-D', tier: 54, severity: 'medium', defaultStatus: 'done',
+    title: '54-D: Alembic migration infrastructure — single authoritative schema source',
+    effort: '2 days',
+    what: 'Two divergent migration paths: _run_migrations() inline Python/SQL in session.py + scripts/migrations/*.sql manual files. No tracking table, no atomic transactions, no autogenerate. Fresh deployments risked partial migrations.',
+    fix: 'Created Alembic setup: alembic.ini at project root; shared/db/migrations/env.py (reads DATABASE_URL from env, imports Base for autogenerate); script.py.mako template; versions/001_baseline.py no-op revision stamps existing schema. Alembic already in market-data requirements.txt (v1.13.2). New schema changes go through Alembic. Run: DATABASE_URL=... alembic upgrade head.',
+    file: 'alembic.ini · shared/db/migrations/env.py · shared/db/migrations/versions/001_baseline.py',
+    implementedNote: 'Done 2026-06-19. Old _run_migrations() retained for backward compat (all IF NOT EXISTS). Use alembic revision --autogenerate -m "description" for new changes.',
+    impact: 'Medium — eliminates ambiguous schema state across deployments; enables autogenerate detection of model-DB drift.',
+  },
 ];
 
 
@@ -6274,6 +6323,7 @@ const TIER_LABEL: Record<Tier, string> = {
   51: 'Tier 51 — Audit Bug Fixes Wave 2: LSTM + Label Lookahead + Paper Lock + Manual Exit (2026-06-19)',
   52: 'Tier 52 — Audit Fix Wave 3: Backtest Lookahead + Benchmark + K-Score Labels + Research Fallback (2026-06-19)',
   53: 'Tier 53 — Audit Fix Wave 4: Adj-Close in Signal Engine + ML Feature Builder (2026-06-19)',
+  54: 'Tier 54 — Audit Fix Wave 5: Per-Horizon ML + Survivorship + Numeric Cash + Alembic (2026-06-19)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6330,6 +6380,7 @@ const TIER_COLOR: Record<Tier, string> = {
   51: '#f472b6',
   52: '#a78bfa',
   53: '#f59e0b',
+  54: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -6401,7 +6452,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;

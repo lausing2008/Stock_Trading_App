@@ -308,7 +308,7 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
         _post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": market})
 
         if post_close:
-            _post(f"{_settings.ml_prediction_url}/ml/train_all")
+            _post(f"{_settings.ml_prediction_url}/ml/train_all_horizons")
             # Evaluate any BUY/SELL signals whose hold window has now expired.
             _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
     except Exception as _re:

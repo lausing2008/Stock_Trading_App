@@ -260,6 +260,44 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE paper_equity_curve ADD COLUMN IF NOT EXISTS market_regime VARCHAR(16)"
         ))
+        # aud14-survivorship: delisted flag on stocks — included in ML training universe
+        conn.execute(text(
+            "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS delisted BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        # aud14-float-financials: migrate cash ledger columns to NUMERIC for exact arithmetic
+        # Idempotent: only converts when the column is still DOUBLE PRECISION
+        for _tbl, _col in [
+            ("user_cash",        "amount"),
+            ("user_positions",   "shares"),
+            ("user_positions",   "avg_cost"),
+            ("position_trades",  "shares"),
+            ("position_trades",  "price"),
+            ("paper_portfolios", "initial_capital"),
+            ("paper_portfolios", "current_cash"),
+            ("paper_trades",     "entry_price"),
+            ("paper_trades",     "shares"),
+            ("paper_trades",     "stop_loss"),
+            ("paper_trades",     "take_profit"),
+            ("paper_trades",     "current_stop"),
+            ("paper_trades",     "exit_price"),
+            ("paper_trades",     "pnl"),
+            ("paper_trades",     "current_price"),
+            ("paper_trades",     "highest_price"),
+        ]:
+            conn.execute(text(f"""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='{_tbl}' AND column_name='{_col}'
+                          AND data_type='double precision'
+                    ) THEN
+                        ALTER TABLE {_tbl}
+                            ALTER COLUMN {_col} TYPE NUMERIC(20,6)
+                            USING {_col}::NUMERIC(20,6);
+                    END IF;
+                END $$;
+            """))
 
 
 def _seed_admin() -> None:

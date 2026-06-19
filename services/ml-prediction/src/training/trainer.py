@@ -35,10 +35,14 @@ _MIN_PRECISION = 0.60  # fallback precision floor (SWING)
 
 # SHORT trades have little time to recover from false entries — require tighter precision.
 # LONG trades can absorb more noise over a 90-day hold — accept a lower floor.
+# Survivorship bias: training universe is active stocks only (delisted stocks
+# are underrepresented). Each style's precision floor is raised by 3pp to
+# compensate for the known upward bullish bias this introduces.
 _PRECISION_BY_STYLE: dict[str, float] = {
-    "SHORT": 0.70,
-    "SWING": 0.60,
-    "LONG":  0.50,
+    "SHORT":  0.73,  # was 0.70
+    "SWING":  0.63,  # was 0.60
+    "LONG":   0.53,  # was 0.50
+    "GROWTH": 0.63,  # same as SWING (similar horizon)
 }
 
 
@@ -109,8 +113,20 @@ def _load_fundamentals(symbol: str) -> dict | None:
     }
 
 
-def _artifact_path(symbol: str, model_name: str) -> Path:
-    return Path(_settings.model_dir) / model_name / f"{symbol}.joblib"
+def _artifact_path(symbol: str, model_name: str, style: str = "SWING") -> Path:
+    """Return the model artifact path for the given symbol, model type, and training style.
+
+    SWING falls back to legacy {symbol}.joblib so existing artifacts continue to
+    work until they are retrained with the new per-style naming convention.
+    """
+    s = style.upper()
+    base = Path(_settings.model_dir) / model_name
+    if s == "SWING":
+        new_path = base / f"{symbol}_swing.joblib"
+        legacy_path = base / f"{symbol}.joblib"
+        # Prefer legacy if new-style artifact does not exist yet (backward compat)
+        return legacy_path if (legacy_path.exists() and not new_path.exists()) else new_path
+    return base / f"{symbol}_{s.lower()}.joblib"
 
 
 def _params_path(symbol: str) -> Path:
@@ -441,7 +457,7 @@ def train_model(
             note="CV-AUC vs test-AUC gap >0.10; consider reducing max_depth or increasing min_child_weight",
         )
 
-    path = _artifact_path(symbol, model_name)
+    path = _artifact_path(symbol, model_name, style)
     path.parent.mkdir(parents=True, exist_ok=True)
     import joblib
     bundle = {
@@ -455,6 +471,8 @@ def train_model(
         "feature_importance": feature_importance,
         "oos_suppressed": oos_suppressed,
         "trained_at": datetime.now(timezone.utc).isoformat(),
+        "style": style,
+        "survivorship_bias_warning": True,  # training universe is active stocks only
     }
     # RACE-001: atomic write — write to a temp file in the same directory, then rename.
     # joblib.dump to the final path directly can produce a corrupt read if a prediction
@@ -475,9 +493,9 @@ def train_model(
     return {"symbol": symbol, "model": model_name, "path": str(path), "metrics": metrics}
 
 
-def load_trained(symbol: str, model_name: str) -> tuple[BaseModel, StandardScaler, dict]:
+def load_trained(symbol: str, model_name: str, style: str = "SWING") -> tuple[BaseModel, StandardScaler, dict]:
     import joblib
-    path = _artifact_path(symbol, model_name)
+    path = _artifact_path(symbol, model_name, style)
     if not path.exists():
         raise FileNotFoundError(f"No trained model at {path}")
     bundle = joblib.load(path)
@@ -487,11 +505,11 @@ def load_trained(symbol: str, model_name: str) -> tuple[BaseModel, StandardScale
 _MODEL_STALE_DAYS = 30  # warn when a model artifact is older than this
 
 
-def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -> dict:
+def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, style: str = "SWING") -> dict:
     import joblib
     import structlog as _slog
     _log = _slog.get_logger()
-    path = _artifact_path(symbol, model_name)
+    path = _artifact_path(symbol, model_name, style)
     if not path.exists():
         raise FileNotFoundError(f"No trained model at {path}")
     bundle = joblib.load(path)
@@ -580,21 +598,21 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5) -
     }
 
 
-def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
+def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING") -> dict:
     """Average XGBoost + RandomForest predictions, weighted by each model's CV AUC.
 
     Falls back to XGBoost-only if the RF model has not been trained for this symbol.
     Using two structurally different models (gradient boosting vs. bagging) reduces
     variance and smooths out individual model over-reactions to recent noise.
     """
-    xgb = predict_latest(symbol, "xgboost", horizon)
+    xgb = predict_latest(symbol, "xgboost", horizon, style=style)
 
-    rf_path = _artifact_path(symbol, "random_forest")
+    rf_path = _artifact_path(symbol, "random_forest", style)
     if not rf_path.exists():
         return {**xgb, "ensemble": False, "model": "xgboost"}
 
     try:
-        rf = predict_latest(symbol, "random_forest", horizon)
+        rf = predict_latest(symbol, "random_forest", horizon, style=style)
     except Exception:
         return {**xgb, "ensemble": False, "model": "xgboost"}
 
@@ -631,7 +649,7 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5) -> dict:
     }
 
 
-def predict_latest_ensemble_three(symbol: str, horizon: int = 5) -> dict:
+def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "SWING") -> dict:
     """XGBoost (40%) + LightGBM (35%) + RandomForest (25%) weighted ensemble.
 
     Agreement logic (SA-8):
@@ -643,22 +661,22 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5) -> dict:
     Falls back gracefully: if LightGBM or RF is not trained, falls back to
     predict_latest_ensemble (XGBoost + RF), then to XGBoost-only.
     """
-    xgb = predict_latest(symbol, "xgboost", horizon)
+    xgb = predict_latest(symbol, "xgboost", horizon, style=style)
 
-    lgb_path = _artifact_path(symbol, "lightgbm")
-    rf_path  = _artifact_path(symbol, "random_forest")
+    lgb_path = _artifact_path(symbol, "lightgbm", style)
+    rf_path  = _artifact_path(symbol, "random_forest", style)
 
     lgb_res = None
     if lgb_path.exists():
         try:
-            lgb_res = predict_latest(symbol, "lightgbm", horizon)
+            lgb_res = predict_latest(symbol, "lightgbm", horizon, style=style)
         except Exception:
             lgb_res = None
 
     rf_res = None
     if rf_path.exists():
         try:
-            rf_res = predict_latest(symbol, "random_forest", horizon)
+            rf_res = predict_latest(symbol, "random_forest", horizon, style=style)
         except Exception:
             rf_res = None
 

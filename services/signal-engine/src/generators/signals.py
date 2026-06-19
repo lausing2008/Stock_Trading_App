@@ -239,8 +239,8 @@ def _fetch_weekly_prices(symbol: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
-    """Return (bullish_probability, test_auc, ml_meta).
+def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None, float, dict]:
+    """Return (bullish_probability, test_auc, ml_meta) for the given style.
 
     SA-8: tries the 3-model ensemble (XGBoost+LightGBM+RF) first, then 2-model,
     then XGBoost-only. ml_meta carries per-model probabilities and agreement status
@@ -248,8 +248,11 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
 
     test_auc drives the dynamic ML/TA fusion weight — a high-quality model (AUC 0.70)
     earns up to 75% weight; a near-random model (AUC < 0.52) gets 0% weight.
+
+    style_key routes to a horizon-specific artifact (e.g. {symbol}_short.joblib).
+    Falls back gracefully to the SWING artifact if a style-specific model is absent.
     """
-    payload = {"symbol": symbol}
+    payload = {"symbol": symbol, "style": style_key}
     endpoints = [
         ("/ml/predict_ensemble_three", payload),
         ("/ml/predict_ensemble",       payload),
@@ -1732,7 +1735,13 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df, ta_weights=_ta_weights)
     sr_data = _sr_context(df)
-    ml_prob, ml_test_auc, ml_meta = _fetch_ml_data(symbol)
+    # Per-style ML: each style has its own horizon-trained artifact.
+    # Falls back to the SWING artifact for styles not yet trained separately.
+    _ml_styles = ("SHORT", "SWING", "LONG", "GROWTH")
+    ml_by_style: dict[str, tuple[float | None, float, dict]] = {
+        sk: _fetch_ml_data(symbol, sk) for sk in _ml_styles
+    }
+    ml_prob, ml_test_auc, ml_meta = ml_by_style["SWING"]  # canonical for shared reasons
     market_regime, fg_score = _fetch_market_regime()
     breadth_pct = _fetch_market_breadth()
     days_to_earnings = _fetch_earnings_proximity(symbol)
@@ -1805,11 +1814,12 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     ta_prob_growth = float(np.clip(ta_prob + _growth_ta_adjustment(df, reasons), 0.0, 1.0))
 
     def _make_signal(style_key: str) -> "AIConfidence":
+        _ml_prob, _ml_auc, _ml_m = ml_by_style[style_key]
         tp = ta_prob_growth if style_key == "GROWTH" else ta_prob
         return _apply_style_signal(
             ta_prob=tp,
-            ml_prob=ml_prob,
-            ml_test_auc=ml_test_auc,
+            ml_prob=_ml_prob,
+            ml_test_auc=_ml_auc,
             style_key=style_key,
             market_regime=market_regime,
             adx_val=reasons.get("adx"),
@@ -1828,7 +1838,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             short_pct_float=short_pct_float,
             analyst_upgrades_7d=analyst_upgrades_7d,
             analyst_downgrades_7d=analyst_downgrades_7d,
-            ml_oos_suppressed=ml_meta.get("ml_oos_suppressed", False),
+            ml_oos_suppressed=_ml_m.get("ml_oos_suppressed", False),
         )
 
     return {k: _make_signal(k) for k in ("SHORT", "SWING", "LONG", "GROWTH")}
