@@ -46,6 +46,35 @@ from .email_service import send_trade_exit_email
 
 log = get_logger("paper_trading_engine")
 
+# AL-1: RL agent — loaded once at module level; falls back gracefully if missing
+try:
+    from .rl_agent import rl_recommend as _rl_recommend
+    _RL_AVAILABLE = True
+except ImportError:
+    _rl_recommend = None  # type: ignore[assignment]
+    _RL_AVAILABLE = False
+    log.warning("paper_trading_engine.rl_agent_unavailable", reason="import failed")
+
+# ── Service-to-service JWT token (for calling auth-protected internal endpoints) ──
+
+_svc_token_cache: str = ""
+
+
+def _svc_token() -> str:
+    global _svc_token_cache
+    if _svc_token_cache:
+        return _svc_token_cache
+    import time
+    from common.config import get_settings as _gs_tok
+    from jose import jwt as _jwt
+    _s = _gs_tok()
+    _svc_token_cache = _jwt.encode(
+        {"sub": "paper-engine", "exp": int(time.time()) + 365 * 86400, "jti": "paper-engine-service"},
+        _s.jwt_secret, algorithm="HS256",
+    )
+    return _svc_token_cache
+
+
 # ── PT-3: Entry score calibration — learned weights from closed paper trades ──
 
 _ENTRY_WEIGHTS_FILE = Path("/data/models/entry_weights.json")
@@ -890,25 +919,25 @@ def _should_enter(
     # ── AL-1: RL policy score adjustment ─────────────────────────────────────
     # Linear Q-function trained on closed paper trades. Adjusts the additive score
     # (±1) before the calibrated or raw threshold comparison.
-    try:
-        from .rl_agent import rl_recommend as _rl_recommend
-        _rl_rec = _rl_recommend(
-            rr_ratio=rr,
-            confidence=confidence,
-            entry_score=float(score),
-            kscore=kscore if kscore is not None else 50.0,
-            style=cfg.get("trading_style", "SWING"),
-            regime=(live_regime.get("state", "neutral") if live_regime else "neutral"),
-        )
-        if _rl_rec["available"]:
-            if _rl_rec["action"] == "BUY":
-                score += 1
-                notes.append(f"RL policy BUY (Q={_rl_rec['q_value']:.3f})")
-            else:
-                score -= 1
-                notes.append(f"RL policy WAIT (Q={_rl_rec['q_value']:.3f})")
-    except Exception:
-        pass  # RL failure is non-fatal
+    if _RL_AVAILABLE and _rl_recommend is not None:
+        try:
+            _rl_rec = _rl_recommend(
+                rr_ratio=rr,
+                confidence=confidence,
+                entry_score=float(score),
+                kscore=kscore if kscore is not None else 50.0,
+                style=cfg.get("trading_style", "SWING"),
+                regime=(live_regime.get("state", "neutral") if live_regime else "neutral"),
+            )
+            if _rl_rec["available"]:
+                if _rl_rec["action"] == "BUY":
+                    score += 1
+                    notes.append(f"RL policy BUY (Q={_rl_rec['q_value']:.3f})")
+                else:
+                    score -= 1
+                    notes.append(f"RL policy WAIT (Q={_rl_rec['q_value']:.3f})")
+        except Exception:
+            pass  # RL call failure is non-fatal
 
     # ── Decision ─────────────────────────────────────────────────────────────
 
@@ -1091,7 +1120,10 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         symbols_to_check = list({t.symbol for t in open_trades if t.stage == "open"})
         for _sym in symbols_to_check:
             try:
-                _rr = _hx_mon.get(f"{_res_url}/research/{_sym}/summary", timeout=1.0)
+                _rr = _hx_mon.get(
+                    f"{_res_url}/research/{_sym}/summary", timeout=1.0,
+                    headers={"Authorization": f"Bearer {_svc_token()}"},
+                )
                 if _rr.status_code == 200:
                     _rd = _rr.json()
                     if (_rd.get("recommendation") or "").upper() in ("AVOID", "SELL"):
@@ -2002,6 +2034,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 _res = _httpx.get(
                     f"{_gs().research_engine_url}/research/{stock.symbol}/summary",
                     timeout=1.5,
+                    headers={"Authorization": f"Bearer {_svc_token()}"},
                 )
                 if _res.status_code == 200:
                     _rs = _res.json()

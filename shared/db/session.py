@@ -298,6 +298,23 @@ def _run_migrations() -> None:  # noqa: C901
                     END IF;
                 END $$;
             """))
+        # INT-8 forward-return tracking columns added to signal_outcomes after initial table creation
+        for _col, _type in [
+            ("price_5d",       "FLOAT"),
+            ("return_5d",      "FLOAT"),
+            ("is_correct_5d",  "BOOLEAN"),
+            ("price_10d",      "FLOAT"),
+            ("return_10d",     "FLOAT"),
+            ("is_correct_10d", "BOOLEAN"),
+            ("price_20d",      "FLOAT"),
+            ("return_20d",     "FLOAT"),
+            ("is_correct_20d", "BOOLEAN"),
+            ("research_rec",   "VARCHAR(16)"),
+            ("research_score", "FLOAT"),
+        ]:
+            conn.execute(text(
+                f"ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS {_col} {_type}"
+            ))
 
 
 def _seed_admin() -> None:
