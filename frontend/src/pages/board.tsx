@@ -1117,10 +1117,13 @@ export default function BoardPage() {
     const worst = Math.min(...returns);
 
     // Per-style breakdown
-    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa' };
-    const styleBreakdown = (['SHORT', 'SWING', 'LONG', 'GROWTH'] as const)
+    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa', OTHER: '#64748b' };
+    const knownStyles = ['SHORT', 'SWING', 'LONG', 'GROWTH'] as const;
+    const styleBreakdown = ([...knownStyles, 'OTHER'] as string[])
       .map(style => {
-        const group = closed.filter(p => p.trading_style === style);
+        const group = style === 'OTHER'
+          ? closed.filter(p => !p.trading_style || !knownStyles.includes(p.trading_style as typeof knownStyles[number]))
+          : closed.filter(p => p.trading_style === style);
         if (group.length === 0) return null;
         const rets = group.map(p => {
           const eff = p.actual_entry_price ?? p.entry_price!;
