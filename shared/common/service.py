@@ -1,12 +1,26 @@
 """Factory for building a uniform FastAPI service across the platform."""
+import uuid
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI
+import structlog
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import get_settings
 from .logging import configure_logging, get_logger
+
+
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    """Generate X-Request-ID if absent; bind to structlog context for every request."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        with structlog.contextvars.bound_contextvars(request_id=req_id):
+            response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
 
 
 def create_app(
@@ -28,6 +42,10 @@ def create_app(
         logger.info("service.stop", name=name)
 
     app = FastAPI(title=name, version=version, lifespan=lifespan)
+
+    # Correlation ID middleware — must be added before CORS so the ID is
+    # bound for the full request lifecycle including CORS pre-flight handling.
+    app.add_middleware(CorrelationIdMiddleware)
 
     allowed_origins = (
         [o.strip() for o in settings.cors_origins.split(",") if o.strip()]

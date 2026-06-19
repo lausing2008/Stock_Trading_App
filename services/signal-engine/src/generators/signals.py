@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -121,6 +122,7 @@ _CONVICTION_WEIGHTS_PATH = Path(_settings.model_dir) / "conviction_weights.json"
 # Global ML weight cap override: None means use the per-style profile default.
 # Set by calibrate_ml_weight(); loaded at import time from disk if present.
 _ml_weight_global_cap: float | None = None
+_ml_weight_lock = threading.Lock()
 
 
 def _load_ml_weight_override() -> float | None:
@@ -140,7 +142,8 @@ def _load_ml_weight_override() -> float | None:
 def set_ml_weight_global_cap(cap: float | None) -> None:
     """Update the in-process ML weight cap override and persist to disk."""
     global _ml_weight_global_cap
-    _ml_weight_global_cap = cap
+    with _ml_weight_lock:
+        _ml_weight_global_cap = cap
     try:
         Path(_ML_WEIGHT_OVERRIDE_PATH).parent.mkdir(parents=True, exist_ok=True)
         if cap is None:

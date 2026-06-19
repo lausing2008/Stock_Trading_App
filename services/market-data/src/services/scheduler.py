@@ -244,6 +244,10 @@ def _post(url: str, **kwargs) -> None:
     tok = _service_token()
     if tok:
         headers = {"Authorization": f"Bearer {tok}", **headers}
+    # Propagate a correlation ID so all downstream service logs can be joined.
+    if "X-Request-ID" not in headers:
+        import uuid as _uuid
+        headers["X-Request-ID"] = str(_uuid.uuid4())
     kwargs["headers"] = headers
     last_exc: Exception | None = None
     for attempt, delay in enumerate(delays, start=1):

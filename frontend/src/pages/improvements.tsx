@@ -4252,6 +4252,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-global-mutable-state',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — signals.py: threading.Lock() on _ml_weight_global_cap write path. ranking routes.py: threading.Lock() on _ETF_CACHE all read/write paths. Partial fix: cross-worker state (multi-Gunicorn) still needs Redis; current EC2 single-worker deployment is safe.',
     tier: 14, severity: 'medium',
     title: 'Module-level mutable global state mutated from concurrent threads without locks',
     file: 'services/signal-engine/src/generators/signals.py · services/market-data/src/services/paper_trading_engine.py · services/ranking-engine/src/api/routes.py',
@@ -4262,6 +4264,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-no-corr-ids',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — shared/common/service.py: CorrelationIdMiddleware generates UUID X-Request-ID if absent, binds to structlog context, echoes in response header. scheduler.py _post() injects X-Request-ID on all outbound HTTP calls.',
     tier: 14, severity: 'medium',
     title: 'No request correlation IDs across service boundaries — incidents require manual timestamp correlation',
     file: 'services/market-data/src/main.py · services/api-gateway/src/main.py',
@@ -6162,6 +6166,26 @@ const ITEMS: Item[] = [
     file: 'frontend/src/components/PriceChart.tsx · frontend/src/pages/stock/[symbol].tsx',
     implementedNote: 'Done 2026-06-19. Lines appear automatically when Game Plan is generated; disappear if gamePlan is null. Chart re-renders with new levels via gamePlanLevels in useEffect deps.',
     impact: 'High — the most-requested visual improvement for game plan usability.',
+  },
+  {
+    id: 'TIER52-F', tier: 52, severity: 'medium', defaultStatus: 'done',
+    title: '52-F: Thread-safe global state — threading.Lock on _ml_weight_cap and _ETF_CACHE',
+    effort: '1h',
+    what: 'signals.py _ml_weight_global_cap was mutated by HTTP handlers and read during bulk signal generation without synchronization. ranking routes.py _ETF_CACHE was read/written from concurrent FastAPI requests with no lock — a potential cache stampede under load.',
+    fix: 'signals.py: added _ml_weight_lock = threading.Lock(); set_ml_weight_global_cap() acquires lock before assignment. ranking routes.py: added _ETF_CACHE_LOCK = threading.Lock(); all cache reads and writes wrapped. Partial fix: cross-worker (multi-Gunicorn) state isolation still requires Redis migration.',
+    file: 'services/signal-engine/src/generators/signals.py · services/ranking-engine/src/api/routes.py',
+    implementedNote: 'Done 2026-06-19. Single-worker EC2 deployment is now fully safe. Multi-worker would need Redis.',
+    impact: 'Medium — prevents cache stampede and lost calibration writes under concurrent load.',
+  },
+  {
+    id: 'TIER52-G', tier: 52, severity: 'medium', defaultStatus: 'done',
+    title: '52-G: X-Request-ID correlation IDs across all 8 services via shared middleware',
+    effort: '1h',
+    what: 'No service generated or propagated request correlation IDs. Diagnosing a failed signal refresh (market-data → signal-engine → ranking-engine) required manually correlating timestamps across 3+ log streams — unreliable under concurrent load.',
+    fix: 'shared/common/service.py: added CorrelationIdMiddleware (Starlette BaseHTTPMiddleware). Generates UUID X-Request-ID if absent in request; binds to structlog contextvars; echoes in response header. All 8 services using create_app() automatically get this. scheduler.py _post() now injects X-Request-ID on all outbound calls for end-to-end scheduler → service tracing.',
+    file: 'shared/common/service.py · services/market-data/src/services/scheduler.py',
+    implementedNote: 'Done 2026-06-19. All services: grep X-Request-ID in docker logs to trace a full request chain.',
+    impact: 'Medium — dramatically simplifies incident diagnosis; no user-visible change.',
   },
 ];
 

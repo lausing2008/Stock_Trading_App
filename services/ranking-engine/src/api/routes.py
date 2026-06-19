@@ -2,6 +2,7 @@
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import date, timedelta
+import threading
 import time as _time
 
 import httpx
@@ -48,13 +49,15 @@ _US_FALLBACK  = "SPY"
 
 _ETF_CACHE_TTL = 3600  # 1 hour
 _ETF_CACHE: dict[str, tuple[float | None, float]] = {}  # ticker → (return, timestamp)
+_ETF_CACHE_LOCK = threading.Lock()
 
 
 def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | None:
     """Return 20-day price return for an ETF/index. Reads from DB when session provided."""
-    cached = _ETF_CACHE.get(ticker)
-    if cached is not None and _time.time() - cached[1] < _ETF_CACHE_TTL:
-        return cached[0]
+    with _ETF_CACHE_LOCK:
+        cached = _ETF_CACHE.get(ticker)
+        if cached is not None and _time.time() - cached[1] < _ETF_CACHE_TTL:
+            return cached[0]
     # DB path — ETFs are seeded as inactive stocks with full price history
     if session is not None and not ticker.startswith("^"):
         from sqlalchemy import select as sa_select
@@ -65,22 +68,27 @@ def _etf_20d_return(ticker: str, session: "Session | None" = None) -> float | No
             df = _load_prices(session, stock.id, lookback=60)
             if not df.empty and len(df) >= 21:
                 ret = float(df["close"].iloc[-1] / df["close"].iloc[-21] - 1)
-                _ETF_CACHE[ticker] = (ret, _time.time())
+                with _ETF_CACHE_LOCK:
+                    _ETF_CACHE[ticker] = (ret, _time.time())
                 return ret
     # Fallback: yfinance (for ^HSI index and any ETF not yet in DB)
     if not _HAS_YF:
-        _ETF_CACHE[ticker] = (None, _time.time())
+        with _ETF_CACHE_LOCK:
+            _ETF_CACHE[ticker] = (None, _time.time())
         return None
     try:
         hist = yf.Ticker(ticker).history(period="2mo")
         if hist.empty or len(hist) < 21:
-            _ETF_CACHE[ticker] = (None, _time.time())
+            with _ETF_CACHE_LOCK:
+                _ETF_CACHE[ticker] = (None, _time.time())
             return None
         ret = float(hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1)
-        _ETF_CACHE[ticker] = (ret, _time.time())
+        with _ETF_CACHE_LOCK:
+            _ETF_CACHE[ticker] = (ret, _time.time())
         return ret
     except Exception:
-        _ETF_CACHE[ticker] = (None, _time.time())
+        with _ETF_CACHE_LOCK:
+            _ETF_CACHE[ticker] = (None, _time.time())
         return None
 
 
