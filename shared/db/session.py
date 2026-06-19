@@ -350,3 +350,19 @@ def _seed_admin() -> None:
             text("UPDATE watchlist_items SET user_id = :uid WHERE user_id IS NULL"),
             {"uid": admin_id},
         )
+
+        # AUD19-ARCH1: Seed service accounts so service JWT tokens (sub="scheduler",
+        # sub="paper-engine") resolve via get_current_user DB lookup when called via HTTP.
+        # These users have no usable password — login is blocked; only service JWTs work.
+        for _svc_user in ("scheduler", "paper-engine"):
+            _exists = conn.execute(
+                text("SELECT 1 FROM users WHERE username = :u"), {"u": _svc_user}
+            ).fetchone()
+            if not _exists:
+                conn.execute(
+                    text("""
+                        INSERT INTO users (username, password_hash, role, is_active, created_at)
+                        VALUES (:u, 'SERVICE_ACCOUNT_NO_LOGIN', 'ADMIN', true, now())
+                    """),
+                    {"u": _svc_user},
+                )
