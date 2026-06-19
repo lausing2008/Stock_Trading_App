@@ -378,6 +378,23 @@ export default function SignalFiltersPage() {
           <p style={{ margin: '4px 0 0', fontSize: 13, color: '#64748b' }}>
             All active stocks with suppression conditions from the latest signal. Hover dots for descriptions. Click headers to sort.
           </p>
+          {data && (() => {
+            const counts: Record<string, number> = {};
+            for (const r of data) counts[r.signal] = (counts[r.signal] ?? 0) + 1;
+            return (
+              <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                {([['BUY', '#4ade80'], ['HOLD', '#94a3b8'], ['WAIT', '#fbbf24'], ['SELL', '#f87171']] as const).map(([sig, color]) =>
+                  counts[sig] ? (
+                    <span key={sig} style={{ fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 5,
+                      color, background: `${color}18`, border: `1px solid ${color}44` }}>
+                      {counts[sig]} {sig}
+                    </span>
+                  ) : null
+                )}
+                <span style={{ fontSize: 11, color: '#334155', alignSelf: 'center' }}>{data.length} total</span>
+              </div>
+            );
+          })()}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button

@@ -1310,8 +1310,8 @@ export default function PaperPortfolioPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ color: '#64748b', borderBottom: '1px solid #334155' }}>
-                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', '% Port', 'P&L', 'Stop', 'Status', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research'].map(h => (
-                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 500 }}>{h}</th>
+                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', '% Port', 'P&L', 'Range', 'Stop', 'Status', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research'].map(h => (
+                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 500 }} title={h === 'Range' ? 'Entry → Current → Target progress bar. Shows how far current price has moved toward take-profit.' : undefined}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1343,6 +1343,32 @@ export default function PaperPortfolioPage() {
                       </td>
                       <td style={{ padding: '9px 10px', color: p.unrealized_pnl >= 0 ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
                         {fmtPct(p.unrealized_pct)} (${p.unrealized_pnl.toFixed(0)})
+                      </td>
+                      <td style={{ padding: '9px 10px' }}>
+                        {(() => {
+                          const entry = p.entry_price;
+                          const cur = p.current_price;
+                          const tgt = p.take_profit;
+                          if (!cur || !tgt || tgt <= entry) {
+                            return <span style={{ fontSize: 10, color: '#334155' }}>—</span>;
+                          }
+                          const span = tgt - entry;
+                          const progress = Math.max(0, Math.min(1, (cur - entry) / span));
+                          const pct = (progress * 100).toFixed(0);
+                          const barColor = cur >= entry ? '#22c55e' : '#ef4444';
+                          return (
+                            <div style={{ width: 72 }} title={`Entry $${entry.toFixed(2)} → Current $${cur.toFixed(2)} → Target $${tgt.toFixed(2)} (${pct}% of way)`}>
+                              <div style={{ height: 5, borderRadius: 3, background: '#1e293b', position: 'relative', overflow: 'hidden' }}>
+                                <div style={{ position: 'absolute', left: 0, width: `${progress * 100}%`, height: '100%', background: barColor, borderRadius: 3, transition: 'width 0.3s' }} />
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#475569', marginTop: 2 }}>
+                                <span>E</span>
+                                <span style={{ color: cur >= entry ? '#4ade80' : '#f87171', fontWeight: 600 }}>{pct}%</span>
+                                <span>T</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td style={{ padding: '9px 10px', color: '#f59e0b' }}>${p.current_stop.toFixed(2)}</td>
                       <td style={{ padding: '9px 10px' }}>

@@ -632,17 +632,32 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
                       {((plan.exit_price! - effectiveEntry) / (plan.take_profit - effectiveEntry) * 100).toFixed(0)}% of target
                     </div>
                   )}
-                  {plan.trading_style && (
-                    <div style={{
-                      fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px',
-                      letterSpacing: '0.06em',
-                      color: plan.trading_style === 'SHORT' ? '#f87171' : plan.trading_style === 'LONG' ? '#4ade80' : '#818cf8',
-                      background: plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.12)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.12)' : 'rgba(129,140,248,0.12)',
-                      border: `1px solid ${plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.3)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.3)' : 'rgba(129,140,248,0.3)'}`,
-                    }}>
-                      {plan.trading_style}
-                    </div>
-                  )}
+                  {(() => {
+                    const STYLE_C: Record<string, { color: string; bg: string; border: string }> = {
+                      SHORT:  { color: '#f87171', bg: 'rgba(248,113,113,0.12)',  border: 'rgba(248,113,113,0.3)'  },
+                      SWING:  { color: '#818cf8', bg: 'rgba(129,140,248,0.12)', border: 'rgba(129,140,248,0.3)'  },
+                      LONG:   { color: '#4ade80', bg: 'rgba(74,222,128,0.12)',  border: 'rgba(74,222,128,0.3)'   },
+                      GROWTH: { color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', border: 'rgba(167,139,250,0.3)'  },
+                    };
+                    if (plan.trading_style) {
+                      const c = STYLE_C[plan.trading_style] ?? { color: '#64748b', bg: 'rgba(100,116,139,0.12)', border: 'rgba(100,116,139,0.3)' };
+                      return <div style={{ fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px', letterSpacing: '0.06em', color: c.color, background: c.bg, border: `1px solid ${c.border}` }}>{plan.trading_style}</div>;
+                    }
+                    return (
+                      <select
+                        onClick={e => e.stopPropagation()}
+                        onChange={async e => {
+                          if (!e.target.value) return;
+                          await api.updateBoardPlan(plan.id, { trading_style: e.target.value });
+                          onExitSaved();
+                        }}
+                        style={{ fontSize: 10, background: '#0f172a', color: '#475569', border: '1px solid #1e293b', borderRadius: 4, padding: '1px 4px', cursor: 'pointer' }}
+                      >
+                        <option value="">Set style…</option>
+                        {['SHORT', 'SWING', 'LONG', 'GROWTH'].map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    );
+                  })()}
                 </div>
               </div>
             ) : (

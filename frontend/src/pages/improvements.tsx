@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5776,6 +5776,39 @@ const ITEMS: Item[] = [
   // ── Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18) ──
 
   {
+    id: 'TIER49-A', tier: 49, severity: 'feature', defaultStatus: 'done',
+    title: '49-A: Trade Board — style picker on closed cards with no style set',
+    effort: '20m',
+    what: 'Closed trades with no trading_style (e.g. TSM) showed no style chip, causing them to appear in the OTHER bucket in the BY STYLE breakdown. There was no way to retroactively tag a closed trade with a style from the board UI.',
+    fix: 'When plan.trading_style is null on a closed card, show a "Set style…" <select> dropdown (SHORT/SWING/LONG/GROWTH). On select, calls api.updateBoardPlan({ trading_style }) and refreshes the board. Also unified style colors across all 4 styles (GROWTH was missing its #a78bfa color in the closed card).',
+    file: 'frontend/src/pages/board.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium — retroactively tag unclassified closed trades; fixes BY STYLE accuracy for TSM and any future null-style trades.',
+  },
+  {
+    id: 'TIER49-B', tier: 49, severity: 'feature', defaultStatus: 'done',
+    title: '49-B: Signal Filter — signal count badges in page header',
+    effort: '15m',
+    what: 'The Signal Filter Monitor page showed a table of all signals but no at-a-glance summary of how many BUY/HOLD/SELL/WAIT signals exist in the current style. Users had to count or scroll to get a sense of the signal landscape.',
+    fix: 'Added count badges (e.g. "12 BUY · 34 HOLD · 8 SELL · 150 total") below the page title. Computed inline from raw data (not filtered rows) so the counts reflect the full universe regardless of active filters.',
+    file: 'frontend/src/pages/signal-filters.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Low-medium — instant signal landscape snapshot without reading the table.',
+  },
+  {
+    id: 'TIER49-C', tier: 49, severity: 'feature', defaultStatus: 'done',
+    title: '49-C: Paper Portfolio — entry→current→target range bar per position',
+    effort: '20m',
+    what: 'The Positions tab showed P&L % and $ but not how far each position had traveled toward its take-profit target. A position at +8% with a 15% target is very different from one at +8% with a 9% target — the first is halfway there, the second is almost done.',
+    fix: 'Added "Range" column showing a mini progress bar: green fill from entry → current price, with E and T anchors. Progress % displayed between anchors. Tooltip shows raw prices. Shows "—" when no take_profit is set. Uses existing PaperPosition data — no API calls.',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium — immediately see which positions are near their target vs barely moving.',
+  },
+
+  // ── Tier 48 — Signal Filter + Portfolio Sizing + Rankings Filter (2026-06-18) ──
+
+  {
     id: 'TIER48-A', tier: 48, severity: 'feature', defaultStatus: 'done',
     title: '48-A: Rankings — signal filter chips (All / BUY / HOLD / SELL / Divergent)',
     effort: '20m',
@@ -5996,6 +6029,7 @@ const TIER_LABEL: Record<Tier, string> = {
   46: 'Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18)',
   47: 'Tier 47 — Rankings Signal Column + Exit Breakdown + Journal Comparison (2026-06-18)',
   48: 'Tier 48 — Signal Filter + Portfolio Sizing + Rankings Filter (2026-06-18)',
+  49: 'Tier 49 — Board Style Picker + Signal Counts + Position Range Bar (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6047,6 +6081,7 @@ const TIER_COLOR: Record<Tier, string> = {
   46: '#34d399',
   47: '#f472b6',
   48: '#818cf8',
+  49: '#fb923c',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -6118,7 +6153,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
