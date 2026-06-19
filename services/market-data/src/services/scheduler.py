@@ -877,9 +877,16 @@ def check_signal_alerts() -> None:
             # live=False: read stored DB signal — consistent with signal filter page.
             # live=True (old default) caused intraday oscillation for threshold-boundary
             # stocks: the signal would flip BUY↔HOLD on every 1-minute check.
+            # AUD19-PERF1: 45s wall-clock budget prevents blocking APScheduler thread pool.
+            _SIGNAL_BUDGET_S = 45.0
+            _alert_t0 = time.monotonic()
             signals: dict[tuple[str, str], str] = {}
             signal_details: dict[tuple[str, str], dict] = {}
+            _skipped_signals = 0
             for sym, style in style_sym_pairs:
+                if time.monotonic() - _alert_t0 > _SIGNAL_BUDGET_S:
+                    _skipped_signals += 1
+                    continue
                 try:
                     r = httpx.get(
                         f"{_settings.signal_engine_url}/signals/{sym}",
@@ -891,11 +898,20 @@ def check_signal_alerts() -> None:
                         signal_details[(sym, style)] = payload
                 except Exception:
                     pass
+            if _skipped_signals:
+                log.warning("signal_alert.budget_exceeded_signals",
+                            skipped=_skipped_signals, budget_s=_SIGNAL_BUDGET_S)
 
             # Fetch analyst ratings + fundamentals (rec_mean, earnings, insider data)
+            _FUND_BUDGET_S = 45.0
+            _fund_t0 = time.monotonic()
             analyst_ratings: dict[str, str] = {}
             fundamentals_cache: dict[str, dict] = {}
+            _skipped_fundamentals = 0
             for sym in symbols:
+                if time.monotonic() - _fund_t0 > _FUND_BUDGET_S:
+                    _skipped_fundamentals += 1
+                    continue
                 try:
                     r = httpx.get(f"{_settings.market_data_url}/stocks/{sym}/fundamentals", timeout=10)
                     if r.status_code == 200:
@@ -904,6 +920,9 @@ def check_signal_alerts() -> None:
                         fundamentals_cache[sym] = payload
                 except Exception:
                     pass
+            if _skipped_fundamentals:
+                log.warning("signal_alert.budget_exceeded_fundamentals",
+                            skipped=_skipped_fundamentals, budget_s=_FUND_BUDGET_S)
 
             # Fetch K-Scores in one bulk call for Layer 2 conviction check
             kscores: dict[str, float] = {}

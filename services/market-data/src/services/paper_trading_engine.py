@@ -1326,6 +1326,8 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                         _so.entry_date  = trade.entry_date
                         _so.exit_price  = exit_price
                         _so.exit_date   = now.date()
+                        # AUD19-DB3: cutoffs are calendar-day approximations of trading-day horizons.
+                        # 7 calendar days ≈ 5 trading days (SHORT), 14 ≈ 10 (SWING), 15+ ≈ 11–20+ (LONG).
                         _bucket = "5d" if days_held <= 7 else ("10d" if days_held <= 14 else "20d")
                         setattr(_so, f"return_{_bucket}", round(pnl_pct * 100, 4))
                         setattr(_so, f"is_correct_{_bucket}", pnl_dollar > 0)
@@ -1870,6 +1872,14 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         return 0.5 * conf_score + 0.3 * kscore_score + 0.2 * breakout_bonus
     buy_signals = sorted(buy_signals, key=_composite_priority, reverse=True)
 
+    # AUD19-PERF2: Pre-fetch all open trades + their stocks ONCE before the candidate loop.
+    # Eliminates N+1 queries for open-risk, sector value, and sector count checks.
+    _prefetched_open: list[tuple] = session.execute(
+        select(PaperTrade, Stock)
+        .join(Stock, PaperTrade.symbol == Stock.symbol)
+        .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
+    ).all()
+
     # PT-P2 + PA-F1: batch-fetch ATR for all candidates in ONE yfinance download
     candidate_syms = [stock.symbol for _, stock, _ in buy_signals]
     atr_cache: dict[str, float | None] = _batch_compute_atr(list(set(candidate_syms)))
@@ -2094,15 +2104,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             position_value = round(shares * live_price, 2)
 
         # PT-B5: Aggregate open-risk check — sum (price - stop) * shares for all open trades
+        # AUD19-PERF2: uses _prefetched_open (pre-fetched before the loop) — no DB query.
         max_open_risk = cfg.get("max_open_risk_pct", 0.12)
         if max_open_risk and equity > 0:
             open_risk = sum(
                 abs(live_prices.get(t.symbol, t.entry_price) - t.current_stop) * t.shares
-                for t in session.execute(
-                    select(PaperTrade).where(
-                        PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open"
-                    )
-                ).scalars().all()
+                for t, _ in _prefetched_open
             )
             new_trade_risk = stop_distance * shares
             if (open_risk + new_trade_risk) / equity > max_open_risk:
@@ -2111,16 +2118,24 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                          limit_pct=round(max_open_risk * 100, 1))
                 continue
 
-        # Sector concentration check — applies to ALL stocks, including null-sector ones
+        # Sector concentration check — AUD19-PERF2: computed in Python from pre-fetched open trades.
         _sector = stock.sector  # may be None (unclassified stocks count against a shared bucket)
-        sector_value = _sector_value(session, portfolio, _sector, live_prices)
+        sector_value = sum(
+            _best_price(t, live_prices) * t.shares
+            for t, st in _prefetched_open
+            if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
+        )
         if (sector_value + position_value) / max(equity, 1) > cfg["max_sector_pct"]:
             log.info("paper.skip_sector_cap", symbol=stock.symbol,
                      sector=_sector or "unclassified",
                      sector_pct=round((sector_value + position_value) / equity * 100, 1))
             continue
         max_sector_pos = int(cfg.get("max_sector_positions", 3))
-        if _sector_count(session, portfolio, _sector) >= max_sector_pos:
+        sector_count = sum(
+            1 for _, st in _prefetched_open
+            if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
+        )
+        if sector_count >= max_sector_pos:
             log.info("paper.skip_sector_count_cap", symbol=stock.symbol,
                      sector=_sector or "unclassified", limit=max_sector_pos)
             continue

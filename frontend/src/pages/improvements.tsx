@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6265,6 +6265,135 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-19. Old _run_migrations() retained for backward compat (all IF NOT EXISTS). Use alembic revision --autogenerate -m "description" for new changes.',
     impact: 'Medium — eliminates ambiguous schema state across deployments; enables autogenerate detection of model-DB drift.',
   },
+
+  // ── Tier 55 — Full System Audit 2026-06-19 ───────────────────────────────────
+  {
+    id: 'AUD19-DB1', tier: 55, severity: 'critical', defaultStatus: 'done',
+    title: 'AUD19-DB1 (FIXED): INT-8 signal_outcomes columns missing from migration',
+    file: 'shared/db/session.py · signal-engine/routes.py · paper_trading_engine.py',
+    effort: '1h',
+    impact: 'Critical — ALL signal outcome calibration was silently failing. Every trade exit writeback to price_5d/return_5d/is_correct_5d (×3 horizons) + research_rec + research_score raised column-not-found and was swallowed by except. Zero outcome data accumulated → SA-31 conviction weights, TA weight tuning, and Optuna ran on empty history permanently.',
+    what: 'signal_outcomes table was created before INT-8 was added. CREATE TABLE in session.py had only 14 original columns. The 11 INT-8 columns added to the SignalOutcome ORM model had no corresponding ADD COLUMN IF NOT EXISTS migration statements. On EC2 (existing DB), Base.metadata.create_all() is a no-op → columns never added.',
+    fix: 'Added 11 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS statements to _run_migrations() in session.py for: price_5d, return_5d, is_correct_5d, price_10d, return_10d, is_correct_10d, price_20d, return_20d, is_correct_20d, research_rec (VARCHAR), research_score. Deployed and verified all 31 columns exist on EC2.',
+    implementedNote: 'Fixed 2026-06-19. All 31 columns verified via information_schema query on EC2. Future trade exits now write outcome data correctly.',
+  },
+  {
+    id: 'AUD19-PERF1', tier: 55, severity: 'high', defaultStatus: 'done',
+    title: 'AUD19-PERF1 (FIXED): N×M sequential HTTP calls in check_signal_alerts — 41-min theoretical block',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '1h',
+    impact: 'High — with 50 alert symbols × 4 horizons + fundamentals: 250 sequential 10s-timeout calls = 41-min worst case. Exhausts APScheduler thread pool, delays or drops paper_trading_step, price refresh, and other jobs.',
+    what: 'check_signal_alerts() fetched signals (httpx.get per (symbol,horizon) pair) and fundamentals (httpx.get per symbol) sequentially with no time budget. Signals and fundamentals calls had 10s timeouts each. Under load, the 1-minute job ran for multiple minutes.',
+    fix: 'Added 45-second wall-clock budget at the start of each sequential fetch loop. After elapsed > 45s, the loop exits and logs a warning with how many pairs/symbols were skipped. This caps the alert checker at ≤90s total (signal loop + fundamental loop) in the worst case.',
+    implementedNote: 'Fixed 2026-06-19. Wall-clock budget added to both the (sym,style) signal loop and the per-symbol fundamentals loop.',
+  },
+  {
+    id: 'AUD19-BUG1', tier: 55, severity: 'high', defaultStatus: 'done',
+    title: 'AUD19-BUG1: Decimal/float arithmetic — Mapped[float] annotation prevents runtime TypeError',
+    file: 'shared/db/models.py · services/market-data/src/services/paper_trading_engine.py',
+    effort: '0.5h',
+    impact: 'Low (confirmed safe) — SQLAlchemy 2.x honors Mapped[float] annotation on Numeric(20,6) columns, returning Python float on reads. NUMERIC storage provides precision at rest; float Python arithmetic is consistent with the existing round(..., 2) pattern. No TypeError occurs.',
+    what: 'Audit finding: NUMERIC(20,6) columns return Decimal; code does Decimal-float arithmetic raising TypeError. Verified: with Mapped[float], SQLAlchemy sets asdecimal=False automatically, returning float. Cash arithmetic is round(float - float, 2) → float, stored as NUMERIC(20,6) at DB level. No active bug.',
+    fix: 'Verified safe. Added clarifying comment in models.py confirming Mapped[float] + Numeric(20,6) = float return, NUMERIC storage. No code change needed.',
+    implementedNote: 'Verified 2026-06-19. Mapped[float] annotation causes SQLAlchemy to use asdecimal=False. System running correctly.',
+  },
+  {
+    id: 'AUD19-PERF2', tier: 55, severity: 'high', defaultStatus: 'done',
+    title: 'AUD19-PERF2 (FIXED): N+1 DB queries per entry candidate in _scan_for_entries',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'High (future scale) — 3 extra DB queries per candidate (open-risk, sector value, sector count). With 20 candidates and multi-user portfolios, 60+ redundant queries per scan cycle. Currently ~60ms overhead, but O(users × candidates) as portfolios grow.',
+    what: 'Inside the buy_signals loop: (1) SELECT * FROM paper_trades WHERE stage=open for aggregated open risk; (2) _sector_value() — another query for open trades in the same sector; (3) _sector_count() — a count query. All three fetched from DB per candidate despite the data being static during one scan cycle.',
+    fix: 'Pre-fetched all open trades + their associated stocks once before the candidate loop. Open-risk calculation now iterates the pre-fetched list. _sector_value() and _sector_count() replaced with in-Python computation over the pre-fetched list using sector groupings.',
+    implementedNote: 'Fixed 2026-06-19. Single DB fetch before the loop replaces N×3 fetches inside it.',
+  },
+  {
+    id: 'AUD19-ARCH1', tier: 55, severity: 'high',
+    title: 'AUD19-ARCH1: RL/calibration endpoints require admin DB user — service token returns 401 via HTTP',
+    file: 'api/rl.py · api/paper_portfolio.py · shared/db/session.py',
+    effort: '1h',
+    impact: 'Medium (operational gap) — POST /rl-agent/train and POST /calibrate-entry can only be triggered via direct function call (scheduler does this), not via HTTP with the service token. Developer debugging or manual triggering requires knowing to call functions directly. Misleading 401 when using service token via curl/HTTP.',
+    what: 'get_admin_user does a DB lookup by username from the JWT sub. Service tokens have sub="scheduler" or sub="paper-engine" — no corresponding User row exists. Direct function calls bypass HTTP auth (scheduler does this). But the HTTP endpoint returns 401 for service tokens.',
+    fix: 'Seed a "scheduler" service user row in _seed_admin() (no password, role=ADMIN, is_active=True). Service tokens with sub="scheduler" then resolve correctly via HTTP. The direct-call path from scheduler remains as a fallback.',
+  },
+  {
+    id: 'AUD19-SEC1', tier: 55, severity: 'medium', defaultStatus: 'done',
+    title: 'AUD19-SEC1 (FIXED): Token blacklist bulk-clear evicts active revoked tokens under Redis failure',
+    file: 'services/market-data/src/api/auth.py',
+    effort: '30min',
+    impact: 'Medium security edge case — if Redis is down AND 2000 sessions are active simultaneously, a logged-out user\'s token becomes temporarily reusable for up to 1 hour. Requires two simultaneous failures (Redis down + 2000 active sessions). Fixed proactively.',
+    what: '_BLACKLIST_MEM.clear() at 2000 entries wiped ALL entries including active revocations. If Redis was simultaneously down, the cleared revocations were lost — logged-out tokens could be reused until they naturally expired.',
+    fix: 'Replaced .clear() with expired-entry prune: evict only entries whose expiry timestamp < now(). Active revocations (expiry in the future) are preserved. After pruning, if still >2000 entries (2000 active non-expired revocations — unrealistic), oldest are dropped by sort.',
+    implementedNote: 'Fixed 2026-06-19. _BLACKLIST_MEM prune now targets only expired entries.',
+  },
+  {
+    id: 'AUD19-DB2', tier: 55, severity: 'medium', defaultStatus: 'done',
+    title: 'AUD19-DB2 (FIXED): strategy-engine calls init_db() — concurrent migrations with market-data on startup',
+    file: 'services/strategy-engine/src/main.py',
+    effort: '30min',
+    impact: 'Medium — both containers starting simultaneously issue 40+ ACCESS EXCLUSIVE ALTER TABLE locks. Second container can stall 30–90s, triggering Docker healthcheck restarts and cascading startup loops on EC2 reboot.',
+    what: 'market-data on_startup calls init_db() → _run_migrations() → 40+ ALTER TABLE statements (ACCESS EXCLUSIVE locks). strategy-engine also calls init_db() for the same schema. Concurrent migrations from two containers create lock contention on every table.',
+    fix: 'Removed init_db() from strategy-engine on_startup. Replaced with a lightweight connection health check (SELECT 1). Only market-data owns the migration path.',
+    implementedNote: 'Fixed 2026-06-19. strategy-engine now does SELECT 1 on startup instead of running migrations.',
+  },
+  {
+    id: 'AUD19-BUG2', tier: 55, severity: 'medium', defaultStatus: 'done',
+    title: 'AUD19-BUG2 (FIXED): RL agent import inside _should_enter() hot path silently swallows ImportError',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '15min',
+    impact: 'Medium — if rl_agent.py fails to import (numpy/sklearn missing), the ImportError is caught by the outer except Exception: pass on every _should_enter() call. No log, no metric — RL integration appears broken but the failure is invisible.',
+    what: 'from .rl_agent import rl_recommend was inside the try block. ImportError → swallowed by except Exception: pass. Developers adding log statements to rl_agent.py would be confused when they never fire.',
+    fix: 'Moved import to module level with _RL_AVAILABLE flag. ImportError at module load logs a warning once (paper_trading_engine.rl_agent_unavailable). Inside _should_enter(), checks if _RL_AVAILABLE before attempting the call.',
+    implementedNote: 'Fixed 2026-06-19 (same commit as DB-1 fix). _RL_AVAILABLE flag set at module load.',
+  },
+  {
+    id: 'AUD19-ARCH2', tier: 55, severity: 'medium',
+    title: 'AUD19-ARCH2: CORS defaults to wildcard allow_origins when CORS_ORIGINS env var not set',
+    file: 'shared/common/service.py · EC2 .env',
+    effort: '15min',
+    impact: 'Medium security hardening — all 9 services respond with Access-Control-Allow-Origin: * when CORS_ORIGINS is not configured. Nginx partially mitigates, but defense-in-depth is missing. Cross-origin unauthenticated requests accepted from any domain.',
+    what: 'service.py CORSMiddleware uses allow_origins=["*"] as fallback. No CORS_ORIGINS env var is set in EC2 .env. With allow_credentials=False (default), cookie CSRF is not a risk, but the policy is overly permissive.',
+    fix: 'Add CORS_ORIGINS=https://lausing.com,https://www.lausing.com to EC2 .env file. No code change needed — service.py already reads settings.cors_origins. Verify with curl -H "Origin: https://evil.com" checking response headers.',
+  },
+  {
+    id: 'AUD19-UX1', tier: 55, severity: 'medium', defaultStatus: 'done',
+    title: 'AUD19-UX1 (FIXED): RL agent and entry calibration endpoints not wired into any frontend UI',
+    file: 'frontend/src/lib/api.ts · frontend/src/pages/board.tsx',
+    effort: '1h',
+    impact: 'Medium UX gap — when the RL model produces unexpected behavior (systematically vetoing all entries), there is no UI surface to diagnose it. Admin must call API directly to see policy status, feature importance, or calibrated entry weights.',
+    what: 'GET /rl-agent/status, GET /paper-portfolio/entry_factors, and GET /rl-agent/recommend were added in the previous session but not wired into api.ts or any page component.',
+    fix: 'Added api.rlStatus(), api.entryFactors(), api.rlRecommend() to api.ts. Added an ML Tuning status card to the paper portfolio board page showing: RL policy status (trained/not, n_trades, win_rate, feature_importance), entry factor weights (w_rr, w_confidence, w_score, w_kscore, threshold), and last calibrated timestamp.',
+    implementedNote: 'Fixed 2026-06-19. RL status + entry factor weights visible in board ML tab.',
+  },
+  {
+    id: 'AUD19-SEC2', tier: 55, severity: 'low',
+    title: 'AUD19-SEC2: Broker OAuth credentials stored as plaintext JSON in DB config column',
+    file: 'shared/db/models.py:534 BrokerConnection.config',
+    effort: '2h',
+    impact: 'Low (mitigated by DB network isolation) — OAuth consumer_key, consumer_secret, oauth_token, oauth_token_secret stored as plaintext JSON. A DB dump (backup, pg_dump, misconfigured port) exposes all broker credentials in plaintext.',
+    what: 'BrokerConnection.config stores full OAuth credential bundle as plaintext JSON. DB is only accessible from within Docker network (not publicly exposed), so the attack surface is a compromised container or a backup file.',
+    fix: 'Encrypt config JSON with Fernet using JWT secret as key: key = base64.urlsafe_b64encode(hashlib.sha256(jwt_secret.encode()).digest()); f = Fernet(key). Encrypt on write, decrypt on read. DB dumps then contain ciphertext only.',
+  },
+  {
+    id: 'AUD19-DB3', tier: 55, severity: 'low', defaultStatus: 'done',
+    title: 'AUD19-DB3 (FIXED): signal_outcomes outcome bucket labels clarified — calendar-day approximation of trading-day horizons',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '15min',
+    impact: 'Low — _bucket assignment used calendar-day cutoffs (7/14 days) to map to trading-day horizon labels (5d/10d/20d). Semantically correct (7 calendar ≈ 5 trading days), but undocumented. Added clarifying comment.',
+    what: '"5d" bucket = ≤7 calendar days (≈5 trading days), "10d" = 8–14 calendar days (≈10 trading days), "20d" = ≥15 calendar days (≈10–20+ trading days). The ≥15-day cutoff is a pragmatic approximation; 20 trading days = 28 calendar days but most LONG exits happen 15–25 calendar days.',
+    fix: 'Added comment documenting the calendar-day-to-trading-day approximation so future maintainers understand the cutoff rationale.',
+    implementedNote: 'Fixed 2026-06-19. Comment added; no functional change to bucket logic.',
+  },
+  {
+    id: 'AUD19-CONN1', tier: 55, severity: 'low', defaultStatus: 'done',
+    title: 'AUD19-CONN1 (FIXED): Research engine calls in _monitor_positions() and _scan_for_entries() missing auth header',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30min',
+    impact: 'High functional fix — PT-I1 research deterioration stop-tightening never fired (always got 401 from research engine). Research-gated position sizing also never worked. Both features appeared implemented but were silently 401ing on every call.',
+    what: 'httpx.get(f"{_res_url}/research/{sym}/summary", timeout=1.0) called without Authorization header. research-engine /research/{symbol}/summary requires JWT. The broad except Exception: pass swallowed the 401, _research_deteriorated was always empty, and the size multiplier always stayed at 1.0.',
+    fix: 'Added _svc_token() helper at module level (same pattern as scheduler._service_token()). Both research calls now pass headers={"Authorization": f"Bearer {_svc_token()}"}.',
+    implementedNote: 'Fixed 2026-06-19 (same commit as DB-1 fix). _svc_token() generates a long-lived service JWT cached in module scope.',
+  },
 ];
 
 
@@ -6330,6 +6459,7 @@ const TIER_LABEL: Record<Tier, string> = {
   52: 'Tier 52 — Audit Fix Wave 3: Backtest Lookahead + Benchmark + K-Score Labels + Research Fallback (2026-06-19)',
   53: 'Tier 53 — Audit Fix Wave 4: Adj-Close in Signal Engine + ML Feature Builder (2026-06-19)',
   54: 'Tier 54 — Audit Fix Wave 5: Per-Horizon ML + Survivorship + Numeric Cash + Alembic (2026-06-19)',
+  55: 'Tier 55 — Full System Audit 2026-06-19: 13 findings (1 Critical · 4 High · 5 Medium · 3 Low)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6387,6 +6517,7 @@ const TIER_COLOR: Record<Tier, string> = {
   52: '#a78bfa',
   53: '#f59e0b',
   54: '#34d399',
+  55: '#f87171',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

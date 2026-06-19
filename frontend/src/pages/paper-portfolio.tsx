@@ -749,6 +749,105 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
   );
 }
 
+// ── AUD19-UX1: ML Intelligence Status panel (RL agent + entry calibration) ─────
+
+function MLIntelligencePanel() {
+  const { data: rl, mutate: mutateRl } = useSWR('rl-status', () => api.rlStatus(), { revalidateOnFocus: false });
+  const { data: ef, mutate: mutateEf } = useSWR('entry-factors', () => api.entryFactors(), { revalidateOnFocus: false });
+  const [trainMsg, setTrainMsg] = useState('');
+  const [calMsg, setCalMsg] = useState('');
+
+  async function trainRl() {
+    setTrainMsg('Starting...');
+    try { await api.rlTrain(); setTrainMsg('Training started in background'); setTimeout(() => mutateRl(), 5000); }
+    catch { setTrainMsg('Failed'); }
+  }
+  async function calibrate() {
+    setCalMsg('Starting...');
+    try { await api.calibrateEntry(); setCalMsg('Calibration started in background'); setTimeout(() => mutateEf(), 5000); }
+    catch { setCalMsg('Failed'); }
+  }
+
+  const cardStyle: React.CSSProperties = { background: '#0f172a', borderRadius: 8, padding: '12px 16px', border: '1px solid #334155', flex: 1, minWidth: 200 };
+  const labelStyle: React.CSSProperties = { fontSize: 11, color: '#64748b', marginBottom: 2 };
+  const valStyle: React.CSSProperties = { fontSize: 13, fontWeight: 600, color: '#f1f5f9' };
+
+  return (
+    <div style={{ background: '#1e293b', borderRadius: 10, padding: 20, border: '1px solid #334155' }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: '#f1f5f9' }}>ML Intelligence Status (AL-1 · PT-3)</div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 16 }}>
+        RL policy uses Ridge regression on closed trade history to adjust entry scores (±1). Entry calibration fits logistic regression on win/loss outcomes to compute calibrated win-probability.
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+        {/* RL Policy */}
+        <div style={cardStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#818cf8' }}>RL Policy (AL-1)</span>
+            <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4,
+              background: rl?.status === 'trained' ? 'rgba(34,197,94,0.15)' : 'rgba(100,116,139,0.15)',
+              color: rl?.status === 'trained' ? '#4ade80' : '#64748b' }}>
+              {rl?.status ?? '...'}
+            </span>
+          </div>
+          {rl?.status === 'trained' ? (
+            <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.8 }}>
+              <div><span style={labelStyle}>Trades used:</span> <span style={valStyle}>{rl.n_trades}</span></div>
+              <div><span style={labelStyle}>Win rate:</span> <span style={{ ...valStyle, color: (rl.win_rate ?? 0) >= 0.5 ? '#4ade80' : '#f87171' }}>{rl.win_rate != null ? `${(rl.win_rate * 100).toFixed(1)}%` : '—'}</span></div>
+              <div><span style={labelStyle}>BUY threshold:</span> <span style={valStyle}>{rl.threshold != null ? `Q ≥ ${(rl.threshold * 100).toFixed(0)}th %ile` : '—'}</span></div>
+              {rl.trained_at && <div style={{ fontSize: 10, color: '#475569', marginTop: 4 }}>Updated {new Date(rl.trained_at).toLocaleDateString()}</div>}
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, color: '#475569' }}>Not trained — runs Sunday after close when ≥50 closed trades exist.</div>
+          )}
+        </div>
+
+        {/* Entry Calibration */}
+        <div style={cardStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>Entry Calibration (PT-3)</span>
+            <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4,
+              background: ef?.status === 'calibrated' ? 'rgba(34,197,94,0.15)' : 'rgba(100,116,139,0.15)',
+              color: ef?.status === 'calibrated' ? '#4ade80' : '#64748b' }}>
+              {ef?.status ?? '...'}
+            </span>
+          </div>
+          {ef?.status === 'calibrated' ? (
+            <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.8 }}>
+              <div><span style={labelStyle}>Trades used:</span> <span style={valStyle}>{ef.n_trades}</span></div>
+              <div><span style={labelStyle}>Win rate:</span> <span style={{ ...valStyle, color: (ef.win_rate ?? 0) >= 0.5 ? '#4ade80' : '#f87171' }}>{ef.win_rate != null ? `${(ef.win_rate * 100).toFixed(1)}%` : '—'}</span></div>
+              <div><span style={labelStyle}>Win-prob threshold:</span> <span style={valStyle}>{ef.threshold != null ? `${(ef.threshold * 100).toFixed(0)}%` : '—'}</span></div>
+              <div style={{ marginTop: 6, fontSize: 11, color: '#64748b' }}>Weights:
+                R:R {ef.w_rr?.toFixed(3) ?? '—'} · Conf {ef.w_confidence?.toFixed(3) ?? '—'} · Score {ef.w_score?.toFixed(3) ?? '—'} · KScore {ef.w_kscore?.toFixed(3) ?? '—'}
+              </div>
+              {ef.calibrated_at && <div style={{ fontSize: 10, color: '#475569', marginTop: 4 }}>Updated {new Date(ef.calibrated_at).toLocaleDateString()}</div>}
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, color: '#475569' }}>Not calibrated — runs Sunday after close when ≥100 closed trades exist.</div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <button onClick={trainRl}
+          style={{ background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
+          Train RL Now
+        </button>
+        <button onClick={calibrate}
+          style={{ background: '#b45309', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
+          Calibrate Entry Now
+        </button>
+        <button onClick={() => { mutateRl(); mutateEf(); }}
+          style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', fontSize: 12 }}>
+          Refresh
+        </button>
+        {trainMsg && <span style={{ fontSize: 11, color: '#f59e0b' }}>{trainMsg}</span>}
+        {calMsg && <span style={{ fontSize: 11, color: '#f59e0b' }}>{calMsg}</span>}
+      </div>
+    </div>
+  );
+}
+
 // ── AL-4: Trade Parameter Optimizer panel (admin only) ────────────────────────
 
 const STYLE_OPTIONS = ['SWING', 'GROWTH', 'LONG', 'SHORT'];
@@ -1889,6 +1988,7 @@ export default function PaperPortfolioPage() {
             />
             <ConfigPanel config={summary.config} onSave={mutateSummary} portfolioId={selectedPortfolioId} />
             <TradeParamsPanel onDone={mutateSummary} />
+            <MLIntelligencePanel />
           </div>
         )}
 

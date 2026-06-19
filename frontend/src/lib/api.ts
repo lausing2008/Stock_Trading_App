@@ -439,6 +439,19 @@ export const api = {
     request<{ status: string; style: string; n_trials: number }>(
       `/paper-portfolio/tune-params?style=${style}&n_trials=${nTrials}`, { method: 'POST' }
     ),
+  rlStatus: () => request<{
+    status: 'trained' | 'not_trained';
+    n_trades?: number; win_rate?: number; threshold?: number;
+    feature_importance?: Record<string, number>; trained_at?: string;
+  }>('/rl-agent/status'),
+  rlTrain: () => request<{ status: string }>('/rl-agent/train', { method: 'POST' }),
+  entryFactors: () => request<{
+    status: 'calibrated' | 'not_calibrated';
+    n_trades?: number; win_rate?: number; threshold?: number;
+    w_rr?: number; w_confidence?: number; w_score?: number; w_kscore?: number;
+    calibrated_at?: string;
+  }>('/paper-portfolio/entry_factors'),
+  calibrateEntry: () => request<{ status: string }>('/paper-portfolio/calibrate-entry', { method: 'POST' }),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
   mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
   mlFeatureImportance: (symbol: string, model = 'xgboost') =>

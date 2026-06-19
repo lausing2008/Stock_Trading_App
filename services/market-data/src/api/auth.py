@@ -30,11 +30,19 @@ def _get_redis() -> redis_lib.Redis:
     return _pool_redis()
 
 
+def _prune_blacklist_mem() -> None:
+    """Remove expired entries from the in-memory blacklist — never evicts active revocations."""
+    now = _time.time()
+    expired = [k for k, exp in _BLACKLIST_MEM.items() if exp <= now]
+    for k in expired:
+        del _BLACKLIST_MEM[k]
+
+
 def _blacklist_jti(jti: str, exp: int) -> None:
     """Store a token JTI in the Redis blacklist until it expires."""
     _BLACKLIST_MEM[jti] = _time.time() + _BLACKLIST_MEM_TTL
     if len(_BLACKLIST_MEM) > 2000:
-        _BLACKLIST_MEM.clear()
+        _prune_blacklist_mem()  # only evicts expired entries; active revocations are preserved
     try:
         ttl = max(1, exp - int(datetime.now(timezone.utc).timestamp()))
         _get_redis().setex(f"{_BLACKLIST_PREFIX}{jti}", ttl, "1")
@@ -52,7 +60,7 @@ def _is_blacklisted(jti: str) -> bool:
         if revoked:
             _BLACKLIST_MEM[jti] = now + _BLACKLIST_MEM_TTL
             if len(_BLACKLIST_MEM) > 2000:
-                _BLACKLIST_MEM.clear()
+                _prune_blacklist_mem()
         return revoked
     except Exception:
         return mem_exp is not None and mem_exp > now
