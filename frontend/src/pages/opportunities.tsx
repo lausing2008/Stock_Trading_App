@@ -460,7 +460,8 @@ export default function Opportunities() {
   const { data: earningsData, isLoading: earningsLoading, error: earningsError } = useSWR<EarningsItem[]>('earnings-14d', () => api.earningsCalendar(14));
 
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
-  const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage !== 'closed').map(p => p.symbol) ?? []), [boardData]);
+  const activeSet = useMemo(() => new Set(boardData?.filter(p => p.stage === 'active').map(p => p.symbol) ?? []), [boardData]);
+  const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage === 'watch' || p.stage === 'planning').map(p => p.symbol) ?? []), [boardData]);
   const earningsSet = useMemo(() => new Set(earningsData?.map(e => e.symbol) ?? []), [earningsData]);
 
   // Radar watchlist — fetch its contents separately so we know what's already in it
@@ -1149,9 +1150,14 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                           {sig.signal}
                         </span>
                       )}
+                      {activeSet.has(r.symbol) && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)' }}>
+                          ▶ ACTIVE
+                        </span>
+                      )}
                       {boardSet.has(r.symbol) && (
                         <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: '#34d399', background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.3)' }}>
-                          ✓ On Board
+                          ✓ Watching
                         </span>
                       )}
                       {earningsSet.has(r.symbol) && (

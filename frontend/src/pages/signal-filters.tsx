@@ -625,6 +625,9 @@ export default function SignalFiltersPage() {
                     }}>!</span>
                   </span>
                 </th>
+                <th style={TH_STATIC} title="How long ago this signal was computed. Green = within 6h (fresh). Amber = 6–24h. Red/dim = older than 24h (stale — next scheduled refresh will update).">
+                  Age
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -815,6 +818,19 @@ export default function SignalFiltersPage() {
                     {/* Regime */}
                     <td style={{ ...TD, color: REGIME_COLORS[row.market_regime ?? ''] ?? '#64748b', fontWeight: 600 }}>
                       {row.market_regime ?? '—'}
+                    </td>
+
+                    {/* Signal age */}
+                    <td style={TD}>
+                      {row.ts ? (() => {
+                        const ageMs = Date.now() - new Date(row.ts).getTime();
+                        const ageH = ageMs / 3600000;
+                        const color = ageH < 6 ? '#4ade80' : ageH < 24 ? '#fbbf24' : '#475569';
+                        const label = ageH < 1 ? `${Math.round(ageMs / 60000)}m`
+                          : ageH < 24 ? `${Math.round(ageH)}h`
+                          : `${Math.floor(ageH / 24)}d`;
+                        return <span style={{ fontSize: 11, fontWeight: 600, color }}>{label}</span>;
+                      })() : <span style={{ color: '#334155' }}>—</span>}
                     </td>
                   </tr>
                 );

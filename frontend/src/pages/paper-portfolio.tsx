@@ -1279,6 +1279,28 @@ export default function PaperPortfolioPage() {
 
         {/* Positions tab */}
         {tab === 'Positions' && (
+          <div>
+            {positions && positions.length > 0 && (() => {
+              const inProfit = positions.filter(p => p.unrealized_pnl > 0).length;
+              const inLoss   = positions.filter(p => p.unrealized_pnl < 0).length;
+              const flat     = positions.length - inProfit - inLoss;
+              const totalPnl = positions.reduce((s, p) => s + p.unrealized_pnl, 0);
+              const profitPct = positions.length ? Math.round(inProfit / positions.length * 100) : 0;
+              return (
+                <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', flex: 1, minWidth: 200, height: 6, borderRadius: 4, overflow: 'hidden', background: '#1e293b' }}>
+                    <div style={{ width: `${profitPct}%`, background: '#22c55e', transition: 'width 0.3s' }} />
+                    <div style={{ width: `${positions.length ? Math.round(inLoss / positions.length * 100) : 0}%`, background: '#ef4444', transition: 'width 0.3s' }} />
+                  </div>
+                  <span style={{ fontSize: 12, color: '#22c55e', fontWeight: 700 }}>{inProfit} green</span>
+                  {flat > 0 && <span style={{ fontSize: 12, color: '#64748b' }}>{flat} flat</span>}
+                  <span style={{ fontSize: 12, color: '#ef4444', fontWeight: 700 }}>{inLoss} red</span>
+                  <span style={{ fontSize: 12, color: totalPnl >= 0 ? '#22c55e' : '#ef4444', fontWeight: 700, marginLeft: 4 }}>
+                    {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(0)} open P&L
+                  </span>
+                </div>
+              );
+            })()}
           <div style={{ overflowX: 'auto' }}>
             {!positions?.length ? (
               <div style={{ color: '#64748b', padding: 24, textAlign: 'center' }}>
@@ -1415,6 +1437,7 @@ export default function PaperPortfolioPage() {
                 </tbody>
               </table>
             )}
+          </div>
           </div>
         )}
 

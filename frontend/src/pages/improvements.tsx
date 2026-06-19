@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5773,6 +5773,39 @@ const ITEMS: Item[] = [
     impact: 'HIGH (UX) — users were receiving dozens of alert emails per hour for a single stock. Design invariant: alert checker must always read DB signals, not live-computed signals.',
   },
 
+  // ── Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18) ──
+
+  {
+    id: 'TIER46-A', tier: 46, severity: 'feature', defaultStatus: 'done',
+    title: '46-A: Signal Filter — signal age column (fresh vs stale indicator)',
+    effort: '20m',
+    what: 'The signal filter table showed BUY/HOLD confidence and suppression conditions but not when that signal was last computed. A BUY signal from 3 days ago (pre-move) is very different from one from 2 hours ago. ts was already in SuppressedSignalRow but unused in the table.',
+    fix: 'Added "Age" column at the end of the signal filter table showing relative time (e.g. "30m", "4h", "2d"). Colour-coded: green < 6h (fresh), amber 6–24h, grey/dim > 24h (stale — next scheduled refresh will update). Non-sortable static column with tooltip.',
+    file: 'frontend/src/pages/signal-filters.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium — helps prioritise between fresh vs stale signals when deciding entries.',
+  },
+  {
+    id: 'TIER46-B', tier: 46, severity: 'feature', defaultStatus: 'done',
+    title: '46-B: Opportunities — distinguish ACTIVE trades vs watching on board badges',
+    effort: '20m',
+    what: 'The "✓ On Board" badge in Opportunities appeared for any non-closed trade plan (watch, planning, or active). A stock where you already have an active position looked identical to one you are merely watching. Traders could evaluate an "entry" for a stock they are already trading.',
+    fix: 'Split boardSet into activeSet (stage=active → amber "▶ ACTIVE" badge) and boardSet (stage=watch/planning → green "✓ Watching" badge). Now at a glance: ACTIVE = you are in a live position, Watching = on the board for review.',
+    file: 'frontend/src/pages/opportunities.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium — prevents confusion between open positions and stocks under evaluation.',
+  },
+  {
+    id: 'TIER46-C', tier: 46, severity: 'feature', defaultStatus: 'done',
+    title: '46-C: Paper Portfolio — P&L distribution health bar in Positions tab',
+    effort: '20m',
+    what: 'The metrics strip showed aggregate unrealized P&L and position count, but not how many individual positions were currently in profit vs loss. A user seeing "+$800 unrealized" could not tell whether that was 8 green / 2 red or 5 green / 5 red (where losses offset winners).',
+    fix: 'Added a green/red progress bar + "X green · Y flat · Z red · $total open P&L" summary row at the top of the Positions tab, computed inline from positions data (no new API call). Bar width proportional to % in profit.',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium (UX) — immediate portfolio stress read without scrolling through individual positions.',
+  },
+
   // ── Tier 45 — Signal Accuracy PT-J1 Display + Board UX + Alert History (2026-06-18) ──
 
   {
@@ -5894,6 +5927,7 @@ const TIER_LABEL: Record<Tier, string> = {
   43: 'Tier 43 — Paper Trading & Alert Bug Fixes (2026-06-18)',
   44: 'Tier 44 — Alert UX + Signal Calibration + Trade Board (2026-06-18)',
   45: 'Tier 45 — Signal Accuracy PT-J1 Display + Board UX + Alert History (2026-06-18)',
+  46: 'Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5942,6 +5976,7 @@ const TIER_COLOR: Record<Tier, string> = {
   43: '#c084fc',
   44: '#2dd4bf',
   45: '#818cf8',
+  46: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -6013,7 +6048,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
