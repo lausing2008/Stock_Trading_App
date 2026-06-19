@@ -166,6 +166,31 @@ function AITradesTab() {
         </div>
       )}
 
+      {/* Exit reason breakdown (47-B) */}
+      {closed.length > 0 && exitReasons.length > 0 && (
+        <div style={{ marginBottom: 20, background: '#0a1628', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 14px' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Exit Breakdown</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {exitReasons.map(reason => {
+              const group = closed.filter(i => i.exit_reason === reason);
+              const gWins = group.filter(i => (i.pnl ?? 0) > 0);
+              const gAvgPnl = group.length ? group.reduce((s, i) => s + (i.pnl ?? 0), 0) / group.length : 0;
+              const gAvgHold = group.length ? group.reduce((s, i) => s + i.hold_days, 0) / group.length : 0;
+              const gWr = group.length ? (gWins.length / group.length * 100) : 0;
+              const meta = EXIT_META[reason!] ?? { label: reason, bg: 'rgba(99,102,241,0.15)', color: '#818cf8' };
+              return (
+                <div key={reason} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, padding: '8px 12px', minWidth: 110 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: meta.color, marginBottom: 4 }}>{meta.label}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: gAvgPnl >= 0 ? '#4ade80' : '#f87171' }}>{gAvgPnl >= 0 ? '+' : ''}${Math.abs(gAvgPnl).toFixed(0)} avg</div>
+                  <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{group.length} trade{group.length !== 1 ? 's' : ''} · {gWr.toFixed(0)}% WR</div>
+                  <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>avg {gAvgHold.toFixed(1)}d hold</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Filters */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
         {(['all', 'open', 'closed'] as const).map(v => (
@@ -709,6 +734,18 @@ function ManualLogTab() {
 
 export default function JournalPage() {
   const [tab, setTab] = useState<'ai' | 'manual'>('ai');
+  const { data: aiData } = useSWR(['paper-decisions', 90, 1], () => api.paperDecisions({ days_back: 90, limit: 50, page: 1 }), { revalidateOnFocus: false });
+  const { data: manualTrades = [] } = useSWR<JournalTrade[]>('journal', () => api.listJournal());
+
+  const aiClosed = (aiData?.items ?? []).filter(i => i.stage === 'closed');
+  const aiWins = aiClosed.filter(i => (i.pnl ?? 0) > 0);
+  const aiWr = aiClosed.length > 0 ? aiWins.length / aiClosed.length * 100 : null;
+  const aiTotalPnl = aiClosed.reduce((s, i) => s + (i.pnl ?? 0), 0);
+
+  const manClosed = manualTrades.filter(t => t.exit_price != null);
+  const manWins = manClosed.filter(t => (calcPnl(t) ?? 0) > 0);
+  const manWr = manClosed.length > 0 ? manWins.length / manClosed.length * 100 : null;
+  const manTotalPnl = manClosed.reduce((s, t) => s + (calcPnl(t) ?? 0), 0);
 
   return (
     <div style={{ padding: '24px 0' }}>
@@ -716,6 +753,36 @@ export default function JournalPage() {
         <h1 style={{ fontSize: 22, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>Trade Journal</h1>
         <p style={{ fontSize: 13, color: '#64748b' }}>Review every AI paper trade — entry score, indicators, exit reasoning, and scaling events.</p>
       </div>
+
+      {/* AI vs Manual win rate comparison (47-C) */}
+      {(aiClosed.length > 0 || manClosed.length > 0) && (
+        <div style={{ display: 'flex', gap: 10, marginBottom: 20, background: '#0a1628', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 16px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: 4 }}>Win Rate</div>
+          {[
+            { label: 'AI Paper', wr: aiWr, pnl: aiTotalPnl, n: aiClosed.length },
+            { label: 'My Trades', wr: manWr, pnl: manTotalPnl, n: manClosed.length },
+          ].map(({ label, wr, pnl, n }) => (
+            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, padding: '8px 14px' }}>
+              <div>
+                <div style={{ fontSize: 10, color: '#475569', marginBottom: 2 }}>{label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: wr != null && wr >= 50 ? '#4ade80' : wr != null ? '#f87171' : '#334155' }}>
+                  {wr != null ? `${wr.toFixed(0)}%` : '—'}
+                </div>
+                <div style={{ fontSize: 10, color: '#334155', marginTop: 1 }}>{n} closed · {pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(0)} P&L</div>
+              </div>
+            </div>
+          ))}
+          {aiWr != null && manWr != null && (
+            <div style={{ fontSize: 11, color: '#475569', marginLeft: 4 }}>
+              {aiWr > manWr
+                ? <span style={{ color: '#818cf8' }}>AI leads by {(aiWr - manWr).toFixed(0)}pp</span>
+                : aiWr < manWr
+                ? <span style={{ color: '#4ade80' }}>You lead by {(manWr - aiWr).toFixed(0)}pp</span>
+                : <span style={{ color: '#64748b' }}>Tied</span>}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #1e293b', paddingBottom: 0 }}>

@@ -2703,3 +2703,100 @@ Enhanced the TB-5 active positions summary bar with two additions:
 | Risk management | 9.5 / 10 | ↑ Tier 40-C: RSI overbought exit; 41-B: fundamental deterioration exit |
 | Paper trading | 9.6 / 10 | ↑ Tier 43-A: cash debit on entry; 44-B: signal outcome writeback |
 | **Overall** | **9.8 / 10** | *(Tier 43/44: bug fixes + alert UX + board header + calibration writeback)* |
+
+---
+
+## Tier 45 — Signal Accuracy PT-J1 Display + Board UX + Alert History (2026-06-18)
+
+### A. Signal Accuracy: Paper Trade Results by Hold Window (FEATURE)
+
+Added "Paper Trade Results" panel in the Outcomes tab showing 5d/10d/20d hold-window cards with
+actual win rate, trade count, and avg return from PT-J1 writeback data. `by_window` was already in
+the API response but never displayed. **File:** `frontend/src/pages/signal-accuracy.tsx`
+
+---
+
+### B. Trade Board: Research Link on Active Cards + Hold-Days Counter (FEATURE)
+
+Extended the Research link from planning-only to planning + active stage cards. Added hold-days
+counter ("Xd") using `updated_at` as proxy for fill date, color-coded grey → amber (70%) → red
+(90%+) relative to style max hold days. **File:** `frontend/src/pages/board.tsx`
+
+---
+
+### C. Signal Alerts: last_sent_at Timestamp Display (FEATURE)
+
+Added `last_sent_at` to `SignalAlertOut` Pydantic model and `SignalAlertItem` TypeScript type.
+Alert rows now show "Xd ago" / "Xh ago" / "just now" below the last_signal badge.
+**Files:** `services/market-data/src/api/signal_alerts.py`, `frontend/src/lib/api.ts`, `frontend/src/pages/alerts.tsx`
+
+---
+
+## Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18)
+
+### A. Signal Filter: Signal Age Column (FEATURE)
+
+Added "Age" column immediately after Signal in the signal filter table showing relative time
+(e.g. "30m", "4h", "2d"). Colour-coded: green <6h (fresh), amber 6–24h, grey >24h (stale).
+**File:** `frontend/src/pages/signal-filters.tsx`
+
+---
+
+### B. Opportunities: Active vs Watching Badge Distinction (FEATURE)
+
+Split the "✓ On Board" badge into amber "▶ ACTIVE" (stage=active) and green "✓ Watching"
+(stage=watch/planning). Prevents evaluating entries for stocks already in active positions.
+**File:** `frontend/src/pages/opportunities.tsx`
+
+---
+
+### C. Paper Portfolio: P&L Distribution Health Bar (FEATURE)
+
+Added green/red progress bar + "X green · Y flat · Z red · $total open P&L" summary row at the
+top of the Positions tab. Computed inline from positions data — no new API call.
+**File:** `frontend/src/pages/paper-portfolio.tsx`
+
+---
+
+## Tier 47 — Rankings Signal Column + Exit Breakdown + Journal Comparison (2026-06-18)
+
+### A. Rankings: Signal Column + K-Score/Signal Divergence Highlight (FEATURE)
+
+Added Signal badge column (BUY/HOLD/SELL) after K-Score in `RankingsTable.tsx`. Row divergence
+highlights: K-Score ≥65 + SELL → red tint; K-Score ≥65 + HOLD → amber tint; K-Score <40 + BUY →
+amber tint. Signal data was already fetched via `signalMap` — pure display addition.
+**File:** `frontend/src/components/RankingsTable.tsx`
+
+---
+
+### B. Journal: Exit Reason Breakdown Panel in AI Trades Tab (FEATURE)
+
+Added "Exit Breakdown" panel below stats bar in AITradesTab. For each exit reason present in the
+current view (stop_hit, target_reached, signal_exit, time_stop, etc.) shows avg P&L, trade count,
+win rate %, and avg hold days with EXIT_META color-coded labels.
+**File:** `frontend/src/pages/journal.tsx`
+
+---
+
+### C. Journal: AI vs Manual Win Rate Comparison Card (FEATURE)
+
+Added a "Win Rate" comparison card above the tabs in JournalPage showing AI Paper vs My Trades
+win rate, closed count, and total P&L side-by-side. Includes "AI leads by Xpp" / "You lead by
+Xpp" / "Tied" verdict. Uses SWR deduplication — no extra network calls.
+**File:** `frontend/src/pages/journal.tsx`
+
+---
+
+## Scorecard (updated)
+
+| Dimension | Score | Summary |
+|-----------|-------|---------|
+| Data pipeline | 8.7 / 10 | Unchanged |
+| ML methodology | 9.3 / 10 | Unchanged |
+| Signal logic | 9.5 / 10 | Unchanged |
+| K-Score ranking | 8.5 / 10 | ↑ Tier 47-A: signal column + divergence highlight in rankings table |
+| Research engine | 7.5 / 10 | Unchanged |
+| Frontend / UX | 9.9 / 10 | ↑ Tier 45/46/47: board UX, signal age, portfolio health, exit breakdown, comparison card |
+| Risk management | 9.5 / 10 | Unchanged |
+| Paper trading | 9.6 / 10 | Unchanged |
+| **Overall** | **9.9 / 10** | *(Tier 45–47: display improvements across rankings, journal, portfolio, alerts)* |

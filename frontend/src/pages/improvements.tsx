@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5776,6 +5776,39 @@ const ITEMS: Item[] = [
   // ── Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18) ──
 
   {
+    id: 'TIER47-A', tier: 47, severity: 'feature', defaultStatus: 'done',
+    title: '47-A: Rankings — signal column + K-Score/signal divergence highlight',
+    effort: '20m',
+    what: 'The rankings table showed K-Score, RS, and Confluence but not the current AI signal. A stock with K-Score 78 sitting at SELL looked identical to one at BUY — a critical piece of information for deciding whether a fundamentally strong stock is actually tradeable now.',
+    fix: 'Added a Signal column (BUY/HOLD/SELL badge) immediately after K-Score in RankingsTable.tsx. Added divergence row highlight: K-Score ≥65 + SELL → subtle red tint; K-Score ≥65 + HOLD → amber tint; K-Score <40 + BUY → amber tint. These are the interesting mismatches worth investigating.',
+    file: 'frontend/src/components/RankingsTable.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'High — fundamental + signal alignment now visible at a glance; divergence rows surface investigation candidates.',
+  },
+  {
+    id: 'TIER47-B', tier: 47, severity: 'feature', defaultStatus: 'done',
+    title: '47-B: Journal — exit reason breakdown panel in AI Trades tab',
+    effort: '20m',
+    what: 'The AI Trades tab showed aggregate stats (win rate, avg hold, total P&L) but not how performance differed by exit reason. Stop Hit trades have different characteristics than Target Reached trades — seeing them separately reveals whether the engine exits well or poorly.',
+    fix: 'Added "Exit Breakdown" panel below the stats bar in AITradesTab. For each exit reason present in the current page (stop_hit, target_reached, signal_exit, time_stop, etc.), shows: avg P&L, trade count, win rate %, and avg hold days. Uses EXIT_META for color-coded labels. Rendered only when closed trades exist.',
+    file: 'frontend/src/pages/journal.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium — reveals which exit trigger produces best/worst results; guides tuning of stop/target levels.',
+  },
+  {
+    id: 'TIER47-C', tier: 47, severity: 'feature', defaultStatus: 'done',
+    title: '47-C: Journal — AI vs manual win rate comparison card',
+    effort: '20m',
+    what: 'The Journal page has two tabs: AI Paper Trades and Manual Log, each with its own stats bar. There was no cross-tab comparison — users had to mentally compare numbers across two separate tabs to judge whether the AI outperforms their own trading.',
+    fix: 'Added a "Win Rate" comparison card above the tabs in JournalPage. Shows AI Paper and My Trades win rate side-by-side with closed count and total P&L. Includes a "AI leads by Xpp" / "You lead by Xpp" / "Tied" verdict line. Uses SWR deduplication so no extra network calls when tabs are open.',
+    file: 'frontend/src/pages/journal.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium — instant benchmark: is the AI actually beating your own judgment?',
+  },
+
+  // ── Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18) ──
+
+  {
     id: 'TIER46-A', tier: 46, severity: 'feature', defaultStatus: 'done',
     title: '46-A: Signal Filter — signal age column (fresh vs stale indicator)',
     effort: '20m',
@@ -5928,6 +5961,7 @@ const TIER_LABEL: Record<Tier, string> = {
   44: 'Tier 44 — Alert UX + Signal Calibration + Trade Board (2026-06-18)',
   45: 'Tier 45 — Signal Accuracy PT-J1 Display + Board UX + Alert History (2026-06-18)',
   46: 'Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18)',
+  47: 'Tier 47 — Rankings Signal Column + Exit Breakdown + Journal Comparison (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -5977,6 +6011,7 @@ const TIER_COLOR: Record<Tier, string> = {
   44: '#2dd4bf',
   45: '#818cf8',
   46: '#34d399',
+  47: '#f472b6',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -6048,7 +6083,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;

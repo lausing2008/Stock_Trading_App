@@ -42,6 +42,7 @@ export default function RankingsTable({
             <th className="px-3 py-2 text-right">Volume</th>
             <th className="px-3 py-2 text-right">vs Avg</th>
             <th className="px-3 py-2 text-right">K-Score</th>
+            <th className="px-3 py-2 text-center">Signal</th>
             <th className="px-3 py-2 text-right" title="Relative Strength vs sector ETF (0-100). >60 = leading sector, <40 = lagging">RS</th>
             <th className="px-3 py-2 text-right">Confluence</th>
             <th className="px-3 py-2 text-right">Fair Price</th>
@@ -62,8 +63,14 @@ export default function RankingsTable({
             const sig = signals?.[r.symbol];
             const cs = pending ? null : confluenceScore(r, sig);
             const grade = cs != null ? confluenceGrade(cs) : null;
+            const signal = sig?.signal ?? null;
+            const divergeBg = !pending && r.score != null && signal != null
+              ? r.score >= 65 && signal === 'SELL' ? 'rgba(239,68,68,0.07)'
+              : r.score >= 65 && signal === 'HOLD' ? 'rgba(251,191,36,0.06)'
+              : r.score < 40 && signal === 'BUY' ? 'rgba(251,191,36,0.06)'
+              : undefined : undefined;
             return (
-              <tr key={r.symbol} className={`border-t border-slate-800 hover:bg-slate-900${pending ? ' opacity-50' : ''}`}>
+              <tr key={r.symbol} className={`border-t border-slate-800 hover:bg-slate-900${pending ? ' opacity-50' : ''}`} style={divergeBg ? { background: divergeBg } : undefined}>
                 {onToggleCompare && (
                   <td className="px-2 py-2">
                     <button
@@ -114,6 +121,15 @@ export default function RankingsTable({
                 </td>
                 <td className="px-3 py-2 text-right font-semibold">
                   {pending ? <span className="text-xs text-slate-600">Pending data</span> : r.score != null ? r.score.toFixed(1) : '—'}
+                </td>
+                <td className="px-3 py-2 text-center">
+                  {signal ? (
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+                      color: signal === 'BUY' ? '#4ade80' : signal === 'SELL' ? '#f87171' : '#64748b',
+                      background: signal === 'BUY' ? 'rgba(74,222,128,0.12)' : signal === 'SELL' ? 'rgba(248,113,113,0.12)' : 'rgba(100,116,139,0.12)',
+                    }}>{signal}</span>
+                  ) : <span className="text-slate-700">—</span>}
                 </td>
                 <td className="px-3 py-2 text-right text-xs font-semibold" style={{
                   color: r.relative_strength == null ? '#475569'
