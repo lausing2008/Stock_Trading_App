@@ -555,6 +555,9 @@ export default function SignalFiltersPage() {
               <tr>
                 <SortTh col="symbol"             label="Symbol"   sortKey={sortKey} dir={sortDir} onSort={handleSort} extraStyle={{ position: 'sticky', left: 0, zIndex: 2, background: '#0b1420' }} />
                 <SortTh col="signal"             label="Signal"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <th style={TH_STATIC} title="How long ago this signal was computed. Green = within 6h (fresh). Amber = 6–24h. Grey = older than 24h (stale — next scheduled refresh will update).">
+                  Age
+                </th>
                 <th style={TH_STATIC} title="Email alert status from the conviction gate. ✓ = email sent. ✗ = gate blocked — hover to see why. — = no alert subscription or not yet checked.">
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Alert
@@ -625,9 +628,6 @@ export default function SignalFiltersPage() {
                     }}>!</span>
                   </span>
                 </th>
-                <th style={TH_STATIC} title="How long ago this signal was computed. Green = within 6h (fresh). Amber = 6–24h. Red/dim = older than 24h (stale — next scheduled refresh will update).">
-                  Age
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -679,6 +679,19 @@ export default function SignalFiltersPage() {
                           <span style={{ fontSize: 9, color: '#64748b', marginLeft: 2 }}>{row.pillars_active ?? 0}/4</span>
                         </span>
                       )}
+                    </td>
+
+                    {/* Signal age */}
+                    <td style={TD}>
+                      {row.ts ? (() => {
+                        const ageMs = Date.now() - new Date(row.ts).getTime();
+                        const ageH = ageMs / 3600000;
+                        const color = ageH < 6 ? '#4ade80' : ageH < 24 ? '#fbbf24' : '#475569';
+                        const label = ageH < 1 ? `${Math.round(ageMs / 60000)}m`
+                          : ageH < 24 ? `${Math.round(ageH)}h`
+                          : `${Math.floor(ageH / 24)}d`;
+                        return <span style={{ fontSize: 11, fontWeight: 600, color }}>{label}</span>;
+                      })() : <span style={{ color: '#334155' }}>—</span>}
                     </td>
 
                     {/* Alert / conviction gate */}
@@ -818,19 +831,6 @@ export default function SignalFiltersPage() {
                     {/* Regime */}
                     <td style={{ ...TD, color: REGIME_COLORS[row.market_regime ?? ''] ?? '#64748b', fontWeight: 600 }}>
                       {row.market_regime ?? '—'}
-                    </td>
-
-                    {/* Signal age */}
-                    <td style={TD}>
-                      {row.ts ? (() => {
-                        const ageMs = Date.now() - new Date(row.ts).getTime();
-                        const ageH = ageMs / 3600000;
-                        const color = ageH < 6 ? '#4ade80' : ageH < 24 ? '#fbbf24' : '#475569';
-                        const label = ageH < 1 ? `${Math.round(ageMs / 60000)}m`
-                          : ageH < 24 ? `${Math.round(ageH)}h`
-                          : `${Math.floor(ageH / 24)}d`;
-                        return <span style={{ fontSize: 11, fontWeight: 600, color }}>{label}</span>;
-                      })() : <span style={{ color: '#334155' }}>—</span>}
                     </td>
                   </tr>
                 );
