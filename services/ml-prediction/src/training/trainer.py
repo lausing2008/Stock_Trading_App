@@ -320,14 +320,21 @@ def train_model(
             if not np.isnan(ic):
                 oos_ics.append(float(ic))
 
-    # --- Three-way split: train / calibration / threshold evaluation ---
+    # --- Four-way split: train / early-stop / calibration / threshold evaluation ---
+    # AUD-C2 fix: XGBoost/LightGBM partially overfit to their eval_set during early stopping,
+    # so using the same set for calibration produces optimistically biased probabilities.
+    # Solution: dedicate a separate early-stop slice (80%) that the model sees during fitting,
+    # and keep the calibration slice (80–90%) fully clean — never passed to fit() or eval_set.
     # split_train already computed above (reused here for clarity).
-    split_cal = int(len(X) * 0.85)
+    split_es  = int(len(X) * 0.80)   # end of early-stop window (same as split_train when train=70%)
+    split_cal = int(len(X) * 0.90)
     X_train = X.iloc[:split_train]
-    X_cal   = X.iloc[split_train:split_cal]
+    X_es    = X.iloc[split_train:split_es]
+    X_cal   = X.iloc[split_es:split_cal]
     X_test  = X.iloc[split_cal:]
     y_train = y_dir.iloc[:split_train]
-    y_cal   = y_dir.iloc[split_train:split_cal]
+    y_es    = y_dir.iloc[split_train:split_es]
+    y_cal   = y_dir.iloc[split_es:split_cal]
     y_test  = y_dir.iloc[split_cal:]
 
     if len(np.unique(y_train)) < 2:
@@ -336,6 +343,7 @@ def train_model(
 
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train.values)
+    X_es_s    = scaler.transform(X_es.values)
     X_cal_s   = scaler.transform(X_cal.values)
     X_test_s  = scaler.transform(X_test.values)
 
@@ -343,13 +351,15 @@ def train_model(
     _recency_w = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
     train_weights = _blend_weights(y_train.values, _recency_w)
 
-    # Early stopping on calibration set for XGBoost; LightGBM handles via its own callbacks (AUD-M10).
+    # Early stopping on the dedicated early-stop set (X_es_s); LightGBM handles via its own
+    # callbacks (AUD-M10). AUD-C2: X_cal_s is intentionally NOT passed here — keeping it clean
+    # for probability calibration below.
     model = get_model(model_name, early_stopping_rounds=50, **(hyperparams or {}))
     if model_name == "xgboost":
         model.fit(
             X_train_s, y_train.values,
             sample_weight=train_weights,
-            eval_set=[(X_cal_s, y_cal.values)],
+            eval_set=[(X_es_s, y_es.values)],
             verbose=False,
         )
     elif model_name == "lightgbm":
@@ -357,7 +367,7 @@ def train_model(
         model.fit(
             X_train_s, y_train.values,
             sample_weight=train_weights,
-            eval_set=[(X_cal_s, y_cal.values)],
+            eval_set=[(X_es_s, y_es.values)],
         )
     else:
         model.fit(X_train_s, y_train.values, sample_weight=train_weights)

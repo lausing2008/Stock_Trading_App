@@ -1263,6 +1263,30 @@ def _yf_sync_fetch(sym: str):
         return {}, [], {"values": {}}, 0.0
 
 
+def _yf_fundamentals(sym: str) -> dict:
+    """Direct yfinance fundamentals fallback — used when market-data cache is cold."""
+    try:
+        info = yf.Ticker(sym).info or {}
+        if not info:
+            return {}
+        return {
+            "revenue_growth":    info.get("revenueGrowth"),
+            "earnings_growth":   info.get("earningsGrowth"),
+            "profit_margins":    info.get("profitMargins"),
+            "gross_margins":     info.get("grossMargins"),
+            "operating_margins": info.get("operatingMargins"),
+            "total_revenue":     info.get("totalRevenue"),
+            "total_cash":        info.get("totalCash"),
+            "total_debt":        info.get("totalDebt"),
+            "free_cashflow":     info.get("freeCashflow"),
+            "trailing_pe":       info.get("trailingPE"),
+            "ev_to_ebitda":      info.get("enterpriseToEbitda"),
+            "ev_to_revenue":     info.get("enterpriseToRevenue"),
+        }
+    except Exception:
+        return {}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/batch")
@@ -1422,6 +1446,10 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
 
     stock = stock_t or {}
     fund = fund_t or {}
+    # RES-FIX-1: when market-data fundamentals cache is cold, fall back to direct yfinance fetch
+    if not fund:
+        loop = asyncio.get_event_loop()
+        fund = await loop.run_in_executor(None, _yf_fundamentals, sym)
     prices = prices_t or []
     indicators = ind_t or {"ts": [], "values": {}}
     levels = levels_t or {}

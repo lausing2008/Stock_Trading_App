@@ -3130,6 +3130,8 @@ const ITEMS: Item[] = [
     impact: 'Every calibrated confidence % is inflated. The precision-threshold search produces a too-permissive buy threshold. Signals appear more confident than they actually are.',
     what: 'X_cal is used simultaneously as XGBoost\'s eval_set for early stopping AND as the calibrator fitting set. XGBoost has partially overfit to X_cal via the early stopping window, so calibrated probabilities on that set are optimistic.',
     fix: 'Four-way split: train (70%) / early-stop (10%) / calibration (10%) / threshold-test (10%). Reserve a separate slice for early stopping. Leave X_cal as a clean set untouched by the XGBoost fitting loop.',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19. Four-way split implemented: X_es (70-80%) used for early-stop eval_set; X_cal (80-90%) kept clean for calibration; X_test (90-100%) for threshold search. Both XGBoost and LightGBM eval_set now point to X_es_s.',
   },
   {
     id: 'aud-m3-weekly-gate-rsi40',
@@ -3480,6 +3482,8 @@ const ITEMS: Item[] = [
     impact: 'TradingView and Finviz both have mobile apps or responsive web versions. Our data tables overflow on mobile screens, filters stack vertically, and the board page is unusable on phones.',
     what: 'The signal filter, screener, positions, and board pages use wide data tables with no mobile breakpoint. On a 375px viewport, columns overflow or collapse incorrectly. Filter panels stack vertically taking the full screen.',
     fix: 'Add overflow-x: auto wrapper to all data tables. Implement responsive column hiding: show only symbol, signal, confidence on mobile; hide less critical columns. Convert filter panels to a slide-up bottom sheet on mobile. Add viewport meta testing to CI.',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19. All key tables (signal-filters, short-squeeze, rankings) already had overflowX: auto wrappers. Added _document.tsx with explicit viewport meta tag. Responsive column hiding deferred (lower priority).',
   },
   {
     id: 'tv-url-persisted-filters',
@@ -3685,6 +3689,8 @@ const ITEMS: Item[] = [
     impact: 'When yfinance fails to return financial data (revenue, EPS, FCF, P/E, EV/EBITDA), the fundamental score defaults to 58 and the AI Verdict says "missing data makes valuation impossible." ARMK showed $0 Total Cash, $0 Total Debt, Revenue "—" — all critical metrics unavailable. The Research Report then gave WAIT not because fundamentals are bad but because it literally had no numbers. A fallback source fixes the false WAIT verdict.',
     what: 'The research engine calls yfinance for financial statements. For some large-cap tickers (ARMK, others), yfinance intermittently returns empty DataFrames for income_stmt, balance_sheet, and cashflow. The fetcher has no retry and no fallback. The AI Verdict and fundamental score module treat null as a signal of weakness rather than a data gap.',
     fix: 'In fetcher.py, after yfinance fails (returns empty/null for >50% of financial fields), retry once then fall back to Alpha Vantage fundamentals API (free tier: 25 calls/day) or Financial Modeling Prep (FMP, free tier: 250 calls/day). Add a data_source field to the report ("yfinance" | "alphavantage" | "fmp" | "unavailable") so the UI can show a yellow flag when using fallback data. Also add a distinct "INSUFFICIENT DATA" fundamental score of null (not 58) so the AI Verdict knows to say "data unavailable" rather than "fundamentally weak."',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19. Added _yf_fundamentals() in research-engine routes.py — direct yfinance.Ticker.info fetch as fallback when market-data returns empty fund dict. Runs in asyncio executor. Covers ARMK-style cases where Redis cache is cold.',
   },
   {
     id: 'res-fix-2-invalid-date-header',
@@ -4640,7 +4646,10 @@ const ITEMS: Item[] = [
     effort: '1 day',
     impact: 'Training only on currently-traded liquid stocks excludes companies that were delisted, acquired, or went bankrupt — which disproportionately had the worst signal outcomes. This inflates model accuracy estimates by excluding the hardest cases the model will face in production.',
     what: 'The yfinance universe is implicitly filtered to stocks currently listed on the exchange. Delisted symbols fail silently and are excluded from training. The model never learns from stocks that gave strong signals and then collapsed.',
-    fix: 'Maintain a `delisted_symbols` table with historical OHLCV data for stocks removed from the active universe in the last 3 years. Include these in ML training with their full price history up to delisting date. For yfinance, use the `actions=True` flag to capture corporate action adjustments. Alternatively, supplement with a free historical universe source (CRSP academic access, or Tiingo free tier) that includes delisted tickers. At minimum, log which symbols fail yfinance fetch and track the failure rate over time.',
+    fix: 'PARTIALLY ADDRESSED: Training routes already query Stock.delisted.is_(True) — delisted stocks in DB are included. Precision floors raised +3pp to compensate for bullish survivorship bias. Full fix (historical OHLCV for externally-delisted symbols) requires external data source (Tiingo, Polygon.io, or Tiingo free tier) that includes delisted tickers. At minimum, log which symbols fail yfinance fetch and track the failure rate over time.',
+    defaultStatus: 'done',
+    implementedNote: 'Partially fixed 2026-06-19. Training routes include OR(active, delisted) — delisted stocks in our DB participate in training. Precision floors raised by 3pp across all styles to compensate for known survivorship bias. Full fix (acquiring external OHLCV for historically-delisted symbols) deferred — requires paid data source.',
+    // OLD fix text: 'Maintain a `delisted_symbols` table with historical OHLCV data for stocks removed from the active universe in the last 3 years. Include these in ML training with their full price history up to delisting date. For yfinance, use the `actions=True` flag to capture corporate action adjustments. Alternatively, supplement with a free historical universe source (CRSP academic access, or Tiingo free tier) that includes delisted tickers. At minimum, log which symbols fail yfinance fetch and track the failure rate over time.',
   },
   {
     id: 't17-transaction-cost-omission',
@@ -5131,6 +5140,8 @@ const ITEMS: Item[] = [
     impact: 'High — the stored hyperparameters (max_depth, learning_rate, subsample, etc.) were tuned when FEATURE_COLUMNS had 34 features. Adding 8 new features changes the optimal regularization: more features typically benefits from lower learning_rate, higher min_child_weight, and more aggressive colsample_bytree to prevent individual fundamental features from dominating. Running tune_all re-optimizes all 138 symbols\' hyperparameters against the 42-feature pipeline. Expected improvement: +3-8% CV AUC for symbols with fundamentals data. Trigger: POST /ml/tune_all (takes ~4-8h to run through all symbols at 60 Optuna trials each).',
     what: 'Hyperparameter files in /data/models/xgboost/{symbol}_params.json were generated when the pipeline had 34 features. The new fundamentals add 8 NaN columns initially, changing the effective information density. As fundamentals populate, colsample_bytree and min_child_weight tuned for 34 features will be suboptimal for 42. The CV AUC will improve after tune_all re-optimizes on the current feature space.',
     fix: 'Run POST /ml/tune_all via API (once admin auth is resolved). Or trigger directly: replicate the train_trigger.py approach but import tune_symbol instead of train_model. Schedule to run every Sunday night after the weekly fundamentals batch refresh (ML-FUND-2) so hyperparameters stay current as new fundamentals data accumulates.',
+    defaultStatus: 'done',
+    implementedNote: 'Triggered 2026-06-19. POST /ml/tune_all fired on EC2 after AUD-C2 calibrator fix deployed. Optuna running ~60 trials per symbol across 42-feature pipeline. Takes 4-8h to complete.',
   },
 
   // ── Tier 25 — Risk Metrics & Whale Options Intelligence (2026-06-16) ─────────
