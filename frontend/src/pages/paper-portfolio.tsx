@@ -1310,13 +1310,15 @@ export default function PaperPortfolioPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ color: '#64748b', borderBottom: '1px solid #334155' }}>
-                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', 'P&L', 'Stop', 'Status', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research'].map(h => (
+                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', '% Port', 'P&L', 'Stop', 'Status', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research'].map(h => (
                       <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 500 }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {positions.map(p => {
+                  {(() => {
+                    const totalPV = positions.reduce((s, pos) => s + pos.position_value, 0);
+                    return positions.map(p => {
                     const isExpanded = expandedPositionId === p.id;
                     const reasons = p.entry_reasons as Record<string, unknown> | null;
                     return (
@@ -1332,6 +1334,13 @@ export default function PaperPortfolioPage() {
                       <td style={{ padding: '9px 10px' }}>{p.current_price != null ? `$${p.current_price.toFixed(2)}` : '—'}</td>
                       <td style={{ padding: '9px 10px' }}>{p.shares.toFixed(2)}</td>
                       <td style={{ padding: '9px 10px' }}>${p.position_value.toFixed(0)}</td>
+                      <td style={{ padding: '9px 10px', fontWeight: 600 }}>
+                        {totalPV > 0 ? (() => {
+                          const pct = p.position_value / totalPV * 100;
+                          const color = pct >= 25 ? '#fbbf24' : '#94a3b8';
+                          return <span style={{ color }} title={pct >= 25 ? 'High concentration — >25% of deployed capital' : undefined}>{pct.toFixed(1)}%</span>;
+                        })() : '—'}
+                      </td>
                       <td style={{ padding: '9px 10px', color: p.unrealized_pnl >= 0 ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
                         {fmtPct(p.unrealized_pct)} (${p.unrealized_pnl.toFixed(0)})
                       </td>
@@ -1433,7 +1442,8 @@ export default function PaperPortfolioPage() {
                     )}
                     </React.Fragment>
                     );
-                  })}
+                  });
+                  })()}
                 </tbody>
               </table>
             )}

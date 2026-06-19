@@ -28,13 +28,14 @@ const CONDITIONS: { key: CondKey; label: string; short: string; color: string; t
 ];
 
 type SortKey =
-  | 'symbol' | 'signal' | 'bullish_probability' | 'suppression_count'
+  | 'symbol' | 'signal' | 'ts' | 'bullish_probability' | 'suppression_count'
   | 'weekly_rsi' | 'rsi' | 'adx' | 'days_to_earnings' | 'news_sentiment' | 'rs_score' | 'breadth_pct';
 
 // Tooltip text for every sortable column header
 const COL_TIPS: Record<SortKey, string> = {
   symbol:             'Stock ticker symbol. Click to open the stock detail page.',
   signal:             'Current signal from the latest AI analysis: BUY / HOLD / WAIT / SELL.',
+  ts:                 'When this signal was last computed. Sort ascending = stalest first (needs refresh). Sort descending = freshest first.',
   bullish_probability:'Fused probability score (0–100%) after all filters applied. Above 50% = bullish lean. BUY threshold is 65% (SWING bull regime).',
   suppression_count:  'Number of suppression conditions currently active for this stock. Higher = signal is being held back by more filters.',
   weekly_rsi:         'RSI(14) computed on weekly bars (daily OHLCV resampled to Monday-anchored weeks). Below 40 = weekly bearish momentum. Used by the Weekly Gate.',
@@ -47,7 +48,7 @@ const COL_TIPS: Record<SortKey, string> = {
 };
 
 const SORT_LABELS: Record<SortKey, string> = {
-  symbol: 'Symbol', signal: 'Signal', bullish_probability: 'Bull%',
+  symbol: 'Symbol', signal: 'Signal', ts: 'Age', bullish_probability: 'Bull%',
   suppression_count: 'Filters', weekly_rsi: 'W.RSI', rsi: 'RSI',
   adx: 'ADX', days_to_earnings: 'Earn.d', news_sentiment: 'News',
   rs_score: 'RS', breadth_pct: 'Breadth',
@@ -79,6 +80,7 @@ function fmtTs(ts: string | null | undefined): string {
 function numVal(row: SuppressedSignalRow, key: SortKey): number {
   if (key === 'symbol') return 0;
   if (key === 'signal') return ['BUY', 'HOLD', 'WAIT', 'SELL'].indexOf(row.signal);
+  if (key === 'ts') return row.ts ? new Date(row.ts).getTime() : 0;
   if (key === 'bullish_probability') return row.bullish_probability ?? 0;
   if (key === 'suppression_count') return row.suppression_count;
   if (key === 'weekly_rsi') return row.weekly_rsi ?? 999;
@@ -555,9 +557,7 @@ export default function SignalFiltersPage() {
               <tr>
                 <SortTh col="symbol"             label="Symbol"   sortKey={sortKey} dir={sortDir} onSort={handleSort} extraStyle={{ position: 'sticky', left: 0, zIndex: 2, background: '#0b1420' }} />
                 <SortTh col="signal"             label="Signal"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
-                <th style={TH_STATIC} title="How long ago this signal was computed. Green = within 6h (fresh). Amber = 6–24h. Grey = older than 24h (stale — next scheduled refresh will update).">
-                  Age
-                </th>
+                <SortTh col="ts"                 label="Age"      sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <th style={TH_STATIC} title="Email alert status from the conviction gate. ✓ = email sent. ✗ = gate blocked — hover to see why. — = no alert subscription or not yet checked.">
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Alert

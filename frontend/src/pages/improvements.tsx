@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -5776,6 +5776,39 @@ const ITEMS: Item[] = [
   // ── Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18) ──
 
   {
+    id: 'TIER48-A', tier: 48, severity: 'feature', defaultStatus: 'done',
+    title: '48-A: Rankings — signal filter chips (All / BUY / HOLD / SELL / Divergent)',
+    effort: '20m',
+    what: 'The rankings table now shows signal badges per row (Tier 47-A), but with 50+ stocks visible, finding just BUY signals or divergent rows required visual scanning. No way to instantly see "show me only BUY stocks" or "show me fundamentally strong stocks the signal disagrees with".',
+    fix: 'Added signal filter chips above the table: All / BUY / HOLD / SELL / Divergent (⚡). Each chip shows a live count. "Divergent" = K-Score ≥65 + non-BUY, or K-Score <40 + BUY — same definition as the row highlight. Computed with useMemo from signalMap already fetched. No extra API calls.',
+    file: 'frontend/src/pages/rankings.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'High — immediately surface only actionable rows; Divergent filter is the most useful for finding mispriced setups.',
+  },
+  {
+    id: 'TIER48-B', tier: 48, severity: 'feature', defaultStatus: 'done',
+    title: '48-B: Paper Portfolio — position sizing % of deployed capital',
+    effort: '20m',
+    what: 'The Positions table showed Value ($) per position but not what % of the total portfolio each position represents. A user could not tell if a single position was 40% of deployed capital without manually dividing. Concentration risk above 25% was invisible.',
+    fix: 'Added "% Port" column after Value. Computed as position_value / sum(all position_values) × 100. Values ≥25% show in amber with tooltip "High concentration — >25% of deployed capital". Uses an IIFE in the tbody to compute totalPV once for the current positions list.',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Medium — concentration risk immediately visible per row without manual calculation.',
+  },
+  {
+    id: 'TIER48-C', tier: 48, severity: 'feature', defaultStatus: 'done',
+    title: '48-C: Signal Filter — sortable Age column (freshest/stalest signals first)',
+    effort: '15m',
+    what: 'The Age column (Tier 46-A) showed relative time but was a static <th> — not sortable. Finding the freshest signals (recently computed) or the most stale (overdue for refresh) required scanning visually. Sorting by age would surface them instantly.',
+    fix: 'Added "ts" to SortKey type, COL_TIPS, SORT_LABELS, and numVal (returns getTime() as sort value). Replaced the static <th> with SortTh — clicking Age now cycles asc (oldest first) / desc (freshest first). Same SortTh styling and ↑↓ indicator as all other columns.',
+    file: 'frontend/src/pages/signal-filters.tsx',
+    implementedNote: 'Done 2026-06-18 — pure frontend change.',
+    impact: 'Low-medium — quickly find stale signals that need a manual refresh trigger.',
+  },
+
+  // ── Tier 47 — Rankings Signal Column + Exit Breakdown + Journal Comparison (2026-06-18) ──
+
+  {
     id: 'TIER47-A', tier: 47, severity: 'feature', defaultStatus: 'done',
     title: '47-A: Rankings — signal column + K-Score/signal divergence highlight',
     effort: '20m',
@@ -5962,6 +5995,7 @@ const TIER_LABEL: Record<Tier, string> = {
   45: 'Tier 45 — Signal Accuracy PT-J1 Display + Board UX + Alert History (2026-06-18)',
   46: 'Tier 46 — Signal Age + Position Overlap + Portfolio Health (2026-06-18)',
   47: 'Tier 47 — Rankings Signal Column + Exit Breakdown + Journal Comparison (2026-06-18)',
+  48: 'Tier 48 — Signal Filter + Portfolio Sizing + Rankings Filter (2026-06-18)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6012,6 +6046,7 @@ const TIER_COLOR: Record<Tier, string> = {
   45: '#818cf8',
   46: '#34d399',
   47: '#f472b6',
+  48: '#818cf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -6083,7 +6118,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;

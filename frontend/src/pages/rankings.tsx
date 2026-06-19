@@ -10,6 +10,7 @@ export default function RankingsPage() {
   const [market, setMarket] = useState<'US' | 'HK' | ''>('');
   const [filterWatchlistId, setFilterWatchlistId] = useState<number | null>(null);
   const [compareSymbols, setCompareSymbols] = useState<Set<string>>(new Set());
+  const [signalFilter, setSignalFilter] = useState<'all' | 'BUY' | 'HOLD' | 'SELL' | 'divergent'>('all');
   const [compareOpen, setCompareOpen] = useState(false);
 
   function toggleCompare(symbol: string) {
@@ -87,6 +88,33 @@ export default function RankingsPage() {
     () => rows.filter(r => compareSymbols.has(r.symbol)),
     [rows, compareSymbols],
   );
+
+  const signalCounts = useMemo(() => {
+    const isDivergent = (r: RankingRow) => {
+      const sig = signalMap[r.symbol]?.signal;
+      return r.score != null && sig != null && (
+        (r.score >= 65 && sig !== 'BUY') || (r.score < 40 && sig === 'BUY')
+      );
+    };
+    return {
+      all: rows.length,
+      BUY: rows.filter(r => signalMap[r.symbol]?.signal === 'BUY').length,
+      HOLD: rows.filter(r => signalMap[r.symbol]?.signal === 'HOLD').length,
+      SELL: rows.filter(r => signalMap[r.symbol]?.signal === 'SELL').length,
+      divergent: rows.filter(isDivergent).length,
+    };
+  }, [rows, signalMap]);
+
+  const filteredRows = useMemo(() => {
+    if (signalFilter === 'all') return rows;
+    if (signalFilter === 'divergent') return rows.filter(r => {
+      const sig = signalMap[r.symbol]?.signal;
+      return r.score != null && sig != null && (
+        (r.score >= 65 && sig !== 'BUY') || (r.score < 40 && sig === 'BUY')
+      );
+    });
+    return rows.filter(r => signalMap[r.symbol]?.signal === signalFilter);
+  }, [rows, signalMap, signalFilter]);
 
   return (
     <div>
@@ -206,11 +234,39 @@ export default function RankingsPage() {
         </div>
       )}
 
+      {/* Signal filter chips (48-A) */}
+      {data && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: '#475569', marginRight: 2 }}>Signal:</span>
+          {([
+            { key: 'all',       label: 'All',         color: '#64748b' },
+            { key: 'BUY',       label: 'BUY',         color: '#4ade80' },
+            { key: 'HOLD',      label: 'HOLD',        color: '#94a3b8' },
+            { key: 'SELL',      label: 'SELL',        color: '#f87171' },
+            { key: 'divergent', label: '⚡ Divergent', color: '#fbbf24' },
+          ] as const).map(({ key, label, color }) => {
+            const active = signalFilter === key;
+            const count = signalCounts[key];
+            return (
+              <button key={key} onClick={() => setSignalFilter(key)}
+                style={{
+                  padding: '3px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: `1px solid ${active ? color : '#1e293b'}`,
+                  background: active ? `${color}18` : 'transparent',
+                  color: active ? color : '#475569',
+                }}>
+                {label} <span style={{ opacity: 0.6, fontSize: 11 }}>({count})</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {isLoading && <div>Loading…</div>}
       {error && <div className="text-slate-300">Unable to load rankings.</div>}
       {data && (
         <RankingsTable
-          rows={rows}
+          rows={filteredRows}
           prices={priceMap}
           signals={signalMap}
           selectedSymbols={compareSymbols}
