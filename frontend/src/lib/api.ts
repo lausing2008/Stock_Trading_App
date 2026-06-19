@@ -573,6 +573,10 @@ export type Backtest = {
   n_trades: number;
   equity_curve: { ts: string; equity: number }[];
   trades: { entry_ts: string; entry: number; exit_ts?: string; exit?: number; ret?: number }[];
+  benchmark_cagr?: number | null;
+  benchmark_total_return?: number | null;
+  alpha?: number | null;
+  benchmark_equity_curve?: { ts: string; equity: number }[];
 };
 export type BacktestRun = {
   id: number;
@@ -595,6 +599,10 @@ export type BacktestDetail = BacktestRun & {
   rule_dsl: { entry: any; exit?: any };
   equity_curve: { ts: string; equity: number }[];
   trades: { entry_ts: string; entry: number; exit_ts?: string; exit?: number; ret?: number }[];
+  benchmark_cagr?: number | null;
+  benchmark_total_return?: number | null;
+  alpha?: number | null;
+  benchmark_equity_curve?: { ts: string; equity: number }[];
 };
 export type PortfolioWeights = {
   method: string;

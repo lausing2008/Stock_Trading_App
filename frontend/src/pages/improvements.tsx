@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -3990,6 +3990,8 @@ const ITEMS: Item[] = [
   // ── HIGH ──────────────────────────────────────────────────────────────────────
   {
     id: 'aud14-backtest-fill',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — engine.py: entries/exits now check iloc[i-1] (signal bar), fill at iloc[i] close (next bar). Added benchmark_cagr, alpha, benchmark_equity_curve fields to BacktestResult.',
     tier: 14, severity: 'high',
     title: 'Backtest fills entry at signal-bar close — look-ahead bias in all trade-level P&L',
     file: 'services/strategy-engine/src/engine.py:51-61',
@@ -4012,6 +4014,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-no-benchmark',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — routes.py fetches SPY via _fetch_prices_df; engine.py BacktestResult has benchmark_cagr, alpha, benchmark_equity_curve. Strategies page shows SPY CAGR, Alpha vs SPY stat cards and SPY dashed line on equity chart.',
     tier: 14, severity: 'high',
     title: 'No benchmark return in backtest results — 12% CAGR meaningless without SPY comparison',
     file: 'services/strategy-engine/src/engine.py · services/strategy-engine/src/api/routes.py',
@@ -4142,6 +4146,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-research-fallback',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — routes.py: when report_quality=="fallback", recommendation overridden to "INSUFFICIENT DATA" and confidence set to 0. Frontend already showed "AI Analysis Unavailable" panel when isFallback.',
     tier: 14, severity: 'high',
     title: 'Research AI fallback WAIT verdict looks identical to a real WAIT — no visual distinction',
     file: 'services/research-engine/src/api/routes.py:1135-1194',
@@ -4264,6 +4270,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-kscore-proxy-labels',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — kscore.py: compute_kscore() returns value=None, growth=None when price proxies used (no real fundamentals). Composite score still uses proxies internally. Frontend already shows "—" for null values.',
     tier: 14, severity: 'medium',
     title: 'K-Score "Value" = price from 52W high, "Growth" = price CAGR — labels are actively misleading',
     file: 'services/ranking-engine/src/scoring/kscore.py:116-141',
@@ -6100,6 +6108,49 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-18 — frontend-only change.',
     impact: 'Medium (UX) — at-a-glance capital allocation and style concentration visible without scrolling.',
   },
+
+  // ── Tier 52 — Audit Fix Wave 3 (2026-06-19) ───────────────────────────────
+
+  {
+    id: 'TIER52-A', tier: 52, severity: 'high', defaultStatus: 'done',
+    title: '52-A: Backtest look-ahead bias — signal detect at i-1, fill at i (1-bar lag)',
+    effort: '2h',
+    what: 'engine.py detected signals and filled at the same bar close (iloc[i]), which is impossible in practice — signal fires at close, fill is earliest next bar. This gave a "win" to any long signal on a bar that opened higher next day without needing to hold.',
+    fix: 'Changed entries/exits from iloc[i] to iloc[i-1] throughout BacktestEngine.run(). Fill price (iloc[i] close) now reflects the NEXT bar after signal. Equity curve pos_shifted(1) unchanged — still captures bar-i-fill to bar-i+1 return as first return.',
+    file: 'services/strategy-engine/src/backtest/engine.py',
+    implementedNote: 'Done 2026-06-19. Typically reduces reported win rate by 2–4pp. Existing stored backtests are stale — users should re-run.',
+    impact: 'High — eliminates the most common form of backtest overfitting. All historical stored backtest results are now known-stale.',
+  },
+  {
+    id: 'TIER52-B', tier: 52, severity: 'high', defaultStatus: 'done',
+    title: '52-B: Add SPY benchmark to backtest — CAGR, alpha, and equity curve overlay',
+    effort: '2h',
+    what: 'No benchmark existed in backtest results. A 12% CAGR looked excellent without knowing SPY returned 18% in the same window. Users were making capital allocation decisions against numbers with no context.',
+    fix: 'routes.py fetches SPY via _fetch_prices_df() for the same date range after running the engine. Computes benchmark_cagr, benchmark_total_return, alpha (portfolio_cagr − SPY_cagr). BacktestResult has 4 new optional fields. Strategies page: SPY CAGR + Alpha vs SPY stat cards; dashed gray SPY line overlaid on the equity curve chart.',
+    file: 'services/strategy-engine/src/api/routes.py · services/strategy-engine/src/backtest/engine.py · frontend/src/pages/strategies.tsx',
+    implementedNote: 'Done 2026-06-19. SPY must be in the DB for benchmark to appear; gracefully omitted if not found.',
+    impact: 'High — alpha vs SPY is the single most useful signal for strategy viability.',
+  },
+  {
+    id: 'TIER52-C', tier: 52, severity: 'medium', defaultStatus: 'done',
+    title: '52-C: K-Score "Value" and "Growth" show null (—) when price proxies, not real fundamentals',
+    effort: '1h',
+    what: 'K-Score sub-scores "Value" and "Growth" were price proxies (52W high distance, 12-month CAGR) labeled as fundamental metrics. A stock down 40% showed 80 Value regardless of P/E. Traders using these for value screening were acting on misleading labels.',
+    fix: 'compute_kscore() now returns value=None, growth=None when no real sector-relative fundamental data is provided. Composite score still uses proxies internally (continuity). Frontend already renders None as "—" with no grade badge and empty bar — no frontend changes needed.',
+    file: 'services/ranking-engine/src/scoring/kscore.py',
+    implementedNote: 'Done 2026-06-19. When sector fundamentals are available (PE/PB/EV/revenue growth) the real scores appear; otherwise "—".',
+    impact: 'Medium — prevents honest traders from thinking they have fundamental validation when they only have price momentum.',
+  },
+  {
+    id: 'TIER52-D', tier: 52, severity: 'high', defaultStatus: 'done',
+    title: '52-D: Research AI fallback "INSUFFICIENT DATA" instead of misleading WAIT/WATCH verdict',
+    effort: '1h',
+    what: 'When Claude failed, the research report returned recommendation="WATCH" and confidence=0 — identical visually to a real WATCH verdict. A trader missing the red banner would incorrectly treat a fallback as a real analysis.',
+    fix: 'routes.py: after determining report_quality=="fallback", override recommendation to "INSUFFICIENT DATA" and set confidence=0. The AI Verdict tab already showed "AI Analysis Unavailable" via the isFallback check — the fix closes the gap in the top-level recommendation field.',
+    file: 'services/research-engine/src/api/routes.py',
+    implementedNote: 'Done 2026-06-19. Fallback state now impossible to miss: "INSUFFICIENT DATA" in the header, 0% confidence, red banner.',
+    impact: 'High — prevents traders from acting on AI placeholder verdicts as real analysis.',
+  },
 ];
 
 
@@ -6162,6 +6213,7 @@ const TIER_LABEL: Record<Tier, string> = {
   49: 'Tier 49 — Board Style Picker + Signal Counts + Position Range Bar (2026-06-18)',
   50: 'Tier 50 — Phase 1 Spec Compliance: Supertrend + ROC + Sortino + PEG + D/E + Sector Cap (2026-06-18)',
   51: 'Tier 51 — Audit Bug Fixes Wave 2: LSTM + Label Lookahead + Paper Lock + Manual Exit (2026-06-19)',
+  52: 'Tier 52 — Audit Fix Wave 3: Backtest Lookahead + Benchmark + K-Score Labels + Research Fallback (2026-06-19)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6216,6 +6268,7 @@ const TIER_COLOR: Record<Tier, string> = {
   49: '#fb923c',
   50: '#4ade80',
   51: '#f472b6',
+  52: '#a78bfa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -6287,7 +6340,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52] as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;

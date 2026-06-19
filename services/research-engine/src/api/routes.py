@@ -1496,6 +1496,10 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     if claude_rec in ("STRONG BUY", "BUY", "WATCH", "AVOID", "SELL") and abs(overall - 65) < 10:
         recommendation = claude_rec
 
+    # Fallback reports must never show a real-looking verdict
+    if report_quality == "fallback":
+        recommendation = "INSUFFICIENT DATA"
+
     checklist = _build_checklist(tech, fund_scores, ai)
     position = _position_size(tech, req.portfolio_size, req.max_risk_pct, price)
 
@@ -1510,7 +1514,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
         "industry": stock.get("industry") or stock.get("sector"),
         "recommendation": recommendation,
         "overall_score": overall,
-        "confidence": min(100, max(0, ai.get("confidence", 65))),
+        "confidence": 0 if report_quality == "fallback" else min(100, max(0, ai.get("confidence", 65))),
         "scores": scores,
         "executive_summary": {
             "bullish_factors": ai.get("bullish_factors", []),

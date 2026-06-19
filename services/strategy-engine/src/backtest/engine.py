@@ -1,8 +1,8 @@
-"""Vectorized backtester — single-asset, long-only, same-bar-close fill.
+"""Vectorized backtester — single-asset, long-only, next-bar fill.
 
-Entry and exit execute at the close of the bar on which the signal fires.
-Equity curve uses position.shift(1) so entry-bar return is excluded (you
-can't capture the return from the prior close to your entry close).
+Signal detected at bar i-1 close, fill at bar i close (1-bar lag eliminates
+same-bar look-ahead). Equity curve uses position.shift(1) so the fill bar's
+return is excluded; first return captured is from fill close to next close.
 Equity returns assume 100% allocation when entry rule fires and flat when exit
 fires. This is intentional simplicity for MVP — portfolio-level and multi-asset
 testing is a future extension documented in ARCHITECTURE.md.
@@ -31,6 +31,10 @@ class BacktestResult:
     equity_curve: list[dict]
     trades: list[dict]
     metrics_raw: dict = field(default_factory=dict)
+    benchmark_cagr: float | None = None
+    benchmark_total_return: float | None = None
+    alpha: float | None = None
+    benchmark_equity_curve: list[dict] = field(default_factory=list)
 
 
 class BacktestEngine:
@@ -49,13 +53,14 @@ class BacktestEngine:
         in_pos = False
         entry_p = 0.0
         trades = []
+        # Detect signal at bar i-1, fill at bar i (1-bar look-ahead lag)
         for i in range(1, len(feat)):
-            if not in_pos and entries.iloc[i]:
+            if not in_pos and entries.iloc[i - 1]:
                 entry_p = feat["close"].iloc[i] * (1 + self.slippage + self.fee)
                 entry_prices.append(entry_p)
                 in_pos = True
                 trades.append({"entry_ts": str(feat["ts"].iloc[i]), "entry": entry_p})
-            elif in_pos and (exits is not None and exits.iloc[i]):
+            elif in_pos and (exits is not None and exits.iloc[i - 1]):
                 exit_p = feat["close"].iloc[i] * (1 - self.slippage - self.fee)
                 exit_prices.append(exit_p)
                 in_pos = False
@@ -68,8 +73,7 @@ class BacktestEngine:
             exit_prices.append(exit_p)
             trades[-1].update({"exit_ts": str(feat["ts"].iloc[-1]), "exit": exit_p, "ret": exit_p / entry_p - 1})
 
-        # Shift position by 1: entry is at bar-i close, so first return should be
-        # bar i → bar i+1 (not bar i-1 → bar i, which you didn't hold).
+        # Shift position by 1: fill at bar i close → first return is bar i → bar i+1
         pos_shifted = pd.Series(position).shift(1, fill_value=0).values
         rets = feat["close"].pct_change().fillna(0) * pos_shifted
         equity = (1 + rets).cumprod()

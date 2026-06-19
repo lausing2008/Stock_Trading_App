@@ -145,6 +145,24 @@ def backtest(
     engine = BacktestEngine()
     result = engine.run(df, rule_dsl.get("entry"), rule_dsl.get("exit"))
 
+    # Fetch SPY benchmark for the same date range
+    spy_df = _fetch_prices_df("SPY", start, end)
+    if not spy_df.empty and len(spy_df) > 1:
+        spy_close = spy_df.set_index("ts")["close"].sort_index()
+        # Align to strategy dates
+        spy_rets = spy_close.pct_change().fillna(0)
+        spy_eq = (1 + spy_rets).cumprod()
+        spy_total = float(spy_eq.iloc[-1] - 1)
+        spy_years = max((spy_df["ts"].iloc[-1] - spy_df["ts"].iloc[0]).days / 365.25, 1e-6)
+        spy_cagr = float(spy_eq.iloc[-1] ** (1 / spy_years) - 1) if spy_eq.iloc[-1] > 0 else -1.0
+        result.benchmark_cagr = round(spy_cagr, 4)
+        result.benchmark_total_return = round(spy_total, 4)
+        result.alpha = round(result.cagr - spy_cagr, 4)
+        result.benchmark_equity_curve = [
+            {"ts": str(t), "equity": round(float(e), 6)}
+            for t, e in zip(spy_df["ts"], spy_eq, strict=False)
+        ][-500:]
+
     bt = Backtest(
         strategy_id=strat.id,
         universe=[body.symbol],
@@ -157,7 +175,14 @@ def backtest(
         cagr=result.cagr,
         profit_factor=result.profit_factor,
         total_return=result.total_return,
-        equity_curve={"data": result.equity_curve[-500:], "sortino": result.sortino, "calmar": result.calmar},
+        equity_curve={
+            "data": result.equity_curve[-500:],
+            "sortino": result.sortino,
+            "calmar": result.calmar,
+            "benchmark_cagr": result.benchmark_cagr,
+            "alpha": result.alpha,
+            "benchmark_equity_curve": result.benchmark_equity_curve,
+        },
         trades={"data": result.trades},
     )
     session.add(bt)

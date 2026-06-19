@@ -16,8 +16,8 @@ import pandas as pd
 class KScoreComponents:
     technical: float
     momentum: float
-    value: float
-    growth: float
+    value: float | None       # None when price proxy used (no real fundamentals)
+    growth: float | None      # None when price proxy used (no real fundamentals)
     volatility: float
     score: float
     fair_price: float | None = None
@@ -149,23 +149,25 @@ def compute_kscore(
 ) -> KScoreComponents:
     """Compute K-Score composite.
 
-    value_score / growth_score (0-100): when provided, these replace the
-    price-based proxies with sector-relative percentile ranks derived from
-    real fundamental data (PE, PB, EV/EBITDA, revenue growth, ROE, etc.).
-    Fall back to the price proxy when fundamentals are unavailable.
+    value_score / growth_score (0-100): when provided, these are sector-relative
+    percentile ranks from real fundamental data (PE, PB, EV/EBITDA, revenue growth,
+    ROE, etc.) and are returned as-is. When None, the composite score uses price
+    proxies internally but value/growth are returned as None (displayed as "—") so
+    the UI does not mislead traders with price data labeled as fundamental quality.
     """
     tech = _technical_score(df)
     mom  = _momentum_score(df)
-    val  = value_score  if value_score  is not None else _value_proxy(df)
-    gro  = growth_score if growth_score is not None else _growth_proxy(df)
+    # Always compute proxy for score calculation even when real data unavailable
+    val_for_score = value_score  if value_score  is not None else _value_proxy(df)
+    gro_for_score = growth_score if growth_score is not None else _growth_proxy(df)
     vol  = _volatility_score(df)
 
     if rs_score is not None:
         score = (
             _WEIGHTS["technical"]        * tech
             + _WEIGHTS["momentum"]       * mom
-            + _WEIGHTS["value"]          * val
-            + _WEIGHTS["growth"]         * gro
+            + _WEIGHTS["value"]          * val_for_score
+            + _WEIGHTS["growth"]         * gro_for_score
             + _WEIGHTS["volatility"]     * vol
             + _WEIGHTS["relative_strength"] * rs_score
         )
@@ -175,8 +177,8 @@ def compute_kscore(
         score = (
             (_WEIGHTS["technical"]    / w_sum) * tech
             + (_WEIGHTS["momentum"]   / w_sum) * mom
-            + (_WEIGHTS["value"]      / w_sum) * val
-            + (_WEIGHTS["growth"]     / w_sum) * gro
+            + (_WEIGHTS["value"]      / w_sum) * val_for_score
+            + (_WEIGHTS["growth"]     / w_sum) * gro_for_score
             + (_WEIGHTS["volatility"] / w_sum) * vol
         )
 
@@ -186,8 +188,8 @@ def compute_kscore(
     return KScoreComponents(
         technical=round(tech, 2),
         momentum=round(mom, 2),
-        value=round(val, 2),
-        growth=round(gro, 2),
+        value=round(value_score, 2) if value_score is not None else None,
+        growth=round(growth_score, 2) if growth_score is not None else None,
         volatility=round(vol, 2),
         score=round(score, 2),
         fair_price=round(fair, 2) if fair else None,

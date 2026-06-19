@@ -190,16 +190,20 @@ function retColor(n: number) { return n >= 0 ? '#4ade80' : '#f87171'; }
 
 const COMPARE_COLORS = ['#818cf8', '#4ade80', '#fb923c'];
 
-function EquityCurve({ data }: { data: { ts: string; equity: number }[] }) {
+function EquityCurve({ data, benchmark }: { data: { ts: string; equity: number }[]; benchmark?: { ts: string; equity: number }[] | null }) {
   if (!data || data.length < 2) return null;
   const values = data.map(d => d.equity);
-  const minV = Math.min(...values), maxV = Math.max(...values);
+  const bmValues = benchmark && benchmark.length > 1 ? benchmark.map(d => d.equity) : [];
+  const allValues = [...values, ...bmValues];
+  const minV = Math.min(...allValues), maxV = Math.max(...allValues);
   const range = maxV - minV || 1;
   const W = 600, H = 100, PAD = 3;
-  const pts = values.map((v, i) => `${(i / (values.length - 1)) * W},${H - PAD - ((v - minV) / range) * (H - PAD * 2)}`).join(' ');
+  const toY = (v: number) => H - PAD - ((v - minV) / range) * (H - PAD * 2);
+  const pts = values.map((v, i) => `${(i / (values.length - 1)) * W},${toY(v)}`).join(' ');
+  const bmPts = bmValues.map((v, i) => `${(i / (bmValues.length - 1)) * W},${toY(v)}`).join(' ');
   const final = values[values.length - 1];
   const col = final >= 1 ? '#4ade80' : '#f87171';
-  const baselineY = H - PAD - ((1 - minV) / range) * (H - PAD * 2);
+  const baselineY = toY(1);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: '160px' }} preserveAspectRatio="none">
       <defs>
@@ -209,6 +213,9 @@ function EquityCurve({ data }: { data: { ts: string; equity: number }[] }) {
         </linearGradient>
       </defs>
       <polygon points={`0,${H} ${pts} ${W},${H}`} fill="url(#ecg)" />
+      {bmValues.length > 1 && (
+        <polyline points={bmPts} fill="none" stroke="#94a3b8" strokeWidth="1" strokeDasharray="5,3" vectorEffect="non-scaling-stroke" opacity="0.6" />
+      )}
       <polyline points={pts} fill="none" stroke={col} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
       {minV < 1 && maxV > 1 && (
         <line x1="0" y1={baselineY} x2={W} y2={baselineY} stroke="#475569" strokeWidth="0.6" strokeDasharray="5,4" vectorEffect="non-scaling-stroke" />
@@ -391,6 +398,10 @@ export default function StrategiesPage() {
         equity_curve: res.equity_curve,
         trades: res.trades ?? [],
         rule_dsl,
+        benchmark_cagr: res.benchmark_cagr ?? null,
+        benchmark_total_return: res.benchmark_total_return ?? null,
+        alpha: res.alpha ?? null,
+        benchmark_equity_curve: res.benchmark_equity_curve ?? [],
       });
       await mutateSaved();
     } catch (e: unknown) {
@@ -602,14 +613,16 @@ export default function StrategiesPage() {
 
           <div style={{ display: 'flex', gap: '8px', padding: '16px 22px', flexWrap: 'wrap' }}>
             {[
-              { label: 'Total Return',  value: fmtPct(result.total_return),               color: retColor(result.total_return) },
-              { label: 'CAGR',          value: fmtPct(result.cagr),                       color: retColor(result.cagr) },
-              { label: 'Sharpe Ratio',  value: result.sharpe.toFixed(2),                  color: result.sharpe >= 1.5 ? '#4ade80' : result.sharpe >= 0.5 ? '#facc15' : '#f87171' },
+              { label: 'Total Return',   value: fmtPct(result.total_return),               color: retColor(result.total_return) },
+              { label: 'CAGR',           value: fmtPct(result.cagr),                       color: retColor(result.cagr) },
+              ...(result.benchmark_cagr != null ? [{ label: 'SPY CAGR', value: fmtPct(result.benchmark_cagr), color: '#94a3b8' }] : []),
+              ...(result.alpha != null ? [{ label: 'Alpha vs SPY', value: (result.alpha >= 0 ? '+' : '') + fmtPct(result.alpha), color: result.alpha >= 0.03 ? '#4ade80' : result.alpha >= 0 ? '#facc15' : '#f87171' }] : []),
+              { label: 'Sharpe Ratio',   value: result.sharpe.toFixed(2),                  color: result.sharpe >= 1.5 ? '#4ade80' : result.sharpe >= 0.5 ? '#facc15' : '#f87171' },
               ...(result.sortino != null ? [{ label: 'Sortino Ratio', value: result.sortino.toFixed(2), color: result.sortino >= 1.5 ? '#4ade80' : result.sortino >= 0.5 ? '#facc15' : '#f87171' }] : []),
-              { label: 'Max Drawdown',  value: fmtPct(result.max_drawdown),               color: '#f87171' },
-              { label: 'Win Rate',      value: `${(result.win_rate * 100).toFixed(0)}%`,  color: result.win_rate >= 0.55 ? '#4ade80' : result.win_rate >= 0.4 ? '#facc15' : '#f87171' },
-              { label: 'Profit Factor', value: result.profit_factor.toFixed(2),           color: result.profit_factor >= 1.5 ? '#4ade80' : result.profit_factor >= 1 ? '#facc15' : '#f87171' },
-              { label: 'Trades',        value: String(result.n_trades),                   color: '#94a3b8' },
+              { label: 'Max Drawdown',   value: fmtPct(result.max_drawdown),               color: '#f87171' },
+              { label: 'Win Rate',       value: `${(result.win_rate * 100).toFixed(0)}%`,  color: result.win_rate >= 0.55 ? '#4ade80' : result.win_rate >= 0.4 ? '#facc15' : '#f87171' },
+              { label: 'Profit Factor',  value: result.profit_factor.toFixed(2),           color: result.profit_factor >= 1.5 ? '#4ade80' : result.profit_factor >= 1 ? '#facc15' : '#f87171' },
+              { label: 'Trades',         value: String(result.n_trades),                   color: '#94a3b8' },
             ].map(({ label, value, color }) => (
               <div key={label} style={{ flex: '1 1 110px', minWidth: '100px', padding: '12px 14px', borderRadius: '8px', background: '#080f1a', border: '1px solid #1e293b' }}>
                 <div style={{ fontSize: '9px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '5px' }}>{label}</div>
@@ -620,9 +633,17 @@ export default function StrategiesPage() {
 
           {result.equity_curve?.length > 1 && (
             <div style={{ padding: '0 22px 12px' }}>
-              <div style={{ fontSize: '10px', color: '#334155', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Equity Curve</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <div style={{ fontSize: '10px', color: '#334155', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Equity Curve</div>
+                {result.benchmark_equity_curve && result.benchmark_equity_curve.length > 1 && (
+                  <div style={{ display: 'flex', gap: '12px', fontSize: '9px', color: '#94a3b8' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><span style={{ width: 16, borderTop: '2px solid #4ade80', display: 'inline-block' }} /> Strategy</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><span style={{ width: 16, borderTop: '1px dashed #94a3b8', display: 'inline-block' }} /> SPY</span>
+                  </div>
+                )}
+              </div>
               <div style={{ borderRadius: '8px', background: '#080f1a', border: '1px solid #1e293b', padding: '8px 12px' }}>
-                <EquityCurve data={result.equity_curve} />
+                <EquityCurve data={result.equity_curve} benchmark={result.benchmark_equity_curve} />
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: '#334155', marginTop: '4px' }}>
                   <span>{result.start}</span><span>{result.end}</span>
                 </div>
