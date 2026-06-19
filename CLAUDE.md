@@ -177,6 +177,48 @@ including `python-jose[cryptography]`.
 
 ---
 
+## Recurring Issue: tune_all 401 — jose Library Missing from ml-prediction
+
+**Symptom:** `POST /ml/tune_all` returns 401 even with a valid JWT token. Optuna re-tune fails
+silently. Models remain trained with stale hyperparameters.
+
+**Root cause (found 2026-06-19):** `python-jose` was missing from the running `stockai-ml-prediction-1`
+container even though it's in `requirements.txt`. The image was built before `python-jose` was added
+to requirements.txt, so the installed package is absent. `shared/common/jwt_auth.py` does
+`from jose import JWTError, jwt` — if the import fails, the generic `except Exception` block
+raises HTTP 401, same as signal-engine's bug.
+
+**Fix:**
+```bash
+docker exec stockai-ml-prediction-1 pip install 'python-jose[cryptography]==3.3.0'
+# Verify:
+docker exec stockai-ml-prediction-1 python3 -c 'from jose import jwt; print("jose OK")'
+```
+
+**Trigger tune_all after fix** (run from market-data container, ml-prediction is on port 8003):
+```bash
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time
+sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from common.config import get_settings
+from jose import jwt as _jwt
+import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'scheduler','jti':str(uuid.uuid4()),'exp':int(time.time())+86400*365}, s.jwt_secret, algorithm='HS256')
+r = httpx.post('http://ml-prediction:8003/ml/tune_all?n_trials=60', headers={'Authorization': f'Bearer {tok}'}, timeout=20)
+print(r.status_code, r.text[:300])
+"
+```
+
+**Permanent fix:** Rebuild the ml-prediction image (after tune_all completes — restarting kills it):
+```bash
+docker compose -f docker/docker-compose.yml build ml-prediction && docker compose -f docker/docker-compose.yml up -d ml-prediction
+# Then re-install jose and re-trigger tune_all (rebuild wipes the pip-install)
+docker exec stockai-ml-prediction-1 pip install 'python-jose[cryptography]==3.3.0'
+```
+
+---
+
 ## Recurring Issue: INT-7 Signal-Engine Research Divergence — Missing Auth Header
 
 **Symptom:** Research divergence log entries (`signal.research_divergence`) never appear in
