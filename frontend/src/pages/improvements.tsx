@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6415,6 +6415,30 @@ const ITEMS: Item[] = [
     fix: 'Added _svc_token() helper at module level (same pattern as scheduler._service_token()). Both research calls now pass headers={"Authorization": f"Bearer {_svc_token()}"}.',
     implementedNote: 'Fixed 2026-06-19 (same commit as DB-1 fix). _svc_token() generates a long-lived service JWT cached in module scope.',
   },
+
+  // ── Tier 56 — ML Infrastructure: jose Fix + 46-Feature tune_all (2026-06-19) ─
+  {
+    id: 'ml-prediction-jose-fix',
+    tier: 56, severity: 'critical', defaultStatus: 'done',
+    title: 'python-jose missing from ml-prediction container — tune_all returned 401 on every call',
+    file: 'services/ml-prediction/requirements.txt',
+    effort: '15 minutes (install) + rebuild',
+    impact: 'Critical — tune_all (POST /ml/tune_all), the weekly Optuna hyperparameter search, had been returning 401 on every call despite a valid JWT. This meant all 142 models were running on stale pre-tuned hyperparameters indefinitely. Same root cause as the signal-engine jose bug (Tier 17): the ml-prediction image was built before python-jose was added to requirements.txt, so jose was absent from the running container. shared/common/jwt_auth.py does `from jose import JWTError, jwt` at import time; ImportError is caught by the generic except Exception block which raises HTTP 401 — making every authenticated endpoint silently reject valid tokens.',
+    what: 'stockai-ml-prediction-1 was built from an image that predated python-jose[cryptography]==3.3.0 being added to services/ml-prediction/requirements.txt. The running container had no jose module installed. jwt_auth.py get_current_username() failed at import time → HTTP 401 on every authenticated endpoint (tune_all, train_all, metrics). Attempts to call tune_all from the scheduler returned 401 silently until diagnosed.',
+    fix: 'Immediate fix: docker exec stockai-ml-prediction-1 pip install "python-jose[cryptography]==3.3.0". Verified: docker exec stockai-ml-prediction-1 python3 -c "from jose import jwt; print(\'jose OK\')". Permanent fix: requirements.txt already has the entry — rebuild the image to bake it in: docker compose build ml-prediction && docker compose up -d ml-prediction. Re-install jose after rebuild (pip install wipes on image refresh). Documented in CLAUDE.md under "Recurring Issue: tune_all 401 — jose Library Missing from ml-prediction".',
+    implementedNote: 'Fixed 2026-06-19. jose installed in running container; tune_all returned HTTP 200 immediately after. Image rebuild scheduled after tune_all completes (restart kills in-progress Optuna run). CLAUDE.md updated with full diagnosis/fix recipe.',
+  },
+  {
+    id: 'tune-all-46-features',
+    tier: 56, severity: 'high', defaultStatus: 'done',
+    title: 'tune_all re-triggered with 46-feature pipeline (AUD-C2 four-way split + PEG + Debt/Equity)',
+    file: 'services/ml-prediction/src/training/tuner.py',
+    effort: '4–8 hours compute (automated, 142 symbols × 60 trials)',
+    impact: 'High — two major training changes invalidated all stored Optuna hyperparameters: (1) AUD-C2: trainer.py switched from three-way (70%/15%/15%) to four-way split (70%/10%/10%/10%) — X_es for early stopping, X_cal for calibration, X_test for threshold search. This changes the effective training set size and early-stopping dynamics, requiring new max_depth, learning_rate, n_estimators. (2) TIER50-D: peg_ratio and debt_to_equity added → 46 features (up from 44). XGBoost optimal colsample_bytree, subsample, and min_child_weight all shift with a larger feature space. Running tune_all (60 Optuna trials per symbol) re-optimises all hyperparameters against the actual current training setup. Observed results: TSLA cv_auc=0.7149 (oos_precision_mean=0.5652, n_features=46), ZS cv_auc=0.6763 (oos_precision_mean=0.8019). Most liquid US large-caps (AAPL, MSFT, NVDA) skipped due to <300 clean samples after the four-way split raises the data threshold.',
+    what: 'After AUD-C2 (four-way split) and TIER50-D (PEG + D/E features), the ml-prediction container had hyperparameter files tuned for the old three-way split and 44-feature pipeline. The stored _params.json files were mismatched to the training configuration. Rebuilding models with stale hyperparameters produces suboptimal regularization: too-deep trees overfit with more features; too-shallow trees underfit with longer early-stop validation windows.',
+    fix: 'Triggered POST /ml/tune_all?n_trials=60 via market-data container using a scheduler JWT (see CLAUDE.md recipe). 142 symbols scheduled. Optuna MedianPruner prunes weak trials early. Results logged per symbol to docker logs stockai-ml-prediction-1. After completion: restart ml-prediction to load new model artifacts, then rebuild image. Do NOT restart until tune_all is complete — restart kills the in-progress Optuna run.',
+    implementedNote: 'Triggered 2026-06-19. 142 symbols × 60 Optuna trials running as background async task in ml-prediction. Estimated runtime 4–8h. Most liquid US stocks (AAPL, MSFT, NVDA, AMZN) skipped — require >300 clean samples for the 70%/10%/10%/10% four-way split (these stocks have ~277 clean rows). Symbols with 300+ rows (TSLA 348, ZS 332+) tune successfully.',
+  },
 ];
 
 
@@ -6481,6 +6505,7 @@ const TIER_LABEL: Record<Tier, string> = {
   53: 'Tier 53 — Audit Fix Wave 4: Adj-Close in Signal Engine + ML Feature Builder (2026-06-19)',
   54: 'Tier 54 — Audit Fix Wave 5: Per-Horizon ML + Survivorship + Numeric Cash + Alembic (2026-06-19)',
   55: 'Tier 55 — Full System Audit 2026-06-19: 13 findings (1 Critical · 4 High · 5 Medium · 3 Low)',
+  56: 'Tier 56 — ML Infrastructure: jose Fix + 46-Feature tune_all (2026-06-19)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6539,6 +6564,7 @@ const TIER_COLOR: Record<Tier, string> = {
   53: '#f59e0b',
   54: '#34d399',
   55: '#f87171',
+  56: '#c084fc',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
