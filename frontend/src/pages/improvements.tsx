@@ -1554,6 +1554,8 @@ const ITEMS: Item[] = [
   {
     id: 'al1-rl-agent',
     tier: 3, severity: 'feature',
+    defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-19 — offline contextual bandit / fitted Q-iteration. services/market-data/src/services/rl_agent.py: RLPolicy class (linear Q-function via Ridge regression), _feature_vector (9 features: rr_norm, conf_norm, score_norm, kscore_norm, regime_enc, style one-hot), run_rl_training() loads closed PaperTrades→Ridge→rl_policy.json. _should_enter() in paper_trading_engine.py calls rl_recommend() and adjusts additive score ±1 (BUY=+1, WAIT=-1) before the calibrated/raw threshold decision. Endpoints: GET /rl-agent/status, POST /rl-agent/train (admin), GET /rl-agent/recommend (debug). Sunday scheduler runs run_rl_training() directly. Falls back gracefully when <50 trades or no policy file.',
     title: 'AL-1: Reinforcement Learning agent — system learns buy/hold/sell policy to maximise Sharpe ratio',
     file: 'services/ml-prediction/src/models/ · services/market-data (new rl_agent.py)',
     effort: '3–4 weeks',

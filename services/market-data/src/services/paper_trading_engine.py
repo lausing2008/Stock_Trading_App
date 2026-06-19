@@ -887,6 +887,29 @@ def _should_enter(
         except Exception:
             pass  # malformed ts: no freshness adjustment
 
+    # ── AL-1: RL policy score adjustment ─────────────────────────────────────
+    # Linear Q-function trained on closed paper trades. Adjusts the additive score
+    # (±1) before the calibrated or raw threshold comparison.
+    try:
+        from .rl_agent import rl_recommend as _rl_recommend
+        _rl_rec = _rl_recommend(
+            rr_ratio=rr,
+            confidence=confidence,
+            entry_score=float(score),
+            kscore=kscore if kscore is not None else 50.0,
+            style=cfg.get("trading_style", "SWING"),
+            regime=(live_regime.get("state", "neutral") if live_regime else "neutral"),
+        )
+        if _rl_rec["available"]:
+            if _rl_rec["action"] == "BUY":
+                score += 1
+                notes.append(f"RL policy BUY (Q={_rl_rec['q_value']:.3f})")
+            else:
+                score -= 1
+                notes.append(f"RL policy WAIT (Q={_rl_rec['q_value']:.3f})")
+    except Exception:
+        pass  # RL failure is non-fatal
+
     # ── Decision ─────────────────────────────────────────────────────────────
 
     # PT-3: Use calibrated logistic weights when available (>=100 closed trades).

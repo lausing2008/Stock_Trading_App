@@ -1518,6 +1518,17 @@ def _weekly_full_refresh() -> None:
     except Exception as _exc:
         log.error("scheduler.calibrate_entry_weights_failed", error=str(_exc))
 
+    # AL-1: train RL Q-function on closed paper trades (Ridge regression → pct_return).
+    # Requires ≥50 trades. Saves policy to /data/models/rl_policy.json.
+    try:
+        log.info("scheduler.rl_agent_train_start")
+        from .rl_agent import run_rl_training as _rl_train
+        rl_result = _rl_train()
+        rl_status = "ok" if "error" not in rl_result else rl_result["error"]
+        _record_job_status("rl_agent_train", rl_status, 0.0)
+    except Exception as _exc:
+        log.error("scheduler.rl_agent_train_failed", error=str(_exc))
+
 
 def _purge_old_data() -> None:
     """Delete rows older than 90 days from intraday price bars and signal outcomes.
