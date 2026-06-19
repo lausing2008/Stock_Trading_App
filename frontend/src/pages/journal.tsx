@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
-import { api, type PaperDecisionItem, type JournalTrade, type JournalTradeIn } from '@/lib/api';
+import { api, type PaperDecisionItem, type JournalTrade, type JournalTradeIn, type TradePlan } from '@/lib/api';
 
 // ─── Exit reason badges ───────────────────────────────────────────────────────
 
@@ -730,12 +730,140 @@ function ManualLogTab() {
   );
 }
 
+// ─── Trade Board tab ─────────────────────────────────────────────────────────
+
+function TradeBoardTab() {
+  const { data: plans = [], isLoading } = useSWR<TradePlan[]>('board', () => api.listBoard(), { revalidateOnFocus: false });
+  const closed = plans.filter(p => p.stage === 'closed').sort((a, b) =>
+    (b.closed_at ?? b.updated_at).localeCompare(a.closed_at ?? a.updated_at),
+  );
+  const [sortBy, setSortBy] = useState<'date' | 'pnl' | 'symbol'>('date');
+
+  function planPnlDollar(p: TradePlan): number | null {
+    const eff = p.actual_entry_price ?? p.entry_price;
+    if (p.exit_price == null || eff == null || p.shares == null) return null;
+    return (p.exit_price - eff) * p.shares;
+  }
+  function planPnlPct(p: TradePlan): number | null {
+    const eff = p.actual_entry_price ?? p.entry_price;
+    if (p.exit_price == null || eff == null || eff === 0) return null;
+    return (p.exit_price - eff) / eff * 100;
+  }
+
+  const sorted = [...closed].sort((a, b) => {
+    if (sortBy === 'symbol') return a.symbol.localeCompare(b.symbol);
+    if (sortBy === 'pnl') return (planPnlDollar(b) ?? -Infinity) - (planPnlDollar(a) ?? -Infinity);
+    return (b.closed_at ?? b.updated_at).localeCompare(a.closed_at ?? a.updated_at);
+  });
+
+  const withPnl = closed.filter(p => planPnlDollar(p) != null);
+  const wins = withPnl.filter(p => (planPnlDollar(p) ?? 0) > 0);
+  const totalPnl = withPnl.reduce((s, p) => s + (planPnlDollar(p) ?? 0), 0);
+  const winRate = withPnl.length ? wins.length / withPnl.length * 100 : null;
+
+  return (
+    <div>
+      {withPnl.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+          {[
+            ['Total P&L', `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, totalPnl >= 0 ? '#4ade80' : '#f87171', `${withPnl.length} with P&L`],
+            ['Win Rate', winRate != null ? `${winRate.toFixed(0)}%` : '—', winRate != null && winRate >= 50 ? '#4ade80' : '#f87171', `${wins.length}W / ${withPnl.length - wins.length}L`],
+            ['Closed', String(closed.length), '#94a3b8', 'total trades'],
+          ].map(([label, value, color, sub]) => (
+            <div key={label} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px', minWidth: 100 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: color as string }}>{value}</div>
+              <div style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>{label}</div>
+              <div style={{ fontSize: 10, color: '#334155', marginTop: 1 }}>{sub}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+        <span style={{ fontSize: 11, color: '#475569' }}>Sort:</span>
+        {([['date', 'Date'], ['symbol', 'Symbol'], ['pnl', 'P&L']] as const).map(([k, label]) => (
+          <button key={k} onClick={() => setSortBy(k)}
+            style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid',
+              borderColor: sortBy === k ? '#475569' : '#1e293b',
+              background: sortBy === k ? 'rgba(71,85,105,0.2)' : 'transparent',
+              color: sortBy === k ? '#94a3b8' : '#475569' }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {isLoading ? (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#475569' }}>Loading…</div>
+      ) : sorted.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#475569' }}>No closed Trade Board entries yet.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {sorted.map(p => {
+            const eff = p.actual_entry_price ?? p.entry_price;
+            const pnlD = planPnlDollar(p);
+            const pnlP = planPnlPct(p);
+            const pnlColor = pnlD == null ? '#64748b' : pnlD >= 0 ? '#4ade80' : '#f87171';
+            const style = p.trading_style ?? (p.game_plan as any)?.style ?? null;
+            const closedDate = p.closed_at ? fmtDate(p.closed_at) : fmtDate(p.updated_at);
+            return (
+              <div key={p.id} style={{ background: '#0b1220', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: '8px 18px', alignItems: 'center' }}>
+                <div style={{ minWidth: 70 }}>
+                  <Link href={`/stock/${p.symbol}`} style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0', textDecoration: 'none' }}>{p.symbol}</Link>
+                  {style && (
+                    <span style={{ marginLeft: 6, fontSize: 10, padding: '1px 5px', borderRadius: 3, background: 'rgba(99,102,241,0.15)', color: STYLE_COLOR[style] ?? '#818cf8' }}>{style}</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b' }}>{closedDate}</div>
+                {eff != null && (
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: '#475569' }}>In: </span>
+                    <span style={{ color: p.actual_entry_price != null ? '#4ade80' : '#94a3b8', fontFamily: 'monospace' }}>${eff.toFixed(2)}</span>
+                    {p.actual_entry_price != null && p.entry_price != null && Math.abs(p.actual_entry_price - p.entry_price) > 0.01 && (
+                      <span style={{ color: '#334155', fontFamily: 'monospace', fontSize: 10 }}> (plan ${p.entry_price.toFixed(2)})</span>
+                    )}
+                  </div>
+                )}
+                {p.exit_price != null && (
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: '#475569' }}>Out: </span>
+                    <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>${p.exit_price.toFixed(2)}</span>
+                  </div>
+                )}
+                {p.shares != null && (
+                  <div style={{ fontSize: 11, color: '#475569' }}>{p.shares} sh</div>
+                )}
+                <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+                  {pnlP != null && (
+                    <div style={{ fontSize: 15, fontWeight: 700, fontFamily: 'monospace', color: pnlColor }}>
+                      {pnlP >= 0 ? '+' : ''}{pnlP.toFixed(2)}%
+                    </div>
+                  )}
+                  {pnlD != null && (
+                    <div style={{ fontSize: 11, color: pnlColor }}>
+                      {pnlD >= 0 ? '+' : ''}${Math.abs(pnlD).toFixed(0)}
+                    </div>
+                  )}
+                  {pnlD == null && <div style={{ fontSize: 12, color: '#334155' }}>No P&L data</div>}
+                </div>
+                {p.notes && (
+                  <div style={{ width: '100%', fontSize: 11, color: '#475569', marginTop: 2, borderTop: '1px solid #1e293b', paddingTop: 4 }}>{p.notes}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function JournalPage() {
-  const [tab, setTab] = useState<'ai' | 'manual'>('ai');
+  const [tab, setTab] = useState<'ai' | 'manual' | 'board'>('ai');
   const { data: aiData } = useSWR(['paper-decisions', 90, 1], () => api.paperDecisions({ days_back: 90, limit: 50, page: 1 }), { revalidateOnFocus: false });
   const { data: manualTrades = [] } = useSWR<JournalTrade[]>('journal', () => api.listJournal());
+  const { data: boardPlans = [] } = useSWR<TradePlan[]>('board', () => api.listBoard(), { revalidateOnFocus: false });
 
   const aiClosed = (aiData?.items ?? []).filter(i => i.stage === 'closed');
   const aiWins = aiClosed.filter(i => (i.pnl ?? 0) > 0);
@@ -747,6 +875,16 @@ export default function JournalPage() {
   const manWr = manClosed.length > 0 ? manWins.length / manClosed.length * 100 : null;
   const manTotalPnl = manClosed.reduce((s, t) => s + (calcPnl(t) ?? 0), 0);
 
+  function boardPnlD(p: TradePlan): number | null {
+    const eff = p.actual_entry_price ?? p.entry_price;
+    if (p.exit_price == null || eff == null || p.shares == null) return null;
+    return (p.exit_price - eff) * p.shares;
+  }
+  const boardClosed = boardPlans.filter(p => p.stage === 'closed' && boardPnlD(p) != null);
+  const boardWins = boardClosed.filter(p => (boardPnlD(p) ?? 0) > 0);
+  const boardWr = boardClosed.length > 0 ? boardWins.length / boardClosed.length * 100 : null;
+  const boardTotalPnl = boardClosed.reduce((s, p) => s + (boardPnlD(p) ?? 0), 0);
+
   return (
     <div style={{ padding: '24px 0' }}>
       <div style={{ marginBottom: 20 }}>
@@ -754,13 +892,14 @@ export default function JournalPage() {
         <p style={{ fontSize: 13, color: '#64748b' }}>Review every AI paper trade — entry score, indicators, exit reasoning, and scaling events.</p>
       </div>
 
-      {/* AI vs Manual win rate comparison (47-C) */}
-      {(aiClosed.length > 0 || manClosed.length > 0) && (
+      {/* Win rate comparison bar */}
+      {(aiClosed.length > 0 || manClosed.length > 0 || boardClosed.length > 0) && (
         <div style={{ display: 'flex', gap: 10, marginBottom: 20, background: '#0a1628', border: '1px solid #1e293b', borderRadius: 8, padding: '12px 16px', alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: 4 }}>Win Rate</div>
           {[
             { label: 'AI Paper', wr: aiWr, pnl: aiTotalPnl, n: aiClosed.length },
-            { label: 'My Trades', wr: manWr, pnl: manTotalPnl, n: manClosed.length },
+            { label: 'Trade Board', wr: boardWr, pnl: boardTotalPnl, n: boardClosed.length },
+            { label: 'Manual Log', wr: manWr, pnl: manTotalPnl, n: manClosed.length },
           ].map(({ label, wr, pnl, n }) => (
             <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, padding: '8px 14px' }}>
               <div>
@@ -772,13 +911,13 @@ export default function JournalPage() {
               </div>
             </div>
           ))}
-          {aiWr != null && manWr != null && (
+          {aiWr != null && boardWr != null && (
             <div style={{ fontSize: 11, color: '#475569', marginLeft: 4 }}>
-              {aiWr > manWr
-                ? <span style={{ color: '#818cf8' }}>AI leads by {(aiWr - manWr).toFixed(0)}pp</span>
-                : aiWr < manWr
-                ? <span style={{ color: '#4ade80' }}>You lead by {(manWr - aiWr).toFixed(0)}pp</span>
-                : <span style={{ color: '#64748b' }}>Tied</span>}
+              {aiWr > boardWr
+                ? <span style={{ color: '#818cf8' }}>AI leads board by {(aiWr - boardWr).toFixed(0)}pp</span>
+                : aiWr < boardWr
+                ? <span style={{ color: '#4ade80' }}>Board leads AI by {(boardWr - aiWr).toFixed(0)}pp</span>
+                : <span style={{ color: '#64748b' }}>AI and Board tied</span>}
             </div>
           )}
         </div>
@@ -786,7 +925,7 @@ export default function JournalPage() {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #1e293b', paddingBottom: 0 }}>
-        {([['ai', 'AI Paper Trades'], ['manual', 'Manual Log']] as const).map(([key, label]) => (
+        {([['ai', 'AI Paper Trades'], ['board', 'Trade Board'], ['manual', 'Manual Log']] as const).map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)}
             style={{ padding: '8px 16px', borderRadius: '6px 6px 0 0', fontSize: 13, fontWeight: 600,
               cursor: 'pointer', border: '1px solid',
@@ -800,7 +939,7 @@ export default function JournalPage() {
         ))}
       </div>
 
-      {tab === 'ai' ? <AITradesTab /> : <ManualLogTab />}
+      {tab === 'ai' ? <AITradesTab /> : tab === 'board' ? <TradeBoardTab /> : <ManualLogTab />}
     </div>
   );
 }
