@@ -559,6 +559,8 @@ export type Backtest = {
   total_return: number;
   cagr: number;
   sharpe: number;
+  sortino?: number | null;
+  calmar?: number | null;
   max_drawdown: number;
   win_rate: number;
   profit_factor: number;
