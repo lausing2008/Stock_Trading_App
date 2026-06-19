@@ -4158,6 +4158,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'aud14-no-chart-entry',
+    defaultStatus: 'done',
+    implementedNote: 'Fixed 2026-06-19 — PriceChart.tsx: added gamePlanLevels prop; renders entry (green dashed), stop (red solid), target1 (purple dashed), target2 (blue dashed) as price lines. stock/[symbol].tsx passes gamePlan.entries[0/1], stop_loss, take_profit to PriceChart.',
     tier: 14, severity: 'high',
     title: 'Signal entry/stop/target never drawn on price chart — traders cannot visually validate the setup',
     file: 'frontend/src/pages/stock/[symbol].tsx:1497-1513 · frontend/src/components/PriceChart.tsx:230-237',
@@ -6150,6 +6152,16 @@ const ITEMS: Item[] = [
     file: 'services/research-engine/src/api/routes.py',
     implementedNote: 'Done 2026-06-19. Fallback state now impossible to miss: "INSUFFICIENT DATA" in the header, 0% confidence, red banner.',
     impact: 'High — prevents traders from acting on AI placeholder verdicts as real analysis.',
+  },
+  {
+    id: 'TIER52-E', tier: 52, severity: 'high', defaultStatus: 'done',
+    title: '52-E: Game Plan entry/stop/target drawn on price chart as colored price lines',
+    effort: '1h',
+    what: 'The Game Plan sidebar showed entry zones, stop, and take-profit only as text. Traders had to mentally map these prices onto the chart against support/resistance zones — a critical visual gap for validating the setup quality.',
+    fix: 'PriceChart.tsx: added gamePlanLevels prop {entryLow, entryHigh, stopLoss, target1, target2}. When present and non-zero, renders: green dashed price lines at entry zone bounds, red solid at stop, purple dashed at target1, blue dashed at target2. stock/[symbol].tsx: derives levels from gamePlan state (entries[0/1].price, stop_loss.price, take_profit.price) and passes as prop.',
+    file: 'frontend/src/components/PriceChart.tsx · frontend/src/pages/stock/[symbol].tsx',
+    implementedNote: 'Done 2026-06-19. Lines appear automatically when Game Plan is generated; disappear if gamePlan is null. Chart re-renders with new levels via gamePlanLevels in useEffect deps.',
+    impact: 'High — the most-requested visual improvement for game plan usability.',
   },
 ];
 

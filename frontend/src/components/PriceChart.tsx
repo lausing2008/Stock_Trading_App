@@ -29,6 +29,13 @@ type Props = {
   levels?: Levels;
   signalMarkers?: SignalHistoryPoint[];
   patterns?: PatternSignal[];
+  gamePlanLevels?: {
+    entryLow?: number | null;
+    entryHigh?: number | null;
+    stopLoss?: number | null;
+    target1?: number | null;
+    target2?: number | null;
+  } | null;
 };
 
 // Daily ranges — 1D removed; use the 5m button for intraday view
@@ -103,7 +110,7 @@ function computeVolMA(priceData: Price[], period = 20): (number | null)[] {
 type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null; ema_200: number|null };
 type MacdVals = { macd: number|null; signal: number|null; hist: number|null };
 
-export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns }: Props) {
+export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels }: Props) {
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef  = useRef<HTMLDivElement>(null);
   const macdRef = useRef<HTMLDivElement>(null);
@@ -353,6 +360,27 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
         title: '',
       });
     }
+
+    // ── Game Plan levels (daily only) ─────────────────────────────────────
+    if (!isIntraday && gamePlanLevels) {
+      const gpl = gamePlanLevels;
+      if (gpl.entryLow && gpl.entryLow > 0) {
+        candles.createPriceLine({ price: gpl.entryLow, color: '#4ade80', lineWidth: 2 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'Entry Low' });
+      }
+      if (gpl.entryHigh && gpl.entryHigh > 0) {
+        candles.createPriceLine({ price: gpl.entryHigh, color: '#4ade80', lineWidth: 2 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'Entry High' });
+      }
+      if (gpl.stopLoss && gpl.stopLoss > 0) {
+        candles.createPriceLine({ price: gpl.stopLoss, color: '#f87171', lineWidth: 2 as const, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: 'Stop' });
+      }
+      if (gpl.target1 && gpl.target1 > 0) {
+        candles.createPriceLine({ price: gpl.target1, color: '#a78bfa', lineWidth: 1 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'Target 1' });
+      }
+      if (gpl.target2 && gpl.target2 > 0) {
+        candles.createPriceLine({ price: gpl.target2, color: '#38bdf8', lineWidth: 1 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'Target 2' });
+      }
+    }
+
     chartRef.current = chart;
 
     function updateSrLabels() {
@@ -453,7 +481,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, isIntraday]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, isIntraday]);
 
   const btn = (active: boolean, label: string, onClick: () => void, color?: string) => (
     <button
