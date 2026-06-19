@@ -349,8 +349,8 @@ class UserPosition(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
-    shares: Mapped[float] = mapped_column(Numeric(20, 6))
-    avg_cost: Mapped[float] = mapped_column(Numeric(20, 6))
+    shares: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    avg_cost: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
     currency: Mapped[str] = mapped_column(String(8), default="USD")
     added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -372,8 +372,8 @@ class PositionTrade(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     position_id: Mapped[int] = mapped_column(ForeignKey("user_positions.id", ondelete="CASCADE"), index=True)
     type: Mapped[str] = mapped_column(String(8))  # BUY | SELL
-    shares: Mapped[float] = mapped_column(Numeric(20, 6))
-    price: Mapped[float] = mapped_column(Numeric(20, 6))
+    shares: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    price: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
     date: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     position: Mapped["UserPosition"] = relationship(back_populates="trades")
@@ -385,7 +385,7 @@ class UserCash(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     currency: Mapped[str] = mapped_column(String(8))
-    amount: Mapped[float] = mapped_column(Numeric(20, 6), default=0.0)
+    amount: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False), default=0.0)
 
     user: Mapped["User"] = relationship(back_populates="cash_balances")
 
@@ -547,8 +547,8 @@ class PaperPortfolio(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(128), default="Paper Portfolio")
-    initial_capital: Mapped[float] = mapped_column(Numeric(20, 6))
-    current_cash: Mapped[float] = mapped_column(Numeric(20, 6))
+    initial_capital: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    current_cash: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
     # JSON config — see paper_trading_engine.py _DEFAULT_CONFIG
     config: Mapped[dict] = mapped_column(JSON)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -577,11 +577,11 @@ class PaperTrade(Base):
     # Entry
     entry_date: Mapped[date] = mapped_column(Date, index=True)
     entry_time: Mapped[datetime] = mapped_column(DateTime)
-    entry_price: Mapped[float] = mapped_column(Numeric(20, 6))
-    shares: Mapped[float] = mapped_column(Numeric(20, 6))
-    stop_loss: Mapped[float] = mapped_column(Numeric(20, 6))    # initial hard stop
-    take_profit: Mapped[float | None] = mapped_column(Numeric(20, 6), nullable=True)
-    current_stop: Mapped[float] = mapped_column(Numeric(20, 6))  # trails up
+    entry_price: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    shares: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    stop_loss: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))    # initial hard stop
+    take_profit: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
+    current_stop: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))  # trails up
 
     # Decision quality at entry
     entry_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -593,17 +593,17 @@ class PaperTrade(Base):
     entry_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Signal.reasons snapshot
 
     # Live tracking
-    current_price: Mapped[float | None] = mapped_column(Numeric(20, 6), nullable=True)
-    highest_price: Mapped[float | None] = mapped_column(Numeric(20, 6), nullable=True)
+    current_price: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
+    highest_price: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
     stage: Mapped[str] = mapped_column(String(20), default="open", index=True)  # open|closed
     hold_days: Mapped[int] = mapped_column(Integer, default=0)
 
     # Exit (null until closed)
     exit_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    exit_price: Mapped[float | None] = mapped_column(Numeric(20, 6), nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
     exit_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     exit_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    pnl: Mapped[float | None] = mapped_column(Numeric(20, 6), nullable=True)
+    pnl: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
     pct_return: Mapped[float | None] = mapped_column(Float, nullable=True)
     # PA-G3: signal lifecycle — which signal was active at exit (for walk-forward attribution)
     signal_at_exit_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
