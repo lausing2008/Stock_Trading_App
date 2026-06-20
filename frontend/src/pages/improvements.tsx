@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6740,6 +6740,52 @@ const ITEMS: Item[] = [
     fix: 'Triggered POST /ml/tune_all?n_trials=60 via market-data container using a scheduler JWT (see CLAUDE.md recipe). 142 symbols scheduled. Optuna MedianPruner prunes weak trials early. Results logged per symbol to docker logs stockai-ml-prediction-1. After completion: restart ml-prediction to load new model artifacts, then rebuild image. Do NOT restart until tune_all is complete — restart kills the in-progress Optuna run.',
     implementedNote: 'Triggered 2026-06-19. 142 symbols × 60 Optuna trials running as background async task in ml-prediction. Estimated runtime 4–8h. Most liquid US stocks (AAPL, MSFT, NVDA, AMZN) skipped — require >300 clean samples for the 70%/10%/10%/10% four-way split (these stocks have ~277 clean rows). Symbols with 300+ rows (TSLA 348, ZS 332+) tune successfully.',
   },
+
+  // ── Tier 63 — Tier 11 Completion: Pattern Filter + Market Cap + Monte Carlo (2026-06-20) ─
+  {
+    id: 'TIER63-A',
+    tier: 63, severity: 'feature', defaultStatus: 'done',
+    title: 'GET /ta/patterns/bulk — bulk chart pattern scan with 6h in-process cache',
+    file: 'services/technical-analysis/src/api/routes.py',
+    effort: '2 hours',
+    impact: 'Previously patterns were only detectable per-symbol via GET /ta/{symbol}/patterns. Screener and ranking-engine had no way to filter by chart pattern without calling 100+ individual endpoints. The bulk endpoint iterates all active stocks, loads 400 days of daily OHLCV, runs detect_patterns(), and caches per market_key for 6 hours. Ranking-engine fetches once per cache window and merges into every leaderboard row.',
+    what: 'No bulk pattern API existed. The TA service had detect_patterns() per symbol but no batch endpoint. The 6h cache (module-level dict keyed by market) means the first screener load after cache expiry is slow (~10–30s for all stocks) but subsequent loads are instant.',
+    fix: 'Added GET /ta/patterns/bulk (optional ?market= filter) with _patterns_bulk_cache: dict at module level. Ranking-engine routes.py: added _fetch_patterns_bulk() with its own 6h module-level cache, merged patterns into leaderboard rows as r["patterns"] = patterns.get(r["symbol"], []). Also fixed container: indicators/__init__.py was stale (missing supertrend export) — copied local version to fix restart.',
+    implementedNote: 'Done 2026-06-20. Deployed via docker cp + docker restart to stockai-technical-analysis-1 and stockai-ranking-engine-1. indicators/__init__.py also recopied to fix supertrend ImportError on restart.',
+  },
+  {
+    id: 'TIER63-B',
+    tier: 63, severity: 'feature', defaultStatus: 'done',
+    title: 'Screener: Market cap tier dropdown filter (Mega / Large / Mid / Small / Micro)',
+    file: 'frontend/src/pages/screener.tsx · services/ranking-engine/src/api/routes.py',
+    effort: '1 hour',
+    impact: 'Users can now restrict screener results to a specific size tier. Market cap is joined from the Fundamental DB row in the ranking-engine leaderboard and returned as market_cap (int, dollars) on every row. The screener applies a [min, max) range filter client-side. Tiers: Mega >$200B, Large $10–200B, Mid $2–10B, Small $300M–2B, Micro <$300M.',
+    what: 'Ranking-engine leaderboard previously returned no market_cap field. Screener had no size filter. The Fundamental model already stores market_cap as an int (dollars) — it only needed to be included in the leaderboard result dict and filtered in screener.',
+    fix: 'ranking-engine routes.py: added "market_cap": int(fund.market_cap) if fund and fund.market_cap else None to the leaderboard result. screener.tsx: added capTier state, capTierMap lookup, filter logic (capRange[0] ≤ market_cap < capRange[1]), and a <select> dropdown with 5 options. api.ts RankingRow type updated with market_cap?: number | null.',
+    implementedNote: 'Done 2026-06-20. No backend restart needed beyond the ranking-engine already restarted for TIER63-A.',
+  },
+  {
+    id: 'TIER63-C',
+    tier: 63, severity: 'feature', defaultStatus: 'done',
+    title: 'Screener: Chart pattern chip multi-select filter (9 patterns, AND logic)',
+    file: 'frontend/src/pages/screener.tsx',
+    effort: '1 hour',
+    impact: 'Users can now filter screener results to stocks displaying one or more of 9 detected chart patterns simultaneously (AND logic — all selected patterns must be present). Patterns come from the ranking-engine patterns field populated by /ta/patterns/bulk. The 9 chips: Double Bottom, Double Top, H&S, Ascending/Descending/Symmetric Triangle, Bull Flag, Bear Flag, Cup & Handle.',
+    what: 'Pattern data was being fetched and merged into leaderboard rows but never surfaced in the screener UI. The patterns Set filter was wired in the filter function but there were no UI controls to set it.',
+    fix: 'screener.tsx: added 9 styled toggle buttons (chips) below the market cap dropdown. Each chip toggles its pattern key in filters.patterns (a Set<string>). Filter function: for each selected pattern, checks if r.patterns includes it — fails if any required pattern is absent (AND logic). Chips are highlighted in indigo when active.',
+    implementedNote: 'Done 2026-06-20. Frontend rebuilt --no-cache and redeployed.',
+  },
+  {
+    id: 'TIER63-D',
+    tier: 63, severity: 'feature', defaultStatus: 'done',
+    title: 'Monte Carlo simulation on paper portfolio Equity Curve tab (1000 bootstrap paths)',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: '2 hours',
+    impact: 'Users now see a forward projection of their paper portfolio on the Equity Curve tab. The simulation bootstraps 1000 paths over 252 trading days (1 year) from the portfolio\'s own historical daily return distribution using a seeded LCG + Box-Muller transform (stable across re-renders). Renders as a Plotly fan chart showing P5/P25/P50/P75/P95 percentile bands. Summary cards show P(positive at 1Y), P10/median/P90 terminal values.',
+    what: 'The Equity Curve tab showed historical equity vs SPY/QQQ/HSI and a BenchmarkTable but no forward projection. Users had no way to understand the range of possible outcomes given the portfolio\'s actual return distribution.',
+    fix: 'Added MonteCarloSection component above the existing tab close. Uses useMemo to compute daily log-returns from curve data, then runs 1000 seeded bootstrap paths (mean + std × normal noise per day). useEffect renders a Plotly chart with fill "tonexty" for the band areas. Falls back gracefully when curve has <5 points. Renders after BenchmarkTable inside the Equity Curve tab.',
+    implementedNote: 'Done 2026-06-20. Pure frontend computation — no backend changes. Frontend rebuilt --no-cache.',
+  },
 ];
 
 
@@ -6813,6 +6859,7 @@ const TIER_LABEL: Record<Tier, string> = {
   60: 'Tier 60 — Security Hardening + Research Gating + NYSE Calendar + DE Perf (2026-06-20)',
   61: 'Tier 61 — Paper Trading Quality Gates (2026-06-20)',
   62: 'Tier 62 — UX + Monitoring Quick Wins (2026-06-20)',
+  63: 'Tier 63 — Tier 11 Completion: Pattern Filter + Market Cap + Monte Carlo (2026-06-20)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6878,6 +6925,7 @@ const TIER_COLOR: Record<Tier, string> = {
   60: '#a3e635',
   61: '#34d399',
   62: '#38bdf8',
+  63: '#c084fc',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
