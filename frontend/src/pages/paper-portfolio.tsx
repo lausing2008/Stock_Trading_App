@@ -951,7 +951,7 @@ function TradeParamsPanel({ onDone }: { onDone: () => void }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-const TABS = ['Positions', 'Decisions', 'Journal', 'Closed Trades', 'Equity Curve', 'Attribution', 'DE Audit'] as const;
+const TABS = ['Positions', 'Decisions', 'Journal', 'Closed Trades', 'Equity Curve', 'Attribution', 'Risk', 'DE Audit'] as const;
 type Tab = typeof TABS[number];
 
 export default function PaperPortfolioPage() {
@@ -1009,7 +1009,7 @@ export default function PaperPortfolioPage() {
     () => api.paperSummary(selectedPortfolioId), { refreshInterval: 60_000 }
   );
   const { data: positions, mutate: mutatePositions } = useSWR(
-    authed && tab === 'Positions' && selectedPortfolioId != null ? ['paper-positions', selectedPortfolioId] : null,
+    authed && (tab === 'Positions' || tab === 'Risk') && selectedPortfolioId != null ? ['paper-positions', selectedPortfolioId] : null,
     () => api.paperPositions(selectedPortfolioId), { refreshInterval: 60_000 }
   );
   const [exitConfirm, setExitConfirm] = useState<{ tradeId: number; symbol: string } | null>(null);
@@ -1981,6 +1981,145 @@ export default function PaperPortfolioPage() {
             )}
           </div>
         )}
+
+        {/* Risk tab */}
+        {tab === 'Risk' && (() => {
+          const pos = positions ?? [];
+          const totalEquity = summary?.total_equity ?? summary?.initial_capital ?? 1;
+          const totalAtRisk = pos.reduce((s, p) => s + (p.entry_price - p.stop_loss) * p.shares, 0);
+          const totalPositionValue = pos.reduce((s, p) => s + p.position_value, 0);
+          const totalUnrealized = pos.reduce((s, p) => s + p.unrealized_pnl, 0);
+          // Sector concentration
+          const sectorMap: Record<string, number> = {};
+          for (const p of pos) {
+            const s = p.sector ?? 'Unknown';
+            sectorMap[s] = (sectorMap[s] ?? 0) + p.position_value;
+          }
+          const sectors = Object.entries(sectorMap).sort((a, b) => b[1] - a[1]);
+          // Regime at entry concentration
+          const regimeMap: Record<string, number> = {};
+          for (const p of pos) {
+            const r = p.market_regime_at_entry ?? 'unknown';
+            regimeMap[r] = (regimeMap[r] ?? 0) + p.position_value;
+          }
+          const regimes = Object.entries(regimeMap).sort((a, b) => b[1] - a[1]);
+          const REGIME_COLOR: Record<string, string> = { bull: '#22c55e', neutral: '#94a3b8', choppy: '#f59e0b', risk_off: '#f97316', bear: '#ef4444', unknown: '#475569' };
+
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {pos.length === 0 ? (
+                <div style={{ padding: 24, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, textAlign: 'center', color: '#475569' }}>
+                  No open positions to analyze.
+                </div>
+              ) : (
+                <>
+                  {/* Summary bar */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                    {[
+                      { label: 'Positions Open', value: pos.length, color: '#e2e8f0' },
+                      { label: 'Total $ at Risk', value: `$${totalAtRisk.toFixed(0)}`, color: totalAtRisk > totalEquity * 0.05 ? '#ef4444' : '#f59e0b' },
+                      { label: 'Risk % of Equity', value: `${((totalAtRisk / totalEquity) * 100).toFixed(1)}%`, color: totalAtRisk / totalEquity > 0.05 ? '#ef4444' : '#22c55e' },
+                      { label: 'Unrealized P&L', value: `${totalUnrealized >= 0 ? '+' : ''}$${totalUnrealized.toFixed(0)}`, color: totalUnrealized >= 0 ? '#22c55e' : '#ef4444' },
+                    ].map(({ label, value, color }) => (
+                      <div key={label} style={{ padding: '12px 14px', background: '#0f172a', borderRadius: 8, border: '1px solid #1e293b' }}>
+                        <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>{label}</div>
+                        <div style={{ fontSize: 20, fontWeight: 800, color }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Per-position stop heat map */}
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+                      Stop Distance Heat Map
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                            {['Symbol', 'Entry', 'Current', 'Stop', 'Stop Distance', '$ at Risk', 'Size % Equity', 'Unrealized'].map(h => (
+                              <th key={h} style={{ padding: '5px 10px', textAlign: 'left', color: '#475569', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...pos].sort((a, b) => {
+                            const stopDistA = ((a.current_price ?? a.entry_price) - (a.current_stop ?? a.stop_loss)) / (a.current_price ?? a.entry_price);
+                            const stopDistB = ((b.current_price ?? b.entry_price) - (b.current_stop ?? b.stop_loss)) / (b.current_price ?? b.entry_price);
+                            return stopDistA - stopDistB;
+                          }).map(p => {
+                            const cur = p.current_price ?? p.entry_price;
+                            const stop = p.current_stop ?? p.stop_loss;
+                            const stopDist = ((cur - stop) / cur) * 100;
+                            const dollarRisk = (p.entry_price - p.stop_loss) * p.shares;
+                            const sizePct = (p.position_value / totalEquity) * 100;
+                            const danger = stopDist < 3;
+                            const warn = stopDist < 6;
+                            return (
+                              <tr key={p.id} style={{ borderBottom: '1px solid #0f172a', background: danger ? 'rgba(239,68,68,0.05)' : 'transparent' }}>
+                                <td style={{ padding: '5px 10px', fontWeight: 700, color: '#e2e8f0' }}>{p.symbol}</td>
+                                <td style={{ padding: '5px 10px', color: '#94a3b8' }}>${p.entry_price.toFixed(2)}</td>
+                                <td style={{ padding: '5px 10px', color: p.unrealized_pct >= 0 ? '#22c55e' : '#ef4444' }}>${cur.toFixed(2)}</td>
+                                <td style={{ padding: '5px 10px', color: '#64748b' }}>${stop.toFixed(2)}</td>
+                                <td style={{ padding: '5px 10px', fontWeight: 700, color: danger ? '#ef4444' : warn ? '#f59e0b' : '#22c55e' }}>
+                                  {stopDist.toFixed(1)}%
+                                </td>
+                                <td style={{ padding: '5px 10px', color: '#94a3b8' }}>${dollarRisk.toFixed(0)}</td>
+                                <td style={{ padding: '5px 10px', color: sizePct > 15 ? '#f59e0b' : '#94a3b8' }}>{sizePct.toFixed(1)}%</td>
+                                <td style={{ padding: '5px 10px', fontWeight: 600, color: p.unrealized_pct >= 0 ? '#22c55e' : '#ef4444' }}>
+                                  {p.unrealized_pct >= 0 ? '+' : ''}{p.unrealized_pct.toFixed(1)}%
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Two-column: sector + regime */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Sector Concentration</div>
+                      {sectors.map(([sector, val]) => {
+                        const pct = (val / totalPositionValue) * 100;
+                        return (
+                          <div key={sector} style={{ marginBottom: 8 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, fontSize: 12 }}>
+                              <span style={{ color: '#94a3b8' }}>{sector}</span>
+                              <span style={{ color: pct > 40 ? '#f59e0b' : '#64748b', fontWeight: 600 }}>{pct.toFixed(0)}%</span>
+                            </div>
+                            <div style={{ height: 6, background: '#1e293b', borderRadius: 3 }}>
+                              <div style={{ width: `${pct}%`, height: '100%', background: pct > 40 ? '#f59e0b' : '#6366f1', borderRadius: 3 }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Regime at Entry</div>
+                      {regimes.map(([regime, val]) => {
+                        const pct = (val / totalPositionValue) * 100;
+                        const color = REGIME_COLOR[regime] ?? '#94a3b8';
+                        return (
+                          <div key={regime} style={{ marginBottom: 8 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, fontSize: 12 }}>
+                              <span style={{ color, fontWeight: 600 }}>{regime}</span>
+                              <span style={{ color: '#64748b' }}>{pct.toFixed(0)}%</span>
+                            </div>
+                            <div style={{ height: 6, background: '#1e293b', borderRadius: 3 }}>
+                              <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 3 }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })()}
 
         {/* DE Audit tab */}
         {tab === 'DE Audit' && (

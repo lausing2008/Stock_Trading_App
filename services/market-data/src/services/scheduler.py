@@ -687,6 +687,15 @@ _STYLE_PARAMS: dict[str, dict] = {
 }
 
 
+def _get_symbol_market(session, symbol: str) -> str:
+    """Return 'HK' or 'US' for the given symbol, defaulting to 'US' if not found."""
+    try:
+        row = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
+        return (row.market or "US") if row else "US"
+    except Exception:
+        return "US"
+
+
 def _build_game_plan(
     symbol: str,
     signal_data: dict,
@@ -1110,6 +1119,32 @@ def check_signal_alerts() -> None:
                     log.warning("signal_alert.skipped", symbol=alert.symbol, reason="no_email_address")
                     alert.last_signal = current
                     continue
+
+                # DE gate: for BUY transitions, confirm Decision Engine agrees before emailing.
+                # Fail-open (allow alert) if DE is unreachable — never block on infrastructure failure.
+                if is_bullish and current == "BUY":
+                    try:
+                        de_r = httpx.post(
+                            f"{_settings.decision_engine_url}/decide/{alert.symbol}",
+                            json={"style": style, "market": _get_symbol_market(session, alert.symbol)},
+                            headers={"Authorization": f"Bearer {_service_token()}"},
+                            timeout=3.0,
+                        )
+                        if de_r.status_code == 200:
+                            de_verdict = de_r.json().get("verdict", "SKIP")
+                            if de_verdict not in ("BUY", "SCALE"):
+                                log.info(
+                                    "signal_alert.skipped_de_gate",
+                                    symbol=alert.symbol,
+                                    de_verdict=de_verdict,
+                                    reason="DE does not agree with BUY — suppressing alert",
+                                )
+                                # Do NOT advance last_signal — retry next run in case DE changes.
+                                continue
+                            log.info("signal_alert.de_gate_passed", symbol=alert.symbol, de_verdict=de_verdict)
+                    except Exception as _de_exc:
+                        log.debug("signal_alert.de_gate_error", symbol=alert.symbol, error=str(_de_exc),
+                                  note="DE unreachable — fail-open, allowing alert")
 
                 # Build game plan for BUY transitions, tailored to the user's trading style
                 game_plan = None

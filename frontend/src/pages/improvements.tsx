@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6508,6 +6508,41 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-20. Research engine trigger has built-in 6h cooldown per symbol — safe to call on every cycle.',
   },
 
+  // ── Tier 59 — DE Gate + Watchlist Scan + Risk Dashboard (2026-06-20) ─────────
+  {
+    id: 'de-gate-signal-alerts',
+    tier: 59, severity: 'feature', defaultStatus: 'done',
+    title: 'DE gate on signal alert emails — BUY emails only sent when Decision Engine also says BUY/SCALE',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '1 session',
+    impact: 'High — alert emails previously fired on any stored BUY signal regardless of regime, momentum, ML confidence, or risk constraints. With the DE gate, a signal alert only triggers when the Decision Engine independently agrees (verdict BUY or SCALE). Blocks alerts in bear regimes (Kelly 0.0), at score below min threshold, when stop would be too tight, or when research diverges strongly. Fail-open: if DE is unreachable, alert sends normally.',
+    what: 'Signal alerts and the Decision Engine computed verdicts independently. A SWING BUY signal with 70% confidence could fire an alert email even when DE would SKIP due to bear regime, poor risk/reward, or ML probability below threshold. The DE was already being called in shadow mode for paper trades — extending it to alerts closes the loop.',
+    fix: 'In check_signal_alerts(), after confirming a BUY signal is current, call POST /decide/{symbol} with style + market (from DB lookup). If DE returns verdict not in (BUY, SCALE), log and skip the alert — last_signal is NOT advanced, so the alert will reconsider next cycle. _get_symbol_market() helper resolves market from the stocks table. Timeout 3s, fail-open on exception.',
+    implementedNote: 'Done 2026-06-20. _get_symbol_market() added to scheduler.py. DE call uses _service_token() for auth. log.info("signal_alert.de_gate_passed") on success, log.info("signal_alert.skipped_de_gate") on block.',
+  },
+  {
+    id: 'watchlist-de-scan',
+    tier: 59, severity: 'feature', defaultStatus: 'done',
+    title: 'Watchlist DE Scan — one-click Decision Engine verdict for all stocks in a watchlist',
+    file: 'frontend/src/pages/watchlist.tsx',
+    effort: 'Included in Tier 59 session',
+    impact: 'Medium — traders can now evaluate all 20–30 stocks in a watchlist against the Decision Engine in a single click, seeing verdict, score vs threshold, regime, ML probability, research alignment, volume z-score, and R:R side by side. Replaces manual /decide page lookups for each symbol.',
+    what: 'The /decide page was per-symbol — evaluating a full watchlist meant 20+ separate queries. The Decision Engine already supported POST /decide/batch. Exposing this via the Watchlist UI creates a rapid pre-market screening tool.',
+    fix: '"⚡ DE Scan" button added to watchlist toolbar. On click: calls api.decideBatch(symbols, effectiveStyle, market). Results render in a table below the holdings: symbol, verdict badge (BUY green / SCALE teal / HOLD gray / SKIP amber / BLOCKED red), score/min_score, regime, confidence, ML prob, research verdict, volume_z, R:R, position size. Close button clears results. decideBatch() added to api.ts.',
+    implementedNote: 'Done 2026-06-20. Uses DecisionResult type from api.ts. Market inferred from watchlist effectiveMarket state. Style from effectiveStyle (SWING/GROWTH/POSITION).',
+  },
+  {
+    id: 'risk-dashboard',
+    tier: 59, severity: 'feature', defaultStatus: 'done',
+    title: 'Paper portfolio Risk tab — stop distances, dollar at risk, sector concentration, regime-at-entry breakdown',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: 'Included in Tier 59 session',
+    impact: 'Medium — the paper portfolio previously had no aggregated risk view. The Risk tab surfaces total dollar at risk (sum of (entry - stop) × shares per position), risk as % of equity, stop distance heat map sorted by proximity to stop (red <3%, amber <6%, green otherwise), per-position size as % of equity, sector concentration bars (warning >40%), and regime-at-entry breakdown. Requires sector field on positions endpoint.',
+    what: 'Knowing individual position P&L is insufficient for portfolio risk management. A trader needs to see: am I too concentrated in one sector? How many positions were entered in a bear regime? Which position is closest to its stop? The Risk tab answers all of these.',
+    fix: 'New "Risk" tab in paper-portfolio.tsx (before DE Audit). Computes all metrics client-side from the positions API response. Summary cards: positions open, total $ at risk, risk % of equity, unrealized P&L. Stop heat map table: sorted ascending by stop distance %, color-coded red/amber/green. Sector and regime-at-entry horizontal bar charts. sector field added to GET /paper-portfolio/positions response (paper_portfolio.py) and PaperPosition type (api.ts).',
+    implementedNote: 'Done 2026-06-20. market_regime_at_entry already present on PaperTrade model. sector added to positions response. Risk tab uses IIFE pattern to keep local computed state out of component scope.',
+  },
+
   // ── Tier 56 — ML Infrastructure: jose Fix + 46-Feature tune_all (2026-06-19) ─
   {
     id: 'ml-prediction-jose-fix',
@@ -6600,6 +6635,7 @@ const TIER_LABEL: Record<Tier, string> = {
   56: 'Tier 56 — ML Infrastructure: jose Fix + 46-Feature tune_all (2026-06-19)',
   57: 'Tier 57 — Decision Engine: New Microservice (2026-06-20)',
   58: 'Tier 58 — Decision Engine: UI + Shadow Audit + Auto-Research (2026-06-20)',
+  59: 'Tier 59 — DE Gate + Watchlist Scan + Risk Dashboard (2026-06-20)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6661,6 +6697,7 @@ const TIER_COLOR: Record<Tier, string> = {
   56: '#c084fc',
   57: '#34d399',
   58: '#60a5fa',
+  59: '#f472b6',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

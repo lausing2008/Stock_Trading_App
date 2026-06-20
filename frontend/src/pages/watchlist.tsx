@@ -3,7 +3,7 @@ import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import MarketClosedBanner from '@/components/MarketClosedBanner';
-import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem } from '@/lib/api';
+import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem, type DecisionResult } from '@/lib/api';
 import { storage } from '@/lib/storage';
 import { getSignalStyle } from '@/lib/settings';
 
@@ -521,6 +521,8 @@ export default function Watchlist() {
   const [viewMode, setViewMode] = useState<'list' | 'compare'>('list');
   const [compareSymbols, setCompareSymbols] = useState<string[]>([]);
   const [compareDays, setCompareDays] = useState(90);
+  const [deScanResults, setDeScanResults] = useState<DecisionResult[] | null>(null);
+  const [deScanLoading, setDeScanLoading] = useState(false);
 
   const { data: relPerfData, isLoading: relPerfLoading } = useSWR<Record<string, RelPerfPoint[]>>(
     viewMode === 'compare' && compareSymbols.length > 0
@@ -776,6 +778,24 @@ export default function Watchlist() {
             <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
             {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
+          <button
+            onClick={async () => {
+              if (!data || data.length === 0) return;
+              setDeScanLoading(true);
+              setDeScanResults(null);
+              try {
+                const symbols = data.map(i => i.symbol);
+                const market = data[0]?.market === 'HK' ? 'HK' : 'US';
+                const results = await api.decideBatch(symbols, effectiveStyle, market);
+                setDeScanResults(results);
+              } catch { setDeScanResults([]); }
+              finally { setDeScanLoading(false); }
+            }}
+            disabled={deScanLoading || !data || data.length === 0}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '6px', border: '1px solid rgba(52,211,153,0.3)', background: deScanLoading ? 'rgba(52,211,153,0.05)' : 'rgba(52,211,153,0.08)', color: deScanLoading ? '#64748b' : '#34d399', cursor: deScanLoading ? 'default' : 'pointer', fontSize: '13px', fontWeight: 600 }}
+          >
+            {deScanLoading ? 'Scanning…' : '⚡ DE Scan'}
+          </button>
         </div>
       </div>
 
@@ -889,6 +909,54 @@ export default function Watchlist() {
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', marginTop: '3px', letterSpacing: '0.06em' }}>TOTAL</div>
           </div>
         </div>
+
+        {/* DE Scan results panel */}
+        {deScanResults && deScanResults.length > 0 && (() => {
+          const VERDICT_COLOR: Record<string, string> = { BUY: '#22c55e', SCALE: '#86efac', HOLD: '#f59e0b', SKIP: '#64748b', BLOCKED: '#ef4444' };
+          return (
+            <div style={{ background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 10, padding: '14px 16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#34d399' }}>⚡ Decision Engine Scan</span>
+                <span style={{ fontSize: 11, color: '#475569' }}>{deScanResults.length} symbols · {effectiveStyle} style · sorted by score</span>
+                <button onClick={() => setDeScanResults(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>×</button>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                      {['Symbol', 'Verdict', 'Score', 'Min', 'Regime', 'Confidence', 'ML Prob', 'Research', 'Vol Z', 'R:R', 'Position'].map(h => (
+                        <th key={h} style={{ padding: '5px 8px', textAlign: 'left', color: '#475569', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deScanResults.map(r => (
+                      <tr key={r.symbol} style={{ borderBottom: '1px solid #0f172a' }}>
+                        <td style={{ padding: '5px 8px', fontWeight: 700, color: '#e2e8f0' }}>
+                          <a href={`/stock/${r.symbol}`} style={{ color: '#e2e8f0', textDecoration: 'none' }}>{r.symbol}</a>
+                        </td>
+                        <td style={{ padding: '5px 8px' }}>
+                          <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: `${VERDICT_COLOR[r.verdict] ?? '#334155'}18`, color: VERDICT_COLOR[r.verdict] ?? '#94a3b8', border: `1px solid ${VERDICT_COLOR[r.verdict] ?? '#334155'}` }}>
+                            {r.verdict}
+                          </span>
+                        </td>
+                        <td style={{ padding: '5px 8px', fontWeight: 700, color: r.score >= r.min_score ? '#22c55e' : '#ef4444' }}>{r.score}</td>
+                        <td style={{ padding: '5px 8px', color: '#64748b' }}>{r.min_score}</td>
+                        <td style={{ padding: '5px 8px', color: '#94a3b8', fontSize: 11 }}>{r.factors.regime ?? '—'}</td>
+                        <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{r.factors.signal_confidence != null ? `${r.factors.signal_confidence.toFixed(0)}%` : '—'}</td>
+                        <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{r.factors.ml_bull_prob != null ? `${(r.factors.ml_bull_prob * 100).toFixed(0)}%` : '—'}</td>
+                        <td style={{ padding: '5px 8px', color: r.factors.research_recommendation === 'BUY' ? '#22c55e' : '#64748b', fontSize: 11 }}>{r.factors.research_recommendation ?? '—'}</td>
+                        <td style={{ padding: '5px 8px', color: (r.factors.volume_z ?? 0) >= 1.5 ? '#f59e0b' : '#64748b' }}>{r.factors.volume_z != null ? r.factors.volume_z.toFixed(1) : '—'}</td>
+                        <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{r.position ? `${r.position.rr_ratio.toFixed(1)}:1` : '—'}</td>
+                        <td style={{ padding: '5px 8px', color: '#64748b', fontSize: 11 }}>{r.position ? `${r.position.shares}sh @ $${r.position.entry_price.toFixed(2)}` : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Filter + Sort bar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>

@@ -485,6 +485,11 @@ export const api = {
   // ── Decision Engine ────────────────────────────────────────────────────────
   decide: (symbol: string, style = 'SWING') =>
     request<DecisionResult>(`/decide/${symbol}/explain?style=${style}`),
+  decideBatch: (symbols: string[], style = 'SWING', market = 'US') =>
+    request<DecisionResult[]>('/decide/batch', {
+      method: 'POST',
+      body: JSON.stringify({ symbols, style, market, equity: 100_000, open_positions: 0, max_positions: 6 }),
+    }),
   regime: (market: 'US' | 'HK' = 'US') =>
     request<RegimeStatus>(`/decide/regime?market=${market}`),
   deDivergences: (limit = 100) =>
@@ -1229,6 +1234,7 @@ export type PaperPosition = {
   confidence_at_entry: number | null;
   kscore_at_entry: number | null;
   market_regime_at_entry: string | null;
+  sector: string | null;
   decision_notes: string[];
   entry_reasons: Record<string, unknown>;
 };
