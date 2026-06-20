@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import structlog
 from jose import jwt as _jwt
 
 from common.config import get_settings
+
+_yf_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yf_price")
 
 log = structlog.get_logger()
 _settings = get_settings()
@@ -77,21 +80,45 @@ async def _fetch_research(client: httpx.AsyncClient, symbol: str) -> dict | None
     return None
 
 
-async def fetch_all(symbol: str, style: str) -> tuple[dict | None, dict | None]:
-    """Fan-out: fetch signal + research in parallel. Returns (signal_data, research_data)."""
+def _yf_last_price(symbol: str) -> float | None:
+    """Fetch latest close price from yfinance. Runs in a thread pool."""
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="5d", interval="1d", auto_adjust=True)
+        if hist.empty:
+            return None
+        price = float(hist["Close"].iloc[-1])
+        return price if price > 0 else None
+    except Exception as exc:
+        log.warning("decision.yf_price_failed", symbol=symbol, error=str(exc))
+        return None
+
+
+async def _fetch_price_fallback(symbol: str) -> float | None:
+    """Async wrapper: fetch price via yfinance in executor thread."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_yf_executor, _yf_last_price, symbol)
+
+
+async def fetch_all(symbol: str, style: str) -> tuple[dict | None, dict | None, float | None]:
+    """Fan-out: fetch signal, research, and price fallback in parallel."""
     async with httpx.AsyncClient() as client:
         signal_task   = _fetch_signal(client, symbol, style)
         research_task = _fetch_research(client, symbol)
-        signal_data, research_data = await asyncio.gather(signal_task, research_task)
-    return signal_data, research_data
+        price_task    = _fetch_price_fallback(symbol)
+        signal_data, research_data, yf_price = await asyncio.gather(signal_task, research_task, price_task)
+    return signal_data, research_data, yf_price
 
 
-def extract_live_price(signal_data: dict | None) -> float | None:
-    """Pull last known price from signal reasons if available."""
-    if not signal_data:
-        return None
-    reasons = signal_data.get("reasons") or {}
-    return reasons.get("last_price") or reasons.get("price") or None
+def extract_live_price(signal_data: dict | None, yf_price: float | None = None) -> float | None:
+    """Pull last known price from signal reasons; fall back to yfinance price."""
+    if signal_data:
+        reasons = signal_data.get("reasons") or {}
+        price = reasons.get("last_price") or reasons.get("price") or reasons.get("close")
+        if price and float(price) > 0:
+            return float(price)
+    return yf_price
 
 
 def build_game_plan(live_price: float, style: str, signal_data: dict | None) -> dict:

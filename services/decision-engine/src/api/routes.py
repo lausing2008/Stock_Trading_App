@@ -55,15 +55,15 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     cfg = _merge_cfg(req.config_overrides)
     style = req.style.upper()
 
-    # 1. Fan-out: fetch signal + research in parallel
-    signal_data, research_data = await fetch_all(symbol, style)
+    # 1. Fan-out: fetch signal + research + yfinance price fallback in parallel
+    signal_data, research_data, yf_price = await fetch_all(symbol, style)
 
-    # 2. Resolve live price
+    # 2. Resolve live price (signal reasons → yfinance fallback → caller-supplied)
     live_price = req.live_price
     if live_price is None:
-        live_price = extract_live_price(signal_data)
+        live_price = extract_live_price(signal_data, yf_price)
     if live_price is None or live_price <= 0:
-        raise HTTPException(422, f"Cannot resolve live price for {symbol} — provide live_price in request or ensure signal data is available")
+        raise HTTPException(422, f"Cannot resolve live price for {symbol} — yfinance returned no data")
 
     # 3. Resolve game plan
     if req.game_plan:
