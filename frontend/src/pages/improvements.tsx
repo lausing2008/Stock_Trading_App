@@ -3365,7 +3365,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'zacks-earnings-surprise-tracker',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add Zacks-style earnings surprise history — consecutive beat streak, estimate revision trend',
     file: 'frontend/src/pages/earnings.tsx · frontend/src/pages/stock/[symbol].tsx',
     effort: '2 days',
@@ -3435,7 +3435,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'finviz-heatmap-sectors',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Enhance heatmap with S&P 500 treemap view — proportional size by market cap, color by performance',
     file: 'frontend/src/pages/heatmap.tsx',
     effort: '2 days',

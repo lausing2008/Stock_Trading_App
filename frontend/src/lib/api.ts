@@ -855,12 +855,14 @@ export type SectorStock = {
   market: string;
   price: number | null;
   change_pct: number | null;
+  market_cap: number | null;
 };
 
 export type SectorGroup = {
   sector: string;
   avg_change_pct: number | null;
   stock_count: number;
+  total_mkt_cap?: number | null;
   stocks: SectorStock[];
 };
 
