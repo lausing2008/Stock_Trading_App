@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6416,6 +6416,52 @@ const ITEMS: Item[] = [
     implementedNote: 'Fixed 2026-06-19 (same commit as DB-1 fix). _svc_token() generates a long-lived service JWT cached in module scope.',
   },
 
+  // ── Tier 57 — Decision Engine: New Microservice (2026-06-20) ────────────────
+  {
+    id: 'decision-engine-service',
+    tier: 57, severity: 'feature', defaultStatus: 'done',
+    title: 'Decision Engine — new stateless microservice on port 8009',
+    file: 'services/decision-engine/',
+    effort: '1 day',
+    impact: 'High architectural — single source of truth for every entry decision. Today the decision logic (scoring, hard rejects, Kelly sizing, regime multipliers, research gating) is scattered across 200+ lines of paper_trading_engine._should_enter() and sizing code. The Decision Engine extracts this into a dedicated service callable by both the paper trading engine and a future Trade Executor. Same verdict, same position size, same rationale — whether paper or live.',
+    what: 'Paper trading engine runs _should_enter() + research sizing + regime sizing + Kelly sizing all internally. A future Trade Executor would duplicate this logic. The Decision Engine is the canonical aggregator: signal engine + ML prediction + research engine + market regime → single DecisionResult (BUY / HOLD / SKIP / BLOCKED + position + score breakdown).',
+    fix: 'New FastAPI service: services/decision-engine/. Core modules: aggregator.py (asyncio.gather fan-out to signal + research), scorer.py (5-layer scoring: price zone, R:R, ML/volume/freshness, research alignment, regime), hard_rejects.py (bear regime, earnings <5d, confidence floor, R:R floor, daily loss limit), sizer.py (Kelly × regime × research × confidence × consensus multipliers). Endpoints: POST /decide/{symbol}, POST /decide/batch, GET /decide/{symbol}/explain, GET /regime. Added to docker-compose.yml + api-gateway proxy routes + shared/common/config.py (decision_engine_url).',
+    implementedNote: 'Built 2026-06-20. All Python files pass syntax check. Next: shadow mode (paper engine calls /decide/{symbol} in parallel with _should_enter() and logs divergence), then cut over when agreement is confirmed.',
+  },
+  {
+    id: 'decision-engine-scorer',
+    tier: 57, severity: 'feature', defaultStatus: 'done',
+    title: 'Decision Engine — 5-layer scoring model with per-layer explainability',
+    file: 'services/decision-engine/src/api/core/scorer.py',
+    effort: 'Included in decision-engine-service',
+    impact: 'Medium — every decision now produces a score_breakdown list with layer, pts, and note for each contributing factor. Replaces the opaque boolean return from _should_enter(). Enables the /explain endpoint and future dashboard visibility into why a trade was or was not entered.',
+    what: 'Layer 1: Price zone (−3…+2) — optimal zone, deep pullback, just above breakout, extended. Layer 2: R:R quality (0…+2) — excellent ≥3.5, good ≥2.5. Layer 3: Signal quality (−1…+5) — volume z, earnings proximity, fused ML prob, confidence delta, signal freshness. Layer 4: Research alignment (−2…+2) — STRONG BUY +2, BUY +1, WATCH 0, AVOID −1, SELL −2. Layer 5: Regime (−2…+1) — bull +1, neutral 0, choppy −1, risk_off −2. min_score raised automatically: choppy→4, risk_off→5, bear→BLOCKED.',
+    fix: 'compute_score() returns (total_score, list[ScoreItem]). min_score_for_regime() applies regime-adjusted threshold. Exact same scoring logic as paper_trading_engine._should_enter() — zero behavioural difference, but now auditable and independently testable.',
+    implementedNote: 'Implemented 2026-06-20 in scorer.py. Research layer is a new addition (was only in sizer as a multiplier in paper engine — now also contributes to the entry score for better conviction filtering).',
+  },
+  {
+    id: 'decision-engine-sizer',
+    tier: 57, severity: 'feature', defaultStatus: 'done',
+    title: 'Decision Engine — Kelly position sizer with 5 independent multipliers',
+    file: 'services/decision-engine/src/api/core/sizer.py',
+    effort: 'Included in decision-engine-service',
+    impact: 'Medium — canonical position sizing extracted from paper_trading_engine. Kelly base (equity × risk_per_trade_pct / stop_distance) scaled by: regime_mult (1.0→0.0), research_mult (1.2→0.6), confidence_mult (1.25/1.0/0.75), consensus_mult (1.15/1.07/1.0), earnings_mult (1.0/0.75/0.50). Returns PositionPlan (shares, size_pct, dollar_risk, entry, stop, target_1, target_2, R:R) + Multipliers breakdown for full transparency.',
+    what: 'Previously sizing was inline in _scan_for_entries() — impossible to test or reuse. Now a pure function: compute_position(equity, live_price, game_plan, confidence, research_rec, regime_state, cross_style_buys, days_to_earnings, cfg) → (PositionPlan, Multipliers). Max loss cap (PA-C1) and max position cap enforced here.',
+    fix: 'sizer.py with exact multiplier values from paper_trading_engine. Multipliers returned as a structured object so callers can log and display which factors inflated or deflated the position.',
+    implementedNote: 'Implemented 2026-06-20 in sizer.py. Values are identical to paper_trading_engine to avoid shadow-mode divergence.',
+  },
+  {
+    id: 'decision-engine-regime',
+    tier: 57, severity: 'feature', defaultStatus: 'done',
+    title: 'Decision Engine — self-contained market regime detection with 4-hour cache',
+    file: 'services/decision-engine/src/api/core/regime.py',
+    effort: 'Included in decision-engine-service',
+    impact: 'Low-medium — Decision Engine is fully self-contained; it does not need a regime endpoint on market-data. Downloads SPY/QQQ/VIX/VIX9D/IWM/MDY (300d) via yfinance, classifies bull/neutral/choppy/risk_off/bear using the same logic as paper_trading_engine._fetch_market_regime(). Results cached 4 hours per market (US + HK). HK uses ^HSI vs 200EMA.',
+    what: 'Without self-contained regime, Decision Engine would need market-data to expose a /regime HTTP endpoint — coupling two services. With regime.py, Decision Engine can make decisions independently and be tested in isolation without market-data running.',
+    fix: 'regime.py: get_regime(market) returns cached result or recomputes via yfinance. US and HK each have separate cache buckets. Falls back to "neutral" if fetch fails.',
+    implementedNote: 'Implemented 2026-06-20 in regime.py. VIX term structure (VIX9D/VIX > 1.10) and market breadth (IWM + MDY vs 200EMA) both included, matching paper_trading_engine.',
+  },
+
   // ── Tier 56 — ML Infrastructure: jose Fix + 46-Feature tune_all (2026-06-19) ─
   {
     id: 'ml-prediction-jose-fix',
@@ -6506,6 +6552,7 @@ const TIER_LABEL: Record<Tier, string> = {
   54: 'Tier 54 — Audit Fix Wave 5: Per-Horizon ML + Survivorship + Numeric Cash + Alembic (2026-06-19)',
   55: 'Tier 55 — Full System Audit 2026-06-19: 13 findings (1 Critical · 4 High · 5 Medium · 3 Low)',
   56: 'Tier 56 — ML Infrastructure: jose Fix + 46-Feature tune_all (2026-06-19)',
+  57: 'Tier 57 — Decision Engine: New Microservice (2026-06-20)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6565,6 +6612,7 @@ const TIER_COLOR: Record<Tier, string> = {
   54: '#34d399',
   55: '#f87171',
   56: '#c084fc',
+  57: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

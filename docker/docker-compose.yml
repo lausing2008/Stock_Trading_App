@@ -106,6 +106,13 @@ services:
       dockerfile: services/research-engine/Dockerfile
     #ports: ["8008:8008"]
 
+  decision-engine:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/decision-engine/Dockerfile
+    #ports: ["8009:8009"]
+
   api-gateway:
     <<: *py-common
     build:
@@ -132,6 +139,8 @@ services:
       portfolio-optimizer:
         condition: service_healthy
       research-engine:
+        condition: service_healthy
+      decision-engine:
         condition: service_healthy
 
   frontend:
