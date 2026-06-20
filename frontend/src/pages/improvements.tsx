@@ -3335,7 +3335,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'sws-snowflake-fundamental-visual',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add Simply Wall St-style fundamental health snowflake / radar chart to stock detail',
     file: 'frontend/src/pages/stock/[symbol].tsx',
     effort: '2 days',
@@ -3395,7 +3395,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'tv-multi-chart-layout',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add multi-stock comparison chart — overlay price performance for 2-5 stocks',
     file: 'frontend/src/pages/stock/[symbol].tsx · frontend/src/pages/positions.tsx',
     effort: '2 days',

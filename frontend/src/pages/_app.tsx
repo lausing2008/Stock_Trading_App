@@ -39,6 +39,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     label: 'Research',
     items: [
       { label: 'Screener',      href: '/screener' },
+      { label: 'Compare',       href: '/compare',       color: '#818cf8' },
       { label: 'Opportunities', href: '/opportunities', color: '#a78bfa' },
       { label: 'Earnings',      href: '/earnings',      color: '#fb923c', tag: 'cal' },
       { label: 'Analyst',       href: '/analyst',       color: '#818cf8' },

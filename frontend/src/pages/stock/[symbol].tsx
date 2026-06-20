@@ -1158,6 +1158,83 @@ Return ONLY valid JSON — no markdown, no prose:
                 );
               })()}
 
+              {/* Snowflake Radar */}
+              {ranking && (() => {
+                const axes = [
+                  { label: 'Technical', value: ranking.technical ?? 0, color: '#38bdf8' },
+                  { label: 'Momentum',  value: ranking.momentum  ?? 0, color: '#fb923c' },
+                  { label: 'Value',     value: ranking.value     ?? 0, color: '#a78bfa' },
+                  { label: 'Growth',    value: ranking.growth    ?? 0, color: '#34d399' },
+                  { label: 'Strength',  value: Math.min(100, ranking.relative_strength ?? 50), color: '#facc15' },
+                ];
+                const n = axes.length;
+                const cx = 80; const cy = 80; const R = 60;
+                const step = (2 * Math.PI) / n;
+                const angle = (i: number) => -Math.PI / 2 + i * step;
+                const pt = (i: number, r: number) => ({
+                  x: cx + r * Math.cos(angle(i)),
+                  y: cy + r * Math.sin(angle(i)),
+                });
+                // Polygon points for filled area
+                const polyPts = axes.map((a, i) => {
+                  const { x, y } = pt(i, (a.value / 100) * R);
+                  return `${x.toFixed(1)},${y.toFixed(1)}`;
+                }).join(' ');
+                // Grid rings at 25, 50, 75, 100
+                const rings = [0.25, 0.5, 0.75, 1.0];
+                return (
+                  <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+                    <h3 className="text-sm font-semibold text-slate-300 mb-3">Score Profile</h3>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+                      <svg viewBox="0 0 160 160" style={{ width: 160, height: 160, flexShrink: 0 }}>
+                        {/* Grid rings */}
+                        {rings.map(r => (
+                          <polygon key={r}
+                            points={axes.map((_, i) => { const p = pt(i, r * R); return `${p.x.toFixed(1)},${p.y.toFixed(1)}`; }).join(' ')}
+                            fill="none" stroke="#1e293b" strokeWidth={1} />
+                        ))}
+                        {/* Axis lines */}
+                        {axes.map((_, i) => {
+                          const p = pt(i, R);
+                          return <line key={i} x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="#1e293b" strokeWidth={1} />;
+                        })}
+                        {/* Filled polygon */}
+                        <polygon points={polyPts} fill="#4f46e540" stroke="#6366f1" strokeWidth={1.5} strokeLinejoin="round" />
+                        {/* Dots */}
+                        {axes.map((a, i) => {
+                          const { x, y } = pt(i, (a.value / 100) * R);
+                          return <circle key={i} cx={x} cy={y} r={3} fill={a.color} />;
+                        })}
+                        {/* Labels */}
+                        {axes.map((a, i) => {
+                          const { x, y } = pt(i, R + 14);
+                          return (
+                            <text key={i} x={x} y={y} textAnchor="middle" dominantBaseline="middle"
+                              fontSize={8} fill="#64748b" fontWeight={600}>
+                              {a.label}
+                            </text>
+                          );
+                        })}
+                      </svg>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1 }}>
+                        {axes.map(a => (
+                          <div key={a.label} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: a.color, flexShrink: 0 }} />
+                            <span style={{ fontSize: '11px', color: '#94a3b8', width: '68px' }}>{a.label}</span>
+                            <div style={{ flex: 1, height: '3px', background: '#1e293b', borderRadius: '2px' }}>
+                              <div style={{ width: `${a.value}%`, height: '100%', background: a.color, borderRadius: '2px', transition: 'width 0.4s' }} />
+                            </div>
+                            <span style={{ fontSize: '11px', fontWeight: 700, color: a.color, width: '28px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                              {a.value.toFixed(0)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Fear & Greed */}
               {fearGreed && (() => {
                 const score = fearGreed.score;
