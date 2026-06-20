@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6508,6 +6508,41 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-20. Research engine trigger has built-in 6h cooldown per symbol — safe to call on every cycle.',
   },
 
+  // ── Tier 61 — Paper Trading Quality Gates (2026-06-20) ───────────────────
+  {
+    id: 'paper-stale-signal-gate',
+    tier: 61, severity: 'high', defaultStatus: 'done',
+    title: 'Stale signal gate — paper trading skips entries when stored signal is >120h old',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '10 min',
+    impact: 'High — if signal-engine refresh fails (service down, jose missing, network issue), stored signals become stale. Without this gate, the paper engine would trade on a 3-day-old BUY signal as if it were current. The 120h threshold catches any failed refresh cycle (signals update 5×/day). Logs paper.skip_stale_signal with symbol and age.',
+    what: 'Paper trading engine iterated all BUY signals and tried to enter positions without checking signal freshness. A signal from 4 days ago looked identical to one from 1 hour ago — both had verdict BUY. If the signal-engine had been down for 2 days, the engine would still trade those stale signals.',
+    fix: 'Before live price lookup, compute signal age: (now - sig.ts).total_seconds() / 3600. If age > 120h, log and continue. Handles tz-naive timestamps by attaching UTC. 120h = 5 days = worst-case 25 missed refresh cycles.',
+    implementedNote: 'Done 2026-06-20. Gate fires before live price lookup so no unnecessary HTTP calls on stale symbols.',
+  },
+  {
+    id: 'paper-research-hard-gate',
+    tier: 61, severity: 'high', defaultStatus: 'done',
+    title: 'Research hard gate — paper trading blocks entry when research recommendation is AVOID/SELL',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '15 min',
+    impact: 'High — research gating previously only scaled position size down. An AVOID recommendation could reduce size from 10% to 2% but still enter the trade. Now AVOID/SELL blocks entry entirely. Consistent with Decision Engine behaviour which hard-gates on AVOID/SELL research. Logs paper.skip_research_gate with symbol and recommendation.',
+    what: 'The research block in _run_cycle() set research_size_mult to 0.5 for AVOID/SELL but let execution continue. This meant paper trading would buy a stock the research engine explicitly flagged as AVOID. The Decision Engine already has a hard gate in hard_rejects.py — paper trading was softer than the live gate.',
+    fix: 'Capture _research_rec outside the try block. After the research size block, check: if research_gating_enabled and _research_rec in (AVOID, SELL): log and continue. Variable renamed from _rec to _research_rec to make the outer-scope capture explicit.',
+    implementedNote: 'Done 2026-06-20. Controlled by research_gating_enabled config key (defaults True). Research size mult code retained for NEUTRAL downgrades that don\'t trigger the hard gate.',
+  },
+  {
+    id: 'paper-cross-horizon-scoring',
+    tier: 61, severity: 'medium', defaultStatus: 'done',
+    title: 'Cross-horizon consensus scoring in paper trading entry gate',
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '15 min',
+    impact: 'Medium — _should_enter() now rewards multi-timeframe alignment (+1 score if 2+ styles BUY) and penalises isolated signals in hostile regimes (-1 score if 0 cross-style buys in bear/choppy). Raises effective confidence bar in bear regimes without needing a separate threshold parameter.',
+    what: 'signal reasons may carry cross_style_buys (count of other horizons agreeing with BUY). _should_enter() already had RL, regime, and volatility scoring but ignored cross-horizon alignment. A SWING BUY with 0 other horizons in a bear regime scored the same as one with GROWTH+POSITION also BUY.',
+    fix: 'Read cross_style_buys and regime state from reasons/live_regime. If cross_buys >= 2: score += 1, note appended. If cross_buys == 0 and regime in (bear, choppy): score -= 1, note appended. Placed after the RL section, before the final Decision block.',
+    implementedNote: 'Done 2026-06-20. Graceful fallback: if cross_style_buys absent from reasons (0), and regime neutral, no score change.',
+  },
+
   // ── Tier 60 — Security Hardening + Research Gating + NYSE Calendar + DE Perf (2026-06-20) ──
   {
     id: 'security-jti-enforcement',
@@ -6716,6 +6751,7 @@ const TIER_LABEL: Record<Tier, string> = {
   58: 'Tier 58 — Decision Engine: UI + Shadow Audit + Auto-Research (2026-06-20)',
   59: 'Tier 59 — DE Gate + Watchlist Scan + Risk Dashboard (2026-06-20)',
   60: 'Tier 60 — Security Hardening + Research Gating + NYSE Calendar + DE Perf (2026-06-20)',
+  61: 'Tier 61 — Paper Trading Quality Gates (2026-06-20)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6779,6 +6815,7 @@ const TIER_COLOR: Record<Tier, string> = {
   58: '#60a5fa',
   59: '#f472b6',
   60: '#a3e635',
+  61: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

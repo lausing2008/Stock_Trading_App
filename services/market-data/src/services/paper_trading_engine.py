@@ -942,6 +942,16 @@ def _should_enter(
         except Exception:
             pass  # RL call failure is non-fatal
 
+    # ── Cross-horizon consensus scoring ──────────────────────────────────────
+    cross_buys_h = int(reasons.get("cross_style_buys", 0))
+    regime_state_h = (live_regime.get("state", "neutral") if live_regime else "neutral")
+    if cross_buys_h >= 2:
+        score += 1
+        notes.append(f"Cross-horizon: {cross_buys_h}+ styles BUY — strong multi-timeframe alignment")
+    elif cross_buys_h == 0 and regime_state_h in ("bear", "choppy"):
+        score -= 1
+        notes.append("No cross-horizon support in bear/choppy regime — conviction penalty")
+
     # ── Decision ─────────────────────────────────────────────────────────────
 
     # PT-3: Use calibrated logistic weights when available (>=100 closed trades).
@@ -2051,6 +2061,16 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      kscore=ranking.score, min=cfg["min_kscore"])
             continue
 
+        # Skip signals older than 120h (5 days) — indicates a failed refresh cycle.
+        # Normal 3-day weekends produce ~84h gaps which safely pass.
+        if sig.ts is not None:
+            _ts_aware = sig.ts.replace(tzinfo=timezone.utc) if sig.ts.tzinfo is None else sig.ts
+            _sig_age_h = (datetime.now(timezone.utc) - _ts_aware).total_seconds() / 3600
+            if _sig_age_h > 120:
+                log.info("paper.skip_stale_signal", symbol=stock.symbol,
+                         age_h=round(_sig_age_h, 1), ts=str(sig.ts)[:19])
+                continue
+
         live_price = live_prices.get(stock.symbol)
         if not live_price or live_price < 1.00:  # reject $0, pennies, and recently-delisted data
             continue
@@ -2161,6 +2181,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             notes = notes + [f"Size 0.75× (confidence {sig_conf:.0f}% — marginal signal)"]
 
         # INT-3: Research-gated position sizing — reduce size when research disagrees
+        _research_rec = ""  # captured outside try for hard gate below
         research_size_mult = 1.0
         if cfg.get("research_gating_enabled", True):
             try:
@@ -2173,21 +2194,26 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 )
                 if _res.status_code == 200:
                     _rs = _res.json()
-                    _rec = _rs.get("recommendation", "")
+                    _research_rec = _rs.get("recommendation", "")
                     _score = float(_rs.get("overall_score") or 0)
-                    if _rec == "STRONG BUY" and _score >= 75:
+                    if _research_rec == "STRONG BUY" and _score >= 75:
                         research_size_mult = 1.2
-                        notes = notes + [f"Size 1.2× (Research: {_rec} {_score:.0f})"]
-                    elif _rec == "BUY" and _score >= 65:
+                        notes = notes + [f"Size 1.2× (Research: {_research_rec} {_score:.0f})"]
+                    elif _research_rec == "BUY" and _score >= 65:
                         research_size_mult = 1.0
-                    elif _rec == "WATCH" and _score >= 60:
+                    elif _research_rec == "WATCH" and _score >= 60:
                         research_size_mult = 0.8
-                        notes = notes + [f"Size 0.8× (Research: {_rec} {_score:.0f})"]
-                    elif _rec in ("WATCH", "AVOID", "SELL"):
+                        notes = notes + [f"Size 0.8× (Research: {_research_rec} {_score:.0f})"]
+                    elif _research_rec in ("WATCH", "AVOID", "SELL"):
                         research_size_mult = 0.6
-                        notes = notes + [f"Size 0.6× (Research: {_rec} {_score:.0f})"]
+                        notes = notes + [f"Size 0.6× (Research: {_research_rec} {_score:.0f})"]
             except Exception:
                 pass  # no research data → neutral 1.0×
+
+        # Hard gate: AVOID/SELL research blocks entry entirely — mirrors DE hard_rejects logic
+        if cfg.get("research_gating_enabled", True) and _research_rec in ("AVOID", "SELL"):
+            log.info("paper.skip_research_gate", symbol=stock.symbol, research_rec=_research_rec)
+            continue
 
         # 40-B: Cross-horizon consensus boost — when ≥2 other styles also fired BUY
         # for this stock in the same signal batch, we have rare multi-timeframe alignment.
