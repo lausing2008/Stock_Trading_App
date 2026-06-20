@@ -18,7 +18,8 @@ type Row = RankingRow & {
 };
 
 type SortKey = 'symbol' | 'score' | 'technical' | 'momentum' | 'value' | 'growth'
-             | 'bullish_probability' | 'change_pct' | 'price' | 'confidence' | 'relative_strength';
+             | 'bullish_probability' | 'change_pct' | 'price' | 'confidence' | 'relative_strength'
+             | 'trailing_pe' | 'revenue_growth' | 'peg_ratio';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,11 @@ const DEFAULT_FILTERS = {
   minFairDiscount: '',   // min % stock trades BELOW fair value (positive = undervalued)
   minRS: '',             // min relative strength score (0-100)
   minConfidence: '',     // min signal confidence (0-100)
+  // Fundamental filters
+  maxPE: '',             // max trailing P/E (exclude expensive)
+  minRevGrowth: '',      // min revenue growth % YoY
+  maxDebt: '',           // max debt-to-equity ratio
+  maxPEG: '',            // max PEG ratio (PE / growth)
   watchlistOnly: true,
   search: '',
 };
@@ -252,6 +258,10 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     const minPrc      = filters.minPrice     ? +filters.minPrice     : null;
     const maxPrc      = filters.maxPrice     ? +filters.maxPrice     : null;
     const minDisc     = filters.minFairDiscount ? +filters.minFairDiscount / 100 : null;
+    const maxPE       = filters.maxPE        ? +filters.maxPE        : null;
+    const minRevGrow  = filters.minRevGrowth ? +filters.minRevGrowth / 100 : null;
+    const maxDebt     = filters.maxDebt      ? +filters.maxDebt      : null;
+    const maxPEG      = filters.maxPEG       ? +filters.maxPEG       : null;
 
     return rows.filter(r => {
       if (filters.market !== 'All' && r.market !== filters.market) return false;
@@ -276,6 +286,10 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
         const discount = (r.fair_price - r.price) / r.price;
         if (discount < minDisc) return false;
       }
+      if (maxPE != null && (r.trailing_pe == null || r.trailing_pe > maxPE)) return false;
+      if (minRevGrow != null && (r.revenue_growth == null || r.revenue_growth < minRevGrow)) return false;
+      if (maxDebt != null && (r.debt_to_equity == null || r.debt_to_equity > maxDebt)) return false;
+      if (maxPEG != null && (r.peg_ratio == null || r.peg_ratio > maxPEG)) return false;
       return true;
     });
   }, [rows, filters]);
@@ -295,6 +309,9 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
       else if (sort.key === 'price')              { av = a.price ?? -1;               bv = b.price ?? -1; }
       else if (sort.key === 'confidence')         { av = a.confidence ?? -1;          bv = b.confidence ?? -1; }
       else if (sort.key === 'relative_strength')  { av = a.relative_strength ?? -1;   bv = b.relative_strength ?? -1; }
+      else if (sort.key === 'trailing_pe')        { av = a.trailing_pe ?? 9999;        bv = b.trailing_pe ?? 9999; }
+      else if (sort.key === 'revenue_growth')     { av = a.revenue_growth ?? -999;     bv = b.revenue_growth ?? -999; }
+      else if (sort.key === 'peg_ratio')          { av = a.peg_ratio ?? 9999;          bv = b.peg_ratio ?? 9999; }
 
       if (typeof av === 'string') return sort.dir === 'asc' ? av.localeCompare(bv as string) : (bv as string).localeCompare(av);
       return sort.dir === 'asc' ? av - (bv as number) : (bv as number) - av;
@@ -322,6 +339,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     !filters.minMomentum && !filters.minValue && !filters.minGrowth && !filters.minBullish &&
     !filters.minChange && !filters.maxChange && !filters.minPrice && !filters.maxPrice &&
     !filters.sector && !filters.minFairDiscount && !filters.minRS && !filters.minConfidence &&
+    !filters.maxPE && !filters.minRevGrowth && !filters.maxDebt && !filters.maxPEG &&
     !filters.watchlistOnly && !filters.search
   );
 
@@ -507,6 +525,13 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
           <NumInput label="Min RS Score"   value={filters.minRS}           onChange={v => setFilters(f => ({ ...f, minRS: v }))}           placeholder="e.g. 50" />
           <NumInput label="Min Confidence" value={filters.minConfidence}   onChange={v => setFilters(f => ({ ...f, minConfidence: v }))}   placeholder="e.g. 60" />
 
+          {/* Fundamental filters */}
+          <div style={{ width: '1px', background: '#1e293b', alignSelf: 'stretch' }} />
+          <NumInput label="Max P/E"       value={filters.maxPE}        onChange={v => setFilters(f => ({ ...f, maxPE: v }))}        placeholder="e.g. 25" />
+          <NumInput label="Min Rev Grw %" value={filters.minRevGrowth} onChange={v => setFilters(f => ({ ...f, minRevGrowth: v }))} placeholder="e.g. 10" />
+          <NumInput label="Max D/E"       value={filters.maxDebt}      onChange={v => setFilters(f => ({ ...f, maxDebt: v }))}      placeholder="e.g. 2" />
+          <NumInput label="Max PEG"       value={filters.maxPEG}       onChange={v => setFilters(f => ({ ...f, maxPEG: v }))}       placeholder="e.g. 1.5" />
+
           {/* Watchlist toggle — admin only */}
           {isAdmin && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
@@ -555,6 +580,11 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                   <Th label="Confidence" col="confidence"          sort={sort} onSort={toggleSort} />
                   <Th label="Day Chg"    col="change_pct"          sort={sort} onSort={toggleSort} />
                   <Th label="Price"      col="price"               sort={sort} onSort={toggleSort} />
+                  {(filters.maxPE || filters.minRevGrowth || filters.maxDebt || filters.maxPEG) && <>
+                    <Th label="P/E"       col="trailing_pe"    sort={sort} onSort={toggleSort} />
+                    <Th label="Rev Grw"   col="revenue_growth" sort={sort} onSort={toggleSort} />
+                    <Th label="PEG"       col="peg_ratio"      sort={sort} onSort={toggleSort} />
+                  </>}
                   <th style={{ padding: '8px 10px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#475569', borderBottom: '1px solid #1e293b', background: '#080f1e' }} />
                 </tr>
               </thead>
@@ -649,6 +679,19 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                       <td style={{ padding: '8px 10px', color: '#94a3b8', fontVariantNumeric: 'tabular-nums', fontSize: '12px' }}>
                         {row.price != null ? row.price.toFixed(2) : '—'}
                       </td>
+
+                      {/* Fundamental columns — shown when any fundamental filter active */}
+                      {(filters.maxPE || filters.minRevGrowth || filters.maxDebt || filters.maxPEG) && <>
+                        <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontSize: '12px', color: row.trailing_pe == null ? '#334155' : row.trailing_pe > 30 ? '#fbbf24' : '#94a3b8' }}>
+                          {row.trailing_pe != null ? row.trailing_pe.toFixed(1) : '—'}
+                        </td>
+                        <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontSize: '12px', color: row.revenue_growth == null ? '#334155' : row.revenue_growth >= 0.2 ? '#4ade80' : row.revenue_growth >= 0 ? '#94a3b8' : '#f87171' }}>
+                          {row.revenue_growth != null ? `${(row.revenue_growth * 100).toFixed(0)}%` : '—'}
+                        </td>
+                        <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontSize: '12px', color: row.peg_ratio == null ? '#334155' : row.peg_ratio < 1 ? '#4ade80' : row.peg_ratio < 2 ? '#fbbf24' : '#f87171' }}>
+                          {row.peg_ratio != null ? row.peg_ratio.toFixed(2) : '—'}
+                        </td>
+                      </>}
 
                       {/* Actions */}
                       <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>

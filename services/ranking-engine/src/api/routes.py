@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from db import Price, Ranking, Signal, SignalType, Stock, TimeFrame, get_session
+from db import Fundamental, Price, Ranking, Signal, SignalType, Stock, TimeFrame, get_session
 
 from ..scoring import compute_kscore
 
@@ -526,13 +526,28 @@ def leaderboard(
         .group_by(Ranking.stock_id)
         .subquery()
     )
+    # Latest fundamentals date per stock
+    latest_fund_subq = (
+        select(Fundamental.stock_id, func.max(Fundamental.as_of).label("max_date"))
+        .group_by(Fundamental.stock_id)
+        .subquery()
+    )
     stmt = (
-        select(Stock, Ranking)
+        select(Stock, Ranking, Fundamental)
         .join(Ranking, Stock.id == Ranking.stock_id)
         .join(
             latest_subq,
             (Ranking.stock_id == latest_subq.c.stock_id)
             & (Ranking.as_of == latest_subq.c.max_as_of),
+        )
+        .outerjoin(
+            latest_fund_subq,
+            Stock.id == latest_fund_subq.c.stock_id,
+        )
+        .outerjoin(
+            Fundamental,
+            (Fundamental.stock_id == latest_fund_subq.c.stock_id)
+            & (Fundamental.as_of == latest_fund_subq.c.max_date),
         )
         .where(Stock.active.is_(True))
     )
@@ -544,6 +559,15 @@ def leaderboard(
     if not rows:
         # No persisted rankings yet — compute live on first run
         return _leaderboard_live(market, limit, session)
+
+    def _cf(v: float | None) -> float | None:
+        """Clean a raw fundamental float."""
+        if v is None:
+            return None
+        try:
+            return None if (v != v or v == float("inf") or v == float("-inf")) else round(v, 4)
+        except (TypeError, ValueError):
+            return None
 
     results = [
         {
@@ -560,8 +584,16 @@ def leaderboard(
             "volatility":        _clean(ranking.volatility),
             "fair_price":        _clean(ranking.fair_price),
             "relative_strength": _clean(ranking.rs_score),
+            # Raw fundamental fields for screener filtering
+            "trailing_pe":       _cf(fund.trailing_pe) if fund else None,
+            "forward_pe":        _cf(fund.forward_pe) if fund else None,
+            "peg_ratio":         _cf(fund.peg_ratio) if fund else None,
+            "revenue_growth":    _cf(fund.revenue_growth) if fund else None,
+            "earnings_growth":   _cf(fund.earnings_growth) if fund else None,
+            "debt_to_equity":    _cf(fund.debt_to_equity) if fund else None,
+            "price_to_book":     _cf(fund.price_to_book) if fund else None,
         }
-        for stock, ranking in rows
+        for stock, ranking, fund in rows
     ]
     results.sort(key=lambda r: r["score"] or 0, reverse=True)
     as_of = str(max((row[1].as_of for row in rows), default=date.today()))

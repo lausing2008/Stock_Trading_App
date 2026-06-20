@@ -3273,7 +3273,7 @@ const ITEMS: Item[] = [
   // ── Screener & Filtering ─────────────────────────────────────────────────────
   {
     id: 'tv-11-screener-fundamental-filters',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Screener: Add fundamental filters — P/E, P/B, EPS growth, revenue growth, debt/equity, ROE',
     file: 'frontend/src/pages/screener.tsx · services/ranking-engine/src/api/routes.py',
     effort: '3 days',
