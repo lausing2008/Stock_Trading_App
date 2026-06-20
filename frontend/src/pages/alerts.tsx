@@ -76,6 +76,7 @@ const ALL_CONDITIONS = [
   'above', 'below', 'cross_above_ema', 'cross_below_ema',
   'new_52wk_high', 'new_52wk_low', 'golden_cross', 'death_cross',
   'macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout',
+  'volume_spike', 'pct_below_52wk_high',
 ];
 
 // ── shared styles ──────────────────────────────────────────────────────────
@@ -246,8 +247,10 @@ function PriceAlertsTab() {
   const [selected, setSelected]   = useState<Set<number>>(new Set());
   const [deleting, setDeleting]   = useState(false);
 
-  const isEma         = EMA_CONDITIONS.includes(condition);
-  const isNoThreshold = NO_THRESHOLD.includes(condition);
+  const isEma              = EMA_CONDITIONS.includes(condition);
+  const isNoThreshold      = NO_THRESHOLD.includes(condition);
+  const isVolumeMultiplier = condition === 'volume_spike';
+  const isPctCondition     = condition === 'pct_below_52wk_high';
 
   useEffect(() => {
     const s = typeof window !== 'undefined' ? localStorage.getItem('stockai_alert_email') : null;
@@ -402,14 +405,30 @@ function PriceAlertsTab() {
                     <option value="rsi_oversold_bounce">RSI Oversold Bounce (crosses 30)</option>
                     <option value="double_bottom">Double Bottom (W-pattern)</option>
                     <option value="breakout">Volume Breakout (20-day high + surge)</option>
+                    <option value="volume_spike">Volume Spike (X× above avg)</option>
+                    <option value="pct_below_52wk_high">% Below 52-Week High</option>
                   </optgroup>
                 </select>
               </div>
-              {!isNoThreshold && !isEma && (
+              {!isNoThreshold && !isEma && !isVolumeMultiplier && !isPctCondition && (
                 <div>
                   <label style={lbl}>Target price</label>
                   <input type="number" step="any" min="0" value={threshold}
                     onChange={e => setThreshold(e.target.value)} placeholder="0.00" required style={inp} />
+                </div>
+              )}
+              {isVolumeMultiplier && (
+                <div>
+                  <label style={lbl}>Volume multiplier (e.g. 3 = 3× avg)</label>
+                  <input type="number" step="0.1" min="1" value={threshold}
+                    onChange={e => setThreshold(e.target.value)} placeholder="3" required style={inp} />
+                </div>
+              )}
+              {isPctCondition && (
+                <div>
+                  <label style={lbl}>% below 52w high to trigger</label>
+                  <input type="number" step="1" min="1" max="80" value={threshold}
+                    onChange={e => setThreshold(e.target.value)} placeholder="10" required style={inp} />
                 </div>
               )}
               {isEma && (

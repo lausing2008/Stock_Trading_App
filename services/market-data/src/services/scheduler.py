@@ -1329,6 +1329,8 @@ def check_technical_alerts() -> None:
         AlertCondition.RSI_OVERSOLD_BOUNCE,
         AlertCondition.DOUBLE_BOTTOM,
         AlertCondition.BREAKOUT,
+        AlertCondition.VOLUME_SPIKE,
+        AlertCondition.PCT_BELOW_52WK_HIGH,
     }
 
     # (no cooldown dict needed — same-day dedup is sufficient; see _already_fired_today)
@@ -1519,6 +1521,34 @@ def check_technical_alerts() -> None:
                             continue
                         cond_label = f"Volume Breakout — closed ${curr_price:.2f} above 20-day high ${high_20:.2f} with {curr_vol/avg_vol:.1f}x volume"
                         threshold_val = high_20
+
+                    elif cond == AlertCondition.VOLUME_SPIKE:
+                        if len(volume) < 21:
+                            continue
+                        avg_vol = float(volume.iloc[-21:-1].mean())
+                        if avg_vol <= 0:
+                            continue
+                        multiplier = float(alert.threshold) if alert.threshold > 0 else 3.0
+                        today_vol = float(volume.iloc[-1])
+                        if today_vol < avg_vol * multiplier:
+                            continue
+                        curr_price = float(close.iloc[-1])
+                        cond_label = f"Volume spike — {today_vol/avg_vol:.1f}× above 20-day average ({int(today_vol):,} vs avg {int(avg_vol):,})"
+                        threshold_val = avg_vol * multiplier
+
+                    elif cond == AlertCondition.PCT_BELOW_52WK_HIGH:
+                        if len(close) < 2:
+                            continue
+                        high_52 = float(close.tail(252).max())
+                        curr_price = float(close.iloc[-1])
+                        if high_52 <= 0:
+                            continue
+                        pct_below = (high_52 - curr_price) / high_52 * 100
+                        target_pct = float(alert.threshold) if alert.threshold > 0 else 10.0
+                        if pct_below < target_pct:
+                            continue
+                        cond_label = f"Now {pct_below:.1f}% below 52-week high of {high_52:.2f} (current {curr_price:.2f})"
+                        threshold_val = high_52
 
                     else:
                         continue

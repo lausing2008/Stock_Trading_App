@@ -3375,7 +3375,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'tv-advanced-alerts',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add advanced alert types: indicator crossover, % below 52w high, volume spike, signal flip (BUY→SELL)',
     file: 'frontend/src/pages/alerts.tsx · services/market-data/src/services/scheduler.py',
     effort: '3 days',

@@ -298,6 +298,8 @@ class AlertCondition(str, enum.Enum):
     RSI_OVERSOLD_BOUNCE  = "rsi_oversold_bounce"   # RSI crosses above 30 from below; threshold unused
     DOUBLE_BOTTOM        = "double_bottom"         # W-pattern detected; threshold unused
     BREAKOUT             = "breakout"              # Price closes above 20-day high with volume surge
+    VOLUME_SPIKE         = "volume_spike"          # threshold = multiplier of 20-day avg volume (e.g. 3.0)
+    PCT_BELOW_52WK_HIGH  = "pct_below_52wk_high"   # threshold = % below 52-week high to trigger (e.g. 10)
 
 
 class PriceAlert(Base):
