@@ -219,6 +219,44 @@ def _is_hk_holiday(dt: datetime | None = None) -> bool:
     return (d.year, d.month, d.day) in _HK_HOLIDAYS
 
 
+# ── NYSE Public Holiday Calendar ──────────────────────────────────────────────
+# Source: NYSE official holiday schedule. Extend each year before January.
+_NYSE_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset([
+    # 2025
+    (2025, 1, 1),   # New Year's Day
+    (2025, 1, 20),  # MLK Day
+    (2025, 2, 17),  # Presidents' Day
+    (2025, 4, 18),  # Good Friday
+    (2025, 5, 26),  # Memorial Day
+    (2025, 6, 19),  # Juneteenth
+    (2025, 7, 4),   # Independence Day
+    (2025, 9, 1),   # Labor Day
+    (2025, 11, 27), # Thanksgiving
+    (2025, 12, 25), # Christmas
+    # 2026
+    (2026, 1, 1),   # New Year's Day
+    (2026, 1, 19),  # MLK Day
+    (2026, 2, 16),  # Presidents' Day
+    (2026, 4, 3),   # Good Friday
+    (2026, 5, 25),  # Memorial Day
+    (2026, 6, 19),  # Juneteenth
+    (2026, 7, 3),   # Independence Day observed (Jul 4 is Saturday)
+    (2026, 9, 7),   # Labor Day
+    (2026, 11, 26), # Thanksgiving
+    (2026, 12, 25), # Christmas
+])
+
+
+def _is_us_trading_day(dt: datetime | None = None) -> bool:
+    """Return True if today is a NYSE trading day (weekday and not a holiday)."""
+    d = (dt or datetime.now(timezone.utc)).astimezone(
+        __import__("zoneinfo").ZoneInfo("America/New_York")
+    )
+    if d.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    return (d.year, d.month, d.day) not in _NYSE_HOLIDAYS
+
+
 def _symbols_for(market: str) -> list[str]:
     """Return all active stock symbols for the given market ('US' or 'HK')."""
     with SessionLocal() as session:
@@ -325,6 +363,9 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
     """
     if market == "HK" and _is_hk_holiday():
         log.info("scheduler.skip", market="HK", reason="hk_public_holiday")
+        return
+    if market == "US" and not _is_us_trading_day():
+        log.info("scheduler.skip", market="US", reason="nyse_holiday")
         return
 
     symbols = _symbols_for(market)
@@ -1670,6 +1711,8 @@ def _refresh_5m(market: str) -> None:
     Rankings and signals are NOT updated here (they use daily bars only).
     """
     if market == "HK" and _is_hk_holiday():
+        return
+    if market == "US" and not _is_us_trading_day():
         return
     symbols = _symbols_for(market)
     if not symbols:

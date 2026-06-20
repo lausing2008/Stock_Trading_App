@@ -69,12 +69,26 @@ async def _fetch_signal(client: httpx.AsyncClient, symbol: str, style: str) -> d
     return None
 
 
+_RESEARCH_MAX_AGE_SEC = 86_400  # discard research older than 24h
+
+
 async def _fetch_research(client: httpx.AsyncClient, symbol: str) -> dict | None:
     try:
         url = f"{_settings.research_engine_url}/research/{symbol}/summary"
         r = await client.get(url, headers={"Authorization": f"Bearer {_svc_token()}"}, timeout=2.0)
         if r.status_code == 200:
-            return r.json()
+            data = r.json()
+            generated_at = data.get("generated_at")
+            if generated_at:
+                try:
+                    from datetime import datetime, timezone
+                    ts = datetime.fromisoformat(generated_at.rstrip("Z")).replace(tzinfo=timezone.utc)
+                    if (datetime.now(timezone.utc) - ts).total_seconds() > _RESEARCH_MAX_AGE_SEC:
+                        log.info("decision.research_stale", symbol=symbol, generated_at=generated_at)
+                        return None
+                except Exception:
+                    pass
+            return data
     except Exception as exc:
         log.warning("decision.research_fetch_failed", symbol=symbol, error=str(exc))
     return None
@@ -102,12 +116,18 @@ async def _fetch_price_fallback(symbol: str) -> float | None:
 
 
 async def fetch_all(symbol: str, style: str) -> tuple[dict | None, dict | None, float | None]:
-    """Fan-out: fetch signal, research, and price fallback in parallel."""
+    """Fan-out: fetch signal + research in parallel; yfinance only if signal has no price."""
     async with httpx.AsyncClient() as client:
-        signal_task   = _fetch_signal(client, symbol, style)
-        research_task = _fetch_research(client, symbol)
-        price_task    = _fetch_price_fallback(symbol)
-        signal_data, research_data, yf_price = await asyncio.gather(signal_task, research_task, price_task)
+        signal_data, research_data = await asyncio.gather(
+            _fetch_signal(client, symbol, style),
+            _fetch_research(client, symbol),
+        )
+    # Only call yfinance when signal reasons carry no usable price (avoids 400-1200ms on every call)
+    reasons = (signal_data or {}).get("reasons") or {}
+    signal_price = reasons.get("last_price") or reasons.get("price") or reasons.get("close")
+    yf_price: float | None = None
+    if not signal_price or float(signal_price) <= 0:
+        yf_price = await _fetch_price_fallback(symbol)
     return signal_data, research_data, yf_price
 
 

@@ -46,6 +46,8 @@ def get_current_username(authorization: str | None = Header(default=None)) -> st
         if not username:
             raise HTTPException(401, "Invalid token")
         jti: str = payload.get("jti", "")
+        if not jti:
+            raise HTTPException(401, "Token missing jti claim")
         if _check_blacklist(jti):
             raise HTTPException(401, "Token has been revoked")
         return username

@@ -14,11 +14,15 @@ def check_hard_rejects(
     max_positions: int,
     daily_pnl_pct: float,
     cfg: dict,
+    research_rec: str | None = None,
 ) -> str | None:
     """Return a human-readable reject reason, or None if all checks pass."""
 
     if signal_direction.upper() != "BUY":
         return f"Signal direction is {signal_direction} — only BUY signals evaluated for entry"
+
+    if cfg.get("research_gating_enabled") and research_rec in ("AVOID", "SELL"):
+        return f"Research recommendation is {research_rec} — gated until outlook improves"
 
     if regime_state == "bear":
         return "Bear regime — all long entries blocked"

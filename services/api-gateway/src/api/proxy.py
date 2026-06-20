@@ -6,6 +6,7 @@ from __future__ import annotations
 import time as _time
 
 import httpx
+import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
 from jose import JWTError, jwt
 
@@ -13,6 +14,7 @@ from common.config import get_settings
 
 router = APIRouter(tags=["proxy"])
 _settings = get_settings()
+log = structlog.get_logger()
 
 # Prefixes that don't require a valid JWT
 _PUBLIC_PREFIXES = {"auth", "health", "docs", "openapi.json", "redoc"}
@@ -94,7 +96,9 @@ def _require_auth(full_path: str, request: Request) -> None:
     try:
         payload = jwt.decode(token, _settings.jwt_secret, algorithms=["HS256"])
         jti: str = payload.get("jti", "")
-        if jti and _is_blacklisted(jti):
+        if not jti:
+            raise HTTPException(401, "Token missing jti claim")
+        if _is_blacklisted(jti):
             raise HTTPException(401, "Token has been revoked")
     except HTTPException:
         raise
@@ -137,6 +141,7 @@ async def reverse_proxy(full_path: str, request: Request):
     except httpx.TimeoutException:
         raise HTTPException(504, "Upstream service timed out")
     except Exception as exc:
-        raise HTTPException(502, f"Upstream error: {exc}")
+        log.warning("proxy.upstream_error", path=full_path, error=str(exc))
+        raise HTTPException(502, "Service temporarily unavailable")
     content_type = r.headers.get("content-type", "application/json").split(";")[0].strip()
     return Response(content=r.content, status_code=r.status_code, media_type=content_type)

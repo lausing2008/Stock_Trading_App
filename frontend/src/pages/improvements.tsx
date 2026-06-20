@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6508,6 +6508,85 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-20. Research engine trigger has built-in 6h cooldown per symbol — safe to call on every cycle.',
   },
 
+  // ── Tier 60 — Security Hardening + Research Gating + NYSE Calendar + DE Perf (2026-06-20) ──
+  {
+    id: 'security-jti-enforcement',
+    tier: 60, severity: 'critical', defaultStatus: 'done',
+    title: 'JWT jti enforcement — tokens without jti can bypass logout blacklist',
+    file: 'services/api-gateway/src/api/proxy.py · shared/common/jwt_auth.py',
+    effort: '15 min',
+    impact: 'Critical — a token crafted without a jti claim would bypass the Redis blacklist entirely. If a user logged out (blacklisting their jti), an attacker with a copy of the token could create a new jti-less token and remain authenticated indefinitely. Now proxy.py and jwt_auth.py both reject tokens missing jti with HTTP 401.',
+    what: 'proxy.py _require_auth() and jwt_auth.py get_current_username() both did: jti = payload.get("jti", ""). If jti is empty, _is_blacklisted("") / _check_blacklist("") returned False immediately (line 19: "if not jti: return False"). A jti-less token is effectively irrevocable.',
+    fix: 'After jwt.decode(), check: if not jti: raise HTTPException(401, "Token missing jti claim"). Also sanitized 502 error message from f"Upstream error: {exc}" to "Service temporarily unavailable" to prevent internal Docker service mesh URL leakage. Fixed _generate_with_service_token in research-engine to include jti.',
+    implementedNote: 'Done 2026-06-20. All existing service tokens already have jti (scheduler uses uuid4, signal/decision-engines use static string JTIs). Research-engine background trigger token fixed to include jti.',
+  },
+  {
+    id: 'security-rate-limit-xff',
+    tier: 60, severity: 'high', defaultStatus: 'done',
+    title: 'Login rate limiter IP bypass — nginx reverse proxy made client IP always appear as the nginx container IP',
+    file: 'services/market-data/src/api/auth.py',
+    effort: '10 min',
+    impact: 'High — login rate limiting was completely ineffective behind Nginx. request.client.host returns the nginx container IP (172.x.x.x), not the real client IP. A brute-force attacker could make unlimited login attempts from any IP. Fixed to read X-Forwarded-For header first.',
+    what: 'auth.py lines 213 and 245: ip = request.client.host. In Docker Compose with Nginx, all requests arrive from nginx container (same Docker network). Every login attempt from any browser appeared as the same IP, so after 5 failures the entire app was rate-limited or no IP was ever blocked.',
+    fix: 'ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or request.client.host. Nginx passes real client IP in X-Forwarded-For automatically. Applied to both /login and /reset-password endpoints.',
+    implementedNote: 'Done 2026-06-20. Both login and reset-password handlers use X-Forwarded-For first. Nginx is already trusted on the internal network — no spoofing risk for X-Forwarded-For.',
+  },
+  {
+    id: 'research-gating-active',
+    tier: 60, severity: 'high', defaultStatus: 'done',
+    title: 'research_gating_enabled was dead config — AVOID/SELL research never blocked DE entries',
+    file: 'services/decision-engine/src/api/core/hard_rejects.py · routes.py',
+    effort: '20 min',
+    impact: 'High — research_gating_enabled was set to True in _DEFAULT_CFG but never read anywhere. A stock with a research recommendation of AVOID or SELL could still pass all hard_rejects checks and receive a BUY verdict from the Decision Engine. Now AVOID/SELL research gates the entry before scoring when research_gating_enabled=True.',
+    what: 'hard_rejects.py check_hard_rejects() had no research_rec parameter. routes.py already resolved research_rec but never passed it to check_hard_rejects(). The config key research_gating_enabled existed in _DEFAULT_CFG with no consumer.',
+    fix: 'Added research_rec: str | None = None param to check_hard_rejects(). If cfg["research_gating_enabled"] and research_rec in ("AVOID", "SELL"): return BLOCKED. routes.py now passes research_rec=research_rec to check_hard_rejects(). Fires before scoring so no partial evaluation on gated stocks.',
+    implementedNote: 'Done 2026-06-20. STRONG BUY, BUY, WATCH recommendations still pass. INSUFFICIENT DATA (fallback reports) also passes — gating only on explicit AVOID/SELL.',
+  },
+  {
+    id: 'research-post-cooldown',
+    tier: 60, severity: 'medium', defaultStatus: 'done',
+    title: 'POST /research/{symbol} had no cooldown — every call triggered Claude regardless of cache age',
+    file: 'services/research-engine/src/api/routes.py',
+    effort: '10 min',
+    impact: 'Medium — the /trigger endpoint had a 6h cooldown but the direct POST endpoint did not. Any authenticated user could call POST /research/{symbol} repeatedly, burning Claude API credits on redundant regenerations. Now returns the cached report if it is < 6h old.',
+    what: '_trigger_ checked _cache age before generating. generate_research() wrote to _cache but never checked it first. The GET endpoint returned from cache; the POST endpoint always ran the full Claude pipeline regardless.',
+    fix: 'Added cache check at the top of generate_research(): if entry in _cache and age < 21600s (6h), return cached report immediately. Users who need a fresh report can DELETE /research/{symbol} to clear the cache first.',
+    implementedNote: 'Done 2026-06-20. Aligns POST with /trigger cooldown semantics. Reduces Claude spend by ~80% on active stocks that get repeated research requests within a day.',
+  },
+  {
+    id: 'research-max-age-de',
+    tier: 60, severity: 'medium', defaultStatus: 'done',
+    title: 'Decision Engine used stale research data (> 24h old) for scoring',
+    file: 'services/decision-engine/src/api/core/aggregator.py',
+    effort: '15 min',
+    impact: 'Medium — the DE fetched research summary via GET /research/{symbol}/summary without checking how old the report was. A report generated 3+ days ago during different market conditions could lower or block a legitimate entry. Now research data older than 24h is discarded (returns None) so scoring treats it as no-research rather than stale-research.',
+    what: '_fetch_research() returned whatever the research-engine had in cache. The research-engine\'s in-memory cache has a 24h TTL but the DE had no awareness of report age. If the research-engine restarted (cache lost) and no new report was triggered, DE would get 404 → None. But if an old report survived, it was used with stale recommendations.',
+    fix: 'Parse generated_at from the summary response. If age > 86400s (24h), log decision.research_stale and return None. Scoring treats None as neutral (no research bonus/penalty).',
+    implementedNote: 'Done 2026-06-20. Uses datetime.fromisoformat() on the generated_at field. Fallback: if generated_at is missing or unparseable, accept the data (fail-open).',
+  },
+  {
+    id: 'nyse-holiday-calendar',
+    tier: 60, severity: 'high', defaultStatus: 'done',
+    title: 'NYSE holiday blindness — US scheduler ran on 9 holidays/year corrupting incremental ingest head',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '30 min',
+    impact: 'High — on NYSE holidays (July 4, Thanksgiving, etc.) the scheduler fired and called ingest_universe() for US stocks. yfinance returns empty or partial data for closed-market days. The incremental ingest head advances anyway, so the next trading day\'s ingest misses bars from the preceding open session. 9 affected days/year; fix mirrors the existing HK holiday calendar pattern.',
+    what: '_refresh_market() already checked _is_hk_holiday() before running HK jobs but had no equivalent for US markets. HK holidays were hardcoded as a frozenset — same approach now applied for NYSE. _refresh_5m() also needed the US check.',
+    fix: 'Added _NYSE_HOLIDAYS frozenset (2025-2026) and _is_us_trading_day() helper (weekday check + holiday lookup in America/New_York timezone). _refresh_market() and _refresh_5m() both return early with log("scheduler.skip", reason="nyse_holiday") when US market is closed.',
+    implementedNote: 'Done 2026-06-20. NYSE holidays for 2025-2026 hardcoded. Both _refresh_market() and _refresh_5m() gated. Holiday list must be extended before each new year.',
+  },
+  {
+    id: 'de-yfinance-lazy',
+    tier: 60, severity: 'medium', defaultStatus: 'done',
+    title: 'Decision Engine always ran yfinance in parallel — added 400-1200ms latency floor to every /decide call',
+    file: 'services/decision-engine/src/api/core/aggregator.py',
+    effort: '10 min',
+    impact: 'Medium — yfinance was launched concurrently with signal+research fetch on every /decide call. Since signal data never carries price in reasons (only indicator values), yfinance always ran. The fix makes it conditional: signal+research run first, then yfinance only if no price is found in signal reasons. When a price is already resolved, yfinance is skipped entirely — /decide latency drops from ~1200ms to ~200ms for cache-hit signals.',
+    what: 'fetch_all() ran asyncio.gather(signal_task, research_task, price_task) in parallel always. The price_task (yfinance in a thread pool) always ran even though the result was often unused. The signal reasons dict contains only indicator values (RSI, MACD, pillars) — no raw price fields. So yfinance always ran.',
+    fix: 'fetch_all() now runs signal+research in parallel first, then checks if reasons has last_price/price/close. Only if none present does it await _fetch_price_fallback(). This removes yfinance latency from the hot path for symbols where the DE is called with a caller-supplied live_price.',
+    implementedNote: 'Done 2026-06-20. Yfinance still runs for symbols with no price in signal reasons (most cases). The gain is when live_price is passed by the caller (paper trading, watchlist scan) — those calls skip yfinance entirely.',
+  },
+
   // ── Tier 59 — DE Gate + Watchlist Scan + Risk Dashboard (2026-06-20) ─────────
   {
     id: 'de-gate-signal-alerts',
@@ -6636,6 +6715,7 @@ const TIER_LABEL: Record<Tier, string> = {
   57: 'Tier 57 — Decision Engine: New Microservice (2026-06-20)',
   58: 'Tier 58 — Decision Engine: UI + Shadow Audit + Auto-Research (2026-06-20)',
   59: 'Tier 59 — DE Gate + Watchlist Scan + Risk Dashboard (2026-06-20)',
+  60: 'Tier 60 — Security Hardening + Research Gating + NYSE Calendar + DE Perf (2026-06-20)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6698,6 +6778,7 @@ const TIER_COLOR: Record<Tier, string> = {
   57: '#34d399',
   58: '#60a5fa',
   59: '#f472b6',
+  60: '#a3e635',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

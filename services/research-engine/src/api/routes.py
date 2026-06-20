@@ -1402,11 +1402,12 @@ async def trigger_research(symbol: str, background_tasks: BackgroundTasks):
 async def _generate_with_service_token(sym: str) -> None:
     """Generate research in background using a short-lived service JWT (no user context)."""
     try:
+        import uuid as _uuid
         from jose import jwt as _jwt
         from datetime import timedelta
         expire = datetime.utcnow() + timedelta(hours=1)
         token = _jwt.encode(
-            {"sub": "service", "role": "admin", "exp": expire},
+            {"sub": "service", "role": "admin", "exp": expire, "jti": str(_uuid.uuid4())},
             _s.jwt_secret, algorithm="HS256",
         )
         async with httpx.AsyncClient(timeout=35) as client:
@@ -1427,6 +1428,13 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
         sym = _sanitise_symbol(symbol)
     except ValueError:
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
+
+    # Return cached report if fresh (< 6h) — prevents double AI spend on rapid re-calls
+    entry = _cache.get(sym)
+    if entry:
+        report, ts = entry
+        if (datetime.now(timezone.utc) - ts).total_seconds() < 21_600:
+            return report
 
     # Forward the caller's JWT to services that require auth (e.g. signal-engine)
     auth = request.headers.get("authorization", "")

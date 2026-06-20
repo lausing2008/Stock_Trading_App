@@ -108,6 +108,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         max_positions=req.max_positions,
         daily_pnl_pct=req.daily_pnl_pct,
         cfg=cfg,
+        research_rec=research_rec,
     )
 
     factors = Factors(

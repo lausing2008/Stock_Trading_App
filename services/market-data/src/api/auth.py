@@ -210,7 +210,7 @@ class UpdateProfileRequest(BaseModel):
 
 @router.post("/login")
 def login(request: Request, body: LoginRequest, session: Session = Depends(get_session)):
-    ip = request.client.host if request.client else "unknown"
+    ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
     _check_rate_limit(ip)
     user = session.execute(
         select(User).where(User.username == body.username.lower())
@@ -242,7 +242,7 @@ def logout(creds: HTTPAuthorizationCredentials | None = Depends(_security)):
 @router.post("/reset-password")
 def reset_password_public(request: Request, body: ResetPasswordRequest, session: Session = Depends(get_session)):
     """Password reset without JWT — requires old password for verification."""
-    ip = request.client.host if request.client else "unknown"
+    ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
     _check_rate_limit(ip)
     user = session.execute(
         select(User).where(User.username == body.username.lower())
