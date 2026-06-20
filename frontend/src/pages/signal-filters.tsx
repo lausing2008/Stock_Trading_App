@@ -366,7 +366,7 @@ export default function SignalFiltersPage() {
   const suppCount = data?.filter(r => r.suppression_count > 0).length ?? 0;
 
   const maxTsMs = data?.length
-    ? Math.max(...data.map(r => { try { return new Date(r.ts).getTime(); } catch { return 0; } }))
+    ? Math.max(...data.map(r => { try { return r.ts ? new Date(r.ts).getTime() : 0; } catch { return 0; } }))
     : null;
   const signalStaleHours = maxTsMs ? Math.round((Date.now() - maxTsMs) / 3600000) : null;
   const signalStale = signalStaleHours != null && signalStaleHours > 30;
