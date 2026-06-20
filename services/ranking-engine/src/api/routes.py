@@ -25,6 +25,26 @@ from ..scoring import compute_kscore
 
 import os
 _MARKET_DATA_URL = os.environ.get("MARKET_DATA_URL", "http://market-data:8001")
+_TA_URL = os.environ.get("TA_URL", "http://technical-analysis:8006")
+
+_patterns_cache_ts: float = 0.0
+_patterns_cache_data: dict = {}
+
+
+def _fetch_patterns_bulk() -> dict[str, list[str]]:
+    """Fetch pre-computed patterns from TA service. Module-level 6h cache."""
+    global _patterns_cache_ts, _patterns_cache_data
+    if _time.time() - _patterns_cache_ts < 21600:
+        return _patterns_cache_data
+    try:
+        with httpx.Client(timeout=90) as c:
+            r = c.get(f"{_TA_URL}/ta/patterns/bulk", timeout=90)
+            if r.status_code == 200:
+                _patterns_cache_data = r.json().get("patterns", {})
+                _patterns_cache_ts = _time.time()
+    except Exception:
+        pass
+    return _patterns_cache_data
 
 # ── Sector → ETF mapping ──────────────────────────────────────────────────────
 _SECTOR_ETF: dict[str, str] = {
@@ -592,15 +612,18 @@ def leaderboard(
             "earnings_growth":   _cf(fund.earnings_growth) if fund else None,
             "debt_to_equity":    _cf(fund.debt_to_equity) if fund else None,
             "price_to_book":     _cf(fund.price_to_book) if fund else None,
+            "market_cap":        int(fund.market_cap) if fund and fund.market_cap else None,
         }
         for stock, ranking, fund in rows
     ]
     # Merge institutional ownership from Redis (not in DB Fundamental table)
     bulk_fund = _fetch_fundamentals_bulk()
+    patterns  = _fetch_patterns_bulk()
     for r in results:
         fd = bulk_fund.get(r["symbol"]) or {}
         r["held_percent_institutions"] = fd.get("held_percent_institutions")
         r["held_percent_insiders"]     = fd.get("held_percent_insiders")
+        r["patterns"] = patterns.get(r["symbol"], [])
 
     results.sort(key=lambda r: r["score"] or 0, reverse=True)
     as_of = str(max((row[1].as_of for row in rows), default=date.today()))

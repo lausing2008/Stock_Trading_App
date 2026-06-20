@@ -3283,7 +3283,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'finviz-candlestick-pattern-filter',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Screener: Add candlestick & chart pattern filters (doji, hammer, breakout, consolidation)',
     file: 'frontend/src/pages/screener.tsx · services/technical-analysis/src/patterns/recognizer.py',
     effort: '2 days',
@@ -3405,7 +3405,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'pv-backtesting-engine',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add signal backtesting — test BUY/SELL rules against historical data with equity curve',
     file: 'services/strategy-engine/ · frontend/src/pages/strategies.tsx',
     effort: '2 weeks',
@@ -3415,7 +3415,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'pv-factor-analysis',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add factor attribution — decompose returns into market, size, value, momentum, quality factors',
     file: 'services/portfolio-optimizer/ · frontend/src/pages/portfolio.tsx',
     effort: '1 week',
@@ -3425,7 +3425,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'pv-monte-carlo',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add Monte Carlo simulation — probability distribution of portfolio outcomes over 1-5 years',
     file: 'services/portfolio-optimizer/ · frontend/src/pages/portfolio.tsx',
     effort: '1 week',

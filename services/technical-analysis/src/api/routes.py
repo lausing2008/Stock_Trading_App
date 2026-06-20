@@ -108,3 +108,70 @@ def get_levels(
         "trendlines": [vars(T) for T in lines],
         "fibonacci": fib,
     }
+
+
+# ---------------------------------------------------------------------------
+# Bulk pattern scan — module-level cache (TTL = 6 hours)
+# ---------------------------------------------------------------------------
+_patterns_bulk_cache: dict = {}  # {market_key: (timestamp, {symbol: [pattern_names]})}
+
+
+@router.get("/patterns/bulk")
+def get_patterns_bulk(
+    market: str | None = None,
+    session: Session = Depends(get_session),
+):
+    import time as _time
+
+    market_key = market if market is not None else "__all__"
+    now = _time.time()
+
+    cached = _patterns_bulk_cache.get(market_key)
+    if cached is not None:
+        ts, data = cached
+        if now - ts < 21600:
+            return {"patterns": data, "count": len(data)}
+
+    # Build stock query
+    stmt = select(Stock).where(Stock.active == True)  # noqa: E712
+    if market is not None:
+        stmt = stmt.where(Stock.market == market)
+    stocks = session.execute(stmt).scalars().all()
+
+    since = date.today() - timedelta(days=400)
+    result: dict = {}
+
+    for stock in stocks:
+        try:
+            rows = session.execute(
+                select(Price)
+                .where(
+                    Price.stock_id == stock.id,
+                    Price.timeframe == TimeFrame("1d"),
+                    Price.ts >= since,
+                )
+                .order_by(Price.ts)
+            ).scalars().all()
+
+            if len(rows) < 30:
+                continue
+
+            df = pd.DataFrame(
+                {
+                    "ts": [r.ts for r in rows],
+                    "open": [r.open for r in rows],
+                    "high": [r.high for r in rows],
+                    "low": [r.low for r in rows],
+                    "close": [r.close for r in rows],
+                    "volume": [r.volume for r in rows],
+                }
+            )
+
+            hits = detect_patterns(df)
+            if hits:
+                result[stock.symbol] = [p["name"] for p in hits]
+        except Exception:
+            continue
+
+    _patterns_bulk_cache[market_key] = (now, result)
+    return {"patterns": result, "count": len(result)}

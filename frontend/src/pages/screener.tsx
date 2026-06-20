@@ -55,6 +55,8 @@ const DEFAULT_FILTERS = {
   maxDebt: '',           // max debt-to-equity ratio
   maxPEG: '',            // max PEG ratio (PE / growth)
   minInstOwnership: '',  // min institutional ownership % (0-100)
+  capTier: '',           // mega|large|mid|small|micro
+  patterns: new Set<string>(), // chart patterns to require (AND logic)
   watchlistOnly: true,
   search: '',
 };
@@ -264,6 +266,11 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     const maxDebt     = filters.maxDebt      ? +filters.maxDebt      : null;
     const maxPEG      = filters.maxPEG       ? +filters.maxPEG       : null;
     const minInstOwn  = filters.minInstOwnership ? +filters.minInstOwnership / 100 : null;
+    const capTierMap: Record<string, [number, number]> = {
+      mega:  [200e9, Infinity], large: [10e9, 200e9],
+      mid:   [2e9, 10e9],      small: [300e6, 2e9], micro: [0, 300e6],
+    };
+    const capRange = filters.capTier ? capTierMap[filters.capTier] : null;
 
     return rows.filter(r => {
       if (filters.market !== 'All' && r.market !== filters.market) return false;
@@ -293,6 +300,11 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
       if (maxDebt != null && (r.debt_to_equity == null || r.debt_to_equity > maxDebt)) return false;
       if (maxPEG != null && (r.peg_ratio == null || r.peg_ratio > maxPEG)) return false;
       if (minInstOwn != null && (r.held_percent_institutions == null || r.held_percent_institutions < minInstOwn)) return false;
+      if (capRange != null && (r.market_cap == null || r.market_cap < capRange[0] || r.market_cap >= capRange[1])) return false;
+      if (filters.patterns.size > 0) {
+        const stockPats = new Set(r.patterns ?? []);
+        for (const p of filters.patterns) { if (!stockPats.has(p)) return false; }
+      }
       return true;
     });
   }, [rows, filters]);
@@ -343,7 +355,8 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     !filters.minChange && !filters.maxChange && !filters.minPrice && !filters.maxPrice &&
     !filters.sector && !filters.minFairDiscount && !filters.minRS && !filters.minConfidence &&
     !filters.maxPE && !filters.minRevGrowth && !filters.maxDebt && !filters.maxPEG &&
-    !filters.minInstOwnership && !filters.watchlistOnly && !filters.search
+    !filters.minInstOwnership && !filters.capTier && filters.patterns.size === 0 &&
+    !filters.watchlistOnly && !filters.search
   );
 
   const loading = !rankData || !signals || !prices;
@@ -535,6 +548,49 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
           <NumInput label="Max D/E"       value={filters.maxDebt}         onChange={v => setFilters(f => ({ ...f, maxDebt: v }))}         placeholder="e.g. 2" />
           <NumInput label="Max PEG"       value={filters.maxPEG}          onChange={v => setFilters(f => ({ ...f, maxPEG: v }))}          placeholder="e.g. 1.5" />
           <NumInput label="Min Inst Own %" value={filters.minInstOwnership} onChange={v => setFilters(f => ({ ...f, minInstOwnership: v }))} placeholder="e.g. 40" />
+
+          {/* Market cap tier */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Market Cap</span>
+            <select value={filters.capTier} onChange={e => setFilters(f => ({ ...f, capTier: e.target.value }))}
+              style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #1e293b', background: '#080f1e', color: '#e2e8f0', fontSize: '12px', minWidth: '90px' }}>
+              <option value="">All</option>
+              <option value="mega">Mega (&gt;200B)</option>
+              <option value="large">Large (10-200B)</option>
+              <option value="mid">Mid (2-10B)</option>
+              <option value="small">Small (0.3-2B)</option>
+              <option value="micro">Micro (&lt;300M)</option>
+            </select>
+          </div>
+
+          {/* Chart pattern chips */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Pattern</span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', maxWidth: '320px' }}>
+              {(['double_bottom', 'double_top', 'head_and_shoulders', 'ascending_triangle', 'descending_triangle', 'symmetric_triangle', 'bull_flag', 'bear_flag', 'cup_and_handle'] as const).map(pat => {
+                const labels: Record<string, string> = {
+                  double_bottom: 'Dbl Bottom', double_top: 'Dbl Top',
+                  head_and_shoulders: 'H&S', ascending_triangle: '▲ Triangle',
+                  descending_triangle: '▽ Triangle', symmetric_triangle: '◇ Triangle',
+                  bull_flag: 'Bull Flag', bear_flag: 'Bear Flag', cup_and_handle: 'Cup',
+                };
+                const active = filters.patterns.has(pat);
+                return (
+                  <button key={pat} onClick={() => setFilters(f => {
+                    const next = new Set(f.patterns);
+                    active ? next.delete(pat) : next.add(pat);
+                    return { ...f, patterns: next };
+                  })} style={{
+                    padding: '3px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer',
+                    border: `1px solid ${active ? '#6366f1' : '#1e293b'}`,
+                    background: active ? 'rgba(99,102,241,0.15)' : 'transparent',
+                    color: active ? '#a5b4fc' : '#475569',
+                    fontWeight: active ? 700 : 400,
+                  }}>{labels[pat]}</button>
+                );
+              })}
+            </div>
+          </div>
 
           {/* Watchlist toggle — admin only */}
           {isAdmin && (

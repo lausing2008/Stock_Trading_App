@@ -384,6 +384,160 @@ function PortfolioCard({
   );
 }
 
+// ── Monte Carlo simulation — bootstrap paths from historical daily returns ──────
+
+function MonteCarloSection({ data }: { data: PaperEquityPoint[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  const stats = useMemo(() => {
+    if (data.length < 5) return null;
+    const equities = data.map(d => d.equity);
+    // daily log-returns
+    const returns: number[] = [];
+    for (let i = 1; i < equities.length; i++) {
+      if (equities[i - 1] > 0) returns.push(Math.log(equities[i] / equities[i - 1]));
+    }
+    if (returns.length < 3) return null;
+
+    const N_PATHS = 1000;
+    const HORIZON = 252; // trading days
+    const startVal = equities[equities.length - 1];
+
+    // seeded LCG so chart is stable on re-renders
+    let seed = 0x12345678;
+    const rand = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0xFFFFFFFF; };
+    const randNorm = () => {
+      // Box-Muller
+      const u = Math.max(rand(), 1e-12);
+      const v = rand();
+      return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    };
+
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length;
+    const std = Math.sqrt(variance);
+
+    // Build paths
+    const paths: number[][] = [];
+    for (let p = 0; p < N_PATHS; p++) {
+      let val = startVal;
+      const path: number[] = [val];
+      for (let d = 0; d < HORIZON; d++) {
+        val *= Math.exp(mean + std * randNorm());
+        path.push(val);
+      }
+      paths.push(path);
+    }
+
+    // Compute percentile bands at each step
+    const PCTS = [5, 25, 50, 75, 95];
+    const bands: Record<number, number[]> = {};
+    for (const pct of PCTS) bands[pct] = [];
+    for (let d = 0; d <= HORIZON; d++) {
+      const vals = paths.map(p => p[d]).sort((a, b) => a - b);
+      for (const pct of PCTS) {
+        const idx = Math.floor((pct / 100) * (vals.length - 1));
+        bands[pct].push(vals[idx]);
+      }
+    }
+
+    const terminalVals = paths.map(p => p[HORIZON]);
+    const probPositive = terminalVals.filter(v => v > startVal).length / N_PATHS;
+    const medianTerminal = bands[50][HORIZON];
+    const p10Terminal = bands[5][HORIZON];
+    const p90Terminal = bands[95][HORIZON];
+
+    return { bands, HORIZON, startVal, probPositive, medianTerminal, p10Terminal, p90Terminal, N_PATHS };
+  }, [data]);
+
+  useEffect(() => {
+    if (!ref.current || !stats) return;
+    let cancelled = false;
+    const { bands, HORIZON, startVal, probPositive, medianTerminal } = stats;
+
+    import('plotly.js-dist-min').then((Plotly: any) => {
+      if (cancelled || !ref.current) return;
+      const xs = Array.from({ length: HORIZON + 1 }, (_, i) => i);
+
+      const traces: any[] = [
+        // 5-95 band (fill)
+        { x: xs, y: bands[5], name: 'P5', type: 'scatter', mode: 'lines', line: { width: 0, color: 'transparent' }, showlegend: false, hoverinfo: 'skip' },
+        { x: xs, y: bands[95], name: 'P5–P95', type: 'scatter', mode: 'lines', fill: 'tonexty',
+          fillcolor: 'rgba(99,102,241,0.08)', line: { width: 0, color: 'transparent' }, showlegend: true,
+          hovertemplate: 'P95: $%{y:,.0f}<extra></extra>' },
+        // 25-75 band (fill)
+        { x: xs, y: bands[25], name: 'P25', type: 'scatter', mode: 'lines', line: { width: 0, color: 'transparent' }, showlegend: false, hoverinfo: 'skip' },
+        { x: xs, y: bands[75], name: 'P25–P75', type: 'scatter', mode: 'lines', fill: 'tonexty',
+          fillcolor: 'rgba(99,102,241,0.15)', line: { width: 0, color: 'transparent' }, showlegend: true,
+          hovertemplate: 'P75: $%{y:,.0f}<extra></extra>' },
+        // median
+        { x: xs, y: bands[50], name: 'Median (P50)', type: 'scatter', mode: 'lines',
+          line: { color: '#818cf8', width: 2 }, hovertemplate: 'Median: $%{y:,.0f}<extra></extra>' },
+        // today line
+        { x: [0], y: [startVal], name: 'Today', type: 'scatter', mode: 'markers',
+          marker: { color: '#22c55e', size: 8 }, hovertemplate: `Today: $${startVal.toLocaleString(undefined, { maximumFractionDigits: 0 })}<extra></extra>` },
+      ];
+
+      const layout = {
+        paper_bgcolor: '#0f172a', plot_bgcolor: '#0f172a',
+        margin: { t: 10, b: 40, l: 60, r: 10 },
+        height: 220,
+        font: { family: 'monospace', size: 11, color: '#94a3b8' },
+        xaxis: { title: 'Trading Days', color: '#475569', gridcolor: '#1e293b', zeroline: false },
+        yaxis: { tickprefix: '$', color: '#475569', gridcolor: '#1e293b', zeroline: false },
+        legend: { orientation: 'h', x: 0, y: 1.08, font: { size: 11 } },
+        hovermode: 'x unified',
+        annotations: [{
+          x: HORIZON, y: medianTerminal,
+          text: `Median: $${medianTerminal.toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
+          showarrow: false, font: { color: '#818cf8', size: 10 }, xanchor: 'right',
+        }],
+      };
+
+      Plotly.react(ref.current, traces, layout, { displayModeBar: false, responsive: true });
+    });
+    return () => { cancelled = true; };
+  }, [stats]);
+
+  if (!stats) {
+    return (
+      <div style={{ color: '#64748b', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>
+        Not enough equity data for Monte Carlo (need at least 5 data points).
+      </div>
+    );
+  }
+
+  const { probPositive, medianTerminal, p10Terminal, p90Terminal, N_PATHS, startVal } = stats;
+
+  return (
+    <div style={{ background: '#0f172a', borderRadius: 10, border: '1px solid #1e293b', padding: '16px 12px', marginTop: 20 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginBottom: 4 }}>Monte Carlo Projection — 1 Year ({HORIZON_LABEL})</div>
+      <div style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+        {N_PATHS.toLocaleString()} bootstrap paths from historical daily return distribution
+      </div>
+      <div ref={ref} />
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 12 }}>
+        {[
+          { label: 'P(positive)', value: `${(probPositive * 100).toFixed(1)}%`, color: probPositive >= 0.6 ? '#4ade80' : probPositive >= 0.4 ? '#facc15' : '#f87171' },
+          { label: 'P10 terminal', value: `$${p10Terminal.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: p10Terminal >= startVal ? '#4ade80' : '#f87171' },
+          { label: 'Median terminal', value: `$${medianTerminal.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: medianTerminal >= startVal ? '#4ade80' : '#f87171' },
+          { label: 'P90 terminal', value: `$${p90Terminal.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: '#a5b4fc' },
+        ].map(({ label, value, color }) => (
+          <div key={label} style={{ background: '#0a1628', border: '1px solid #1e293b', borderRadius: 6, padding: '8px 12px', minWidth: 110 }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>{label}</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color }}>{value}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 10, color: '#334155', marginTop: 8 }}>
+        Simulated using bootstrap resampling of observed daily returns. Not financial advice.
+      </div>
+    </div>
+  );
+}
+
+const HORIZON_LABEL = '252 trading days';
+
 // ── Compare equity chart (overlay all portfolios + SPY) ───────────────────────
 
 function CompareEquityChart({ data }: { data: PaperCompareData[] }) {
@@ -1944,6 +2098,7 @@ export default function PaperPortfolioPage() {
               <EquityChart data={curve ?? []} initialCapital={summary.initial_capital} />
             </div>
             {(curve?.length ?? 0) > 0 && <BenchmarkTable data={curve ?? []} />}
+            {(curve?.length ?? 0) > 0 && <MonteCarloSection data={curve ?? []} />}
             {(curve?.length ?? 0) === 0 && (
               <div style={{ color: '#64748b', fontSize: 13, textAlign: 'center' }}>
                 Equity curve snapshots are taken once per day after market close. Check back after first trading session.
