@@ -309,6 +309,34 @@ and the filter must agree on what the current signal is.
 
 ---
 
+## Recurring Issue: Improvements Page Not Showing New Tiers
+
+**Symptom:** After adding a new tier to `improvements.tsx` (items, TIER_LABEL, TIER_COLOR, Tier type union),
+the new tier items do not appear on the improvements page even after a frontend rebuild.
+
+**Root cause (fixed 2026-06-20):** `frontend/src/pages/improvements.tsx` line ~6890 had a hardcoded
+tier list `[1, 2, 3, ..., 54]` that controlled which tier sections are rendered on the page.
+Adding a new tier to `TIER_LABEL`/`TIER_COLOR` and the items array had no effect because the
+render loop only iterated this hardcoded list.
+
+**Fix applied:** Replaced the hardcoded array with:
+```js
+const tiers = (Object.keys(TIER_LABEL).map(Number).sort((a, b) => a - b) as Tier[])
+  .filter(t => filterTier === 0 || t === filterTier);
+```
+Now the render loop is driven by TIER_LABEL — any tier added there automatically appears.
+
+**What to do when adding a new tier:**
+1. Add `N` to the `type Tier` union
+2. Add items with `tier: N`
+3. Add `N: 'Tier N — ...'` to `TIER_LABEL`
+4. Add `N: '#hexcolor'` to `TIER_COLOR`
+5. The render loop (`tiers` variable) is now automatic — no manual update needed.
+6. Rebuild frontend: `docker compose -f docker/docker-compose.yml build --no-cache frontend && docker compose -f docker/docker-compose.yml up -d frontend`
+   (Use `--no-cache` to prevent Docker from serving a stale Next.js build layer)
+
+---
+
 ## Known Ongoing Limitations
 
 - Broker commission: `commission_per_share` defaults to 0.0 (user's broker is commission-free)
