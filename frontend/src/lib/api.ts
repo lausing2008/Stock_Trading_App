@@ -481,6 +481,14 @@ export const api = {
     request<{ status: string }>(`/broker/paper-portfolios/${portfolioId}/broker`, {
       method: 'PUT', body: JSON.stringify({ broker_connection_id: brokerConnectionId }),
     }),
+
+  // ── Decision Engine ────────────────────────────────────────────────────────
+  decide: (symbol: string, style = 'SWING') =>
+    request<DecisionResult>(`/decide/${symbol}/explain?style=${style}`),
+  regime: (market: 'US' | 'HK' = 'US') =>
+    request<RegimeStatus>(`/decide/regime?market=${market}`),
+  deDivergences: (limit = 100) =>
+    request<DeDivergenceResponse>(`/paper-portfolio/de-divergences?limit=${limit}`),
 };
 
 export type SuppressedSignalConditions = {
@@ -1376,4 +1384,108 @@ export type BrokerAccountInfo = {
     unrealized_pnl: number;
     unrealized_pnl_pct: number;
   }[];
+};
+
+// ── Decision Engine types ────────────────────────────────────────────────────
+
+export type DecisionVerdict = 'BUY' | 'SCALE' | 'HOLD' | 'SKIP' | 'BLOCKED';
+
+export type ScoreItem = { layer: string; pts: number; note: string };
+
+export type PositionPlan = {
+  shares: number;
+  size_pct: number;
+  dollar_risk: number;
+  entry_price: number;
+  stop_price: number;
+  target_1: number;
+  target_2: number;
+  rr_ratio: number;
+};
+
+export type DecisionFactors = {
+  signal_direction: string | null;
+  signal_confidence: number | null;
+  ml_bull_prob: number | null;
+  research_recommendation: string | null;
+  research_score: number | null;
+  regime: string | null;
+  volume_z: number | null;
+  days_to_earnings: number | null;
+  signal_age_h: number | null;
+  conf_delta: number | null;
+  cross_style_buys: number | null;
+};
+
+export type DecisionMultipliers = {
+  regime: number;
+  research: number;
+  confidence: number;
+  consensus: number;
+  earnings: number;
+};
+
+export type DecisionResult = {
+  symbol: string;
+  style: string;
+  verdict: DecisionVerdict;
+  score: number;
+  min_score: number;
+  position: PositionPlan | null;
+  factors: DecisionFactors;
+  multipliers: DecisionMultipliers;
+  score_breakdown: ScoreItem[];
+  blocked_reason: string | null;
+  latency_ms: number;
+  timestamp: string;
+  explanation?: string;
+  result?: DecisionResult;
+};
+
+export type RegimeStatus = {
+  state: 'bull' | 'neutral' | 'choppy' | 'risk_off' | 'bear';
+  vix: number | null;
+  vix9d: number | null;
+  spy_price: number | null;
+  spy_ema20: number | null;
+  spy_ema50: number | null;
+  spy_ema200: number | null;
+  spy_20d_ret: number | null;
+  qqq_price: number | null;
+  qqq_ema50: number | null;
+  vix_5d_trend: 'rising' | 'falling' | 'flat' | null;
+  vix_term_inverted: boolean;
+  breadth_weak: boolean;
+  breadth_size_mult: number;
+  hsi_price: number | null;
+  hsi_ema200: number | null;
+  notes: string[];
+};
+
+export type DeDivergenceEvent = {
+  ts: string;
+  symbol: string;
+  paper_enter: boolean;
+  paper_score: number;
+  de_verdict: string;
+  de_score: number;
+  de_min_score: number;
+  de_blocked_reason: string | null;
+};
+
+export type DeAgreementEvent = {
+  ts: string;
+  symbol: string;
+  verdict: string;
+  paper_enter: boolean;
+  de_score: number;
+  paper_score: number;
+};
+
+export type DeDivergenceResponse = {
+  total_divergences: number;
+  total_agreements: number;
+  agreement_rate_pct: number | null;
+  divergences: DeDivergenceEvent[];
+  agreements: DeAgreementEvent[];
 };

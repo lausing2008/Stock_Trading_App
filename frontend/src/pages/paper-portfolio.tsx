@@ -15,6 +15,7 @@ import {
   type PaperDecisionItem,
   type PaperPortfolioConfig,
   type ResearchSummary,
+  type DeDivergenceResponse,
 } from '@/lib/api';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -950,7 +951,7 @@ function TradeParamsPanel({ onDone }: { onDone: () => void }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-const TABS = ['Positions', 'Decisions', 'Journal', 'Closed Trades', 'Equity Curve', 'Attribution'] as const;
+const TABS = ['Positions', 'Decisions', 'Journal', 'Closed Trades', 'Equity Curve', 'Attribution', 'DE Audit'] as const;
 type Tab = typeof TABS[number];
 
 export default function PaperPortfolioPage() {
@@ -1037,6 +1038,10 @@ export default function PaperPortfolioPage() {
   const { data: attribution } = useSWR(
     authed && tab === 'Attribution' && selectedPortfolioId != null ? ['paper-attribution', selectedPortfolioId] : null,
     () => api.paperAttribution(selectedPortfolioId), { revalidateOnFocus: false }
+  );
+  const { data: deAudit } = useSWR<DeDivergenceResponse>(
+    authed && tab === 'DE Audit' ? 'de-divergences' : null,
+    () => api.deDivergences(200), { revalidateOnFocus: false, refreshInterval: 60_000 }
   );
 
   if (!authed) return null;
@@ -1972,6 +1977,98 @@ export default function PaperPortfolioPage() {
                     </table>
                   </div>
                 ))}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* DE Audit tab */}
+        {tab === 'DE Audit' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Summary bar */}
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {[
+                { label: 'Total Divergences', value: deAudit?.total_divergences ?? '—', color: '#ef4444' },
+                { label: 'Total Agreements', value: deAudit?.total_agreements ?? '—', color: '#22c55e' },
+                { label: 'Agreement Rate', value: deAudit?.agreement_rate_pct != null ? `${deAudit.agreement_rate_pct}%` : '—', color: '#6366f1' },
+              ].map(({ label, value, color }) => (
+                <div key={label} style={{ flex: 1, minWidth: 160, padding: '12px 16px', background: '#0f172a', borderRadius: 8, border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {!deAudit || (deAudit.total_divergences === 0 && deAudit.total_agreements === 0) ? (
+              <div style={{ padding: 24, background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, textAlign: 'center', color: '#475569' }}>
+                No shadow data yet. The Decision Engine runs alongside every scan cycle during market hours.
+              </div>
+            ) : (
+              <>
+                {/* Divergences */}
+                {(deAudit?.divergences?.length ?? 0) > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#ef4444', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+                      Divergences ({deAudit!.total_divergences}) — where DE and paper engine disagree
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                            {['Time', 'Symbol', 'Paper', 'Paper Score', 'DE Verdict', 'DE Score', 'DE Min', 'Blocked Reason'].map(h => (
+                              <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#475569', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {deAudit!.divergences.slice(0, 50).map((d, i) => (
+                            <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                              <td style={{ padding: '5px 10px', color: '#64748b', whiteSpace: 'nowrap' }}>{new Date(d.ts).toLocaleString()}</td>
+                              <td style={{ padding: '5px 10px', fontWeight: 700, color: '#e2e8f0' }}>{d.symbol}</td>
+                              <td style={{ padding: '5px 10px', color: d.paper_enter ? '#22c55e' : '#64748b', fontWeight: 600 }}>{d.paper_enter ? 'ENTER' : 'SKIP'}</td>
+                              <td style={{ padding: '5px 10px', color: '#94a3b8', textAlign: 'center' }}>{d.paper_score}</td>
+                              <td style={{ padding: '5px 10px', fontWeight: 700, color: ['BUY','SCALE'].includes(d.de_verdict) ? '#22c55e' : d.de_verdict === 'BLOCKED' ? '#ef4444' : '#64748b' }}>{d.de_verdict}</td>
+                              <td style={{ padding: '5px 10px', color: '#94a3b8', textAlign: 'center' }}>{d.de_score}</td>
+                              <td style={{ padding: '5px 10px', color: '#64748b', textAlign: 'center' }}>{d.de_min_score}</td>
+                              <td style={{ padding: '5px 10px', color: '#f97316', fontSize: 11 }}>{d.de_blocked_reason ?? '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Recent agreements (sample) */}
+                {(deAudit?.agreements?.length ?? 0) > 0 && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#22c55e', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+                      Recent Agreements (last 20 shown)
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                            {['Time', 'Symbol', 'Decision', 'DE Score', 'Paper Score'].map(h => (
+                              <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#475569', fontWeight: 600 }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {deAudit!.agreements.slice(0, 20).map((a, i) => (
+                            <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                              <td style={{ padding: '5px 10px', color: '#64748b', whiteSpace: 'nowrap' }}>{new Date(a.ts).toLocaleString()}</td>
+                              <td style={{ padding: '5px 10px', fontWeight: 700, color: '#e2e8f0' }}>{a.symbol}</td>
+                              <td style={{ padding: '5px 10px', color: a.paper_enter ? '#22c55e' : '#64748b', fontWeight: 600 }}>{a.paper_enter ? 'ENTER' : 'SKIP'}</td>
+                              <td style={{ padding: '5px 10px', color: '#94a3b8', textAlign: 'center' }}>{a.de_score}</td>
+                              <td style={{ padding: '5px 10px', color: '#94a3b8', textAlign: 'center' }}>{a.paper_score}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>

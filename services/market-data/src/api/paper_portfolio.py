@@ -1372,3 +1372,47 @@ def trigger_entry_calibration(
         _calibration_running = True
     background_tasks.add_task(_calibrate_and_save)
     return {"status": "started", "min_trades": _MIN_CALIBRATION_TRADES}
+
+
+# ── Decision Engine shadow audit ──────────────────────────────────────────────
+
+@router.get("/de-divergences")
+def get_de_divergences(
+    limit: int = Query(100, ge=1, le=500),
+    _: User = Depends(get_current_user),
+) -> dict:
+    """Return recent Decision Engine shadow divergences and agreements from Redis."""
+    import redis as _redis_lib
+    try:
+        rc = _redis_lib.from_url(_settings.redis_url, decode_responses=True, socket_connect_timeout=2)
+        raw_div = rc.lrange("de:divergences", 0, limit - 1)
+        raw_agr = rc.lrange("de:agreements", 0, limit - 1)
+        total_div = rc.llen("de:divergences")
+        total_agr = rc.llen("de:agreements")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}")
+
+    divergences = []
+    for raw in raw_div:
+        try:
+            divergences.append(json.loads(raw))
+        except Exception:
+            pass
+
+    agreements = []
+    for raw in raw_agr:
+        try:
+            agreements.append(json.loads(raw))
+        except Exception:
+            pass
+
+    total = total_div + total_agr
+    agreement_rate = round(total_agr / total * 100, 1) if total else None
+
+    return {
+        "total_divergences": total_div,
+        "total_agreements": total_agr,
+        "agreement_rate_pct": agreement_rate,
+        "divergences": divergences,
+        "agreements": agreements,
+    }

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6462,6 +6462,52 @@ const ITEMS: Item[] = [
     implementedNote: 'Implemented 2026-06-20 in regime.py. VIX term structure (VIX9D/VIX > 1.10) and market breadth (IWM + MDY vs 200EMA) both included, matching paper_trading_engine.',
   },
 
+  // ── Tier 58 — Decision Engine: UI + Shadow Audit + Auto-Research (2026-06-20) ─
+  {
+    id: 'de-explain-page',
+    tier: 58, severity: 'feature', defaultStatus: 'done',
+    title: 'Decision Engine explain page — /decide: type any symbol, see verdict + 5-layer score breakdown',
+    file: 'frontend/src/pages/decide.tsx',
+    effort: '1 session',
+    impact: 'High — users can now see exactly why the Decision Engine would or would not trade any symbol right now. Verdict badge (BUY/SCALE/HOLD/SKIP/BLOCKED), animated score bar vs min_score threshold, score breakdown table (each layer, points, note), factors grid (ML prob, confidence, research, regime, volume_z, signal age), Kelly multipliers, and position plan (shares, stop, targets, R:R).',
+    what: 'The Decision Engine had a working POST /decide/{symbol} and GET /decide/{symbol}/explain endpoint but no frontend. Users could not inspect DE decisions without curl or API calls. The /decide page fills this gap.',
+    fix: 'New /decide page: symbol input + style picker + Decide button. Calls GET /decide/{symbol}/explain (returns { result, explanation }). Renders verdict with color coding, animated score bar, 5-layer breakdown table, factors grid, multipliers row, and position plan card. Added api.decide() and api.regime() to api.ts. Nav link added under Tools.',
+    implementedNote: 'Done 2026-06-20. All Decision Engine types added to api.ts (DecisionResult, RegimeStatus, DeDivergenceResponse, ScoreItem, PositionPlan, DecisionFactors, DecisionMultipliers).',
+  },
+  {
+    id: 'regime-dashboard',
+    tier: 58, severity: 'feature', defaultStatus: 'done',
+    title: 'Market Regime dashboard — /regime: live US + HK regime state with all driving metrics',
+    file: 'frontend/src/pages/regime.tsx',
+    effort: 'Included in Tier 58 session',
+    impact: 'Medium — users can see the current market regime (bull/neutral/choppy/risk_off/bear) for both US and HK markets, along with the metrics that drive it: VIX, VIX9D, VIX term inversion, SPY vs EMA20/50/200, 20-day SPY return, QQQ, IWM/MDY breadth. Also shows the regime reference table: min score thresholds and Kelly multipliers per regime.',
+    what: 'Regime was used by the Decision Engine and paper trading engine internally but was never surfaced in the UI. Users had to infer market conditions from external sources. The /regime page makes regime state a first-class UI concept.',
+    fix: 'New /regime page. Calls GET /decide/regime?market=US and GET /decide/regime?market=HK in parallel via api.regime(). Two side-by-side regime cards with color-coded state badge, all raw metrics (VIX, EMA levels, breadth, term structure), and regime classification notes. Reference table shows min_score and Kelly mult for each regime. Refresh button to force re-fetch. Nav link added under Tools.',
+    implementedNote: 'Done 2026-06-20. RegimeStatus type updated to match actual decision-engine response fields.',
+  },
+  {
+    id: 'de-shadow-audit-dashboard',
+    tier: 58, severity: 'feature', defaultStatus: 'done',
+    title: 'Decision Engine shadow audit dashboard — DE Audit tab on paper portfolio with divergence/agreement tracking',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: 'Included in Tier 58 session',
+    impact: 'High — shadow mode divergences and agreements are now persisted to Redis (capped lists de:divergences and de:agreements, 500 each) and queryable via GET /paper-portfolio/de-divergences. The DE Audit tab on paper-portfolio shows agreement rate, divergence table (symbol, paper decision, DE verdict, scores, blocked reason), and recent agreement sample. This is the validation tool for deciding when DE is ready to replace _should_enter().',
+    what: 'Shadow mode logged divergences to structlog but they disappeared on container restart. There was no way to see aggregate agreement rate or patterns in divergences without tailing logs. Persistent Redis storage + endpoint + UI tab solves this.',
+    fix: '_shadow_decision_engine() now writes divergences to Redis de:divergences list (lpush + ltrim 500) and agreements to de:agreements list on every scan cycle. GET /paper-portfolio/de-divergences reads both lists and returns total counts, agreement rate %, and the raw events. DE Audit tab added to paper-portfolio page with stats summary bar + divergence table + agreements table.',
+    implementedNote: 'Done 2026-06-20. Paper engine uses json.dumps for Redis storage; API parses back with json.loads. Agreements also tracked (not just divergences) to compute accurate agreement rate.',
+  },
+  {
+    id: 'auto-research-trigger',
+    tier: 58, severity: 'feature', defaultStatus: 'done',
+    title: 'Auto-research trigger — scheduler fires background research for top BUY signals after each refresh',
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: 'Included in Tier 58 session',
+    impact: 'Medium — top 5 BUY signals per market (confidence ≥ 65%) automatically get a research report triggered after every signal refresh (5×/day). The research engine has a 6-hour cooldown per symbol built into its /trigger endpoint, so redundant calls are no-ops. Result: stocks appearing in BUY signals now consistently have fresh AI research, eliminating the manual "Board → Research" step.',
+    what: 'Research reports were entirely manual — a user had to navigate to the stock page and click "Research" or go to the board. Most BUY signals never had attached research, so the decision engine\'s research alignment factor was always absent. Auto-triggering closes this gap.',
+    fix: '_auto_trigger_research(market) function added to scheduler.py. Queries DB for top N=5 BUY signals (Signal.signal == "BUY", confidence ≥ 65%) for the given market, sorted by confidence desc. For each, fires POST {research_engine_url}/research/{symbol}/trigger (no auth required; internal network only). Logs triggered symbols + statuses. Called as Stage 2.5 in _refresh_market() after signals/refresh but before alerts.',
+    implementedNote: 'Done 2026-06-20. Research engine trigger has built-in 6h cooldown per symbol — safe to call on every cycle.',
+  },
+
   // ── Tier 56 — ML Infrastructure: jose Fix + 46-Feature tune_all (2026-06-19) ─
   {
     id: 'ml-prediction-jose-fix',
@@ -6553,6 +6599,7 @@ const TIER_LABEL: Record<Tier, string> = {
   55: 'Tier 55 — Full System Audit 2026-06-19: 13 findings (1 Critical · 4 High · 5 Medium · 3 Low)',
   56: 'Tier 56 — ML Infrastructure: jose Fix + 46-Feature tune_all (2026-06-19)',
   57: 'Tier 57 — Decision Engine: New Microservice (2026-06-20)',
+  58: 'Tier 58 — Decision Engine: UI + Shadow Audit + Auto-Research (2026-06-20)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6613,6 +6660,7 @@ const TIER_COLOR: Record<Tier, string> = {
   55: '#f87171',
   56: '#c084fc',
   57: '#34d399',
+  58: '#60a5fa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

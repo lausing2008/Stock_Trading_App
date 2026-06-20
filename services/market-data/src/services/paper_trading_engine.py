@@ -1675,6 +1675,23 @@ def _shadow_decision_engine(
                 de_blocked_reason=de_blocked,
                 note="paper engine is authoritative — investigating divergence",
             )
+            try:
+                import redis as _redis_lib
+                from common.config import get_settings as _gs2
+                _rc = _redis_lib.from_url(_gs2().redis_url, decode_responses=True, socket_connect_timeout=1)
+                _rc.lpush("de:divergences", json.dumps({
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "symbol": symbol,
+                    "paper_enter": should_enter,
+                    "paper_score": paper_score,
+                    "de_verdict": de_verdict,
+                    "de_score": de_score,
+                    "de_min_score": de_min,
+                    "de_blocked_reason": de_blocked,
+                }))
+                _rc.ltrim("de:divergences", 0, 499)
+            except Exception:
+                pass
         else:
             log.info(
                 "decision_engine.shadow_agree",
@@ -1684,6 +1701,21 @@ def _shadow_decision_engine(
                 de_score=de_score,
                 paper_score=paper_score,
             )
+            try:
+                import redis as _redis_lib
+                from common.config import get_settings as _gs2
+                _rc = _redis_lib.from_url(_gs2().redis_url, decode_responses=True, socket_connect_timeout=1)
+                _rc.lpush("de:agreements", json.dumps({
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "symbol": symbol,
+                    "verdict": de_verdict,
+                    "paper_enter": should_enter,
+                    "de_score": de_score,
+                    "paper_score": paper_score,
+                }))
+                _rc.ltrim("de:agreements", 0, 499)
+            except Exception:
+                pass
     except Exception as exc:
         log.debug("decision_engine.shadow_error", symbol=symbol, error=str(exc))
 

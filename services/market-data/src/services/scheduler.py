@@ -268,6 +268,48 @@ def _post(url: str, **kwargs) -> None:
         pass
 
 
+_AUTO_RESEARCH_TOP_N = 5        # max BUY signals to trigger per refresh cycle
+_AUTO_RESEARCH_MIN_CONF = 65.0  # only trigger for signals with confidence >= 65%
+
+
+def _auto_trigger_research(market: str) -> None:
+    """Fire background research trigger for the top-N BUY signals that lack a fresh report.
+
+    The research engine's /trigger endpoint has a 6-hour cooldown — it skips
+    automatically if a report was generated recently, so it is safe to call on
+    every refresh cycle without risk of repeated expensive AI requests.
+    """
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(Stock.symbol, Signal.confidence)
+            .join(Signal, Signal.stock_id == Stock.id)
+            .where(
+                Stock.market == market,
+                Signal.signal == "BUY",
+                Signal.confidence >= _AUTO_RESEARCH_MIN_CONF,
+            )
+            .order_by(Signal.confidence.desc())
+            .limit(_AUTO_RESEARCH_TOP_N)
+        ).all()
+
+    if not rows:
+        return
+
+    triggered = []
+    for sym, conf in rows:
+        try:
+            with httpx.Client(timeout=5) as client:
+                r = client.post(
+                    f"{_settings.research_engine_url}/research/{sym}/trigger",
+                )
+            status = r.json().get("status", "?") if r.status_code == 202 else r.status_code
+        except Exception as exc:
+            status = str(exc)
+        triggered.append({"symbol": sym, "conf": round(conf, 1), "status": status})
+
+    log.info("scheduler.auto_research_triggered", market=market, symbols=triggered)
+
+
 def _refresh_market(market: str, *, post_close: bool = False) -> None:
     """Run one full refresh cycle for the given market.
 
@@ -313,6 +355,12 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
             _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
     except Exception as _re:
         log.error("scheduler.rankings_signals_failed", market=market, error=str(_re), exc_info=True)
+
+    # Stage 2.5: Auto-research — trigger background research for top BUY signals without fresh reports
+    try:
+        _auto_trigger_research(market)
+    except Exception as _are:
+        log.warning("scheduler.auto_research_failed", market=market, error=str(_are))
 
     # Stage 3: Alerts — always runs regardless of ingest or signal failures
     try:
