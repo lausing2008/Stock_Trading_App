@@ -1985,7 +1985,7 @@ export default function PaperPortfolioPage() {
         {/* Risk tab */}
         {tab === 'Risk' && (() => {
           const pos = positions ?? [];
-          const totalEquity = summary?.total_equity ?? summary?.initial_capital ?? 1;
+          const totalEquity = summary?.current_equity ?? summary?.initial_capital ?? 1;
           const totalAtRisk = pos.reduce((s, p) => s + (p.entry_price - p.stop_loss) * p.shares, 0);
           const totalPositionValue = pos.reduce((s, p) => s + p.position_value, 0);
           const totalUnrealized = pos.reduce((s, p) => s + p.unrealized_pnl, 0);
