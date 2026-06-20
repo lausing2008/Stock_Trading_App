@@ -360,6 +360,7 @@ export const api = {
   getResearch: (symbol: string) => request<ResearchReport>(`/research/${symbol}`),
   getResearchSummary: (symbol: string) => request<ResearchSummary>(`/research/${symbol}/summary`),
   getResearchBatch: (symbols: string[]) => request<Record<string, ResearchSummary>>(`/research/batch?symbols=${symbols.join(',')}`),
+  triggerResearch: (symbol: string) => request<{ status: string; symbol: string }>(`/research/${encodeURIComponent(symbol)}/trigger`, { method: 'POST' }),
   clearResearch: (symbol: string) => request(`/research/${symbol}`, { method: 'DELETE' }),
   chatResearch: (symbol: string, messages: {role: string; content: string}[], api_key: string, model: string, provider: string) =>
     request<{role: string; content: string}>(`/research/${symbol}/chat`, { method: 'POST', body: JSON.stringify({ messages, api_key, model, provider }) }, 60_000),

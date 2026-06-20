@@ -753,3 +753,123 @@ def send_trade_exit_email(
   </div>
 </body></html>"""
     return send_email(to, subject, body_html, body_text)
+
+
+def send_paper_portfolio_digest_email(
+    to: str,
+    portfolio_name: str,
+    total_return_pct: float,
+    total_pnl: float,
+    open_count: int,
+    today_closed: list,  # list of {symbol, pnl, pnl_pct, exit_reason}
+    top_positions: list,  # list of {symbol, unrealized_pct, style}
+    sharpe: float | None,
+) -> bool:
+    """Daily after-market portfolio digest email."""
+    from datetime import date as _date
+    date_str = _date.today().strftime("%b %d, %Y")
+
+    ret_color = "#22c55e" if total_return_pct >= 0 else "#ef4444"
+    ret_sign = "+" if total_return_pct >= 0 else ""
+    pnl_sign = "+" if total_pnl >= 0 else ""
+
+    # ── Closed trades today ───────────────────────────────────────────────────
+    closed_rows_html = ""
+    closed_lines_text = ""
+    for t in today_closed[:8]:
+        sym = t.get("symbol", "")
+        pnl = t.get("pnl", 0.0)
+        pnl_pct = t.get("pnl_pct", 0.0)
+        reason = (t.get("exit_reason") or "").replace("_", " ").title()
+        c = "#22c55e" if pnl >= 0 else "#ef4444"
+        s = "+" if pnl >= 0 else ""
+        closed_rows_html += (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{sym}</td>'
+            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{c}">{s}${pnl:,.2f} ({s}{pnl_pct:.1f}%)</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{reason}</td>'
+            f'</tr>'
+        )
+        closed_lines_text += f"  {sym:6}  {s}${pnl:,.2f} ({s}{pnl_pct:.1f}%)  {reason}\n"
+
+    closed_section_html = ""
+    if closed_rows_html:
+        closed_section_html = f"""
+        <h3 style="font-size:14px;font-weight:700;color:#374151;margin:24px 0 10px">Closed Today</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr style="background:#f8fafc"><th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Symbol</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">P&amp;L</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Reason</th></tr>
+          {closed_rows_html}
+        </table>"""
+        closed_section_text = f"\nCLOSED TODAY:\n{closed_lines_text}"
+    else:
+        closed_section_text = "\nNo trades closed today.\n"
+
+    # ── Open positions ────────────────────────────────────────────────────────
+    pos_rows_html = ""
+    pos_lines_text = ""
+    for p in top_positions[:6]:
+        sym = p.get("symbol", "")
+        pct = p.get("unrealized_pct", 0.0)
+        style = p.get("style", "")
+        c = "#22c55e" if pct >= 0 else "#ef4444"
+        s = "+" if pct >= 0 else ""
+        pos_rows_html += (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{sym}</td>'
+            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{c}">{s}{pct:.1f}%</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{style}</td>'
+            f'</tr>'
+        )
+        pos_lines_text += f"  {sym:6}  {s}{pct:.1f}%  {style}\n"
+
+    pos_section_html = ""
+    if pos_rows_html:
+        pos_section_html = f"""
+        <h3 style="font-size:14px;font-weight:700;color:#374151;margin:24px 0 10px">Open Positions ({open_count})</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr style="background:#f8fafc"><th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Symbol</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Unrealized</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#64748b">Style</th></tr>
+          {pos_rows_html}
+        </table>"""
+
+    sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "—"
+
+    subject = f"[Paper Portfolio] {portfolio_name} — {date_str} · {ret_sign}{total_return_pct:.1f}%"
+    body_text = (
+        f"Paper Portfolio Digest — {portfolio_name} — {date_str}\n"
+        f"Total Return: {ret_sign}{total_return_pct:.1f}%  Total P&L: {pnl_sign}${total_pnl:,.2f}\n"
+        f"Open Positions: {open_count}  Sharpe: {sharpe_str}\n"
+        f"{closed_section_text}"
+        f"\nOPEN POSITIONS:\n{pos_lines_text}"
+    )
+    body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:540px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <div style="margin-bottom:20px">
+      <div style="font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Paper Portfolio Digest · {date_str}</div>
+      <div style="font-size:20px;font-weight:700;color:#111827">{portfolio_name}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
+      <div style="background:#f8fafc;border-radius:8px;padding:14px;text-align:center">
+        <div style="font-size:22px;font-weight:800;color:{ret_color}">{ret_sign}{total_return_pct:.1f}%</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:2px">Total Return</div>
+      </div>
+      <div style="background:#f8fafc;border-radius:8px;padding:14px;text-align:center">
+        <div style="font-size:18px;font-weight:700;color:{ret_color}">{pnl_sign}${total_pnl:,.0f}</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:2px">Total P&amp;L</div>
+      </div>
+      <div style="background:#f8fafc;border-radius:8px;padding:14px;text-align:center">
+        <div style="font-size:18px;font-weight:700;color:#374151">{sharpe_str}</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:2px">Sharpe</div>
+      </div>
+    </div>
+    {closed_section_html}
+    {pos_section_html}
+    <p style="font-size:12px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:12px">
+      Paper trade simulation — no real money. <a href="https://lausing.com/paper-portfolio" style="color:#6366f1">View portfolio →</a>
+    </p>
+  </div>
+</body></html>"""
+    return send_email(to, subject, body_html, body_text)

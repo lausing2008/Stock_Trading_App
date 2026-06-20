@@ -168,6 +168,8 @@ export default function StockDetail() {
 
   // Research summary (INT-1, INT-2, INT-6)
   const [researchSummary, setResearchSummary] = useState<ResearchSummary | null>(null);
+  const [researchRefreshing, setResearchRefreshing] = useState(false);
+  const [researchTriggerMsg, setResearchTriggerMsg] = useState<string | null>(null);
 
   // AI chat state
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
@@ -626,6 +628,18 @@ Return ONLY valid JSON — no markdown, no prose:
     } finally {
       setFundRefreshing(false);
     }
+  }
+
+  async function handleResearchRefresh() {
+    setResearchRefreshing(true);
+    setResearchTriggerMsg(null);
+    try {
+      const res = await api.triggerResearch(symbol);
+      setResearchTriggerMsg(res?.status === 'triggered' ? 'Refresh queued — report updates in ~30s' : 'Refresh queued');
+    } catch {
+      setResearchTriggerMsg('Trigger failed');
+    }
+    setResearchRefreshing(false);
   }
 
   async function runML() {
@@ -1694,6 +1708,15 @@ Return ONLY valid JSON — no markdown, no prose:
                     )}
                     {resScore !== null && <span style={{ fontSize: 10, color: '#64748b' }}>{resScore} pts</span>}
                     {resAge !== null && <span style={{ fontSize: 9, color: staleResearch ? '#f87171' : '#334155' }}>{resAge < 24 ? `${resAge}h ago` : `${Math.floor(resAge / 24)}d ago`}{staleResearch ? ' · STALE' : ''}</span>}
+                    <button
+                      onClick={handleResearchRefresh}
+                      disabled={researchRefreshing}
+                      title="Trigger a fresh research report"
+                      style={{ marginLeft: 4, padding: '2px 7px', borderRadius: 5, border: '1px solid rgba(129,140,248,0.25)', background: 'rgba(129,140,248,0.08)', color: researchRefreshing ? '#f59e0b' : '#818cf8', cursor: researchRefreshing ? 'default' : 'pointer', fontSize: 10, fontWeight: 700, lineHeight: 1 }}
+                    >
+                      {researchRefreshing ? '…' : '↻'}
+                    </button>
+                    {researchTriggerMsg && <span style={{ fontSize: 9, color: '#4ade80', marginLeft: 4 }}>{researchTriggerMsg}</span>}
                     {!resCore && <span style={{ fontSize: 10, color: '#334155' }}>—</span>}
                   </div>
                   {/* Conviction gauge (INT-6) */}

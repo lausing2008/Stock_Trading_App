@@ -365,10 +365,24 @@ export default function SignalFiltersPage() {
   const gateCount = data?.filter(r => r.conditions.weekly_gate).length ?? 0;
   const suppCount = data?.filter(r => r.suppression_count > 0).length ?? 0;
 
+  const maxTsMs = data?.length
+    ? Math.max(...data.map(r => { try { return new Date(r.ts).getTime(); } catch { return 0; } }))
+    : null;
+  const signalStaleHours = maxTsMs ? Math.round((Date.now() - maxTsMs) / 3600000) : null;
+  const signalStale = signalStaleHours != null && signalStaleHours > 30;
+
   if (!authed) return null;
 
   return (
     <div style={{ padding: '24px 28px', maxWidth: 1700, margin: '0 auto' }}>
+      {signalStale && (
+        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: 8, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 16 }}>⚠️</span>
+          <span style={{ fontSize: 13, color: '#fbbf24' }}>
+            Signal refresh may have failed — newest signal is <strong>{signalStaleHours}h old</strong>. Expected refresh every ~5h on market days.
+          </span>
+        </div>
+      )}
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 }}>
         <div>

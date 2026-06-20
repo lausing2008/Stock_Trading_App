@@ -85,7 +85,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 
 
 from .ingestion import ingest_universe
-from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email
+from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
 from ..api.routes import refresh_live_price_cache
 
@@ -1932,6 +1932,78 @@ def send_morning_digest(market: str = "US") -> None:
         _record_job_status(f"morning_digest_{market.lower()}", "error", time.monotonic() - _t0, str(exc))
 
 
+def send_paper_portfolio_digest() -> None:
+    """Send after-market portfolio digest email to all users with email configured.
+
+    Runs weekdays at 17:00 ET (1h after US close). Covers all active paper
+    portfolios. Shows total return, today's closed trades, open positions.
+    """
+    from datetime import date as _date
+    from sqlalchemy import select as _sel, desc as _desc
+    from ..db import SessionLocal
+    from ..db.models import User, PaperPortfolio, PaperTrade
+    _t0 = time.monotonic()
+    try:
+        with SessionLocal() as session:
+            users = session.execute(_sel(User).where(User.email != None, User.email != "")).scalars().all()  # noqa: E711
+            sent = 0
+            for user in users:
+                if not user.email:
+                    continue
+                portfolios = session.execute(
+                    _sel(PaperPortfolio).where(PaperPortfolio.user_id == user.id)
+                ).scalars().all()
+                if not portfolios:
+                    continue
+                for p in portfolios:
+                    from ..api.paper_portfolio import _portfolio_risk_metrics, _get_portfolio
+                    from ..db.models import PaperEquityCurve
+                    # Summary metrics
+                    curve_rows = session.execute(
+                        _sel(PaperEquityCurve).where(PaperEquityCurve.portfolio_id == p.id).order_by(PaperEquityCurve.date)
+                    ).scalars().all()
+                    risk = _portfolio_risk_metrics(curve_rows)
+                    open_trades = session.execute(
+                        _sel(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
+                    ).scalars().all()
+                    today = _date.today()
+                    closed_today = session.execute(
+                        _sel(PaperTrade).where(
+                            PaperTrade.portfolio_id == p.id,
+                            PaperTrade.stage == "closed",
+                            PaperTrade.closed_at >= datetime.combine(today, datetime.min.time()).replace(tzinfo=timezone.utc),  # type: ignore[arg-type]
+                        ).order_by(_desc(PaperTrade.closed_at))
+                    ).scalars().all()
+                    equity = p.current_equity or p.initial_capital
+                    total_return_pct = round((equity / p.initial_capital - 1) * 100, 2)
+                    total_pnl = round(equity - p.initial_capital, 2)
+                    today_closed_list = [
+                        {"symbol": t.symbol, "pnl": t.pnl or 0.0, "pnl_pct": t.pnl_pct or 0.0, "exit_reason": t.exit_reason or ""}
+                        for t in closed_today
+                    ]
+                    top_positions = sorted(
+                        [{"symbol": t.symbol, "unrealized_pct": t.unrealized_pct or 0.0, "style": t.trading_style or ""} for t in open_trades],
+                        key=lambda x: abs(x["unrealized_pct"]), reverse=True
+                    )
+                    ok = send_paper_portfolio_digest_email(
+                        to=user.email,
+                        portfolio_name=p.name or f"Portfolio #{p.id}",
+                        total_return_pct=total_return_pct,
+                        total_pnl=total_pnl,
+                        open_count=len(open_trades),
+                        today_closed=today_closed_list,
+                        top_positions=top_positions,
+                        sharpe=risk.get("sharpe"),
+                    )
+                    if ok:
+                        sent += 1
+        _record_job_status("paper_portfolio_digest", "ok", time.monotonic() - _t0)
+        log.info("scheduler.paper_portfolio_digest_done", sent=sent)
+    except Exception as exc:
+        _record_job_status("paper_portfolio_digest", "error", time.monotonic() - _t0, str(exc))
+        log.error("scheduler.paper_portfolio_digest_failed", error=str(exc), exc_info=True)
+
+
 def start_scheduler() -> None:
     """Register all APScheduler jobs and start the background scheduler.
 
@@ -2075,6 +2147,13 @@ def start_scheduler() -> None:
         lambda: send_morning_digest("HK"),
         CronTrigger(hour=8, minute=55, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         id="morning_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── Paper portfolio after-market digest — 17:00 ET (1h after US close) ──
+    _scheduler.add_job(
+        send_paper_portfolio_digest,
+        CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+        id="paper_portfolio_digest", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Price alert checker — every minute ──────────────────────────────────

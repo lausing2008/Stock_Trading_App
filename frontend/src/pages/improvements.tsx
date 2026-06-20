@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6508,6 +6508,63 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-20. Research engine trigger has built-in 6h cooldown per symbol — safe to call on every cycle.',
   },
 
+  // ── Tier 62 — UX + Monitoring Quick Wins (2026-06-20) ────────────────────
+  {
+    id: 'watchlist-bulk-add',
+    tier: 62, severity: 'feature', defaultStatus: 'done',
+    title: 'Watchlist bulk add — paste comma/newline separated symbols to add all at once',
+    file: 'frontend/src/pages/watchlist.tsx',
+    effort: '20 min',
+    impact: 'Medium — adding stocks to a watchlist one-by-one from the search modal is tedious when seeding a new list. Bulk paste allows pasting 10–50 symbols at once (e.g. from a screener export). Tab switcher in AddToListModal: "Search" (unchanged) + "Bulk Paste" (textarea → Add All button). Shows progress "Adding 3/7…" and final "Done — added X symbols". Skips symbols already in the list.',
+    what: 'AddToListModal only had a search-by-name flow. No way to add multiple stocks in one action.',
+    fix: 'Added "Bulk Paste" tab with textarea. handleBulkAdd() splits on comma/newline/space, deduplicates, skips symbols in currentSymbols, calls api.addToWatchlist() in sequence with progress state.',
+    implementedNote: 'Done 2026-06-20. Tab state defaults to "search" to preserve existing UX. Symbols are uppercased and deduped before adding.',
+  },
+  {
+    id: 'research-refresh-button',
+    tier: 62, severity: 'feature', defaultStatus: 'done',
+    title: 'Research refresh button on stock detail — trigger fresh report without navigating away',
+    file: 'frontend/src/pages/stock/[symbol].tsx · frontend/src/lib/api.ts',
+    effort: '20 min',
+    impact: 'Medium — previously the only way to refresh research was to navigate to /research/[symbol] and wait for a regeneration. Now a small ↻ button appears next to the research age on stock detail. Shows "Refresh queued — report updates in ~30s" on success. Trigger endpoint is unauthenticated (internal network only) so no auth headers needed.',
+    what: 'Research summary on stock detail showed age but had no refresh action. Navigating to /research/[symbol] was the only option.',
+    fix: 'Added triggerResearch() to api.ts (POST /research/{symbol}/trigger). Added researchRefreshing/researchTriggerMsg state + handleResearchRefresh() handler. ↻ button placed inline after the age span in the research section.',
+    implementedNote: 'Done 2026-06-20. Button disabled while in-flight. Status message auto-clears on next trigger.',
+  },
+  {
+    id: 'admin-signals-refresh-buttons',
+    tier: 62, severity: 'feature', defaultStatus: 'done',
+    title: 'Admin-signals: manual US/HK signal refresh buttons',
+    file: 'frontend/src/pages/admin-signals.tsx',
+    effort: '20 min',
+    impact: 'Medium — previously triggering a manual signal refresh required SSH + docker exec or API call. Now two buttons on admin-signals page ("↻ Refresh US" and "↻ Refresh HK") POST to /signals/refresh?market=X using the existing api.refreshSignals() method. Shows count of signals queued on success. Both buttons disable while either refresh is in flight.',
+    what: 'admin-signals page showed signal log data but had no way to trigger a manual refresh from the UI.',
+    fix: 'Added refreshing/refreshMsg state and handleRefresh(market) function. Refresh button row added below page subtitle.',
+    implementedNote: 'Done 2026-06-20. Uses existing api.refreshSignals(market) which calls POST /signals/refresh. Timeout handled by server — response returns queue count.',
+  },
+  {
+    id: 'paper-portfolio-daily-digest',
+    tier: 62, severity: 'feature', defaultStatus: 'done',
+    title: 'Paper portfolio after-market digest email — daily P&L summary at 17:00 ET',
+    file: 'services/market-data/src/services/email_service.py · services/market-data/src/services/scheduler.py',
+    effort: '30 min',
+    impact: 'High — users with paper portfolios now receive a concise end-of-day email: total return %, total P&L $, Sharpe ratio, list of trades closed today with P&L and exit reason, top open positions by unrealized %. Covers all portfolios per user. Runs weekdays at 17:00 ET (1h after US market close). Visible in admin-health as "Portfolio Digest Email" job.',
+    what: 'Morning digest email (pre-market) existed but there was no post-market summary. Users had to check the app to see how the day went.',
+    fix: 'send_paper_portfolio_digest_email() added to email_service.py with HTML grid layout (3-stat header + closed trades table + open positions table). send_paper_portfolio_digest() scheduler function iterates all users with email, fetches their portfolios, computes metrics, sends email. Registered as paper_portfolio_digest job at 17:00 ET Monday–Friday.',
+    implementedNote: 'Done 2026-06-20. Admin-health JOBS_META updated to show digest job status. Job fires regardless of whether any trades happened — zero-trade days show "No trades closed today."',
+  },
+  {
+    id: 'signal-filter-stale-banner',
+    tier: 62, severity: 'medium', defaultStatus: 'done',
+    title: 'Signal Filter stale data warning — amber banner if newest signal is >30h old',
+    file: 'frontend/src/pages/signal-filters.tsx',
+    effort: '10 min',
+    impact: 'Medium — if signal refresh fails (signal-engine down, jose missing, scheduler crash), signals silently become stale. Previously there was no visual indicator on the Signal Filter page. Now an amber warning banner appears at the top: "Newest signal is Xh old — expected refresh every ~5h on market days." Gives the user an early warning without needing to check logs.',
+    what: 'Signal Filter showed the ts (age) column per row but had no aggregate staleness indicator. A user looking at 12h-old signals had no obvious banner telling them something was wrong.',
+    fix: 'Compute maxTsMs from Math.max(...data.map(r => new Date(r.ts).getTime())). If (now - maxTsMs) > 30h, render amber warning div above the header. signalStaleHours shown in the message.',
+    implementedNote: 'Done 2026-06-20. 30h threshold chosen to survive weekends (signals don\'t refresh on Sat/Sun) — staleness only triggers on weekday signal failures. Weekend signals will be ~60h old by Monday open, but the banner is informational not blocking.',
+  },
+
   // ── Tier 61 — Paper Trading Quality Gates (2026-06-20) ───────────────────
   {
     id: 'paper-stale-signal-gate',
@@ -6752,6 +6809,7 @@ const TIER_LABEL: Record<Tier, string> = {
   59: 'Tier 59 — DE Gate + Watchlist Scan + Risk Dashboard (2026-06-20)',
   60: 'Tier 60 — Security Hardening + Research Gating + NYSE Calendar + DE Perf (2026-06-20)',
   61: 'Tier 61 — Paper Trading Quality Gates (2026-06-20)',
+  62: 'Tier 62 — UX + Monitoring Quick Wins (2026-06-20)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6816,6 +6874,7 @@ const TIER_COLOR: Record<Tier, string> = {
   59: '#f472b6',
   60: '#a3e635',
   61: '#34d399',
+  62: '#38bdf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

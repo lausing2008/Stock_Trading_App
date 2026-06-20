@@ -234,12 +234,16 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
   onClose: () => void;
   onAdded: () => void;
 }) {
+  const [tab, setTab] = useState<'search' | 'bulk'>('search');
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState<string | null>(null);
   const [added, setAdded] = useState<Set<string>>(new Set());
+  const [bulkText, setBulkText] = useState('');
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  const [bulkDone, setBulkDone] = useState<number | null>(null);
   const { data: stocks } = useSWR<Stock[]>('stocks-universe', () => api.listStocks());
   const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { inputRef.current?.focus(); }, []);
+  useEffect(() => { if (tab === 'search') inputRef.current?.focus(); }, [tab]);
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', fn);
@@ -262,6 +266,26 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
     onAdded();
   }
 
+  async function handleBulkAdd() {
+    const tokens = bulkText
+      .split(/[\s,\n]+/)
+      .map(t => t.trim().toUpperCase())
+      .filter(t => t.length > 0);
+    const unique = [...new Set(tokens)].filter(sym => !currentSymbols.has(sym));
+    if (unique.length === 0) { setBulkDone(0); return; }
+    setBulkDone(null);
+    setBulkProgress({ done: 0, total: unique.length });
+    for (let i = 0; i < unique.length; i++) {
+      await api.addToWatchlist(unique[i], listId);
+      setBulkProgress({ done: i + 1, total: unique.length });
+    }
+    setBulkProgress(null);
+    setBulkDone(unique.length);
+    onAdded();
+  }
+
+  const bulkRunning = bulkProgress !== null;
+
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
       <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(6px)' }} />
@@ -271,40 +295,82 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
           <span style={{ fontSize: '15px', fontWeight: 700, color: '#f1f5f9' }}>Add stocks to list</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px' }}>✕</button>
         </div>
-        <div style={{ padding: '0 20px 12px', flexShrink: 0 }}>
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Search by symbol or name…"
-            style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box' }}
-          />
+        {/* Tab switcher */}
+        <div style={{ display: 'flex', gap: '6px', padding: '0 20px 12px', flexShrink: 0 }}>
+          <button
+            onClick={() => setTab('search')}
+            style={{ padding: '6px 16px', borderRadius: '8px', border: 'none', fontSize: '13px', fontWeight: 600, cursor: 'pointer', background: tab === 'search' ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.05)', color: tab === 'search' ? '#818cf8' : '#64748b', transition: 'background 0.15s, color 0.15s' }}
+          >
+            Search
+          </button>
+          <button
+            onClick={() => setTab('bulk')}
+            style={{ padding: '6px 16px', borderRadius: '8px', border: 'none', fontSize: '13px', fontWeight: 600, cursor: 'pointer', background: tab === 'bulk' ? 'rgba(100,116,139,0.25)' : 'rgba(255,255,255,0.05)', color: tab === 'bulk' ? '#94a3b8' : '#64748b', transition: 'background 0.15s, color 0.15s' }}
+          >
+            Bulk Paste
+          </button>
         </div>
-        <div style={{ overflowY: 'auto', padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          {!stocks && <div style={{ color: '#475569', fontSize: '13px', padding: '12px 0' }}>Loading…</div>}
-          {filtered.map(stock => {
-            const inList = currentSymbols.has(stock.symbol) || added.has(stock.symbol);
-            const isAdding = adding === stock.symbol;
-            return (
-              <div key={stock.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 12px', borderRadius: '8px', background: inList ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${inList ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.05)'}` }}>
-                <div style={{ minWidth: 0 }}>
-                  <span style={{ fontWeight: 700, fontSize: '13px', color: '#f1f5f9', fontFamily: 'ui-monospace, monospace' }}>{stock.symbol}</span>
-                  <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{stock.name}</span>
-                </div>
-                <button
-                  onClick={() => !inList && addStock(stock.symbol)}
-                  disabled={inList || isAdding}
-                  style={{ flexShrink: 0, marginLeft: '8px', padding: '5px 12px', borderRadius: '6px', border: 'none', fontSize: '12px', fontWeight: 700, cursor: inList ? 'default' : 'pointer', background: inList ? 'rgba(34,197,94,0.1)' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: inList ? '#4ade80' : '#fff', opacity: isAdding ? 0.6 : 1 }}
-                >
-                  {isAdding ? '…' : inList ? '✓' : '+ Add'}
-                </button>
+        {tab === 'search' ? (
+          <>
+            <div style={{ padding: '0 20px 12px', flexShrink: 0 }}>
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search by symbol or name…"
+                style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box' }}
+              />
+            </div>
+            <div style={{ overflowY: 'auto', padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {!stocks && <div style={{ color: '#475569', fontSize: '13px', padding: '12px 0' }}>Loading…</div>}
+              {filtered.map(stock => {
+                const inList = currentSymbols.has(stock.symbol) || added.has(stock.symbol);
+                const isAdding = adding === stock.symbol;
+                return (
+                  <div key={stock.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 12px', borderRadius: '8px', background: inList ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${inList ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.05)'}` }}>
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ fontWeight: 700, fontSize: '13px', color: '#f1f5f9', fontFamily: 'ui-monospace, monospace' }}>{stock.symbol}</span>
+                      <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{stock.name}</span>
+                    </div>
+                    <button
+                      onClick={() => !inList && addStock(stock.symbol)}
+                      disabled={inList || isAdding}
+                      style={{ flexShrink: 0, marginLeft: '8px', padding: '5px 12px', borderRadius: '6px', border: 'none', fontSize: '12px', fontWeight: 700, cursor: inList ? 'default' : 'pointer', background: inList ? 'rgba(34,197,94,0.1)' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: inList ? '#4ade80' : '#fff', opacity: isAdding ? 0.6 : 1 }}
+                    >
+                      {isAdding ? '…' : inList ? '✓' : '+ Add'}
+                    </button>
+                  </div>
+                );
+              })}
+              {stocks && filtered.length === 0 && (
+                <div style={{ color: '#475569', fontSize: '13px', padding: '16px 0', textAlign: 'center' }}>No tracked stocks match "{query}"</div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div style={{ padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <textarea
+              value={bulkText}
+              onChange={e => { setBulkText(e.target.value); setBulkDone(null); }}
+              placeholder={'Paste symbols separated by commas or newlines…\ne.g. AAPL, GOOGL, TSLA'}
+              rows={7}
+              disabled={bulkRunning}
+              style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'ui-monospace, monospace', lineHeight: '1.5', opacity: bulkRunning ? 0.5 : 1 }}
+            />
+            <button
+              onClick={handleBulkAdd}
+              disabled={bulkRunning || bulkText.trim().length === 0}
+              style={{ padding: '9px 0', borderRadius: '8px', border: 'none', fontSize: '13px', fontWeight: 700, cursor: bulkRunning || bulkText.trim().length === 0 ? 'default' : 'pointer', background: bulkRunning || bulkText.trim().length === 0 ? 'rgba(99,102,241,0.2)' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: '#fff', opacity: bulkRunning || bulkText.trim().length === 0 ? 0.6 : 1, transition: 'opacity 0.15s' }}
+            >
+              {bulkRunning ? `Adding ${bulkProgress!.done}/${bulkProgress!.total}…` : 'Add All'}
+            </button>
+            {bulkDone !== null && (
+              <div style={{ fontSize: '13px', color: '#4ade80', textAlign: 'center', padding: '4px 0' }}>
+                {bulkDone === 0 ? 'No new symbols to add (all already in list)' : `Done — added ${bulkDone} symbol${bulkDone === 1 ? '' : 's'}`}
               </div>
-            );
-          })}
-          {stocks && filtered.length === 0 && (
-            <div style={{ color: '#475569', fontSize: '13px', padding: '16px 0', textAlign: 'center' }}>No tracked stocks match "{query}"</div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
