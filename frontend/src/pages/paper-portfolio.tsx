@@ -1846,6 +1846,40 @@ export default function PaperPortfolioPage() {
         {/* Closed Trades tab */}
         {tab === 'Closed Trades' && (
           <div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
+              {trades?.items?.length ? (
+                <button
+                  onClick={() => {
+                    const headers = ['Symbol','Style','Entry Date','Exit Date','Entry $','Exit $','P&L %','P&L $','Shares','Days','Exit Reason','Stop Loss','R:R','Score','Confidence'];
+                    const rows = (trades.items ?? []).map(t => [
+                      t.symbol,
+                      t.trading_style ?? '',
+                      t.entry_date ?? '',
+                      t.exit_time ?? '',
+                      t.entry_price.toFixed(2),
+                      t.exit_price != null ? t.exit_price.toFixed(2) : '',
+                      t.pct_return != null ? t.pct_return.toFixed(2) : '',
+                      t.pnl != null ? t.pnl.toFixed(2) : '',
+                      t.shares.toFixed(4),
+                      t.hold_days,
+                      t.exit_reason ?? '',
+                      t.stop_loss.toFixed(2),
+                      t.rr_ratio_at_entry != null ? t.rr_ratio_at_entry.toFixed(2) : '',
+                      t.entry_score ?? '',
+                      t.confidence_at_entry != null ? t.confidence_at_entry.toFixed(0) : '',
+                    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+                    const csv = [headers.join(','), ...rows].join('\n');
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+                    a.download = `paper-trades-${new Date().toISOString().slice(0, 10)}.csv`;
+                    a.click();
+                  }}
+                  style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid #334155', background: '#0f172a', color: '#94a3b8', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+                >
+                  ↓ Export CSV
+                </button>
+              ) : null}
+            </div>
             <div style={{ overflowX: 'auto' }}>
               {!trades?.items.length ? (
                 <div style={{ color: '#64748b', padding: 24, textAlign: 'center' }}>No closed trades yet.</div>

@@ -3445,23 +3445,25 @@ const ITEMS: Item[] = [
   },
   {
     id: 'tv-paper-trading-journal',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add paper trading journal export — PDF/CSV of all trades with AI entry rationale',
     file: 'frontend/src/pages/paper-portfolio.tsx',
     effort: '1 day',
     impact: 'TradingView allows exporting trade history. Our paper portfolio stores rich AI decision notes but users can\'t export them for offline analysis or sharing.',
     what: 'The paper portfolio decisions tab shows trade history with AI reasons but there\'s no export button. Users building a trading journal or doing post-trade analysis must manually copy data.',
     fix: 'Add "Export CSV" button to Decisions tab. Include: date, symbol, direction, entry price, exit price, P&L, hold days, all entry_decision_notes, exit reasons, signal confidence. Add "Export PDF" option that generates a formatted trade journal with AI reasoning sections.',
+    implementedNote: 'Done 2026-06-20 — Closed Trades tab now has "↓ Export CSV" button. Downloads paper-trades-YYYY-MM-DD.csv with 15 columns: Symbol, Style, Entry/Exit dates, prices, P&L %, P&L $, Shares, Days, Exit Reason, Stop Loss, R:R, Score, Confidence. PDF deferred.',
   },
   {
     id: 'sa-price-target-chart',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add analyst price target distribution chart — show high/median/low targets vs current price',
     file: 'frontend/src/pages/analyst.tsx · frontend/src/pages/stock/[symbol].tsx',
     effort: '1 day',
     impact: 'Seeking Alpha and Simply Wall St show analyst price target distributions visually — a horizontal bar spanning low to high with median marked vs current price. Our analyst page shows tabular targets without a visual range.',
     what: 'analyst.tsx and stock detail show individual analyst targets in a table. There\'s no visual showing the distribution of targets relative to current price or the implied upside/downside range.',
     fix: 'Add a horizontal price target distribution component: a bar from target_low to target_high, with target_median marked and a vertical line at current_price. Show implied upside % from median. Add sparkline of how median target has evolved over the last 6 months.',
+    implementedNote: 'Already implemented in stock/[symbol].tsx — gradient bar from Low→High with labeled dot markers for Low, Median, Mean, High, and current price. Upside % to mean target shown. Sparkline of target history deferred.',
   },
   {
     id: 'sa-short-selling-dashboard',
@@ -3509,13 +3511,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'finviz-premarket-overview',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add pre-market overview panel — futures, VIX, fear & greed, sector rotation at a glance',
     file: 'frontend/src/pages/index.tsx',
     effort: '2 days',
     impact: 'Finviz\'s homepage shows S&P 500 futures, NASDAQ futures, VIX, 10Y treasury yield, gold, oil, and USD all in one row before market open. Our homepage lacks this morning briefing panel that traders check daily.',
     what: 'The homepage shows the top-ranked stocks and some market data but there\'s no single panel with all the "morning checklist" data: futures direction, overnight VIX change, fear & greed trend, sector rotation signal, and earnings today.',
     fix: 'Add a PreMarket bar to the top of the homepage: SPY futures %, QQQ futures %, VIX current + 1-day change, 10Y yield, Fear & Greed gauge (fetched from the fear-greed endpoint), and a "Earnings Today" count badge. Refresh every 5 minutes.',
+    implementedNote: 'Done 2026-06-20 — Added Market Pulse row below market indices grid: Signal Breadth panel (BUY/HOLD/WAIT/SELL counts with % + proportional color bar) + VIX Fear panel (color-coded Low/Moderate/Elevated/Extreme labels). Uses existing indices + sigCounts data, no new API calls. Futures/10Y yield/fear-greed deferred.',
   },
 
   // ── Tier 12 — Paper Trading Deep Review 2026-06-13 ──────────────────────────

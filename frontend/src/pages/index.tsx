@@ -107,6 +107,7 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
   }
 
   return (
+    <>
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '10px' }}>
 
       {/* US Markets */}
@@ -187,6 +188,54 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
         )}
       </div>
     </div>
+
+    {/* Market Pulse — signal breadth + VIX */}
+    <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+      {/* Signal breadth */}
+      {total > 0 && (
+        <div style={{ borderRadius: 10, border: '1px solid #1e293b', background: '#0b1120', padding: '10px 16px', flex: 1, minWidth: 200 }}>
+          <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Signal Breadth</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {(['BUY', 'HOLD', 'WAIT', 'SELL'] as const).map(sig => {
+              const colors: Record<string, string> = { BUY: '#22c55e', HOLD: '#38bdf8', WAIT: '#f59e0b', SELL: '#ef4444' };
+              const c = colors[sig];
+              const n = sigCounts[sig];
+              const pct = total > 0 ? Math.round(n / total * 100) : 0;
+              return n > 0 ? (
+                <div key={sig} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: c, background: `${c}18`, border: `1px solid ${c}44`, padding: '2px 7px', borderRadius: 4 }}>{sig}</span>
+                  <span style={{ fontSize: 11, color: '#94a3b8' }}>{n} <span style={{ color: '#475569' }}>({pct}%)</span></span>
+                </div>
+              ) : null;
+            })}
+          </div>
+          {/* Breadth bar */}
+          <div style={{ marginTop: 8, height: 5, borderRadius: 3, background: '#1e293b', overflow: 'hidden', display: 'flex' }}>
+            {(['BUY', 'HOLD', 'WAIT', 'SELL'] as const).map(sig => {
+              const colors: Record<string, string> = { BUY: '#22c55e', HOLD: '#38bdf8', WAIT: '#f59e0b', SELL: '#ef4444' };
+              const pct = total > 0 ? (sigCounts[sig] / total) * 100 : 0;
+              return pct > 0 ? <div key={sig} style={{ height: '100%', width: `${pct}%`, background: colors[sig] }} /> : null;
+            })}
+          </div>
+        </div>
+      )}
+      {/* VIX snapshot */}
+      {(() => {
+        const vixIdx = indices.find(i => i.ticker === '^VIX');
+        if (!vixIdx || vixIdx.price == null) return null;
+        const vix = vixIdx.price;
+        const vixColor = vix < 15 ? '#22c55e' : vix < 20 ? '#facc15' : vix < 30 ? '#f97316' : '#ef4444';
+        const vixLabel = vix < 15 ? 'Low Fear' : vix < 20 ? 'Moderate' : vix < 30 ? 'Elevated Fear' : 'Extreme Fear';
+        return (
+          <div style={{ borderRadius: 10, border: '1px solid #1e293b', background: '#0b1120', padding: '10px 16px', minWidth: 130 }}>
+            <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>VIX Fear</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: vixColor }}>{vix.toFixed(1)}</div>
+            <div style={{ fontSize: 11, color: vixColor, marginTop: 2 }}>{vixLabel}</div>
+          </div>
+        );
+      })()}
+    </div>
+    </>
   );
 }
 
