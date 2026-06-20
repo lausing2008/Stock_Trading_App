@@ -6997,7 +6997,7 @@ export default function ImprovementsPage() {
     return true;
   });
 
-  const tiers = (Object.keys(TIER_LABEL).map(Number).sort((a, b) => a - b) as Tier[]).filter(t => filterTier === 0 || t === filterTier);
+  const tiers = (Object.keys(TIER_LABEL).map(Number).sort((a, b) => b - a) as Tier[]).filter(t => filterTier === 0 || t === filterTier);
 
   // Summary counts
   const total = ITEMS.length;
@@ -7060,7 +7060,7 @@ export default function ImprovementsPage() {
           }}
         >
           <option value={0} style={{ background: '#0f172a', color: '#cbd5e1' }}>All tiers</option>
-          {(Object.keys(TIER_LABEL).map(Number).sort((a, b) => a - b) as Tier[]).map(t => (
+          {(Object.keys(TIER_LABEL).map(Number).sort((a, b) => b - a) as Tier[]).map(t => (
             <option key={t} value={t} style={{ background: '#0f172a', color: '#cbd5e1' }}>
               {TIER_LABEL[t]}
             </option>
