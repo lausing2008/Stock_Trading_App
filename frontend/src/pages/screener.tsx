@@ -359,7 +359,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     !filters.watchlistOnly && !filters.search
   );
 
-  const loading = !rankData || !signals || !prices;
+  const loading = !rankData || !signals;
 
   return (
     <div style={{ maxWidth: '1400px', margin: '0 auto', padding: '20px 16px' }}>

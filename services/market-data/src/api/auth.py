@@ -13,7 +13,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
+from common.logging import get_logger
 from db import SessionLocal, User, UserRole, get_session
+
+log = get_logger("auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -392,15 +395,27 @@ def impersonate(
     admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session),
 ):
-    """Return a JWT scoped to another user — admin only.  No password required."""
+    """Return a short-lived JWT scoped to another user — admin only.  No password required."""
+    target = username.lower()
+    if target == admin.username:
+        raise HTTPException(400, "Cannot impersonate yourself")
     user = session.execute(
-        select(User).where(User.username == username.lower())
+        select(User).where(User.username == target)
     ).scalar_one_or_none()
     if not user:
         raise HTTPException(404, f"User '{username}' not found")
     if not user.is_active:
         raise HTTPException(400, "Cannot impersonate a disabled user")
-    token = _make_token(user.username, user.role.value)
+    if user.role.value == "admin":
+        raise HTTPException(403, "Cannot impersonate another admin")
+    # Short-lived impersonation token (1 hour) with audit claim
+    expire = datetime.now(timezone.utc) + timedelta(hours=1)
+    token = jwt.encode(
+        {"sub": user.username, "role": user.role.value.lower(),
+         "exp": expire, "jti": str(uuid.uuid4()), "impersonated_by": admin.username},
+        _settings.jwt_secret, algorithm=ALGORITHM,
+    )
+    log.warning("auth.impersonate", admin=admin.username, target=user.username)
     return {"token": token, "username": user.username, "role": user.role.value.lower()}
 
 

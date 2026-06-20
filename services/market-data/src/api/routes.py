@@ -1929,7 +1929,7 @@ def get_dividends(symbol: str):
         _get_redis().setex(cache_key, 60 * 60 * 72, json.dumps(data))
         return data
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch dividends for {sym}: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch dividends for {sym}")
 
 
 # ── Institutional Holdings ────────────────────────────────────────────────────
@@ -1995,7 +1995,7 @@ def get_institutional(symbol: str):
         _get_redis().setex(cache_key, 60 * 60 * 72, json.dumps(data))
         return data
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch institutional data for {sym}: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch institutional data for {sym}")
 
 
 @router.get("/conviction")
@@ -2003,7 +2003,7 @@ def conviction_status():
     """Return latest conviction gate check result per symbol:style from Redis."""
     import json as _json
     r = _get_redis()
-    keys = r.keys("conv_gate:*")
+    keys = list(r.scan_iter("conv_gate:*"))
     result: dict = {}
     for key in keys:
         parts = key.split(":", 2)
@@ -2076,7 +2076,7 @@ def get_prices(
     timeframe: str = "1d",
     start: date | None = None,
     end: date | None = None,
-    limit: int = Query(1000, le=10000),
+    limit: int = Query(1000, ge=1, le=10000),
     session: Session = Depends(get_session),
 ):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -2088,6 +2088,8 @@ def get_prices(
         raise HTTPException(400, f"Invalid timeframe '{timeframe}'. Valid values: {[v.value for v in TimeFrame]}")
     if not end:
         end = date.today()
+    if start and end and start > end:
+        raise HTTPException(400, "start date must not be after end date")
 
     stmt = (
         select(Price)

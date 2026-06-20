@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6786,6 +6786,85 @@ const ITEMS: Item[] = [
     fix: 'Added MonteCarloSection component above the existing tab close. Uses useMemo to compute daily log-returns from curve data, then runs 1000 seeded bootstrap paths (mean + std × normal noise per day). useEffect renders a Plotly chart with fill "tonexty" for the band areas. Falls back gracefully when curve has <5 points. Renders after BenchmarkTable inside the Equity Curve tab.',
     implementedNote: 'Done 2026-06-20. Pure frontend computation — no backend changes. Frontend rebuilt --no-cache.',
   },
+
+  // ── Tier 64 — Deep System Quality Audit (2026-06-20) ─────────────────────────
+  {
+    id: 'TIER64-BUG',
+    tier: 64, severity: 'high', defaultStatus: 'done',
+    file: 'signals.py · paper_portfolio.py · screener.tsx · paper-portfolio.tsx',
+    effort: '1h',
+    impact: 'High — closed-trade P&L never stored in DB; screener always showed spinner; error screen blocked recovery',
+    title: 'BUG Cluster: market_regime unknown fallback, trade.realized_pnl typo, screener infinite spinner, portfolio error gate',
+    what: 'Four bugs found in deep audit: (1) signals.py reg= fell back to "high_vol" on "unknown" regime instead of preserving it, causing incorrect threshold selection. (2) paper_portfolio.py manual exit set trade.realized_pnl (non-existent field) instead of trade.pnl + trade.pct_return, so closed trade P&L was never written to DB. (3) screener.tsx loading state gated on !prices (prices never fetched — null forever), causing infinite spinner. (4) paper-portfolio.tsx if (summaryError) showed error screen even when summary had loaded, preventing recovery after transient errors.',
+    fix: 'signals.py: added "unknown" to the valid regime tuple, fallback changed to "unknown". paper_portfolio.py: fixed field names to trade.pnl + trade.pct_return. screener.tsx: removed !prices from loading guard. paper-portfolio.tsx: changed guard to if (!summary && summaryError).',
+    implementedNote: 'Done 2026-06-20 — 4 one-liner fixes across signal-engine, market-data, screener, paper-portfolio.',
+  },
+  {
+    id: 'TIER64-SEC',
+    tier: 64, severity: 'critical', defaultStatus: 'done',
+    file: 'alerts.py · auth.py · config.py · service.py',
+    effort: '2h',
+    impact: 'Critical — SSRF enabled internal service attacks; impersonation unaudited and unscoped; weak JWT accepted in staging',
+    title: 'Security Fixes: SSRF via webhook_url, impersonation audit trail, JWT weak-secret scope, CORS fallback',
+    what: 'Four security issues: (1) SSRF-001: alert webhook_url accepted any URL including internal Docker addresses (e.g. http://postgres:5432/) fired from the scheduler. (2) AUTH-002: /impersonate endpoint had no audit log, no short TTL, and no admin-targeting-admin guard. (3) JWT-001: weak JWT_SECRET check only applied to env="production", leaving staging with default placeholder. (4) AUTH-003: CORS origin fallback to ["*"] was only a warning in non-dev, not enforced. (5) INPUT-001: AlertCreate had no field-length or symbol-format validation.',
+    fix: 'alerts.py: added _validate_webhook_url() (https-only, blocks private IP ranges) and Pydantic Field constraints (symbol regex, note max 500, webhook max 2048). auth.py: impersonate now logs warning, uses 1h TTL, blocks admin-on-admin, adds impersonated_by claim. config.py: changed env=="production" to env!="development". service.py: CORS non-dev now raises RuntimeError. Added get_logger to auth.py.',
+    implementedNote: 'Done 2026-06-20 — alerts.py, auth.py, config.py, service.py all updated.',
+  },
+  {
+    id: 'TIER64-ML',
+    tier: 64, severity: 'high', defaultStatus: 'done',
+    file: 'trainer.py · tuner.py · builder.py',
+    effort: '2h',
+    impact: 'High — fillna(0.0) on fundamentals breaks XGBoost NaN routing; label leakage inflates tuner AUC; NaN→0 corrupts early macro rows',
+    title: 'ML Fixes: fillna breaks XGBoost NaN routing, label threshold leakage, high_vol_regime NaN, misleading log',
+    what: 'Four ML training bugs: (1) BUG-ML-1: trainer.py inference reindex used fill_value=0.0 + fillna(0.0) on ALL columns including FUNDAMENTAL_COLUMNS and WEEKLY_COLUMNS — nulling out fundamentals that should be NaN for XGBoost\'s built-in NaN-routing (sparse fundamentals are intentionally absent). (2) BUG-ML-3: tuner.py computed label_threshold on full history before slicing to 85% — test set data leaked into the label distribution. (3) BUG-ML-4: builder.py computed high_vol_regime as (spy_vol_20 > 0.02).astype(float) — NaN spy_vol_20 became 0.0 (False) instead of NaN, corrupting early training rows. (4) BUG-ML-6: trainer.py suppression log said "OOS accuracy < 52%" but the check was cv_auc_mean < 0.52 (AUC, not accuracy).',
+    fix: 'trainer.py: imports WEEKLY_COLUMNS; fill_value=np.nan; only fillna(0.0) for non-fundamental/weekly columns. tuner.py: label_threshold computed on df.iloc[:max(int(len*0.70), 60)]. builder.py: high_vol_regime wrapped in np.where for NaN preservation. trainer.py: log note updated to "OOS AUC < 0.52".',
+    implementedNote: 'Done 2026-06-20 — trainer.py, tuner.py, builder.py updated.',
+  },
+  {
+    id: 'TIER64-SCHED',
+    tier: 64, severity: 'high', defaultStatus: 'done',
+    file: 'scheduler.py',
+    effort: '2h',
+    impact: 'High — duplicate alert emails possible; 52wk alert fired incorrectly; service token expires silently after 365 days',
+    title: 'Scheduler Fixes: 52wk-high includes current bar, price alert no Redis lock, token never refreshes, stale fail_counts dict',
+    what: 'Four scheduler bugs: (1) BUG-4: PCT_BELOW_52WK_HIGH alert used close.tail(252).max() including today\'s close — always returns current price, making the alert fire the moment the stock is slightly below its own current price. (2) SCHED-1: check_price_alerts() had no Redis distributed lock (unlike check_signal_alerts) — concurrent 1-min runs could send duplicate emails. (3) SCHED-5: _service_token_cache was populated once and never refreshed — after 365 days the cached token silently expires. (4) SCHED-6: _alert_fail_counts dict accumulated entries for deleted alert IDs forever.',
+    fix: 'scheduler.py: close.tail(252) → close.iloc[:-1].tail(252). Added _PRICE_ALERT_LOCK_KEY/TTL and distributed lock block at start of check_price_alerts with finally-release. _service_token: added _service_token_exp tracking, refreshes when within 7 days of expiry. check_signal_alerts: prunes stale _alert_fail_counts keys at start of each run.',
+    implementedNote: 'Done 2026-06-20 — scheduler.py updated.',
+  },
+  {
+    id: 'TIER64-API',
+    tier: 64, severity: 'medium', defaultStatus: 'done',
+    file: 'routes.py (market-data · ranking-engine) · models.py (decision-engine)',
+    effort: '1.5h',
+    impact: 'Medium — Redis KEYS blocks server-wide; unbounded batch could OOM; exception leakage; GROUP BY full scan',
+    title: 'API Fixes: Redis KEYS blocking call, batch decide unbounded, raw exception in 502, inverted dates, sector max_length, PERF-5 GROUP BY',
+    what: 'Six API quality issues: (1) APID-4: /conviction endpoint used r.keys("conv_gate:*") — O(N) blocking call that pauses Redis for all callers. (2) APID-2: /decide/batch had no symbol count limit — 500+ symbols would launch 500+ asyncio tasks. (3) APID-6: /dividends and /institutional 502s exposed raw Python exception text (potentially leaking internal paths). (4) APID-3: /prices accepted inverted date ranges (start > end) silently returning 0 rows; limit had no floor. (5) APID-5: leaderboard sector filter used unbounded ILIKE with no max_length. (6) PERF-5: all leaderboard/sector GROUP BY subqueries scanned the full rankings history.',
+    fix: 'routes.py: r.keys → list(r.scan_iter(...)). models.py: BatchDecisionRequest @field_validator caps symbols at 30. routes.py: 502 detail strings stripped of exception text. /prices: added start > end guard and ge=1 floor on limit. ranking routes.py: sector query max_length=100. All GROUP BY subqueries now bounded with Ranking.as_of >= today - 60d.',
+    implementedNote: 'Done 2026-06-20 — routes.py (market-data, ranking-engine), models.py (decision-engine) updated.',
+  },
+  {
+    id: 'TIER64-DI',
+    tier: 64, severity: 'medium', defaultStatus: 'done',
+    file: 'signal-engine/routes.py · paper_portfolio.py',
+    effort: '1h',
+    impact: 'Medium — concurrent page views inserted duplicate signals; reset dropped equity history point',
+    title: 'Data Integrity: signals duplicate guard on GET/persist path, reset_portfolio equity snapshot',
+    what: 'Two data integrity gaps: (1) DI-1: GET /signals/{symbol}?persist=true unconditionally inserted a new Signal row even if an identical signal was already stored today — TOCTOU race between concurrent unauthenticated page views could insert duplicate signals. The _bulk_persist() path had a same-day guard; the GET path did not. (2) DI-6: reset_portfolio() snapshotted no equity curve entry before resetting — the equity curve chart showed a gap at reset time; closed-trade P&L at reset not captured.',
+    fix: 'signal-engine routes.py: GET persist path now has the same check-before-insert guard as _bulk_persist (query last signal for (stock_id, horizon), skip if same type+today). paper_portfolio.py: reset_portfolio now writes a PaperEquityCurve snapshot of final equity (cash + closed position exit values) before resetting cash to initial_capital.',
+    implementedNote: 'Done 2026-06-20 — signal-engine/routes.py and market-data/paper_portfolio.py updated.',
+  },
+  {
+    id: 'TIER64-FE',
+    tier: 64, severity: 'medium', defaultStatus: 'done',
+    file: 'paper-portfolio.tsx · signal-engine/routes.py',
+    effort: '1h',
+    impact: 'Medium — reconciliation bugs in React; stale pagination; research divergence only logged for last style',
+    title: 'Frontend: decisions Fragment key, pagination tab reset, posSymbolKey useMemo, signal-engine BUG-6 divergence per-style',
+    what: 'Four frontend/cross-service fixes: (1) BUG-005: decisions table .map() used <> fragment wrapping <tr key={d.id}> — React ignores keys on inner elements of an unkeyed fragment, degrading reconciliation performance and causing stale UI on decisions list updates. (2) BUG-004: switching tabs did not reset tradesPage/decPage to 1 — navigating to page 3 of Decisions, then to Closed Trades and back showed page 3 of an empty set. (3) BUG-001: posSymbols.join(",") computed inline in useEffect deps — extracted to posSymbolKey memoized constant. (4) BUG-6: signal-engine routes.py research_divergence check was outside the inner style loop, always checking only the last style\'s signal against research.',
+    fix: '<> → <React.Fragment key={d.id}> with <tr> key removed (React.Fragment carries the key). Added useEffect([tab]) to reset both pagination states. posSymbolKey = useMemo. signal-engine: divergence block moved inside the for style_key, ai loop.',
+    implementedNote: 'Done 2026-06-20 — paper-portfolio.tsx and signal-engine/routes.py updated.',
+  },
 ];
 
 
@@ -6860,6 +6939,7 @@ const TIER_LABEL: Record<Tier, string> = {
   61: 'Tier 61 — Paper Trading Quality Gates (2026-06-20)',
   62: 'Tier 62 — UX + Monitoring Quick Wins (2026-06-20)',
   63: 'Tier 63 — Tier 11 Completion: Pattern Filter + Market Cap + Monte Carlo (2026-06-20)',
+  64: 'Tier 64 — Deep System Quality Audit: 31 Confirmed Fixes (Security · ML · Scheduler · API · Frontend)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -6926,6 +7006,7 @@ const TIER_COLOR: Record<Tier, string> = {
   61: '#34d399',
   62: '#38bdf8',
   63: '#c084fc',
+  64: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

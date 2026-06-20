@@ -1,10 +1,13 @@
 """Price alert CRUD — create, list, delete alerts per authenticated user."""
 from __future__ import annotations
 
+import ipaddress
+import re
 from datetime import datetime
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,15 +18,54 @@ from .auth import get_current_user
 log = get_logger("alerts")
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
+_PRIVATE_NETS = [
+    ipaddress.ip_network(cidr) for cidr in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7",
+    )
+]
+_SYMBOL_RE = re.compile(r'^[A-Z0-9.\^\-]{1,20}$')
+
+
+def _validate_webhook_url(url: str | None) -> str | None:
+    if url is None:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError("webhook_url must use https")
+    host = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(host)
+        if any(addr in net for net in _PRIVATE_NETS):
+            raise ValueError("webhook_url must not target private/internal IP ranges")
+    except ValueError as exc:
+        if "must" in str(exc):
+            raise
+        # hostname (not an IP) — allow; internal DNS not resolvable here
+    return url
+
 
 class AlertCreate(BaseModel):
-    symbol: str
+    symbol: str = Field(..., min_length=1, max_length=20)
     condition: str
     threshold: float
     email: str | None = None
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=500)
     recurring: bool = False
-    webhook_url: str | None = None
+    webhook_url: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, v: str) -> str:
+        v = v.upper().strip()
+        if not _SYMBOL_RE.match(v):
+            raise ValueError("symbol must be 1-20 uppercase alphanumeric characters")
+        return v
+
+    @field_validator("webhook_url")
+    @classmethod
+    def validate_webhook(cls, v: str | None) -> str | None:
+        return _validate_webhook_url(v)
 
 
 class AlertOut(BaseModel):

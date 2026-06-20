@@ -297,8 +297,10 @@ def sector_rotation(
     Includes RS momentum (change vs 5-7 days ago) and top/bottom stocks per sector.
     """
     # ── Current rankings ──────────────────────────────────────────────────────
+    _cutoff = date.today() - timedelta(days=60)
     latest_subq = (
         select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .where(Ranking.as_of >= _cutoff)
         .group_by(Ranking.stock_id)
         .subquery()
     )
@@ -387,7 +389,7 @@ def sector_rotation(
 @router.get("/screen")
 def screen(
     market: str | None = Query(None),
-    sector: str | None = Query(None),
+    sector: str | None = Query(None, max_length=100),
     signal: str | None = Query(None, description="BUY | HOLD | WAIT | SELL"),
     min_confidence: float | None = Query(None, ge=0, le=100),
     min_score: float | None = Query(None, ge=0, le=100),
@@ -405,9 +407,11 @@ def screen(
     All filter params are optional. Results sorted by `sort_by` descending.
     Returns matching stocks with ranking sub-scores, latest signal, and confidence.
     """
-    # Latest ranking per stock
+    # Latest ranking per stock — bounded to recent history for performance (PERF-5)
+    _screen_cutoff = date.today() - timedelta(days=60)
     latest_subq = (
         select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .where(Ranking.as_of >= _screen_cutoff)
         .group_by(Ranking.stock_id)
         .subquery()
     )
@@ -540,9 +544,11 @@ def leaderboard(
     page load, which would otherwise be O(N_stocks × price_history) per request.
     Falls back to live computation only when no cached data exists (first run).
     """
-    # Latest ranking date per stock
+    # PERF-5: Bound GROUP BY to recent history so it doesn't scan the entire rankings table.
+    _rank_cutoff = date.today() - timedelta(days=60)
     latest_subq = (
         select(Ranking.stock_id, func.max(Ranking.as_of).label("max_as_of"))
+        .where(Ranking.as_of >= _rank_cutoff)
         .group_by(Ranking.stock_id)
         .subquery()
     )

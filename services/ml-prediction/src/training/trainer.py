@@ -25,7 +25,7 @@ from common.logging import get_logger
 from db import Fundamental, Price, SessionLocal, Stock, TimeFrame
 from sqlalchemy import desc as sa_desc
 
-from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS
+from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS, WEEKLY_COLUMNS
 from ..models import BaseModel, get_model
 
 log = get_logger("trainer")
@@ -451,7 +451,7 @@ def train_model(
             "train.oos_suppressed",
             symbol=symbol,
             oos_acc=round(oos_acc_mean, 4),
-            note="model OOS accuracy < 52%; live predictions will be held at 0.5 (neutral)",
+            note="model OOS AUC < 0.52 (near coin-flip); live predictions will be held at 0.5 (neutral)",
         )
 
     # ML-FIX-4: overfitting detection — CV-AUC is measured on in-distribution folds;
@@ -581,7 +581,12 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
             "oos_suppressed": True,
         }
 
-    X_aligned = X.reindex(columns=saved_cols, fill_value=0.0).fillna(0.0)
+    # Preserve NaN for fundamental/weekly columns — XGBoost routes NaN natively;
+    # filling with 0.0 breaks the learned split directions for sparse fundamentals.
+    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS)
+    X_aligned = X.reindex(columns=saved_cols, fill_value=np.nan)
+    _fill_cols = [c for c in X_aligned.columns if c not in _nan_ok]
+    X_aligned[_fill_cols] = X_aligned[_fill_cols].fillna(0.0)
     Xs = scaler.transform(X_aligned.values)
     # Positive-class probability for the latest bar (calibrator expects 1D input).
     # XGBModel.predict_proba returns 1D (n_samples,); XGBClassifier returns 2D (n_samples, 2).

@@ -1231,7 +1231,7 @@ def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tupl
     Returns (signal, style_key, threshold_tier).
     """
     p = _STYLE_PROFILES[style_key]
-    reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "high_vol"
+    reg = market_regime if market_regime in ("bull", "high_vol", "bear", "unknown") else "unknown"
     buy_t  = p["buy_threshold"][reg]
     hold_t = p["hold_threshold"][reg]
     tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")

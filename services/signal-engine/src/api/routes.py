@@ -244,6 +244,9 @@ def _bulk_persist(symbols: list[str]) -> None:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
                 if not stock:
                     continue
+                # Cache the research summary once per symbol (shared across styles)
+                _research_summary: dict | None = None
+                _research_fetched = False
                 for style_key, ai in all_sig.items():
                     horizon_enum = SignalHorizon(ai.horizon)
                     # Only insert if the signal type changed for this (stock, horizon) pair,
@@ -264,38 +267,42 @@ def _bulk_persist(symbols: list[str]) -> None:
                         bullish_probability=ai.bullish_probability,
                         reasons=ai.reasons,
                     ))
-                s.commit()
 
-                # INT-4: auto-trigger research on new BUY signal (fire-and-forget)
-                # INT-7: log divergence if research and signal disagree
-                if ai.signal in ("BUY", "STRONG BUY"):
-                    try:
-                        import httpx as _httpx
-                        _url = _settings.research_engine_url
-                        # INT-4: trigger background research if stale
-                        _httpx.post(f"{_url}/research/{symbol}/trigger", timeout=1.5)
-                        # INT-7: check divergence (service token required — endpoint needs auth)
-                        _tok = _service_token()
-                        _sr = _httpx.get(
-                            f"{_url}/research/{symbol}/summary",
-                            timeout=1.5,
-                            headers={"Authorization": f"Bearer {_tok}"},
-                        )
-                        if _sr.status_code == 200:
-                            _rd = _sr.json()
-                            _rec = _rd.get("recommendation", "")
-                            _score = float(_rd.get("overall_score") or 0)
-                            if _rec in ("AVOID", "SELL") or (_rec == "WATCH" and _score < 60):
-                                log.warning(
-                                    "signal.research_divergence",
-                                    symbol=symbol,
-                                    signal=ai.signal,
-                                    signal_conf=round(ai.confidence or 0, 1),
-                                    research_rec=_rec,
-                                    research_score=_score,
+                    # INT-4: auto-trigger research on new BUY signal (fire-and-forget)
+                    # INT-7: log divergence if research and signal disagree (per-style)
+                    if ai.signal in ("BUY", "STRONG BUY"):
+                        try:
+                            import httpx as _httpx
+                            _url = _settings.research_engine_url
+                            if not _research_fetched:
+                                # INT-4: trigger background research if stale
+                                _httpx.post(f"{_url}/research/{symbol}/trigger", timeout=1.5)
+                                # INT-7: fetch summary once; reused for all BUY styles
+                                _tok = _service_token()
+                                _sr = _httpx.get(
+                                    f"{_url}/research/{symbol}/summary",
+                                    timeout=1.5,
+                                    headers={"Authorization": f"Bearer {_tok}"},
                                 )
-                    except Exception:
-                        pass  # never block signal generation on research calls
+                                if _sr.status_code == 200:
+                                    _research_summary = _sr.json()
+                                _research_fetched = True
+                            if _research_summary:
+                                _rec = _research_summary.get("recommendation", "")
+                                _score = float(_research_summary.get("overall_score") or 0)
+                                if _rec in ("AVOID", "SELL") or (_rec == "WATCH" and _score < 60):
+                                    log.warning(
+                                        "signal.research_divergence",
+                                        symbol=symbol,
+                                        style=style_key,
+                                        signal=ai.signal,
+                                        signal_conf=round(ai.confidence or 0, 1),
+                                        research_rec=_rec,
+                                        research_score=_score,
+                                    )
+                        except Exception:
+                            pass  # never block signal generation on research calls
+                s.commit()
 
         except Exception as exc:
             log.warning("signals.refresh.skip", symbol=symbol, error=str(exc))
@@ -3004,11 +3011,22 @@ def signal_for(
         raise HTTPException(404, str(exc)) from exc
 
     if persist and stock:
+        today = date.today()
         for ai in all_sig.values():
+            horizon_enum = SignalHorizon(ai.horizon)
+            # Guard against same-day duplicate: skip if an identical signal was already stored today.
+            existing = session.execute(
+                select(Signal.signal, Signal.ts)
+                .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
+                .order_by(desc(Signal.ts))
+                .limit(1)
+            ).one_or_none()
+            if existing is not None and existing[0] == SignalType(ai.signal) and existing[1].date() == today:
+                continue
             session.add(Signal(
                 stock_id=stock.id,
                 signal=SignalType(ai.signal),
-                horizon=SignalHorizon(ai.horizon),
+                horizon=horizon_enum,
                 confidence=ai.confidence,
                 bullish_probability=ai.bullish_probability,
                 reasons=ai.reasons,

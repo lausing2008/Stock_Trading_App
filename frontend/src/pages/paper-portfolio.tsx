@@ -1130,6 +1130,12 @@ export default function PaperPortfolioPage() {
     setAuthed(true);
   }, [router]);
 
+  // Reset pagination when switching tabs so stale page numbers don't carry over.
+  useEffect(() => {
+    setTradesPage(1);
+    setDecPage(1);
+  }, [tab]);
+
   const { data: portfolioList, mutate: mutateList } = useSWR(
     authed ? 'paper-list' : null, () => api.paperList(), { refreshInterval: 60_000 }
   );
@@ -1173,10 +1179,12 @@ export default function PaperPortfolioPage() {
   // INT-9: research verdicts for open positions
   const [posResearchMap, setPosResearchMap] = useState<Record<string, ResearchSummary>>({});
   const posSymbols = useMemo(() => positions?.map(p => p.symbol) ?? [], [positions]);
+  const posSymbolKey = useMemo(() => posSymbols.join(','), [posSymbols]);
   useEffect(() => {
     if (!posSymbols.length) { setPosResearchMap({}); return; }
     api.getResearchBatch(posSymbols).then(r => setPosResearchMap(r ?? {})).catch(() => {});
-  }, [posSymbols.join(',')]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posSymbolKey]);
   const { data: trades } = useSWR(
     authed && tab === 'Closed Trades' && selectedPortfolioId != null ? ['paper-trades', tradesPage, selectedPortfolioId] : null,
     () => api.paperTrades({ page: tradesPage, limit: 50, portfolioId: selectedPortfolioId })
@@ -1200,7 +1208,7 @@ export default function PaperPortfolioPage() {
 
   if (!authed) return null;
 
-  if (summaryError) {
+  if (!summary && summaryError) {
     return (
       <main style={{ minHeight: '100vh', background: '#0f172a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div style={{ color: '#f87171' }}>Failed to load paper portfolio data.</div>
@@ -1801,8 +1809,8 @@ export default function PaperPortfolioPage() {
                     const exitReasons = d.exit_reasons ?? {};
                     const reasonKeys = Object.keys(reasons).filter(k => !['stability_days'].includes(k));
                     return (
-                    <>
-                    <tr key={d.id}
+                    <React.Fragment key={d.id}>
+                    <tr
                       onClick={() => setExpandedDecisionId(isExpanded ? null : d.id)}
                       style={{ borderBottom: isExpanded ? 'none' : '1px solid #1e293b', cursor: 'pointer',
                         background: isExpanded ? '#0f1a2e' : undefined, transition: 'background 0.1s' }}>
@@ -1835,7 +1843,7 @@ export default function PaperPortfolioPage() {
                       </td>
                     </tr>
                     {isExpanded && (
-                      <tr key={`${d.id}-expand`} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <tr style={{ borderBottom: '1px solid #1e293b' }}>
                         <td colSpan={11} style={{ padding: '0 10px 14px 10px', background: '#0f1a2e' }}>
                           <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
                             {/* Entry stats */}
@@ -1893,7 +1901,7 @@ export default function PaperPortfolioPage() {
                         </td>
                       </tr>
                     )}
-                    </>
+                    </React.Fragment>
                     );
                   })}
                 </tbody>

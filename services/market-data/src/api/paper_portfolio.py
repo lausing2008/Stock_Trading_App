@@ -376,7 +376,8 @@ def manual_exit_trade(
     trade.exit_time    = now
     trade.exit_price   = exit_p
     trade.exit_reason  = "manual_exit"
-    trade.realized_pnl = pnl
+    trade.pnl           = pnl
+    trade.pct_return    = pnl_pct
     trade.current_price = exit_p
 
     # Credit cash back
@@ -635,6 +636,20 @@ def reset_portfolio(
         t.exit_reasons = {"message": "Admin reset — all positions force-closed"}
         t.pnl = round((exit_price - t.entry_price) * t.shares, 2)
         t.pct_return = round((exit_price / t.entry_price - 1) * 100, 4)
+
+    # Snapshot final equity before reset so the equity curve captures the ending value.
+    final_equity = round(
+        p.current_cash + sum(t.exit_price * t.shares for t in open_trades), 2
+    )
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    session.execute(
+        pg_insert(PaperEquityCurve)
+        .values(portfolio_id=p.id, date=datetime.utcnow().date(), equity=final_equity)
+        .on_conflict_do_update(
+            index_elements=["portfolio_id", "date"],
+            set_={"equity": final_equity},
+        )
+    )
 
     p.current_cash = p.initial_capital
     session.commit()

@@ -47,6 +47,11 @@ def create_app(
     # bound for the full request lifecycle including CORS pre-flight handling.
     app.add_middleware(CorrelationIdMiddleware)
 
+    if not settings.cors_origins and settings.env != "development":
+        raise RuntimeError(
+            "CORS_ORIGINS must be set to an explicit list in non-development environments. "
+            "Add CORS_ORIGINS=https://yourdomain.com to your .env file."
+        )
     allowed_origins = (
         [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
         if settings.cors_origins

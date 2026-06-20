@@ -190,7 +190,9 @@ def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
     macro["vix_spiking"] = np.where(
         vix_20d.isna(), np.nan, (vix_c > vix_20d * 1.3).astype(float)
     )
-    macro["high_vol_regime"] = (macro["spy_vol_20"] > 0.02).astype(float)
+    macro["high_vol_regime"] = np.where(
+        macro["spy_vol_20"].isna(), np.nan, (macro["spy_vol_20"] > 0.02).astype(float)
+    )
     macro["market_stress"] = np.where(
         vix_20d.isna(), np.nan,
         ((macro["spy_ret_5"] < -0.03).values & (vix_c > vix_20d).values).astype(float),

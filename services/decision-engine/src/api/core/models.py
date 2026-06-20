@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Request ────────────────────────────────────────────────────────────────────
@@ -84,6 +84,13 @@ class DecisionResult(BaseModel):
 class BatchDecisionRequest(BaseModel):
     symbols: list[str]
     style: str = "SWING"
+
+    @field_validator("symbols")
+    @classmethod
+    def _check_symbols_len(cls, v: list[str]) -> list[str]:
+        if len(v) > 30:
+            raise ValueError("batch decide accepts at most 30 symbols per request")
+        return v
     portfolio_id: int | None = None
     equity: float = 10_000.0
     open_positions: int = 0

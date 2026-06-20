@@ -96,22 +96,26 @@ _redis: redis_lib.Redis | None = None
 
 # Cache a service-to-service JWT so scheduler can call auth-protected internal endpoints.
 _service_token_cache: str | None = None
+_service_token_exp: float = 0.0  # epoch seconds when the cached token expires
 
 
 def _service_token() -> str:
-    """Return a long-lived JWT for scheduler → internal service calls (sub='scheduler')."""
-    global _service_token_cache
-    if _service_token_cache:
+    """Return a JWT for scheduler → internal service calls. Refreshes 7 days before expiry."""
+    import time as _time_mod
+    global _service_token_cache, _service_token_exp
+    if _service_token_cache and _time_mod.time() < _service_token_exp - 7 * 86400:
         return _service_token_cache
     try:
         from jose import jwt as _jwt
         import uuid
+        exp = datetime.now(timezone.utc) + timedelta(days=365)
         payload = {
             "sub": "scheduler",
             "jti": str(uuid.uuid4()),
-            "exp": datetime.now(timezone.utc) + timedelta(days=365),
+            "exp": exp,
         }
         _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+        _service_token_exp = exp.timestamp()
         return _service_token_cache
     except Exception as exc:
         log.error("scheduler.service_token_failed", error=str(exc))
@@ -856,6 +860,9 @@ _alert_fail_counts: dict[int, int] = {}
 _SIGNAL_ALERT_LOCK_KEY = "stockai:lock:check_signal_alerts"
 _SIGNAL_ALERT_LOCK_TTL = 120  # seconds — prevents concurrent runs from US+HK scheduler overlap
 
+_PRICE_ALERT_LOCK_KEY = "stockai:lock:check_price_alerts"
+_PRICE_ALERT_LOCK_TTL = 55  # seconds — alert checker runs every 60s; 55s prevents overlap
+
 _PAPER_TRADING_LOCK_KEY = "stockai:lock:paper_trading_step"
 _PAPER_TRADING_LOCK_TTL = 90  # seconds — typical step runs in 20-40s; 90s prevents double-exec
 
@@ -912,6 +919,12 @@ def check_signal_alerts() -> None:
             alerts = session.execute(select(SignalAlert)).scalars().all()
             if not alerts:
                 return
+
+            # SCHED-6: Prune stale fail-count entries for deleted alert IDs to prevent unbounded growth.
+            active_ids = {a.id for a in alerts}
+            stale_ids = [k for k in list(_alert_fail_counts) if k not in active_ids]
+            for k in stale_ids:
+                _alert_fail_counts.pop(k, None)
 
             symbols = list({a.symbol for a in alerts})
 
@@ -1260,6 +1273,13 @@ def _fire_webhook(url: str, payload: dict) -> None:
 def check_price_alerts() -> None:
     """Check all untriggered alerts against latest live prices and fire emails."""
     try:
+        acquired = _get_redis().set(_PRICE_ALERT_LOCK_KEY, "1", nx=True, ex=_PRICE_ALERT_LOCK_TTL)
+        if not acquired:
+            log.info("price_alert.skipped_locked", reason="another run in progress")
+            return
+    except Exception:
+        pass  # Redis unavailable — allow through; rare double-send risk accepted
+    try:
         import yfinance as yf
         with SessionLocal() as session:
             alerts = session.execute(
@@ -1324,6 +1344,11 @@ def check_price_alerts() -> None:
                 _fire_webhook(url, payload)
     except Exception as exc:
         log.error("alert.check_error", error=str(exc))
+    finally:
+        try:
+            _get_redis().delete(_PRICE_ALERT_LOCK_KEY)
+        except Exception:
+            pass
 
 
 def check_technical_alerts() -> None:
@@ -1561,7 +1586,7 @@ def check_technical_alerts() -> None:
                     elif cond == AlertCondition.PCT_BELOW_52WK_HIGH:
                         if len(close) < 2:
                             continue
-                        high_52 = float(close.tail(252).max())
+                        high_52 = float(close.iloc[:-1].tail(252).max())
                         curr_price = float(close.iloc[-1])
                         if high_52 <= 0:
                             continue

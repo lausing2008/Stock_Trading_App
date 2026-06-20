@@ -79,7 +79,10 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     except Exception:
         pass
 
-    label_threshold = compute_label_threshold(df, horizon)
+    # Use only the first 70% of data to compute the label threshold,
+    # matching the training split and preventing test-set leakage.
+    _thresh_cutoff = max(int(len(df) * 0.70), 60)
+    label_threshold = compute_label_threshold(df.iloc[:_thresh_cutoff], horizon)
 
     fund_data: dict | None = None
     try:
