@@ -23,6 +23,7 @@ class AlertCreate(BaseModel):
     email: str | None = None
     note: str | None = None
     recurring: bool = False
+    webhook_url: str | None = None
 
 
 class AlertOut(BaseModel):
@@ -36,6 +37,7 @@ class AlertOut(BaseModel):
     triggered_at: datetime | None
     recurring: bool
     last_sent_at: datetime | None
+    webhook_url: str | None
     created_at: datetime
 
     class Config:
@@ -64,6 +66,7 @@ def create_alert(
         email=email,
         note=body.note,
         recurring=body.recurring,
+        webhook_url=body.webhook_url or None,
     )
     session.add(alert)
     session.commit()

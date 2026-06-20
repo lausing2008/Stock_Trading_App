@@ -3240,6 +3240,37 @@ Return ONLY valid JSON — no markdown, no prose:
                       <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0' }}>{item.value}</div>
                     </div>
                   ))}
+                  {/* Dividend sustainability grade */}
+                  {dividendData.payout_ratio != null && (() => {
+                    const pr = dividendData.payout_ratio;
+                    const eg = data.fundamentals?.earnings_growth ?? null;
+                    const dy = dividendData.dividend_yield ?? 0;
+                    let score = 100;
+                    if (pr > 0.9) score -= 50;
+                    else if (pr > 0.75) score -= 30;
+                    else if (pr > 0.6) score -= 15;
+                    else if (pr > 0.4) score -= 5;
+                    if (eg != null) {
+                      if (eg < -0.1) score -= 20;
+                      else if (eg < 0) score -= 10;
+                      else if (eg > 0.1) score += 10;
+                    }
+                    if (dy > 0.08) score -= 10;
+                    const [g, c, d] = score >= 90 ? ['A', '#4ade80', 'Very safe'] :
+                                      score >= 75 ? ['B', '#86efac', 'Sustainable'] :
+                                      score >= 55 ? ['C', '#fbbf24', 'Adequate'] :
+                                      score >= 35 ? ['D', '#fb923c', 'Stretched'] :
+                                                    ['F', '#f87171', 'At risk'];
+                    return (
+                      <div>
+                        <div style={{ fontSize: '10px', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '3px' }}>Div Safety</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontSize: '18px', fontWeight: 800, color: c }}>{g}</span>
+                          <span style={{ fontSize: '11px', color: '#64748b' }}>{d}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
                 {dividendData.dividends.length === 0 ? (
                   <div style={{ fontSize: '12px', color: '#475569' }}>No dividend history found.</div>

@@ -3303,7 +3303,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'finviz-institutional-ownership-filter',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Screener: Add institutional ownership % and insider activity as screener filters',
     file: 'frontend/src/pages/screener.tsx',
     effort: '1 day',
@@ -3345,7 +3345,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'sa-quant-score',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add Seeking Alpha-style Quant Score with sub-scores: Valuation, Growth, Profitability, Momentum, EPS Revisions',
     file: 'services/ranking-engine/src/scoring/kscore.py · frontend/src/pages/stock/[symbol].tsx',
     effort: '3 days',
@@ -3355,7 +3355,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'div-sustainability-grade',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add dividend sustainability grade — payout ratio, coverage, growth history, yield safety',
     file: 'frontend/src/pages/stock/[symbol].tsx · services/market-data/src/api/market_data.py',
     effort: '2 days',
@@ -3385,7 +3385,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'tv-webhook-alerts',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add webhook URL support for alerts — send JSON payload to user-configured endpoint',
     file: 'services/market-data/src/services/email_service.py · services/market-data/src/api/alerts.py',
     effort: '2 days',

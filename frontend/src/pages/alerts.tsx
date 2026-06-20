@@ -232,6 +232,7 @@ function PriceAlertsTab() {
   const [emaPeriod, setEmaPeriod] = useState('20');
   const [email, setEmail]         = useState('');
   const [note, setNote]           = useState('');
+  const [webhookUrl, setWebhookUrl] = useState('');
   const [recurring, setRecurring] = useState(false);
   const [saving, setSaving]       = useState(false);
   const [saved, setSaved]         = useState(false);
@@ -287,10 +288,10 @@ function PriceAlertsTab() {
     const thresholdVal = isNoThreshold ? 0 : isEma ? parseInt(emaPeriod) : parseFloat(threshold);
     setSaving(true); setError('');
     try {
-      await api.createAlert({ symbol, condition, threshold: thresholdVal, email, note: note || undefined, recurring: isNoThreshold ? recurring : false });
+      await api.createAlert({ symbol, condition, threshold: thresholdVal, email, note: note || undefined, recurring: isNoThreshold ? recurring : false, webhook_url: webhookUrl || undefined });
       localStorage.setItem('stockai_alert_email', email);
       await mutate();
-      setThreshold(''); setNote('');
+      setThreshold(''); setNote(''); setWebhookUrl('');
       setSaved(true); setTimeout(() => setSaved(false), 2000);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create alert');
@@ -461,6 +462,11 @@ function PriceAlertsTab() {
                 <label style={lbl}>Note (optional)</label>
                 <input type="text" value={note} onChange={e => setNote(e.target.value)}
                   placeholder="e.g. buy target" style={inp} />
+              </div>
+              <div style={{ flex: 2 }}>
+                <label style={lbl}>Webhook URL (optional)</label>
+                <input type="url" value={webhookUrl} onChange={e => setWebhookUrl(e.target.value)}
+                  placeholder="https://..." style={inp} />
               </div>
               {isNoThreshold && (
                 <div>

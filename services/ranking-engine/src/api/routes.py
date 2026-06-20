@@ -595,6 +595,13 @@ def leaderboard(
         }
         for stock, ranking, fund in rows
     ]
+    # Merge institutional ownership from Redis (not in DB Fundamental table)
+    bulk_fund = _fetch_fundamentals_bulk()
+    for r in results:
+        fd = bulk_fund.get(r["symbol"]) or {}
+        r["held_percent_institutions"] = fd.get("held_percent_institutions")
+        r["held_percent_insiders"]     = fd.get("held_percent_insiders")
+
     results.sort(key=lambda r: r["score"] or 0, reverse=True)
     as_of = str(max((row[1].as_of for row in rows), default=date.today()))
     return {"as_of": as_of, "rankings": results[:limit]}

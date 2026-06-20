@@ -1244,6 +1244,19 @@ def check_signal_alerts() -> None:
             pass
 
 
+def _fire_webhook(url: str, payload: dict) -> None:
+    """POST a HMAC-SHA256-signed alert payload to a webhook URL. Best-effort."""
+    import hashlib, hmac as _hmac, json as _json
+    try:
+        body = _json.dumps(payload, default=str)
+        secret = get_settings().jwt_secret.encode()
+        sig = _hmac.new(secret, body.encode(), hashlib.sha256).hexdigest()
+        with httpx.Client(timeout=5) as c:
+            c.post(url, content=body, headers={"Content-Type": "application/json", "X-Signature": f"sha256={sig}"})
+    except Exception as exc:
+        log.warning("webhook.failed", url=url, error=str(exc))
+
+
 def check_price_alerts() -> None:
     """Check all untriggered alerts against latest live prices and fire emails."""
     try:
@@ -1269,6 +1282,7 @@ def check_price_alerts() -> None:
 
             fired = 0
             pending_emails: list[dict] = []
+            pending_webhooks: list[tuple[str, dict]] = []
             for alert in alerts:
                 price = prices.get(alert.symbol)
                 if price is None:
@@ -1291,6 +1305,11 @@ def check_price_alerts() -> None:
                         condition=alert.condition.value,
                         threshold=alert.threshold, price=price, note=alert.note,
                     ))
+                if alert.webhook_url:
+                    pending_webhooks.append((alert.webhook_url, dict(
+                        symbol=alert.symbol, condition=alert.condition.value,
+                        threshold=alert.threshold, price=price, note=alert.note,
+                    )))
 
             # Commit triggered flags BEFORE sending emails so a crash between
             # commit and send causes a missed email rather than a duplicate.
@@ -1301,6 +1320,8 @@ def check_price_alerts() -> None:
             for kwargs in pending_emails:
                 if not send_price_alert_email(**kwargs):
                     log.warning("alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
+            for url, payload in pending_webhooks:
+                _fire_webhook(url, payload)
     except Exception as exc:
         log.error("alert.check_error", error=str(exc))
 
@@ -1398,6 +1419,7 @@ def check_technical_alerts() -> None:
 
             fired = 0
             pending_emails: list[dict] = []
+            pending_webhooks: list[tuple[str, dict]] = []
             for alert in alerts:
                 close = prices_by_sym.get(alert.symbol)
                 if close is None:
@@ -1574,6 +1596,12 @@ def check_technical_alerts() -> None:
                             price=float(close.iloc[-1]),
                             note=alert.note,
                         ))
+                    if alert.webhook_url:
+                        pending_webhooks.append((alert.webhook_url, dict(
+                            symbol=alert.symbol, condition=cond_label,
+                            threshold=threshold_val, price=float(close.iloc[-1]),
+                            note=alert.note,
+                        )))
 
                 except Exception as exc:
                     log.warning("tech_alert.check_error", symbol=alert.symbol, error=str(exc))
@@ -1585,6 +1613,8 @@ def check_technical_alerts() -> None:
             for kwargs in pending_emails:
                 if not send_price_alert_email(**kwargs):
                     log.warning("tech_alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
+            for url, payload in pending_webhooks:
+                _fire_webhook(url, payload)
 
     except Exception as exc:
         log.error("tech_alert.error", error=str(exc))

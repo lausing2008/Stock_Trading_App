@@ -54,6 +54,7 @@ const DEFAULT_FILTERS = {
   minRevGrowth: '',      // min revenue growth % YoY
   maxDebt: '',           // max debt-to-equity ratio
   maxPEG: '',            // max PEG ratio (PE / growth)
+  minInstOwnership: '',  // min institutional ownership % (0-100)
   watchlistOnly: true,
   search: '',
 };
@@ -262,6 +263,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     const minRevGrow  = filters.minRevGrowth ? +filters.minRevGrowth / 100 : null;
     const maxDebt     = filters.maxDebt      ? +filters.maxDebt      : null;
     const maxPEG      = filters.maxPEG       ? +filters.maxPEG       : null;
+    const minInstOwn  = filters.minInstOwnership ? +filters.minInstOwnership / 100 : null;
 
     return rows.filter(r => {
       if (filters.market !== 'All' && r.market !== filters.market) return false;
@@ -290,6 +292,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
       if (minRevGrow != null && (r.revenue_growth == null || r.revenue_growth < minRevGrow)) return false;
       if (maxDebt != null && (r.debt_to_equity == null || r.debt_to_equity > maxDebt)) return false;
       if (maxPEG != null && (r.peg_ratio == null || r.peg_ratio > maxPEG)) return false;
+      if (minInstOwn != null && (r.held_percent_institutions == null || r.held_percent_institutions < minInstOwn)) return false;
       return true;
     });
   }, [rows, filters]);
@@ -340,7 +343,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     !filters.minChange && !filters.maxChange && !filters.minPrice && !filters.maxPrice &&
     !filters.sector && !filters.minFairDiscount && !filters.minRS && !filters.minConfidence &&
     !filters.maxPE && !filters.minRevGrowth && !filters.maxDebt && !filters.maxPEG &&
-    !filters.watchlistOnly && !filters.search
+    !filters.minInstOwnership && !filters.watchlistOnly && !filters.search
   );
 
   const loading = !rankData || !signals || !prices;
@@ -527,10 +530,11 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
 
           {/* Fundamental filters */}
           <div style={{ width: '1px', background: '#1e293b', alignSelf: 'stretch' }} />
-          <NumInput label="Max P/E"       value={filters.maxPE}        onChange={v => setFilters(f => ({ ...f, maxPE: v }))}        placeholder="e.g. 25" />
-          <NumInput label="Min Rev Grw %" value={filters.minRevGrowth} onChange={v => setFilters(f => ({ ...f, minRevGrowth: v }))} placeholder="e.g. 10" />
-          <NumInput label="Max D/E"       value={filters.maxDebt}      onChange={v => setFilters(f => ({ ...f, maxDebt: v }))}      placeholder="e.g. 2" />
-          <NumInput label="Max PEG"       value={filters.maxPEG}       onChange={v => setFilters(f => ({ ...f, maxPEG: v }))}       placeholder="e.g. 1.5" />
+          <NumInput label="Max P/E"       value={filters.maxPE}           onChange={v => setFilters(f => ({ ...f, maxPE: v }))}           placeholder="e.g. 25" />
+          <NumInput label="Min Rev Grw %" value={filters.minRevGrowth}    onChange={v => setFilters(f => ({ ...f, minRevGrowth: v }))}    placeholder="e.g. 10" />
+          <NumInput label="Max D/E"       value={filters.maxDebt}         onChange={v => setFilters(f => ({ ...f, maxDebt: v }))}         placeholder="e.g. 2" />
+          <NumInput label="Max PEG"       value={filters.maxPEG}          onChange={v => setFilters(f => ({ ...f, maxPEG: v }))}          placeholder="e.g. 1.5" />
+          <NumInput label="Min Inst Own %" value={filters.minInstOwnership} onChange={v => setFilters(f => ({ ...f, minInstOwnership: v }))} placeholder="e.g. 40" />
 
           {/* Watchlist toggle — admin only */}
           {isAdmin && (

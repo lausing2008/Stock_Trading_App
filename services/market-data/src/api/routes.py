@@ -766,6 +766,7 @@ def fundamentals_bulk(session: Session = Depends(get_session)):
         "return_on_equity", "return_on_assets",
         "revenue_growth", "earnings_growth",
         "peg_ratio", "debt_to_equity",
+        "held_percent_institutions", "held_percent_insiders",
     )
     for symbol in active_symbols:
         try:

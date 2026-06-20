@@ -129,7 +129,7 @@ export const api = {
 
   // Price alerts
   listAlerts: () => request<PriceAlert[]>(`/alerts`),
-  createAlert: (body: { symbol: string; condition: string; threshold: number; email?: string; note?: string; recurring?: boolean }) =>
+  createAlert: (body: { symbol: string; condition: string; threshold: number; email?: string; note?: string; recurring?: boolean; webhook_url?: string }) =>
     request<PriceAlert>(`/alerts`, { method: 'POST', body: JSON.stringify(body) }),
   deleteAlert: (id: number) => request(`/alerts/${id}`, { method: 'DELETE' }),
 
@@ -582,7 +582,7 @@ export type Signal = {
 export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null; ts: string | null; stability_days?: number | null };
 export type SignalHistoryPoint = { ts: string | null; signal: string; confidence: number; bullish_probability: number | null };
 export type PatternSignal = { name: string; label: string; description: string; bullish: boolean };
-export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null; relative_strength?: number | null; trailing_pe?: number | null; forward_pe?: number | null; peg_ratio?: number | null; revenue_growth?: number | null; earnings_growth?: number | null; debt_to_equity?: number | null; price_to_book?: number | null };
+export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null; relative_strength?: number | null; trailing_pe?: number | null; forward_pe?: number | null; peg_ratio?: number | null; revenue_growth?: number | null; earnings_growth?: number | null; debt_to_equity?: number | null; price_to_book?: number | null; held_percent_institutions?: number | null; held_percent_insiders?: number | null };
 export type SectorRsStock = { symbol: string; name: string; rs_score: number | null; kscore: number | null; past_rs: number | null };
 export type SectorRotationEntry = { sector: string; etf: string; avg_rs: number; rs_change: number | null; stock_count: number; leading: number; lagging: number; leading_pct: number; top_stocks: SectorRsStock[]; bottom_stocks: SectorRsStock[] };
 export type SectorRotationReport = { as_of: string; sectors: SectorRotationEntry[] };
@@ -648,7 +648,7 @@ export type WatchlistItem = { symbol: string; name: string; name_zh?: string | n
 export type WatchlistMeta = { id: number; name: string; item_count: number; trading_style: string | null; created_at: string };
 export type NewsItem = { title: string; url: string; source: string; published_at: number; sentiment: number; sentiment_label: 'bullish' | 'bearish' | 'neutral'; thumbnail?: string };
 export type AppUser = { id: number; username: string; role: 'admin' | 'user'; is_active: boolean; email?: string | null; created_at: string };
-export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; recurring: boolean; last_sent_at: string | null; created_at: string };
+export type PriceAlert = { id: number; symbol: string; condition: string; threshold: number; email: string; note: string | null; triggered: boolean; triggered_at: string | null; recurring: boolean; last_sent_at: string | null; webhook_url: string | null; created_at: string };
 export type SignalAlertItem = { id: number; symbol: string; email: string | null; last_signal: string | null; last_sent_at: string | null; alert_mode: string; horizon: string; require_consensus: boolean; created_at: string };
 export type TradePlan = { id: number; symbol: string; stage: 'watch' | 'planning' | 'active' | 'closed'; game_plan: Record<string, unknown> | null; entry_price: number | null; stop_loss: number | null; take_profit: number | null; notes: string | null; source: string | null; exit_price: number | null; actual_entry_price: number | null; shares: number | null; trading_style: string | null; closed_at: string | null; created_at: string; updated_at: string };
 export type CongressTrade = { Ticker: string; Date: string; Politician: string; Transaction: string; Min: number | null; Max: number | null; Party: string | null; State: string | null; Chamber: string | null; ReportDate: string | null };
