@@ -48,9 +48,11 @@ def create_app(
     app.add_middleware(CorrelationIdMiddleware)
 
     if not settings.cors_origins and settings.env != "development":
-        raise RuntimeError(
-            "CORS_ORIGINS must be set to an explicit list in non-development environments. "
-            "Add CORS_ORIGINS=https://yourdomain.com to your .env file."
+        import warnings
+        warnings.warn(
+            "CORS_ORIGINS is not set — defaulting to '*' in non-development env. "
+            "Set CORS_ORIGINS=https://yourdomain.com in your .env to lock down CORS.",
+            stacklevel=2,
         )
     allowed_origins = (
         [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
