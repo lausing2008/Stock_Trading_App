@@ -149,6 +149,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "regime_risk_off_min_score": 5,      # stricter entry gate in risk_off
     "regime_choppy_min_score":   4,      # slightly stricter in choppy
     "enabled":                   True,
+    # Decision Engine shadow mode — calls /decide/{symbol} alongside _should_enter()
+    # and logs divergences. Non-authoritative: paper engine decision always wins.
+    "decision_engine_shadow":    True,
 }
 
 # Mirrors scheduler._STYLE_PARAMS — inlined here to avoid circular import.
@@ -1608,6 +1611,83 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
 # ── Entry scanner ─────────────────────────────────────────────────────────────
 
+def _shadow_decision_engine(
+    symbol: str,
+    should_enter: bool,
+    paper_score: int,
+    live_price: float,
+    game_plan: dict,
+    equity: float,
+    open_count: int,
+    cfg: dict,
+) -> None:
+    """Call Decision Engine in shadow mode alongside _should_enter().
+
+    Compares DE verdict to the paper engine's own decision and logs any divergence.
+    Never raises — failures are swallowed so shadow mode cannot affect real entries.
+    The paper engine's _should_enter() decision always wins.
+    """
+    try:
+        import httpx as _httpx
+        from common.config import get_settings as _gs_de
+        de_url = _gs_de().decision_engine_url
+        r = _httpx.post(
+            f"{de_url}/decide/{symbol}",
+            json={
+                "style":            cfg.get("trading_style", "SWING"),
+                "equity":           equity,
+                "open_positions":   open_count,
+                "max_positions":    cfg.get("max_positions", 6),
+                "live_price":       live_price,
+                "game_plan":        game_plan,
+                "market":           cfg.get("market", "US"),
+                "daily_pnl_pct":    0.0,
+                "config_overrides": {
+                    "min_entry_score":     cfg.get("min_entry_score", 4),
+                    "min_confidence":      cfg.get("min_confidence", 62.0),
+                    "min_rr_ratio":        cfg.get("min_rr_ratio", 2.0),
+                    "risk_per_trade_pct":  cfg.get("risk_per_trade_pct", 0.01),
+                    "max_position_pct":    cfg.get("max_position_pct", 0.10),
+                    "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),
+                },
+            },
+            headers={"Authorization": f"Bearer {_svc_token()}"},
+            timeout=2.5,
+        )
+        if r.status_code != 200:
+            return
+        result = r.json()
+        de_verdict  = result.get("verdict", "SKIP")
+        de_buy      = de_verdict in ("BUY", "SCALE")
+        de_score    = result.get("score", 0)
+        de_min      = result.get("min_score", 4)
+        de_blocked  = result.get("blocked_reason")
+
+        if de_buy != should_enter:
+            log.warning(
+                "decision_engine.shadow_divergence",
+                symbol=symbol,
+                paper_enter=should_enter,
+                paper_score=paper_score,
+                de_verdict=de_verdict,
+                de_score=de_score,
+                de_min_score=de_min,
+                de_blocked_reason=de_blocked,
+                note="paper engine is authoritative — investigating divergence",
+            )
+        else:
+            log.info(
+                "decision_engine.shadow_agree",
+                symbol=symbol,
+                de_verdict=de_verdict,
+                paper_enter=should_enter,
+                de_score=de_score,
+                paper_score=paper_score,
+            )
+    except Exception as exc:
+        log.debug("decision_engine.shadow_error", symbol=symbol, error=str(exc))
+
+
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
@@ -1993,6 +2073,19 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
             kscore=float(ranking.score) if ranking and ranking.score is not None else None,
         )
+
+        # Shadow mode: compare Decision Engine verdict vs _should_enter() (non-authoritative)
+        if cfg.get("decision_engine_shadow", True):
+            _shadow_decision_engine(
+                symbol=stock.symbol,
+                should_enter=should_enter,
+                paper_score=score,
+                live_price=live_price,
+                game_plan=game_plan,
+                equity=equity,
+                open_count=open_count,
+                cfg=cfg,
+            )
 
         if not should_enter:
             log.info("paper.entry_skipped",
