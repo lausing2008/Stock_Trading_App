@@ -245,7 +245,7 @@ export default function SignalTuningPage() {
   useEffect(() => {
     const s = getSession();
     if (!s) { router.replace('/login'); return; }
-    if (!s.is_admin) { router.replace('/'); return; }
+    if (s.role !== 'admin') { router.replace('/'); return; }
     setUsername(s.username);
   }, [router]);
 
