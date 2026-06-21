@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 95 — Post-tune_all Signal Refresh ────────────────────────────────────
+  {
+    id: 'TIER95-POST-TUNE-REFRESH',
+    tier: 95, severity: 'feature', defaultStatus: 'done',
+    file: 'services/ml-prediction/src/api/routes.py:_run_all()',
+    effort: '30m',
+    impact: 'Medium — without this, new ML models are only used at the next scheduled signal refresh (up to 5 hours later if tune_all completes on a trading day). With this, new models generate fresh signals immediately after tune_all finishes.',
+    title: 'Auto signal refresh after tune_all: new 54-feature models used immediately',
+    what: 'tune_all retrains all 142 XGBoost models but the signal engine continues serving stale signals computed with old model versions until the next scheduled refresh (5× per day). On weekends when tune_all runs, the new models sit idle until Monday.',
+    fix: 'At the end of _run_all() background task, after all symbols complete, count tuned models. If tuned_count > 0, POST /signals/refresh for US and HK markets using a service JWT. Failures are non-fatal (logged as warnings).',
+    implementedNote: 'Done 2026-06-21. Triggers POST /signals/refresh?market=US and POST /signals/refresh?market=HK once all symbols are processed. Service JWT used (same pattern as scheduler). Post-refresh failures never abort or mask tune_all results.',
+  },
+
   // ── Tier 94 — tune_all Reliability + Sector ETF Daily Refresh ───────────────
   {
     id: 'TIER94-TUNE-ALL-RELIABILITY',
@@ -7834,6 +7847,7 @@ const TIER_LABEL: Record<Tier, string> = {
   92: 'Tier 92 — Signal Tuning Action Panel: trigger watchdog/auto-tuner/tune_all from admin UI (done)',
   93: 'Tier 93 — Morning Digest Signal Performance: 30d win rate summary in daily email (done)',
   94: 'Tier 94 — tune_all reliability + sector ETF daily refresh (done)',
+  95: 'Tier 95 — post-tune_all signal refresh: new models used immediately (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7931,6 +7945,7 @@ const TIER_COLOR: Record<Tier, string> = {
   92: '#a78bfa',
   93: '#4ade80',
   94: '#f472b6',
+  95: '#fb7185',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

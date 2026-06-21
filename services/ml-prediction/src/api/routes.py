@@ -134,6 +134,36 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _
                 log.warning("tune_all.symbol_failed", symbol=sym, error=str(exc))
                 result = {"symbol": sym, "skipped": True, "reason": str(exc)}
             results.append(result)
+
+        # TIER95: After all models are retrained, trigger signal refreshes so new models
+        # are used immediately (not at the next scheduled refresh 5× per day).
+        tuned_count = sum(1 for r in results if not r.get("skipped"))
+        if tuned_count > 0:
+            log.info("tune_all.complete", tuned=tuned_count, total=len(symbols))
+            try:
+                from common.config import get_settings as _gs
+                import httpx as _hx
+                import uuid as _uuid
+                from jose import jwt as _jwt
+                _s = _gs()
+                _tok = _jwt.encode(
+                    {"sub": "ml-prediction", "jti": str(_uuid.uuid4()), "exp": int(__import__("time").time()) + 3600},
+                    _s.jwt_secret, algorithm="HS256",
+                )
+                _hdrs = {"Authorization": f"Bearer {_tok}"}
+                for _mkt in ("US", "HK"):
+                    try:
+                        _r = _hx.post(
+                            f"{_s.signal_engine_url}/signals/refresh",
+                            params={"market": _mkt},
+                            headers=_hdrs, timeout=30,
+                        )
+                        log.info("tune_all.post_signal_refresh", market=_mkt, status=_r.status_code)
+                    except Exception as _exc:
+                        log.warning("tune_all.post_signal_refresh_failed", market=_mkt, error=str(_exc))
+            except Exception as _exc:
+                log.warning("tune_all.post_refresh_setup_failed", error=str(_exc))
+
         return results
 
     tasks.add_task(_run_all)
