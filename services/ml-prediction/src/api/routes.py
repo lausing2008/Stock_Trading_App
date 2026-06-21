@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from common.jwt_auth import get_current_username
 
 from ..models import list_models
-from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, train_model, tune_symbol
+from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, train_model, tune_symbol, validate_walkforward
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
@@ -368,3 +368,35 @@ def list_all_metrics(model: str = "xgboost"):
 
     results.sort(key=lambda x: (x.get("test_auc") or 0), reverse=True)
     return {"model": model, "count": len(results), "symbols": results}
+
+
+@router.get("/walkforward/{symbol}")
+def walkforward_oos(
+    symbol: str,
+    model: str = "xgboost",
+    style: str = "SWING",
+    train_days: int = 252,
+    test_days: int = 63,
+    _: str = Depends(get_current_username),
+):
+    """True out-of-sample walk-forward validation for one symbol.
+
+    Retrains a temporary model on each rolling training window and evaluates on
+    the subsequent test_days — a genuine OOS simulation (no lookahead).
+
+    Slower than reading cached metrics (each window retrains from scratch).
+    Use for auditing a single symbol's OOS performance; for fleet-wide metrics
+    use GET /ml/metrics which returns the stored CV AUC from the existing bundle.
+
+    Returns: per-window OOS precision, AUC, avg return, IC; summary statistics.
+    """
+    result = validate_walkforward(
+        symbol.upper(),
+        model_name=model,
+        style=style,
+        train_days=train_days,
+        test_days=test_days,
+    )
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result

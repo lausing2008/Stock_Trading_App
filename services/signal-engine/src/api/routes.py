@@ -2906,6 +2906,109 @@ def outcomes_calibrate(
     }
 
 
+@router.post("/outcomes/calibrate/apply")
+def outcomes_calibrate_apply(
+    days: int = Query(180, description="Look-back window in calendar days"),
+    min_samples: int = Query(15, description="Minimum signals required to apply a new threshold"),
+    min_ev_lift: float = Query(0.1, description="Minimum expected-value lift (%) before applying"),
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Apply empirically-optimal buy thresholds to Redis so signal generator picks them up live.
+
+    Reads the same calibration data as GET /outcomes/calibrate and, for each horizon
+    where the suggested threshold has a positive EV lift and sufficient sample size,
+    writes `stockai:signal_thresholds:{HORIZON}` to Redis with a 30-day TTL.
+
+    The signal generator reads these keys at signal decision time (falls back to the
+    hardcoded _STYLE_PROFILES values if absent).  Run this weekly via the scheduler.
+    """
+    import statistics as _stats
+
+    CURRENT: dict[str, float] = {
+        "SHORT":  63.0,
+        "SWING":  67.0,
+        "LONG":   60.0,
+        "GROWTH": 60.0,
+    }
+
+    cutoff = date.today() - timedelta(days=days)
+    all_outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+        )
+    ).scalars().all()
+
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    redis_client = _get_redis()
+    _REDIS_TTL = 30 * 86400  # 30 days
+
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        bucket = [o for o in all_outcomes if o.horizon.value == h]
+        current_t = CURRENT.get(h, 65.0)
+
+        if len(bucket) < min_samples:
+            skipped.append({"horizon": h, "reason": f"only {len(bucket)} samples (need {min_samples})"})
+            continue
+
+        best_ev = -999.0
+        best_t: float | None = None
+        best_stats: dict | None = None
+        current_stats: dict | None = None
+
+        for t_int in range(40, 86):
+            sub = [o for o in bucket if o.confidence >= float(t_int)]
+            if len(sub) < min_samples:
+                continue
+            wins = sum(1 for o in sub if o.is_correct)
+            rets = [o.pct_return for o in sub if o.pct_return is not None]
+            acc = wins / len(sub)
+            avg_ret = _stats.mean(rets) if rets else 0.0
+            ev = acc * avg_ret * 100
+            if ev > best_ev:
+                best_ev = ev
+                best_t = float(t_int)
+                best_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
+            if t_int == int(current_t):
+                current_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
+
+        if best_t is None:
+            skipped.append({"horizon": h, "reason": "no threshold met EV criteria"})
+            continue
+
+        current_ev = current_stats["ev_pct"] if current_stats else 0.0
+        ev_lift = round(best_ev - current_ev, 2)
+
+        if ev_lift < min_ev_lift and abs(best_t - current_t) < 3:
+            skipped.append({
+                "horizon": h,
+                "reason": f"EV lift {ev_lift}% below min {min_ev_lift}% and threshold shift <3pt",
+                "suggested": best_t / 100,
+                "current": current_t / 100,
+            })
+            continue
+
+        # Write to Redis — signal generator reads this at decision time
+        redis_key = f"stockai:signal_thresholds:{h}"
+        redis_client.setex(redis_key, _REDIS_TTL, str(round(best_t / 100, 4)))
+        applied.append({
+            "horizon": h,
+            "previous_threshold": current_t / 100,
+            "new_threshold": round(best_t / 100, 4),
+            "ev_lift_pct": ev_lift,
+            "stats": best_stats,
+        })
+
+    return {
+        "applied": applied,
+        "skipped": skipped,
+        "redis_ttl_days": 30,
+    }
+
+
 _DECAY_DAYS = [1, 2, 3, 5, 7, 10, 15, 20, 30]
 
 

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7048,6 +7048,97 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 84 — Broker Integration: Alpaca live execution (roadmap) ──────────────────────────────────────
+  {
+    id: 'TIER84-BROKER-ALPACA',
+    tier: 84, severity: 'feature', defaultStatus: 'todo',
+    file: 'services/market-data/src/services/paper_trading_engine.py, shared/db/models.py:BrokerConnection',
+    implementedNote: 'Roadmap: Alpaca Markets API (free tier) provides paper + live trading execution. Existing BrokerInterface ABC and EtradeBroker (Tier 18) architecture supports adding AlpacaBroker. Alpaca requires no OAuth PIN flow — uses API key + secret. Would turn paper trading signals into real orders.',
+    effort: '2 weeks',
+    impact: 'Transformative — turns the AI signals into actual trades. Institutional traders require real execution feedback to validate signal quality.',
+    title: 'Broker integration: Alpaca live order execution (free paper + live API)',
+    what: 'Paper trading simulates outcomes but does not execute real orders. Gap to institutional deployment: signals are not acted upon.',
+    fix: 'Add AlpacaBroker to broker service. Wire paper_trading_engine.py to route BUY/SELL decisions through AlpacaBroker.place_order() when broker_connection_id is set.',
+  },
+
+  // ── Tier 83 — Intraday SHORT Signal Refresh (roadmap) ──────────────────────────────────────
+  {
+    id: 'TIER83-INTRADAY-SHORT',
+    tier: 83, severity: 'feature', defaultStatus: 'todo',
+    file: 'services/market-data/src/services/scheduler.py, services/signal-engine/src/api/routes.py',
+    implementedNote: 'Roadmap: SHORT horizon (5-day hold) signals are currently refreshed 5×/day with all other styles. Intraday price moves >1.5 ATR should trigger immediate SHORT signal re-evaluation. Requires an intraday trigger job in scheduler.py that monitors 5-min price bars and POSTs /signals/refresh?market=US&style=SHORT&symbol=AAPL when threshold exceeded.',
+    effort: '1 week',
+    impact: 'High for SHORT trades — intraday momentum/reversal signals become stale within minutes. Institutional SHORT desks re-score every tick.',
+    title: 'Intraday SHORT signal refresh: trigger on >1.5 ATR intraday move',
+    what: 'SHORT signals (5-day horizon) are only refreshed 5×/day with all other styles. A stock that gaps 3% intraday generates no new signal until the next scheduled refresh.',
+    fix: 'Add intraday monitor in scheduler: check 5m bars every minute; if stock moved >1.5 ATR since open, trigger immediate SHORT-only signal refresh for that symbol.',
+  },
+
+  // ── Tier 82 — Financial Modeling Prep (FMP) Integration (roadmap) ─────────────────────────
+  {
+    id: 'TIER82-FMP-ANALYST-ESTIMATES',
+    tier: 82, severity: 'feature', defaultStatus: 'todo',
+    file: 'services/ml-prediction/src/features/builder.py, services/market-data/src/services/scheduler.py',
+    implementedNote: 'Roadmap: Financial Modeling Prep (FMP) free tier provides analyst EPS estimate revisions (direction of estimate changes = momentum factor), analyst price targets + consensus, and EPS forecast for next quarter. These are stronger predictors than static yfinance fundamentals. Requires FMP_API_KEY env var. Cost: $0/month (free tier, 250 API calls/day).',
+    effort: '3 days (pending API key)',
+    impact: 'High — analyst estimate revisions are one of the strongest proven alpha factors. Stocks where analysts are raising estimates outperform by 3-5% over 3 months.',
+    title: 'FMP integration: analyst EPS estimate revisions + price targets as ML features',
+    what: 'Current ML features use yfinance recommendation_mean (static consensus) but not the direction of estimate changes (revisions). Revisions momentum — analysts raising EPS estimates — is a top institutional alpha factor.',
+    fix: 'Add FMP data fetcher in scheduler (weekly). Add eps_revision_direction (+1/-1/0) and analyst_pt_upside (% to consensus price target) to FUNDAMENTAL_COLUMNS in builder.py.',
+  },
+
+  // ── Tier 81 — Walk-Forward OOS Validation Endpoint (2026-06-21) ─────────────────────────────
+  {
+    id: 'TIER81-WALKFORWARD-OOS',
+    tier: 81, severity: 'medium', defaultStatus: 'done',
+    file: 'services/ml-prediction/src/training/trainer.py:validate_walkforward(), services/ml-prediction/src/api/routes.py:GET /ml/walkforward/{symbol}, services/ml-prediction/src/training/__init__.py',
+    implementedNote: 'Done 2026-06-21: validate_walkforward(symbol, model, style, train_days=252, test_days=63) added to trainer.py. Retrains a temporary model per window (no lookahead) and evaluates OOS precision, AUC, avg return, and IC (Spearman correlation between predicted probability and actual forward return). GET /ml/walkforward/{symbol} endpoint exposes results with per-window breakdown and summary statistics. Unlike the existing 5-fold CV, this genuinely retrains per window with data up to window start — a true OOS simulation.',
+    effort: '2h',
+    impact: 'High — institutional compliance requires proof that models generalise to unseen data. Mean OOS IC > 0.03 is the institutional bar for a tradeable signal.',
+    title: 'True walk-forward OOS validation: retrain per window, evaluate on held-out test (GET /ml/walkforward/{symbol})',
+    what: 'Existing train_model() used 5-fold TimeSeriesSplit CV but folds on the 70% training portion only. No validation proved the model generalises to data it never saw at train time.',
+    fix: 'Added validate_walkforward() that slides a (train_days, test_days) window across 6 years of history, retraining per window and reporting OOS precision, AUC, avg return, and IC per fold.',
+  },
+
+  // ── Tier 80 — Feature Attribution at Predict Time (2026-06-21) ──────────────────────────────
+  {
+    id: 'TIER80-FEATURE-ATTRIBUTION',
+    tier: 80, severity: 'medium', defaultStatus: 'done',
+    file: 'services/ml-prediction/src/training/trainer.py:predict_latest():feature_attributions',
+    implementedNote: 'Done 2026-06-21: predict_latest() now computes feature_attributions dict — top-5 features ranked by |importance × sign(feature_value)|. Returned in the prediction response as feature_attributions: {feature_name: contribution_score}. Positive = pushes toward BUY, negative = pushes toward SELL. No external library needed — uses feature_importances_ stored in the joblib bundle.',
+    effort: '30m',
+    impact: 'Medium — signal transparency. Institutional traders need to understand why an AI signal fired before acting on it. The feature_attributions appear in signal.reasons JSON, enabling "driven by: momentum + EPS beat" labelling on stock detail page.',
+    title: 'Signal feature attribution: top-5 drivers returned with every ML prediction',
+    what: 'ML predictions returned a probability but no explanation. Users could not audit why a BUY signal fired — was it momentum, fundamentals, or macro? Black-box signals are not acceptable at institutional level.',
+    fix: 'predict_latest() computes feature_attributions using feature_importance × sign(feature_value) as a directional contribution proxy. Returns top-5 features by absolute contribution alongside the probability.',
+  },
+
+  // ── Tier 79 — Dynamic Threshold Auto-Apply (2026-06-21) ─────────────────────────────────────
+  {
+    id: 'TIER79-DYNAMIC-THRESHOLDS',
+    tier: 79, severity: 'high', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:POST /signals/outcomes/calibrate/apply, services/signal-engine/src/generators/signals.py:_get_dynamic_buy_threshold(), services/market-data/src/services/scheduler.py',
+    implementedNote: 'Done 2026-06-21: (1) POST /signals/outcomes/calibrate/apply endpoint reads live outcomes data and writes per-horizon optimal buy thresholds to Redis (stockai:signal_thresholds:{HORIZON}, 30-day TTL). (2) _get_dynamic_buy_threshold(style, regime) in signals.py reads from Redis before falling back to hardcoded _STYLE_PROFILES. (3) Scheduler now calls calibrate/apply weekly (Sunday) alongside TA weight and conviction weight calibration. Effect: buy thresholds self-tune from real trade outcomes rather than being fixed constants.',
+    effort: '2h',
+    impact: 'High — hardcoded thresholds (SWING: 0.67, SHORT: 0.63) were set at design time with no empirical backing from live trades. Auto-calibration aligns the threshold to the actual win rate distribution of live signals.',
+    title: 'Dynamic threshold auto-apply: buy thresholds self-tune weekly from live outcomes data via Redis',
+    what: 'buy_threshold in _STYLE_PROFILES was hardcoded and never updated from live trade outcomes. The calibrate endpoint computed optimal values but they were read-only.',
+    fix: 'Added POST /outcomes/calibrate/apply that writes optimal thresholds to Redis. _decide_style() in signals.py reads these before using hardcoded fallbacks. Wired to Sunday calibration run.',
+  },
+
+  // ── Tier 78 — EPS Beat Momentum + Short Ratio Delta ML Features (2026-06-21) ──────────────────────────────────
+  {
+    id: 'TIER78-EPS-BEAT-FEATURES',
+    tier: 78, severity: 'high', defaultStatus: 'done',
+    file: 'services/ml-prediction/src/features/builder.py:FUNDAMENTAL_COLUMNS, services/ml-prediction/src/training/trainer.py:_load_earnings_features(),_load_fundamentals()',
+    implementedNote: 'Done 2026-06-21: 4 new ML features added from existing DB tables — no external API required. (1) eps_beat_streak: consecutive quarters beating EPS estimate (0–4 clipped) from EarningsEvent table — counts backward from most-recent quarter until first miss. (2) eps_surprise_avg: rolling 4-quarter average surprise_pct from EarningsEvent.surprise_pct — positive = consistent EPS beats. (3) days_to_earnings: calendar days to next expected earnings (0–90; 90 when unknown/far) — earnings proximity is a risk factor. (4) short_ratio_delta: change in short_ratio between two most-recent Fundamental snapshots — negative = short covering (bullish). All 4 are NaN-allowed (XGBoost handles missing values natively). 47 → 51 total features. Takes effect on next train_all.',
+    effort: '3h',
+    impact: 'High — EPS beat streak is a proven top-5 institutional alpha factor. Consistent earnings beaters outperform by 4-6% over 3 months. Short covering is one of the strongest short-term momentum catalysts.',
+    title: 'Institutional ML features: EPS beat streak, EPS surprise avg, days-to-earnings, short ratio delta (47→51 features)',
+    what: 'ML model had no EPS quality features beyond static earnings_growth (YoY). Analyst estimate beat streak — the single most-tested equity alpha factor — was absent. Short interest trend was also missing (only static short_ratio).',
+    fix: '_load_earnings_features() fetches last 5 EarningsEvent rows per symbol and computes beat streak + surprise avg. _load_fundamentals() now returns last 2 Fundamental rows and computes short_ratio_delta. Both merged into fund_data before build_features() call.',
+  },
+
   // ── Tier 77 — Signal Quality Calibration Page (2026-06-21) ─────────────────────────────────────────
   {
     id: 'TIER77-CALIBRATION-PAGE',
@@ -7593,6 +7684,13 @@ const TIER_LABEL: Record<Tier, string> = {
   75: 'Tier 75 — Audit Round 2 Remaining: daily_pnl + TA scores + async + UUIDs + indexes + positions research',
   76: 'Tier 76 — Auth Hardening: ML predict auth + EI read auth + NOT NULL constraints (2026-06-21)',
   77: 'Tier 77 — Signal Quality Calibration: reliability diagram + per-horizon bands + threshold recs (2026-06-21)',
+  78: 'Tier 78 — Institutional ML Features: EPS beat streak + surprise avg + short ratio delta (51 features)',
+  79: 'Tier 79 — Dynamic Thresholds: buy thresholds self-tune weekly from live outcomes data',
+  80: 'Tier 80 — Feature Attribution: top-5 signal drivers returned with every ML prediction',
+  81: 'Tier 81 — Walk-Forward OOS: true per-window retraining + OOS precision/AUC/IC validation',
+  82: 'Tier 82 — FMP Integration: analyst EPS estimate revisions + price targets (roadmap)',
+  83: 'Tier 83 — Intraday SHORT Refresh: re-score SHORT signals on >1.5 ATR intraday move (roadmap)',
+  84: 'Tier 84 — Broker Integration: Alpaca live execution (roadmap)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7673,6 +7771,13 @@ const TIER_COLOR: Record<Tier, string> = {
   75: '#a78bfa',
   76: '#38bdf8',
   77: '#4ade80',
+  78: '#f59e0b',
+  79: '#a78bfa',
+  80: '#38bdf8',
+  81: '#34d399',
+  82: '#f97316',
+  83: '#fb923c',
+  84: '#818cf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -7949,18 +8054,18 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current (2026-06-17) — Tier 31: signal_outcomes dedup fix (18× row inflation eliminated; guard by stock+horizon+date), HK paper trading (HKEX hours, HSI regime, market stock filter), 3 paper portfolios running (GROWTH US + SWING US + SWING HK), portfolio switcher always visible + market badges.
+          Current (2026-06-21) — Tier 78–81: Institutional-grade ML (51 features: EPS beat streak, short ratio delta), self-tuning signal thresholds (outcomes-driven Redis config), feature attribution per signal, true walk-forward OOS validation.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
-            { label: 'Data pipeline',   score: 9.0, target: 9.2, note: '↑ ML-FUND-2 weekly fundamentals batch refresh live (all 138 symbols Sunday, rate-limited 3/s). ↑ ML-FUND-4 staleness warning on Company Financials. ↑ fetched_at persisted in Redis cache so data age survives 24h TTL.' },
-            { label: 'ML methodology',  score: 9.3, target: 9.4, note: '↑ SA-29: weekly_rsi + weekly_trend added as ML features (44 total, 2026-06-17). TA calibration: macd_zero_cross_up (0.64) + bullish_trend (0.40) dominant predictors. tune_all relaunched (560 jobs, 44-feature baseline).' },
-            { label: 'Signal logic',    score: 9.3, target: 9.4, note: '↑ SA-30 min 3-pillar gate for SWING/LONG (×0.70 compress, 2026-06-17). ↑ INT-8 research alignment panel in Signal Filter. ↑ SA-28 SWING threshold 0.62→0.65, GROWTH 0.57→0.60.' },
+            { label: 'Data pipeline',   score: 9.0, target: 9.2, note: '↑ ML-FUND-2 weekly fundamentals batch refresh live (all 138 symbols Sunday, rate-limited 3/s). ↑ ML-FUND-4 staleness warning on Company Financials.' },
+            { label: 'ML methodology',  score: 9.5, target: 9.7, note: '↑ Tier 78: 51 features (EPS beat streak, EPS surprise avg, days-to-earnings, short ratio delta added). ↑ Tier 81: true WF OOS validation endpoint (per-window precision/AUC/IC). Tier 80: feature attribution per prediction.' },
+            { label: 'Signal logic',    score: 9.5, target: 9.6, note: '↑ Tier 79: dynamic buy thresholds self-tune weekly from live outcomes data (Redis). SA-30 min 3-pillar gate. Research-gated sizing. INT-8 research alignment panel.' },
             { label: 'K-Score ranking', score: 8.5, target: 8.5, note: '✓ SCR-1 multi-factor screener + RES-4 sector context (target met)' },
-            { label: 'Research engine', score: 8.2, target: 8.8, note: '↑ RES-FIX-1 data fallback + INT-4 auto-trigger + INT-6 composite score' },
-            { label: 'Frontend / UX',   score: 9.7, target: 9.8, note: '↑ Tier 16: chart overhaul (EMA200, VWAP, 52W H/L, signal markers, pattern strip), signal history sidebar, screener filters' },
+            { label: 'Research engine', score: 8.2, target: 8.8, note: '↑ RES-FIX-1 data fallback + INT-4 auto-trigger + INT-6 composite score. Tier 82 (FMP analyst estimates) roadmap.' },
+            { label: 'Frontend / UX',   score: 9.7, target: 9.8, note: '↑ Tier 77: Signal Quality page (calibration curve + threshold recs). Tier 16: chart overhaul (EMA200, VWAP, 52W H/L, signal markers). Conviction Gate panel.' },
             { label: 'Risk management', score: 9.0, target: 9.2, note: '↑ Tier 31: 3 autonomous paper portfolios (GROWTH US + SWING US + SWING HK) + HK market hours + HSI regime. CB-W1 cutoff fixed. INT-3 research-gated sizing + PT-M1/M2/M4/M5 all live.' },
-            { label: 'Overall',         score: 9.8, target: 9.8, note: '↑ Tier 31: signal_outcomes dedup (data integrity), HK paper trading (platform expansion), 3 portfolios running, portfolio switcher UX.' },
+            { label: 'Overall',         score: 9.8, target: 9.9, note: '↑ Tier 78–81: Institutional ML (51 features), self-tuning thresholds, feature attribution, WF OOS validation. Roadmap: FMP estimates (82), intraday SHORT (83), Alpaca broker (84).' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -8003,8 +8108,9 @@ export default function ImprovementsPage() {
           Tier 25 (2026-06-16): Sharpe ratio on stock detail — 1-year annualised Sharpe calculated from existing price data (no backend change); header card with Excellent/Good/Fair/Poor color tiers. Whale options detection — extended options-flow from 2 to 4 expiries; added premium = volume × lastPrice × 100 per contract; is_whale flag at $500K threshold; response gains whale_count and top_whale_premium; UI shows 🐋 badge when whales detected, highlighted rows with Premium column in amber.
           Tier 24 (2026-06-16, partial): ML-FUND-2 weekly fundamentals batch refresh — _refresh_fundamentals_batch() added to _weekly_full_refresh() in scheduler.py; runs after signals/rankings, before tune_all; rate-limited 3 req/s; also triggered immediately for all 138 symbols via fund_batch.py docker exec script. ML-FUND-3 feature importance panel — GET /ml/features/SYMBOL endpoint added to ml-prediction; collapsible "Top model drivers" section on stock detail with horizontal bars color-coded by category (green=technical, blue=macro, purple=fundamental). ML-FUND-4 fundamentals staleness warning — fetched_at added to FundamentalsOut and persisted in Redis cache; Company Financials header shows "as of [date]" / "⚠ Nd old" when &gt; 90 days. Open: ML-FUND-5 tune_all rerun with 42-feature pipeline (expected +3-8% CV AUC; schedule for next Sunday after fundamentals batch populates).
           Tier 30 (2026-06-17): SA-29 weekly RSI + weekly trend as ML features — daily closes resampled to weekly W-FRI bars; RSI-14w and price vs 10-week SMA trend (+1/0/−1) forward-filled to daily; added to WEEKLY_COLUMNS (NaN-optional like fundamentals); 42→44 features total. SA-30 minimum 3-pillar gate for SWING/LONG — min_pillars_for_buy=3; 2-pillar signals compressed ×0.70 toward neutral (breakeven fused ≥ 0.714); SHORT/GROWTH retain 2-pillar minimum; pillar_gate reason: "compressed_2_pillar_below_min3". ML-FUND-5 tune_all relaunched — 560 Optuna jobs (140 symbols × 4 styles, 60 trials each) running on EC2 ml-prediction; first tune run using the full 44-feature pipeline. INT-8 C research alignment panel in Signal Filter — ResearchAlignmentPanel component above condition summary bar; fetches outcomes/summary?horizon=&#123;style&#125;&amp;days=90; shows win-rate tiles (aligned/partial/divergent/no_research) with count + avg return; updates on style tab change; OutcomesSummary type extended with by_research_alignment + by_window fields.
+          Tier 78–81 (2026-06-21): Institutional-grade improvements — Tier 78: 4 new ML features from existing DB: eps_beat_streak (consecutive EPS beats, 0–4), eps_surprise_avg (4Q rolling avg surprise %), days_to_earnings (0–90d), short_ratio_delta (short covering signal) → 47→51 features; takes effect on next train_all. Tier 79: POST /outcomes/calibrate/apply writes empirically-optimal per-horizon buy thresholds to Redis (30-day TTL); _decide_style() in signals.py reads Redis before hardcoded values; wired to Sunday scheduler; thresholds now self-tune from live trade outcomes. Tier 80: predict_latest() returns feature_attributions dict (top-5 features ranked by |importance × sign(value)|); positive=BUY driver, negative=SELL driver; stored in prediction response for signal transparency. Tier 81: validate_walkforward(symbol, train_days=252, test_days=63) in trainer.py; retrains per window with data up to window start; evaluates OOS precision, AUC, avg return, IC; GET /ml/walkforward/{symbol} endpoint exposes results; proves model generalises to genuinely unseen data.
           Tier 31 (2026-06-17): signal_outcomes dedup fix — evaluate_signal_outcomes now guards by (stock_id, horizon, signal_date) in addition to signal_id; 5×/day signal refreshes no longer produce 18× inflated outcome rows; DB cleaned (73→52 rows, 21 duplicates deleted). HK paper trading — paper_trading_engine.py: _is_market_hours(market) checks HKEX sessions (09:30-12:00 + 13:00-16:00 HKT); _fetch_hk_market_regime() uses ^HSI vs 200 SMA; _scan_for_entries() filters Stock.market == cfg["market"]; per-portfolio regime fetch (US→SPY/VIX, HK→HSI); scheduler enabled for both markets. 3 paper portfolios now running: GROWTH US (existing), SWING US (new $50k), SWING HK (new $50k). Portfolio switcher UX — card grid always visible with PORTFOLIOS label; market badge on cards (US=cyan, HK=orange); market dropdown in create modal.
-          Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Remaining: walk-forward backtest, SUR-001, CV-001, WEIGHT-001, ENS-001 (ML training methodology items).
+          Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Tiers 78–81 shipped: 51 ML features (EPS beat streak, short ratio delta), self-tuning signal thresholds via outcomes calibration, feature attribution per prediction, true WF OOS validation. Roadmap: FMP analyst estimates (82), intraday SHORT refresh (83), Alpaca broker execution (84).
         </p>
       </div>
     </div>

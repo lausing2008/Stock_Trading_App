@@ -1251,14 +1251,36 @@ def _fetch_analyst_momentum(symbol: str) -> tuple[int, int]:
     return 0, 0
 
 
+def _get_dynamic_buy_threshold(style_key: str, reg: str) -> float | None:
+    """Read empirically-calibrated buy threshold from Redis if available.
+
+    Written by POST /outcomes/calibrate/apply.  Returns None if absent so
+    _decide_style falls back to the hardcoded _STYLE_PROFILES value.
+    """
+    try:
+        import redis as redis_lib
+        r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        val = r.get(f"stockai:signal_thresholds:{style_key.upper()}")
+        if val:
+            return float(val)
+    except Exception:
+        pass
+    return None
+
+
 def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str, str]:
     """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds.
+
+    Reads dynamically-calibrated buy threshold from Redis if available (written by
+    POST /outcomes/calibrate/apply).  Falls back to hardcoded _STYLE_PROFILES values.
 
     Returns (signal, style_key, threshold_tier).
     """
     p = _STYLE_PROFILES[style_key]
     reg = market_regime if market_regime in ("bull", "high_vol", "bear", "unknown") else "unknown"
-    buy_t  = p["buy_threshold"][reg]
+    # Dynamic override from outcomes-based calibration; falls back to hardcoded profile
+    dynamic_buy = _get_dynamic_buy_threshold(style_key, reg)
+    buy_t  = dynamic_buy if dynamic_buy is not None else p["buy_threshold"][reg]
     hold_t = p["hold_threshold"][reg]
     tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")
     if fused_prob > buy_t:   return "BUY",  style_key, tier

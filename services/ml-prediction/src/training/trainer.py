@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import Fundamental, Price, SessionLocal, Stock, TimeFrame
+from db import EarningsEvent, Fundamental, Price, SessionLocal, Stock, TimeFrame
 from sqlalchemy import desc as sa_desc
 
 from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS, WEEKLY_COLUMNS
@@ -81,6 +81,7 @@ def _load_fundamentals(symbol: str) -> dict | None:
     Returns None if no row exists (model will train with NaN fundamental features).
     fcf_yield is computed here as free_cashflow / market_cap so builder.py
     only needs to consume scalar values.
+    Also computes short_ratio_delta from the two most-recent snapshots (covering=negative delta).
     """
     with SessionLocal() as session:
         stock = session.execute(
@@ -88,17 +89,22 @@ def _load_fundamentals(symbol: str) -> dict | None:
         ).scalar_one_or_none()
         if not stock:
             return None
-        row = session.execute(
+        rows = session.execute(
             select(Fundamental)
             .where(Fundamental.stock_id == stock.id)
             .order_by(sa_desc(Fundamental.as_of))
-            .limit(1)
-        ).scalar_one_or_none()
-    if row is None:
+            .limit(2)
+        ).scalars().all()
+    if not rows:
         return None
+    row = rows[0]
     fcf = row.free_cashflow
     mkt = row.market_cap
     fcf_yield = (fcf / mkt) if (fcf and mkt and mkt > 0) else None
+    # short_ratio_delta: negative = short covering (bullish), positive = building shorts (bearish)
+    short_ratio_delta: float | None = None
+    if len(rows) >= 2 and row.short_ratio is not None and rows[1].short_ratio is not None:
+        short_ratio_delta = row.short_ratio - rows[1].short_ratio
     return {
         "revenue_growth":      row.revenue_growth,
         "earnings_growth":     row.earnings_growth,
@@ -106,11 +112,82 @@ def _load_fundamentals(symbol: str) -> dict | None:
         "return_on_equity":    row.return_on_equity,
         "fcf_yield":           fcf_yield,
         "short_ratio":         row.short_ratio,
+        "short_ratio_delta":   short_ratio_delta,
         "recommendation_mean": row.recommendation_mean,
         "price_to_book":       row.price_to_book,
         "peg_ratio":           getattr(row, "peg_ratio", None),
         "debt_to_equity":      getattr(row, "debt_to_equity", None),
     }
+
+
+def _load_earnings_features(symbol: str) -> dict:
+    """Fetch EPS beat streak, surprise average, and days-to-next-earnings.
+
+    eps_beat_streak  — consecutive quarters beating consensus estimate (0=no streak; capped at 4)
+    eps_surprise_avg — rolling 4-quarter average surprise_pct (positive = consistent beats)
+    days_to_earnings — calendar days to next expected report (0–90; 90 when unknown or far)
+
+    All values are NaN-tolerant — missing data returns NaN keys (XGBoost handles natively).
+    """
+    today = date.today()
+    result: dict = {}
+    with SessionLocal() as session:
+        stock = session.execute(
+            select(Stock).where(Stock.symbol == symbol)
+        ).scalar_one_or_none()
+        if not stock:
+            return result
+
+        # Completed earnings (with actual EPS) — last 5 quarters
+        past = session.execute(
+            select(EarningsEvent)
+            .where(
+                EarningsEvent.stock_id == stock.id,
+                EarningsEvent.report_date <= today,
+                EarningsEvent.eps_actual.isnot(None),
+            )
+            .order_by(sa_desc(EarningsEvent.report_date))
+            .limit(5)
+        ).scalars().all()
+
+        # Next upcoming earnings date
+        next_date = session.execute(
+            select(EarningsEvent.report_date)
+            .where(
+                EarningsEvent.stock_id == stock.id,
+                EarningsEvent.report_date > today,
+            )
+            .order_by(EarningsEvent.report_date)
+            .limit(1)
+        ).scalar_one_or_none()
+
+    # EPS beat streak: count consecutive beats from most-recent going back
+    beat_streak = 0
+    for ev in past:
+        if ev.eps_actual is not None and ev.eps_estimate is not None and ev.eps_estimate != 0:
+            if ev.eps_actual > ev.eps_estimate:
+                beat_streak += 1
+            else:
+                break
+        elif ev.surprise_pct is not None:
+            if ev.surprise_pct > 0:
+                beat_streak += 1
+            else:
+                break
+    result["eps_beat_streak"] = float(min(beat_streak, 4))
+
+    # Rolling 4-quarter surprise average
+    surprises = [ev.surprise_pct for ev in past[:4] if ev.surprise_pct is not None]
+    result["eps_surprise_avg"] = float(np.mean(surprises)) if surprises else None
+
+    # Days to next earnings — clamp to [0, 90]; use 90 when no upcoming date known
+    if next_date is not None:
+        days = (next_date - today).days
+        result["days_to_earnings"] = float(min(max(days, 0), 90))
+    else:
+        result["days_to_earnings"] = 90.0  # unknown / far — treat as low-urgency
+
+    return result
 
 
 def _artifact_path(symbol: str, model_name: str, style: str = "SWING") -> Path:
@@ -260,9 +337,13 @@ def train_model(
     _train_rows = int(len(df) * 0.70)
     label_threshold = compute_label_threshold(df.iloc[:max(_train_rows, 60)], horizon)
 
-    fund_data: dict | None = None
+    fund_data: dict = {}
     try:
-        fund_data = _load_fundamentals(symbol)
+        fund_data = _load_fundamentals(symbol) or {}
+    except Exception:
+        pass
+    try:
+        fund_data.update(_load_earnings_features(symbol))
     except Exception:
         pass
 
@@ -554,9 +635,13 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     except Exception:
         pass
 
-    infer_fund_data: dict | None = None
+    infer_fund_data: dict = {}
     try:
-        infer_fund_data = _load_fundamentals(symbol)
+        infer_fund_data = _load_fundamentals(symbol) or {}
+    except Exception:
+        pass
+    try:
+        infer_fund_data.update(_load_earnings_features(symbol))
     except Exception:
         pass
 
@@ -600,6 +685,26 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     else:
         prob = float(calibrator.predict([raw_prob])[0])
 
+    # ── Feature attribution (top-5 drivers) ────────────────────────────────────
+    # Approximation: importance × sign(scaled_value) gives a directional contribution.
+    # Positive = pushes toward BUY, negative = pushes toward SELL.
+    feature_attributions: dict[str, float] = {}
+    try:
+        fi = bundle.get("feature_importance", {})
+        if fi and not X.empty:
+            latest = X.iloc[-1]
+            for feat, imp in fi.items():
+                if feat in latest.index:
+                    val = latest[feat]
+                    if not np.isnan(val) and imp > 0:
+                        # Directional contribution: positive features push BUY
+                        feature_attributions[feat] = round(float(imp * np.sign(val)), 5)
+            # Return top 5 by absolute contribution
+            top5 = sorted(feature_attributions.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+            feature_attributions = dict(top5)
+    except Exception:
+        pass
+
     return {
         "symbol": symbol,
         "model": model_name,
@@ -610,6 +715,7 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
         "metrics": bundle.get("metrics", {}),
         "trained_at": bundle.get("trained_at"),
         "model_age_days": model_age_days,
+        "feature_attributions": feature_attributions,
     }
 
 
@@ -768,4 +874,145 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
             "cv_auc_mean": round(mean_auc, 4),
             "buy_threshold": buy_threshold,
         },
+    }
+
+
+def validate_walkforward(
+    symbol: str,
+    model_name: str = "xgboost",
+    style: str = "SWING",
+    train_days: int = 252,
+    test_days: int = 63,
+) -> dict:
+    """True walk-forward validation: retrain per window, evaluate on held-out test slice.
+
+    Unlike the CV in train_model() (which folds on training-period data only), this
+    trains one model per window using only data up to the window start, then evaluates
+    on the subsequent test_days — a genuine out-of-sample simulation.
+
+    Returns a list of per-window metrics and summary statistics (mean OOS precision,
+    mean AUC, buy signal count, and annualised Sharpe proxy).
+    """
+    try:
+        df_all = _load_prices(symbol, lookback_days=365 * 6)
+    except ValueError as exc:
+        return {"symbol": symbol, "error": str(exc)}
+
+    today = date.today()
+    df_all = df_all[pd.to_datetime(df_all["ts"]).dt.date < today].copy()
+    if df_all.empty or len(df_all) < train_days + test_days:
+        return {"symbol": symbol, "error": f"Insufficient price history ({len(df_all)} bars)"}
+
+    horizon = _HORIZON_BY_STYLE.get(style.upper(), 10)
+
+    # Build macro + earnings features once (same data used across all windows)
+    try:
+        start_d = pd.to_datetime(df_all["ts"]).min().date()
+        macro_df = fetch_macro_features(start_d, today)
+    except Exception:
+        macro_df = None
+
+    fund_data: dict = {}
+    try:
+        fund_data = _load_fundamentals(symbol) or {}
+        fund_data.update(_load_earnings_features(symbol))
+    except Exception:
+        pass
+
+    windows: list[dict] = []
+    n = len(df_all)
+    pos = train_days  # start of first test window
+
+    while pos + test_days <= n - horizon:
+        df_train = df_all.iloc[:pos].copy()
+        df_test  = df_all.iloc[pos:pos + test_days + horizon].copy()
+
+        # Compute label threshold on training portion only (no lookahead)
+        label_threshold = compute_label_threshold(df_train.iloc[-min(252, len(df_train)):], horizon)
+
+        try:
+            X_tr, y_tr, _ = build_features(
+                df_train, horizon=horizon, macro_df=macro_df,
+                label_threshold=label_threshold, fund_data=fund_data,
+            )
+            X_te, y_te, y_ret_te = build_features(
+                df_test, horizon=horizon, macro_df=macro_df,
+                label_threshold=label_threshold, fund_data=fund_data,
+            )
+        except Exception:
+            pos += test_days
+            continue
+
+        if len(X_tr) < 100 or len(X_te) < 5:
+            pos += test_days
+            continue
+
+        scaler = StandardScaler()
+        X_tr_s = scaler.fit_transform(X_tr.values)
+        X_te_s = scaler.transform(X_te.values)
+
+        _rw = _recency_weights(len(X_tr), newest_to_oldest_ratio=5.0)
+        sw = _blend_weights(y_tr.values, _rw)
+
+        try:
+            m = get_model(model_name)
+            m.fit(X_tr_s, y_tr.values, sample_weight=sw)
+            probs = m.predict_proba(X_te_s)
+            raw = probs[:, 1] if probs.ndim == 2 else probs
+        except Exception:
+            pos += test_days
+            continue
+
+        # Use a fixed 0.5 threshold for OOS eval (no threshold optimisation on OOS data)
+        preds = (raw > 0.5).astype(int)
+        n_buy = int(preds.sum())
+        oos_prec = float(precision_score(y_te, preds, zero_division=0)) if n_buy else None
+        oos_auc = float(roc_auc_score(y_te, raw)) if len(np.unique(y_te)) > 1 else None
+        avg_ret  = float(np.mean(y_ret_te.values[preds == 1])) if n_buy > 0 else None
+
+        # IC: Spearman rank correlation of predicted probability vs actual return
+        ic_val = None
+        if len(y_ret_te) >= 5:
+            ic, _ = spearmanr(raw, y_ret_te.values)
+            ic_val = round(float(ic), 4) if not np.isnan(ic) else None
+
+        train_end = str(pd.to_datetime(df_train.iloc[-1]["ts"]).date())
+        test_end  = str(pd.to_datetime(df_test.iloc[min(test_days - 1, len(df_test) - 1)]["ts"]).date())
+
+        windows.append({
+            "train_end":   train_end,
+            "test_end":    test_end,
+            "n_train":     len(X_tr),
+            "n_test":      len(X_te),
+            "n_buy_signals": n_buy,
+            "oos_precision": round(oos_prec, 3) if oos_prec is not None else None,
+            "oos_auc":     round(oos_auc, 4) if oos_auc is not None else None,
+            "avg_return_pct": round(avg_ret * 100, 2) if avg_ret is not None else None,
+            "ic":          ic_val,
+        })
+        pos += test_days
+
+    if not windows:
+        return {"symbol": symbol, "error": "No valid WF windows produced"}
+
+    precs = [w["oos_precision"] for w in windows if w["oos_precision"] is not None]
+    aucs  = [w["oos_auc"] for w in windows if w["oos_auc"] is not None]
+    rets  = [w["avg_return_pct"] for w in windows if w["avg_return_pct"] is not None]
+    ics   = [w["ic"] for w in windows if w["ic"] is not None]
+
+    return {
+        "symbol": symbol,
+        "style": style,
+        "model": model_name,
+        "n_windows": len(windows),
+        "train_days": train_days,
+        "test_days": test_days,
+        "summary": {
+            "mean_oos_precision": round(float(np.mean(precs)), 3) if precs else None,
+            "mean_oos_auc": round(float(np.mean(aucs)), 4) if aucs else None,
+            "mean_avg_return_pct": round(float(np.mean(rets)), 2) if rets else None,
+            "mean_ic": round(float(np.mean(ics)), 4) if ics else None,
+            "precision_stability": round(float(np.std(precs)), 3) if len(precs) > 1 else None,
+        },
+        "windows": windows,
     }

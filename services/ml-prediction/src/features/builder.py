@@ -1,4 +1,4 @@
-"""Feature engineering — 47 features (29 stock-specific + 8 macro + 10 fundamental).
+"""Feature engineering — 51 features (29 stock-specific + 8 macro + 14 fundamental).
 
 29 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
@@ -18,17 +18,21 @@
   high_vol_regime       — 1 if spy_vol_20 > 2% annualised daily vol
   market_stress         — 1 if SPY 5d return < -3% AND VIX above its MA
 
-10 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
+14 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
   revenue_growth        — YoY revenue growth rate
   earnings_growth       — YoY EPS growth rate
   gross_margin          — gross profit margin
   return_on_equity      — ROE (net income / book equity)
   fcf_yield             — free cash flow / market cap (value quality signal)
   short_ratio           — days-to-cover (short interest / avg daily volume)
+  short_ratio_delta     — change in short_ratio vs prior snapshot (covering=bullish)
   recommendation_mean   — analyst consensus (1=strong buy … 5=strong sell)
   price_to_book         — P/B ratio (value factor)
   peg_ratio             — PE / forward EPS growth (growth at a reasonable price)
   debt_to_equity        — total debt / total equity (solvency risk signal)
+  eps_beat_streak       — consecutive quarters beating EPS estimate (0–4 clipped)
+  eps_surprise_avg      — rolling 4-quarter average EPS surprise % (positive=beat)
+  days_to_earnings      — days to next expected earnings (0–90, 90=unknown/far)
 
 Label: binary BUY / SELL only — rows where |fwd_ret| < label_threshold are
 excluded from training (dead zone). This removes noise-level moves that are
@@ -63,10 +67,15 @@ FUNDAMENTAL_COLUMNS = [
     "return_on_equity",     # net income / book equity
     "fcf_yield",            # free cash flow / market cap
     "short_ratio",          # days-to-cover (short interest / avg daily vol)
+    "short_ratio_delta",    # change vs prior fundamental snapshot (negative = short covering = bullish)
     "recommendation_mean",  # 1=strong buy … 5=strong sell
     "price_to_book",        # P/B ratio
     "peg_ratio",            # PE / forward EPS growth (Phase 1)
     "debt_to_equity",       # total debt / total equity (Phase 1)
+    # Tier 78 — earnings quality features (from EarningsEvent table)
+    "eps_beat_streak",      # consecutive quarters beating EPS estimate (0=no streak, 4=4+ beats)
+    "eps_surprise_avg",     # 4-quarter rolling average EPS surprise % (positive=consistent beats)
+    "days_to_earnings",     # days to next expected earnings event (0–90; 90=unknown/far)
 ]
 
 # SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with

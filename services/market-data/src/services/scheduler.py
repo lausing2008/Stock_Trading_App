@@ -1748,6 +1748,12 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.signal_engine_url}/signals/calibrate_conviction_weights")
     _record_job_status("calibrate_conviction_weights_sent", "ok", 0.0)
 
+    # Tier 79: auto-apply empirically-optimal buy thresholds from live outcomes data.
+    # Writes per-horizon thresholds to Redis; signal generator reads them live.
+    log.info("scheduler.calibrate_signal_thresholds_start")
+    _post(f"{_settings.signal_engine_url}/signals/outcomes/calibrate/apply")
+    _record_job_status("calibrate_signal_thresholds_sent", "ok", 0.0)
+
     # PT-3: calibrate entry factor weights from closed paper trades.
     # Fits logistic regression on (rr_ratio, confidence, entry_score, kscore) vs win/loss.
     # Called directly (not via HTTP) because the service token has no DB user record.
