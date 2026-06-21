@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 96 — ML AUC in Signal Alert Emails ──────────────────────────────────
+  {
+    id: 'TIER96-ALERT-ML-AUC',
+    tier: 96, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/email_service.py:send_signal_alert_email()',
+    effort: '15m',
+    impact: 'Low-medium — signal alert emails now show the ML model\'s test AUC alongside the ML probability. Users can distinguish a 65% probability from a 0.72 AUC model (reliable) vs a 0.53 AUC model (unreliable) — they should weigh the signal very differently.',
+    title: 'Signal alert emails: show ML model AUC (strong/good/fair/weak) next to ML probability',
+    what: 'Alert emails showed ML probability (e.g. "65% bullish") but not model quality. A 65% prediction from a 0.52-AUC model (barely better than random) is far less actionable than 65% from a 0.75-AUC model.',
+    fix: 'Add "ML model AUC" row to signal detail table. Value: auc formatted as "0.724 (strong)" / "0.623 (good)" / "0.572 (fair)" / "0.521 (weak)". Data source: reasons.ml_test_auc already included in signal response.',
+    implementedNote: 'Done 2026-06-21. Added _ml_auc_note() helper. Thresholds: ≥0.70=strong, ≥0.60=good, ≥0.55=fair, <0.55=weak.',
+  },
+
   // ── Tier 95 — Post-tune_all Signal Refresh ────────────────────────────────────
   {
     id: 'TIER95-POST-TUNE-REFRESH',
@@ -7848,6 +7861,7 @@ const TIER_LABEL: Record<Tier, string> = {
   93: 'Tier 93 — Morning Digest Signal Performance: 30d win rate summary in daily email (done)',
   94: 'Tier 94 — tune_all reliability + sector ETF daily refresh (done)',
   95: 'Tier 95 — post-tune_all signal refresh: new models used immediately (done)',
+  96: 'Tier 96 — ML model AUC in signal alert emails (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7946,6 +7960,7 @@ const TIER_COLOR: Record<Tier, string> = {
   93: '#4ade80',
   94: '#f472b6',
   95: '#fb7185',
+  96: '#c084fc',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

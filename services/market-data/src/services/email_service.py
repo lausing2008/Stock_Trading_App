@@ -117,6 +117,11 @@ def send_signal_alert_email(
         return "Yes" if v else "No"
     def _fmt(v, d=1) -> str:
         return f"{v:.{d}f}" if v is not None else "—"
+    def _ml_auc_note(auc) -> str:
+        if auc is None:
+            return "—"
+        q = "strong" if auc >= 0.70 else "good" if auc >= 0.60 else "fair" if auc >= 0.55 else "weak"
+        return f"{float(auc):.3f} ({q})"
 
     rsi_val  = reasons.get("rsi")
     rsi_note = ""
@@ -202,6 +207,7 @@ def send_signal_alert_email(
         ("OBV trend (10/30 MA)",  _yn(reasons.get("obv_trend_bullish"))),
         ("Volume Z-score",        _fmt(reasons.get("volume_z"), 2)),
         ("ML probability",        f"{float(ml_prob)*100:.1f}% bullish" if ml_prob is not None else "—"),
+        ("ML model AUC",          _ml_auc_note(reasons.get("ml_test_auc"))),
         ("Next earnings",         earnings_note),
         ("Insider activity (6M)", insider_note),
     ]
