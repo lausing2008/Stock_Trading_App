@@ -212,19 +212,21 @@ def get_beat_rate(stock_id: int, lookback: int = 8) -> float | None:
 
 
 def _row_to_dict(e: EarningsEvent) -> dict:
+    today = date.today()
     return {
         "id": e.id,
         "stock_id": e.stock_id,
-        "report_date": e.report_date.isoformat(),
+        "earnings_date": e.report_date.isoformat(),  # matches TypeScript EarningsEvent.earnings_date
+        "estimated_eps": e.eps_estimate,              # matches TypeScript EarningsEvent.estimated_eps
+        "actual_eps": e.eps_actual,                   # matches TypeScript EarningsEvent.actual_eps
+        "estimated_revenue": e.revenue_estimate,      # matches TypeScript EarningsEvent.estimated_revenue
+        "actual_revenue": e.revenue_actual,           # matches TypeScript EarningsEvent.actual_revenue
+        "surprise_pct": e.surprise_pct,
+        "beat_rate": None,    # per-row historical beat rate requires extra query; shows '—' in UI
+        "avg_beat_pct": None,
+        "is_upcoming": e.report_date >= today,        # matches TypeScript EarningsEvent.is_upcoming
         "period": e.period,
         "fiscal_year": e.fiscal_year,
         "fiscal_quarter": e.fiscal_quarter,
-        "eps_estimate": e.eps_estimate,
-        "eps_actual": e.eps_actual,
-        "revenue_estimate": e.revenue_estimate,
-        "revenue_actual": e.revenue_actual,
-        "surprise_pct": e.surprise_pct,
-        "revenue_surprise_pct": e.revenue_surprise_pct,
         "earnings_strength_score": e.earnings_strength_score,
-        "post_earnings_return_1d": e.post_earnings_return_1d,
     }

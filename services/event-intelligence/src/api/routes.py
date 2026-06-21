@@ -25,9 +25,9 @@ def get_economic(
     market: str = Query("US"),
 ):
     country = "US" if market.upper() == "US" else "HK"
-    upcoming = economic.get_upcoming_economic_events(days, country)
-    recent = economic.get_recent_economic_events(30, country)
-    return {"upcoming": upcoming, "recent": recent}
+    events = economic.get_upcoming_economic_events(days, country)
+    fomc_days = economic.days_to_next_fomc()
+    return {"events": events, "fomc_days_away": fomc_days}
 
 
 @router.post("/events/sync/economic")
@@ -175,16 +175,33 @@ async def recompute_catalyst(_: str = Depends(get_current_username)):
 
 @router.get("/events/overview")
 def get_overview():
-    """Single endpoint returning all sections for the /intelligence page."""
+    """Single endpoint returning all sections for the /intelligence page.
+    Shape must match the EventIntelOverview TypeScript type in api.ts."""
+    upcoming_economic = economic.get_upcoming_economic_events(14, "US")
+    fomc_days = economic.days_to_next_fomc()
+    upcoming_earnings = earnings.get_upcoming_earnings(14)
+    insider_leaders = insider.get_insider_leaderboard(30, 10)
+    congress_leaders = congress.get_congress_leaderboard(90, 10)
     return {
-        "economic_upcoming": economic.get_upcoming_economic_events(14, "US"),
-        "earnings_calendar": earnings.get_upcoming_earnings(14),
-        "congress_recent": congress.get_recent_congress_trades(30, 20),
-        "insider_leaderboard": insider.get_insider_leaderboard(30, 10),
-        "congress_leaderboard": congress.get_congress_leaderboard(90, 10),
-        "catalyst_leaderboard": catalyst.get_catalyst_leaderboard(15),
-        "risk_leaderboard": catalyst.get_risk_leaderboard(10),
-        "composite_leaderboard": catalyst.get_composite_leaderboard(10),
+        "economic": {
+            "upcoming_count": len(upcoming_economic),
+            "fomc_days_away": fomc_days,
+            "events": upcoming_economic,
+        },
+        "earnings": {
+            "upcoming_count": len(upcoming_earnings),
+            "events": upcoming_earnings,
+        },
+        "insider": {
+            "top_buys": insider_leaders,
+        },
+        "congress": {
+            "top_buys": congress_leaders,
+            "recent": congress.get_recent_congress_trades(30, 20),
+        },
+        "catalyst_leaders": catalyst.get_catalyst_leaderboard(15),
+        "risk_leaders": catalyst.get_risk_leaderboard(10),
+        "composite_leaders": catalyst.get_composite_leaderboard(10),
         "political_events": political.get_political_events(30),
     }
 

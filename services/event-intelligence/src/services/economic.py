@@ -161,14 +161,15 @@ def get_upcoming_economic_events(days: int = 14, country: str = "US") -> list[di
             {
                 "id": e.id,
                 "event_type": e.event_type,
-                "title": e.title,
-                "country": e.country,
+                "event_name": e.title,        # matches TypeScript EconomicEvent.event_name
+                "market": e.country,           # matches TypeScript EconomicEvent.market
                 "event_date": e.event_date.isoformat(),
+                "event_time": None,
                 "actual_value": e.actual_value,
-                "expected_value": e.expected_value,
+                "forecast_value": e.expected_value,  # matches TypeScript EconomicEvent.forecast_value
                 "previous_value": e.previous_value,
-                "importance": e.importance,
-                "source": e.source,
+                "impact_level": e.importance,  # matches TypeScript EconomicEvent.impact_level
+                "notes": None,
             }
             for e in rows
         ]
