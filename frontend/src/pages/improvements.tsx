@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 94 — tune_all Reliability + Sector ETF Daily Refresh ───────────────
+  {
+    id: 'TIER94-TUNE-ALL-RELIABILITY',
+    tier: 94, severity: 'bug', defaultStatus: 'done',
+    file: 'services/ml-prediction/src/training/tuner.py, services/ml-prediction/src/api/routes.py, services/market-data/src/services/scheduler.py',
+    effort: '1h',
+    impact: 'High — tune_all was silently killing itself at IBM (ValueError: single-class fold) and had no error isolation, so a crash on symbol N left symbols N+1 through 142 never retrained. Also, sector ETF prices (XLK/XLF/SPY etc.) were active=False so they were never refreshed — sector_rs ML features (TIER90) were using 3-week-stale ETF data.',
+    title: 'tune_all crash fix (single-class fold + uncaught exception) + sector ETF daily refresh',
+    what: '(1) tuner.py objective(): clf.fit() raised ValueError for IBM because a training fold had only one unique class label (all BUY). No fold-level guard existed. (2) routes.py _run_all(): no try/except around tune_symbol() — one failing symbol killed the entire background task loop. (3) scheduler.py: sector ETFs (XLK, XLF, XLV, XLE, XLY, XLU, XLI, XLB, XLC, XLRE, SPY) have active=False in DB, so _refresh_market() never ingested their daily prices — TIER90 sector RS features were stale.',
+    fix: '(1) tuner.py: add `if len(np.unique(y_tr)) < 2: continue` guard before clf.fit(). (2) routes.py _run_all(): wrap tune_symbol() in try/except Exception; log warning and continue. (3) scheduler.py _refresh_market(): when market=="US", also call ingest_universe(_SECTOR_ETFS, "1d") after the main symbols ingest.',
+    implementedNote: 'Done 2026-06-21. tune_all re-triggered to retrain all 142 models. Sector ETF prices backfilled (3 months via yfinance). ETFs now refreshed every US market day.',
+  },
+
   // ── Tier 93 — Morning Digest Signal Performance ───────────────────────────
   {
     id: 'TIER93-DIGEST-PERF',
@@ -7820,6 +7833,7 @@ const TIER_LABEL: Record<Tier, string> = {
   91: 'Tier 91 — Broker Credential Encryption: Fernet at-rest encryption for OAuth credentials (done)',
   92: 'Tier 92 — Signal Tuning Action Panel: trigger watchdog/auto-tuner/tune_all from admin UI (done)',
   93: 'Tier 93 — Morning Digest Signal Performance: 30d win rate summary in daily email (done)',
+  94: 'Tier 94 — tune_all reliability + sector ETF daily refresh (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7916,6 +7930,7 @@ const TIER_COLOR: Record<Tier, string> = {
   91: '#fb923c',
   92: '#a78bfa',
   93: '#4ade80',
+  94: '#f472b6',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

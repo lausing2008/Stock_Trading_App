@@ -402,6 +402,14 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
         _ingest_ok = False
         log.error("scheduler.ingest_failed", market=market, error=str(_ie), exc_info=True)
 
+    # TIER94: Keep sector ETF prices fresh for sector_rs ML features (active=False so not in symbols)
+    if market == "US":
+        _SECTOR_ETFS = ["XLK", "XLF", "XLV", "XLE", "XLY", "XLU", "XLI", "XLB", "XLC", "XLRE", "SPY"]
+        try:
+            ingest_universe(_SECTOR_ETFS, "1d")
+        except Exception as _etf_exc:
+            log.warning("scheduler.sector_etf_ingest_failed", error=str(_etf_exc))
+
     # Stage 2: Rankings + signals — runs even if ingest partially failed (uses last good bar)
     try:
         _post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": market})
