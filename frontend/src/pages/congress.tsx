@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
-import { api, type CongressTrade } from '@/lib/api';
+import { api, type CongressTradeRecord as CongressTrade } from '@/lib/api';
 import { loadSettings } from '@/lib/settings';
 import { askAI, isAiConfigured } from '@/lib/ai';
 
