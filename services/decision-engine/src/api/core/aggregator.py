@@ -42,14 +42,25 @@ _STYLE_PARAMS = {
 }
 
 
-def _default_game_plan(live_price: float, style: str) -> dict:
+def _default_game_plan(live_price: float, style: str, atr_14: float | None = None) -> dict:
     p = _STYLE_PARAMS.get(style.upper(), _STYLE_PARAMS["SWING"])
+    fixed_stop = live_price * p["stop_pct"]
+    if atr_14 and atr_14 > 0:
+        # ATR-based stop: 2× ATR below entry; floored by fixed % so stop never exceeds style max loss
+        atr_stop = live_price - 2.0 * atr_14
+        stop = max(atr_stop, fixed_stop)
+        # Target: 2:1 R:R off the actual stop used
+        rr_target = live_price + 2.0 * (live_price - stop)
+        take_profit = min(rr_target, live_price * p["target_pct"])  # cap at style max
+    else:
+        stop = fixed_stop
+        take_profit = live_price * p["target_pct"]
     return {
         "entry2":      round(live_price * p["entry2_pct"],   4),
         "breakout":    round(live_price * p["breakout_pct"], 4),
-        "stop":        round(live_price * p["stop_pct"],     4),
-        "take_profit": round(live_price * p["target_pct"],   4),
-        "target_1":    round(live_price * (1 + (p["target_pct"] - 1) * 0.5), 4),
+        "stop":        round(stop,        4),
+        "take_profit": round(take_profit, 4),
+        "target_1":    round(live_price + (take_profit - live_price) * 0.5, 4),
     }
 
 
@@ -142,9 +153,11 @@ def extract_live_price(signal_data: dict | None, yf_price: float | None = None) 
 
 
 def build_game_plan(live_price: float, style: str, signal_data: dict | None) -> dict:
-    """Build game plan from signal reasons if available, else use style defaults."""
+    """Build game plan from signal reasons if available, else use ATR-aware style defaults."""
+    atr_14: float | None = None
     if signal_data:
         reasons = signal_data.get("reasons") or {}
+        atr_14 = reasons.get("atr_14")
         gp = {
             "entry2":      reasons.get("entry2"),
             "breakout":    reasons.get("breakout"),
@@ -156,4 +169,4 @@ def build_game_plan(live_price: float, style: str, signal_data: dict | None) -> 
             gp["breakout"] = gp["breakout"] or live_price * 1.035
             gp["target_1"] = gp["target_1"] or (live_price + (gp["take_profit"] - live_price) * 0.5)
             return {k: float(v) for k, v in gp.items()}
-    return _default_game_plan(live_price, style)
+    return _default_game_plan(live_price, style, atr_14)

@@ -620,12 +620,21 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
     elif macd_positive:
         score += 0.10
 
+    # Count consecutive weeks RSI ≤ 38 (used by graduated bearish gate)
+    rsi_consec_low = 0
+    for v in reversed((rsi <= 38).values):
+        if v:
+            rsi_consec_low += 1
+        else:
+            break
+
     return {
         "weekly_rsi": round(rsi_val, 1) if rsi_val is not None else None,
         "weekly_trend": weekly_trend,
         "weekly_macd_bull": weekly_macd_bull,
         "weekly_score": float(np.clip(score, 0, 1)),
         "weekly_confidence": weekly_confidence,
+        "weekly_rsi_consec_low": rsi_consec_low,
     }
 
 
@@ -1651,11 +1660,24 @@ def _apply_style_signal(
             and weekly_trend is not None
             and weekly_rsi <= 38
             and weekly_trend == "down"):
-        fused = 0.5 + (fused - 0.5) * 0.40
+        # Graduated compression: brief dips (< 5 bars) get 0.65× — could recover quickly.
+        # Confirmed downtrends (≥ 20 bars) get 0.40× — structurally broken weekly chart.
+        # Linear interpolation between 5 and 20 bars.
+        _consec = weekly_tech.get("weekly_rsi_consec_low", 99)
+        if _consec < 5:
+            _mult = 0.65
+        elif _consec >= 20:
+            _mult = 0.40
+        else:
+            _mult = 0.65 - 0.25 * (_consec - 5) / 15.0
+        fused = 0.5 + (fused - 0.5) * _mult
         fused = float(np.clip(fused, 0.0, 1.0))
         reasons["weekly_gate_fired"] = True
+        reasons["weekly_gate_bars"] = _consec
+        reasons["weekly_gate_mult"] = round(_mult, 3)
     else:
         reasons["weekly_gate_fired"] = False
+        reasons["weekly_gate_bars"] = 0
 
     # SA-28: Weekly overbought extension gate (SWING/LONG, mirrors the oversold gate above).
     # When weekly RSI > 75 and the weekly trend is up, the stock is in an extended rally —
@@ -1790,6 +1812,18 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             reasons["double_top_neckline"]        = meta.get("neckline")
             reasons["double_top_target"]          = meta.get("target")
             reasons["double_top_neckline_broken"] = bool(meta.get("neckline_broken"))
+    # ATR-14 and last price — used by decision-engine for ATR-based game plan stops
+    _close = _adj_close(df)
+    _high = df["high"].astype(float)
+    _low = df["low"].astype(float)
+    _tr = pd.concat([_high - _low, (_high - _close.shift(1)).abs(), (_low - _close.shift(1)).abs()], axis=1).max(axis=1)
+    _atr_series = _tr.ewm(alpha=1 / 14, adjust=False).mean()
+    _last_price = float(_close.iloc[-1])
+    _atr_14 = float(_atr_series.iloc[-1]) if not pd.isna(_atr_series.iloc[-1]) else None
+    reasons["last_price"] = round(_last_price, 4)
+    reasons["atr_14"] = round(_atr_14, 4) if _atr_14 else None
+    reasons["atr_14_pct"] = round(_atr_14 / _last_price, 4) if (_atr_14 and _last_price > 0) else None
+
     reasons["days_to_earnings"]   = days_to_earnings
     reasons["news_sentiment"]     = news_sentiment
     reasons["rs_score"]                = rs_score

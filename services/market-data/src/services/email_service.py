@@ -249,6 +249,45 @@ def send_signal_alert_email(
     </div>"""
             conviction_text = "\n✅ 5-Layer Conviction Gate — All Passed:\n" + "\n".join(f"  ✓ {l}" for l in conviction_layers) + "\n"
 
+    # ── Active signal suppression conditions ──────────────────────────────
+    _suppression_items = []
+    if reasons.get("weekly_gate_fired"):
+        _bars = reasons.get("weekly_gate_bars", "?")
+        _mult = reasons.get("weekly_gate_mult")
+        _mult_str = f" ({int(_mult*100)}× compress)" if _mult else ""
+        _suppression_items.append(f"Weekly RSI bearish gate — {_bars} consecutive weeks below 38{_mult_str}")
+    if reasons.get("weekly_overbought_gate"):
+        _suppression_items.append("Weekly RSI overbought gate — weekly RSI > 75 (×0.85 compress)")
+    if reasons.get("ml_oos_suppressed"):
+        _suppression_items.append("ML out-of-sample suppression active — model OOS accuracy below threshold")
+    _pillar = reasons.get("pillar_gate", "")
+    if "compressed" in str(_pillar):
+        _suppression_items.append(f"Pillar gate: {_pillar} — fewer than required TA dimensions agree")
+    if reasons.get("compression_cap_applied"):
+        _suppression_items.append("Compression cap applied — multiple filters stacked beyond 70% limit")
+    _dte = reasons.get("days_to_earnings")
+    if _dte is not None and isinstance(_dte, (int, float)) and 0 < _dte <= 10:
+        _suppression_items.append(f"Earnings compression ({int(_dte)}d to earnings) — signal capped pre-announcement")
+    if reasons.get("is_stale"):
+        _suppression_items.append("Stale price data — bars are > 3 calendar days old, confidence reduced")
+
+    suppression_html = ""
+    suppression_text = ""
+    if _suppression_items:
+        _supp_rows = "".join(
+            f'<tr><td style="padding:5px 12px;font-size:13px;color:#7c2d12;border-bottom:1px solid #fed7aa">'
+            f'<span style="color:#ea580c;font-weight:700;margin-right:8px">⚠</span>{item}</td></tr>'
+            for item in _suppression_items
+        )
+        suppression_html = f"""
+    <div style="margin-top:16px">
+      <div style="font-size:11px;font-weight:700;color:#ea580c;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Active Signal Suppressions</div>
+      <table style="width:100%;border-collapse:collapse;background:#fff7ed;border-radius:8px;overflow:hidden;border:1px solid #fed7aa">
+        {_supp_rows}
+      </table>
+    </div>"""
+        suppression_text = "\nActive suppressions:\n" + "\n".join(f"  ⚠ {s}" for s in _suppression_items) + "\n"
+
     # ── Game plan HTML (only for BUY transitions) ─────────────────────────
     game_plan_html = ""
     game_plan_text = ""
@@ -370,6 +409,7 @@ Key Risk: {risk}
         + f"\nWhy the signal changed:\n{rows_text}\n\n"
         + conviction_text
         + (f"{earnings_warn}\n\n" if earnings_warn else "")
+        + suppression_text
         + game_plan_text
         + cta + "\n"
         f"Not personalised financial advice. Always do your own research.\n"
@@ -432,6 +472,7 @@ Key Risk: {risk}
     {cta_html}
     {f'<div style="background:#fef9c3;border:1px solid #fbbf24;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:13px;color:#92400e">{earnings_warn}</div>' if earnings_warn else ''}
     {conviction_html}
+    {suppression_html}
     {game_plan_html}
     <p style="font-size:11px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:16px">
       Not personalised financial advice. Always do your own research before acting.

@@ -1432,3 +1432,78 @@ def get_de_divergences(
         "divergences": divergences,
         "agreements": agreements,
     }
+
+
+@router.get("/kelly")
+def kelly_sizing(
+    style: str = Query("SWING", description="Trading style: SWING|GROWTH|LONG|SHORT"),
+    lookback_days: int = Query(90, description="Days of closed trade history to use"),
+    _user: str = Depends(get_current_user),
+):
+    """Compute Kelly Criterion position sizing from closed paper trade history.
+
+    Returns kelly_f (full Kelly), quarter_kelly (recommended sizing fraction),
+    and summary statistics. Uses the last `lookback_days` of closed trades.
+
+    Kelly formula: f* = (p×b - q) / b
+      p = win rate, q = 1-p, b = avg_win_pct / avg_loss_pct
+    Position sizing: use quarter-Kelly (0.25×f*) to account for model uncertainty.
+    """
+    cutoff = date.today() - timedelta(days=lookback_days)
+    with SessionLocal() as session:
+        trades = session.execute(
+            select(PaperTrade)
+            .where(
+                PaperTrade.stage == "closed",
+                PaperTrade.trading_style == style.upper(),
+                PaperTrade.exit_time >= cutoff,
+                PaperTrade.pct_return.isnot(None),
+            )
+            .order_by(desc(PaperTrade.exit_time))
+        ).scalars().all()
+
+    if len(trades) < 10:
+        return {
+            "style": style.upper(),
+            "trades_count": len(trades),
+            "kelly_f": None,
+            "quarter_kelly": None,
+            "recommended_risk_pct": 1.0,
+            "win_rate": None,
+            "avg_win_pct": None,
+            "avg_loss_pct": None,
+            "note": f"Need ≥10 closed trades; only {len(trades)} found in last {lookback_days} days",
+        }
+
+    wins = [t.pct_return for t in trades if t.pct_return and t.pct_return > 0]
+    losses = [abs(t.pct_return) for t in trades if t.pct_return and t.pct_return < 0]
+    p = len(wins) / len(trades)
+    q = 1.0 - p
+    avg_win = float(np.mean(wins)) if wins else 0.0
+    avg_loss = float(np.mean(losses)) if losses else 0.01
+
+    b = avg_win / avg_loss if avg_loss > 0 else 1.0
+    kelly_f = (p * b - q) / b if b > 0 else 0.0
+    kelly_f = max(0.0, min(kelly_f, 1.0))
+    quarter_kelly = kelly_f * 0.25
+
+    # Map quarter-Kelly to a practical risk % (base 1%, scaled by quarter-Kelly bands)
+    if quarter_kelly >= 0.08:
+        recommended_risk_pct = 3.0
+    elif quarter_kelly >= 0.05:
+        recommended_risk_pct = 2.0
+    else:
+        recommended_risk_pct = 1.0
+
+    return {
+        "style": style.upper(),
+        "trades_count": len(trades),
+        "lookback_days": lookback_days,
+        "kelly_f": round(kelly_f, 4),
+        "quarter_kelly": round(quarter_kelly, 4),
+        "recommended_risk_pct": recommended_risk_pct,
+        "win_rate": round(p, 4),
+        "avg_win_pct": round(avg_win * 100, 2),
+        "avg_loss_pct": round(avg_loss * 100, 2),
+        "reward_risk_ratio": round(b, 2),
+    }

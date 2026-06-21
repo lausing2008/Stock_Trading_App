@@ -398,6 +398,20 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
             _post(f"{_settings.ml_prediction_url}/ml/train_all_horizons")
             # Evaluate any BUY/SELL signals whose hold window has now expired.
             _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
+            # Stale model guard: if tune_all hasn't run in >21 days, trigger it now.
+            # Normally runs weekly on Sunday; this catches missed weeks (container restarts, errors).
+            try:
+                _tune_status_raw = _get_redis().get("scheduler:job:tune_all_sent")
+                if _tune_status_raw:
+                    _tune_last = json.loads(_tune_status_raw).get("last_run")
+                    if _tune_last:
+                        _days_stale = (datetime.now(timezone.utc) - datetime.fromisoformat(_tune_last)).days
+                        if _days_stale > 21:
+                            log.warning("scheduler.tune_all_stale_retrigger", days_since=_days_stale)
+                            _post(f"{_settings.ml_prediction_url}/ml/tune_all")
+                            _record_job_status("tune_all_sent", "ok", 0.0)
+            except Exception as _ta_e:
+                log.warning("scheduler.tune_all_age_check_failed", error=str(_ta_e))
     except Exception as _re:
         log.error("scheduler.rankings_signals_failed", market=market, error=str(_re), exc_info=True)
 

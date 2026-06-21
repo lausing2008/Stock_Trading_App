@@ -1,8 +1,8 @@
-"""Feature engineering — 46 features (28 stock-specific + 8 macro + 10 fundamental).
+"""Feature engineering — 47 features (29 stock-specific + 8 macro + 10 fundamental).
 
-28 stock-specific:
+29 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
-  Volatility: vol_20, vol_60, atr_14_pct, atr_ratio
+  Volatility: vol_20, vol_60, atr_14_pct, atr_ratio, vol_ratio_5d20d
   Trend     : sma_20_gap, sma_50_gap, sma_100_gap, sma_200_gap
   Oscillators: rsi_14, macd, macd_signal, macd_hist, bb_pct, stoch_k
   Volume    : volume_z, obv_z, cmf_20
@@ -82,6 +82,7 @@ FEATURE_COLUMNS = [
     "momentum_12_1",       # 12-month minus 1-month return (classic factor; avoids 1m reversal)
     # Volatility
     "vol_20", "vol_60", "atr_14_pct", "atr_ratio",
+    "vol_ratio_5d20d",      # 5-day / 20-day vol ratio — expansion = choppy, compression = breakout setup
     # Trend
     "sma_20_gap", "sma_50_gap", "sma_100_gap",
     "sma_200_gap",         # long-term trend filter; most-watched institutional level
@@ -268,6 +269,7 @@ def build_features(
     daily_ret = c.pct_change()
     out["vol_20"] = daily_ret.rolling(20).std()
     out["vol_60"] = daily_ret.rolling(60).std()
+    out["vol_ratio_5d20d"] = daily_ret.rolling(5).std() / daily_ret.rolling(20).std().replace(0, np.nan)
 
     tr = pd.concat([
         h - lo,

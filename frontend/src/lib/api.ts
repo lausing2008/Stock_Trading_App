@@ -85,6 +85,8 @@ export const api = {
     return request<Signal>(`/signals/${symbol}?${params}`);
   },
   allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
+  convictionAll: () => request<Record<string, { sent: boolean; passed: string[]; failed: string[]; signal: string; ts: string }>>('/stocks/conviction'),
+  kellySize: (style: string, lookbackDays?: number) => request<{ kelly_f: number | null; quarter_kelly: number | null; recommended_risk_pct: number; win_rate: number | null; avg_win_pct: number | null; avg_loss_pct: number | null; reward_risk_ratio: number | null; trades_count: number; note?: string }>(`/paper-portfolio/kelly?style=${style}${lookbackDays ? `&lookback_days=${lookbackDays}` : ''}`),
   signalHistory: (symbol: string, style = 'SWING', days = 60) =>
     request<SignalHistoryPoint[]>(`/signals/${symbol}/history?style=${style}&days=${days}`),
   signalChanges: (symbols: string[], hours = 48) =>
