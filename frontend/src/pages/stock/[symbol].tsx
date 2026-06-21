@@ -2545,6 +2545,12 @@ Return ONLY valid JSON — no markdown, no prose:
                         const label = pct >= 20 ? 'High — squeeze risk' : pct >= 10 ? 'Elevated' : 'Low';
                         return card('Short % of Float', `${pct.toFixed(1)}%`, label, color);
                       })()}
+                      {f.shares_short != null && f.shares_short_prior_month != null && (() => {
+                        const rising = f.shares_short > f.shares_short_prior_month!;
+                        const pctChg = ((f.shares_short - f.shares_short_prior_month!) / f.shares_short_prior_month!) * 100;
+                        const color = rising ? '#f87171' : '#4ade80';
+                        return card('Short Trend', rising ? `↑ ${pctChg.toFixed(0)}% MoM` : `↓ ${Math.abs(pctChg).toFixed(0)}% MoM`, rising ? 'Shorts rising (bearish)' : 'Shorts falling (bullish)', color);
+                      })()}
                       {f.short_ratio != null && (() => {
                         const color = f.short_ratio >= 5 ? '#f87171' : f.short_ratio >= 3 ? '#fbbf24' : '#94a3b8';
                         return card('Days to Cover', `${f.short_ratio.toFixed(1)}d`, 'short ratio', color);

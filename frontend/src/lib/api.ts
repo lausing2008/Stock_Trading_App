@@ -87,6 +87,8 @@ export const api = {
   allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
   signalHistory: (symbol: string, style = 'SWING', days = 60) =>
     request<SignalHistoryPoint[]>(`/signals/${symbol}/history?style=${style}&days=${days}`),
+  signalChanges: (symbols: string[], hours = 48) =>
+    request<SignalChange[]>(`/signals/recent_changes?symbols=${symbols.join(',')}&hours=${hours}`),
   getPatterns: (symbol: string) =>
     request<{ symbol: string; patterns: PatternSignal[]; as_of: string }>(`/signals/${symbol}/patterns`),
   refreshSignal: (symbol: string) => request<Signal>(`/signals/${symbol}?live=true&persist=true`),
@@ -581,6 +583,7 @@ export type Signal = {
 
 export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null; ts: string | null; stability_days?: number | null };
 export type SignalHistoryPoint = { ts: string | null; signal: string; confidence: number; bullish_probability: number | null };
+export type SignalChange = { symbol: string; name: string; horizon: string; from_signal: string; to_signal: string; ts: string; confidence: number; bullish_probability: number | null; prev_ts: string };
 export type PatternSignal = { name: string; label: string; description: string; bullish: boolean };
 export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null; relative_strength?: number | null; vol_ratio?: number | null; trailing_pe?: number | null; forward_pe?: number | null; peg_ratio?: number | null; revenue_growth?: number | null; earnings_growth?: number | null; debt_to_equity?: number | null; price_to_book?: number | null; held_percent_institutions?: number | null; held_percent_insiders?: number | null; market_cap?: number | null; patterns?: string[] };
 export type SectorRsStock = { symbol: string; name: string; rs_score: number | null; kscore: number | null; past_rs: number | null };
@@ -779,6 +782,7 @@ export type Fundamentals = {
   short_percent_of_float: number | null;
   short_ratio: number | null;
   shares_short: number | null;
+  shares_short_prior_month: number | null;
   // Ownership
   held_percent_institutions: number | null;
   held_percent_insiders: number | null;
@@ -922,6 +926,7 @@ export type SqueezeCandidate = {
   short_percent_of_float: number;
   short_ratio: number | null;
   shares_short: number | null;
+  shares_short_prior_month: number | null;
   price: number | null;
   change_pct: number | null;
   momentum_score: number | null;

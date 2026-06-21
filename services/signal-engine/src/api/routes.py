@@ -2204,6 +2204,87 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
         return None
 
 
+@router.get("/recent_changes")
+def recent_signal_changes(
+    symbols: str = Query(..., description="Comma-separated symbols to check"),
+    hours: int = Query(48, ge=1, le=168),
+    session: Session = Depends(get_session),
+):
+    """Return recent signal direction changes for the given symbols.
+
+    For each symbol+horizon pair, compares the two most recent stored signals
+    within the time window. Returns entries where the signal flipped, newest first.
+    """
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()][:50]
+    if not sym_list:
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    stocks = session.execute(
+        select(Stock.id, Stock.symbol, Stock.name)
+        .where(Stock.symbol.in_(sym_list))
+    ).all()
+    stock_ids = [r.id for r in stocks]
+    symbol_map = {r.id: r.symbol for r in stocks}
+    name_map = {r.id: r.name for r in stocks}
+
+    if not stock_ids:
+        return []
+
+    from sqlalchemy import func as _func
+    rn_subq = (
+        select(
+            Signal.stock_id,
+            Signal.horizon,
+            Signal.signal,
+            Signal.ts,
+            Signal.confidence,
+            Signal.bullish_probability,
+            _func.row_number().over(
+                partition_by=[Signal.stock_id, Signal.horizon],
+                order_by=Signal.ts.desc(),
+            ).label("rn"),
+        )
+        .where(
+            Signal.stock_id.in_(stock_ids),
+            Signal.ts >= cutoff,
+        )
+        .subquery()
+    )
+
+    rows = session.execute(
+        select(rn_subq).where(rn_subq.c.rn <= 2)
+    ).all()
+
+    from collections import defaultdict as _dd
+    groups: dict[tuple, list] = _dd(list)
+    for r in rows:
+        groups[(r.stock_id, r.horizon)].append(r)
+
+    changes = []
+    for (sid, horizon), pair in groups.items():
+        if len(pair) < 2:
+            continue
+        pair.sort(key=lambda r: r.ts, reverse=True)
+        latest, prev = pair[0], pair[1]
+        if latest.signal == prev.signal:
+            continue
+        changes.append({
+            "symbol": symbol_map[sid],
+            "name": name_map[sid],
+            "horizon": horizon.value if hasattr(horizon, "value") else str(horizon),
+            "from_signal": prev.signal.value if hasattr(prev.signal, "value") else str(prev.signal),
+            "to_signal": latest.signal.value if hasattr(latest.signal, "value") else str(latest.signal),
+            "ts": latest.ts.isoformat(),
+            "confidence": round(float(latest.confidence), 1),
+            "bullish_probability": round(float(latest.bullish_probability), 3) if latest.bullish_probability is not None else None,
+            "prev_ts": prev.ts.isoformat(),
+        })
+
+    changes.sort(key=lambda c: c["ts"], reverse=True)
+    return changes
+
+
 @router.get("/{symbol}/history")
 def signal_history(
     symbol: str,

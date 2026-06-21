@@ -409,6 +409,22 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
         </div>
       </div>
 
+      {/* Preset filter chips */}
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+        {[
+          { label: 'Vol Surge ⚡', apply: () => setFilters(f => ({ ...f, minVolRatio: '2' })), active: filters.minVolRatio === '2' },
+          { label: 'Strong BUY', apply: () => setFilters(f => ({ ...f, signals: new Set(['BUY']), minScore: '65', minConfidence: '60' })), active: filters.signals.size === 1 && filters.signals.has('BUY') && filters.minScore === '65' },
+          { label: 'High Short', apply: () => setFilters(f => ({ ...f, minFairDiscount: '' })), active: false },
+          { label: 'Deep Value', apply: () => setFilters(f => ({ ...f, minFairDiscount: '15', maxPE: '20' })), active: filters.minFairDiscount === '15' && filters.maxPE === '20' },
+          { label: 'Growth Momentum', apply: () => setFilters(f => ({ ...f, minRevGrowth: '20', minMomentum: '60' })), active: filters.minRevGrowth === '20' && filters.minMomentum === '60' },
+        ].map(preset => (
+          <button key={preset.label} onClick={preset.apply}
+            style={{ padding: '4px 10px', borderRadius: '5px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${preset.active ? '#6366f1' : '#1e293b'}`, background: preset.active ? 'rgba(99,102,241,0.15)' : 'transparent', color: preset.active ? '#818cf8' : '#64748b', transition: 'all 0.1s' }}>
+            {preset.label}
+          </button>
+        ))}
+      </div>
+
       {/* AI Natural Language Screener */}
       <div style={{ background: '#080f1e', border: '1px solid #312e81', borderRadius: '10px', padding: '12px 16px', marginBottom: '12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: nlExplain || nlError ? '8px' : '0' }}>

@@ -708,6 +708,7 @@ class FundamentalsOut(BaseModel):
     short_percent_of_float: float | None = None
     short_ratio: float | None = None
     shares_short: int | None = None
+    shares_short_prior_month: int | None = None  # prior month short interest (yfinance sharesShortPriorMonth)
     # Ownership breakdown
     held_percent_institutions: float | None = None
     held_percent_insiders: float | None = None
@@ -962,6 +963,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         short_percent_of_float=_safe(info, "shortPercentOfFloat"),
         short_ratio=_safe(info, "shortRatio"),
         shares_short=_safe(info, "sharesShort"),
+        shares_short_prior_month=_safe(info, "sharesShortPriorMonth"),
         held_percent_institutions=_safe(info, "heldPercentInstitutions"),
         held_percent_insiders=_safe(info, "heldPercentInsiders"),
     )
@@ -1613,6 +1615,7 @@ def short_squeeze(
                 "short_percent_of_float": round(spf * 100, 2),
                 "short_ratio": data.get("short_ratio"),
                 "shares_short": data.get("shares_short"),
+                "shares_short_prior_month": data.get("shares_short_prior_month"),
                 "price": p.get("price") if p else None,
                 "change_pct": p.get("change_pct") if p else None,
                 "momentum_score": rank.momentum if rank else None,
