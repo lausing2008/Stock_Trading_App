@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from db import get_session, CatalystScore, Stock
 
 from .earnings import get_days_to_earnings, get_beat_rate
-from .insider import compute_insider_score, days_since_last_congress_buy as _no_op
+from .insider import compute_insider_score
 from .congress import compute_congress_score, days_since_last_congress_buy
 from .institutional import compute_institutional_score
 from .economic import days_to_next_fomc
