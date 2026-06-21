@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 97 — Top/Bottom Performers in Morning Digest ────────────────────────
+  {
+    id: 'TIER97-DIGEST-SYMBOL-LEADERBOARD',
+    tier: 97, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/email_service.py:send_morning_digest_email()',
+    effort: '30m',
+    impact: 'Medium — morning digest now shows the top 5 and bottom 5 symbols by 30-day avg return. Users immediately see which specific stocks are working vs failing, not just aggregate win rates.',
+    title: 'Morning digest: top/bottom 5 symbol leaderboard by 30d avg return',
+    what: 'Morning digest showed aggregate signal performance (overall win rate + by-horizon breakdown) but no per-symbol breakdown. Hard to know which specific stocks have the best or worst outcome track record.',
+    fix: 'Add sym_section_html after perf_section_html. Top 5 (green, highest avg return) + bottom 5 (red, lowest avg return) from outcomes summary by_symbol data. scheduler.py passes by_symbol list in signal_performance dict.',
+    implementedNote: 'Done 2026-06-21. by_symbol already returned by signal-engine /outcomes/summary. Added to signal_performance dict in scheduler.py, rendered in email_service.py.',
+  },
+
   // ── Tier 96 — ML AUC in Signal Alert Emails ──────────────────────────────────
   {
     id: 'TIER96-ALERT-ML-AUC',
@@ -7862,6 +7875,7 @@ const TIER_LABEL: Record<Tier, string> = {
   94: 'Tier 94 — tune_all reliability + sector ETF daily refresh (done)',
   95: 'Tier 95 — post-tune_all signal refresh: new models used immediately (done)',
   96: 'Tier 96 — ML model AUC in signal alert emails (done)',
+  97: 'Tier 97 — Morning digest: top/bottom 5 symbol leaderboard by avg return (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7961,6 +7975,7 @@ const TIER_COLOR: Record<Tier, string> = {
   94: '#f472b6',
   95: '#fb7185',
   96: '#c084fc',
+  97: '#38bdf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

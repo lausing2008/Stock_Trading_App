@@ -2187,6 +2187,7 @@ def send_morning_digest(market: str = "US") -> None:
                         "win_rate": _sp.get("overall", {}).get("win_rate"),
                         "avg_return_pct": _sp.get("overall", {}).get("avg_return_pct"),
                         "by_horizon": _sp.get("by_horizon", {}),
+                        "by_symbol": _sp.get("by_symbol", []),
                     }
         except Exception:
             pass  # non-fatal — digest sends without performance section

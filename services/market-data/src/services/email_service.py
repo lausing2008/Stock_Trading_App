@@ -692,6 +692,49 @@ def send_morning_digest_email(
       {"" if not h_rows else f'<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><thead><tr style="background:#f8fafc"><th style="padding:5px 10px;font-size:10px;color:#94a3b8;text-align:left;text-transform:uppercase">Style</th><th style="padding:5px 10px;font-size:10px;color:#94a3b8;text-align:right;text-transform:uppercase">Win Rate</th><th style="padding:5px 10px;font-size:10px;color:#94a3b8;text-align:right;text-transform:uppercase">Signals</th><th style="padding:5px 10px;font-size:10px;color:#94a3b8;text-align:right;text-transform:uppercase">Avg Ret</th></tr></thead><tbody>{h_rows}</tbody></table>'}
     </div>"""
 
+    # ── Top/Bottom symbol leaderboard (TIER97) ────────────────────────────
+    sym_section_html = ""
+    _by_sym = (signal_performance or {}).get("by_symbol", [])
+    if len(_by_sym) >= 4:
+        _top5 = _by_sym[:5]
+        _top5_syms = {s["symbol"] for s in _top5}
+        _bot5 = [s for s in reversed(_by_sym) if s["symbol"] not in _top5_syms][:5]
+
+        def _sym_row(s: dict, color: str) -> str:
+            ar = s.get("avg_return_pct")
+            ar_s = (f"+{ar:.1f}%" if ar is not None and ar > 0 else f"{ar:.1f}%" if ar is not None else "—")
+            wr_pct = round((s.get("win_rate") or 0) * 100)
+            return (
+                f'<tr style="border-bottom:1px solid #f1f5f9">'
+                f'<td style="padding:4px 8px;font-weight:700;font-size:12px">{s["symbol"]}</td>'
+                f'<td style="padding:4px 8px;font-size:12px;text-align:right;color:#64748b">{wr_pct}%</td>'
+                f'<td style="padding:4px 8px;font-size:12px;text-align:right;font-weight:700;color:{color}">{ar_s}</td>'
+                f'<td style="padding:4px 8px;font-size:11px;text-align:right;color:#94a3b8">{s.get("count", "—")}</td>'
+                f'</tr>'
+            )
+
+        _col_hdr = (
+            '<tr style="background:#f8fafc">'
+            '<th style="padding:4px 8px;font-size:10px;color:#94a3b8;text-align:left;text-transform:uppercase">Symbol</th>'
+            '<th style="padding:4px 8px;font-size:10px;color:#94a3b8;text-align:right;text-transform:uppercase">Win%</th>'
+            '<th style="padding:4px 8px;font-size:10px;color:#94a3b8;text-align:right;text-transform:uppercase">Avg Ret</th>'
+            '<th style="padding:4px 8px;font-size:10px;color:#94a3b8;text-align:right;text-transform:uppercase">N</th>'
+            '</tr>'
+        )
+        _top_rows = "".join(_sym_row(s, "#22c55e") for s in _top5)
+        _bot_rows = "".join(_sym_row(s, "#ef4444") for s in _bot5)
+        sym_section_html = f"""
+    <div style="margin-top:20px">
+      <div style="font-size:11px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px">Top Performers — Last 30 Days</div>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:14px">
+        <thead>{_col_hdr}</thead><tbody>{_top_rows}</tbody>
+      </table>
+      <div style="font-size:11px;font-weight:700;color:#ef4444;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px">Underperformers — Last 30 Days</div>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+        <thead>{_col_hdr}</thead><tbody>{_bot_rows}</tbody>
+      </table>
+    </div>"""
+
     _market_name = {"US": "US Markets (NYSE/NASDAQ)", "HK": "HK Market (HKEX)"}.get(market.upper(), market.upper())
     subject = f"📊 Morning Digest [{market.upper()}]: StockAI — {date_str} | Regime: {sl}"
     body_text = (
@@ -728,6 +771,7 @@ def send_morning_digest_email(
     {pos_section_html}
     {pat_section_html}
     {perf_section_html}
+    {sym_section_html}
 
     <p style="font-size:11px;color:#94a3b8;margin-top:28px;border-top:1px solid #e2e8f0;padding-top:14px">
       Not financial advice. Paper trading simulation only. StockAI · {date_str}
