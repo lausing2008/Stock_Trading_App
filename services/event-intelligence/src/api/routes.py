@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from common.jwt_auth import get_current_username
-from db import get_session, Stock
+from db import get_session, SessionLocal, Stock
 from sqlalchemy import select
 
 from ..services import economic, earnings, insider, congress, institutional, political, catalyst
@@ -192,7 +192,7 @@ def get_overview():
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _symbol_to_id(symbol: str) -> int:
-    with get_session() as s:
+    with SessionLocal() as s:
         row = s.execute(
             select(Stock.id).where(Stock.symbol == symbol.upper())
         ).scalar_one_or_none()

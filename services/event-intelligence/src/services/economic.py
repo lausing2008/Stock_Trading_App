@@ -10,7 +10,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from common.config import get_settings
-from db import get_session, EconomicEvent
+from db import get_session, SessionLocal, EconomicEvent
 
 log = structlog.get_logger()
 _settings = get_settings()
@@ -56,7 +56,7 @@ _FRED_SERIES: list[tuple[str, str, str, str]] = [
 def _seed_fomc() -> int:
     """Insert hardcoded FOMC dates if not already present."""
     inserted = 0
-    with get_session() as s:
+    with SessionLocal() as s:
         for date_str, title, importance in _FOMC_DATES:
             dt = datetime.strptime(date_str, "%Y-%m-%d").replace(
                 hour=14, minute=0, tzinfo=timezone.utc
@@ -110,7 +110,7 @@ async def sync_fred(lookback_days: int = 365) -> dict:
                     continue
                 data = r.json()
                 observations = data.get("observations", [])
-                with get_session() as s:
+                with SessionLocal() as s:
                     for obs in observations:
                         try:
                             dt = datetime.strptime(obs["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -147,7 +147,7 @@ def get_upcoming_economic_events(days: int = 14, country: str = "US") -> list[di
     """Return upcoming economic events from DB, sorted by date."""
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(days=days)
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(EconomicEvent)
             .where(
@@ -178,7 +178,7 @@ def get_recent_economic_events(days: int = 30, country: str = "US") -> list[dict
     """Return recently released economic data."""
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=days)
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(EconomicEvent)
             .where(
@@ -205,7 +205,7 @@ def get_recent_economic_events(days: int = 30, country: str = "US") -> list[dict
 def days_to_next_fomc() -> int | None:
     """Return days until next FOMC meeting, or None if not in DB."""
     now = datetime.now(timezone.utc)
-    with get_session() as s:
+    with SessionLocal() as s:
         row = s.execute(
             select(EconomicEvent)
             .where(

@@ -10,7 +10,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from db import get_session, InsiderTransaction, Stock
+from db import get_session, SessionLocal, InsiderTransaction, Stock
 
 log = structlog.get_logger()
 
@@ -152,7 +152,7 @@ async def sync_insider_for_symbol(ticker: str, stock_id: int, days: int = 90) ->
                 continue
             if data["transaction_type"] not in ("purchase", "sale"):
                 continue
-            with get_session() as s:
+            with SessionLocal() as s:
                 stmt = (
                     pg_insert(InsiderTransaction)
                     .values(
@@ -177,7 +177,7 @@ async def sync_insider_for_symbol(ticker: str, stock_id: int, days: int = 90) ->
 
 async def sync_all_insider(days: int = 90) -> dict:
     """Sync insider transactions for all tracked stocks."""
-    with get_session() as s:
+    with SessionLocal() as s:
         stocks = s.execute(select(Stock.id, Stock.symbol)).all()
 
     total = 0
@@ -191,7 +191,7 @@ async def sync_all_insider(days: int = 90) -> dict:
 
 def get_insider_for_symbol(stock_id: int, days: int = 90) -> list[dict]:
     since = date.today() - timedelta(days=days)
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(InsiderTransaction)
             .where(InsiderTransaction.stock_id == stock_id, InsiderTransaction.transaction_date >= since)
@@ -203,7 +203,7 @@ def get_insider_for_symbol(stock_id: int, days: int = 90) -> list[dict]:
 def get_insider_leaderboard(days: int = 30, limit: int = 20) -> list[dict]:
     """Stocks with most net insider buying in last N days."""
     since = date.today() - timedelta(days=days)
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(
                 InsiderTransaction.stock_id,

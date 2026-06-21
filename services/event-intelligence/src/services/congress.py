@@ -10,7 +10,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from db import get_session, CongressTrade, Stock
+from db import get_session, SessionLocal, CongressTrade, Stock
 
 log = structlog.get_logger()
 
@@ -70,7 +70,7 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
     cutoff = date.today() - timedelta(days=lookback_days)
 
     # Build ticker → stock_id lookup
-    with get_session() as s:
+    with SessionLocal() as s:
         ticker_map: dict[str, int] = {sym: sid for sid, sym in s.execute(select(Stock.id, Stock.symbol)).all()}
 
     total = 0
@@ -88,7 +88,7 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
                 log.warning("congress.fetch_error", chamber=chamber, error=str(exc))
                 continue
 
-            with get_session() as s:
+            with SessionLocal() as s:
                 for t in trades:
                     try:
                         # House and Senate have slightly different field names
@@ -143,7 +143,7 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
 
 def get_congress_for_symbol(stock_id: int, days: int = 90) -> list[dict]:
     since = date.today() - timedelta(days=days)
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(CongressTrade)
             .where(CongressTrade.stock_id == stock_id, CongressTrade.trade_date >= since)
@@ -154,7 +154,7 @@ def get_congress_for_symbol(stock_id: int, days: int = 90) -> list[dict]:
 
 def get_congress_leaderboard(days: int = 90, limit: int = 20) -> list[dict]:
     since = date.today() - timedelta(days=days)
-    with get_session() as s:
+    with SessionLocal() as s:
         all_rows = s.execute(
             select(CongressTrade, Stock.symbol, Stock.name)
             .join(Stock, CongressTrade.stock_id == Stock.id)
@@ -193,7 +193,7 @@ def get_congress_leaderboard(days: int = 90, limit: int = 20) -> list[dict]:
 
 def get_recent_congress_trades(days: int = 30, limit: int = 50) -> list[dict]:
     since = date.today() - timedelta(days=days)
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(CongressTrade)
             .where(CongressTrade.trade_date >= since)
@@ -228,7 +228,7 @@ def compute_congress_score(stock_id: int, days: int = 90) -> float:
 
 def days_since_last_congress_buy(stock_id: int) -> int | None:
     today = date.today()
-    with get_session() as s:
+    with SessionLocal() as s:
         row = s.execute(
             select(CongressTrade.trade_date)
             .where(

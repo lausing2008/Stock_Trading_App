@@ -10,7 +10,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from db import get_session, EarningsEvent, Stock
+from db import get_session, SessionLocal, EarningsEvent, Stock
 
 log = structlog.get_logger()
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yf_earnings")
@@ -27,7 +27,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
         try:
             hist = ticker.earnings_history
             if hist is not None and not hist.empty:
-                with get_session() as s:
+                with SessionLocal() as s:
                     for idx, row in hist.iterrows():
                         try:
                             report_date = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
@@ -88,7 +88,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                     rev_est = cal.get("Revenue Estimate")
                     fq = (upcoming.month - 1) // 3 + 1
                     fy = upcoming.year
-                    with get_session() as s:
+                    with SessionLocal() as s:
                         stmt = (
                             pg_insert(EarningsEvent)
                             .values(
@@ -139,7 +139,7 @@ def _compute_strength(eps_est: float | None, eps_act: float | None, surprise_pct
 
 async def sync_all_earnings() -> dict:
     """Sync earnings for all tracked stocks. Runs yfinance calls in thread pool."""
-    with get_session() as s:
+    with SessionLocal() as s:
         stocks = s.execute(select(Stock.id, Stock.symbol)).all()
 
     loop = asyncio.get_running_loop()
@@ -154,7 +154,7 @@ async def sync_all_earnings() -> dict:
 
 def get_earnings_for_symbol(stock_id: int, days_back: int = 365) -> list[dict]:
     since = date.today() - timedelta(days=days_back)
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(EarningsEvent)
             .where(EarningsEvent.stock_id == stock_id, EarningsEvent.report_date >= since)
@@ -166,7 +166,7 @@ def get_earnings_for_symbol(stock_id: int, days_back: int = 365) -> list[dict]:
 def get_upcoming_earnings(days: int = 14) -> list[dict]:
     today = date.today()
     cutoff = today + timedelta(days=days)
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(EarningsEvent, Stock.symbol, Stock.name)
             .join(Stock, EarningsEvent.stock_id == Stock.id)
@@ -185,7 +185,7 @@ def get_upcoming_earnings(days: int = 14) -> list[dict]:
 
 def get_days_to_earnings(stock_id: int) -> int | None:
     today = date.today()
-    with get_session() as s:
+    with SessionLocal() as s:
         row = s.execute(
             select(EarningsEvent.report_date)
             .where(EarningsEvent.stock_id == stock_id, EarningsEvent.report_date >= today)
@@ -198,7 +198,7 @@ def get_days_to_earnings(stock_id: int) -> int | None:
 
 
 def get_beat_rate(stock_id: int, lookback: int = 8) -> float | None:
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(EarningsEvent.surprise_pct)
             .where(EarningsEvent.stock_id == stock_id, EarningsEvent.surprise_pct.isnot(None))

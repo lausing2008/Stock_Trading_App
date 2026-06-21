@@ -9,7 +9,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from db import get_session, PoliticalEvent, Stock
+from db import get_session, SessionLocal, PoliticalEvent, Stock
 
 log = structlog.get_logger()
 
@@ -26,7 +26,7 @@ async def sync_political_contracts(days: int = 30) -> dict:
     today = date.today()
     since = today - timedelta(days=days)
 
-    with get_session() as s:
+    with SessionLocal() as s:
         ticker_map = {sym.upper(): sid for sid, sym in s.execute(select(Stock.id, Stock.symbol)).all()}
 
     total = 0
@@ -52,7 +52,7 @@ async def sync_political_contracts(days: int = 30) -> dict:
                 if r.status_code != 200:
                     continue
                 results = r.json().get("results", [])
-                with get_session() as s:
+                with SessionLocal() as s:
                     for award in results:
                         amount = award.get("Award Amount") or 0
                         if amount < 1_000_000:  # only track awards > $1M
@@ -86,7 +86,7 @@ async def sync_political_contracts(days: int = 30) -> dict:
 
 def get_political_events(days: int = 30, stock_id: int | None = None) -> list[dict]:
     since = date.today() - timedelta(days=days)
-    with get_session() as s:
+    with SessionLocal() as s:
         q = select(PoliticalEvent).where(PoliticalEvent.event_date >= since)
         if stock_id is not None:
             q = q.where(PoliticalEvent.stock_id == stock_id)

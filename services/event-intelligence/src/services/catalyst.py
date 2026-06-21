@@ -7,7 +7,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from db import get_session, CatalystScore, Stock
+from db import get_session, SessionLocal, CatalystScore, Stock
 
 from .earnings import get_days_to_earnings, get_beat_rate
 from .insider import compute_insider_score
@@ -133,7 +133,7 @@ def compute_and_store(stock_id: int, technical_score: float = 50.0, atr_pct: flo
     last_congress = days_since_last_congress_buy(stock_id)
     last_insider = _days_since_last_insider_buy(stock_id)
 
-    with get_session() as s:
+    with SessionLocal() as s:
         stmt = (
             pg_insert(CatalystScore)
             .values(
@@ -199,7 +199,7 @@ def _days_since_last_insider_buy(stock_id: int) -> int | None:
 
 
 def get_catalyst(stock_id: int) -> dict | None:
-    with get_session() as s:
+    with SessionLocal() as s:
         row = s.execute(
             select(CatalystScore).where(CatalystScore.stock_id == stock_id)
         ).scalar_one_or_none()
@@ -209,7 +209,7 @@ def get_catalyst(stock_id: int) -> dict | None:
 
 
 def get_catalyst_leaderboard(limit: int = 20) -> list[dict]:
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(CatalystScore, Stock.symbol, Stock.name)
             .join(Stock, CatalystScore.stock_id == Stock.id)
@@ -224,7 +224,7 @@ def get_catalyst_leaderboard(limit: int = 20) -> list[dict]:
 
 
 def get_risk_leaderboard(limit: int = 20) -> list[dict]:
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(CatalystScore, Stock.symbol, Stock.name)
             .join(Stock, CatalystScore.stock_id == Stock.id)
@@ -239,7 +239,7 @@ def get_risk_leaderboard(limit: int = 20) -> list[dict]:
 
 
 def get_composite_leaderboard(limit: int = 20) -> list[dict]:
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(CatalystScore, Stock.symbol, Stock.name)
             .join(Stock, CatalystScore.stock_id == Stock.id)
@@ -255,7 +255,7 @@ def get_composite_leaderboard(limit: int = 20) -> list[dict]:
 
 async def recompute_all(technical_scores: dict[int, float] | None = None) -> dict:
     """Recompute catalyst scores for all tracked stocks."""
-    with get_session() as s:
+    with SessionLocal() as s:
         stocks = s.execute(select(Stock.id, Stock.symbol)).all()
 
     ts = technical_scores or {}

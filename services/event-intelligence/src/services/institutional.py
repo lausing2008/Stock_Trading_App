@@ -11,7 +11,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from db import get_session, InstitutionalHolding, InstitutionalTransaction, Stock
+from db import get_session, SessionLocal, InstitutionalHolding, InstitutionalTransaction, Stock
 
 log = structlog.get_logger()
 
@@ -101,7 +101,7 @@ async def _parse_13f_holdings(client: httpx.AsyncClient, fund_cik: str, accessio
 async def sync_institutional() -> dict:
     """Sync latest 13F holdings for all tracked funds."""
     # Build CUSIP → stock_id lookup (approximate — we match by symbol name)
-    with get_session() as s:
+    with SessionLocal() as s:
         stocks = {sym.upper(): sid for sid, sym in s.execute(select(Stock.id, Stock.symbol)).all()}
 
     total_holdings = 0
@@ -116,7 +116,7 @@ async def sync_institutional() -> dict:
             await asyncio.sleep(0.12)
             holdings = await _parse_13f_holdings(client, fund_cik, accession)
 
-            with get_session() as s:
+            with SessionLocal() as s:
                 for h in holdings:
                     # Match by name approximation
                     stock_id = None
@@ -151,7 +151,7 @@ async def sync_institutional() -> dict:
 
 
 def get_institutional_for_symbol(stock_id: int) -> list[dict]:
-    with get_session() as s:
+    with SessionLocal() as s:
         rows = s.execute(
             select(InstitutionalHolding)
             .where(InstitutionalHolding.stock_id == stock_id)
@@ -189,7 +189,7 @@ def compute_institutional_score(stock_id: int) -> float:
 
 
 def get_institutional_leaderboard(limit: int = 20) -> list[dict]:
-    with get_session() as s:
+    with SessionLocal() as s:
         all_rows = s.execute(
             select(InstitutionalHolding, Stock.symbol, Stock.name)
             .join(Stock, InstitutionalHolding.stock_id == Stock.id)
