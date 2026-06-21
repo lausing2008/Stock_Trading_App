@@ -138,6 +138,23 @@ _ml_weight_global_cap: float | None = None
 _ml_weight_lock = threading.Lock()
 _ML_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml_fetch")
 
+_ml_svc_token_cache: str = ""
+
+
+def _ml_service_token() -> str:
+    """Return a long-lived service JWT for authenticating signal-engine → ml-prediction calls."""
+    global _ml_svc_token_cache
+    if _ml_svc_token_cache:
+        return _ml_svc_token_cache
+    import time
+    import uuid
+    from jose import jwt as _jwt
+    from common.config import get_settings as _gs
+    s = _gs()
+    payload = {"sub": "signal-engine", "exp": int(time.time()) + 365 * 86400, "jti": str(uuid.uuid4())}
+    _ml_svc_token_cache = _jwt.encode(payload, s.jwt_secret, algorithm="HS256")
+    return _ml_svc_token_cache
+
 
 def _load_ml_weight_override() -> float | None:
     """Load calibrated ML weight cap from disk, or return None (use profile default)."""
@@ -263,7 +280,8 @@ def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None,
     for endpoint, body in endpoints:
         try:
             with httpx.Client(timeout=10) as c:
-                r = c.post(f"{_settings.ml_prediction_url}{endpoint}", json=body)
+                r = c.post(f"{_settings.ml_prediction_url}{endpoint}", json=body,
+                           headers={"Authorization": f"Bearer {_ml_service_token()}"})
                 if r.status_code == 200:
                     data = r.json()
                     prob = float(data.get("bullish_probability", 0.5))

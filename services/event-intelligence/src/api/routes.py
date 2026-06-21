@@ -23,6 +23,7 @@ def health():
 def get_economic(
     days: int = Query(14, ge=1, le=90),
     market: str = Query("US"),
+    _: str = Depends(get_current_username),
 ):
     country = "US" if market.upper() == "US" else "HK"
     events = economic.get_upcoming_economic_events(days, country)
@@ -39,12 +40,12 @@ async def sync_economic(_: str = Depends(get_current_username)):
 # ── Earnings ──────────────────────────────────────────────────────────────────
 
 @router.get("/events/earnings/calendar")
-def get_earnings_calendar(days: int = Query(14, ge=1, le=60)):
+def get_earnings_calendar(days: int = Query(14, ge=1, le=60), _: str = Depends(get_current_username)):
     return earnings.get_upcoming_earnings(days)
 
 
 @router.get("/events/earnings")
-def get_earnings_by_symbol(symbol: str = Query(...)):
+def get_earnings_by_symbol(symbol: str = Query(...), _: str = Depends(get_current_username)):
     stock_id = _symbol_to_id(symbol)
     return earnings.get_earnings_for_symbol(stock_id)
 
@@ -59,7 +60,7 @@ async def sync_earnings(_: str = Depends(get_current_username)):
 # NOTE: fixed-path routes MUST appear before {symbol} routes in FastAPI
 
 @router.get("/events/insider/leaderboard")
-def insider_leaderboard(days: int = Query(30, ge=7, le=365), limit: int = Query(20, ge=5, le=50)):
+def insider_leaderboard(days: int = Query(30, ge=7, le=365), limit: int = Query(20, ge=5, le=50), _: str = Depends(get_current_username)):
     return insider.get_insider_leaderboard(days, limit)
 
 
@@ -70,7 +71,7 @@ async def sync_insider(_: str = Depends(get_current_username)):
 
 
 @router.get("/events/insider/{symbol}")
-def get_insider(symbol: str, days: int = Query(90, ge=30, le=365)):
+def get_insider(symbol: str, days: int = Query(90, ge=30, le=365), _: str = Depends(get_current_username)):
     stock_id = _symbol_to_id(symbol)
     txns = insider.get_insider_for_symbol(stock_id, days)
     score = insider.compute_insider_score(stock_id, days)
@@ -81,12 +82,12 @@ def get_insider(symbol: str, days: int = Query(90, ge=30, le=365)):
 # NOTE: fixed-path routes MUST appear before {symbol} routes in FastAPI
 
 @router.get("/events/congress/leaderboard")
-def congress_leaderboard(days: int = Query(90, ge=30, le=365), limit: int = Query(20, ge=5, le=50)):
+def congress_leaderboard(days: int = Query(90, ge=30, le=365), limit: int = Query(20, ge=5, le=50), _: str = Depends(get_current_username)):
     return congress.get_congress_leaderboard(days, limit)
 
 
 @router.get("/events/congress/recent")
-def recent_congress(days: int = Query(30, ge=7, le=90), limit: int = Query(50, ge=10, le=200)):
+def recent_congress(days: int = Query(30, ge=7, le=90), limit: int = Query(50, ge=10, le=200), _: str = Depends(get_current_username)):
     return congress.get_recent_congress_trades(days, limit)
 
 
@@ -97,7 +98,7 @@ async def sync_congress(_: str = Depends(get_current_username)):
 
 
 @router.get("/events/congress/{symbol}")
-def get_congress(symbol: str, days: int = Query(90, ge=30, le=365)):
+def get_congress(symbol: str, days: int = Query(90, ge=30, le=365), _: str = Depends(get_current_username)):
     stock_id = _symbol_to_id(symbol)
     trades = congress.get_congress_for_symbol(stock_id, days)
     score = congress.compute_congress_score(stock_id, days)
@@ -108,7 +109,7 @@ def get_congress(symbol: str, days: int = Query(90, ge=30, le=365)):
 # NOTE: fixed-path routes MUST appear before {symbol} routes in FastAPI
 
 @router.get("/events/institutional/leaderboard")
-def institutional_leaderboard(limit: int = Query(20, ge=5, le=50)):
+def institutional_leaderboard(limit: int = Query(20, ge=5, le=50), _: str = Depends(get_current_username)):
     return institutional.get_institutional_leaderboard(limit)
 
 
@@ -119,7 +120,7 @@ async def sync_institutional(_: str = Depends(get_current_username)):
 
 
 @router.get("/events/institutional/{symbol}")
-def get_institutional(symbol: str):
+def get_institutional(symbol: str, _: str = Depends(get_current_username)):
     stock_id = _symbol_to_id(symbol)
     holdings = institutional.get_institutional_for_symbol(stock_id)
     score = institutional.compute_institutional_score(stock_id)
@@ -129,7 +130,7 @@ def get_institutional(symbol: str):
 # ── Political Events ──────────────────────────────────────────────────────────
 
 @router.get("/events/political")
-def get_political(days: int = Query(30, ge=7, le=180), symbol: str | None = None):
+def get_political(days: int = Query(30, ge=7, le=180), symbol: str | None = None, _: str = Depends(get_current_username)):
     stock_id = _symbol_to_id(symbol) if symbol else None
     return political.get_political_events(days, stock_id)
 
@@ -144,17 +145,17 @@ async def sync_political(_: str = Depends(get_current_username)):
 # NOTE: fixed-path routes MUST appear before {symbol} routes in FastAPI
 
 @router.get("/catalyst/leaderboard")
-def catalyst_leaderboard(limit: int = Query(20, ge=5, le=50)):
+def catalyst_leaderboard(limit: int = Query(20, ge=5, le=50), _: str = Depends(get_current_username)):
     return catalyst.get_catalyst_leaderboard(limit)
 
 
 @router.get("/catalyst/risk-leaderboard")
-def risk_leaderboard(limit: int = Query(20, ge=5, le=50)):
+def risk_leaderboard(limit: int = Query(20, ge=5, le=50), _: str = Depends(get_current_username)):
     return catalyst.get_risk_leaderboard(limit)
 
 
 @router.get("/catalyst/composite-leaderboard")
-def composite_leaderboard(limit: int = Query(20, ge=5, le=50)):
+def composite_leaderboard(limit: int = Query(20, ge=5, le=50), _: str = Depends(get_current_username)):
     return catalyst.get_composite_leaderboard(limit)
 
 
@@ -165,7 +166,7 @@ async def recompute_catalyst(_: str = Depends(get_current_username)):
 
 
 @router.get("/catalyst/{symbol}")
-def get_catalyst(symbol: str, technical_score: float = Query(50.0, ge=0.0, le=100.0)):
+def get_catalyst(symbol: str, technical_score: float = Query(50.0, ge=0.0, le=100.0), _: str = Depends(get_current_username)):
     stock_id = _symbol_to_id(symbol)
     score = catalyst.get_catalyst(stock_id)
     if score is None:
@@ -178,7 +179,7 @@ def get_catalyst(symbol: str, technical_score: float = Query(50.0, ge=0.0, le=10
 # ── Overview (used by frontend intelligence page) ─────────────────────────────
 
 @router.get("/events/overview")
-def get_overview():
+def get_overview(_: str = Depends(get_current_username)):
     """Single endpoint returning all sections for the /intelligence page.
     Shape must match the EventIntelOverview TypeScript type in api.ts."""
     upcoming_economic = economic.get_upcoming_economic_events(14, "US")

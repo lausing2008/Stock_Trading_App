@@ -755,7 +755,7 @@ class InsiderTransaction(Base):
     total_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     transaction_date: Mapped[date] = mapped_column(Date, index=True)
     filing_date: Mapped[date] = mapped_column(Date, index=True)
-    accession_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    accession_number: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (
@@ -778,7 +778,7 @@ class CongressTrade(Base):
     amount_range: Mapped[str | None] = mapped_column(String(64), nullable=True)
     amount_min: Mapped[float | None] = mapped_column(Float, nullable=True)
     amount_max: Mapped[float | None] = mapped_column(Float, nullable=True)
-    trade_date: Mapped[date | None] = mapped_column(Date, index=True, nullable=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
     disclosure_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

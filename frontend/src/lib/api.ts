@@ -517,6 +517,10 @@ export const api = {
     request<RegimeStatus>(`/decide/regime?market=${market}`),
   deDivergences: (limit = 100) =>
     request<DeDivergenceResponse>(`/paper-portfolio/de-divergences?limit=${limit}`),
+
+  // ── Signal Quality / Calibration ──────────────────────────────────────────
+  outcomesCalibration: (days = 180) =>
+    request<CalibrationData>(`/signals/outcomes/calibration?days=${days}`),
 };
 
 export type SuppressedSignalConditions = {
@@ -711,6 +715,9 @@ export type OutcomesCalibrationRow = {
   at_suggested_threshold?: { n: number; win_rate: number; avg_return_pct: number; expected_value_pct: number } | null;
 };
 export type OutcomesCalibration = { days: number; min_samples: number; calibrations: OutcomesCalibrationRow[] };
+export type CalibrationBand = { band: string; midpoint: number; count: number; win_rate: number; win_rate_pct: number; avg_return_pct: number | null; calibration_gap: number };
+export type CalibrationHorizon = { horizon: string; total: number; win_rate_pct: number; avg_return_pct: number | null; suggested_min_confidence: number | null; bands: CalibrationBand[] };
+export type CalibrationData = { total: number; days: number; overall: { win_rate_pct: number; avg_return_pct: number | null }; horizons: CalibrationHorizon[] };
 export type AlphaDecayCurvePoint = { day: number; avg_return_pct: number | null; p25: number | null; p75: number | null; n: number };
 export type AlphaDecayReport = { horizon: string; signal_count: number; lookback_days: number; optimal_hold_days: number | null; optimal_return_pct: number | null; curve: AlphaDecayCurvePoint[] };
 export type WalkForwardReport = {

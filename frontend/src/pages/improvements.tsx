@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7048,6 +7048,54 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 77 — Signal Quality Calibration Page (2026-06-21) ─────────────────────────────────────────
+  {
+    id: 'TIER77-CALIBRATION-PAGE',
+    tier: 77, severity: 'medium', defaultStatus: 'done',
+    file: 'frontend/src/pages/signal-quality.tsx, services/signal-engine/src/api/routes.py:2715, frontend/src/lib/api.ts, frontend/src/pages/_app.tsx',
+    implementedNote: 'Done 2026-06-21: New /signal-quality page added to nav under "Signal Quality" (purple, new tag). Backend: GET /signals/outcomes/calibration?days=180 endpoint returns per-horizon × confidence-band stats including win_rate, avg_return_pct, calibration_gap (actual − expected), and suggested_min_confidence per horizon. Frontend: signal-quality.tsx shows overall stats (total evaluated, global win rate, avg return), per-horizon sections with confidence band tables, inline SVG reliability diagram (expected vs actual win rate with perfect-calibration diagonal line), and threshold recommendation box. Types added: CalibrationBand, CalibrationHorizon, CalibrationData.',
+    effort: '2h',
+    impact: 'High — makes model calibration visible for the first time. Previously there was no way to know if "75% confidence" signals actually won 75% of the time. The page enables data-driven threshold tuning.',
+    title: 'New page: Signal Quality — calibration curve, win rate by confidence band, threshold recommendations',
+    what: 'No UI existed to verify that AI signal confidence scores are well-calibrated. The existing /outcomes/summary returned aggregate stats but no per-horizon calibration curve. Impossible to know if min_confidence=65 was the right threshold.',
+    fix: 'Added calibration endpoint + full-page UI with reliability diagram, per-horizon tabs, confidence band breakdown, and suggested min_confidence per horizon.',
+  },
+
+  // ── Tier 76 — Auth Hardening + DB Constraints (2026-06-21) ──────────────────────────────────────────
+  {
+    id: 'TIER76-ML-AUTH',
+    tier: 76, severity: 'medium', defaultStatus: 'done',
+    file: 'services/ml-prediction/src/api/routes.py:148,158,171, services/signal-engine/src/generators/signals.py',
+    implementedNote: 'Done 2026-06-21: (1) Added Depends(get_current_username) to POST /ml/predict, /ml/predict_ensemble, /ml/predict_ensemble_three. (2) Added _ml_service_token() function in signals.py (same UUID JTI pattern). (3) Updated _fetch_ml_data() httpx POST calls to include Authorization: Bearer header. All 3 predict endpoints now require a valid JWT.',
+    effort: '30m',
+    impact: 'Medium — ML model inference was accessible without auth on the internal network; any compromised container could query model predictions. Now requires valid JWT for all model access.',
+    title: 'Fix M-1: ML predict endpoints had no auth — JWT now required',
+    what: 'POST /ml/predict, /ml/predict_ensemble, /ml/predict_ensemble_three had no Depends(get_current_username) despite all train/tune endpoints being protected. Signal engine called them without Authorization header.',
+    fix: 'Added auth to all 3 predict endpoints. Added _ml_service_token() + Authorization header to signal engine ML calls.',
+  },
+  {
+    id: 'TIER76-EI-AUTH',
+    tier: 76, severity: 'medium', defaultStatus: 'done',
+    file: 'services/event-intelligence/src/api/routes.py',
+    implementedNote: 'Done 2026-06-21: Added Depends(get_current_username) to all 16 unauthenticated GET endpoints in event-intelligence: /events/economic, /events/earnings/calendar, /events/earnings, /events/insider/leaderboard, /events/insider/{symbol}, /events/congress/leaderboard, /events/congress/recent, /events/congress/{symbol}, /events/institutional/leaderboard, /events/institutional/{symbol}, /events/political, /catalyst/leaderboard, /catalyst/risk-leaderboard, /catalyst/composite-leaderboard, /catalyst/{symbol}, /events/overview. GET /health remains unauthenticated.',
+    effort: '30m',
+    impact: 'Medium — defense-in-depth: all financial intelligence data (insider trades, congress activity, catalyst scores) now requires JWT even on the internal Docker network. Consistent with write endpoints which were already protected.',
+    title: 'Fix H-5/M-5: All EI read endpoints now require JWT (defense-in-depth)',
+    what: '16 GET endpoints in event-intelligence service had no auth. api-gateway already gated external calls, but internal Docker network access was unrestricted.',
+    fix: 'Added _: str = Depends(get_current_username) to all 16 GET endpoints. api-gateway forwards Authorization header to internal services so frontend calls work unchanged.',
+  },
+  {
+    id: 'TIER76-CONSTRAINTS',
+    tier: 76, severity: 'low', defaultStatus: 'done',
+    file: 'shared/db/models.py',
+    implementedNote: 'Done 2026-06-21: (1) InsiderTransaction.accession_number changed from nullable=True to nullable=False (was Mapped[str | None], now Mapped[str]). PostgreSQL allows multiple NULLs in unique constraints — this prevented deduplication when accession was absent. (2) CongressTrade.trade_date changed from nullable=True to nullable=False. The sync code already skips records with no trade_date ("if not trade_date_str: continue"), so this is safe to enforce at the model level.',
+    effort: '15m',
+    impact: 'Low — prevents rare edge case where duplicate insider/congress rows could bypass unique constraint deduplication via NULL == anything logic.',
+    title: 'Fix H-1/M-3: InsiderTransaction.accession_number and CongressTrade.trade_date set NOT NULL',
+    what: 'PostgreSQL unique constraints do not treat NULLs as equal — multiple rows with NULL accession_number bypass the unique constraint. Same issue with trade_date in the congress unique constraint.',
+    fix: 'Changed nullable=True → nullable=False on both fields in shared/db/models.py.',
+  },
+
   // ── Tier 75 — Audit Round 2 Remaining Fixes + Positions Research (2026-06-21) ──────────────────────
   {
     id: 'TIER75-DAILY-PNL-DE',
@@ -7543,6 +7591,8 @@ const TIER_LABEL: Record<Tier, string> = {
   73: 'Tier 73 — Gate Unification + Signal Config + Event Intel Integration (2026-06-21)',
   74: 'Tier 74 — Deep Audit Round 2: EI Bugs + Decision Engine + Research Integration (2026-06-21)',
   75: 'Tier 75 — Audit Round 2 Remaining: daily_pnl + TA scores + async + UUIDs + indexes + positions research',
+  76: 'Tier 76 — Auth Hardening: ML predict auth + EI read auth + NOT NULL constraints (2026-06-21)',
+  77: 'Tier 77 — Signal Quality Calibration: reliability diagram + per-horizon bands + threshold recs (2026-06-21)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7621,6 +7671,8 @@ const TIER_COLOR: Record<Tier, string> = {
   73: '#34d399',
   74: '#f59e0b',
   75: '#a78bfa',
+  76: '#38bdf8',
+  77: '#4ade80',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

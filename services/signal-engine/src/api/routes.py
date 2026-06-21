@@ -2712,6 +2712,102 @@ def outcomes_summary(
     }
 
 
+@router.get("/outcomes/calibration")
+def outcomes_calibration(
+    days: int = Query(180, ge=30, le=365, description="Look-back window in calendar days"),
+    session: Session = Depends(get_session),
+):
+    """Calibration curve data for the reliability diagram.
+
+    For each horizon × confidence band combination, returns the actual win rate
+    vs expected (midpoint of the band). Used to assess whether confidence scores
+    are well-calibrated and to recommend minimum confidence thresholds.
+    """
+    import statistics
+    cutoff = date.today() - timedelta(days=days)
+
+    outcomes = session.execute(
+        select(SignalOutcome)
+        .where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+        )
+    ).scalars().all()
+
+    if not outcomes:
+        return {"total": 0, "horizons": [], "overall": {}, "message": "No evaluated BUY outcomes yet"}
+
+    bands = [
+        (50, 60, "50-60", 55.0),
+        (60, 65, "60-65", 62.5),
+        (65, 70, "65-70", 67.5),
+        (70, 75, "70-75", 72.5),
+        (75, 80, "75-80", 77.5),
+        (80, 101, "80+", 85.0),
+    ]
+
+    horizons = ["SHORT", "SWING", "LONG", "GROWTH"]
+    horizon_stats = []
+
+    for hor in horizons:
+        hor_outcomes = [o for o in outcomes if o.horizon == hor or o.horizon == SignalHorizon(hor)]
+        if not hor_outcomes:
+            continue
+
+        band_data = []
+        for lo, hi, label, midpoint in bands:
+            bucket = [o for o in hor_outcomes if lo <= o.confidence < hi]
+            if len(bucket) < 3:
+                continue
+            wins = sum(1 for o in bucket if o.is_correct)
+            rets = [o.pct_return for o in bucket if o.pct_return is not None]
+            band_data.append({
+                "band": label,
+                "midpoint": midpoint,
+                "count": len(bucket),
+                "win_rate": round(wins / len(bucket), 3),
+                "win_rate_pct": round(wins / len(bucket) * 100, 1),
+                "avg_return_pct": round(statistics.mean(rets) * 100, 2) if rets else None,
+                "calibration_gap": round((wins / len(bucket)) - (midpoint / 100), 3),
+            })
+
+        if not band_data:
+            continue
+
+        # Suggest min_confidence: lowest band with win_rate >= 0.52
+        suggested_min = None
+        for bd in sorted(band_data, key=lambda x: x["midpoint"]):
+            if bd["win_rate"] >= 0.52 and bd["count"] >= 5:
+                suggested_min = bd["midpoint"] - 5  # use band start
+                break
+
+        hor_wins = sum(1 for o in hor_outcomes if o.is_correct)
+        hor_rets = [o.pct_return for o in hor_outcomes if o.pct_return is not None]
+        horizon_stats.append({
+            "horizon": hor,
+            "total": len(hor_outcomes),
+            "win_rate_pct": round(hor_wins / len(hor_outcomes) * 100, 1),
+            "avg_return_pct": round(statistics.mean(hor_rets) * 100, 2) if hor_rets else None,
+            "suggested_min_confidence": suggested_min,
+            "bands": band_data,
+        })
+
+    # Overall
+    all_wins = sum(1 for o in outcomes if o.is_correct)
+    all_rets = [o.pct_return for o in outcomes if o.pct_return is not None]
+
+    return {
+        "total": len(outcomes),
+        "days": days,
+        "overall": {
+            "win_rate_pct": round(all_wins / len(outcomes) * 100, 1),
+            "avg_return_pct": round(statistics.mean(all_rets) * 100, 2) if all_rets else None,
+        },
+        "horizons": horizon_stats,
+    }
+
+
 @router.get("/outcomes/calibrate")
 def outcomes_calibrate(
     days: int = Query(180, description="Look-back window in calendar days"),

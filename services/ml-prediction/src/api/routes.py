@@ -145,7 +145,7 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _
 
 
 @router.post("/predict")
-def predict(req: PredictRequest):
+def predict(req: PredictRequest, _: str = Depends(get_current_username)):
     try:
         return predict_latest(req.symbol, req.model, req.horizon, style=req.style)
     except FileNotFoundError as exc:
@@ -155,7 +155,7 @@ def predict(req: PredictRequest):
 
 
 @router.post("/predict_ensemble")
-def predict_ensemble(req: PredictRequest):
+def predict_ensemble(req: PredictRequest, _: str = Depends(get_current_username)):
     """XGBoost + RandomForest ensemble prediction, weighted by each model's CV AUC.
 
     Falls back to XGBoost-only if RF model not yet trained for this symbol.
@@ -168,7 +168,7 @@ def predict_ensemble(req: PredictRequest):
 
 
 @router.post("/predict_ensemble_three")
-def predict_ensemble_three(req: PredictRequest):
+def predict_ensemble_three(req: PredictRequest, _: str = Depends(get_current_username)):
     """XGBoost (40%) + LightGBM (35%) + RandomForest (25%) ensemble with agreement detection.
 
     Falls back gracefully if LightGBM or RF haven't been trained yet.
