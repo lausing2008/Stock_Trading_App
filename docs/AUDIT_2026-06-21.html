@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>Audit Report — Tier 66-68 Changes — 2026-06-21</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; line-height: 1.5; }
+  .header { margin-bottom: 32px; }
+  .header h1 { font-size: 22px; font-weight: 700; color: #f8fafc; margin-bottom: 4px; }
+  .header p { font-size: 13px; color: #64748b; }
+  .badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px; text-transform: uppercase; letter-spacing: .05em; vertical-align: middle; margin-left: 8px; }
+  .confirmed { background: rgba(239,68,68,.15); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
+  .plausible { background: rgba(251,191,36,.12); color: #fbbf24; border: 1px solid rgba(251,191,36,.3); }
+  .finding { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 20px 24px; margin-bottom: 16px; }
+  .finding-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 12px; }
+  .rank { font-size: 11px; font-weight: 800; color: #475569; min-width: 24px; padding-top: 2px; }
+  .finding h3 { font-size: 15px; font-weight: 600; color: #f1f5f9; line-height: 1.4; flex: 1; }
+  .meta { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }
+  .file-badge { font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; color: #94a3b8; background: #0f172a; padding: 2px 8px; border-radius: 4px; border: 1px solid #334155; }
+  .line-badge { font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; color: #64748b; background: #0f172a; padding: 2px 8px; border-radius: 4px; border: 1px solid #334155; }
+  .scenario { font-size: 13px; color: #94a3b8; background: #0f172a; padding: 12px 14px; border-radius: 6px; border-left: 3px solid #334155; margin-top: 8px; }
+  .scenario strong { color: #cbd5e1; }
+  .scenario code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: #7dd3fc; background: rgba(125,211,252,.07); padding: 1px 4px; border-radius: 3px; }
+  .sev-high { border-left-color: #ef4444; }
+  .sev-med { border-left-color: #f59e0b; }
+  .sev-low { border-left-color: #3b82f6; }
+  .summary-bar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 28px; }
+  .stat { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 14px; text-align: center; }
+  .stat-n { font-size: 28px; font-weight: 800; }
+  .stat-l { font-size: 11px; color: #64748b; margin-top: 2px; }
+  .n-red { color: #ef4444; }
+  .n-yellow { color: #f59e0b; }
+  .n-blue { color: #3b82f6; }
+  .fix { margin-top: 8px; font-size: 12px; color: #4ade80; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Deep Full Audit — Tier 66-68 Code Review</h1>
+  <p>2026-06-21 &nbsp;·&nbsp; 8 finder angles · 1-vote verification · Commits 17d7495 → 3076fb6 vs main</p>
+</div>
+
+<div class="summary-bar">
+  <div class="stat"><div class="stat-n n-red">2</div><div class="stat-l">High severity</div></div>
+  <div class="stat"><div class="stat-n n-yellow">4</div><div class="stat-l">Medium severity</div></div>
+  <div class="stat"><div class="stat-n n-blue">2</div><div class="stat-l">Low severity</div></div>
+</div>
+
+<div class="finding">
+  <div class="finding-header">
+    <div class="rank">#1</div>
+    <h3>4 sequential ML HTTP calls replace 1 — live signal endpoint can block for 120s <span class="badge confirmed">confirmed</span></h3>
+  </div>
+  <div class="meta">
+    <span class="file-badge">signal-engine/src/generators/signals.py</span>
+    <span class="line-badge">line 1763</span>
+  </div>
+  <div class="scenario sev-high">
+    <strong>What changed:</strong> <code>generate_all_signals()</code> now calls <code>_fetch_ml_data(symbol, sk)</code> 4× sequentially (SHORT → SWING → LONG → GROWTH). Each call tries 3 endpoints with a <strong>10s timeout each</strong>.<br><br>
+    <strong>Failure path:</strong> <code>GET /signals/{symbol}?live=true</code> (routes.py:3090) calls this synchronously. When ML service is unreachable, each style exhausts 3×10s = 30s before giving up. Total: <strong>4×30 = 120s</strong>. The api-gateway proxy timeout is 120s — live signal requests time out instead of gracefully falling back to TA-only.<br><br>
+    <strong>Background bulk persist is unaffected</strong> (runs as background task). Only live signal requests (?live=true) are impacted.<br><br>
+    <div class="fix">Fix: Use ThreadPoolExecutor to fetch all 4 styles in parallel. Worst-case drops from 120s to 30s.</div>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="finding-header">
+    <div class="rank">#2</div>
+    <h3>reasons["ml_oos_suppressed"] always stores SWING's OOS flag for all styles <span class="badge confirmed">confirmed</span></h3>
+  </div>
+  <div class="meta">
+    <span class="file-badge">signal-engine/src/generators/signals.py</span>
+    <span class="line-badge">line 1793</span>
+  </div>
+  <div class="scenario sev-high">
+    <strong>Root cause:</strong> <code>ml_meta = ml_by_style["SWING"][2]</code>. Line 1793 writes <code>reasons["ml_oos_suppressed"] = ml_meta.get("ml_oos_suppressed", False)</code> into the shared base reasons dict — SWING's OOS status for all styles.<br><br>
+    <strong>Consequence:</strong> OOS penalty fires correctly in <code>_apply_style_signal()</code> via <code>_ml_m.get("ml_oos_suppressed")</code> (line 1875). Signals are computed correctly. But the stored DB JSON for SHORT/LONG/GROWTH has SWING's flag. Any historical analysis, signal accuracy report, or email suppression section reading <code>reasons["ml_oos_suppressed"]</code> from stored signals gets wrong data for 3 of 4 styles.<br><br>
+    <div class="fix">Fix: Remove the shared write at line 1793. Each style should write its own flag inside _make_signal() or _apply_style_signal().</div>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="finding-header">
+    <div class="rank">#3</div>
+    <h3>Falsy check `if _atr_14` stores None for exactly-zero ATR <span class="badge plausible">plausible</span></h3>
+  </div>
+  <div class="meta">
+    <span class="file-badge">signal-engine/src/generators/signals.py</span>
+    <span class="line-badge">line 1824</span>
+  </div>
+  <div class="scenario sev-med">
+    <strong>Bug:</strong> <code>reasons["atr_14"] = round(_atr_14, 4) if _atr_14 else None</code> is falsy for both <code>None</code> AND <code>0.0</code>. A stock with zero intraday range on all 14 recent bars (e.g., HK micro-cap or halted stock) would have <code>_atr_14 == 0.0</code>, but it's stored as <code>None</code>.<br><br>
+    <strong>Cascade:</strong> Aggregator reads <code>None</code> for <code>atr_14</code>, skips ATR-based stop, falls back silently to fixed %. No log. The distinction between "ATR computed as zero" and "ATR unavailable" is lost.<br><br>
+    <div class="fix">Fix: <code>if _atr_14 is not None</code> — zero ATR is a valid computed value and should be stored faithfully.</div>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="finding-header">
+    <div class="rank">#4</div>
+    <h3>ATR-based game plan silently breaks 2:1 R:R when stop is wide and target is capped <span class="badge plausible">plausible</span></h3>
+  </div>
+  <div class="meta">
+    <span class="file-badge">decision-engine/src/api/core/aggregator.py</span>
+    <span class="line-badge">lines 53-54</span>
+  </div>
+  <div class="scenario sev-med">
+    <strong>Logic:</strong> <code>rr_target = live_price + 2.0 × (live_price − stop)</code> then <code>take_profit = min(rr_target, live_price × target_pct)</code>.<br><br>
+    <strong>Failure:</strong> SWING has <code>target_pct = 1.12</code>. If ATR stop is 7% below entry, <code>rr_target = +14%</code> → capped at <code>+12%</code>. Effective R:R = 12/7 = 1.71:1, not 2:1. The gap worsens as stop distance grows beyond 6%. The game plan dict returned has no R:R field — callers see stop+target that appear internally consistent but the 2:1 guarantee is silently broken.<br><br>
+    <div class="fix">Fix: Add <code>rr_ratio = round((take_profit - live_price) / max(live_price - stop, 0.001), 2)</code> to the returned dict so the UI can surface when the actual ratio deviates from the target.</div>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="finding-header">
+    <div class="rank">#5</div>
+    <h3>asyncio.get_event_loop() inside running async context — DeprecationWarning now, crash on Python 3.12 <span class="badge plausible">plausible</span></h3>
+  </div>
+  <div class="meta">
+    <span class="file-badge">research-engine/src/api/routes.py</span>
+    <span class="line-badge">lines 1477, 1488</span>
+  </div>
+  <div class="scenario sev-med">
+    <strong>Code:</strong> Two occurrences of <code>loop = asyncio.get_event_loop()</code> inside <code>async def generate_research()</code>.<br><br>
+    <strong>Python 3.11 (current):</strong> Emits <code>DeprecationWarning</code> but works — returns the running loop.<br><br>
+    <strong>Python 3.12:</strong> Raises <code>RuntimeError: no current event loop</code> — crashes the yfinance fallback fetch for every uncached symbol. Research generation fails entirely for symbols not in the DB cache.<br><br>
+    <div class="fix">Fix: Replace both with <code>asyncio.get_running_loop()</code>.</div>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="finding-header">
+    <div class="rank">#6</div>
+    <h3>In-memory cache miss race — concurrent requests for same symbol both trigger full AI generation <span class="badge plausible">plausible</span></h3>
+  </div>
+  <div class="meta">
+    <span class="file-badge">research-engine/src/api/routes.py</span>
+    <span class="line-badge">line 1449</span>
+  </div>
+  <div class="scenario sev-med">
+    <strong>Trigger:</strong> A BUY signal fires for a popular symbol. Multiple users click the Research button within milliseconds (email alert link, opportunities page refresh). Both requests call <code>_cache.get(sym)</code>, both miss, both proceed through asyncio.gather data fetching, both call Claude/DeepSeek. Second write overwrites first. Each generation costs ~$0.05–$0.15 in API tokens.<br><br>
+    <strong>Frequency:</strong> Happens reliably on every BUY email if multiple subscribers open the link simultaneously — exactly the highest-traffic moment.<br><br>
+    <div class="fix">Fix: Per-symbol asyncio.Lock — first waiter computes and caches; second waiter acquires lock, finds warm cache, returns immediately.</div>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="finding-header">
+    <div class="rank">#7</div>
+    <h3>weekly_rsi_consec_low default=99 applies maximum compression if key ever absent <span class="badge plausible">plausible</span></h3>
+  </div>
+  <div class="meta">
+    <span class="file-badge">signal-engine/src/generators/signals.py</span>
+    <span class="line-badge">line 1666</span>
+  </div>
+  <div class="scenario sev-low">
+    <strong>Current state:</strong> Safe — <code>_weekly_technicals()</code> always includes the key. The gate fires only when <code>weekly_rsi &lt;= 38 AND weekly_trend == "down"</code>.<br><br>
+    <strong>Risk:</strong> If a future refactor drops the key or a test passes a partial <code>weekly_tech</code> dict, <code>weekly_tech.get("weekly_rsi_consec_low", 99)</code> returns 99, mapping to the maximum 0.40× multiplier (≥20 bars confirmed downtrend severity). A brief dip gets the same penalty as a structurally broken weekly chart, with no log indicating the default fired.<br><br>
+    <div class="fix">Fix: Add a log.warning when the default 99 is used, or assert the key is present.</div>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="finding-header">
+    <div class="rank">#8</div>
+    <h3>aggregator.py `if atr_14 and atr_14 > 0` — inconsistent guard pattern vs signals.py fix <span class="badge plausible">plausible</span></h3>
+  </div>
+  <div class="meta">
+    <span class="file-badge">decision-engine/src/api/core/aggregator.py</span>
+    <span class="line-badge">line 48</span>
+  </div>
+  <div class="scenario sev-low">
+    <strong>Context:</strong> Once Bug #3 is fixed (signals.py stores <code>0.0</code> faithfully), this guard correctly skips ATR logic for zero ATR (zero ATR is meaningless for stop placement — correct behavior).<br><br>
+    <strong>Not a bug in isolation</strong> — the fallback to fixed stop is correct when ATR is zero. The guard is semantically appropriate here, unlike Bug #3 where <code>None</code> has a different meaning from <code>0.0</code>. Low priority; note that the code patterns diverge intentionally after Bug #3 is addressed.
+  </div>
+</div>
+
+<div style="margin-top:32px; padding-top:20px; border-top:1px solid #1e293b; font-size:12px; color:#475569">
+  Scope: commits 17d7495 → 3076fb6 (Tier 66-68 fixes). Files reviewed: signals.py, aggregator.py, research-engine/routes.py, scheduler.py, paper_portfolio.py, email_service.py, builder.py, registry.py, api.ts, opportunities.tsx.
+</div>
+
+</body>
+</html>

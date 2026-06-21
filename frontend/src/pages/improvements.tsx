@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7048,6 +7048,85 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 70 — Deep Full Audit Fixes (2026-06-21) ─────────────────────────────
+  {
+    id: 'TIER70-PARALLEL-ML',
+    tier: 70, severity: 'high', defaultStatus: 'done',
+    file: 'signal-engine/src/generators/signals.py:1768',
+    implementedNote: 'Done 2026-06-21: Replaced sequential dict comprehension {sk: _fetch_ml_data(symbol, sk) for sk in _ml_styles} with parallel ThreadPoolExecutor futures. module-level _ML_EXECUTOR (max_workers=4). Worst-case live signal latency drops from 120s (4×3×10s timeouts) to 30s (1 style×3×10s) when ML service is degraded.',
+    effort: '1h',
+    impact: 'High — live signal endpoint (?live=true) could block for 120s in worst case when ML is unreachable; now 30s max',
+    title: 'Parallel ML fetches: 4 sequential calls replaced with ThreadPoolExecutor',
+    what: 'generate_all_signals() fetches ML predictions for 4 styles (SHORT/SWING/LONG/GROWTH) sequentially. Each call tries 3 endpoints with 10s timeout. Worst case: 4×3×10=120s, exceeding the api-gateway 120s proxy timeout and causing live signal requests to time out instead of gracefully falling back to TA-only.',
+    fix: 'Use _ML_EXECUTOR.submit() to launch all 4 _fetch_ml_data() calls in parallel, then .result() to collect. Module-level ThreadPoolExecutor avoids per-call thread pool creation overhead.',
+  },
+  {
+    id: 'TIER70-OOS-FLAG',
+    tier: 70, severity: 'high', defaultStatus: 'done',
+    file: 'signal-engine/src/generators/signals.py:1630,1799',
+    implementedNote: 'Done 2026-06-21: Removed reasons["ml_oos_suppressed"] write from shared base dict in generate_all_signals() (was always SWING\'s value). Added reasons["ml_oos_suppressed"] = ml_oos_suppressed inside _apply_style_signal() where the per-style ml_oos_suppressed param is received — each horizon now stores its own flag.',
+    effort: '30m',
+    impact: 'High — stored DB signals for SHORT/LONG/GROWTH showed SWING\'s OOS flag; audit trail corrupted for 3 of 4 styles',
+    title: 'Per-style ml_oos_suppressed: removed shared SWING write, added per-style write inside _apply_style_signal',
+    what: 'generate_all_signals() wrote reasons["ml_oos_suppressed"] from ml_meta (SWING\'s dict) to the shared base reasons. _apply_style_signal() creates a copy of base_reasons, so SHORT/LONG/GROWTH signals inherited SWING\'s OOS status even though each style has its own model.',
+    fix: 'Remove line 1793 write from shared dict. Add reasons["ml_oos_suppressed"] = ml_oos_suppressed inside _apply_style_signal() (line 1630) so each style writes its own flag from its own ml_meta.',
+  },
+  {
+    id: 'TIER70-ATR-ZERO',
+    tier: 70, severity: 'medium', defaultStatus: 'done',
+    file: 'signal-engine/src/generators/signals.py:1831',
+    implementedNote: 'Done 2026-06-21: Changed `if _atr_14` to `if _atr_14 is not None`. Zero ATR (halted/zero-range stock) now stored as 0.0 rather than None, preserving the distinction between "computed zero" and "computation failed".',
+    effort: '15m',
+    impact: 'Medium — thin/halted HK stocks with zero 14-bar ATR would store null instead of 0.0; aggregator then used fixed % stop silently',
+    title: 'ATR falsy-zero fix: `if _atr_14` → `if _atr_14 is not None`',
+    what: 'reasons["atr_14"] = round(_atr_14, 4) if _atr_14 else None — falsy check treats 0.0 the same as None. A stock with zero intraday range on all 14 bars stores None, causing aggregator to skip ATR stop silently.',
+    fix: 'if _atr_14 is not None — zero is a valid computed ATR and should be stored faithfully.',
+  },
+  {
+    id: 'TIER70-RR-RATIO',
+    tier: 70, severity: 'medium', defaultStatus: 'done',
+    file: 'decision-engine/src/api/core/aggregator.py:60',
+    implementedNote: 'Done 2026-06-21: Added rr_ratio = round(reward / risk, 2) if risk > 0 else None to _default_game_plan() return dict. Callers (and the frontend) can now surface when the actual R:R deviates from the 2:1 target due to the style target cap.',
+    effort: '15m',
+    impact: 'Medium — ATR stop > 6% combined with style target cap (1.12× for SWING) silently produced R:R of 1.71:1 or worse with no indication',
+    title: 'Add rr_ratio to game plan dict to surface when ATR stop breaks 2:1 R:R guarantee',
+    what: 'take_profit = min(rr_target, live_price × target_pct) caps take_profit at the style max. When ATR stop is wide (>6% for SWING), rr_target > cap, so effective R:R < 2:1 with no visibility.',
+    fix: 'Add rr_ratio = round((take_profit - live_price) / max(live_price - stop, 0.001), 2) to the returned dict.',
+  },
+  {
+    id: 'TIER70-ASYNCIO',
+    tier: 70, severity: 'medium', defaultStatus: 'done',
+    file: 'research-engine/src/api/routes.py:1491,1502',
+    implementedNote: 'Done 2026-06-21: Replaced both asyncio.get_event_loop() calls inside generate_research() with asyncio.get_running_loop(). Python 3.11 emits DeprecationWarning with get_event_loop() in a running coroutine; Python 3.12 raises RuntimeError.',
+    effort: '10m',
+    impact: 'Medium — would crash yfinance fallback fetch path on Python 3.12 upgrade; currently emits DeprecationWarning on 3.11',
+    title: 'asyncio.get_event_loop() → get_running_loop() in async research endpoint',
+    what: 'generate_research() calls asyncio.get_event_loop() inside an async function. Python 3.11 logs DeprecationWarning but works. Python 3.12 raises RuntimeError, crashing the fallback yfinance fetch for any uncached symbol.',
+    fix: 'asyncio.get_running_loop() is the correct call inside a running coroutine.',
+  },
+  {
+    id: 'TIER70-RESEARCH-DEDUP',
+    tier: 70, severity: 'medium', defaultStatus: 'done',
+    file: 'research-engine/src/api/routes.py:1461',
+    implementedNote: 'Done 2026-06-21: Added asyncio.Event-based deduplication. _inflight_research dict maps sym → asyncio.Event. Second request for same uncached symbol awaits the event instead of calling AI. First caller sets the event after caching. Falls through if first caller had an error.',
+    effort: '1h',
+    impact: 'Medium — BUY email triggers multiple simultaneous research page opens; each was calling Claude/DeepSeek independently ($0.05–$0.15 per call)',
+    title: 'Research generation dedup: asyncio.Event prevents concurrent AI calls for same symbol',
+    what: 'Two concurrent POST /research/{sym} requests both miss the in-memory cache, both call AI, second overwrites first. Happens reliably after every BUY email when multiple subscribers click simultaneously.',
+    fix: 'asyncio.Event per symbol: first request creates the event, computes, caches, fires the event. Second request awaits the event and reads the warm cache.',
+  },
+  {
+    id: 'TIER70-WEEKLY-GATE-LOG',
+    tier: 70, severity: 'low', defaultStatus: 'done',
+    file: 'signal-engine/src/generators/signals.py:1671',
+    implementedNote: 'Done 2026-06-21: Added log.warning("weekly_gate.consec_key_missing") when weekly_rsi_consec_low key is absent from weekly_tech dict. The default-99 fires maximum 0.40× compression — safe to default but should be visible in logs if it ever triggers.',
+    effort: '10m',
+    impact: 'Low — future refactor dropping the key would silently apply max compression on all weekly-gated symbols; log makes it detectable',
+    title: 'Log warning when weekly_rsi_consec_low key absent (default-99 → max compression)',
+    what: 'weekly_tech.get("weekly_rsi_consec_low", 99) defaults to 99 (≥20 bars → 0.40× max compression) if the key is absent. _weekly_technicals() always includes it today, but a future refactor or test could drop it.',
+    fix: 'Add log.warning when the default fires so the gap is immediately visible in production logs.',
+  },
+
   // ── Tier 69 — Refactoring & Tech Debt ─────────────────────────────────────────
   {
     id: 'TIER69-DEAD-CODE',
@@ -7169,6 +7248,7 @@ const TIER_LABEL: Record<Tier, string> = {
   67: 'Tier 67 — High Priority: Gate Transparency + ATR Stops + Kelly Sizing + Opportunities',
   68: 'Tier 68 — ML & Regime: Feature Expansion + Auto-Retrain + Config-Driven Thresholds',
   69: 'Tier 69 — Refactoring & Tech Debt: Dead Code + Health Dashboard + DB Constraint',
+  70: 'Tier 70 — Deep Audit Fixes: Parallel ML + OOS Flag + R:R Ratio + Research Dedup',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7241,6 +7321,7 @@ const TIER_COLOR: Record<Tier, string> = {
   67: '#a78bfa',
   68: '#38bdf8',
   69: '#34d399',
+  70: '#818cf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
