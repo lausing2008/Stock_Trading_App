@@ -647,17 +647,25 @@ def send_morning_digest_email(
         sp_wr_color = "#22c55e" if sp_wr >= 0.50 else "#f59e0b" if sp_wr >= 0.38 else "#ef4444"
         sp_ret = signal_performance.get("avg_return_pct")
         sp_ret_str = (f"+{sp_ret:.1f}%" if sp_ret and sp_ret > 0 else f"{sp_ret:.1f}%" if sp_ret is not None else "—")
+        sp_ret_color = "#22c55e" if sp_ret and sp_ret > 0 else "#ef4444"
         sp_total = signal_performance.get("total", 0)
         by_h = signal_performance.get("by_horizon", {})
-        h_rows = "".join(
-            f'<tr style="border-bottom:1px solid #f1f5f9">'
-            f'<td style="padding:5px 10px;font-size:12px;color:#64748b">{h}</td>'
-            f'<td style="padding:5px 10px;font-size:12px;font-weight:700;text-align:right;color:{"#22c55e" if (v.get("win_rate",0) or 0) >= 0.50 else "#f59e0b" if (v.get("win_rate",0) or 0) >= 0.38 else "#ef4444"}">{round((v.get("win_rate") or 0)*100,1)}%</td>'
-            f'<td style="padding:5px 10px;font-size:12px;text-align:right;color:#64748b">{v.get("count","—")}</td>'
-            f'<td style="padding:5px 10px;font-size:12px;text-align:right;color:#94a3b8">{(f"+{v[\"avg_return_pct\"]:.1f}%" if v.get("avg_return_pct") and v["avg_return_pct"] > 0 else f"{v[\"avg_return_pct\"]:.1f}%" if v.get("avg_return_pct") is not None else "—")}</td>'
-            f'</tr>'
-            for h, v in by_h.items() if v.get("count", 0) > 0
-        )
+
+        def _h_row(h: str, v: dict) -> str:
+            wr = (v.get("win_rate") or 0)
+            wrc = "#22c55e" if wr >= 0.50 else "#f59e0b" if wr >= 0.38 else "#ef4444"
+            ar = v.get("avg_return_pct")
+            ar_s = (f"+{ar:.1f}%" if ar and ar > 0 else f"{ar:.1f}%" if ar is not None else "—")
+            return (
+                f'<tr style="border-bottom:1px solid #f1f5f9">'
+                f'<td style="padding:5px 10px;font-size:12px;color:#64748b">{h}</td>'
+                f'<td style="padding:5px 10px;font-size:12px;font-weight:700;text-align:right;color:{wrc}">{round(wr*100,1)}%</td>'
+                f'<td style="padding:5px 10px;font-size:12px;text-align:right;color:#64748b">{v.get("count","—")}</td>'
+                f'<td style="padding:5px 10px;font-size:12px;text-align:right;color:#94a3b8">{ar_s}</td>'
+                f'</tr>'
+            )
+
+        h_rows = "".join(_h_row(h, v) for h, v in by_h.items() if v.get("count", 0) > 0)
         perf_section_html = f"""
     <div style="margin-top:24px">
       <div style="font-size:11px;font-weight:700;color:#818cf8;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Signal Performance — Last 30 Days</div>
@@ -667,7 +675,7 @@ def send_morning_digest_email(
           <div style="font-size:10px;color:#94a3b8">30d win rate</div>
         </div>
         <div style="text-align:center">
-          <div style="font-size:20px;font-weight:800;color:{"#22c55e" if sp_ret and sp_ret > 0 else "#ef4444"}">{sp_ret_str}</div>
+          <div style="font-size:20px;font-weight:800;color:{sp_ret_color}">{sp_ret_str}</div>
           <div style="font-size:10px;color:#94a3b8">avg return</div>
         </div>
         <div style="text-align:center">
