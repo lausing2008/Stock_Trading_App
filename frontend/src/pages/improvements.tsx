@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7048,6 +7048,52 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 71 — Tech Debt: Dead Code + Gate Auth + Signal Upsert + Health Dashboard (2026-06-21) ─
+  {
+    id: 'TIER71-DEAD-CODE',
+    tier: 71, severity: 'low', defaultStatus: 'done',
+    file: 'signal-engine/src/generators/signals.py:869,1331',
+    implementedNote: 'Done 2026-06-21: Removed rsi_divergence = "none" and reasons["rsi_divergence"] = rsi_divergence (lines 869-870) — disabled since argmax bug noted in comments; storing "none" adds dead weight to reasons JSON. Removed reasons["weekly_blend_applied"] = False (line 1331) — SA-18 was removed; this flag was always False with no reader.',
+    effort: '15m',
+    impact: 'Low — cleanup; no functional change; reduces reasons JSON size',
+    title: 'Dead code removal: rsi_divergence="none" and weekly_blend_applied=False',
+    what: 'signals.py stored two hardcoded dead values in every signal\'s reasons dict: rsi_divergence always "none" (disabled feature, argmax bug noted in comments), and weekly_blend_applied always False (SA-18 removed). No code reads either key.',
+    fix: 'Remove both assignments. The comment explaining why RSI divergence is disabled is preserved for context.',
+  },
+  {
+    id: 'TIER71-GATE-AUTH',
+    tier: 71, severity: 'medium', defaultStatus: 'done',
+    file: 'signal-engine/src/api/routes.py:3429',
+    implementedNote: 'Done 2026-06-21: Added _: str = Depends(get_current_username) to gate_backtest GET endpoint. Previously unprotected — any unauthenticated caller could invoke the 90-day backtest simulation. get_current_username was already imported at line 11.',
+    effort: '15m',
+    impact: 'Medium — gate_backtest runs a heavy SQL query; should require auth to prevent unauthenticated abuse',
+    title: 'gate_backtest endpoint: add authentication',
+    what: 'GET /signals/gate_backtest was the only signals endpoint with no auth. It replays the conviction gate against up to 365 days of signals — a non-trivial DB query. Any anonymous caller could trigger it.',
+    fix: 'Add _: str = Depends(get_current_username) to the endpoint signature.',
+  },
+  {
+    id: 'TIER71-SIGNAL-DEDUP',
+    tier: 71, severity: 'medium', defaultStatus: 'done',
+    file: 'shared/db/migrations/versions/002_signals_dedup_index.py, signal-engine/src/api/routes.py:262',
+    implementedNote: 'Done 2026-06-21: (1) Alembic migration 002 deduplicates existing rows (keep latest ts per stock_id+horizon+day), then creates UNIQUE INDEX uq_signals_stock_horizon_day on signals(stock_id, horizon, date_trunc(\'day\', ts)). (2) _bulk_persist now uses ON CONFLICT ... DO UPDATE upsert via SQLAlchemy text() — one row per stock/horizon/day, signal type changes update in place rather than growing the table.',
+    effort: '1h',
+    impact: 'Medium — prevents table growth from intraday signal flips; DB-level constraint catches race conditions between parallel bulk_persist runs',
+    title: 'Signals UNIQUE INDEX + upsert: one row per (stock, horizon, day)',
+    what: '_bulk_persist used Python-level dedup (skip same type+day) but allowed multiple rows per day if signal type changed (BUY→HOLD→BUY). No DB constraint prevented parallel bulk_persist races. Table grows unbounded on active trading days.',
+    fix: 'Alembic migration 002 creates uq_signals_stock_horizon_day. _bulk_persist uses INSERT ... ON CONFLICT DO UPDATE to upsert in place.',
+  },
+  {
+    id: 'TIER71-HEALTH-DASHBOARD',
+    tier: 71, severity: 'medium', defaultStatus: 'done',
+    file: 'services/api-gateway/src/api/health.py, frontend/src/pages/admin-health.tsx',
+    implementedNote: 'Done 2026-06-21: (1) New GET /health/deep endpoint in api-gateway fans out parallel pings to all 9 upstream service /health endpoints, returns latency_ms + status per service. (2) admin-health.tsx SERVICE CONNECTIVITY section shows a grid of service tiles (service name, latency, ✓/✗/⏱), refreshes every 60s with a manual refresh button. (3) ServiceHealthReport + ServiceHealthResult types added to api.ts.',
+    effort: '2h',
+    impact: 'Medium — operational visibility: see which services are down or slow at a glance from admin panel',
+    title: 'Service health dashboard: GET /health/deep + admin panel connectivity grid',
+    what: 'The admin health page showed scheduler jobs, ML metrics, and signal freshness — but had no way to see whether upstream services (signal-engine, research-engine, etc.) were actually reachable. Container down ≠ scheduler failure; the gap was invisible.',
+    fix: 'New GET /health/deep in api-gateway pings all 9 services in parallel. Frontend renders a service grid tile per service with latency and status color.',
+  },
+
   // ── Tier 70 — Deep Full Audit Fixes (2026-06-21) ─────────────────────────────
   {
     id: 'TIER70-PARALLEL-ML',
@@ -7249,6 +7295,7 @@ const TIER_LABEL: Record<Tier, string> = {
   68: 'Tier 68 — ML & Regime: Feature Expansion + Auto-Retrain + Config-Driven Thresholds',
   69: 'Tier 69 — Refactoring & Tech Debt: Dead Code + Health Dashboard + DB Constraint',
   70: 'Tier 70 — Deep Audit Fixes: Parallel ML + OOS Flag + R:R Ratio + Research Dedup',
+  71: 'Tier 71 — Tech Debt: Dead Code + Gate Auth + Signal Upsert + Health Dashboard',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7322,6 +7369,7 @@ const TIER_COLOR: Record<Tier, string> = {
   68: '#38bdf8',
   69: '#34d399',
   70: '#818cf8',
+  71: '#6ee7b7',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

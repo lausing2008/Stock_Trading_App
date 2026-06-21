@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type SchedulerJob, type MlModelMetric, type SignalSummary } from '@/lib/api';
+import { api, type SchedulerJob, type MlModelMetric, type SignalSummary, type ServiceHealthReport } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string }> = {
@@ -143,6 +143,12 @@ export default function AdminHealthPage() {
     authed ? 'signals-SWING' : null,
     () => api.allSignals('SWING'),
     { revalidateOnFocus: false, refreshInterval: 120_000 },
+  );
+
+  const { data: healthData, mutate: mutateHealth } = useSWR<ServiceHealthReport>(
+    authed ? 'health-deep' : null,
+    () => api.healthDeep(),
+    { revalidateOnFocus: false, refreshInterval: 60_000 },
   );
 
   const signalCounts = useMemo(() => {
@@ -332,6 +338,49 @@ export default function AdminHealthPage() {
           </div>
         </div>
       )}
+
+      {/* Service Connectivity */}
+      <div style={{ marginTop: '28px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+          <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>SERVICE CONNECTIVITY</div>
+          <button
+            onClick={() => mutateHealth()}
+            style={{ padding: '3px 10px', borderRadius: '5px', fontSize: '10px', fontWeight: 600, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#475569' }}
+          >
+            ↺
+          </button>
+        </div>
+        {!healthData && (
+          <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b', fontSize: '12px', color: '#334155' }}>
+            Loading service ping…
+          </div>
+        )}
+        {healthData && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '8px' }}>
+            {healthData.results.map(r => {
+              const ok = r.status === 'ok';
+              const timeout = r.status === 'timeout';
+              const color = ok ? '#4ade80' : timeout ? '#fbbf24' : '#f87171';
+              const bg = ok ? 'rgba(74,222,128,0.04)' : timeout ? 'rgba(251,191,36,0.06)' : 'rgba(239,68,68,0.07)';
+              const border = ok ? 'rgba(74,222,128,0.15)' : timeout ? 'rgba(251,191,36,0.25)' : 'rgba(239,68,68,0.25)';
+              return (
+                <div key={r.service} style={{ padding: '10px 14px', borderRadius: '8px', background: bg, border: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: '#cbd5e1', fontFamily: 'monospace' }}>{r.service}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '10px', color: '#475569' }}>{r.latency_ms}ms</span>
+                    <span style={{ fontSize: '11px', fontWeight: 700, color }}>{ok ? '✓' : timeout ? '⏱' : '✗'}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {healthData && (
+          <div style={{ marginTop: '8px', fontSize: '11px', color: '#334155' }}>
+            {healthData.services_ok}/{healthData.services_total} services reachable — refreshes every 60s
+          </div>
+        )}
+      </div>
 
       {/* ML Training Health */}
       {mlData && mlData.count > 0 && (

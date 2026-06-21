@@ -866,9 +866,6 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     # argmax in the window. The volume-inversion (0.5× on high-volume "confirmation") is
     # also unbacktested and contested. Both the penalty and the bullish bonus are zeroed
     # until the logic is rewritten to compare RSI values at the two price peaks.
-    rsi_divergence = "none"
-    reasons["rsi_divergence"] = rsi_divergence
-
     # ── MACD histogram + zero-line crossover ──────────────────────────────
     macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     hist = macd_line - macd_line.ewm(span=9, adjust=False).mean()
@@ -1328,8 +1325,6 @@ def _apply_style_signal(
     # Double-applying the same weekly_score data (once as absolute blend, once as
     # directional amplifier) produced compounding effects larger than documented.
     # The alignment filter is the sole weekly integration mechanism.
-    reasons["weekly_blend_applied"] = False
-
     # ── SA-19 / SA-30: Independent pillar gate ───────────────────────────────
     # Compress signals where only 1 dimension agrees (likely market-beta noise);
     # boost where all 4 pillars converge (rare, high-confidence setup).

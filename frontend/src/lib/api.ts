@@ -458,6 +458,7 @@ export const api = {
   }>('/paper-portfolio/entry_factors'),
   calibrateEntry: () => request<{ status: string }>('/paper-portfolio/calibrate-entry', { method: 'POST' }),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
+  healthDeep: () => request<ServiceHealthReport>('/health/deep'),
   mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
   mlFeatureImportance: (symbol: string, model = 'xgboost') =>
     request<FeatureImportanceResult>(`/ml/features/${symbol}?model=${model}`),
@@ -1332,6 +1333,21 @@ export type SchedulerJob = {
   last_run: string;
   duration_s: number;
   error: string | null;
+};
+
+export type ServiceHealthResult = {
+  service: string;
+  status: 'ok' | 'error' | 'timeout';
+  latency_ms: number;
+  code: number | null;
+  error?: string;
+};
+
+export type ServiceHealthReport = {
+  gateway: string;
+  services_ok: number;
+  services_total: number;
+  results: ServiceHealthResult[];
 };
 
 export type MlModelMetric = {

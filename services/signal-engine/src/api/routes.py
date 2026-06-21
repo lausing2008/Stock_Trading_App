@@ -4,7 +4,7 @@ import json
 import os as _os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
@@ -249,24 +249,32 @@ def _bulk_persist(symbols: list[str]) -> None:
                 _research_fetched = False
                 for style_key, ai in all_sig.items():
                     horizon_enum = SignalHorizon(ai.horizon)
-                    # Only insert if the signal type changed for this (stock, horizon) pair,
-                    # or if a new signal of the same type is being generated on a different day.
-                    last = s.execute(
-                        select(Signal.signal, Signal.ts)
-                        .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
-                        .order_by(desc(Signal.ts))
-                        .limit(1)
-                    ).one_or_none()
-                    if last is not None and last[0] == SignalType(ai.signal) and last[1].date() == date.today():
-                        continue
-                    s.add(Signal(
-                        stock_id=stock.id,
-                        signal=SignalType(ai.signal),
-                        horizon=horizon_enum,
-                        confidence=ai.confidence,
-                        bullish_probability=ai.bullish_probability,
-                        reasons=ai.reasons,
-                    ))
+                    # Upsert: one signal row per (stock, horizon, calendar day).
+                    # Conflict on the unique index uq_signals_stock_horizon_day
+                    # → update in place so signal type changes within a day overwrite rather than grow the table.
+                    s.execute(
+                        text("""
+                            INSERT INTO signals
+                                (stock_id, signal, horizon, confidence, bullish_probability, reasons)
+                            VALUES
+                                (:sid, :sig::signaltype, :hor::signalhorizon, :conf, :bp, :rsns::jsonb)
+                            ON CONFLICT (stock_id, horizon, date_trunc('day', ts))
+                            DO UPDATE SET
+                                signal              = EXCLUDED.signal,
+                                confidence          = EXCLUDED.confidence,
+                                bullish_probability = EXCLUDED.bullish_probability,
+                                reasons             = EXCLUDED.reasons,
+                                ts                  = NOW()
+                        """),
+                        dict(
+                            sid=stock.id,
+                            sig=ai.signal,
+                            hor=ai.horizon,
+                            conf=ai.confidence,
+                            bp=ai.bullish_probability,
+                            rsns=json.dumps(ai.reasons),
+                        ),
+                    )
 
                     # INT-4: auto-trigger research on new BUY signal (fire-and-forget)
                     # INT-7: log divergence if research and signal disagree (per-style)
@@ -3432,6 +3440,7 @@ def gate_backtest(
     style: str = Query("SWING", regex="^(SHORT|SWING|LONG|GROWTH)$"),
     hold_days: int = Query(10, ge=1, le=60),
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Compare old vs new conviction gate logic against historical BUY signals.
 
