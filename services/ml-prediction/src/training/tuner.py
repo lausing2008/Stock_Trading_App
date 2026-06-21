@@ -120,6 +120,8 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
             X_tr, X_val = X_arr[tr_idx], X_arr[val_idx]
             y_tr, y_val = y_arr[tr_idx], y_arr[val_idx]
             sc = StandardScaler()
+            if len(np.unique(y_tr)) < 2:
+                continue
             # ML-FIX-2 + ML-FIX-3: blended weights (recency × balanced class) in tuner too
             recency_w = _recency_weights(len(tr_idx), newest_to_oldest_ratio=5.0)
             w = _blend_weights(y_tr, recency_w)

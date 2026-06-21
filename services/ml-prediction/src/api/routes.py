@@ -128,7 +128,11 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _
     def _run_all():
         results = []
         for sym in symbols:
-            result = tune_symbol(sym, n_trials=n_trials, horizon=horizon, style=style)
+            try:
+                result = tune_symbol(sym, n_trials=n_trials, horizon=horizon, style=style)
+            except Exception as exc:
+                log.warning("tune_all.symbol_failed", symbol=sym, error=str(exc))
+                result = {"symbol": sym, "skipped": True, "reason": str(exc)}
             results.append(result)
         return results
 
