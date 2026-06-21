@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7048,6 +7048,71 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 89 — Meta-Learning: Cross-Symbol Pattern Transfer (roadmap) ─────────────────────────
+  {
+    id: 'TIER89-META-LEARNING',
+    tier: 89, severity: 'feature', defaultStatus: 'todo',
+    file: 'services/ml-prediction/src/training/trainer.py, services/ml-prediction/src/features/builder.py',
+    implementedNote: 'Roadmap: Train a universal "meta model" on signal_outcomes across all symbols simultaneously (not per-symbol), using sector/cap/volatility embeddings. Use the meta model to cold-start new symbols with insufficient history. Transfer learned patterns (e.g. "high EPS beat streak + low short ratio = sustained momentum") across similar stocks in the same sector.',
+    effort: '3 weeks',
+    impact: 'Medium-high — primarily benefits new symbols with <1 year of history where per-symbol XGBoost overfits. Also provides a second opinion source for ensemble predictions.',
+    title: 'Meta-learning: universal cross-symbol model for cold-start and ensemble diversity',
+    what: 'Each symbol has its own XGBoost model trained independently. New symbols with <200 trading days of history have insufficient data to train a reliable model. There is no transfer of learned patterns from high-quality symbols to new symbols in the same sector.',
+    fix: 'Train a single cross-symbol model on signal_outcomes using all symbols (add symbol_sector and market_cap_bin embeddings as features). Use it as a prior for new symbols and as a 4th model in the ensemble (weight: 15%) for all symbols.',
+  },
+
+  // ── Tier 88 — Self-Tuning Dashboard (roadmap) ─────────────────────────────
+  {
+    id: 'TIER88-SELF-TUNING-DASHBOARD',
+    tier: 88, severity: 'feature', defaultStatus: 'todo',
+    file: 'frontend/src/pages/improvements.tsx, services/signal-engine/src/api/routes.py',
+    implementedNote: 'Roadmap: A dedicated /signal-tuning page showing: (1) Current vs tuned parameters per style (Redis overrides vs hardcoded defaults); (2) 14-day rolling win rate trend sparkline per style; (3) Watchdog action history (last 10 threshold adjustments with before/after values + trigger date); (4) Auto-calibration schedule (next run date + last applied thresholds); (5) Manual override form to force-apply specific parameter values. Gives operators visibility into the self-training loop without reading Redis directly.',
+    effort: '1 week',
+    impact: 'Medium — operational visibility. Without this page, operators cannot see what the self-tuning system has done or why win rates changed.',
+    title: 'Self-tuning dashboard: visibility into style parameters, win rates, and watchdog history',
+    what: 'The self-tuning system (Tier 85 auto-tuner + Tier 86 watchdog) writes Redis keys but provides no UI. Operators cannot see whether the system has tightened thresholds, what the current effective parameters are, or whether a style is in watchdog emergency mode.',
+    fix: 'Add /signal-tuning page: fetch GET /signals/tune_status (new endpoint returning all Redis overrides + defaults + 14d win rates + watchdog history). Render parameter table and win rate sparklines.',
+  },
+
+  // ── Tier 87 — Outcome-Informed ML Retraining (roadmap) ───────────────────
+  {
+    id: 'TIER87-OUTCOME-INFORMED-RETRAIN',
+    tier: 87, severity: 'feature', defaultStatus: 'todo',
+    file: 'services/ml-prediction/src/training/trainer.py, shared/db/models.py:SignalOutcome',
+    implementedNote: 'Roadmap: After each weekly tune_all, augment the training dataset with closed signal_outcomes as additional labeled examples. Each outcome row has: entry date, symbol, confidence, ta_score, ml_prob, fused_prob, is_correct (label), pct_return. This converts live trading results into additional training data with real labels — not synthetic price-history labels. Weight these examples 2× to prioritise recent live trading data over historical price labels.',
+    effort: '1 week',
+    impact: 'High — models trained on real trading outcomes (not just price history labels) are the institutional standard. Live data has implicit alpha from the strategy itself, which synthetic training labels cannot capture.',
+    title: 'Outcome-informed ML retraining: augment training data with closed signal_outcomes',
+    what: 'Models are trained on historical price data with synthetic forward-return labels. Closed signal_outcomes records contain real labels (is_correct) tied to actual strategy decisions — higher quality than price-history labels. These are never used in training.',
+    fix: 'In train_model(), after build_features(), append signal_outcomes rows for this symbol as additional training examples (normalized feature vector from reasons JSON + is_correct label). Apply 2× sample weight to these rows. Fall back to pure price-history training if <20 outcomes exist.',
+  },
+
+  // ── Tier 86 — Self-Healing Watchdog (2026-06-21) ────────────────────────────────────────────
+  {
+    id: 'TIER86-WATCHDOG',
+    tier: 86, severity: 'high', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:POST /signals/watchdog, services/market-data/src/services/scheduler.py:_watchdog_job',
+    implementedNote: 'Done 2026-06-21: POST /signals/watchdog monitors 14-day rolling win rate per style. If win_rate < 38% with ≥5 evaluated outcomes, tightens buy threshold by +0.03 (capped at floor+12pp max). If no signals fire for 7+ consecutive days, relaxes by 0.02 (floor: hardcoded default). Caps at 3 tightenings before flagging manual review. Writes to Redis stockai:watchdog:{STYLE}:threshold (7-day TTL) — read FIRST by _get_dynamic_buy_threshold() before the calibrated threshold, giving immediate response. Wired into scheduler: daily 06:10 ET Mon-Fri.',
+    effort: '2h',
+    impact: 'High — prevents the system from continuing to fire signals during a regime where they are consistently wrong. Acts as a circuit breaker without human intervention.',
+    title: 'Self-healing watchdog: auto-tighten thresholds when 14d win rate < 38%',
+    what: 'When market conditions shift (e.g. rotation out of momentum stocks), the system fires BUY signals that lose money for weeks before a human reviews and tightens the configuration. No automated circuit breaker exists.',
+    fix: 'POST /signals/watchdog checks 14d win rates per style after each trading day. Below 38% → tighten threshold by 0.03. Zero signals for 7d → relax. Max 3 auto-tightenings before requiring manual review. Runs daily at 06:10 ET.',
+  },
+
+  // ── Tier 85 — Style Profile Auto-Tuner (2026-06-21) ─────────────────────────────────────────
+  {
+    id: 'TIER85-STYLE-AUTO-TUNER',
+    tier: 85, severity: 'high', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:POST /signals/tune_style_profiles, services/signal-engine/src/generators/signals.py:_get_style_tuned_param(), services/market-data/src/services/scheduler.py:tune_style_profiles',
+    implementedNote: 'Done 2026-06-21: POST /signals/tune_style_profiles sweeps signal_outcomes × Signal.reasons JSON (which contains ml_weight, adx, breadth_pct per signal) to find optimal parameter values per style. Parameters tuned: ml_weight_cap (optimal ML fusion weight ceiling), adx_min (ADX below which accuracy is <45%), breadth_compression (tighter when low-breadth signals underperform by >8pp). Writes to Redis stockai:style_tune:{STYLE}:{param} (30-day TTL). Signal generator reads via _get_style_tuned_param(style, param, default) — falls back to hardcoded _STYLE_PROFILES when absent. Wired into weekly_full_refresh() after calibrate_signal_thresholds.',
+    effort: '4h',
+    impact: 'High — each style (SHORT/SWING/LONG/GROWTH) has different optimal gate parameters. GROWTH stocks tolerate lower ADX (momentum at any trend strength), LONG stocks require higher breadth confirmation. Static hardcoded params are a one-size-fits-all compromise. Live-data-driven tuning adjusts to actual win/loss patterns.',
+    title: 'Style profile auto-tuner: sweep ml_weight_cap + adx_min + breadth_compression per style from live outcomes',
+    what: 'Signal gate parameters (adx_min, ml_weight_cap, high_vol_compression, breadth_compression) are hardcoded in _STYLE_PROFILES per style. They were set manually based on theory. No system existed to verify whether the configured values actually maximise win rate and EV in live trading.',
+    fix: 'POST /signals/tune_style_profiles reads signal_outcomes (120d lookback) + Signal.reasons (contains ml_weight and adx per signal). Sweeps parameter combinations, measures EV (win_rate × avg_return) per bucket, writes optimal values to Redis. Weekly run in _weekly_full_refresh() alongside TA weight calibration.',
+  },
+
   // ── Tier 84 — Broker Integration: Alpaca live execution (roadmap) ──────────────────────────────────────
   {
     id: 'TIER84-BROKER-ALPACA',
@@ -7691,6 +7756,11 @@ const TIER_LABEL: Record<Tier, string> = {
   82: 'Tier 82 — FMP Integration: analyst EPS estimate revisions + price targets (roadmap)',
   83: 'Tier 83 — Intraday SHORT Refresh: re-score SHORT signals on >1.5 ATR intraday move (roadmap)',
   84: 'Tier 84 — Broker Integration: Alpaca live execution (roadmap)',
+  85: 'Tier 85 — Style Profile Auto-Tuner: sweep ml_weight_cap + adx_min + breadth_compression per style from live outcomes',
+  86: 'Tier 86 — Self-Healing Watchdog: auto-tighten thresholds when 14d win rate < 38%',
+  87: 'Tier 87 — Outcome-Informed Retraining: augment ML training with closed signal_outcomes (roadmap)',
+  88: 'Tier 88 — Self-Tuning Dashboard: visibility into style parameters, win rates, watchdog history (roadmap)',
+  89: 'Tier 89 — Meta-Learning: universal cross-symbol model for cold-start + ensemble diversity (roadmap)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7778,6 +7848,11 @@ const TIER_COLOR: Record<Tier, string> = {
   82: '#f97316',
   83: '#fb923c',
   84: '#818cf8',
+  85: '#a78bfa',
+  86: '#f43f5e',
+  87: '#06b6d4',
+  88: '#84cc16',
+  89: '#e879f9',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
@@ -8054,18 +8129,18 @@ export default function ImprovementsPage() {
           Overall Assessment
         </div>
         <div style={{ fontSize: 11, color: '#475569', marginBottom: 10 }}>
-          Current (2026-06-21) — Tier 78–81: Institutional-grade ML (51 features: EPS beat streak, short ratio delta), self-tuning signal thresholds (outcomes-driven Redis config), feature attribution per signal, true walk-forward OOS validation.
+          Current (2026-06-21) — Tier 78–86: Self-training system live. 51-feature institutional ML + per-style auto-tuner + self-healing watchdog. System tunes its own gate parameters and circuit-breaks on degraded win rates without human intervention.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
           {[
             { label: 'Data pipeline',   score: 9.0, target: 9.2, note: '↑ ML-FUND-2 weekly fundamentals batch refresh live (all 138 symbols Sunday, rate-limited 3/s). ↑ ML-FUND-4 staleness warning on Company Financials.' },
-            { label: 'ML methodology',  score: 9.5, target: 9.7, note: '↑ Tier 78: 51 features (EPS beat streak, EPS surprise avg, days-to-earnings, short ratio delta added). ↑ Tier 81: true WF OOS validation endpoint (per-window precision/AUC/IC). Tier 80: feature attribution per prediction.' },
-            { label: 'Signal logic',    score: 9.5, target: 9.6, note: '↑ Tier 79: dynamic buy thresholds self-tune weekly from live outcomes data (Redis). SA-30 min 3-pillar gate. Research-gated sizing. INT-8 research alignment panel.' },
+            { label: 'ML methodology',  score: 9.5, target: 9.7, note: '↑ Tier 78: 51 features (EPS beat streak, EPS surprise avg, days-to-earnings, short ratio delta). ↑ Tier 81: true WF OOS validation (per-window precision/AUC/IC). Tier 80: feature attribution per prediction.' },
+            { label: 'Signal logic',    score: 9.6, target: 9.8, note: '↑ Tier 79: dynamic buy thresholds self-tune weekly from live outcomes (Redis). ↑ Tier 85: per-style ml_weight_cap/adx_min/breadth_compression auto-tuned. ↑ Tier 86: watchdog auto-tightens on win_rate < 38%.' },
             { label: 'K-Score ranking', score: 8.5, target: 8.5, note: '✓ SCR-1 multi-factor screener + RES-4 sector context (target met)' },
             { label: 'Research engine', score: 8.2, target: 8.8, note: '↑ RES-FIX-1 data fallback + INT-4 auto-trigger + INT-6 composite score. Tier 82 (FMP analyst estimates) roadmap.' },
             { label: 'Frontend / UX',   score: 9.7, target: 9.8, note: '↑ Tier 77: Signal Quality page (calibration curve + threshold recs). Tier 16: chart overhaul (EMA200, VWAP, 52W H/L, signal markers). Conviction Gate panel.' },
             { label: 'Risk management', score: 9.0, target: 9.2, note: '↑ Tier 31: 3 autonomous paper portfolios (GROWTH US + SWING US + SWING HK) + HK market hours + HSI regime. CB-W1 cutoff fixed. INT-3 research-gated sizing + PT-M1/M2/M4/M5 all live.' },
-            { label: 'Overall',         score: 9.8, target: 9.9, note: '↑ Tier 78–81: Institutional ML (51 features), self-tuning thresholds, feature attribution, WF OOS validation. Roadmap: FMP estimates (82), intraday SHORT (83), Alpaca broker (84).' },
+            { label: 'Overall',         score: 9.8, target: 9.9, note: '↑ Tier 78–86: Institutional ML (51 features), self-training closed loop (style auto-tuner + watchdog), feature attribution, WF OOS validation. Roadmap: outcome-informed retrain (87), self-tuning dashboard (88), meta-learning (89).' },
           ].map(d => (
             <div key={d.label} style={{ background: '#020617', borderRadius: 6, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -8110,7 +8185,8 @@ export default function ImprovementsPage() {
           Tier 30 (2026-06-17): SA-29 weekly RSI + weekly trend as ML features — daily closes resampled to weekly W-FRI bars; RSI-14w and price vs 10-week SMA trend (+1/0/−1) forward-filled to daily; added to WEEKLY_COLUMNS (NaN-optional like fundamentals); 42→44 features total. SA-30 minimum 3-pillar gate for SWING/LONG — min_pillars_for_buy=3; 2-pillar signals compressed ×0.70 toward neutral (breakeven fused ≥ 0.714); SHORT/GROWTH retain 2-pillar minimum; pillar_gate reason: "compressed_2_pillar_below_min3". ML-FUND-5 tune_all relaunched — 560 Optuna jobs (140 symbols × 4 styles, 60 trials each) running on EC2 ml-prediction; first tune run using the full 44-feature pipeline. INT-8 C research alignment panel in Signal Filter — ResearchAlignmentPanel component above condition summary bar; fetches outcomes/summary?horizon=&#123;style&#125;&amp;days=90; shows win-rate tiles (aligned/partial/divergent/no_research) with count + avg return; updates on style tab change; OutcomesSummary type extended with by_research_alignment + by_window fields.
           Tier 78–81 (2026-06-21): Institutional-grade improvements — Tier 78: 4 new ML features from existing DB: eps_beat_streak (consecutive EPS beats, 0–4), eps_surprise_avg (4Q rolling avg surprise %), days_to_earnings (0–90d), short_ratio_delta (short covering signal) → 47→51 features; takes effect on next train_all. Tier 79: POST /outcomes/calibrate/apply writes empirically-optimal per-horizon buy thresholds to Redis (30-day TTL); _decide_style() in signals.py reads Redis before hardcoded values; wired to Sunday scheduler; thresholds now self-tune from live trade outcomes. Tier 80: predict_latest() returns feature_attributions dict (top-5 features ranked by |importance × sign(value)|); positive=BUY driver, negative=SELL driver; stored in prediction response for signal transparency. Tier 81: validate_walkforward(symbol, train_days=252, test_days=63) in trainer.py; retrains per window with data up to window start; evaluates OOS precision, AUC, avg return, IC; GET /ml/walkforward/[symbol] endpoint exposes results; proves model generalises to genuinely unseen data.
           Tier 31 (2026-06-17): signal_outcomes dedup fix — evaluate_signal_outcomes now guards by (stock_id, horizon, signal_date) in addition to signal_id; 5×/day signal refreshes no longer produce 18× inflated outcome rows; DB cleaned (73→52 rows, 21 duplicates deleted). HK paper trading — paper_trading_engine.py: _is_market_hours(market) checks HKEX sessions (09:30-12:00 + 13:00-16:00 HKT); _fetch_hk_market_regime() uses ^HSI vs 200 SMA; _scan_for_entries() filters Stock.market == cfg["market"]; per-portfolio regime fetch (US→SPY/VIX, HK→HSI); scheduler enabled for both markets. 3 paper portfolios now running: GROWTH US (existing), SWING US (new $50k), SWING HK (new $50k). Portfolio switcher UX — card grid always visible with PORTFOLIOS label; market badge on cards (US=cyan, HK=orange); market dropdown in create modal.
-          Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — All HIGH audit findings resolved. Tiers 78–81 shipped: 51 ML features (EPS beat streak, short ratio delta), self-tuning signal thresholds via outcomes calibration, feature attribution per prediction, true WF OOS validation. Roadmap: FMP analyst estimates (82), intraday SHORT refresh (83), Alpaca broker execution (84).
+          Tier 85–86 (2026-06-21): Self-training closed feedback loop — Tier 85: POST /signals/tune_style_profiles reads signal_outcomes (120d) × Signal.reasons JSON (which stores ml_weight, adx, breadth_pct per signal); sweeps ml_weight_cap (0.15–0.75), adx_min (10–38), and breadth_compression per style; finds EV-maximising values; writes to Redis stockai:style_tune:&#123;STYLE&#125;:&#123;param&#125; (30-day TTL); _get_style_tuned_param() reads Redis first, falls back to hardcoded _STYLE_PROFILES; wired into _weekly_full_refresh(). Tier 86: POST /signals/watchdog checks 14-day rolling win rate per style; if win_rate &lt; 38% with ≥5 outcomes, tightens buy threshold +0.03 (max 3 auto-tightenings before flagging manual review); if 0 signals for 7+ days, relaxes by 0.02 (floor = hardcoded default); writes to Redis stockai:watchdog:&#123;STYLE&#125;:threshold (7-day TTL); watchdog key is read FIRST by _get_dynamic_buy_threshold() — immediate circuit-breaker response; wired as daily job at 06:10 ET Mon-Fri. Roadmap: outcome-informed ML retraining (87), self-tuning dashboard page (88), meta-learning universal model (89).
+          Overall: <strong style={{ color: '#4ade80' }}>9.95 / 10</strong> — Self-training system live: Tiers 78–86 shipped. 51 ML features, per-style parameter auto-tuning from live outcomes, self-healing watchdog circuit breaker. System continuously improves its own gate parameters without human intervention. Roadmap: outcome-informed ML retrain (87), self-tuning dashboard (88), meta-learning (89).
         </p>
       </div>
     </div>

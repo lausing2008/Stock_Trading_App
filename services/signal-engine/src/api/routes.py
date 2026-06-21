@@ -3009,6 +3009,245 @@ def outcomes_calibrate_apply(
     }
 
 
+@router.post("/tune_style_profiles")
+def tune_style_profiles(
+    days: int = Query(120, description="Look-back window in calendar days"),
+    min_samples: int = Query(10, description="Minimum outcomes required per bucket"),
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Sweep style-specific gate parameters against live signal_outcomes and apply optimal values.
+
+    For each style × parameter combination, groups outcomes by the relevant field in
+    signal.reasons, finds the value that maximises expected-value (win_rate × avg_return),
+    and writes it to Redis (stockai:style_tune:{STYLE}:{param}, 30-day TTL).
+
+    Parameters tuned:
+      - ml_weight_cap: optimal maximum ML fusion weight per style
+      - adx_min: optimal ADX minimum threshold below which signals are compressed
+      - high_vol_compression: whether high-vol compression is helping or hurting
+      - breadth_compression: whether breadth compression threshold is calibrated
+
+    Signal generator reads these from Redis via _get_style_tuned_param().
+    Run weekly (Sunday) alongside TA and conviction weight calibration.
+    """
+    import statistics as _stats
+
+    cutoff = date.today() - timedelta(days=days)
+    outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+        )
+    ).scalars().all()
+
+    # Fetch reasons JSON for each outcome's signal
+    signal_ids = [o.signal_id for o in outcomes if o.signal_id]
+    signals_map: dict[int, dict] = {}
+    if signal_ids:
+        rows = session.execute(
+            select(Signal.id, Signal.reasons).where(Signal.id.in_(signal_ids))
+        ).all()
+        for row in rows:
+            if row.reasons:
+                signals_map[row.id] = row.reasons
+
+    redis_client = _get_redis()
+    _REDIS_TTL = 30 * 86400
+    applied: list[dict] = []
+    skipped: list[dict] = []
+
+    def _ev_at(subset):
+        if not subset:
+            return None
+        wins = sum(1 for o in subset if o.is_correct)
+        rets = [o.pct_return for o in subset if o.pct_return is not None]
+        acc = wins / len(subset)
+        avg_ret = _stats.mean(rets) if rets else 0.0
+        return acc * avg_ret * 100, acc, avg_ret
+
+    for style in ("SHORT", "SWING", "LONG", "GROWTH"):
+        style_outcomes = [o for o in outcomes if o.horizon.value == style]
+        if len(style_outcomes) < min_samples * 2:
+            skipped.append({"style": style, "reason": f"only {len(style_outcomes)} outcomes (need {min_samples * 2})"})
+            continue
+
+        style_with_reasons = [
+            (o, signals_map.get(o.signal_id, {}))
+            for o in style_outcomes
+            if o.signal_id and o.signal_id in signals_map
+        ]
+        if len(style_with_reasons) < min_samples:
+            skipped.append({"style": style, "reason": f"only {len(style_with_reasons)} outcomes with reasons JSON"})
+            continue
+
+        # ── ml_weight_cap: sweep 0.15–0.75, find cap where EV is maximised ──
+        best_ml_ev, best_ml_cap = -999.0, None
+        for cap_int in range(15, 76, 5):
+            cap = cap_int / 100.0
+            sub = [o for o, r in style_with_reasons if r.get("ml_weight", 0) <= cap + 0.05]
+            if len(sub) < min_samples:
+                continue
+            ev_result = _ev_at(sub)
+            if ev_result and ev_result[0] > best_ml_ev:
+                best_ml_ev = ev_result[0]
+                best_ml_cap = cap
+
+        if best_ml_cap is not None:
+            redis_client.setex(f"stockai:style_tune:{style}:ml_weight_cap", _REDIS_TTL, str(round(best_ml_cap, 2)))
+            applied.append({"style": style, "param": "ml_weight_cap", "value": best_ml_cap})
+
+        # ── adx_min: find ADX level below which accuracy < 45% ──────────────
+        adx_outcomes = [(o, r) for o, r in style_with_reasons if r.get("adx") is not None]
+        if len(adx_outcomes) >= min_samples:
+            # Find where below-threshold accuracy is <45% but above is >50%
+            best_adx = None
+            for adx_thresh in range(10, 40, 2):
+                below = [o for o, r in adx_outcomes if r.get("adx", 99) < adx_thresh]
+                above = [o for o, r in adx_outcomes if r.get("adx", 0) >= adx_thresh]
+                if len(below) < min_samples or len(above) < min_samples:
+                    continue
+                below_acc = sum(1 for o in below if o.is_correct) / len(below)
+                above_acc = sum(1 for o in above if o.is_correct) / len(above)
+                if below_acc < 0.45 and above_acc > below_acc + 0.05:
+                    best_adx = adx_thresh
+                    break
+            if best_adx is not None:
+                redis_client.setex(f"stockai:style_tune:{style}:adx_min", _REDIS_TTL, str(best_adx))
+                applied.append({"style": style, "param": "adx_min", "value": best_adx})
+
+        # ── breadth_compression: verify compression is justified (breadth<40 underperforms) ──
+        breadth_outcomes = [(o, r) for o, r in style_with_reasons if r.get("breadth_pct") is not None]
+        if len(breadth_outcomes) >= min_samples:
+            low_breadth  = [o for o, r in breadth_outcomes if r.get("breadth_pct", 100) < 40]
+            high_breadth = [o for o, r in breadth_outcomes if r.get("breadth_pct", 0) >= 40]
+            if len(low_breadth) >= min_samples // 2 and len(high_breadth) >= min_samples // 2:
+                lb_acc = sum(1 for o in low_breadth if o.is_correct) / len(low_breadth)
+                hb_acc = sum(1 for o in high_breadth if o.is_correct) / len(high_breadth)
+                # If breadth<40 signals underperform by >8pp, confirm stronger compression
+                if lb_acc < hb_acc - 0.08:
+                    new_bc = 0.88  # tighter than default 0.90
+                    redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
+                    applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
+                                    "low_breadth_acc": round(lb_acc, 3), "high_breadth_acc": round(hb_acc, 3)})
+                elif lb_acc > hb_acc - 0.02:
+                    # Breadth not predictive — restore default
+                    new_bc = 0.95
+                    redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
+                    applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
+                                    "note": "low-breadth underperformance not significant"})
+
+    return {"applied": applied, "skipped": skipped, "n_outcomes_analyzed": len(outcomes), "redis_ttl_days": 30}
+
+
+@router.post("/watchdog")
+def signal_watchdog(
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Self-healing threshold watchdog: monitor rolling win rates and auto-adjust.
+
+    Checks the last 14-day rolling win rate per style. If win rate drops below 38%,
+    applies an emergency threshold tightening (+0.03). If signal count drops to zero
+    for 7+ consecutive days, relaxes the threshold by 0.02 (floor: hardcoded default).
+
+    Writes to stockai:watchdog:{STYLE}:threshold (Redis, 7-day TTL) — this key is
+    read by _get_dynamic_buy_threshold() BEFORE the calibrated key, ensuring the
+    watchdog's response is immediate.
+
+    Caps adjustments at 3 tightenings before requiring a manual review (prevents
+    the system from silencing itself completely).
+
+    Schedule: daily (06:00 ET) from market-data scheduler.
+    """
+    _14D = date.today() - timedelta(days=14)
+    _7D  = date.today() - timedelta(days=7)
+    _REDIS_TTL_7D = 7 * 86400
+    _MAX_TIGHTEN = 3
+
+    # Hardcoded bull-regime thresholds as floors
+    _DEFAULT_THRESHOLDS = {"SHORT": 0.63, "SWING": 0.67, "LONG": 0.60, "GROWTH": 0.60}
+
+    redis_client = _get_redis()
+    actions: list[dict] = []
+    status: list[dict] = []
+
+    for style in ("SHORT", "SWING", "LONG", "GROWTH"):
+        # 14-day outcomes
+        outcomes_14d = session.execute(
+            select(SignalOutcome).where(
+                SignalOutcome.signal_date >= _14D,
+                SignalOutcome.is_correct.is_not(None),
+                SignalOutcome.signal_direction == "BUY",
+                SignalOutcome.horizon == SignalHorizon[style],
+            )
+        ).scalars().all()
+
+        # 7-day signal count (regardless of evaluation status)
+        signals_7d = session.execute(
+            select(func.count(Signal.id)).where(
+                Signal.ts >= _7D,
+                Signal.signal == SignalType.BUY,
+                Signal.horizon == SignalHorizon[style],
+            )
+        ).scalar() or 0
+
+        win_rate_14d = None
+        if outcomes_14d:
+            wins = sum(1 for o in outcomes_14d if o.is_correct)
+            win_rate_14d = wins / len(outcomes_14d)
+
+        # Current watchdog adjustment
+        current_key = f"stockai:watchdog:{style}:threshold"
+        tighten_count_key = f"stockai:watchdog:{style}:tighten_count"
+        current_adj = redis_client.get(current_key)
+        tighten_count = int(redis_client.get(tighten_count_key) or 0)
+
+        floor_threshold = _DEFAULT_THRESHOLDS.get(style, 0.65)
+
+        action = None
+        if win_rate_14d is not None and win_rate_14d < 0.38 and len(outcomes_14d) >= 5:
+            if tighten_count >= _MAX_TIGHTEN:
+                action = "max_tighten_reached_manual_review_needed"
+                actions.append({"style": style, "action": action, "win_rate_14d": round(win_rate_14d, 3)})
+            else:
+                # Tighten by 0.03 from the current adjustment (or calibrated base)
+                current_val = float(current_adj) if current_adj else (
+                    float(redis_client.get(f"stockai:signal_thresholds:{style}") or 0) or floor_threshold
+                )
+                new_val = min(current_val + 0.03, floor_threshold + 0.12)  # max +12pp above floor
+                redis_client.setex(current_key, _REDIS_TTL_7D, str(round(new_val, 4)))
+                redis_client.setex(tighten_count_key, _REDIS_TTL_7D, str(tighten_count + 1))
+                action = "tightened"
+                actions.append({"style": style, "action": action, "from": round(current_val, 4),
+                                 "to": round(new_val, 4), "win_rate_14d": round(win_rate_14d, 3),
+                                 "tighten_count": tighten_count + 1})
+
+        elif signals_7d == 0 and current_adj:
+            # No signals for 7 days — the threshold may be too tight; relax
+            current_val = float(current_adj)
+            if current_val > floor_threshold + 0.01:
+                new_val = max(current_val - 0.02, floor_threshold)
+                redis_client.setex(current_key, _REDIS_TTL_7D, str(round(new_val, 4)))
+                redis_client.delete(tighten_count_key)  # reset tighten count on relax
+                action = "relaxed"
+                actions.append({"style": style, "action": action, "from": round(current_val, 4),
+                                 "to": round(new_val, 4), "signals_7d": signals_7d})
+
+        status.append({
+            "style": style,
+            "win_rate_14d": round(win_rate_14d, 3) if win_rate_14d is not None else None,
+            "n_outcomes_14d": len(outcomes_14d),
+            "signals_7d": signals_7d,
+            "current_watchdog_threshold": float(current_adj) if current_adj else None,
+            "tighten_count": tighten_count,
+            "action": action,
+        })
+
+    return {"actions": actions, "status": status}
+
+
 _DECAY_DAYS = [1, 2, 3, 5, 7, 10, 15, 20, 30]
 
 

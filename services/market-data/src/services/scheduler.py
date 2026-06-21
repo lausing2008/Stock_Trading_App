@@ -1754,6 +1754,13 @@ def _weekly_full_refresh() -> None:
     _post(f"{_settings.signal_engine_url}/signals/outcomes/calibrate/apply")
     _record_job_status("calibrate_signal_thresholds_sent", "ok", 0.0)
 
+    # Tier 85: sweep style-specific gate params (ml_weight_cap, adx_min, breadth_compression)
+    # against live outcomes data. Writes optimal values to Redis per-style; signal generator
+    # reads them via _get_style_tuned_param() — falls back to hardcoded defaults when absent.
+    log.info("scheduler.tune_style_profiles_start")
+    _post(f"{_settings.signal_engine_url}/signals/tune_style_profiles")
+    _record_job_status("tune_style_profiles_sent", "ok", 0.0)
+
     # PT-3: calibrate entry factor weights from closed paper trades.
     # Fits logistic regression on (rr_ratio, confidence, entry_score, kscore) vs win/loss.
     # Called directly (not via HTTP) because the service token has no DB user record.
@@ -2295,6 +2302,19 @@ def start_scheduler() -> None:
         id="live_price_cache_refresh",
         replace_existing=True,
         max_instances=1, coalesce=True,
+    )
+
+    # ── Tier 86: Self-healing watchdog — daily 06:10 ET ──────────────────────
+    # Monitors 14-day rolling win rates per style; auto-tightens thresholds when
+    # win rate drops below 38%; relaxes when no signals fire for 7+ days.
+    # Writes to Redis stockai:watchdog:{STYLE}:threshold (7-day TTL).
+    # Signal generator reads watchdog key before calibrated key — response is immediate.
+    def _watchdog_job():
+        _post(f"{_settings.signal_engine_url}/signals/watchdog")
+    _scheduler.add_job(
+        _watchdog_job,
+        CronTrigger(hour=6, minute=10, day_of_week="mon-fri", timezone="America/New_York"),
+        id="signal_watchdog_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── DB purge — Sunday 15:00 PST (before weekly full refresh) ────────────

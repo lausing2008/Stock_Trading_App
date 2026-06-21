@@ -1251,21 +1251,39 @@ def _fetch_analyst_momentum(symbol: str) -> tuple[int, int]:
     return 0, 0
 
 
-def _get_dynamic_buy_threshold(style_key: str, reg: str) -> float | None:
-    """Read empirically-calibrated buy threshold from Redis if available.
-
-    Written by POST /outcomes/calibrate/apply.  Returns None if absent so
-    _decide_style falls back to the hardcoded _STYLE_PROFILES value.
-    """
+def _redis_get_float(key: str) -> float | None:
+    """Read a float value from Redis; return None on miss or error."""
     try:
         import redis as redis_lib
         r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
-        val = r.get(f"stockai:signal_thresholds:{style_key.upper()}")
-        if val:
-            return float(val)
+        val = r.get(key)
+        return float(val) if val else None
     except Exception:
-        pass
-    return None
+        return None
+
+
+def _get_dynamic_buy_threshold(style_key: str, reg: str) -> float | None:
+    """Read empirically-calibrated buy threshold from Redis if available.
+
+    Written by POST /outcomes/calibrate/apply (Tier 79).  Returns None if absent so
+    _decide_style falls back to the hardcoded _STYLE_PROFILES value.
+    """
+    # Check watchdog emergency adjustment first (most recent, tightest)
+    watchdog = _redis_get_float(f"stockai:watchdog:{style_key.upper()}:threshold")
+    if watchdog is not None:
+        return watchdog
+    # Calibrated threshold from weekly outcomes sweep
+    return _redis_get_float(f"stockai:signal_thresholds:{style_key.upper()}")
+
+
+def _get_style_tuned_param(style_key: str, param: str, default):
+    """Read a tuned style parameter from Redis if available (written by tune_style_profiles).
+
+    Falls back to `default` (the value from _STYLE_PROFILES) when absent.
+    Keys: stockai:style_tune:{STYLE}:{param}
+    """
+    val = _redis_get_float(f"stockai:style_tune:{style_key.upper()}:{param}")
+    return val if val is not None else default
 
 
 def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str, str]:
@@ -1334,7 +1352,9 @@ def _apply_style_signal(
         else:
             # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
             raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
-        eff_cap = _ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"]
+        # Per-style ML weight cap: Redis override (tune_style_profiles) > global file override > profile default
+        _per_style_cap = _get_style_tuned_param(style_key, "ml_weight_cap", None)
+        eff_cap = _per_style_cap if _per_style_cap is not None else (_ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"])
         ml_w = min(raw_w, eff_cap)
         if raw_w > 0:  # floor only applies to non-zero weights — don't resurrect a zero-weighted inverse model
             ml_w = max(ml_w, p.get("ml_weight_floor", 0.0))
@@ -1420,7 +1440,7 @@ def _apply_style_signal(
         reasons["weekly_alignment"] = False
 
     # ── ADX choppy-market compression ────────────────────────────────────────
-    adx_min  = p.get("adx_min")
+    adx_min  = _get_style_tuned_param(style_key, "adx_min", p.get("adx_min"))
     adx_comp = p.get("adx_compression")
     # C3 FIX: skip compression if adx_val is None (insufficient history) — don't penalise
     if adx_min is not None and adx_comp is not None and adx_val is not None and adx_val < adx_min:
@@ -1428,14 +1448,14 @@ def _apply_style_signal(
     reasons["adx_compression"] = (adx_min is not None and adx_val is not None and adx_val < adx_min)
 
     # ── High-volatility regime compression ───────────────────────────────────
-    hv_comp = p.get("high_vol_compression")
+    hv_comp = _get_style_tuned_param(style_key, "high_vol_compression", p.get("high_vol_compression"))
     if hv_comp is not None and market_regime == "high_vol":
         fused = 0.5 + (fused - 0.5) * hv_comp
     reasons["high_vol_compression"] = (hv_comp is not None and market_regime == "high_vol")
 
     # ── Market breadth compression ────────────────────────────────────────────
     breadth_pct = base_reasons.get("breadth_pct")
-    bc = p.get("breadth_compression")
+    bc = _get_style_tuned_param(style_key, "breadth_compression", p.get("breadth_compression"))
     breadth_fired = False
     if bc is not None and breadth_pct is not None and breadth_pct < 40:
         fused = 0.5 + (fused - 0.5) * bc
