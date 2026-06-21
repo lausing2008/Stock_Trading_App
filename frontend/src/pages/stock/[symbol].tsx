@@ -1929,6 +1929,46 @@ Return ONLY valid JSON — no markdown, no prose:
             );
           })()}
 
+          {/* Event Intelligence panel — catalyst/insider/congress scores from signal reasons */}
+          {(() => {
+            const r = data?.signal?.reasons as Record<string, unknown> | null | undefined;
+            if (!r) return null;
+            const catalystScore  = r?.catalyst_score  != null ? Number(r.catalyst_score)  : null;
+            const insiderScore   = r?.insider_score   != null ? Number(r.insider_score)   : null;
+            const congressScore  = r?.congress_score  != null ? Number(r.congress_score)  : null;
+            const compositeScore = r?.composite_score != null ? Number(r.composite_score) : null;
+            if (catalystScore == null && insiderScore == null && congressScore == null) return null;
+            const sc = (n: number | null) => n == null ? '#6b7280' : n >= 60 ? '#22c55e' : n >= 30 ? '#f59e0b' : n < 0 ? '#ef4444' : '#6b7280';
+            const fmt = (n: number | null) => n == null ? '—' : n.toFixed(0);
+            const bar = (n: number | null, maxAbs = 100) => {
+              if (n == null) return null;
+              const pct = Math.max(0, Math.min(100, ((n + maxAbs) / (2 * maxAbs)) * 100));
+              return <div style={{ flex: 1, height: 4, background: '#1f2937', borderRadius: 2 }}><div style={{ width: `${pct}%`, height: '100%', borderRadius: 2, background: sc(n) }} /></div>;
+            };
+            return (
+              <div style={{ background: '#0a0f1e', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Event Intelligence</span>
+                  <a href="/intelligence" style={{ fontSize: 9, color: '#f59e0b', textDecoration: 'none', opacity: 0.7 }}>Full dashboard →</a>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {[
+                    { label: 'Catalyst', val: catalystScore, tip: 'Composite: earnings × insider × congress × institutional' },
+                    { label: 'Insider',  val: insiderScore,  tip: 'Net insider buying pressure (−100 to +100, role-weighted)' },
+                    { label: 'Congress', val: congressScore, tip: 'Congressional buying interest (0–100, net purchase bias)' },
+                    { label: 'AI Composite', val: compositeScore, tip: '0.5×catalyst + 0.3×(100−risk) + 0.2×earnings' },
+                  ].map(({ label, val, tip }) => (
+                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }} title={tip}>
+                      <span style={{ fontSize: 10, color: '#64748b', width: 70, flexShrink: 0 }}>{label}</span>
+                      {bar(val)}
+                      <span style={{ fontSize: 10, fontWeight: 700, color: sc(val), width: 28, textAlign: 'right', flexShrink: 0 }}>{fmt(val)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
           {signalHistory && signalHistory.length >= 2 && (
             <ConfidenceTrend history={signalHistory} />
           )}

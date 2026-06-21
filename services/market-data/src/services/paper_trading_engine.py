@@ -149,9 +149,10 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "regime_risk_off_min_score": 5,      # stricter entry gate in risk_off
     "regime_choppy_min_score":   4,      # slightly stricter in choppy
     "enabled":                   True,
-    # Decision Engine shadow mode — calls /decide/{symbol} alongside _should_enter()
-    # and logs divergences. Non-authoritative: paper engine decision always wins.
-    "decision_engine_shadow":    True,
+    # Decision Engine mode — authoritative since Tier 73.
+    # "primary": DE verdict is the gate (fallback to _should_enter() if DE unreachable).
+    # "shadow":  old behavior — _should_enter() decides, DE logged for comparison only.
+    "decision_engine_mode":    "primary",
 }
 
 # Mirrors scheduler._STYLE_PARAMS — inlined here to avoid circular import.
@@ -1621,21 +1622,18 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
 # ── Entry scanner ─────────────────────────────────────────────────────────────
 
-def _shadow_decision_engine(
+def _call_decision_engine(
     symbol: str,
-    should_enter: bool,
-    paper_score: int,
     live_price: float,
     game_plan: dict,
     equity: float,
     open_count: int,
     cfg: dict,
-) -> None:
-    """Call Decision Engine in shadow mode alongside _should_enter().
+) -> tuple[bool, str, int, str | None] | None:
+    """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
-    Compares DE verdict to the paper engine's own decision and logs any divergence.
-    Never raises — failures are swallowed so shadow mode cannot affect real entries.
-    The paper engine's _should_enter() decision always wins.
+    Returns None if the DE is unreachable (caller falls back to _should_enter()).
+    Never raises — failures return None so DE unavailability never blocks entries.
     """
     try:
         import httpx as _httpx
@@ -1653,11 +1651,11 @@ def _shadow_decision_engine(
                 "market":           cfg.get("market", "US"),
                 "daily_pnl_pct":    0.0,
                 "config_overrides": {
-                    "min_entry_score":     cfg.get("min_entry_score", 4),
-                    "min_confidence":      cfg.get("min_confidence", 62.0),
-                    "min_rr_ratio":        cfg.get("min_rr_ratio", 2.0),
-                    "risk_per_trade_pct":  cfg.get("risk_per_trade_pct", 0.01),
-                    "max_position_pct":    cfg.get("max_position_pct", 0.10),
+                    "min_entry_score":        cfg.get("min_entry_score", 4),
+                    "min_confidence":         cfg.get("min_confidence", 62.0),
+                    "min_rr_ratio":           cfg.get("min_rr_ratio", 2.0),
+                    "risk_per_trade_pct":     cfg.get("risk_per_trade_pct", 0.01),
+                    "max_position_pct":       cfg.get("max_position_pct", 0.10),
                     "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),
                 },
             },
@@ -1665,69 +1663,17 @@ def _shadow_decision_engine(
             timeout=2.5,
         )
         if r.status_code != 200:
-            return
+            log.warning("decision_engine.bad_status", symbol=symbol, status=r.status_code)
+            return None
         result = r.json()
-        de_verdict  = result.get("verdict", "SKIP")
-        de_buy      = de_verdict in ("BUY", "SCALE")
-        de_score    = result.get("score", 0)
-        de_min      = result.get("min_score", 4)
-        de_blocked  = result.get("blocked_reason")
-
-        if de_buy != should_enter:
-            log.warning(
-                "decision_engine.shadow_divergence",
-                symbol=symbol,
-                paper_enter=should_enter,
-                paper_score=paper_score,
-                de_verdict=de_verdict,
-                de_score=de_score,
-                de_min_score=de_min,
-                de_blocked_reason=de_blocked,
-                note="paper engine is authoritative — investigating divergence",
-            )
-            try:
-                import redis as _redis_lib
-                from common.config import get_settings as _gs2
-                _rc = _redis_lib.from_url(_gs2().redis_url, decode_responses=True, socket_connect_timeout=1)
-                _rc.lpush("de:divergences", json.dumps({
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "symbol": symbol,
-                    "paper_enter": should_enter,
-                    "paper_score": paper_score,
-                    "de_verdict": de_verdict,
-                    "de_score": de_score,
-                    "de_min_score": de_min,
-                    "de_blocked_reason": de_blocked,
-                }))
-                _rc.ltrim("de:divergences", 0, 499)
-            except Exception:
-                pass
-        else:
-            log.info(
-                "decision_engine.shadow_agree",
-                symbol=symbol,
-                de_verdict=de_verdict,
-                paper_enter=should_enter,
-                de_score=de_score,
-                paper_score=paper_score,
-            )
-            try:
-                import redis as _redis_lib
-                from common.config import get_settings as _gs2
-                _rc = _redis_lib.from_url(_gs2().redis_url, decode_responses=True, socket_connect_timeout=1)
-                _rc.lpush("de:agreements", json.dumps({
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "symbol": symbol,
-                    "verdict": de_verdict,
-                    "paper_enter": should_enter,
-                    "de_score": de_score,
-                    "paper_score": paper_score,
-                }))
-                _rc.ltrim("de:agreements", 0, 499)
-            except Exception:
-                pass
+        verdict       = result.get("verdict", "SKIP")
+        should_enter  = verdict in ("BUY", "SCALE")
+        score         = result.get("score", 0)
+        blocked       = result.get("blocked_reason")
+        return should_enter, verdict, score, blocked
     except Exception as exc:
-        log.debug("decision_engine.shadow_error", symbol=symbol, error=str(exc))
+        log.debug("decision_engine.call_error", symbol=symbol, error=str(exc))
+        return None
 
 
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
@@ -2120,34 +2066,51 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         reason="target <= price", target=round(gp_target, 2), price=round(live_price, 2))
             continue
 
-        # Entry qualifier: "Is now a good time?"
-        should_enter, score, notes = _should_enter(
-            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
-            kscore=float(ranking.score) if ranking and ranking.score is not None else None,
-        )
+        # Entry qualifier: Decision Engine is authoritative; _should_enter() is the fallback.
+        de_mode = cfg.get("decision_engine_mode", "primary")
+        kscore_f = float(ranking.score) if ranking and ranking.score is not None else None
+        gate_source = "de"
 
-        # Shadow mode: compare Decision Engine verdict vs _should_enter() (non-authoritative)
-        if cfg.get("decision_engine_shadow", True):
-            _shadow_decision_engine(
+        if de_mode == "primary":
+            de_result = _call_decision_engine(
                 symbol=stock.symbol,
-                should_enter=should_enter,
-                paper_score=score,
                 live_price=live_price,
                 game_plan=game_plan,
                 equity=equity,
                 open_count=open_count,
                 cfg=cfg,
             )
+            if de_result is not None:
+                should_enter, de_verdict, score, de_blocked = de_result
+                notes = [f"DE: {de_verdict}"] + ([f"blocked: {de_blocked}"] if de_blocked else [])
+                log.info("paper.de_verdict", symbol=stock.symbol,
+                         verdict=de_verdict, score=score, blocked=de_blocked)
+            else:
+                # DE unreachable — fall back to _should_enter() so trading continues
+                should_enter, score, notes = _should_enter(
+                    stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
+                    kscore=kscore_f,
+                )
+                gate_source = "fallback"
+                log.warning("paper.de_fallback", symbol=stock.symbol,
+                            note="DE unreachable; using _should_enter()")
+        else:
+            # Legacy shadow mode: _should_enter() decides, DE logged only
+            should_enter, score, notes = _should_enter(
+                stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
+                kscore=kscore_f,
+            )
+            gate_source = "legacy"
 
         if not should_enter:
             log.info("paper.entry_skipped",
-                     symbol=stock.symbol, score=score,
+                     symbol=stock.symbol, score=score, gate=gate_source,
                      min_score=cfg.get("min_entry_score", 3),
                      regime=regime_state, reasons=notes[:3])
             continue
 
         log.info("paper.entry_decision",
-                 symbol=stock.symbol, score=score, notes=notes[:2])
+                 symbol=stock.symbol, score=score, gate=gate_source, notes=notes[:2])
 
         # Position sizing: risk_dollar / stop_distance = shares
         stop        = game_plan["stop"]

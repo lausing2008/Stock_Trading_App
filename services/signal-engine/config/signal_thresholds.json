@@ -1,0 +1,59 @@
+{
+  "_comment": "Signal engine tunable thresholds. Hot-reloadable via POST /signals/admin/reload_config.",
+  "_version": "1.0.0",
+
+  "ml": {
+    "soft_cap_low":          0.05,
+    "soft_cap_high":         0.95,
+    "disagree_band_low":     0.25,
+    "disagree_band_high":    0.35,
+    "disagree_cut_mild":     0.75,
+    "disagree_cut_max":      0.50,
+    "auc_ramp_start":        0.50,
+    "auc_ramp_mid":          0.55,
+    "auc_ramp_end":          0.70,
+    "auc_weight_at_mid":     0.20,
+    "auc_weight_at_end":     0.75
+  },
+
+  "rsi": {
+    "sweet_spot_lo":         45,
+    "sweet_spot_hi":         65,
+    "mild_overbought_hi":    72,
+    "weekly_gate_thresh":    38,
+    "weekly_overbought":     75,
+    "weekly_gate_bars_min":  5,
+    "weekly_gate_bars_max":  20,
+    "weekly_gate_mult_mild": 0.65,
+    "weekly_gate_mult_full": 0.40
+  },
+
+  "market": {
+    "breadth_floor":         0.40,
+    "breadth_compression":   0.90,
+    "vix_high":              25.0,
+    "vix_fear":              30.0,
+    "sr_proximity_pct":      0.015
+  },
+
+  "pattern": {
+    "recency_bars":          20,
+    "neckline_confirm_bars": 3,
+    "double_bottom_boost":   0.03,
+    "confluence_boost":      0.03
+  },
+
+  "signals": {
+    "stale_price_days":      3,
+    "pillar_1_compress":     0.85,
+    "pillar_2_compress":     0.70,
+    "pillar_4_boost":        0.03
+  },
+
+  "horizons": {
+    "SHORT":  { "hold_days": 5,  "outcome_return_days": 5  },
+    "SWING":  { "hold_days": 20, "outcome_return_days": 20 },
+    "LONG":   { "hold_days": 60, "outcome_return_days": 60 },
+    "GROWTH": { "hold_days": 45, "outcome_return_days": 45 }
+  }
+}

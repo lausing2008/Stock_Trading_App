@@ -54,6 +54,7 @@ def _service_token() -> str:
 
 
 from ..generators import generate_signal, generate_all_signals
+from ..config import get_thresholds, reload as reload_thresholds, loaded_at as thresholds_loaded_at
 
 log = get_logger("signals")
 
@@ -1899,6 +1900,22 @@ def calibrate_ta_weights(
         "in_sample_accuracy": round(accuracy, 4),
         "weights":          new_weights,
     }
+
+
+@router.get("/admin/config")
+def get_signal_config(_: str = Depends(get_current_username)):
+    """Return current signal_thresholds.json values + last-loaded timestamp."""
+    return {"thresholds": get_thresholds(), "loaded_at": thresholds_loaded_at()}
+
+
+@router.post("/admin/reload_config")
+def reload_signal_config(_: str = Depends(get_current_username)):
+    """Hot-reload signal_thresholds.json without restarting the container."""
+    try:
+        result = reload_thresholds()
+        return {"ok": True, **result}
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to reload config: {exc}")
 
 
 @router.post("/calibrate_conviction_weights")

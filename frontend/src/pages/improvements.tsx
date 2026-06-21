@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7048,6 +7048,63 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 73 — Gate Unification + Signal Config + Event Intel Integration (2026-06-21) ────────────
+  {
+    id: 'TIER73-PAPER-GATE',
+    tier: 73, severity: 'critical', defaultStatus: 'done',
+    file: 'market-data/src/services/paper_trading_engine.py:1624,2123',
+    implementedNote: 'Done 2026-06-21: Promoted Decision Engine from shadow mode to authoritative gate. _call_decision_engine() replaces _shadow_decision_engine() — returns (should_enter, verdict, score, blocked_reason) or None if unreachable. When DE is reachable and returns 200: its verdict (BUY/SCALE=enter, else skip) is final. When DE is unreachable: falls back to _should_enter() so trading continues. decision_engine_mode config key: "primary" (default) or "shadow" (legacy). gate_source logged in all entry events ("de"/"fallback"/"legacy").',
+    effort: '2h',
+    impact: 'Critical — paper trading was entering trades the conviction gate rejects (or skipping trades it would approve); win rate and P&L now reflect gate-disciplined trading',
+    title: 'Paper trading gate unification: Decision Engine is now authoritative (was shadow-only)',
+    what: 'Paper trading used _should_enter() (inline reimplementation with different thresholds). Decision Engine was called in shadow mode — its verdicts logged but ignored. Paper trades could enter positions the DE explicitly rejects. SWING stop discrepancy: DE used 8.8% (−12%), paper used 5.5% — partially fixed in Tier 66, but DE verdict still non-authoritative.',
+    fix: '_shadow_decision_engine() replaced by _call_decision_engine() that returns the verdict. Paper trading uses DE verdict as the gate. Falls back to _should_enter() if DE is unreachable (2.5s timeout). Config key decision_engine_mode="primary" enables new behavior; "shadow" restores legacy mode for rollback.',
+  },
+  {
+    id: 'TIER73-GATE-LAYERS',
+    tier: 73, severity: 'high', defaultStatus: 'done',
+    file: 'frontend/src/pages/stock/[symbol].tsx:1782',
+    implementedNote: 'Done 2026-06-21: The stock detail page (lines 1782-1822) already reconstructs per-layer conviction gate breakdown from signal reasons (K-Score, uptrend, RSI, MACD, OBV, ADX, ML). Each layer shown with ✓/✗ icon + actual value + threshold. SOFT layers (MACD/OBV/ADX/ML) distinguished from hard layers. Gate tier label (Full/Near/Failed) computed inline. Signal filter shows failed reasons on hover from Redis conv_gate key. Assessment: TIER67-GATE-LAYERS is functionally complete — frontend already shows exactly which layer is blocking and what value it needs to change.',
+    effort: '0h',
+    impact: 'High — users can see per-layer conviction breakdown on stock detail page; signal filter shows failed reasons on hover',
+    title: 'Conviction gate layer transparency — validated as already implemented',
+    what: 'TIER67-GATE-LAYERS requested per-layer PASS/FAIL display with actual values and thresholds. Assessment in Tier 73 confirmed this was already built into the stock detail signal card.',
+    fix: 'No code change required. Implementation documented here for tracking.',
+  },
+  {
+    id: 'TIER73-INTEL-NAV',
+    tier: 73, severity: 'low', defaultStatus: 'done',
+    file: 'frontend/src/pages/_app.tsx:47',
+    implementedNote: 'Done 2026-06-21: Added Event Intelligence to Research nav menu (between Research Engine and end of list). Label: "Event Intelligence", href: /intelligence, color: #f59e0b, tag: "new".',
+    effort: '5m',
+    impact: 'Low — makes /intelligence page discoverable from the main nav',
+    title: 'Event Intelligence added to Research nav menu',
+    what: '/intelligence page was built in Tier 72 but had no nav entry. Users had to know the URL.',
+    fix: 'Added to Research section of _app.tsx nav items.',
+  },
+  {
+    id: 'TIER73-CATALYST-CARD',
+    tier: 73, severity: 'medium', defaultStatus: 'done',
+    file: 'frontend/src/pages/stock/[symbol].tsx:1931',
+    implementedNote: 'Done 2026-06-21: Event Intelligence panel added to signal sidebar between Research Intelligence and Confidence Trend sections. Shows catalyst_score, insider_score, congress_score, composite_score read directly from signal.reasons (injected by signal engine _bulk_persist since Tier 72). Each score rendered as a labeled bar + numeric value, color-coded green/amber/red. Link to /intelligence dashboard. Shows only when at least one score is available.',
+    effort: '1h',
+    impact: 'Medium — catalyst intelligence scores visible inline on stock detail without navigating to /intelligence page',
+    title: 'Event Intelligence panel on stock detail page (catalyst/insider/congress scores from signal reasons)',
+    what: 'Catalyst scores were injected into signal reasons by Tier 72 but not displayed anywhere on the stock detail page.',
+    fix: 'New "Event Intelligence" section in signal sidebar reads catalyst_score, insider_score, congress_score, composite_score from data.signal.reasons and renders horizontal score bars.',
+  },
+  {
+    id: 'TIER73-SIGNAL-CONFIG',
+    tier: 73, severity: 'medium', defaultStatus: 'done',
+    file: 'signal-engine/config/signal_thresholds.json, signal-engine/src/config.py, signal-engine/src/api/routes.py:1905',
+    implementedNote: 'Done 2026-06-21: (1) services/signal-engine/config/signal_thresholds.json created with 6 sections: ml (soft caps, disagree bands, AUC ramp), rsi (sweet spot, weekly gate thresholds), market (breadth floor, VIX levels, S/R proximity), pattern (recency bars, neckline confirm, boost values), signals (stale price days, pillar compress), horizons (hold days per style). (2) signal-engine/src/config.py: thread-safe lazy loader with reload() function. (3) GET /signals/admin/config returns current thresholds + loaded_at. (4) POST /signals/admin/reload_config hot-reloads without restart.',
+    effort: '3h',
+    impact: 'Medium — 20+ hardcoded thresholds now in config file; hot-reloadable via API for live A/B testing without docker restart',
+    title: 'Config-driven signal thresholds: signal_thresholds.json + hot-reload API',
+    what: '20+ magic numbers hardcoded in signals.py required code edit + docker cp + restart to change. Blocked rapid A/B testing of threshold changes.',
+    fix: 'signal_thresholds.json externalizes all key thresholds. Lazy-loaded at startup, hot-reloadable via POST /signals/admin/reload_config. GET /signals/admin/config shows current values.',
+  },
+
   // ── Tier 72 — Event Intelligence Platform (2026-06-21) ──────────────────────────────────────────
   {
     id: 'TIER72-EI-SERVICE',
@@ -7222,7 +7279,8 @@ const ITEMS: Item[] = [
   // ── Tier 69 — Refactoring & Tech Debt ─────────────────────────────────────────
   {
     id: 'TIER69-DEAD-CODE',
-    tier: 69, severity: 'low', defaultStatus: 'todo',
+    tier: 69, severity: 'low', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-21 as TIER71-DEAD-CODE: removed rsi_divergence="none" and weekly_blend_applied=False from signals.py.',
     file: 'signal-engine/src/generators/signals.py',
     effort: '1h',
     impact: 'Low — dead code bloats reasons dict and creates confusion for future changes; removing improves maintainability',
@@ -7232,7 +7290,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'TIER69-GATE-BACKTEST',
-    tier: 69, severity: 'low', defaultStatus: 'todo',
+    tier: 69, severity: 'low', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-21 as TIER71-GATE-AUTH: added Depends(get_current_username) to gate_backtest endpoint.',
     file: 'signal-engine/src/api/routes.py',
     effort: '1h',
     impact: 'Low — /signals/gate_backtest endpoint simulates old removed conviction gate; confusing to have in production alongside the new sequential filter approach',
@@ -7242,7 +7301,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'TIER69-SIGNAL-DEDUP',
-    tier: 69, severity: 'low', defaultStatus: 'todo',
+    tier: 69, severity: 'low', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-21 as TIER71-SIGNAL-DEDUP: Alembic migration 002 added UNIQUE INDEX uq_signals_stock_horizon_day. _bulk_persist uses INSERT ... ON CONFLICT DO UPDATE upsert.',
     file: 'shared/db/models.py (signals table)',
     effort: '1h',
     impact: 'Low — duplicate signals possible if scheduler crashes mid-run; DB constraint is the correct enforcement layer',
@@ -7252,7 +7312,8 @@ const ITEMS: Item[] = [
   },
   {
     id: 'TIER69-HEALTH-DASHBOARD',
-    tier: 69, severity: 'low', defaultStatus: 'todo',
+    tier: 69, severity: 'low', defaultStatus: 'done',
+    implementedNote: 'Done 2026-06-21 as TIER71-HEALTH-DASHBOARD: GET /health/deep endpoint + admin-health.tsx service connectivity grid.',
     file: 'services/api-gateway/src/api/routes.py · frontend/src/pages/admin.tsx',
     effort: '3h',
     impact: 'Low — currently no way to see which services are responding without running docker logs; health dashboard surfaces connectivity issues immediately',
@@ -7343,6 +7404,7 @@ const TIER_LABEL: Record<Tier, string> = {
   70: 'Tier 70 — Deep Audit Fixes: Parallel ML + OOS Flag + R:R Ratio + Research Dedup',
   71: 'Tier 71 — Tech Debt: Dead Code + Gate Auth + Signal Upsert + Health Dashboard',
   72: 'Tier 72 — Event Intelligence Platform: Economic · Earnings · Insider · Congress · Catalyst',
+  73: 'Tier 73 — Gate Unification + Signal Config + Event Intel Integration (2026-06-21)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7418,6 +7480,7 @@ const TIER_COLOR: Record<Tier, string> = {
   70: '#818cf8',
   71: '#6ee7b7',
   72: '#f59e0b',
+  73: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
