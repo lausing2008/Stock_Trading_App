@@ -81,7 +81,7 @@ from sqlalchemy import select, func
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, Stock, User, Watchlist, WatchlistItem
+from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -1826,6 +1826,135 @@ def _purge_old_data() -> None:
         log.error("scheduler.purge_failed", error=str(exc), exc_info=True)
 
 
+def _check_short_intraday_triggers(market: str) -> None:
+    """TIER83: Trigger SHORT signal refresh when intraday move exceeds 1.5× ATR.
+
+    Runs after every 5m bar ingest. Finds active stocks with a SHORT BUY signal
+    today, checks if the intraday price move (|current_close / first_bar_close - 1|)
+    exceeds 1.5× the stored atr_14_pct from the latest signal reasons.
+
+    When triggered, calls GET /signals/{symbol}?live=True&persist=True&style=SHORT
+    on the signal engine to recompute and persist a fresh SHORT signal.
+
+    Rate-limited via Redis: max 1 trigger per symbol per 60 minutes, max 3 per day.
+    Fail-open: any exception is caught and logged so the 5m ingest is never blocked.
+    """
+    from datetime import date as _date, datetime as _dt
+
+    today = _date.today()
+    # market hours guard: US 09:30–16:00 ET, HK 09:30–16:00 HKT
+    if market == "US":
+        now_et = _dt.now(ZoneInfo("America/New_York"))
+        if not (now_et.hour >= 9 and (now_et.hour < 16 or (now_et.hour == 9 and now_et.minute >= 30))):
+            return
+    elif market == "HK":
+        now_hk = _dt.now(ZoneInfo("Asia/Hong_Kong"))
+        if not (now_hk.hour >= 9 and now_hk.hour < 16):
+            return
+
+    try:
+        r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+    except Exception:
+        return
+
+    try:
+        with SessionLocal() as session:
+            # Get stocks with a SHORT BUY signal as of today
+            start_of_day = _dt.combine(today, _dt.min.time()).replace(tzinfo=timezone.utc)
+            short_signals = session.execute(
+                select(Stock.symbol, Stock.id, Signal.reasons)
+                .join(Signal, Signal.stock_id == Stock.id)
+                .where(
+                    Stock.market == market.upper(),
+                    Stock.active.is_(True),
+                    Signal.signal == SignalType.BUY,
+                    Signal.horizon == SignalHorizon.SHORT,
+                    Signal.ts >= start_of_day,
+                )
+                .order_by(Signal.ts.desc())
+                .distinct(Stock.id)
+            ).all()
+
+            if not short_signals:
+                return
+
+            stock_ids = {row.id for row in short_signals}
+
+            # Batch-fetch today's 5m bars for these stocks in one query
+            bars_rows = session.execute(
+                select(Price.stock_id, Price.close, Price.ts)
+                .where(
+                    Price.stock_id.in_(stock_ids),
+                    Price.timeframe == TimeFrame.M5,
+                    Price.ts >= start_of_day,
+                )
+                .order_by(Price.stock_id, Price.ts)
+            ).all()
+
+            # Group bars by stock_id
+            bars_by_stock: dict[int, list] = {}
+            for row in bars_rows:
+                bars_by_stock.setdefault(row.stock_id, []).append(float(row.close))
+
+        triggers: list[str] = []
+        for sig_row in short_signals:
+            sym = sig_row.symbol
+            stock_id = sig_row.id
+            reasons = sig_row.reasons or {}
+            atr_pct = reasons.get("atr_14_pct") if isinstance(reasons, dict) else None
+            if not atr_pct or atr_pct <= 0:
+                # Fallback: use 1.5% as proxy ATR for stocks missing atr data
+                atr_pct = 0.015
+
+            bars = bars_by_stock.get(stock_id, [])
+            if len(bars) < 3:
+                continue  # not enough intraday data yet
+
+            day_open = bars[0]
+            current_price = bars[-1]
+            if day_open <= 0:
+                continue
+
+            intraday_move = abs(current_price - day_open) / day_open
+            threshold = 1.5 * atr_pct
+
+            if intraday_move < threshold:
+                continue
+
+            # Rate-limit: 1 trigger per symbol per 60 min, max 3 per day
+            hourly_key = f"stockai:short_trigger:{sym}:hourly"
+            daily_key  = f"stockai:short_trigger:{sym}:{today}"
+            if r.exists(hourly_key):
+                continue
+            daily_count = int(r.get(daily_key) or 0)
+            if daily_count >= 3:
+                continue
+
+            # Mark rate limits before the HTTP call to prevent duplicate concurrent triggers
+            r.setex(hourly_key, 3600, "1")
+            r.setex(daily_key, 86400, str(daily_count + 1))
+            triggers.append(sym)
+            log.info("short_intraday_trigger.detected",
+                     symbol=sym, market=market,
+                     intraday_move_pct=round(intraday_move * 100, 2),
+                     atr_pct=round(atr_pct * 100, 2),
+                     threshold_pct=round(threshold * 100, 2))
+
+        # Fire signal refreshes outside the DB session
+        for sym in triggers:
+            try:
+                url = f"{_settings.signal_engine_url}/signals/{sym}?live=true&persist=true&style=SHORT"
+                resp = httpx.get(url, timeout=15.0)
+                log.info("short_intraday_trigger.refreshed",
+                         symbol=sym, status=resp.status_code)
+            except Exception as exc:
+                log.warning("short_intraday_trigger.refresh_failed",
+                            symbol=sym, error=str(exc))
+
+    except Exception as exc:
+        log.warning("short_intraday_trigger.error", market=market, error=str(exc))
+
+
 def _refresh_5m(market: str) -> None:
     """Ingest the latest 5-minute bars and run a paper trading monitor cycle.
 
@@ -1859,6 +1988,9 @@ def _refresh_5m(market: str) -> None:
         except Exception as _pte:
             log.error("scheduler.paper_trading_5m_failed", market=market, error=str(_pte), exc_info=True)
             _record_job_status(f"paper_trading_5m_{market.lower()}", "error", time.monotonic() - _pt0, str(_pte))
+
+    # TIER83: check if any SHORT-style stocks have crossed the intraday ATR trigger
+    _check_short_intraday_triggers(market)
 
 
 def send_morning_digest(market: str = "US") -> None:

@@ -6904,14 +6904,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'TIER66-PAPER-GATE',
-    tier: 66, severity: 'critical', defaultStatus: 'in-progress',
-    file: 'market-data/src/services/scheduler.py · decision-engine/src/api/core/aggregator.py',
-    effort: '3h remaining',
+    tier: 66, severity: 'critical', defaultStatus: 'done',
+    file: 'market-data/src/services/paper_trading_engine.py · decision-engine/src/api/core/aggregator.py',
+    effort: '3h',
     impact: 'Critical — paper trading enters trades the conviction gate rejects; win rate and P&L statistics are not representative of what a gate-disciplined trader would achieve',
     title: 'Fix paper trading gate bypass — replace _should_enter() with decision-engine verdict',
     what: 'Paper trading uses _should_enter() which reimplements gate logic inline with different thresholds vs _is_conviction_buy() in the scheduler. Decision-engine runs in "shadow mode" — its verdicts are logged but not used. Paper trades can enter positions that the conviction gate explicitly rejects. Also: STYLE_PARAMS mismatch — decision-engine SWING stop is 8.8%, paper trading SWING stop is 5.5%. Game plans from decision-engine are inconsistent with what paper trading executes.',
     fix: 'Replace _should_enter() with a call to decision-engine verdict (BUY = enter, SKIP/BLOCKED/HOLD = skip). Create shared STYLE_PARAMS config (JSON) imported by both decision-engine and paper trading. Resolve SWING stop discrepancy (validate against closed trade win rates). Remove inline gate reimplementation.',
-    implementedNote: 'Partial fix 2026-06-20: SWING STYLE_PARAMS aligned — decision-engine aggregator.py SWING stop_pct corrected from 0.880 (−12%) to 0.945 (−5.5%), entry2 0.965, breakout 1.020, target 1.120 — now consistent with paper_trading_engine.py and scheduler.py. 2026-06-21: Added conviction gate hard-block in paper_trading_engine.py — before the Decision Engine entry check, reads conv_gate:{symbol}:{style} Redis key; if signal=="BUY" and sent==False (gate explicitly failed), skips entry and logs paper.entry_gate_blocked. Fail-open if Redis unavailable. Full gate unification (replacing _should_enter() with direct decision-engine verdict call) remains as follow-up work.',
+    implementedNote: 'Done 2026-06-21: Paper trading uses decision_engine_mode="primary" — _call_decision_engine() is called first and its verdict (BUY/SCALE = enter, SKIP/BLOCKED/HOLD = skip) is authoritative. _should_enter() is only the fallback when DE is unreachable. SWING STYLE_PARAMS aligned (stop_pct 0.945, entry2 0.965, breakout 1.020, target 1.120). Conviction gate hard-block reads conv_gate Redis key before the DE call — if gate explicitly failed for current BUY, paper entry is skipped immediately.',
   },
   {
     id: 'TIER66-SIGNAL-BUGS',
@@ -7131,14 +7131,14 @@ const ITEMS: Item[] = [
   // ── Tier 83 — Intraday SHORT Signal Refresh (roadmap) ──────────────────────────────────────
   {
     id: 'TIER83-INTRADAY-SHORT',
-    tier: 83, severity: 'feature', defaultStatus: 'todo',
-    file: 'services/market-data/src/services/scheduler.py, services/signal-engine/src/api/routes.py',
-    implementedNote: 'Roadmap: SHORT horizon (5-day hold) signals are currently refreshed 5×/day with all other styles. Intraday price moves >1.5 ATR should trigger immediate SHORT signal re-evaluation. Requires an intraday trigger job in scheduler.py that monitors 5-min price bars and POSTs /signals/refresh?market=US&style=SHORT&symbol=AAPL when threshold exceeded.',
+    tier: 83, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/scheduler.py:_check_short_intraday_triggers()',
     effort: '1 week',
     impact: 'High for SHORT trades — intraday momentum/reversal signals become stale within minutes. Institutional SHORT desks re-score every tick.',
     title: 'Intraday SHORT signal refresh: trigger on >1.5 ATR intraday move',
     what: 'SHORT signals (5-day horizon) are only refreshed 5×/day with all other styles. A stock that gaps 3% intraday generates no new signal until the next scheduled refresh.',
     fix: 'Add intraday monitor in scheduler: check 5m bars every minute; if stock moved >1.5 ATR since open, trigger immediate SHORT-only signal refresh for that symbol.',
+    implementedNote: 'Done 2026-06-21: _check_short_intraday_triggers(market) added to scheduler.py, called after every _refresh_5m() ingest. Queries stocks with a SHORT BUY signal today, batch-fetches today\'s 5m bars, computes |current_close/first_bar_close − 1|, compares to 1.5 × atr_14_pct from stored signal reasons (fallback: 1.5%). Calls GET /signals/{sym}?live=true&persist=true&style=SHORT when triggered. Rate-limited via Redis: max 1 trigger per symbol per 60 min (hourly key) and max 3 per day (daily counter). Fail-open: exceptions caught and logged so 5m ingest is never blocked.',
   },
 
   // ── Tier 82 — Financial Modeling Prep (FMP) Integration (roadmap) ─────────────────────────
