@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -6865,6 +6865,217 @@ const ITEMS: Item[] = [
     fix: '<> → <React.Fragment key={d.id}> with <tr> key removed (React.Fragment carries the key). Added useEffect([tab]) to reset both pagination states. posSymbolKey = useMemo. signal-engine: divergence block moved inside the for style_key, ai loop.',
     implementedNote: 'Done 2026-06-20 — paper-portfolio.tsx and signal-engine/routes.py updated.',
   },
+
+  // ── Tier 65 — Deep Audit 2026-06-20 ─────────────────────────────────────────
+  {
+    id: 'TIER65-AUDIT',
+    tier: 65, severity: 'critical', defaultStatus: 'done',
+    file: 'docs/AUDIT_2026-06-20.html',
+    effort: '—',
+    impact: 'Critical — 6 critical findings across signal engine, ML pipeline, regime, and decision-making that directly undermine profitability',
+    title: 'Deep System Audit 2026-06-20: AI Signal · ML · Regime · Decision Pipeline (6 Critical · 9 High · 11 Medium · 6 Low)',
+    what: 'Full audit of all 11 microservices, signal generation logic, ML pipeline, regime engine, inter-service connectivity, conviction gate, game plan, paper trading, and Kelly sizing. Key findings: (1) ML predictions never reach signal-engine — ml-prediction service is trained and running but its output is not cached by market-data, leaving signal-engine running as TA-only for most symbols. (2) Regime logic locked inside decision-engine with no HTTP endpoint — signal-engine uses Fear & Greed separately, research-engine has no regime context, portfolio-optimizer has no regime-aware position limits. (3) RSI divergence hard-disabled but its weight remains in TA calibration — silent dead weight corrupting signal scores. (4) SWING earnings compression makes BUY mathematically impossible pre-earnings even for reliable beaters (×0.50 threshold too aggressive). (5) Paper trading bypasses conviction gate via separate _should_enter() function — enters trades the gate explicitly rejected. (6) STYLE_PARAMS mismatch between decision-engine (SWING stop 8.8%) and paper trading (SWING stop 5.5%) — win rate statistics cannot be cross-referenced.',
+    fix: 'See AUDIT_2026-06-20.html in docs/. Action items split across Tiers 66–69.',
+    implementedNote: 'Audit complete 2026-06-20. Full report at docs/AUDIT_2026-06-20.html.',
+  },
+
+  // ── Tier 66 — Critical Fixes: ML Wiring + Regime API + Signal Bugs ───────────
+  {
+    id: 'TIER66-ML-WIRE',
+    tier: 66, severity: 'critical', defaultStatus: 'todo',
+    file: 'market-data/src/services/scheduler.py · signal-engine/src/generators/signals.py',
+    effort: '4h',
+    impact: 'Critical — ML predictions trained on 46 features currently bypassed; signal-engine runs TA-only for most symbols; wiring ML in is the single highest-ROI change',
+    title: 'Wire ML predictions into signal pipeline (market-data → Redis → signal-engine)',
+    what: 'Market-data scheduler has no task calling POST /ml/predict_ensemble_three. Signal-engine reads ml_probability from a Redis cache key (ml:pred:{symbol}:{style}) that is never populated by market-data. Signal-engine ML fusion step uses empty/stale data for most symbols, reducing effective ML weight toward 0. The XGBoost/LightGBM/RandomForest ensemble (trained on 46 features including macro, regime, and fundamental context) is completely disconnected from signal generation.',
+    fix: 'Add daily batch task in market-data scheduler: for each tracked symbol × 4 styles, call POST /ml/predict_ensemble_three, write result to Redis ml:pred:{symbol}:{style} (TTL 28h). Signal-engine reads from this key with async direct ML fallback (5s timeout) on cache miss. Add model_retrain_date to ML response; signal-engine applies exponential age decay (50% weight at 30 days, 20% at 60 days). Log when model_age > 21 days.',
+  },
+  {
+    id: 'TIER66-REGIME-API',
+    tier: 66, severity: 'critical', defaultStatus: 'todo',
+    file: 'decision-engine/src/api/routes.py · decision-engine/src/api/core/regime.py',
+    effort: '3h',
+    impact: 'Critical — regime logic exists and is correct but locked inside decision-engine; signal-engine, research-engine, and portfolio-optimizer all run with inconsistent regime proxies',
+    title: 'Expose regime as shared HTTP endpoint (GET /decide/regime)',
+    what: 'Regime detection (bull/bear/choppy/risk_off/neutral using SPY EMAs, VIX, IWM/MDY breadth) is embedded in decision-engine with a local 4-hour cache and no HTTP endpoint. No other service can access it. Signal-engine uses Fear & Greed < 30 as its own proxy; research-engine has no regime context; portfolio-optimizer applies no regime-aware position limits. The system can simultaneously classify "bull" in research and "risk_off" in signal suppression.',
+    fix: 'Add GET /decide/regime?market=US|HK endpoint. Cache result in Redis regime:{market} with TTL: 30 min when VIX > 20, 4h otherwise. Signal-engine replaces its Fear & Greed check with a call to this endpoint and stores market_regime in signal reasons dict. Portfolio-optimizer fetches regime and applies position multiplier (bull=1.0, choppy=0.75, bear=0.60, risk_off=0.50).',
+  },
+  {
+    id: 'TIER66-PAPER-GATE',
+    tier: 66, severity: 'critical', defaultStatus: 'todo',
+    file: 'market-data/src/services/scheduler.py',
+    effort: '3h',
+    impact: 'Critical — paper trading enters trades the conviction gate rejects; win rate and P&L statistics are not representative of what a gate-disciplined trader would achieve',
+    title: 'Fix paper trading gate bypass — replace _should_enter() with decision-engine verdict',
+    what: 'Paper trading uses _should_enter() which reimplements gate logic inline with different thresholds vs _is_conviction_buy() in the scheduler. Decision-engine runs in "shadow mode" — its verdicts are logged but not used. Paper trades can enter positions that the conviction gate explicitly rejects. Also: STYLE_PARAMS mismatch — decision-engine SWING stop is 8.8%, paper trading SWING stop is 5.5%. Game plans from decision-engine are inconsistent with what paper trading executes.',
+    fix: 'Replace _should_enter() with a call to decision-engine verdict (BUY = enter, SKIP/BLOCKED/HOLD = skip). Create shared STYLE_PARAMS config (JSON) imported by both decision-engine and paper trading. Resolve SWING stop discrepancy (validate against closed trade win rates). Remove inline gate reimplementation.',
+  },
+  {
+    id: 'TIER66-SIGNAL-BUGS',
+    tier: 66, severity: 'critical', defaultStatus: 'todo',
+    file: 'signal-engine/src/generators/signals.py',
+    effort: '2h',
+    impact: 'Critical — RSI divergence dead weight corrupts TA calibration silently; SWING pre-earnings compression blocks all signals ≤2 days before earnings even for reliable beaters; stale price tolerance allows 5-day-old data',
+    title: 'Fix 3 signal engine bugs: RSI divergence dead weight · SWING earnings compression · stale price threshold',
+    what: '(1) rsi_divergence = "none" is set unconditionally (H3/H4 bug: was comparing argmax timing not RSI levels). But rsi_divergence_bullish remains in REASONS_MAP and TA_WEIGHTS — its weight is drawn from calibration but contribution is always zero, corrupting signal scores. (2) SWING earnings compression {2: 0.50, 5: 0.75, 10: 0.90}: borderline signal at fused=0.70 with earnings in 2 days → 0.70 × 0.50 = 0.35, fails 0.67 threshold. Even beat-rate scaling (×2.0) restores to 0.70 at best — never fires new BUY. (3) if days_old > 5 in staleness check but comment says "3 calendar days" — 4–5 day old bars pass without 0.60× suppression.',
+    fix: '(1) Remove rsi_divergence_bullish from REASONS_MAP + TA_WEIGHTS; redistribute weight to MACD momentum. Rewrite divergence later (compare RSI at confirmed price swing highs/lows). (2) Raise SWING earnings thresholds to {2: 0.65, 5: 0.85, 10: 0.95}. (3) Change days_old > 5 to days_old > 3.',
+  },
+  {
+    id: 'TIER66-RESEARCH-AUTH',
+    tier: 66, severity: 'high', defaultStatus: 'todo',
+    file: 'research-engine/src/api/routes.py:74',
+    effort: '1h',
+    impact: 'High — research reports may be generated without signal data (401 silent fail on signal fetch); recommendations less accurate',
+    title: 'Fix research-engine missing auth header on signal-engine calls',
+    what: 'Research-engine calls GET /signals/{symbol} without a Bearer token. Per CLAUDE.md connectivity invariants, all auth-protected endpoints require Authorization header. If signal-engine enforces auth on this endpoint, the call returns 401 silently — research report is generated without signal context, producing less accurate recommendations.',
+    fix: 'Add _svc_token() to research-engine (same JWT pattern: sub="research-engine", exp=1yr). Pass Authorization: Bearer {_svc_token()} on all calls to signal-engine. Extend to any other auth-protected upstream calls in research-engine.',
+  },
+
+  // ── Tier 67 — High Priority: Gate Transparency + Game Plan + Opportunities ────
+  {
+    id: 'TIER67-GATE-LAYERS',
+    tier: 67, severity: 'high', defaultStatus: 'todo',
+    file: 'signal-engine/src/generators/signals.py · frontend/src/pages/stock/[symbol].tsx',
+    effort: '3h',
+    impact: 'High — users cannot see why Gate is NEAR vs FULL; removes the "black box" and turns Gate into a diagnostic tool; enables users to wait for specific conditions to resolve',
+    title: 'Conviction gate layer transparency — expose per-layer PASS/FAIL with actual values',
+    what: 'The conviction gate runs checks (K-Score, uptrend structure, RSI bounds, MACD, OBV, ADX, ML probability, disqualifiers) but stores no structured per-layer breakdown. The frontend reconstructs FULL/NEAR/FAILED from the reasons dict heuristically. Users see "NEAR" but cannot tell which specific layer is failing or what value it needs to reach to pass.',
+    fix: 'Add conviction_layers dict to signal reasons: each layer stores {status: "PASS"|"SOFT"|"FAIL", value: actual_value, threshold: condition}. Add gate_score (e.g. 6/8). Frontend reads conviction_layers directly and renders a mini breakdown: each layer as a colored row (green PASS, yellow SOFT, red FAIL) with the actual value shown.',
+  },
+  {
+    id: 'TIER67-GAME-PLAN-ATR',
+    tier: 67, severity: 'high', defaultStatus: 'todo',
+    file: 'decision-engine/src/api/routes.py',
+    effort: '3h',
+    impact: 'High — fixed % stops are placed without regard to individual stock volatility or meaningful technical levels; ATR-based stops at S/R reduce stop-outs from normal volatility',
+    title: 'ATR-based stops + S/R alignment in decision-engine game plan',
+    what: 'Decision-engine game plan calculates stop loss as a fixed percentage from entry (SWING: 8.8%). No ATR-based stops that adapt to each stock\'s volatility, and no alignment to support/resistance levels where institutional stops cluster. Paper trading uses ATR stops — another mismatch. A volatile stock like NVDA and a stable stock like KO get the same fixed % stop despite 3× volatility difference.',
+    fix: 'Compute ATR_14 for each stock (available from TA service). Set stop = entry − (2.0 × ATR_14). Also check nearest support level from S/R context — if support is within 5% below entry, use max(ATR-stop, support_level) as final stop. Return both ATR-stop and S/R-stop in game plan response so user sees the reasoning.',
+  },
+  {
+    id: 'TIER67-KELLY',
+    tier: 67, severity: 'high', defaultStatus: 'todo',
+    file: 'decision-engine/src/api/routes.py · market-data/src/services/scheduler.py',
+    effort: '3h',
+    impact: 'High — fixed 1% risk systematically underweights high-conviction signals; Kelly calibration from closed paper trades extracts more return per unit of risk',
+    title: 'Kelly Criterion position sizing calibrated from closed paper trade history',
+    what: 'All position sizing uses fixed 1% risk per trade. Kelly Criterion is referenced in the frontend ML panel but not computed by any backend service. Closed paper trade history (win/loss + R:R per style) is available but unused for calibration. For a 55% win rate SWING strategy with 2:1 R:R, optimal Kelly is ~10%, quarter-Kelly is 2.5% — systematically undersizing good setups.',
+    fix: 'Add /ml/kelly endpoint: compute kelly_f = win_rate - (1 - win_rate) / rr_ratio from last 90 days of closed paper trades per style. Use quarter-Kelly for live sizing. Decision-engine: scale position by confidence band — Gate FULL + confidence ≥60%: 3% risk; NEAR + confidence 45–60%: 2%; otherwise 1%. Return kelly_f and applied_size in game plan response.',
+  },
+  {
+    id: 'TIER67-OPPORTUNITIES-GATE',
+    tier: 67, severity: 'medium', defaultStatus: 'todo',
+    file: 'frontend/src/pages/opportunities.tsx · services/signal-engine/src/api/routes.py',
+    effort: '2h',
+    impact: 'Medium — users see non-actionable stocks (Gate FAILED) in opportunities list without indication; clicking through wastes time',
+    title: 'Opportunities page: gate status badges + Confluence tab gate-FULL filter',
+    what: 'Opportunity cards show signal and K-Score but not conviction gate status. A stock with Gate FAILED appears identically to Gate FULL. The Confluence tab should be the highest-conviction tab but includes Gate NEAR and FAILED stocks. Users can\'t identify which opportunities are truly ready to trade vs which need to wait.',
+    fix: 'Add gate_status to signal API response (already available in reasons dict). Show gate badge on each opportunity card: FULL (green), NEAR (yellow), — (gray/no BUY). Confluence tab: filter to gate_status === "FULL" only. Add "Gate: Full only" toggle to other tabs.',
+  },
+  {
+    id: 'TIER67-ALERT-GATE',
+    tier: 67, severity: 'medium', defaultStatus: 'todo',
+    file: 'market-data/src/services/scheduler.py — check_signal_alerts()',
+    effort: '1h',
+    impact: 'Medium — users receive signal change alerts without knowing if the trade is clean or suppressed; reduces actionability of alerts',
+    title: 'Include gate status + suppression conditions in signal alert emails',
+    what: 'Signal change emails (▲ Upgrade / ▼ Downgrade) show symbol, horizon, and confidence but not conviction gate status or active suppression conditions. A user receiving a SWING BUY upgrade email has no way to know if the gate is FULL (trade it now) or NEAR (still waiting on weekly misalignment) without opening the app.',
+    fix: 'Add gate_status and top 2 suppression conditions (if any dots active) to the email body: "SWING BUY — Gate: NEAR · Weekly misalignment active · Confidence: 64%. Click to view full analysis." This one change makes alerts significantly more actionable.',
+  },
+
+  // ── Tier 68 — ML & Regime Enhancements ────────────────────────────────────────
+  {
+    id: 'TIER68-ML-FEATURES',
+    tier: 68, severity: 'medium', defaultStatus: 'todo',
+    file: 'ml-prediction/src/features/builder.py',
+    effort: '4h',
+    impact: 'Medium — regime and sector context are strong predictors of which signals are reliable; adding them improves AUC and reduces false signals in adverse conditions',
+    title: 'ML feature expansion: regime class · sector RS · yield curve · vol ratio · earnings context',
+    what: 'Current 46 features include SPY returns and VIX level but miss: (1) regime classification (bull/bear/choppy/risk_off) as categorical feature, (2) sector ETF relative strength percentile, (3) yield curve spread (10Y-2Y) as macro regime indicator, (4) vol_ratio_5d20d (already computed in ranking-engine), (5) earnings_days_away and historical beat_rate. These context features help the model distinguish reliable signals from regime-driven noise.',
+    fix: 'Add the 5 features to FEATURE_COLUMNS in builder.py. For regime_class: fetch from decision-engine regime endpoint (once exposed). For yield_curve: fetch from FRED API or cached market-data. Retrain all models with tune_all after feature additions. Update FEATURE_COLUMNS documentation to match actual 46 (now ~51) feature count.',
+  },
+  {
+    id: 'TIER68-ML-LSTM',
+    tier: 68, severity: 'medium', defaultStatus: 'todo',
+    file: 'ml-prediction/src/models/lstm.py',
+    effort: '1h',
+    impact: 'Medium — LSTM returning 0.5 (coin flip) dilutes ensemble predictions on short histories; removing it improves ensemble accuracy immediately',
+    title: 'Remove LSTM from model registry — incomplete implementation returning constant 0.5',
+    what: 'LSTM model stub returns 0.5 for sequences shorter than minimum length. It is registered in the model registry and included in ensembles. This dilutes predictions on short-history stocks (common for newly-listed or HK stocks). No LSTM training pipeline exists — it is a placeholder that actively degrades ensemble quality.',
+    fix: 'Remove LSTM from model registry in ml_config.json. Add TODO comment in lstm.py documenting what a real LSTM implementation would require (PyTorch/TF, sequence padding, separate training loop). This immediately improves ensemble accuracy at no other cost.',
+  },
+  {
+    id: 'TIER68-ML-RETRAIN',
+    tier: 68, severity: 'medium', defaultStatus: 'todo',
+    file: 'market-data/src/services/scheduler.py',
+    effort: '2h',
+    impact: 'Medium — models can silently go 60+ days without retraining in production; market regime shifts mean stale models predict with high AUC on outdated patterns',
+    title: 'Auto-retraining trigger when model_age exceeds 21 days',
+    what: 'Models are retrained manually via POST /ml/tune_all. No automatic trigger exists. In production, if the operator forgets the weekend batch job, models can go 30–60+ days without retraining. Signal-engine uses ml_test_auc at face value regardless of model age — a stale model with AUC 0.72 trained during a bull market gets full weight during a bear market.',
+    fix: 'Add weekly check in market-data scheduler (Saturday morning): for each style, if model_retrain_date > 21 days, trigger POST /ml/tune_all?styles={stale_styles} with service JWT. Log the trigger event. Send admin notification if tune_all fails. Store model_retrain_date in Redis alongside the predictions.',
+  },
+  {
+    id: 'TIER68-SIGNAL-CONFIG',
+    tier: 68, severity: 'medium', defaultStatus: 'todo',
+    file: 'signal-engine/src/generators/signals.py',
+    effort: '3h',
+    impact: 'Medium — 20+ hardcoded thresholds currently require code deploy + docker restart to change; config-driven approach enables A/B testing and live tuning',
+    title: 'Config-driven signal thresholds — move 20+ magic numbers to signal_thresholds.json',
+    what: 'Signals.py has 20+ hardcoded values: ML soft-caps (0.05, 0.95), RSI sweet-spot range (45, 65), disagreement thresholds (0.35, 0.25), breadth floor (0.40), weekly gate thresholds (75), pattern recency window (20 bars), S/R proximity (1.5%), outcome hold days per horizon. Each change requires a code edit + docker cp + docker restart. Some thresholds should vary by market regime.',
+    fix: 'Create services/signal-engine/config/signal_thresholds.json with all 20+ values. Load at startup with pydantic validation. Add POST /signals/admin/reload_config (admin JWT required) to hot-reload without restart. Add GET /signals/admin/config to show current values + last-modified date. This unblocks rapid A/B testing of threshold changes.',
+  },
+  {
+    id: 'TIER68-WEEKLY-GATE',
+    tier: 68, severity: 'medium', defaultStatus: 'todo',
+    file: 'signal-engine/src/generators/signals.py:1654',
+    effort: '2h',
+    impact: 'Medium — 0.40× weekly gate applied equally to brief RSI dips and extended downtrends over-suppresses legitimate recovery entries in fundamentally strong stocks',
+    title: 'Weekly gate: graduated suppression for brief RSI dips vs confirmed extended downtrends',
+    what: 'The weekly gate applies 0.40× suppression when weekly_rsi ≤ 38 AND trend down, regardless of how long the RSI dip has lasted. A stock with RSI dipping briefly to 37 for 2 bars (temporary weakness) gets the same suppression as one in a 30-bar confirmed downtrend. The 0.40× is also applied AFTER the compression cap — it cannot be rescued by the cap floor.',
+    fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
+  },
+
+  // ── Tier 69 — Refactoring & Tech Debt ─────────────────────────────────────────
+  {
+    id: 'TIER69-DEAD-CODE',
+    tier: 69, severity: 'low', defaultStatus: 'todo',
+    file: 'signal-engine/src/generators/signals.py',
+    effort: '1h',
+    impact: 'Low — dead code bloats reasons dict and creates confusion for future changes; removing improves maintainability',
+    title: 'Signal engine dead code cleanup: weekly_blend_applied flag + rsi_divergence_bullish key',
+    what: '(1) weekly_blend_applied flag always set to False — SA-18 (additive 15% weekly blend) was removed but the flag remains, bloating each signal\'s reasons dict by one key. (2) rsi_divergence_bullish in REASONS_MAP and mentioned in code comments but value never computed (always "none" due to H3/H4 bug). These create confusion when reading reasons dicts and signal audit logs.',
+    fix: 'Remove weekly_blend_applied flag entirely from reasons dict construction. Remove rsi_divergence_bullish from REASONS_MAP and any TA_WEIGHTS entry. Update comments to note divergence detection is pending rewrite. No functional change — purely cleanup.',
+  },
+  {
+    id: 'TIER69-GATE-BACKTEST',
+    tier: 69, severity: 'low', defaultStatus: 'todo',
+    file: 'signal-engine/src/api/routes.py',
+    effort: '1h',
+    impact: 'Low — /signals/gate_backtest endpoint simulates old removed conviction gate; confusing to have in production alongside the new sequential filter approach',
+    title: 'Remove or admin-gate the /signals/gate_backtest endpoint',
+    what: 'The /signals/gate_backtest endpoint (line 3429 in routes.py) simulates an old 8-layer conviction gate that was removed and replaced by sequential filters. Having this endpoint active in production implies the old gate is still the system\'s logic, which it is not. Any external tooling that calls this endpoint gets incorrect gate simulation.',
+    fix: 'Either: (1) Remove the endpoint entirely and add a comment documenting the migration to sequential filters, or (2) Add require_admin_jwt() dependency so it\'s only callable internally for historical comparison. Add a response header "X-Deprecated: true" to make the deprecation visible.',
+  },
+  {
+    id: 'TIER69-SIGNAL-DEDUP',
+    tier: 69, severity: 'low', defaultStatus: 'todo',
+    file: 'shared/db/models.py (signals table)',
+    effort: '1h',
+    impact: 'Low — duplicate signals possible if scheduler crashes mid-run; DB constraint is the correct enforcement layer',
+    title: 'Add UNIQUE constraint on signals table (stock_id, horizon, ts::date)',
+    what: 'Signal deduplication is checked in application code (within a single _bulk_persist call) but not enforced at the DB level. If the scheduler crashes mid-run, the next run can insert duplicate signals for the same stock+horizon+day. The signals/recent_changes endpoint uses window functions that assume at most one signal per stock+horizon per time period — duplicates would produce incorrect "change" pairs.',
+    fix: 'Add Alembic migration: CREATE UNIQUE INDEX IF NOT EXISTS uq_signals_stock_horizon_day ON signals (stock_id, horizon, date_trunc(\'day\', ts)). Handle IntegrityError in _bulk_persist with ON CONFLICT DO UPDATE SET signal=excluded.signal, confidence=excluded.confidence, ts=excluded.ts.',
+  },
+  {
+    id: 'TIER69-HEALTH-DASHBOARD',
+    tier: 69, severity: 'low', defaultStatus: 'todo',
+    file: 'services/api-gateway/src/api/routes.py · frontend/src/pages/admin.tsx',
+    effort: '3h',
+    impact: 'Low — currently no way to see which services are responding without running docker logs; health dashboard surfaces connectivity issues immediately',
+    title: 'Service health dashboard: GET /health/deep + admin UI service status grid',
+    what: 'No unified health check endpoint exists across all 11 services. Debugging inter-service issues requires manually checking docker logs per container. When the jose 401 bug affected signal-engine, it took hours to identify because there was no health surface showing "signal-engine auth is broken."',
+    fix: 'Add GET /health/deep to api-gateway: pings all 9 upstream services (/health endpoint) and returns latency + status for each. Cache for 30s. Frontend admin page: display service health grid (name, status dot green/yellow/red, last ping latency, last ping time). Alerts if any service returns non-200 or latency > 5s.',
+  },
 ];
 
 
@@ -6940,6 +7151,11 @@ const TIER_LABEL: Record<Tier, string> = {
   62: 'Tier 62 — UX + Monitoring Quick Wins (2026-06-20)',
   63: 'Tier 63 — Tier 11 Completion: Pattern Filter + Market Cap + Monte Carlo (2026-06-20)',
   64: 'Tier 64 — Deep System Quality Audit: 31 Confirmed Fixes (Security · ML · Scheduler · API · Frontend)',
+  65: 'Tier 65 — Deep Audit 2026-06-20: AI Signal · ML · Regime · Decision (6 Critical · 9 High · 11 Medium · 6 Low)',
+  66: 'Tier 66 — Critical Fixes: ML Wiring + Regime API + Paper Trading Gate + Signal Bugs',
+  67: 'Tier 67 — High Priority: Gate Transparency + ATR Stops + Kelly Sizing + Opportunities',
+  68: 'Tier 68 — ML & Regime: Feature Expansion + Auto-Retrain + Config-Driven Thresholds',
+  69: 'Tier 69 — Refactoring & Tech Debt: Dead Code + Health Dashboard + DB Constraint',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7007,6 +7223,11 @@ const TIER_COLOR: Record<Tier, string> = {
   62: '#38bdf8',
   63: '#c084fc',
   64: '#f59e0b',
+  65: '#ef4444',
+  66: '#f97316',
+  67: '#a78bfa',
+  68: '#38bdf8',
+  69: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

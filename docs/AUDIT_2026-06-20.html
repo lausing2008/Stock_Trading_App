@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StockAI — Deep System Audit 2026-06-20</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #060e1c; --bg2: #0a1628; --bg3: #0f1e35;
+    --border: #1e293b;
+    --text: #e2e8f0; --muted: #64748b; --dim: #334155;
+    --green: #22c55e; --yellow: #facc15; --orange: #f97316; --red: #ef4444;
+    --blue: #38bdf8; --indigo: #6366f1; --purple: #a78bfa; --teal: #34d399; --amber: #f59e0b;
+    --radius: 10px;
+  }
+  html { scroll-behavior: smooth; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; font-size: 14px; }
+  nav { position: sticky; top: 0; z-index: 100; background: rgba(6,14,28,0.97); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 0 20px; display: flex; align-items: center; overflow-x: auto; white-space: nowrap; }
+  nav a { display: inline-block; padding: 13px 13px; font-size: 11px; font-weight: 600; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; flex-shrink: 0; }
+  nav a:hover { color: var(--text); border-color: var(--indigo); }
+  .nav-brand { font-weight: 800; font-size: 13px; color: var(--text); padding: 13px 16px 13px 0; border-right: 1px solid var(--border); margin-right: 8px; flex-shrink: 0; }
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 26px; font-weight: 800; color: var(--text); letter-spacing: -0.02em; margin-bottom: 6px; }
+  h2 { font-size: 18px; font-weight: 800; color: var(--text); margin: 44px 0 16px; padding-top: 4px; }
+  h3 { font-size: 12px; font-weight: 700; color: var(--purple); text-transform: uppercase; letter-spacing: 0.08em; margin: 28px 0 10px; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 44px 0; }
+  .sev { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
+  .sev-critical { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.25); }
+  .sev-high { background: rgba(249,115,22,0.15); color: var(--orange); border: 1px solid rgba(249,115,22,0.25); }
+  .sev-medium { background: rgba(250,204,21,0.12); color: var(--yellow); border: 1px solid rgba(250,204,21,0.2); }
+  .sev-low { background: rgba(100,116,139,0.15); color: #94a3b8; border: 1px solid rgba(100,116,139,0.2); }
+  .sev-ok { background: rgba(34,197,94,0.1); color: var(--green); border: 1px solid rgba(34,197,94,0.2); }
+  .status { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 5px; font-size: 11px; font-weight: 700; }
+  .status-ok { background: rgba(34,197,94,0.08); color: var(--green); border: 1px solid rgba(34,197,94,0.18); }
+  .status-warn { background: rgba(250,204,21,0.08); color: var(--yellow); border: 1px solid rgba(250,204,21,0.18); }
+  .status-crit { background: rgba(239,68,68,0.08); color: var(--red); border: 1px solid rgba(239,68,68,0.18); }
+  .finding { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 10px; }
+  .finding-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+  .finding-title { font-weight: 700; font-size: 14px; color: var(--text); flex: 1; }
+  .finding-loc { font-family: monospace; font-size: 11px; color: var(--muted); background: var(--bg3); padding: 2px 7px; border-radius: 4px; margin-top: 4px; display: inline-block; }
+  .finding-body { color: #94a3b8; font-size: 13px; line-height: 1.55; }
+  .finding-fix { margin-top: 8px; padding: 8px 12px; background: rgba(34,197,94,0.05); border: 1px solid rgba(34,197,94,0.12); border-radius: 6px; font-size: 12px; color: #86efac; }
+  .finding-fix::before { content: '→ Fix: '; font-weight: 700; }
+  .svc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .svc-table th { padding: 8px 12px; text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); background: var(--bg); border-bottom: 1px solid var(--border); }
+  .svc-table td { padding: 9px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); vertical-align: top; }
+  .svc-table tr:last-child td { border-bottom: none; }
+  code { font-family: monospace; font-size: 11px; background: var(--bg3); padding: 1px 5px; border-radius: 3px; color: var(--purple); }
+  pre { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; font-family: monospace; font-size: 11px; color: #94a3b8; overflow-x: auto; margin: 8px 0; line-height: 1.6; }
+  .highlight { background: rgba(99,102,241,0.06); border: 1px solid rgba(99,102,241,0.18); border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 13px; color: #94a3b8; }
+  .highlight strong { color: var(--text); }
+  .warn-box { background: rgba(249,115,22,0.06); border: 1px solid rgba(249,115,22,0.18); border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 13px; color: #94a3b8; }
+  .crit-box { background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.18); border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 13px; color: #94a3b8; }
+  .ok-box { background: rgba(34,197,94,0.05); border: 1px solid rgba(34,197,94,0.15); border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 13px; color: #94a3b8; }
+  .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 16px 0; }
+  .summary-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
+  .summary-num { font-size: 28px; font-weight: 800; }
+  .summary-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .conn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; margin: 12px 0; }
+  .conn-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .conn-from { font-weight: 700; font-size: 12px; color: var(--text); margin-bottom: 6px; }
+  .conn-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); margin: 3px 0; }
+  .conn-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .tier-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 12px; }
+  .tier-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .tier-badge { padding: 4px 12px; border-radius: 6px; font-size: 11px; font-weight: 800; }
+  .tier-title { font-size: 15px; font-weight: 800; color: var(--text); }
+  .tier-item { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: #94a3b8; padding: 6px 10px; background: var(--bg3); border-radius: 6px; margin-bottom: 5px; }
+  .tier-item-num { flex-shrink: 0; font-weight: 800; color: var(--muted); min-width: 18px; }
+  .tier-item strong { color: var(--text); }
+  @media (max-width: 700px) { .summary-grid { grid-template-columns: repeat(2,1fr); } }
+</style>
+</head>
+<body>
+<nav>
+  <span class="nav-brand">StockAI Audit · 2026-06-20</span>
+  <a href="#summary">Summary</a>
+  <a href="#signal">AI Signal</a>
+  <a href="#ml">ML Pipeline</a>
+  <a href="#regime">Regime Engine</a>
+  <a href="#services">Services</a>
+  <a href="#decision">Decision Making</a>
+  <a href="#tier">Tier Plan</a>
+</nav>
+<main>
+
+<div style="margin-bottom:24px; padding-top:8px;">
+  <h1>Deep System Audit — AI Signal · ML · Regime · Decision Pipeline</h1>
+  <p style="color:var(--muted); font-size:13px; margin-top:4px;">Full read of all 11 microservices + signal generation + ML pipeline + decision-making · 2026-06-20</p>
+</div>
+
+<section id="summary">
+<div class="summary-grid">
+  <div class="summary-card"><div class="summary-num" style="color:var(--red);">6</div><div class="summary-label">Critical</div></div>
+  <div class="summary-card"><div class="summary-num" style="color:var(--orange);">9</div><div class="summary-label">High</div></div>
+  <div class="summary-card"><div class="summary-num" style="color:var(--yellow);">11</div><div class="summary-label">Medium</div></div>
+  <div class="summary-card"><div class="summary-num" style="color:var(--muted);">6</div><div class="summary-label">Low / Refactor</div></div>
+</div>
+<div class="ok-box"><strong>Architecture is sound.</strong> Async fan-outs, Redis caching, JWT auth between services — the microservice topology is well-designed and most services are individually correct. The signal pipeline produces real edge with sophisticated pillar architecture, multi-style generation, and comprehensive reasons tracking.</div>
+<div class="crit-box">
+  <strong>Six critical gaps found:</strong><br>
+  (1) <strong>ML predictions never reach signal-engine</strong> — the most expensive compute asset is trained but bypassed.<br>
+  (2) <strong>Regime engine locked in decision-engine</strong> — not reusable by signal-engine, research-engine, or portfolio-optimizer.<br>
+  (3) <strong>RSI divergence hard-disabled</strong> while its TA weights remain — silent dead weight corrupting signal calibration.<br>
+  (4) <strong>SWING pre-earnings compression</strong> makes BUY mathematically impossible even for reliable beaters.<br>
+  (5) <strong>Paper trading bypasses the conviction gate</strong> — enters trades the gate explicitly rejects.<br>
+  (6) <strong>STYLE_PARAMS mismatch</strong> between Decision Engine and Paper Trading (SWING stop: 8.8% vs 5.5%).
+</div>
+</section>
+
+<hr>
+
+<!-- SIGNAL ENGINE -->
+<section id="signal">
+<h2>AI Signal Engine Audit</h2>
+<p style="color:var(--muted);font-size:13px;margin-bottom:18px;">Path: <code>services/signal-engine/src/generators/signals.py</code></p>
+
+<h3>Architecture</h3>
+<div class="highlight">Signal generation uses a 4-pillar TA score (Trend 35% · Momentum 25% · Volume 20% · Structure 20%), fused with ML probability via a dynamic weight (0–75% based on AUC). Multi-timeframe confirmation (weekly RSI/MACD/trend) boosts or compresses the result. 12+ sequential suppression filters apply per-style multipliers. Four style profiles (SHORT/SWING/LONG/GROWTH) share one data-fetch pass with different thresholds.</div>
+
+<h3>Critical Bugs</h3>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">RSI Divergence Hard-Disabled — Dead Weight in TA Calibration</div><div class="finding-loc">signals.py:852</div></div><span class="sev sev-critical">CRITICAL</span></div>
+  <div class="finding-body"><code>rsi_divergence = "none"</code> is set unconditionally — the detection logic was disabled when a bug was found (argmax comparing timing indices instead of RSI levels). But <code>"rsi_divergence_bullish"</code> remains in REASONS_MAP and TA_WEIGHTS. Its weight is drawn from the calibration but its contribution is always zero. This silently corrupts the TA score calibration by allocating probability mass to a feature that never fires.</div>
+  <div class="finding-fix">Remove <code>rsi_divergence_bullish</code> from REASONS_MAP and TA_WEIGHTS; redistribute its weight to MACD momentum. Then rewrite divergence detection to compare RSI values at confirmed swing highs/lows (not argmax index positions).</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">SWING Pre-Earnings Compression Makes BUY Mathematically Impossible</div><div class="finding-loc">signals.py:1093</div></div><span class="sev sev-critical">CRITICAL</span></div>
+  <div class="finding-body">SWING earnings compression thresholds: <code>{2: 0.50, 5: 0.75, 10: 0.90}</code>. SWING buy_threshold: <code>0.67</code>. A borderline signal at <code>fused = 0.70</code> with earnings in 2 days: <code>0.70 × 0.50 = 0.35</code> — fails threshold. The beat-rate scaling (up to ×2.0) restores to 0.70 at best, never generating new BUY. Reliable earnings beaters are silently blocked from SWING signals in 2-day windows.</div>
+  <div class="finding-fix">Raise SWING earnings thresholds to <code>{2: 0.65, 5: 0.85, 10: 0.95}</code>. Validate against 90 days of SWING outcomes in pre-earnings windows.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Stale Price Tolerance: Code 5 Days vs Comment 3 Days</div><div class="finding-loc">signals.py:1707</div></div><span class="sev sev-high">HIGH</span></div>
+  <div class="finding-body"><code>if days_old &gt; 5</code> marks data stale. Comment says "3 calendar days." Signals can be computed on 4–5 day old bars and published without the 0.60× suppression being applied.</div>
+  <div class="finding-fix">Change to <code>if days_old &gt; 3</code>. Add a log warning at <code>days_old &gt; 1</code> so stale data is visible before hitting the threshold.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">ML Model Age Not Tracked — Stale Models at Full Weight</div><div class="finding-loc">signals.py:242</div></div><span class="sev sev-high">HIGH</span></div>
+  <div class="finding-body">Signal-engine uses <code>ml_test_auc</code> to determine ML weight (up to 0.65–0.75× of fusion). No check on when the model was retrained. A 45-day-old model with AUC 0.72 gets full weight as one retrained yesterday. Market regimes shift; stale models may confidently predict the wrong direction.</div>
+  <div class="finding-fix">Add <code>model_retrain_date</code> to ML prediction response. Compute <code>model_age_days</code> in signal-engine; apply exponential decay: full weight at 0–7d, 80% at 14d, 50% at 30d, 20% at 60d. Log when age &gt; 21 days.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Weekly Gate Post-Compression Cap Cannot Be Rescued</div><div class="finding-loc">signals.py:1654</div></div><span class="sev sev-high">HIGH</span></div>
+  <div class="finding-body">The 0.40× weekly gate (weekly_rsi ≤ 38 AND trend down) fires after the compression cap. All other filters respect the cap (min 55% floor for SWING), but the weekly gate bypasses it — a signal at the cap floor is then crushed to ~22% of original. Undocumented; may over-suppress during temporary RSI dips in otherwise healthy stocks.</div>
+  <div class="finding-fix">If RSI dip is recent (&lt;5 bars), apply 0.65× instead of 0.40×. If confirmed weekly downtrend &gt;20 bars, keep full 0.40×. Store <code>weekly_gate_reason</code> (brief_dip vs extended_downtrend) in reasons.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">No Conviction Gate — Sequential Filters Replace Coherent Scoring</div><div class="finding-loc">signals.py:1244</div></div><span class="sev sev-medium">MEDIUM</span></div>
+  <div class="finding-body">The original 8-layer Conviction Gate has been replaced by sequential probability multipliers. No unified gate boolean exists. The frontend Gate UI (FULL/NEAR/FAILED) reconstructs state from the reasons dict on the fly — it may not match backend suppression state if reasons format changes.</div>
+  <div class="finding-fix">Add <code>conviction_layers</code> dict to signal reasons (PASS/SOFT/FAIL per check + actual value) and <code>gate_score</code> (e.g. 6/8 PASS). Frontend reads directly rather than reconstructing.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">S/R Levels Not Weighted by Touch Count</div><div class="finding-loc">signals.py — _sr_context()</div></div><span class="sev sev-medium">MEDIUM</span></div>
+  <div class="finding-body">S/R context applies ±0.05 adjustment equally to all levels. A level touched once gets the same weight as one touched 5 times. Institutional levels (tested repeatedly) carry far more significance.</div>
+  <div class="finding-fix">Cluster nearby levels within 0.5%. Weight by touch count: 1 touch=±0.03, 2=±0.05, 3+=±0.08.</div>
+</div>
+
+<h3>Hardcoded Magic Numbers (Should Be Config-Driven)</h3>
+<table class="svc-table">
+  <thead><tr><th>Value</th><th>File:Line</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>0.05, 0.95</code></td><td>signals.py:1279</td><td>ML probability soft-cap bounds</td></tr>
+    <tr><td><code>0.35, 0.25</code></td><td>signals.py:1294–1301</td><td>ML/TA disagreement thresholds</td></tr>
+    <tr><td><code>45, 65</code></td><td>signals.py:954, 1012</td><td>RSI sweet-spot range</td></tr>
+    <tr><td><code>0.015</code></td><td>signals.py:669</td><td>S/R proximity detection (1.5%)</td></tr>
+    <tr><td><code>0.40</code></td><td>signals.py:1394</td><td>Market breadth floor</td></tr>
+    <tr><td><code>75</code></td><td>signals.py:1669</td><td>Weekly RSI overbought gate</td></tr>
+    <tr><td><code>20</code></td><td>signals.py:1776</td><td>Pattern recency decay (bars)</td></tr>
+    <tr><td><code>10, 25, 90</code></td><td>signals.py:1142–1145</td><td>Outcome hold days per horizon</td></tr>
+  </tbody>
+</table>
+
+<h3>Style Profile Summary</h3>
+<table class="svc-table">
+  <thead><tr><th>Style</th><th>ML Cap</th><th>Buy Threshold (Bull)</th><th>ADX Min</th><th>Weekly Boost</th><th>Earnings Compress</th></tr></thead>
+  <tbody>
+    <tr><td>SHORT</td><td>0.30</td><td>0.63</td><td>27</td><td>1.08×</td><td>None</td></tr>
+    <tr><td>SWING</td><td>0.65</td><td>0.67</td><td>15</td><td>1.12×</td><td>{2: 0.50, 5: 0.75, 10: 0.90} ← BUG</td></tr>
+    <tr><td>LONG</td><td>0.45</td><td>0.60</td><td>None</td><td>1.18×</td><td>None</td></tr>
+    <tr><td>GROWTH</td><td>0.70</td><td>0.60</td><td>12</td><td>1.08×</td><td>{2: 0.60, 5: 0.80, 10: 0.92}</td></tr>
+  </tbody>
+</table>
+
+<div class="ok-box"><strong>What's working well:</strong> Pillar architecture prevents double-counting correlated indicators. Single data-fetch shared across 4 styles is efficient. Comprehensive ~180-key reasons dict is fully auditable. /filter_audit endpoint validates each filter's actual predictive edge — rare capability. Earnings beat-rate scaling (SA-7) is sophisticated. ML/TA disagreement dampening (graduated 25–50% weight reduction) is mathematically sound.</div>
+</section>
+
+<hr>
+
+<!-- ML PIPELINE -->
+<section id="ml">
+<h2>ML Prediction Pipeline Audit</h2>
+<p style="color:var(--muted);font-size:13px;margin-bottom:18px;">Path: <code>services/ml-prediction/src/</code></p>
+
+<div class="ok-box"><strong>Architecture score: 9/10 — Production-grade with excellent anti-leakage and overfitting controls.</strong> Zero look-ahead bias confirmed. TimeSeriesSplit(5) + four-way temporal split (70/80/90/100%) prevents all data contamination. Probability calibration on isolated holdout set. Blended sample weights (recency × balanced class). Overfitting detection (CV-test AUC gap &gt; 0.10 triggers suppression). Multi-model ensemble XGBoost (40%) + LightGBM (35%) + RandomForest (25%) with dynamic weighting.</div>
+
+<div class="warn-box"><strong>Documentation discrepancy:</strong> Code lists 22 features but actual <code>FEATURE_COLUMNS</code> contains 46 features: 28 technical (momentum, volatility, trend, oscillators, volume), 8 macro (SPY returns, VIX, regime flags), 10 fundamental (revenue growth, ROE, FCF yield, P/B, D/E).</div>
+
+<h3>Issues Found</h3>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">ML Output Never Flows into Signal Generation</div><div class="finding-loc">market-data/scheduler.py · signal-engine/signals.py:242</div></div><span class="sev sev-critical">CRITICAL</span></div>
+  <div class="finding-body">Signal-engine reads <code>ml_probability</code> from a Redis cache key it expects market-data to populate. But market-data's scheduler has no task calling <code>POST /ml/predict_ensemble_three</code>. The cache is never populated. Signal-engine's ML fusion may be using empty or stale data for most symbols — effectively running as TA-only for the majority of the stock universe. The ML service is trained, tuned, and running but disconnected from the main signal pipeline.</div>
+  <div class="finding-fix">Add daily batch task in market-data scheduler: for each tracked symbol × 4 styles, call <code>POST /ml/predict_ensemble_three</code> and write result to <code>ml:pred:{symbol}:{style}</code> in Redis (TTL 28h). Signal-engine reads from this key. Or: have signal-engine call ml-prediction directly (async, 5s timeout) with Redis fallback.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">LSTM Model Incomplete — Returns 0.5 for Short Histories</div><div class="finding-loc">ml-prediction/src/models/lstm.py</div></div><span class="sev sev-medium">MEDIUM</span></div>
+  <div class="finding-body">The LSTM model stub returns <code>0.5</code> (coin flip) when sequence length &lt; minimum. It is registered in the model registry but contributes noise to any ensemble that includes it. No LSTM training pipeline exists; it's a placeholder.</div>
+  <div class="finding-fix">Remove LSTM from the model registry entirely until fully implemented. Its 0.5 return dilutes ensemble signal on short histories.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Missing Market Regime Features in ML Training</div><div class="finding-loc">ml-prediction/src/features/builder.py</div></div><span class="sev sev-medium">MEDIUM</span></div>
+  <div class="finding-body">Features include SPY returns and VIX level but not: yield curve spread (10Y-2Y), credit spreads, sector momentum relative to market, or trend regime classification (up/down/range-bound). These macro context features are strong predictors of which signals are reliable vs unreliable.</div>
+  <div class="finding-fix">Add: (1) <code>yield_curve_spread</code> = 10Y - 2Y treasury spread, (2) <code>sector_rs_rank</code> = sector ETF RS percentile, (3) <code>regime_class</code> from the decision-engine regime endpoint (once exposed), (4) <code>vol_ratio_5d20d</code> (already computed in ranking-engine, add to ML features), (5) <code>earnings_days_away</code> and <code>beat_rate</code>.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">No Auto-Retraining When Model Goes Stale</div><div class="finding-loc">ml-prediction/src/api/routes.py · market-data scheduler</div></div><span class="sev sev-medium">MEDIUM</span></div>
+  <div class="finding-body">Models are retrained on-demand via <code>POST /ml/tune_all</code>. No automatic trigger exists when model_age exceeds a threshold. In production, models can go 30–60+ days without retraining if the operator forgets the manual tune.</div>
+  <div class="finding-fix">Add weekly check in market-data scheduler: if <code>model_retrain_date</code> for any style &gt; 21 days, trigger <code>POST /ml/tune_all?styles={stale_styles}</code> automatically. Notify via log + admin alert.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Hardcoded Train/Test Split Ratios</div><div class="finding-loc">ml-prediction/src/training/trainer.py</div></div><span class="sev sev-low">LOW</span></div>
+  <div class="finding-body">Four-way temporal split is hardcoded at 70/80/90/100%. These should be configurable, especially as more data accumulates. The calibration set (90–100%) may shrink if the total dataset grows and 10% becomes too small for isotonic regression.</div>
+  <div class="finding-fix">Move split ratios to <code>ml_config.json</code> alongside other tuning parameters. Add minimum calibration set size check (at least 200 samples).</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Survivorship Bias Adjustment Is Intuition-Based, Not Validated</div><div class="finding-loc">ml-prediction/src/training/trainer.py</div></div><span class="sev sev-low">LOW</span></div>
+  <div class="finding-body">A +3pp precision adjustment for survivorship bias is applied to performance metrics. This is noted in comments as intuition-based. The actual survivorship bias impact depends on the proportion of delisted stocks in the training universe, which is not measured.</div>
+  <div class="finding-fix">Track <code>SignalOutcome</code> (actual forward returns) per symbol in production. Use real outcomes to measure and calibrate the adjustment empirically rather than applying a fixed +3pp.</div>
+</div>
+
+<div class="ok-box"><strong>What's working well:</strong> Zero look-ahead bias across all 46 features confirmed. TimeSeriesSplit prevents temporal leakage. Probability calibration (IsotonicRegression ≥300 samples, LogisticRegression &lt;300, graceful fallback) is industry-standard. Optuna tuning with MedianPruner and 9-parameter search space is thorough. Atomic persistence via tempfile + os.replace() prevents model corruption on restart. Overfitting detection via CV-test AUC gap is a strong guard. Multi-model ensemble with dynamic weighting and agreement detection is sophisticated.</div>
+</section>
+
+<hr>
+
+<!-- REGIME ENGINE -->
+<section id="regime">
+<h2>Regime Engine Audit</h2>
+<p style="color:var(--muted);font-size:13px;margin-bottom:18px;">Path: <code>services/decision-engine/src/api/core/regime.py</code> (embedded — no standalone service)</p>
+
+<div class="crit-box"><strong>There is no regime-engine service.</strong> Regime detection is embedded exclusively inside the decision-engine with a local 4-hour cache. No HTTP endpoint exposes it. No other service can access it. Signal-engine, research-engine, and portfolio-optimizer each implement their own simplified regime proxies — creating inconsistent regime state across services.</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Regime Logic Locked in Decision-Engine — Not Accessible by Any Other Service</div><div class="finding-loc">decision-engine/src/api/core/regime.py:24–198</div></div><span class="sev sev-critical">CRITICAL</span></div>
+  <div class="finding-body">The regime computation (lines 61–198) classifies markets as bull/bear/choppy/risk_off/neutral using SPY EMAs, VIX level, IWM/MDY breadth — comprehensive and correct. But it lives inside decision-engine with no HTTP endpoint. Signal-engine checks Fear &amp; Greed separately. Research-engine has no regime context. Portfolio-optimizer has no regime-aware position limits. The system can simultaneously show "Bull" in research and "choppy" in signal suppression filters.</div>
+  <div class="finding-fix">Add <code>GET /decide/regime?market=US|HK</code> to decision-engine. Cache result in Redis under <code>regime:{market}</code> with 30-min TTL when VIX &gt; 20, 4h otherwise. Signal-engine replaces Fear &amp; Greed check with this endpoint. Research-engine quotes regime in reports. Portfolio-optimizer adjusts position limits by regime state.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Signal Engine and Decision Engine Have Inconsistent Regime State</div><div class="finding-loc">signals.py — market_regime fetch vs regime.py</div></div><span class="sev sev-high">HIGH</span></div>
+  <div class="finding-body">Signal-engine applies <code>high_vol_regime</code> (Fear &amp; Greed &lt; 30) and <code>market_breadth</code> (&lt;40%) independently. Decision-engine uses a 5-state regime based on SPY EMAs, VIX, and small-cap breadth. A signal can be generated under "normal" conditions and then blocked by decision-engine operating in "risk_off" — confusing to diagnose.</div>
+  <div class="finding-fix">Once regime endpoint is exposed: signal-engine calls it and stores <code>market_regime</code> in reasons dict. All downstream decisions (alerts, paper trading, game plan) reference the same regime.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Portfolio-Optimizer Has No Regime-Aware Position Limits</div><div class="finding-loc">portfolio-optimizer/src/api/routes.py</div></div><span class="sev sev-medium">MEDIUM</span></div>
+  <div class="finding-body">All 4 optimization methods (Mean-Variance, Risk Parity, HRP, AI Allocation) have no regime check. In bear or risk_off regimes, the optimizer may still recommend full allocation to volatile stocks.</div>
+  <div class="finding-fix">After exposing regime endpoint: apply regime multiplier to max position limits: bull=1.0, choppy=0.75, bear=0.60, risk_off=0.50. Return applied multiplier in optimization response.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">4-Hour Regime Cache Misses Intraday VIX Spikes</div><div class="finding-loc">regime.py:14</div></div><span class="sev sev-medium">MEDIUM</span></div>
+  <div class="finding-body">VIX can spike 30%+ intraday. A spike from 15 to 35 at market open may not change the regime classification for up to 4 hours. Signals generated during this window use pre-spike (bull) thresholds.</div>
+  <div class="finding-fix">Conditional cache TTL: <code>ttl = 30*60 if vix &gt; 20 else 4*60*60</code>. Implement as part of the shared Redis cache once regime endpoint is exposed.</div>
+</div>
+</section>
+
+<hr>
+
+<!-- SERVICES MAP -->
+<section id="services">
+<h2>Inter-Service Connectivity Audit</h2>
+<p style="color:var(--muted);font-size:13px;margin-bottom:18px;">11 microservices · All connections mapped · Missing links identified</p>
+
+<table class="svc-table">
+  <thead><tr><th>Service</th><th>Status</th><th>Issues</th><th>Port</th></tr></thead>
+  <tbody>
+    <tr><td><strong>api-gateway</strong></td><td><span class="status status-ok">✓ Healthy</span></td><td>None — routes all 9 upstreams, JWT + Redis blacklist correct</td><td>8000</td></tr>
+    <tr><td><strong>market-data</strong></td><td><span class="status status-warn">⚠ Gap</span></td><td>Never calls ml-prediction — signal-engine has no ML data in cache</td><td>8001</td></tr>
+    <tr><td><strong>signal-engine</strong></td><td><span class="status status-warn">⚠ Gap</span></td><td>No direct ML calls; reads from empty Redis cache</td><td>8005</td></tr>
+    <tr><td><strong>ranking-engine</strong></td><td><span class="status status-ok">✓ Healthy</span></td><td>None — K-Score weights verified to sum to 100%</td><td>8002</td></tr>
+    <tr><td><strong>ml-prediction</strong></td><td><span class="status status-crit">⚠ Underused</span></td><td>Trained, tuned, running — but predictions not flowing to signal-engine</td><td>8003</td></tr>
+    <tr><td><strong>technical-analysis</strong></td><td><span class="status status-ok">✓ Healthy</span></td><td>None — correct indicators, patterns, S/R levels</td><td>8006</td></tr>
+    <tr><td><strong>research-engine</strong></td><td><span class="status status-warn">⚠ Auth Bug</span></td><td>Calls signal-engine without Bearer token — potential 401 silent fail</td><td>8008</td></tr>
+    <tr><td><strong>decision-engine</strong></td><td><span class="status status-warn">⚠ Isolated</span></td><td>Regime logic not exposed as API — unusable by other services</td><td>8009</td></tr>
+    <tr><td><strong>portfolio-optimizer</strong></td><td><span class="status status-ok">✓ Healthy</span></td><td>No regime access (blocked by regime isolation issue)</td><td>8007</td></tr>
+    <tr><td><strong>strategy-engine</strong></td><td><span class="status status-ok">✓ Healthy</span></td><td>None — isolated, single responsibility</td><td>8004</td></tr>
+  </tbody>
+</table>
+
+<h3>Critical Missing Links</h3>
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Research-Engine Calls Signal-Engine Without Auth — Silent 401 Possible</div><div class="finding-loc">research-engine/src/api/routes.py:74</div></div><span class="sev sev-high">HIGH</span></div>
+  <div class="finding-body">Research-engine calls <code>GET /signals/{symbol}</code> without a Bearer token. If signal-engine enforces auth on this endpoint (per CLAUDE.md connectivity invariants), this returns 401 silently — research reports are generated without signal data, producing less accurate recommendations.</div>
+  <div class="finding-fix">Add <code>_svc_token()</code> to research-engine (same JWT pattern as signal-engine/decision-engine) and pass Bearer token on all calls to signal-engine.</div>
+</div>
+
+<h3>Service Data Flow</h3>
+<pre>
+Market Data (prices, fundamentals, broker data)
+     ↓
+Signal Engine → (4 pillars: Trend/Momentum/Volume/Structure + ML fusion)
+     ↓
+Decision Engine → (regime check + signal + research → verdict + game plan)
+     ↓
+Paper Trading / Portfolio / Alerts
+
+Ranking Engine ← (TA patterns, fundamentals) → K-Score Leaderboard
+Research Engine ← (signal, TA, fundamentals, ranking) → AI Research Report
+ML Prediction ← (trained on prices + macro + fundamentals) → [NOT CONNECTED to signal pipeline]
+Portfolio Optimizer ← (prices, K-Scores) → Allocation [NO REGIME INPUT]
+</pre>
+</section>
+
+<hr>
+
+<!-- DECISION MAKING -->
+<section id="decision">
+<h2>Decision-Making Pipeline Audit</h2>
+<p style="color:var(--muted);font-size:13px;margin-bottom:18px;">Conviction gate · Game plan · Paper trading · Kelly sizing · Opportunities · Alerts</p>
+
+<h3>Critical Bugs</h3>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Paper Trading Bypasses Conviction Gate — Uses Different _should_enter() Logic</div><div class="finding-loc">market-data/src/services/scheduler.py:516–673</div></div><span class="sev sev-critical">CRITICAL</span></div>
+  <div class="finding-body">The conviction gate (<code>_is_conviction_buy()</code>) in the scheduler has 5 layers and produces verdicts for decisions. But paper trading uses a separate <code>_should_enter()</code> function that reimplements gate logic inline with different thresholds. Paper trades can enter positions that the conviction gate explicitly rejected. Decision-engine is run in "shadow mode" and its verdicts are logged but not used by paper trading.</div>
+  <div class="finding-fix">Replace <code>_should_enter()</code> in paper trading with a call to the decision-engine verdict. If decision-engine verdict is BUY (not SKIP/BLOCKED/HOLD), enter. Shadow mode should not be shadow — it should be the authority. Remove the inline reimplementation.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">STYLE_PARAMS Mismatch — Decision Engine vs Paper Trading Have Different Stop %</div><div class="finding-loc">decision-engine/src/ vs market-data/src/services/scheduler.py</div></div><span class="sev sev-critical">CRITICAL</span></div>
+  <div class="finding-body">Decision engine SWING stop: <strong>8.8%</strong>. Paper trading SWING stop: <strong>5.5%</strong>. Same style, different risk parameters. Game plans generated by decision-engine are inconsistent with what paper trading actually executes. Win rate statistics from paper trading cannot be applied to decision-engine recommendations.</div>
+  <div class="finding-fix">Create a single shared <code>STYLE_PARAMS</code> config (JSON or common/ module). Both services import from the same source. Any parameter change updates both simultaneously.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Game Plan Uses Fixed % Stops — No ATR or S/R Levels</div><div class="finding-loc">decision-engine/src/api/routes.py</div></div><span class="sev sev-high">HIGH</span></div>
+  <div class="finding-body">Stop loss in the decision-engine game plan is a fixed percentage from entry price (SWING: 8.8%). No ATR-based stops (which adapt to each stock's volatility) and no support/resistance level alignment (which is where institutional players actually place stops). Paper trading uses ATR-based stops — creating another STYLE_PARAMS mismatch and poor stop placement in practice.</div>
+  <div class="finding-fix">Use ATR-based stops: <code>stop = entry - (2.0 × ATR_14)</code>. Also check nearest support level — use the higher of ATR-stop or nearest support (within 5%) as the stop price. This ensures stops are placed at meaningful technical levels.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Kelly Criterion Not Used — Fixed 1% Risk Per Trade</div><div class="finding-loc">decision-engine/src/api/routes.py · scheduler.py</div></div><span class="sev sev-high">HIGH</span></div>
+  <div class="finding-body">Position sizing uses fixed 1% risk per trade throughout. Kelly Criterion is referenced in the frontend (ML panel) but not computed by any backend service. For a strategy with 55% win rate and 2:1 R:R, optimal Kelly is ~10%, half-Kelly is 5% — systematically undersizing winners. Historical closed trades are available in paper trading but not used for Kelly calibration.</div>
+  <div class="finding-fix">Implement Kelly per-style from closed paper trades: <code>kelly_f = win_rate - (1 - win_rate) / rr_ratio</code>. Use quarter-Kelly for live sizing. The signal-engine already computes confidence — use it to scale position: high-confidence BUY at 3% risk, medium at 2%, low at 1%.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Opportunities Page Does Not Filter by Conviction Gate</div><div class="finding-loc">frontend/src/pages/opportunities.tsx</div></div><span class="sev sev-medium">MEDIUM</span></div>
+  <div class="finding-body">Opportunities tabs (Swing, Short-Term, Long-Term, Growth, Confluence) rank stocks by signal and K-Score but do not filter by conviction gate status (FULL/NEAR/FAILED). A stock with Gate FAILED appears identically to one with Gate FULL — users don't know which are actually actionable.</div>
+  <div class="finding-fix">Add gate status to the opportunities API response. In the Confluence tab especially, filter to Gate FULL only. In other tabs, show gate status badge (FULL / NEAR / —) on each card and allow filtering.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Conviction Gate Not Exposed to Frontend — Users Can't See Which Layers Failed</div><div class="finding-loc">scheduler.py:516–673 · stock/[symbol].tsx</div></div><span class="sev sev-medium">MEDIUM</span></div>
+  <div class="finding-body">The conviction gate runs 5 checks (K-Score, uptrend, RSI bounds, MACD momentum, OBV trend) in the scheduler but does not return which layers passed or failed. The stock detail page shows FULL/NEAR/FAILED but cannot show WHY. Users have no way to understand what needs to change for a NEAR to become FULL.</div>
+  <div class="finding-fix">Return <code>conviction_layers</code> in signal response: each layer stores PASS/FAIL + actual value (e.g., <code>{"rsi": {"status": "PASS", "value": 58.3, "threshold": [35, 75]}}</code>). Frontend renders a mini gate breakdown showing each layer's status — turns the Gate from a black box into a diagnostic tool.</div>
+</div>
+
+<div class="finding">
+  <div class="finding-header"><div><div class="finding-title">Alert Emails Don't Show Gate Status or Suppression Reason</div><div class="finding-loc">market-data/src/services/scheduler.py — check_signal_alerts()</div></div><span class="sev sev-low">LOW</span></div>
+  <div class="finding-body">Signal change emails (▲ Upgrade / ▼ Downgrade) don't include the gate status (FULL/NEAR/FAILED) or key suppression conditions. Users can't act on an alert without opening the app to check if the trade is actually clean.</div>
+  <div class="finding-fix">Include gate status and top 2 suppression conditions (if any) in the email body: "SWING BUY — Gate: NEAR (Weekly misalignment, RSI 71 — near overbought). Confidence: 64%." This alone saves a round-trip to the app for each alert.</div>
+</div>
+
+<div class="ok-box"><strong>What's working well:</strong> Decision-engine async fan-out (signal + research in parallel) prevents timeouts. Hard reject logic (regime, research gating, portfolio limits) is comprehensive. Position scoring (4-point scale) is clear and auditable. Service JWT auth between decision-engine and its upstreams is correct. Paper trading tracks trade history and generates closed trade statistics.</div>
+</section>
+
+<hr>
+
+<!-- TIER PLAN -->
+<section id="tier">
+<h2>Tier 65–69 — Action Plan</h2>
+<p style="color:var(--muted);font-size:13px;margin-bottom:18px;">All action items prioritized by profitability impact. Grouped into implementation phases.</p>
+
+<h3>Phase A — Critical (Tier 66)</h3>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(239,68,68,0.15);color:var(--red);">A-1 · CRITICAL</span><span class="tier-title">Wire ML Predictions into Signal Pipeline</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Market-data scheduler: daily batch call <code>POST /ml/predict_ensemble_three</code> for all symbols × 4 styles → cache in Redis <code>ml:pred:{symbol}:{style}</code></div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>Signal-engine reads from Redis cache (TTL 28h); falls back to direct ML call (async, 5s timeout) if cache miss</div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>Add <code>model_retrain_date</code> to ML response; signal-engine applies age decay (50% weight at 30 days)</div></div>
+</div>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(239,68,68,0.15);color:var(--red);">A-2 · CRITICAL</span><span class="tier-title">Expose Regime as Shared API</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Add <code>GET /decide/regime?market=US|HK</code> to decision-engine; cache in Redis <code>regime:{market}</code></div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>Signal-engine replaces Fear &amp; Greed check with regime endpoint; stores <code>market_regime</code> in reasons</div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>Portfolio-optimizer applies regime position multiplier (bull=1.0, choppy=0.75, bear=0.60, risk_off=0.50)</div></div>
+  <div class="tier-item"><span class="tier-item-num">4.</span><div>Reduce VIX-sensitive cache to 30 min when VIX &gt; 20</div></div>
+</div>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(239,68,68,0.15);color:var(--red);">A-3 · CRITICAL</span><span class="tier-title">Fix Paper Trading Gate Bypass + STYLE_PARAMS Mismatch</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Replace <code>_should_enter()</code> in paper trading with decision-engine verdict (BUY = enter, SKIP/BLOCKED = skip)</div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>Create shared <code>STYLE_PARAMS</code> config (JSON); both decision-engine and paper trading import from it</div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>Align SWING stop: resolve 8.8% vs 5.5% discrepancy; validate against historical closed trade win rates</div></div>
+</div>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(239,68,68,0.15);color:var(--red);">A-4 · CRITICAL</span><span class="tier-title">Fix Signal Engine Bugs</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Remove <code>rsi_divergence_bullish</code> from REASONS_MAP + TA_WEIGHTS; redistribute weight to MACD momentum</div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>Raise SWING earnings thresholds: <code>{2: 0.65, 5: 0.85, 10: 0.95}</code></div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>Fix stale price threshold: <code>days_old &gt; 5</code> → <code>days_old &gt; 3</code></div></div>
+</div>
+
+<h3>Phase B — High Priority (Tier 67)</h3>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(249,115,22,0.15);color:var(--orange);">B-1 · HIGH</span><span class="tier-title">Conviction Gate Transparency + Game Plan Quality</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Add <code>conviction_layers</code> dict to signal reasons (PASS/SOFT/FAIL per check + actual value + threshold)</div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>Frontend stock detail gate breakdown: show each layer's status — turns Gate from black box to diagnostic</div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>Switch decision-engine game plan to ATR-based stops: <code>stop = entry − 2.0 × ATR_14</code>, aligned to nearest support</div></div>
+  <div class="tier-item"><span class="tier-item-num">4.</span><div>Implement Kelly position sizing: <code>kelly_f</code> calibrated from closed paper trades per style; use quarter-Kelly</div></div>
+</div>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(249,115,22,0.15);color:var(--orange);">B-2 · HIGH</span><span class="tier-title">Research-Engine Auth Fix + Opportunities Gate Filter</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Add <code>_svc_token()</code> to research-engine; pass Bearer token on all signal-engine and auth-protected calls</div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>Opportunities page Confluence tab: filter to Gate FULL only</div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>All opportunity cards: show gate status badge (FULL / NEAR / —)</div></div>
+  <div class="tier-item"><span class="tier-item-num">4.</span><div>Alert emails: include gate status + top 2 suppression conditions in email body</div></div>
+</div>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(249,115,22,0.15);color:var(--orange);">B-3 · HIGH</span><span class="tier-title">S/R Touch-Count Weighting + MACD Divergence</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Cluster S/R levels within 0.5%; weight by touch count: 1=±0.03, 2=±0.05, 3+=±0.08 adjustment to fused prob</div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>MACD histogram divergence: price at 20-bar high + MACD peak lower than prior peak → bearish divergence → 0.85× suppressor</div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>Weekly gate: brief RSI dip (&lt;5 bars) → 0.65× instead of 0.40×; confirmed downtrend (&gt;20 bars) → 0.40×</div></div>
+</div>
+
+<h3>Phase C — ML &amp; Regime Enhancements (Tier 68)</h3>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(250,204,21,0.12);color:var(--yellow);">C-1 · MEDIUM</span><span class="tier-title">ML Feature Expansion + Auto-Retraining</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Add features: regime classification, vol_ratio_5d20d, earnings_days_away, beat_rate, sector_rs_rank, yield_curve_spread</div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>Remove LSTM from model registry until fully implemented</div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>Auto-retraining: market-data weekly check triggers tune_all if any style model_age &gt; 21 days</div></div>
+  <div class="tier-item"><span class="tier-item-num">4.</span><div>Move train/test splits to <code>ml_config.json</code>; add minimum calibration set size check (200 samples)</div></div>
+</div>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(250,204,21,0.12);color:var(--yellow);">C-2 · MEDIUM</span><span class="tier-title">Config-Driven Signal Thresholds</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Create <code>signal_thresholds.json</code> with all 20+ hardcoded values</div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>Hot-reload via <code>POST /signals/reload_config</code> (admin-only) — no redeploy needed to tune thresholds</div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>Admin page: show current thresholds + last-modified date</div></div>
+</div>
+
+<h3>Phase D — Refactoring (Tier 69)</h3>
+
+<div class="tier-card">
+  <div class="tier-header"><span class="tier-badge" style="background:rgba(100,116,139,0.15);color:#94a3b8;">D · REFACTOR</span><span class="tier-title">Dead Code Cleanup + Service Health Dashboard</span></div>
+  <div class="tier-item"><span class="tier-item-num">1.</span><div>Remove <code>weekly_blend_applied</code> flag (always False, SA-18 removed)</div></div>
+  <div class="tier-item"><span class="tier-item-num">2.</span><div>Remove <code>rsi_divergence_bullish</code> from REASONS_MAP (dead, see A-4)</div></div>
+  <div class="tier-item"><span class="tier-item-num">3.</span><div>Gate or remove <code>/signals/gate_backtest</code> endpoint (simulates old removed gate — confusing in prod)</div></div>
+  <div class="tier-item"><span class="tier-item-num">4.</span><div>Add <code>UNIQUE(stock_id, horizon, ts::date)</code> DB constraint on signals table</div></div>
+  <div class="tier-item"><span class="tier-item-num">5.</span><div>Add <code>GET /health/deep</code> to api-gateway: ping all 9 upstream services, return latency + status grid</div></div>
+  <div class="tier-item"><span class="tier-item-num">6.</span><div>Frontend admin page: service health grid (green/yellow/red per service with last ping time)</div></div>
+</div>
+
+</section>
+</main>
+</body>
+</html>
