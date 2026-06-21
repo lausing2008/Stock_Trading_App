@@ -1090,7 +1090,7 @@ _STYLE_PROFILES: dict[str, dict] = {
         "weekly_boost": 1.12, "weekly_compress": 0.85,
         # Fixed: was {2: 0.25, 5: 0.55, 10: 0.80}. The 0.25× meant a stock needed
         # fused_prob ≈ 1.10 to fire a BUY with earnings in ≤2 days — impossible.
-        "earnings_compression": {2: 0.50, 5: 0.75, 10: 0.90},
+        "earnings_compression": {2: 0.65, 5: 0.85, 10: 0.95},
         "news_compression": {25: 0.75, 35: 0.85},
         "rs_compression": 0.85,
         "kscore_boost": False,
@@ -1704,7 +1704,7 @@ def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
         from datetime import timezone as _tz
         today_utc = __import__("datetime").datetime.now(_tz.utc).date()
         days_old = (today_utc - last_ts_utc.date()).days
-        if days_old > 5:
+        if days_old > 3:
             log.warning(
                 "signal.stale_price_data",
                 symbol=symbol,

@@ -36,7 +36,7 @@ def _svc_token() -> str:
 
 _STYLE_PARAMS = {
     "SCALP":  {"entry2_pct": 0.990, "breakout_pct": 1.010, "stop_pct": 0.975, "target_pct": 1.040},
-    "SWING":  {"entry2_pct": 0.940, "breakout_pct": 1.035, "stop_pct": 0.880, "target_pct": 1.350},
+    "SWING":  {"entry2_pct": 0.965, "breakout_pct": 1.020, "stop_pct": 0.945, "target_pct": 1.120},
     "GROWTH": {"entry2_pct": 0.920, "breakout_pct": 1.050, "stop_pct": 0.840, "target_pct": 1.600},
     "INCOME": {"entry2_pct": 0.970, "breakout_pct": 1.015, "stop_pct": 0.930, "target_pct": 1.150},
 }

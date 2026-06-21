@@ -71,6 +71,25 @@ def _get_admin_ai_key(provider: str = "claude") -> str:
         return ""
 
 
+import time as _time
+
+_svc_token_cache: str = ""
+
+def _svc_token() -> str:
+    """Cached long-lived service JWT for inter-service calls."""
+    global _svc_token_cache
+    if _svc_token_cache:
+        return _svc_token_cache
+    from jose import jwt as _jwt
+    payload = {
+        "sub": "research-engine",
+        "jti": "research-engine-service",
+        "exp": int(_time.time()) + 365 * 86400,
+    }
+    _svc_token_cache = _jwt.encode(payload, _s.jwt_secret, algorithm="HS256")
+    return _svc_token_cache
+
+
 async def _get(client: httpx.AsyncClient, url: str, auth: str = "") -> dict | list | None:
     try:
         headers = {"Authorization": auth} if auth else {}
@@ -1436,8 +1455,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
         if (datetime.now(timezone.utc) - ts).total_seconds() < 21_600:
             return report
 
-    # Forward the caller's JWT to services that require auth (e.g. signal-engine)
-    auth = request.headers.get("authorization", "")
+    svc_auth = f"Bearer {_svc_token()}"
 
     # Gather data from all services in parallel
     async with httpx.AsyncClient(timeout=25) as client:
@@ -1447,7 +1465,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
             _get(client, f"{_s.market_data_url}/stocks/{sym}/prices?timeframe=1d&limit=260"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/indicators?days=400"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/levels"),
-            _get(client, f"{_s.signal_engine_url}/signals/{sym}", auth),
+            _get(client, f"{_s.signal_engine_url}/signals/{sym}", svc_auth),
             _get(client, f"{_s.ranking_engine_url}/rankings/{sym}"),
             _get(client, f"{_s.market_data_url}/stocks/latest_prices?symbols={sym}"),
         )
