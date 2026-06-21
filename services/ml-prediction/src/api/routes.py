@@ -1,10 +1,11 @@
 """ML endpoints: list, train, tune, predict."""
-from sqlalchemy import or_
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from common.jwt_auth import get_current_username
+from common.logging import get_logger
+
+log = get_logger("ml.routes")
 
 from ..models import list_models
 from ..training import predict_latest, predict_latest_ensemble, predict_latest_ensemble_three, train_model, tune_symbol, validate_walkforward
@@ -89,7 +90,7 @@ def train_all(tasks: BackgroundTasks, style: str = "SWING", _: str = Depends(get
 
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
+            select(Stock.symbol).where(Stock.active.is_(True))
         ).scalars())
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
@@ -120,7 +121,7 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _
 
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
+            select(Stock.symbol).where(Stock.active.is_(True))
         ).scalars())
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
@@ -225,7 +226,7 @@ def train_all_ensemble_three(tasks: BackgroundTasks, style: str = "SWING", _: st
 
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
+            select(Stock.symbol).where(Stock.active.is_(True))
         ).scalars())
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
@@ -256,7 +257,7 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = De
 
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
+            select(Stock.symbol).where(Stock.active.is_(True))
         ).scalars())
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 5)
@@ -288,7 +289,7 @@ def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(get_current_user
 
     with SessionLocal() as session:
         symbols = list(session.execute(
-            select(Stock.symbol).where(or_(Stock.active.is_(True), Stock.delisted.is_(True)))
+            select(Stock.symbol).where(Stock.active.is_(True))
         ).scalars())
 
     scheduled: list[dict] = []
