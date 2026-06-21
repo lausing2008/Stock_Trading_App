@@ -1,4 +1,4 @@
-"""Feature engineering — 51 features (29 stock-specific + 8 macro + 14 fundamental).
+"""Feature engineering — 54 features (29 stock-specific + 8 macro + 3 sector + 14 fundamental).
 
 29 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
@@ -17,6 +17,11 @@
   vix_spiking           — 1 if VIX > 20d MA × 1.3 (sudden fear spike)
   high_vol_regime       — 1 if spy_vol_20 > 2% annualised daily vol
   market_stress         — 1 if SPY 5d return < -3% AND VIX above its MA
+
+3 sector (TIER90 — NaN for HK/unmapped sectors; XGBoost handles natively):
+  sector_rs_20d         — sector ETF 20d return minus SPY 20d return (positive = outperforming)
+  sector_rs_5d          — sector ETF 5d return minus SPY 5d return (short-term momentum)
+  sector_in_favor       — 1 if sector_rs_20d > 0
 
 14 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
   revenue_growth        — YoY revenue growth rate
@@ -52,6 +57,107 @@ def _adj_close(df: pd.DataFrame) -> pd.Series:
     if ac is not None and not ac.isna().all():
         return ac.fillna(df["close"]).astype(float)
     return df["close"].astype(float)
+
+
+SECTOR_ETF_MAP: dict[str, str] = {
+    "Technology":             "XLK",
+    "Financial Services":     "XLF",
+    "Financial":              "XLF",
+    "Healthcare":             "XLV",
+    "Energy":                 "XLE",
+    "Consumer Cyclical":      "XLY",
+    "Utilities":              "XLU",
+    "Industrials":            "XLI",
+    "Basic Materials":        "XLB",
+    "Communication Services": "XLC",
+    "Real Estate":            "XLRE",
+}
+
+SECTOR_COLUMNS = [
+    "sector_rs_20d",   # sector ETF 20d return vs SPY (positive = sector outperforming)
+    "sector_rs_5d",    # sector ETF 5d return vs SPY (short-term momentum context)
+    "sector_in_favor", # 1 if sector outperforming SPY over 20d
+]
+
+
+def fetch_sector_features(symbol: str, start_date: date, end_date: date) -> "pd.DataFrame":
+    """Compute sector relative strength vs SPY from DB prices (TIER90).
+
+    Returns a DataFrame indexed by "YYYY-MM-DD" strings with columns:
+      sector_rs_20d  — sector ETF 20-day return minus SPY 20-day return
+      sector_rs_5d   — sector ETF 5-day return minus SPY 5-day return
+      sector_in_favor — 1.0 if sector_rs_20d > 0, else 0.0
+
+    Returns an empty DataFrame when the stock has no sector, the sector has
+    no ETF mapping, or the ETF/SPY prices are not in the DB.
+    Falls back to empty DataFrame on any error — sector RS is NaN-allowed in
+    FEATURE_COLUMNS so missing data never breaks model training.
+    """
+    try:
+        from sqlalchemy import select as _select
+        from db import Price, SessionLocal, Stock, TimeFrame
+
+        buffer_start = start_date - timedelta(days=60)
+
+        with SessionLocal() as session:
+            stock = session.execute(
+                _select(Stock).where(Stock.symbol == symbol.upper())
+            ).scalar_one_or_none()
+
+            if stock is None or not stock.sector:
+                return pd.DataFrame()
+
+            etf_symbol = SECTOR_ETF_MAP.get(stock.sector)
+            if not etf_symbol:
+                return pd.DataFrame()
+
+            etf_stock = session.execute(
+                _select(Stock).where(Stock.symbol == etf_symbol)
+            ).scalar_one_or_none()
+            spy_stock = session.execute(
+                _select(Stock).where(Stock.symbol == "SPY")
+            ).scalar_one_or_none()
+
+            if etf_stock is None or spy_stock is None:
+                return pd.DataFrame()
+
+            etf_rows = session.execute(
+                _select(Price.ts, Price.close).where(
+                    Price.stock_id == etf_stock.id,
+                    Price.timeframe == TimeFrame.D1,
+                    Price.ts >= buffer_start,
+                    Price.ts <= end_date,
+                ).order_by(Price.ts)
+            ).all()
+
+            spy_rows = session.execute(
+                _select(Price.ts, Price.close).where(
+                    Price.stock_id == spy_stock.id,
+                    Price.timeframe == TimeFrame.D1,
+                    Price.ts >= buffer_start,
+                    Price.ts <= end_date,
+                ).order_by(Price.ts)
+            ).all()
+
+        if not etf_rows or not spy_rows:
+            return pd.DataFrame()
+
+        etf_s = pd.Series({r.ts.strftime("%Y-%m-%d"): float(r.close) for r in etf_rows})
+        spy_s = pd.Series({r.ts.strftime("%Y-%m-%d"): float(r.close) for r in spy_rows})
+
+        common = etf_s.index.intersection(spy_s.index)
+        if len(common) < 25:
+            return pd.DataFrame()
+
+        etf_c, spy_c = etf_s[common], spy_s[common]
+        df_out = pd.DataFrame(index=common)
+        df_out["sector_rs_20d"]   = etf_c.pct_change(20) - spy_c.pct_change(20)
+        df_out["sector_rs_5d"]    = etf_c.pct_change(5)  - spy_c.pct_change(5)
+        df_out["sector_in_favor"] = (df_out["sector_rs_20d"] > 0).astype(float)
+        return df_out.dropna(how="all")
+
+    except Exception:
+        return pd.DataFrame()
 
 
 MACRO_COLUMNS = [
@@ -109,6 +215,8 @@ FEATURE_COLUMNS = [
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Macro — regime boolean flags
     "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
+    # Sector relative strength (TIER90) — NaN for HK/unmapped stocks; XGBoost handles natively
+    *SECTOR_COLUMNS,
     # Fundamentals — static per stock, broadcast to all price rows
     *FUNDAMENTAL_COLUMNS,
 ]
@@ -247,6 +355,7 @@ def build_features(
     label_threshold: float = 0.01,
     inference_mode: bool = False,
     fund_data: dict | None = None,
+    sector_df: "pd.DataFrame | None" = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (X, y_direction, y_return).
 
@@ -378,6 +487,23 @@ def build_features(
         for col in MACRO_COLUMNS:
             out[col] = np.nan
 
+    # --- Sector relative strength features (TIER90) ---
+    # Indexed by "YYYY-MM-DD" string — same pattern as macro_df.
+    # NaN for HK stocks and any symbol whose sector has no ETF mapping.
+    if sector_df is not None and not sector_df.empty:
+        for col in SECTOR_COLUMNS:
+            if col in sector_df.columns:
+                out[col] = dates.map(sector_df[col])
+            else:
+                out[col] = np.nan
+    else:
+        for col in SECTOR_COLUMNS:
+            out[col] = np.nan
+
+    # Forward-fill sector gaps (weekends / ETF trading calendar mismatches)
+    for col in SECTOR_COLUMNS:
+        out[col] = out[col].ffill()
+
     # Forward-fill macro gaps (weekends, holidays, early-day partial data)
     for col in MACRO_COLUMNS:
         out[col] = out[col].ffill()
@@ -405,10 +531,10 @@ def build_features(
 
     X = out[FEATURE_COLUMNS].replace([np.inf, -np.inf], np.nan)
 
-    # Fundamental and weekly columns are NaN-allowed — XGBoost handles NaN natively.
-    # Require only the core daily features to be non-null so rows aren't discarded
-    # when fundamentals are absent or history is too short for weekly bars.
-    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS)
+    # Fundamental, weekly, and sector columns are NaN-allowed — XGBoost handles NaN natively.
+    # Sector columns are NaN for HK stocks and unmapped sectors.
+    # Require only the core daily features to be non-null so rows aren't discarded.
+    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS) | set(SECTOR_COLUMNS)
     _required = [c for c in FEATURE_COLUMNS if c not in _nan_ok]
 
     if inference_mode:

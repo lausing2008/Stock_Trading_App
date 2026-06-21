@@ -25,7 +25,7 @@ from common.logging import get_logger
 from db import EarningsEvent, Fundamental, Price, SessionLocal, Signal, SignalOutcome, Stock, TimeFrame
 from sqlalchemy import desc as sa_desc
 
-from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS, WEEKLY_COLUMNS
+from ..features import build_features, compute_label_threshold, fetch_macro_features, fetch_sector_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS, SECTOR_COLUMNS, WEEKLY_COLUMNS
 from ..models import BaseModel, get_model
 
 log = get_logger("trainer")
@@ -416,6 +416,9 @@ def train_model(
     except Exception:
         macro_df = None
 
+    # TIER90: sector relative strength vs SPY from DB prices
+    sector_df = fetch_sector_features(symbol, start_date, end_date)
+
     # Per-symbol volatility-adjusted dead zone — computed on training rows only
     # to prevent future volatility from leaking into the label dead-zone boundary.
     _train_rows = int(len(df) * 0.70)
@@ -433,7 +436,7 @@ def train_model(
 
     X, y_dir, y_ret = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
-        fund_data=fund_data,
+        fund_data=fund_data, sector_df=sector_df,
     )
     if len(X) < 200:
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
@@ -746,11 +749,15 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
 
     # Fetch macro features aligned to the stock's price dates
     macro_df = None
+    infer_start = None
     try:
-        start_date = pd.to_datetime(df["ts"]).min().date()
-        macro_df = fetch_macro_features(start_date, date.today() + timedelta(days=1))
+        infer_start = pd.to_datetime(df["ts"]).min().date()
+        macro_df = fetch_macro_features(infer_start, date.today() + timedelta(days=1))
     except Exception:
         pass
+
+    # TIER90: sector RS for inference
+    sector_df = fetch_sector_features(symbol, infer_start or (date.today() - timedelta(days=400)), date.today() + timedelta(days=1))
 
     infer_fund_data: dict = {}
     try:
@@ -766,7 +773,7 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     X, _, _ = build_features(
         df, horizon=horizon, macro_df=macro_df,
         label_threshold=0.0, inference_mode=True,
-        fund_data=infer_fund_data,
+        fund_data=infer_fund_data, sector_df=sector_df,
     )
     if X.empty:
         return {"symbol": symbol, "bullish_probability": 0.5, "confidence": 0}
@@ -1022,12 +1029,14 @@ def validate_walkforward(
 
     horizon = _HORIZON_BY_STYLE.get(style.upper(), 10)
 
-    # Build macro + earnings features once (same data used across all windows)
+    # Build macro + earnings + sector features once (same data used across all windows)
+    start_d = pd.to_datetime(df_all["ts"]).min().date()
     try:
-        start_d = pd.to_datetime(df_all["ts"]).min().date()
         macro_df = fetch_macro_features(start_d, today)
     except Exception:
         macro_df = None
+
+    wf_sector_df = fetch_sector_features(symbol, start_d, today)
 
     fund_data: dict = {}
     try:
@@ -1051,10 +1060,12 @@ def validate_walkforward(
             X_tr, y_tr, _ = build_features(
                 df_train, horizon=horizon, macro_df=macro_df,
                 label_threshold=label_threshold, fund_data=fund_data,
+                sector_df=wf_sector_df,
             )
             X_te, y_te, y_ret_te = build_features(
                 df_test, horizon=horizon, macro_df=macro_df,
                 label_threshold=label_threshold, fund_data=fund_data,
+                sector_df=wf_sector_df,
             )
         except Exception:
             pos += test_days

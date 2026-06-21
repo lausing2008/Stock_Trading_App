@@ -6996,9 +6996,9 @@ const ITEMS: Item[] = [
   // ── Tier 68 — ML & Regime Enhancements ────────────────────────────────────────
   {
     id: 'TIER68-ML-FEATURES',
-    tier: 68, severity: 'medium', defaultStatus: 'in-progress',
-    file: 'ml-prediction/src/features/builder.py',
-    implementedNote: 'Partial 2026-06-20: vol_ratio_5d20d added (5d/20d volatility ratio — compression signals breakout setup, expansion signals choppy regime). Feature count now 47. regime_class, sector_rs, yield_curve deferred — require external data pipelines (decision-engine regime endpoint, FRED API). earnings_days_away deferred — cannot be a static broadcast feature (changes daily, would create data leakage in training). Retrain with tune_all needed to activate new feature.',
+    tier: 68, severity: 'medium', defaultStatus: 'done',
+    file: 'services/ml-prediction/src/features/builder.py · services/ml-prediction/src/training/trainer.py',
+    implementedNote: 'Done 2026-06-21: sector RS added as 3 new features (sector_rs_20d, sector_rs_5d, sector_in_favor) — reads sector ETF prices (XLK/XLF/XLV/XLE/XLY/XLU/XLI/XLB/XLC/XLRE) directly from DB, computes sector return vs SPY return. fetch_sector_features() added to builder.py; sector_df parameter added to build_features(). Features are NaN-allowed (XGBoost handles natively) — graceful for HK stocks and unmapped sectors. Feature count: 47→54 (adding sector_rs_20d, sector_rs_5d, sector_in_favor). vol_ratio_5d20d added 2026-06-20. yield_curve and regime_class deferred (FRED API / historical regime reconstruction needed). Retrain with tune_all to activate.',
     effort: '4h',
     impact: 'Medium — regime and sector context are strong predictors of which signals are reliable; adding them improves AUC and reduces false signals in adverse conditions',
     title: 'ML feature expansion: regime class · sector RS · yield curve · vol ratio · earnings context',
