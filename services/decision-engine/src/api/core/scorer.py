@@ -139,6 +139,19 @@ def compute_score(
         except Exception:
             pass
 
+    # ── Layer 3f: Catalyst intelligence ──────────────────────────────────────
+    catalyst_score = reasons.get("catalyst_score")
+    if catalyst_score is not None:
+        cs = float(catalyst_score)
+        if cs >= 60:
+            pts, note = 1, f"Strong catalyst signal (score={cs:.0f}) — insider buying or congress accumulation"
+        elif cs <= -30:
+            pts, note = -1, f"Negative catalyst signal (score={cs:.0f}) — insider selling or adverse events"
+        else:
+            pts, note = 0, f"Neutral catalyst signal (score={cs:.0f})"
+        score += pts
+        breakdown.append(ScoreItem(layer="catalyst", pts=pts, note=note))
+
     # ── Layer 4: Research alignment ───────────────────────────────────────────
     if research_rec:
         rec_upper = research_rec.upper().replace("_", " ")

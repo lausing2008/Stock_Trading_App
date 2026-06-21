@@ -923,7 +923,8 @@ def _dcf_fair_value(fund: dict, price: float, sector: str = "Unknown") -> dict |
 # ── Claude integration ────────────────────────────────────────────────────────
 
 async def _call_claude(req: ResearchRequest, symbol: str, stock: dict, fund: dict,
-                       tech: dict, fund_scores: dict, live_price: float = 0.0) -> dict:
+                       tech: dict, fund_scores: dict, live_price: float = 0.0,
+                       catalyst: dict | None = None) -> dict:
     api_key = req.api_key.strip() or _get_admin_ai_key(req.provider)
     if not api_key:
         return _fallback_ai()
@@ -978,6 +979,20 @@ async def _call_claude(req: ResearchRequest, symbol: str, stock: dict, fund: dic
         "Always respond with valid JSON only — no markdown, no extra text."
     )
 
+    catalyst_summary = {
+        "catalyst_score": (catalyst or {}).get("catalyst_score"),
+        "insider_score": (catalyst or {}).get("insider_score"),
+        "congress_score": (catalyst or {}).get("congress_score"),
+        "institutional_score": (catalyst or {}).get("institutional_score"),
+        "earnings_score": (catalyst or {}).get("earnings_score"),
+        "composite_score": (catalyst or {}).get("composite_score"),
+    }
+    catalyst_note = (
+        "Scores are 0-100 (positive) or negative (bearish). "
+        "insider_score >50 = cluster of executive purchases; congress_score >30 = recent congressional buys; "
+        "catalyst_score >60 = strong positive catalyst; <0 = adverse events or net selling."
+    )
+
     user_prompt = f"""Analyze {symbol} ({name}) for investment suitability. Current price: ${price}. Market cap: {market_cap}. Sector: {sector}.
 
 TECHNICAL DATA:
@@ -985,6 +1000,9 @@ TECHNICAL DATA:
 
 FUNDAMENTAL DATA:
 {json.dumps(fund_summary, indent=2)}
+
+CATALYST & EVENT INTELLIGENCE ({catalyst_note}):
+{json.dumps(catalyst_summary, indent=2)}
 
 Return a JSON object with EXACTLY this structure (fill in all fields based on your knowledge of {symbol} and the data above):
 
@@ -1473,7 +1491,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
 
     # Gather data from all services in parallel
     async with httpx.AsyncClient(timeout=25) as client:
-        stock_t, fund_t, prices_t, ind_t, levels_t, signal_t, rank_t, live_t = await asyncio.gather(
+        stock_t, fund_t, prices_t, ind_t, levels_t, signal_t, rank_t, live_t, catalyst_t = await asyncio.gather(
             _get(client, f"{_s.market_data_url}/stocks/{sym}"),
             _get(client, f"{_s.market_data_url}/stocks/{sym}/fundamentals"),
             _get(client, f"{_s.market_data_url}/stocks/{sym}/prices?timeframe=1d&limit=260"),
@@ -1482,6 +1500,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
             _get(client, f"{_s.signal_engine_url}/signals/{sym}", svc_auth),
             _get(client, f"{_s.ranking_engine_url}/rankings/{sym}"),
             _get(client, f"{_s.market_data_url}/stocks/latest_prices?symbols={sym}"),
+            _get(client, f"{_s.event_intelligence_url}/catalyst/{sym}", svc_auth),
         )
 
     stock = stock_t or {}
@@ -1496,6 +1515,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     signal = signal_t or {}
     ranking = rank_t or {}
     live = (live_t or [{}])[0] if isinstance(live_t, list) else {}
+    catalyst = catalyst_t or {}
 
     if not stock:
         # Symbol not in DB — fetch directly from yfinance
@@ -1521,7 +1541,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     dcf = _dcf_fair_value(fund, price, sector=stock.get("sector", "Unknown"))
 
     # Call Claude for qualitative analysis
-    ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price)
+    ai = await _call_claude(req, sym, stock, fund, tech, fund_scores, live_price=price, catalyst=catalyst)
 
     # Determine report quality
     missing_services = sum([not fund_t, not signal_t, not rank_t, not ind_t])

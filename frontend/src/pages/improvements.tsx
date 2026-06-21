@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7048,6 +7048,74 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 74 — Deep Audit Round 2 Fixes: EI Bugs + Decision Engine + Research Integration (2026-06-21) ──
+  {
+    id: 'TIER74-INSIDER-CIK',
+    tier: 74, severity: 'critical', defaultStatus: 'done',
+    file: 'services/event-intelligence/src/services/insider.py:75',
+    implementedNote: 'Done 2026-06-21: _parse_form4() was using hardcoded entity CIK "0" in the EDGAR archive URL — every Form 4 index fetch returned HTTP 404 silently. Fixed by extracting the filer CIK from the first 10 digits of the accession number (EDGAR format: {filer_cik_10digit}-{YY}-{seq}). e.g. "0001234567-24-000001" → CIK "1234567". Zero API changes needed — the CIK is embedded in the accession number itself.',
+    effort: '30m',
+    impact: 'Critical — insider_score was permanently 0.0 for all stocks since no Form 4 data could be fetched; catalyst_score (35% insider weight) was systematically wrong. Fix unblocks all insider intelligence.',
+    title: 'Fix: Insider EDGAR Form 4 URL used CIK 0 — all fetches returned 404',
+    what: 'SEC EDGAR archive URL for Form 4 index requires the filer\'s (reporting person\'s) 10-digit CIK. Code used "/Archives/edgar/data/0/" (literal zero). Accession number format encodes the CIK as its first segment.',
+    fix: 'Extract entity_cik = str(int(accession.split("-")[0])) and build URL using that CIK.',
+  },
+  {
+    id: 'TIER74-INSIDER-DEAD-QUERY',
+    tier: 74, severity: 'low', defaultStatus: 'done',
+    file: 'services/event-intelligence/src/services/insider.py:207-226',
+    implementedNote: 'Done 2026-06-21: Removed first unused query in get_insider_leaderboard(). The function had two queries: first used a broken ORDER BY (scalar_subquery returning NULL) with the result never used; second fetched all transactions and aggregated in Python. Removed the dead first query.',
+    effort: '15m',
+    impact: 'Low — eliminated one wasted DB round-trip per leaderboard call',
+    title: 'Fix: Dead first query in get_insider_leaderboard() removed',
+    what: 'Lines 207-226 executed a query whose result was never used (ORDER BY returned NULL subquery). Wasted one DB round-trip per call.',
+    fix: 'Deleted the dead query block. Function now runs only the Python-aggregation path.',
+  },
+  {
+    id: 'TIER74-POLITICAL-DEDUP',
+    tier: 74, severity: 'high', defaultStatus: 'done',
+    file: 'services/event-intelligence/src/services/political.py:66, shared/db/models.py:826',
+    implementedNote: 'Done 2026-06-21: (1) Added pre-existence check in sync_political_contracts() before s.add() — queries for matching (stock_id, event_type, event_date, agency) row and skips if found. Prevents duplicate rows on every daily sync. (2) Added UniqueConstraint("stock_id", "event_type", "event_date", "agency", name="uq_political_event") to PoliticalEvent model for future clean installs.',
+    effort: '30m',
+    impact: 'High — political events table was growing unboundedly; each daily sync appended new copies of all contract awards',
+    title: 'Fix: political_events table no unique constraint → duplicates on every sync',
+    what: 'PoliticalEvent had no UniqueConstraint and used s.add() (not upsert). Every daily sync inserted new copies of the same awards. After 30 days, each award had 30 rows.',
+    fix: 'Pre-existence check before insert + UniqueConstraint added to model.',
+  },
+  {
+    id: 'TIER74-CATALYST-DECISION-ENGINE',
+    tier: 74, severity: 'high', defaultStatus: 'done',
+    file: 'services/decision-engine/src/api/core/scorer.py:142',
+    implementedNote: 'Done 2026-06-21: Added Layer 3f "catalyst intelligence" to scorer.py between Layer 3e (freshness) and Layer 4 (research). Reads catalyst_score from signal.reasons JSONB dict: ≥60 → +1pt "Strong catalyst signal — insider buying or congress accumulation", ≤-30 → -1pt "Negative catalyst signal", else 0pt. Breakdown shows catalyst layer with score in note.',
+    effort: '30m',
+    impact: 'High — decision engine was ignoring catalyst_score/insider_score/congress_score from signal.reasons entirely; event intelligence data had zero influence on entry decisions',
+    title: 'Fix: Decision engine scorer never read catalyst_score — Layer 3f added',
+    what: 'scorer.py had 5 layers: price_zone, rr, volume/earnings/ml/conf_delta/freshness, research, regime. catalyst_score from signal.reasons was present but never read. Event Intelligence platform had zero influence on paper trading decisions.',
+    fix: 'Added Layer 3f after freshness: reads reasons.get("catalyst_score"), scores ±1 based on thresholds.',
+  },
+  {
+    id: 'TIER74-RESEARCH-CATALYST',
+    tier: 74, severity: 'high', defaultStatus: 'done',
+    file: 'services/research-engine/src/api/routes.py:1476,1499,1524,925',
+    implementedNote: 'Done 2026-06-21: Research engine now calls GET /catalyst/{symbol} from event-intelligence service in parallel with the 8 existing service calls. catalyst_t is added to the asyncio.gather, unpacked as catalyst = catalyst_t or {}. Passed to _call_claude() as new catalyst parameter. Claude prompt now includes "CATALYST & EVENT INTELLIGENCE" section with catalyst_score, insider_score, congress_score, institutional_score, earnings_score, composite_score. Score legend included in prompt: >60 = strong positive, <0 = bearish.',
+    effort: '1h',
+    impact: 'High — research reports were generated with zero awareness of congressional trading, insider buying, or catalyst scores. Now Claude sees all event intelligence context when writing reports.',
+    title: 'Fix: Research engine never called /catalyst endpoint — event intelligence absent from AI reports',
+    what: 'generate_research() fetched from 8 services (market-data, TA, signals, rankings) but never called event-intelligence. AI reports about insider activity used only yfinance insider_buy_transactions_6m. Congressional trade patterns, catalyst scores were invisible to Claude.',
+    fix: 'Added GET /catalyst/{symbol} to asyncio.gather. Injected catalyst_summary into Claude prompt as "CATALYST & EVENT INTELLIGENCE" section.',
+  },
+  {
+    id: 'TIER74-WF-BENCHMARK-AUTH',
+    tier: 74, severity: 'low', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:2217',
+    implementedNote: 'Done 2026-06-21: _wf_benchmark() now passes Authorization: Bearer {_service_token()} header in the GET /stocks/{symbol}/prices call to market-data. Previously had no auth header → 401 → benchmark field always null in walkforward response.',
+    effort: '15m',
+    impact: 'Low — walkforward benchmark comparison (vs SPY/HSI) was always null, limiting usefulness of WF reports',
+    title: 'Fix: _wf_benchmark() missing auth header → benchmark always null',
+    what: 'market-data /stocks/{symbol}/prices is auth-protected. _wf_benchmark called it without Authorization header → 401 → returned None silently.',
+    fix: 'Added headers={"Authorization": f"Bearer {_service_token()}"} to the httpx.Client.get() call.',
+  },
+
   // ── Tier 73 — Gate Unification + Signal Config + Event Intel Integration (2026-06-21) ────────────
   {
     id: 'TIER73-PAPER-GATE',
@@ -7405,6 +7473,7 @@ const TIER_LABEL: Record<Tier, string> = {
   71: 'Tier 71 — Tech Debt: Dead Code + Gate Auth + Signal Upsert + Health Dashboard',
   72: 'Tier 72 — Event Intelligence Platform: Economic · Earnings · Insider · Congress · Catalyst',
   73: 'Tier 73 — Gate Unification + Signal Config + Event Intel Integration (2026-06-21)',
+  74: 'Tier 74 — Deep Audit Round 2: EI Bugs + Decision Engine + Research Integration (2026-06-21)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7481,6 +7550,7 @@ const TIER_COLOR: Record<Tier, string> = {
   71: '#6ee7b7',
   72: '#f59e0b',
   73: '#34d399',
+  74: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

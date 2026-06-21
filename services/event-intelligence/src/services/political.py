@@ -62,14 +62,26 @@ async def sync_political_contracts(days: int = 30) -> dict:
                             award_date = date.fromisoformat(award_date_str[:10])
                         except Exception:
                             award_date = today
-                        title = f"{ticker} — {award.get('Awarding Agency', 'Federal Agency')} Contract ${amount/1e6:.1f}M"
+                        agency = award.get("Awarding Agency") or ""
+                        # Guard against duplicates — table has no unique constraint yet
+                        existing = s.execute(
+                            select(PoliticalEvent.id).where(
+                                PoliticalEvent.stock_id == stock_id,
+                                PoliticalEvent.event_type == "contract_award",
+                                PoliticalEvent.event_date == award_date,
+                                PoliticalEvent.agency == agency,
+                            )
+                        ).scalar_one_or_none()
+                        if existing:
+                            continue
+                        title = f"{ticker} — {agency or 'Federal Agency'} Contract ${amount/1e6:.1f}M"
                         s.add(PoliticalEvent(
                             stock_id=stock_id,
                             event_type="contract_award",
                             title=title[:512],
                             description=award.get("Description") or "",
                             amount_usd=float(amount),
-                            agency=award.get("Awarding Agency") or "",
+                            agency=agency,
                             event_date=award_date,
                             impact="positive",
                             source="usaspending",

@@ -72,7 +72,10 @@ async def _fetch_form4_filings(client: httpx.AsyncClient, ticker: str, days: int
 async def _parse_form4(client: httpx.AsyncClient, accession: str) -> dict | None:
     """Download and parse a Form 4 XML filing."""
     acc_fmt = accession.replace("-", "")
-    url = f"https://www.sec.gov/Archives/edgar/data/0/{acc_fmt}/{accession}-index.htm"
+    # Accession number format: {filer_cik_10digit}-{YY}-{sequence}
+    # First segment is the 10-digit zero-padded filer CIK — strip leading zeros.
+    entity_cik = str(int(accession.split("-")[0]))
+    url = f"https://www.sec.gov/Archives/edgar/data/{entity_cik}/{acc_fmt}/{accession}-index.htm"
     try:
         r = await client.get(url, headers=_HEADERS, timeout=10.0)
         if r.status_code != 200:
@@ -204,27 +207,6 @@ def get_insider_leaderboard(days: int = 30, limit: int = 20) -> list[dict]:
     """Stocks with most net insider buying in last N days."""
     since = date.today() - timedelta(days=days)
     with SessionLocal() as s:
-        rows = s.execute(
-            select(
-                InsiderTransaction.stock_id,
-                Stock.symbol,
-                Stock.name,
-            )
-            .join(Stock, InsiderTransaction.stock_id == Stock.id)
-            .where(
-                InsiderTransaction.transaction_date >= since,
-                InsiderTransaction.transaction_type == "purchase",
-            )
-            .group_by(InsiderTransaction.stock_id, Stock.symbol, Stock.name)
-            .order_by(
-                # total purchase value descending
-                select(
-                    Stock.id
-                ).correlate().limit(1).scalar_subquery()
-            )
-            .limit(limit)
-        ).all()
-        # Simpler approach: compute in Python
         result: dict[int, dict] = {}
         all_txns = s.execute(
             select(InsiderTransaction, Stock.symbol, Stock.name)

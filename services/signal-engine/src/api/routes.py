@@ -2214,7 +2214,8 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
     try:
         url = f"{_settings.market_data_url}/stocks/{symbol}/prices"
         with httpx.Client(timeout=10) as c:
-            r = c.get(url, params={"timeframe": "1d", "start": start.isoformat(), "limit": 1000})
+            r = c.get(url, params={"timeframe": "1d", "start": start.isoformat(), "limit": 1000},
+                      headers={"Authorization": f"Bearer {_service_token()}"})
             if r.status_code != 200:
                 return None
         data = r.json()

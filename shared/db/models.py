@@ -825,6 +825,9 @@ class InstitutionalTransaction(Base):
 
 class PoliticalEvent(Base):
     __tablename__ = "political_events"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "event_type", "event_date", "agency", name="uq_political_event"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     stock_id: Mapped[int | None] = mapped_column(ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)
