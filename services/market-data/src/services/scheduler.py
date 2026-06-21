@@ -2162,6 +2162,27 @@ def send_morning_digest(market: str = "US") -> None:
                 if str(cond.value if hasattr(cond, "value") else cond) in _PATTERN_CONDITIONS
             ]
 
+        # ── Signal outcomes summary (30d win rate) ───────────────────────────
+        signal_performance: dict = {}
+        try:
+            tok = _service_token()
+            _hdrs = {"Authorization": f"Bearer {tok}"} if tok else {}
+            _r = httpx.get(
+                f"{_settings.signal_engine_url}/signals/outcomes/summary?days=30",
+                headers=_hdrs, timeout=8,
+            )
+            if _r.status_code == 200:
+                _sp = _r.json()
+                if _sp.get("total", 0) > 0:
+                    signal_performance = {
+                        "total": _sp.get("total", 0),
+                        "win_rate": _sp.get("overall", {}).get("win_rate"),
+                        "avg_return_pct": _sp.get("overall", {}).get("avg_return_pct"),
+                        "by_horizon": _sp.get("by_horizon", {}),
+                    }
+        except Exception:
+            pass  # non-fatal — digest sends without performance section
+
         # ── Send to all recipients ────────────────────────────────────────────
         sent = 0
         for user in users:
@@ -2174,6 +2195,7 @@ def send_morning_digest(market: str = "US") -> None:
                 open_positions=open_positions,
                 pattern_alerts=pattern_alerts,
                 market=market,
+                signal_performance=signal_performance,
             )
             if ok:
                 sent += 1

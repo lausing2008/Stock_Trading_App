@@ -491,6 +491,7 @@ def send_morning_digest_email(
     open_positions: list,
     pattern_alerts: list,
     market: str = "US",
+    signal_performance: dict | None = None,
 ) -> bool:
     """Send the daily pre-market digest email."""
     state = regime.get("state", "unknown")
@@ -638,6 +639,45 @@ def send_morning_digest_email(
       </table>
     </div>"""
 
+    # ── Signal performance (30d outcomes) section ──────────────────────────
+    perf_section_html = ""
+    if signal_performance and signal_performance.get("total", 0) > 0 and signal_performance.get("win_rate") is not None:
+        sp_wr = signal_performance["win_rate"]
+        sp_wr_pct = round(sp_wr * 100, 1)
+        sp_wr_color = "#22c55e" if sp_wr >= 0.50 else "#f59e0b" if sp_wr >= 0.38 else "#ef4444"
+        sp_ret = signal_performance.get("avg_return_pct")
+        sp_ret_str = (f"+{sp_ret:.1f}%" if sp_ret and sp_ret > 0 else f"{sp_ret:.1f}%" if sp_ret is not None else "—")
+        sp_total = signal_performance.get("total", 0)
+        by_h = signal_performance.get("by_horizon", {})
+        h_rows = "".join(
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:5px 10px;font-size:12px;color:#64748b">{h}</td>'
+            f'<td style="padding:5px 10px;font-size:12px;font-weight:700;text-align:right;color:{"#22c55e" if (v.get("win_rate",0) or 0) >= 0.50 else "#f59e0b" if (v.get("win_rate",0) or 0) >= 0.38 else "#ef4444"}">{round((v.get("win_rate") or 0)*100,1)}%</td>'
+            f'<td style="padding:5px 10px;font-size:12px;text-align:right;color:#64748b">{v.get("count","—")}</td>'
+            f'<td style="padding:5px 10px;font-size:12px;text-align:right;color:#94a3b8">{(f"+{v[\"avg_return_pct\"]:.1f}%" if v.get("avg_return_pct") and v["avg_return_pct"] > 0 else f"{v[\"avg_return_pct\"]:.1f}%" if v.get("avg_return_pct") is not None else "—")}</td>'
+            f'</tr>'
+            for h, v in by_h.items() if v.get("count", 0) > 0
+        )
+        perf_section_html = f"""
+    <div style="margin-top:24px">
+      <div style="font-size:11px;font-weight:700;color:#818cf8;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Signal Performance — Last 30 Days</div>
+      <div style="display:flex;gap:16px;margin-bottom:10px">
+        <div style="text-align:center">
+          <div style="font-size:20px;font-weight:800;color:{sp_wr_color}">{sp_wr_pct}%</div>
+          <div style="font-size:10px;color:#94a3b8">30d win rate</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:20px;font-weight:800;color:{"#22c55e" if sp_ret and sp_ret > 0 else "#ef4444"}">{sp_ret_str}</div>
+          <div style="font-size:10px;color:#94a3b8">avg return</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:20px;font-weight:800;color:#94a3b8">{sp_total}</div>
+          <div style="font-size:10px;color:#94a3b8">outcomes</div>
+        </div>
+      </div>
+      {"" if not h_rows else f'<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><thead><tr style="background:#f8fafc"><th style="padding:5px 10px;font-size:10px;color:#94a3b8;text-align:left;text-transform:uppercase">Style</th><th style="padding:5px 10px;font-size:10px;color:#94a3b8;text-align:right;text-transform:uppercase">Win Rate</th><th style="padding:5px 10px;font-size:10px;color:#94a3b8;text-align:right;text-transform:uppercase">Signals</th><th style="padding:5px 10px;font-size:10px;color:#94a3b8;text-align:right;text-transform:uppercase">Avg Ret</th></tr></thead><tbody>{h_rows}</tbody></table>'}
+    </div>"""
+
     _market_name = {"US": "US Markets (NYSE/NASDAQ)", "HK": "HK Market (HKEX)"}.get(market.upper(), market.upper())
     subject = f"📊 Morning Digest [{market.upper()}]: StockAI — {date_str} | Regime: {sl}"
     body_text = (
@@ -673,6 +713,7 @@ def send_morning_digest_email(
     {opp_section_html}
     {pos_section_html}
     {pat_section_html}
+    {perf_section_html}
 
     <p style="font-size:11px;color:#94a3b8;margin-top:28px;border-top:1px solid #e2e8f0;padding-top:14px">
       Not financial advice. Paper trading simulation only. StockAI · {date_str}

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,58 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 93 — Morning Digest Signal Performance ───────────────────────────
+  {
+    id: 'TIER93-DIGEST-PERF',
+    tier: 93, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/scheduler.py, services/market-data/src/services/email_service.py',
+    effort: '1h',
+    impact: 'Medium — morning digest previously showed opportunities and positions but no feedback on how past signals performed. Adding 30d win rate + per-style breakdown closes the learning loop for the user.',
+    title: 'Morning digest: 30d signal performance summary (win rate + avg return by style)',
+    what: 'The morning digest email had no backward-looking performance data. Users could see today\'s opportunities but not whether yesterday\'s BUY signals were working. signal_outcomes table has rich 30d win rate data already computed.',
+    fix: 'Fetch GET /signals/outcomes/summary?days=30 from signal-engine during digest compilation. Add a "Signal Performance — Last 30 Days" section to the email showing overall win rate, avg return, outcome count, and per-style breakdown (SHORT/SWING/LONG/GROWTH win rate + count + avg return).',
+    implementedNote: 'Done 2026-06-21. signal_performance dict fetched in send_morning_digest() and passed to send_morning_digest_email(). Added perf_section_html with 3 metric cards + per-style breakdown table. Non-fatal: digest sends without section if signal-engine unreachable.',
+  },
+
+  // ── Tier 92 — Signal Tuning Action Panel ─────────────────────────────────
+  {
+    id: 'TIER92-TUNING-ACTIONS',
+    tier: 92, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/signal-tuning.tsx, frontend/src/lib/api.ts',
+    effort: '2h',
+    impact: 'Medium — the Signal Tuning admin page was read-only. Admins had to run tune_style_profiles and watchdog via the terminal. Adding trigger buttons makes the self-tuning system fully UI-operable.',
+    title: 'Signal Tuning page: action buttons (run watchdog / auto-tuner / tune_all) + ML model fleet summary',
+    what: 'signal-tuning.tsx showed parameter status but had no way to trigger the tuning system from the UI. Also showed no ML model quality data (AUC per symbol, overfit count).',
+    fix: 'Added 3 action buttons: Run Watchdog, Run Style Auto-Tuner, Trigger tune_all. Each shows spinner + result status. Also added ML Model Fleet section showing model count, avg AUC, overfit count, and top-5/bottom-5 by AUC. Added api.runWatchdog(), api.runStyleAutoTuner(), api.mlTuneAll() methods.',
+    implementedNote: 'Done 2026-06-21. runAction() handler with loading state. ML metrics fetched via api.mlMetrics(). Top/bottom 5 tables sorted by test_auc with color-coded overfit gap.',
+  },
+
+  // ── Tier 91 — Broker Credential Encryption ───────────────────────────────
+  {
+    id: 'TIER91-BROKER-ENCRYPT',
+    tier: 91, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/api/broker.py',
+    effort: '2h',
+    impact: 'Low-medium security fix — OAuth credentials now encrypted at rest. DB dumps no longer expose consumer_key/secret/oauth_token in plaintext.',
+    title: 'Broker OAuth credentials encrypted at rest with Fernet (AUD19-SEC2)',
+    what: 'BrokerConnection.config stored full OAuth credential bundle (consumer_key, consumer_secret, oauth_token, oauth_token_secret) as plaintext JSON in the DB.',
+    fix: 'Added _encrypt_config()/_decrypt_config() helpers using Fernet with SHA-256(jwt_secret) as key. All writes call _encrypt_config(). All reads call _decrypt_config(). Legacy plaintext rows (no _enc key) pass through unchanged for backward compatibility.',
+    implementedNote: 'Done 2026-06-21. Fernet key derived from SHA-256 of JWT secret (same key as JWT signing). No DB migration needed — backward-compatible JSON envelope with _enc field distinguishes encrypted from plaintext rows.',
+  },
+
+  // ── Tier 90 — Sector Relative Strength ML Features ───────────────────────
+  {
+    id: 'TIER90-SECTOR-RS',
+    tier: 90, severity: 'feature', defaultStatus: 'done',
+    file: 'services/ml-prediction/src/features/builder.py, services/ml-prediction/src/training/trainer.py',
+    effort: '3h',
+    impact: 'Medium — adds 3 sector-level contextual features to ML training. Stocks in outperforming sectors (positive sector_rs_20d) should have structurally higher win rates when the stock itself is also strong. Reduces XGBoost reliance on stock-level TA alone.',
+    title: 'Sector relative strength as ML features: sector_rs_20d, sector_rs_5d, sector_in_favor',
+    what: 'ML models had no awareness of whether the stock\'s sector was outperforming or underperforming SPY. A strong individual stock in a weak sector has lower conviction than the same setup in a leading sector.',
+    fix: 'fetch_sector_features() added to builder.py. Reads sector ETF prices (XLK/XLF/XLV/XLE/XLY/XLU/XLI/XLB/XLC/XLRE) from DB. Computes sector_rs_20d (ETF 20d return vs SPY), sector_rs_5d (5d), sector_in_favor (1 if 20d > 0). Features are NaN-allowed — XGBoost handles natively. HK stocks get NaN (no US sector mapping).',
+    implementedNote: 'Done 2026-06-21. Feature count grows 51→54 after retrain. SECTOR_COLUMNS exported via __init__.py. trainer.py passes sector_df through train_model(), predict(), validate_walkforward(). tune_all triggered to retrain all 142 models with 54-feature set.',
+  },
+
   // ── Tier 89 — Meta-Learning: Cross-Symbol Pattern Transfer (roadmap) ─────────────────────────
   {
     id: 'TIER89-META-LEARNING',
@@ -7764,6 +7816,10 @@ const TIER_LABEL: Record<Tier, string> = {
   87: 'Tier 87 — Outcome-Informed Retraining: augment ML training with closed signal_outcomes (roadmap)',
   88: 'Tier 88 — Self-Tuning Dashboard: visibility into style parameters, win rates, watchdog history (roadmap)',
   89: 'Tier 89 — Meta-Learning: universal cross-symbol model for cold-start + ensemble diversity (roadmap)',
+  90: 'Tier 90 — Sector RS ML Features: sector ETF vs SPY relative strength as training features (done)',
+  91: 'Tier 91 — Broker Credential Encryption: Fernet at-rest encryption for OAuth credentials (done)',
+  92: 'Tier 92 — Signal Tuning Action Panel: trigger watchdog/auto-tuner/tune_all from admin UI (done)',
+  93: 'Tier 93 — Morning Digest Signal Performance: 30d win rate summary in daily email (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7856,6 +7912,10 @@ const TIER_COLOR: Record<Tier, string> = {
   87: '#06b6d4',
   88: '#84cc16',
   89: '#e879f9',
+  90: '#38bdf8',
+  91: '#fb923c',
+  92: '#a78bfa',
+  93: '#4ade80',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

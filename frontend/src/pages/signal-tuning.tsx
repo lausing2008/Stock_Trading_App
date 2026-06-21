@@ -15,7 +15,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api } from '@/lib/api';
+import { api, type MlMetricsList } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -241,6 +241,8 @@ function StyleCard({ style, data }: { style: string; data: StyleStatus }) {
 export default function SignalTuningPage() {
   const router = useRouter();
   const [username, setUsername] = useState<string | null>(null);
+  const [actionStatus, setActionStatus] = useState<Record<string, string>>({});
+  const [actionRunning, setActionRunning] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const s = getSession();
@@ -255,9 +257,37 @@ export default function SignalTuningPage() {
     { revalidateOnFocus: false },
   );
 
+  const { data: mlData } = useSWR<MlMetricsList>(
+    username ? 'ml-metrics-tuning' : null,
+    () => api.mlMetrics('xgboost'),
+    { revalidateOnFocus: false },
+  );
+
+  async function runAction(key: string, fn: () => Promise<{ status: string }>) {
+    setActionRunning(r => ({ ...r, [key]: true }));
+    setActionStatus(s => ({ ...s, [key]: '' }));
+    try {
+      const res = await fn();
+      setActionStatus(s => ({ ...s, [key]: res.status || 'ok' }));
+      setTimeout(() => mutate(), 2000);
+    } catch (e: unknown) {
+      setActionStatus(s => ({ ...s, [key]: (e as Error)?.message || 'error' }));
+    } finally {
+      setActionRunning(r => ({ ...r, [key]: false }));
+    }
+  }
+
   if (!username) return null;
 
   const STYLES = ['SHORT', 'SWING', 'LONG', 'GROWTH'];
+
+  // ML model quality summary
+  const mlSymbols = mlData?.symbols ?? [];
+  const mlWithAuc = mlSymbols.filter(s => s.test_auc != null);
+  const mlAvgAuc = mlWithAuc.length
+    ? mlWithAuc.reduce((sum, s) => sum + (s.test_auc ?? 0), 0) / mlWithAuc.length
+    : null;
+  const mlOverfit = mlSymbols.filter(s => (s.overfit_gap ?? 0) > 0.1).length;
 
   // Check if any style has active overrides
   const anyOverrides = data && STYLES.some(s => {
@@ -308,6 +338,41 @@ export default function SignalTuningPage() {
         </div>
       </div>
 
+      {/* Action buttons */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+        {[
+          { key: 'watchdog', label: 'Run Watchdog', desc: 'Evaluate 14d win rate → tighten/relax thresholds', fn: () => api.runWatchdog() as Promise<{ status: string }> },
+          { key: 'autotuner', label: 'Run Style Auto-Tuner', desc: 'Sweep ml_weight_cap/adx_min per style vs outcomes', fn: () => api.runStyleAutoTuner() as Promise<{ status: string }> },
+          { key: 'tune_all', label: 'Trigger tune_all (60 trials)', desc: 'Retrain + Optuna-tune all XGBoost models', fn: () => api.mlTuneAll(60) as Promise<{ status: string }> },
+        ].map(({ key, label, desc, fn }) => (
+          <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <button
+              disabled={actionRunning[key]}
+              onClick={() => runAction(key, fn)}
+              style={{
+                background: actionRunning[key] ? '#1e293b' : '#0f172a',
+                border: '1px solid #334155',
+                borderRadius: 6,
+                color: actionRunning[key] ? '#64748b' : '#94a3b8',
+                cursor: actionRunning[key] ? 'not-allowed' : 'pointer',
+                padding: '6px 14px',
+                fontSize: 12,
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {actionRunning[key] ? '⟳ Running…' : label}
+            </button>
+            <span style={{ color: '#475569', fontSize: 10 }}>{desc}</span>
+            {actionStatus[key] && (
+              <span style={{ color: actionStatus[key] === 'scheduled' || actionStatus[key] === 'ok' ? '#4ade80' : '#f87171', fontSize: 10 }}>
+                {actionStatus[key]}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+
       {anyOverrides && (
         <div style={{ background: '#1c1410', border: '1px solid #d97706', borderRadius: 6, padding: '8px 14px', marginBottom: 20, color: '#fbbf24', fontSize: 12 }}>
           One or more styles have active Redis parameter overrides. These override hardcoded defaults until the Redis TTL expires.
@@ -332,6 +397,57 @@ export default function SignalTuningPage() {
               <StyleCard key={style} style={style} data={data.styles[style]} />
             ) : null
           ))}
+        </div>
+      )}
+
+      {/* ML model metrics summary */}
+      {mlData && (
+        <div style={{ marginTop: 28, borderTop: '1px solid #1e293b', paddingTop: 18 }}>
+          <h2 style={{ color: '#94a3b8', fontSize: 14, fontWeight: 600, marginBottom: 12 }}>
+            ML Model Fleet — {mlData.count} models
+          </h2>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 14 }}>
+            {[
+              { label: 'Models trained', value: mlData.count.toString(), color: '#94a3b8' },
+              { label: 'Avg test AUC', value: mlAvgAuc != null ? mlAvgAuc.toFixed(3) : '—', color: mlAvgAuc != null && mlAvgAuc >= 0.60 ? '#4ade80' : mlAvgAuc != null && mlAvgAuc >= 0.55 ? '#fbbf24' : '#f87171' },
+              { label: 'Overfit (gap>0.10)', value: mlOverfit.toString(), color: mlOverfit > 5 ? '#f87171' : '#4ade80' },
+            ].map(({ label, value, color }) => (
+              <div key={label} style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 18px', textAlign: 'center' }}>
+                <div style={{ color, fontWeight: 700, fontSize: 20 }}>{value}</div>
+                <div style={{ color: '#475569', fontSize: 10, marginTop: 2 }}>{label}</div>
+              </div>
+            ))}
+          </div>
+          {/* Top 5 and Bottom 5 by AUC */}
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+            {[
+              { title: 'Top 5 by AUC', items: [...mlWithAuc].sort((a, b) => (b.test_auc ?? 0) - (a.test_auc ?? 0)).slice(0, 5), good: true },
+              { title: 'Bottom 5 by AUC (needs retraining)', items: [...mlWithAuc].sort((a, b) => (a.test_auc ?? 0) - (b.test_auc ?? 0)).slice(0, 5), good: false },
+            ].map(({ title, items, good }) => (
+              <div key={title} style={{ flex: '1 1 280px', minWidth: 240 }}>
+                <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>{title}</div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      {['Symbol', 'Test AUC', 'CV AUC', 'Gap'].map(h => (
+                        <th key={h} style={{ padding: '3px 8px', color: '#475569', fontWeight: 500, fontSize: 10, textAlign: h === 'Symbol' ? 'left' : 'right', textTransform: 'uppercase' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map(m => (
+                      <tr key={m.symbol} style={{ borderTop: '1px solid #1e293b' }}>
+                        <td style={{ padding: '4px 8px', color: '#e2e8f0', fontWeight: 600 }}>{m.symbol}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: (m.test_auc ?? 0) >= 0.60 ? '#4ade80' : (m.test_auc ?? 0) >= 0.55 ? '#fbbf24' : '#f87171', fontWeight: 600 }}>{m.test_auc?.toFixed(3) ?? '—'}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{m.cv_auc?.toFixed(3) ?? '—'}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: (m.overfit_gap ?? 0) > 0.10 ? '#f87171' : '#475569', fontSize: 10 }}>{m.overfit_gap != null ? (m.overfit_gap > 0 ? '+' : '') + m.overfit_gap.toFixed(3) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

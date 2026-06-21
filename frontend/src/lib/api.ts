@@ -272,6 +272,12 @@ export const api = {
       factors: { factor: string; win_pct: number; los_pct: number; edge: number; win_count: number; los_count: number }[];
       message?: string;
     }>(`/signals/factor_attribution?horizon=${horizon}&lookback_days=${lookbackDays}&min_count=${minCount}`),
+  runStyleAutoTuner: () =>
+    request<{ status: string; styles_tuned: number }>('/signals/tune_style_profiles', { method: 'POST' }),
+  runWatchdog: () =>
+    request<{ status: string; actions: Record<string, string> }>('/signals/watchdog', { method: 'POST' }),
+  mlTuneAll: (nTrials = 60) =>
+    request<{ status: string; count: number; symbols: string[] }>(`/ml/tune_all?n_trials=${nTrials}`, { method: 'POST' }),
   signalTuneStatus: () =>
     request<{
       as_of: string; config_loaded_at: string | null;
