@@ -49,6 +49,7 @@ const DEFAULT_FILTERS = {
   minFairDiscount: '',   // min % stock trades BELOW fair value (positive = undervalued)
   minRS: '',             // min relative strength score (0-100)
   minConfidence: '',     // min signal confidence (0-100)
+  minVolRatio: '',       // min volume ratio (avg5d / avg20d) — 2+ = volume spike
   // Fundamental filters
   maxPE: '',             // max trailing P/E (exclude expensive)
   minRevGrowth: '',      // min revenue growth % YoY
@@ -256,6 +257,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     const minBullish  = filters.minBullish   ? +filters.minBullish / 100 : null;
     const minRS       = filters.minRS        ? +filters.minRS        : null;
     const minConf     = filters.minConfidence ? +filters.minConfidence : null;
+    const minVolRat   = filters.minVolRatio   ? +filters.minVolRatio   : null;
     const minChg      = filters.minChange    ? +filters.minChange    : null;
     const maxChg      = filters.maxChange    ? +filters.maxChange    : null;
     const minPrc      = filters.minPrice     ? +filters.minPrice     : null;
@@ -286,6 +288,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
       if (minBullish != null && (r.bullish_probability ?? 0) < minBullish) return false;
       if (minRS      != null && (r.relative_strength ?? 0) < minRS) return false;
       if (minConf    != null && (r.confidence ?? 0) < minConf) return false;
+      if (minVolRat  != null && (r.vol_ratio == null || r.vol_ratio < minVolRat)) return false;
       if (minChg     != null && (r.change_pct ?? 0) < minChg) return false;
       if (maxChg     != null && (r.change_pct ?? 0) > maxChg) return false;
       if (minPrc     != null && (r.price ?? 0) < minPrc) return false;
@@ -355,7 +358,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     !filters.minChange && !filters.maxChange && !filters.minPrice && !filters.maxPrice &&
     !filters.sector && !filters.minFairDiscount && !filters.minRS && !filters.minConfidence &&
     !filters.maxPE && !filters.minRevGrowth && !filters.maxDebt && !filters.maxPEG &&
-    !filters.minInstOwnership && !filters.capTier && filters.patterns.size === 0 &&
+    !filters.minInstOwnership && !filters.capTier && !filters.minVolRatio && filters.patterns.size === 0 &&
     !filters.watchlistOnly && !filters.search
   );
 
@@ -540,6 +543,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
           <NumInput label="Min Underval %" value={filters.minFairDiscount} onChange={v => setFilters(f => ({ ...f, minFairDiscount: v }))} placeholder="e.g. 10" />
           <NumInput label="Min RS Score"   value={filters.minRS}           onChange={v => setFilters(f => ({ ...f, minRS: v }))}           placeholder="e.g. 50" />
           <NumInput label="Min Confidence" value={filters.minConfidence}   onChange={v => setFilters(f => ({ ...f, minConfidence: v }))}   placeholder="e.g. 60" />
+          <NumInput label="Min Vol Ratio"  value={filters.minVolRatio}     onChange={v => setFilters(f => ({ ...f, minVolRatio: v }))}     placeholder="e.g. 2" />
 
           {/* Fundamental filters */}
           <div style={{ width: '1px', background: '#1e293b', alignSelf: 'stretch' }} />
@@ -640,6 +644,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                   <Th label="Confidence" col="confidence"          sort={sort} onSort={toggleSort} />
                   <Th label="Day Chg"    col="change_pct"          sort={sort} onSort={toggleSort} />
                   <Th label="Price"      col="price"               sort={sort} onSort={toggleSort} />
+                  {filters.minVolRatio && <th style={{ padding: '8px 10px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#f59e0b', borderBottom: '1px solid #1e293b', background: '#080f1e', whiteSpace: 'nowrap' }}>Vol Ratio</th>}
                   {(filters.maxPE || filters.minRevGrowth || filters.maxDebt || filters.maxPEG) && <>
                     <Th label="P/E"       col="trailing_pe"    sort={sort} onSort={toggleSort} />
                     <Th label="Rev Grw"   col="revenue_growth" sort={sort} onSort={toggleSort} />
@@ -739,6 +744,15 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                       <td style={{ padding: '8px 10px', color: '#94a3b8', fontVariantNumeric: 'tabular-nums', fontSize: '12px' }}>
                         {row.price != null ? row.price.toFixed(2) : '—'}
                       </td>
+
+                      {/* Vol Ratio column — shown when vol filter active */}
+                      {filters.minVolRatio && (
+                        <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontSize: '12px', fontWeight: 700,
+                          color: row.vol_ratio == null ? '#334155' : row.vol_ratio >= 2 ? '#f59e0b' : row.vol_ratio >= 1.5 ? '#4ade80' : '#64748b' }}>
+                          {row.vol_ratio != null ? `${row.vol_ratio.toFixed(2)}×` : '—'}
+                          {row.vol_ratio != null && row.vol_ratio >= 2 && <span style={{ marginLeft: '4px', fontSize: '9px' }}>⚡</span>}
+                        </td>
+                      )}
 
                       {/* Fundamental columns — shown when any fundamental filter active */}
                       {(filters.maxPE || filters.minRevGrowth || filters.maxDebt || filters.maxPEG) && <>

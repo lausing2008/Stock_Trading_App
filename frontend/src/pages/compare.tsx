@@ -144,7 +144,7 @@ export default function ComparePage() {
       const limit = RANGES[rangeIdx].bars + 5;
       const results = await Promise.all(
         symbols.map(async sym => {
-          const prices: Price[] = await api.getPrices(sym, 'D1', limit);
+          const prices: Price[] = await api.getPrices(sym, '1d', limit);
           return { symbol: sym, prices };
         })
       );

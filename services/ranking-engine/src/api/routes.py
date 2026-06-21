@@ -595,6 +595,32 @@ def leaderboard(
         except (TypeError, ValueError):
             return None
 
+    # Compute vol_ratio (avg5d / avg20d) for all stocks in one Price query
+    _stock_ids = [row[0].id for row in rows]
+    _vol_cutoff = date.today() - timedelta(days=35)
+    _vol_rows = session.execute(
+        select(Price.stock_id, Price.volume)
+        .where(
+            Price.stock_id.in_(_stock_ids),
+            Price.timeframe == TimeFrame.D1,
+            Price.ts >= str(_vol_cutoff),
+        )
+        .order_by(Price.stock_id, Price.ts.desc())
+    ).all()
+    from collections import defaultdict as _dd
+    _vols_by_stock: dict[int, list[float]] = _dd(list)
+    for _vr in _vol_rows:
+        _vols_by_stock[_vr.stock_id].append(float(_vr.volume or 0))
+    _vol_ratio_map: dict[int, float | None] = {}
+    for _sid, _vols in _vols_by_stock.items():
+        _valid = [v for v in _vols if v > 0]
+        if len(_valid) < 5:
+            _vol_ratio_map[_sid] = None
+            continue
+        _avg5  = sum(_valid[:5]) / 5
+        _avg20 = sum(_valid[:min(len(_valid), 20)]) / min(len(_valid), 20)
+        _vol_ratio_map[_sid] = round(_avg5 / _avg20, 2) if _avg20 > 0 else None
+
     results = [
         {
             "symbol":            stock.symbol,
@@ -610,6 +636,7 @@ def leaderboard(
             "volatility":        _clean(ranking.volatility),
             "fair_price":        _clean(ranking.fair_price),
             "relative_strength": _clean(ranking.rs_score),
+            "vol_ratio":         _vol_ratio_map.get(stock.id),
             # Raw fundamental fields for screener filtering
             "trailing_pe":       _cf(fund.trailing_pe) if fund else None,
             "forward_pe":        _cf(fund.forward_pe) if fund else None,

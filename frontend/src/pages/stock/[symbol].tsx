@@ -1077,6 +1077,108 @@ Return ONLY valid JSON — no markdown, no prose:
             </div>
           )}
 
+          {/* Volume Bar Chart */}
+          {data.prices && data.prices.length >= 5 && (() => {
+            const dailyBars = [...data.prices!]
+              .filter(p => p.volume > 0)
+              .sort((a, b) => a.ts.localeCompare(b.ts))
+              .slice(-60);
+            if (dailyBars.length < 5) return null;
+            // 20-day moving average volume per bar
+            const avgVols = dailyBars.map((_, i) => {
+              const window = dailyBars.slice(Math.max(0, i - 19), i + 1);
+              return window.reduce((s, p) => s + p.volume, 0) / window.length;
+            });
+            const maxVol = Math.max(...dailyBars.map(p => p.volume));
+            const latestVol = dailyBars[dailyBars.length - 1].volume;
+            const latestAvg = avgVols[avgVols.length - 1];
+            const latestRatio = latestAvg > 0 ? latestVol / latestAvg : null;
+            const isSpike = latestRatio != null && latestRatio >= 2;
+            const padL = 44, padR = 8, padT = 12, padB = 24;
+            const W = 600, H = 100;
+            const chartW = W - padL - padR;
+            const chartH = H - padT - padB;
+            const barW = Math.max(1, chartW / dailyBars.length - 1);
+            function xPos(i: number) { return padL + (i / (dailyBars.length - 1)) * chartW; }
+            function yPos(v: number) { return padT + chartH - (v / maxVol) * chartH; }
+            function barColor(vol: number, avg: number) {
+              if (avg <= 0) return '#334155';
+              const r = vol / avg;
+              if (r >= 2) return '#f59e0b';
+              if (r >= 1.5) return '#4ade80';
+              if (r >= 1) return '#6366f1';
+              return '#334155';
+            }
+            const tickVols = [0, maxVol * 0.5, maxVol];
+            function fmtVolShort(v: number) {
+              if (v >= 1e9) return `${(v/1e9).toFixed(1)}B`;
+              if (v >= 1e6) return `${(v/1e6).toFixed(0)}M`;
+              if (v >= 1e3) return `${(v/1e3).toFixed(0)}K`;
+              return String(Math.round(v));
+            }
+            const xLabels: { i: number; label: string }[] = [];
+            const step = Math.max(1, Math.floor(dailyBars.length / 5));
+            dailyBars.forEach((p, i) => {
+              if (i % step === 0 || i === dailyBars.length - 1) {
+                xLabels.push({ i, label: p.ts.slice(5, 10) });
+              }
+            });
+            return (
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px', padding: '14px 16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Volume</span>
+                  {isSpike && (
+                    <span style={{ fontSize: '10px', fontWeight: 800, background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '4px', padding: '1px 6px', letterSpacing: '0.06em' }}>
+                      ⚡ VOLUME SPIKE {latestRatio!.toFixed(1)}× AVG
+                    </span>
+                  )}
+                  {latestRatio != null && !isSpike && (
+                    <span style={{ fontSize: '11px', color: latestRatio >= 1 ? '#4ade80' : '#64748b' }}>
+                      {latestRatio.toFixed(2)}× avg today
+                    </span>
+                  )}
+                  <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#475569' }}>20d avg — dashed</span>
+                </div>
+                <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+                  {/* Y-axis gridlines + labels */}
+                  {tickVols.map((tv, ti) => (
+                    <g key={ti}>
+                      <line x1={padL} y1={yPos(tv)} x2={W - padR} y2={yPos(tv)} stroke="#1e293b" strokeWidth={1} />
+                      <text x={padL - 4} y={yPos(tv) + 4} fill="#475569" fontSize={9} textAnchor="end">{fmtVolShort(tv)}</text>
+                    </g>
+                  ))}
+                  {/* Volume bars */}
+                  {dailyBars.map((p, i) => {
+                    const bx = xPos(i);
+                    return (
+                      <rect key={i}
+                        x={bx - barW / 2} y={padT + chartH - (p.volume / maxVol) * chartH}
+                        width={barW} height={(p.volume / maxVol) * chartH}
+                        fill={barColor(p.volume, avgVols[i])}
+                        opacity={0.85}
+                      />
+                    );
+                  })}
+                  {/* 20d avg line */}
+                  <polyline
+                    points={avgVols.map((av, i) => `${xPos(i).toFixed(1)},${yPos(av).toFixed(1)}`).join(' ')}
+                    fill="none" stroke="#60a5fa" strokeWidth={1.5} strokeDasharray="4,3" opacity={0.7}
+                  />
+                  {/* X-axis labels */}
+                  {xLabels.map(({ i, label }) => (
+                    <text key={i} x={xPos(i)} y={H - 4} fill="#475569" fontSize={9} textAnchor="middle">{label}</text>
+                  ))}
+                </svg>
+                <div style={{ display: 'flex', gap: '16px', marginTop: '6px', fontSize: '10px', color: '#475569' }}>
+                  <span><span style={{ color: '#f59e0b' }}>■</span> Spike (≥2× avg)</span>
+                  <span><span style={{ color: '#4ade80' }}>■</span> High (≥1.5×)</span>
+                  <span><span style={{ color: '#6366f1' }}>■</span> Normal (≥1×)</span>
+                  <span><span style={{ color: '#60a5fa' }}>— —</span> 20d Avg</span>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* K-Score + Fear & Greed side by side */}
           {(ranking || fearGreed) && (
             <div style={{ display: 'grid', gridTemplateColumns: ranking && fearGreed ? '1fr 1fr' : '1fr', gap: '16px', alignItems: 'stretch' }}>
