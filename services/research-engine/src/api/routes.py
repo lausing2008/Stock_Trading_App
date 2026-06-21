@@ -39,6 +39,7 @@ def _sanitise_symbol(raw: str) -> str:
 
 # Simple in-memory cache: symbol → (report_dict, timestamp)
 _cache: dict[str, tuple[dict, datetime]] = {}
+_inflight_research: dict[str, asyncio.Event] = {}  # in-flight events; waiters pause until event fires
 CACHE_TTL_SEC = 86_400       # 24 h — full quality reports
 CACHE_TTL_PARTIAL_SEC = 1_800  # 30 min — partial (missing services)
 CACHE_TTL_FALLBACK_SEC = 300   # 5 min — fallback (AI timeout/error)
@@ -1448,12 +1449,25 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     except ValueError:
         raise HTTPException(400, f"Invalid symbol: {symbol!r}")
 
-    # Return cached report if fresh (< 6h) — prevents double AI spend on rapid re-calls
+    # Cache check (fast path — no waiting)
     entry = _cache.get(sym)
     if entry:
         report, ts = entry
         if (datetime.now(timezone.utc) - ts).total_seconds() < 21_600:
             return report
+
+    # Deduplicate concurrent AI calls for the same symbol using asyncio.Event.
+    # If a request is already in-flight, wait for it to finish, then return from cache.
+    if sym in _inflight_research:
+        await _inflight_research[sym].wait()
+        entry = _cache.get(sym)
+        if entry:
+            report, ts = entry
+            if (datetime.now(timezone.utc) - ts).total_seconds() < 21_600:
+                return report
+        # Fell through (first caller had an error) — proceed to compute ourselves
+    else:
+        _inflight_research[sym] = asyncio.Event()
 
     svc_auth = f"Bearer {_svc_token()}"
 
@@ -1474,7 +1488,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     fund = fund_t or {}
     # RES-FIX-1: when market-data fundamentals cache is cold, fall back to direct yfinance fetch
     if not fund:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         fund = await loop.run_in_executor(None, _yf_fundamentals, sym)
     prices = prices_t or []
     indicators = ind_t or {"ts": [], "values": {}}
@@ -1485,7 +1499,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
 
     if not stock:
         # Symbol not in DB — fetch directly from yfinance
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         yf_stock, yf_prices, yf_indicators, yf_price = await loop.run_in_executor(
             None, _yf_sync_fetch, sym
         )
@@ -1619,6 +1633,10 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     ttl = CACHE_TTL_FALLBACK_SEC if report_quality == "fallback" else CACHE_TTL_PARTIAL_SEC if report_quality == "partial" else CACHE_TTL_SEC
     log.info("research.generated", symbol=sym, overall=overall, recommendation=recommendation,
              quality=report_quality, cache_ttl_s=ttl)
+    # Signal any waiters that the report is now cached, then remove the in-flight marker.
+    ev = _inflight_research.pop(sym, None)
+    if ev:
+        ev.set()
     return report
 
 

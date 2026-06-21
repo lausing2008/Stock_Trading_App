@@ -69,6 +69,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -135,6 +136,7 @@ _CONVICTION_WEIGHTS_PATH = Path(_settings.model_dir) / "conviction_weights.json"
 # Set by calibrate_ml_weight(); loaded at import time from disk if present.
 _ml_weight_global_cap: float | None = None
 _ml_weight_lock = threading.Lock()
+_ML_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml_fetch")
 
 
 def _load_ml_weight_override() -> float | None:
@@ -1625,6 +1627,7 @@ def _apply_style_signal(
     # above threshold, but we apply a 0.6× compression so a low-confidence model
     # doesn't unduly amplify bullish TA noise into a full BUY.
     # Absent flag = new/untuned symbol → do not penalise.
+    reasons["ml_oos_suppressed"] = ml_oos_suppressed  # per-style; each horizon has its own model
     if ml_oos_suppressed:
         fused = 0.5 + (fused - 0.5) * 0.6
         reasons["low_oos_accuracy"] = True
@@ -1664,6 +1667,8 @@ def _apply_style_signal(
         # Confirmed downtrends (≥ 20 bars) get 0.40× — structurally broken weekly chart.
         # Linear interpolation between 5 and 20 bars.
         _consec = weekly_tech.get("weekly_rsi_consec_low", 99)
+        if _consec == 99 and "weekly_rsi_consec_low" not in weekly_tech:
+            log.warning("weekly_gate.consec_key_missing", symbol="unknown", note="defaulting to max compression")
         if _consec < 5:
             _mult = 0.65
         elif _consec >= 20:
@@ -1757,11 +1762,12 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df, ta_weights=_ta_weights)
     sr_data = _sr_context(df)
-    # Per-style ML: each style has its own horizon-trained artifact.
-    # Falls back to the SWING artifact for styles not yet trained separately.
+    # Per-style ML fetched in parallel — 4 sequential calls with 10s timeout each would add
+    # up to 120s worst-case when ML is slow; parallel fetch caps worst-case at 30s.
     _ml_styles = ("SHORT", "SWING", "LONG", "GROWTH")
+    _ml_futures = {sk: _ML_EXECUTOR.submit(_fetch_ml_data, symbol, sk) for sk in _ml_styles}
     ml_by_style: dict[str, tuple[float | None, float, dict]] = {
-        sk: _fetch_ml_data(symbol, sk) for sk in _ml_styles
+        sk: f.result() for sk, f in _ml_futures.items()
     }
     ml_prob, ml_test_auc, ml_meta = ml_by_style["SWING"]  # canonical for shared reasons
     market_regime, fg_score = _fetch_market_regime()
@@ -1790,7 +1796,8 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["ml_model"]           = ml_meta.get("ml_model")
     reasons["ml_agreement"]       = ml_meta.get("ml_agreement")
     reasons["ml_model_probs"]     = ml_meta.get("ml_model_probs")
-    reasons["ml_oos_suppressed"]  = ml_meta.get("ml_oos_suppressed", False)
+    # ml_oos_suppressed is per-style — written inside _apply_style_signal from the style-specific
+    # ml_meta so each horizon's stored signal reflects its own model's OOS status, not SWING's.
     reasons["weekly_ta_score"]    = round(weekly_score, 3)
     reasons["weekly_rsi"]         = weekly_tech["weekly_rsi"]
     reasons["weekly_trend"]       = weekly_tech["weekly_trend"]
@@ -1821,7 +1828,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     _last_price = float(_close.iloc[-1])
     _atr_14 = float(_atr_series.iloc[-1]) if not pd.isna(_atr_series.iloc[-1]) else None
     reasons["last_price"] = round(_last_price, 4)
-    reasons["atr_14"] = round(_atr_14, 4) if _atr_14 else None
+    reasons["atr_14"] = round(_atr_14, 4) if _atr_14 is not None else None
     reasons["atr_14_pct"] = round(_atr_14 / _last_price, 4) if (_atr_14 and _last_price > 0) else None
 
     reasons["days_to_earnings"]   = days_to_earnings

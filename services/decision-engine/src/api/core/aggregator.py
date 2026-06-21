@@ -55,12 +55,16 @@ def _default_game_plan(live_price: float, style: str, atr_14: float | None = Non
     else:
         stop = fixed_stop
         take_profit = live_price * p["target_pct"]
+    risk = live_price - stop
+    reward = take_profit - live_price
+    rr_ratio = round(reward / risk, 2) if risk > 0 else None
     return {
         "entry2":      round(live_price * p["entry2_pct"],   4),
         "breakout":    round(live_price * p["breakout_pct"], 4),
         "stop":        round(stop,        4),
         "take_profit": round(take_profit, 4),
         "target_1":    round(live_price + (take_profit - live_price) * 0.5, 4),
+        "rr_ratio":    rr_ratio,
     }
 
 
