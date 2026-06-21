@@ -2069,6 +2069,29 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         reason="target <= price", target=round(gp_target, 2), price=round(live_price, 2))
             continue
 
+        # Conviction gate hard-block: if the alert system already evaluated this
+        # BUY and the conviction gate failed, skip the entry — paper trading must
+        # agree with what the alert system would notify (TIER66-PAPER-GATE).
+        # Uses the existing conv_gate:{symbol}:{style} Redis key (1-day TTL).
+        # No gate key = gate not yet run (allow entry; first BUY before next alert cycle).
+        try:
+            import redis as _redis_lib
+            from common.config import get_settings as _gs_gate
+            _gate_settings = _gs_gate()
+            _gate_redis = _redis_lib.Redis.from_url(_gate_settings.redis_url, decode_responses=True)
+            _style = signal_data.get("horizon", "SWING")
+            _cgval = _gate_redis.get(f"conv_gate:{stock.symbol}:{_style}")
+            if _cgval:
+                _cgdata = json.loads(_cgval)
+                # sent=False means the gate explicitly failed for this BUY signal
+                if _cgdata.get("signal") == "BUY" and _cgdata.get("sent") is False:
+                    _failed_layers = _cgdata.get("failed", [])
+                    log.info("paper.entry_gate_blocked",
+                             symbol=stock.symbol, style=_style, failed=_failed_layers[:2])
+                    continue
+        except Exception:
+            pass  # Redis unavailable or parse error → allow entry (fail-open)
+
         # Entry qualifier: Decision Engine is authoritative; _should_enter() is the fallback.
         de_mode = cfg.get("decision_engine_mode", "primary")
         kscore_f = float(ranking.score) if ranking and ranking.score is not None else None

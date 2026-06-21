@@ -729,29 +729,33 @@ export default function SignalFiltersPage() {
                     <td style={{ ...TD, minWidth: 110 }}>
                       {row.conviction == null ? (
                         <span style={{ color: '#475569', fontSize: 11 }}>—</span>
-                      ) : row.conviction.sent ? (
-                        <span style={{ display: 'block', lineHeight: 1.5 }}>
-                          <span style={{ color: '#22c55e', fontSize: 11, fontWeight: 700 }}>✓ Sent</span>
-                          <span style={{ display: 'block', color: '#475569', fontSize: 10 }}>
-                            {row.conviction.sent_at
-                              ? `Sent: ${fmtTs(row.conviction.sent_at)}`
-                              : `Checked: ${fmtTs(row.conviction.ts)}`}
+                      ) : (() => {
+                        const tier = (row.conviction as any).conviction_tier as string | undefined;
+                        const gateScore = (row.conviction as any).gate_score as string | undefined;
+                        const tierColor = tier === 'full' ? '#22c55e' : tier === 'near' ? '#fbbf24' : '#f87171';
+                        const tierLabel = tier === 'full' ? 'FULL' : tier === 'near' ? 'NEAR' : 'FAILED';
+                        const allLayers = [...(row.conviction.passed || []).map((p: string) => `✓ ${p}`), ...(row.conviction.failed || []).map((f: string) => `✗ ${f}`)];
+                        const tooltipText = allLayers.join('\n') || (row.conviction.failed || []).join('\n');
+                        return (
+                          <span title={tooltipText || undefined} style={{ cursor: tooltipText ? 'help' : 'default', display: 'block', lineHeight: 1.5 }}>
+                            <span style={{ color: tierColor, fontSize: 11, fontWeight: 700 }}>
+                              {tier ? tierLabel : (row.conviction.sent ? '✓ Sent' : '✗ Failed')}
+                              {gateScore && <span style={{ color: '#475569', fontWeight: 400, marginLeft: 4 }}>({gateScore})</span>}
+                            </span>
+                            <span style={{ display: 'block', color: '#475569', fontSize: 10 }}>
+                              {row.conviction.sent_at
+                                ? `Sent: ${fmtTs(row.conviction.sent_at)}`
+                                : `Checked: ${fmtTs(row.conviction.ts)}`}
+                            </span>
+                            {!row.conviction.sent && (row.conviction.failed || []).length > 0 && (
+                              <span style={{ display: 'block', color: '#64748b', fontSize: 10 }}>
+                                {row.conviction.failed[0]?.slice(0, 30)}{(row.conviction.failed[0] || '').length > 30 ? '…' : ''}
+                                {(row.conviction.failed || []).length > 1 && ` +${row.conviction.failed.length - 1}`}
+                              </span>
+                            )}
                           </span>
-                        </span>
-                      ) : (
-                        <span
-                          title={row.conviction.failed.join('\n')}
-                          style={{ color: '#f87171', fontSize: 11, cursor: 'help', display: 'block', lineHeight: 1.5 }}
-                        >
-                          ✗ {row.conviction.failed[0] ?? 'Gate failed'}
-                          {row.conviction.failed.length > 1 && (
-                            <span style={{ color: '#64748b' }}> +{row.conviction.failed.length - 1}</span>
-                          )}
-                          <span style={{ display: 'block', color: '#475569', fontSize: 10 }}>
-                            {`Checked: ${fmtTs(row.conviction.ts)}`}
-                          </span>
-                        </span>
-                      )}
+                        );
+                      })()}
                     </td>
 
                     {/* Bull% */}

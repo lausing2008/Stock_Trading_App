@@ -6911,7 +6911,7 @@ const ITEMS: Item[] = [
     title: 'Fix paper trading gate bypass — replace _should_enter() with decision-engine verdict',
     what: 'Paper trading uses _should_enter() which reimplements gate logic inline with different thresholds vs _is_conviction_buy() in the scheduler. Decision-engine runs in "shadow mode" — its verdicts are logged but not used. Paper trades can enter positions that the conviction gate explicitly rejects. Also: STYLE_PARAMS mismatch — decision-engine SWING stop is 8.8%, paper trading SWING stop is 5.5%. Game plans from decision-engine are inconsistent with what paper trading executes.',
     fix: 'Replace _should_enter() with a call to decision-engine verdict (BUY = enter, SKIP/BLOCKED/HOLD = skip). Create shared STYLE_PARAMS config (JSON) imported by both decision-engine and paper trading. Resolve SWING stop discrepancy (validate against closed trade win rates). Remove inline gate reimplementation.',
-    implementedNote: 'Partial fix 2026-06-20: SWING STYLE_PARAMS aligned — decision-engine aggregator.py SWING stop_pct corrected from 0.880 (−12%) to 0.945 (−5.5%), entry2 0.965, breakout 1.020, target 1.120 — now consistent with paper_trading_engine.py and scheduler.py. Full gate unification (replacing _should_enter() with decision-engine verdict call) remains as follow-up work.',
+    implementedNote: 'Partial fix 2026-06-20: SWING STYLE_PARAMS aligned — decision-engine aggregator.py SWING stop_pct corrected from 0.880 (−12%) to 0.945 (−5.5%), entry2 0.965, breakout 1.020, target 1.120 — now consistent with paper_trading_engine.py and scheduler.py. 2026-06-21: Added conviction gate hard-block in paper_trading_engine.py — before the Decision Engine entry check, reads conv_gate:{symbol}:{style} Redis key; if signal=="BUY" and sent==False (gate explicitly failed), skips entry and logs paper.entry_gate_blocked. Fail-open if Redis unavailable. Full gate unification (replacing _should_enter() with direct decision-engine verdict call) remains as follow-up work.',
   },
   {
     id: 'TIER66-SIGNAL-BUGS',
@@ -6939,13 +6939,14 @@ const ITEMS: Item[] = [
   // ── Tier 67 — High Priority: Gate Transparency + Game Plan + Opportunities ────
   {
     id: 'TIER67-GATE-LAYERS',
-    tier: 67, severity: 'high', defaultStatus: 'todo',
-    file: 'signal-engine/src/generators/signals.py · frontend/src/pages/stock/[symbol].tsx',
+    tier: 67, severity: 'high', defaultStatus: 'done',
+    file: 'services/market-data/src/services/scheduler.py · frontend/src/pages/signal-filters.tsx',
     effort: '3h',
-    impact: 'High — users cannot see why Gate is NEAR vs FULL; removes the "black box" and turns Gate into a diagnostic tool; enables users to wait for specific conditions to resolve',
+    impact: 'High — users can now see FULL/NEAR/FAILED conviction tier with gate score (e.g. 5/7) and hover tooltip listing every passed/failed layer on the Signal Filter page',
     title: 'Conviction gate layer transparency — expose per-layer PASS/FAIL with actual values',
     what: 'The conviction gate runs checks (K-Score, uptrend structure, RSI bounds, MACD, OBV, ADX, ML probability, disqualifiers) but stores no structured per-layer breakdown. The frontend reconstructs FULL/NEAR/FAILED from the reasons dict heuristically. Users see "NEAR" but cannot tell which specific layer is failing or what value it needs to reach to pass.',
     fix: 'Add conviction_layers dict to signal reasons: each layer stores {status: "PASS"|"SOFT"|"FAIL", value: actual_value, threshold: condition}. Add gate_score (e.g. 6/8). Frontend reads conviction_layers directly and renders a mini breakdown: each layer as a colored row (green PASS, yellow SOFT, red FAIL) with the actual value shown.',
+    implementedNote: 'Done 2026-06-21: scheduler.py _store_conviction() now derives conviction_tier (full/near/failed) from passed/failed layer lists — hard failures = any non-soft layer failing, near = ≤1 soft failure. Stores conviction_tier and gate_score (e.g. "5/7") in Redis conv_gate:{symbol}:{style} key. signal-filters.tsx conviction gate cell now shows colored FULL/NEAR/FAILED badge with gate score; hover tooltip lists all passed (✓) and failed (✗) layers.',
   },
   {
     id: 'TIER67-GAME-PLAN-ATR',
@@ -7077,14 +7078,14 @@ const ITEMS: Item[] = [
   // ── Tier 87 — Outcome-Informed ML Retraining (roadmap) ───────────────────
   {
     id: 'TIER87-OUTCOME-INFORMED-RETRAIN',
-    tier: 87, severity: 'feature', defaultStatus: 'todo',
-    file: 'services/ml-prediction/src/training/trainer.py, shared/db/models.py:SignalOutcome',
-    implementedNote: 'Roadmap: After each weekly tune_all, augment the training dataset with closed signal_outcomes as additional labeled examples. Each outcome row has: entry date, symbol, confidence, ta_score, ml_prob, fused_prob, is_correct (label), pct_return. This converts live trading results into additional training data with real labels — not synthetic price-history labels. Weight these examples 2× to prioritise recent live trading data over historical price labels.',
+    tier: 87, severity: 'feature', defaultStatus: 'done',
+    file: 'services/ml-prediction/src/training/trainer.py',
     effort: '1 week',
     impact: 'High — models trained on real trading outcomes (not just price history labels) are the institutional standard. Live data has implicit alpha from the strategy itself, which synthetic training labels cannot capture.',
     title: 'Outcome-informed ML retraining: augment training data with closed signal_outcomes',
     what: 'Models are trained on historical price data with synthetic forward-return labels. Closed signal_outcomes records contain real labels (is_correct) tied to actual strategy decisions — higher quality than price-history labels. These are never used in training.',
     fix: 'In train_model(), after build_features(), append signal_outcomes rows for this symbol as additional training examples (normalized feature vector from reasons JSON + is_correct label). Apply 2× sample weight to these rows. Fall back to pure price-history training if <20 outcomes exist.',
+    implementedNote: 'Done 2026-06-21: Added _load_outcome_features(symbol, style, lookback_days=365) which queries closed SignalOutcome rows (is_correct not None, ≥20 required), fetches price history for signal_date−400d, reconstructs feature vectors via build_features(). In train_model() after the len(X)<200 guard, outcome rows are appended (pd.concat + sort_index) and tracked in outcome_dates_set. Final train_weights multiplied 2× for outcome rows. n_outcome_rows logged in model bundle. Falls back silently if <20 outcomes or feature reconstruction fails.',
   },
 
   // ── Tier 86 — Self-Healing Watchdog (2026-06-21) ────────────────────────────────────────────

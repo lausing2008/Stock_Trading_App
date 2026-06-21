@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import EarningsEvent, Fundamental, Price, SessionLocal, Stock, TimeFrame
+from db import EarningsEvent, Fundamental, Price, SessionLocal, Signal, SignalOutcome, Stock, TimeFrame
 from sqlalchemy import desc as sa_desc
 
 from ..features import build_features, compute_label_threshold, fetch_macro_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS, WEEKLY_COLUMNS
@@ -303,6 +303,90 @@ def _blend_weights(y: np.ndarray, recency_w: np.ndarray) -> np.ndarray:
     return combined / combined.mean()
 
 
+def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int = 365) -> tuple[pd.DataFrame, pd.Series]:
+    """Load closed signal_outcomes for this symbol and reconstruct feature vectors.
+
+    For each closed SignalOutcome (is_correct is not None), looks up the price bar
+    on signal_date and rebuilds the feature vector using the same build_features()
+    pipeline. Returns (X_outcomes, y_outcomes) aligned on date index.
+
+    Min 20 outcomes required — otherwise returns empty DataFrames.
+    Called from train_model() to augment training data with real live trading labels.
+    Outcomes are weighted 2× relative to price-history training rows.
+    """
+    from datetime import date as _date, timedelta as _td
+    from db import SignalHorizon
+
+    cutoff = _date.today() - _td(days=lookback_days)
+    try:
+        horizon_val = SignalHorizon[style.upper()]
+    except KeyError:
+        return pd.DataFrame(), pd.Series(dtype=int)
+
+    with SessionLocal() as session:
+        stock = session.execute(select(Stock).where(Stock.symbol == symbol.upper())).scalar_one_or_none()
+        if stock is None:
+            return pd.DataFrame(), pd.Series(dtype=int)
+
+        outcomes = session.execute(
+            select(SignalOutcome).where(
+                SignalOutcome.stock_id == stock.id,
+                SignalOutcome.horizon == horizon_val,
+                SignalOutcome.signal_direction == "BUY",
+                SignalOutcome.is_correct.is_not(None),
+                SignalOutcome.signal_date >= cutoff,
+            )
+        ).scalars().all()
+
+        if len(outcomes) < 20:
+            return pd.DataFrame(), pd.Series(dtype=int)
+
+        # For each outcome, look up all price bars from (signal_date - 300d) to build features
+        outcome_dates = sorted({o.signal_date for o in outcomes})
+        signal_date_set = {o.signal_date for o in outcomes}
+        label_map = {o.signal_date: int(o.is_correct) for o in outcomes}
+
+        # Fetch enough price history to build features for the earliest signal date
+        earliest = min(outcome_dates) - _td(days=400)
+        prices = session.execute(
+            select(Price).where(
+                Price.stock_id == stock.id,
+                Price.ts >= earliest,
+                Price.timeframe == TimeFrame.D1,
+            ).order_by(Price.ts)
+        ).scalars().all()
+
+    if len(prices) < 100:
+        return pd.DataFrame(), pd.Series(dtype=int)
+
+    df = pd.DataFrame([{
+        "ts": p.ts,
+        "open": p.open, "high": p.high, "low": p.low, "close": p.close, "volume": p.volume,
+    } for p in prices])
+    df["ts"] = pd.to_datetime(df["ts"])
+    df = df.set_index("ts").sort_index()
+    df.index = df.index.normalize()  # strip time component for date alignment
+
+    try:
+        X_full, y_dir, _ = build_features(df, horizon=5, macro_df=None)
+    except Exception:
+        return pd.DataFrame(), pd.Series(dtype=int)
+
+    if X_full.empty:
+        return pd.DataFrame(), pd.Series(dtype=int)
+
+    # Filter to only outcome dates
+    X_full.index = X_full.index.normalize()
+    outcome_idx = [d for d in [pd.Timestamp(d) for d in signal_date_set] if d in X_full.index]
+    if not outcome_idx:
+        return pd.DataFrame(), pd.Series(dtype=int)
+
+    X_out = X_full.loc[outcome_idx]
+    y_out = pd.Series([label_map[d.date()] for d in outcome_idx], index=X_out.index, dtype=int)
+
+    return X_out, y_out
+
+
 def train_model(
     symbol: str,
     model_name: str = "xgboost",
@@ -354,6 +438,34 @@ def train_model(
     if len(X) < 200:
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
         return {"symbol": symbol, "skipped": True, "reason": f"only {len(X)} clean samples"}
+
+    # Tier 87 — Outcome-informed augmentation: append closed signal_outcomes as
+    # additional training rows. These rows carry real live-trading labels (is_correct)
+    # tied to actual strategy decisions — higher-quality ground truth than synthetic
+    # forward-return labels. Falls back silently if <20 outcomes.
+    # Outcome rows are 2× weighted in the final model fit but NOT in CV (to avoid
+    # contaminating the OOS CV measurement with live-trading data).
+    n_outcome_rows = 0
+    outcome_dates_set: set = set()  # tracks which X rows came from outcomes
+    try:
+        X_out, y_out = _load_outcome_features(symbol, style=style)
+        if not X_out.empty and len(X_out) >= 20:
+            shared_cols = [c for c in FEATURE_COLUMNS if c in X_out.columns and c in X.columns]
+            if shared_cols:
+                X_out = X_out[shared_cols]
+                # Drop outcome rows that exactly overlap main training set dates
+                overlap_idx = X.index.intersection(X_out.index)
+                X_out = X_out.drop(index=overlap_idx, errors="ignore")
+                y_out = y_out.drop(index=overlap_idx, errors="ignore")
+                if len(X_out) >= 5:
+                    # Track which dates are outcome rows for later 2× weighting
+                    outcome_dates_set = set(X_out.index)
+                    X = pd.concat([X[shared_cols], X_out]).sort_index()
+                    y_dir = pd.concat([y_dir, y_out]).reindex(X.index)
+                    n_outcome_rows = len(X_out)
+                    log.info("train.outcome_augment", symbol=symbol, n_outcomes=n_outcome_rows)
+    except Exception as _oe:
+        log.warning("train.outcome_augment_failed", symbol=symbol, error=str(_oe))
 
     # --- Hyperparams: passed > saved tuned > defaults ---
     if hyperparams is None and model_name == "xgboost":
@@ -431,6 +543,10 @@ def train_model(
     # ML-FIX-2: recency + balanced class weights blended for final training
     _recency_w = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
     train_weights = _blend_weights(y_train.values, _recency_w)
+    # Tier 87: apply 2× multiplier to outcome rows (real live-trading labels)
+    if outcome_dates_set:
+        _outcome_mask = np.array([d in outcome_dates_set for d in X_train.index])
+        train_weights[_outcome_mask] *= 2.0
 
     # Early stopping on the dedicated early-stop set (X_es_s); LightGBM handles via its own
     # callbacks (AUD-M10). AUD-C2: X_cal_s is intentionally NOT passed here — keeping it clean
@@ -564,6 +680,7 @@ def train_model(
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "style": style,
         "survivorship_bias_warning": True,  # training universe is active stocks only
+        "n_outcome_rows": n_outcome_rows,  # Tier 87: live trading outcome rows used in training
     }
     # RACE-001: atomic write — write to a temp file in the same directory, then rename.
     # joblib.dump to the final path directly can produce a corrupt read if a prediction

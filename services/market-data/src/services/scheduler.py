@@ -147,7 +147,7 @@ def _record_job_status(job_name: str, status: str, duration_s: float, error: str
         pass
 
 
-def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None) -> None:
+def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed: list, signal: str, sent_at: str | None = None, conviction_tier: str | None = None) -> None:
     try:
         r = _get_redis()
         now = datetime.now(timezone.utc).isoformat()
@@ -159,6 +159,17 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
                     sent_at = json.loads(existing).get("sent_at")
             except Exception:
                 pass
+        # Derive conviction_tier from passed/failed if not explicitly provided
+        if conviction_tier is None:
+            _SOFT = ("OBV", "ADX", "ML probability", "MACD")
+            soft_f = [f for f in failed if any(kw in f for kw in _SOFT)]
+            hard_f = [f for f in failed if f not in soft_f]
+            if len(failed) == 0:
+                conviction_tier = "full"
+            elif len(hard_f) == 0 and len(soft_f) == 1:
+                conviction_tier = "near"
+            else:
+                conviction_tier = "failed"
         r.setex(
             f"conv_gate:{symbol}:{style}",
             86400,  # 1-day TTL — expires with the trading day so stale conviction data doesn't persist
@@ -169,6 +180,8 @@ def _store_conviction(symbol: str, style: str, sent: bool, passed: list, failed:
                 "signal": signal,
                 "ts": now,
                 "sent_at": sent_at,
+                "conviction_tier": conviction_tier,  # "full" | "near" | "failed"
+                "gate_score": f"{len(passed)}/{len(passed) + len(failed)}",
             }),
         )
     except Exception:
@@ -1142,7 +1155,7 @@ def check_signal_alerts() -> None:
                                 reason="conviction_layers_failed", failed=failed,
                                 regime=current_regime,
                             )
-                            _store_conviction(alert.symbol, style, False, passed, failed, current)
+                            _store_conviction(alert.symbol, style, False, passed, failed, current, conviction_tier=conviction_tier)
                             continue  # last_signal NOT updated — retried next run
                         conviction_passed = passed
                         near_conviction = conviction_tier == "near"
@@ -1246,7 +1259,7 @@ def check_signal_alerts() -> None:
                     _alert_fail_counts.pop(alert.id, None)  # reset failure counter
                     log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
                     _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current,
-                                      sent_at=now_utc.isoformat())
+                                      sent_at=now_utc.isoformat(), conviction_tier=conviction_tier or "full")
                 else:
                     # DP-1: cap retries to prevent infinite loop on broken email config
                     _alert_fail_counts[alert.id] = _alert_fail_counts.get(alert.id, 0) + 1
