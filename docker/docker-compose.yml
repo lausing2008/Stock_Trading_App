@@ -113,6 +113,13 @@ services:
       dockerfile: services/decision-engine/Dockerfile
     #ports: ["8009:8009"]
 
+  event-intelligence:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/event-intelligence/Dockerfile
+    #ports: ["8010:8010"]
+
   api-gateway:
     <<: *py-common
     build:
@@ -141,6 +148,8 @@ services:
       research-engine:
         condition: service_healthy
       decision-engine:
+        condition: service_healthy
+      event-intelligence:
         condition: service_healthy
 
   frontend:

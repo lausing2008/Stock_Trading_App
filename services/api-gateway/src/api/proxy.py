@@ -34,6 +34,8 @@ _ROUTES = {
     "portfolio-risk": _settings.market_data_url,
     "research": _settings.research_engine_url,
     "decide":   _settings.decision_engine_url,
+    "events":   _settings.event_intelligence_url,
+    "catalyst": _settings.event_intelligence_url,
     "watchlist": _settings.market_data_url,
     "watchlists": _settings.market_data_url,
     "auth": _settings.market_data_url,

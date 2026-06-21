@@ -240,6 +240,33 @@ def _bulk_persist(symbols: list[str]) -> None:
                 if others:
                     ai.reasons["cross_style_buy_styles"] = others
 
+            # Enrich reasons with catalyst intelligence (once per symbol, fail-silent)
+            _catalyst: dict | None = None
+            try:
+                import httpx as _httpx_cat
+                _cr = _httpx_cat.get(
+                    f"{_settings.event_intelligence_url}/catalyst/{symbol}",
+                    headers={"Authorization": f"Bearer {_service_token()}"},
+                    timeout=2.0,
+                )
+                if _cr.status_code == 200:
+                    _catalyst = _cr.json()
+            except Exception:
+                pass
+
+            if _catalyst:
+                for _ai in all_sig.values():
+                    if _ai.reasons is None:
+                        _ai.reasons = {}
+                    if _catalyst.get("catalyst_score") is not None:
+                        _ai.reasons["catalyst_score"] = round(_catalyst["catalyst_score"], 1)
+                    if _catalyst.get("insider_score") is not None:
+                        _ai.reasons["insider_score"] = round(_catalyst["insider_score"], 1)
+                    if _catalyst.get("congress_score") is not None:
+                        _ai.reasons["congress_score"] = round(_catalyst["congress_score"], 1)
+                    if _catalyst.get("composite_score") is not None:
+                        _ai.reasons["composite_score"] = round(_catalyst["composite_score"], 1)
+
             with SessionLocal() as s:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
                 if not stock:

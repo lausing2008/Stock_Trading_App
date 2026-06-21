@@ -691,3 +691,173 @@ class Fundamental(Base):
     __table_args__ = (
         UniqueConstraint("stock_id", "as_of", name="uq_fundamentals_stock_date"),
     )
+
+
+# ── Event Intelligence Platform ───────────────────────────────────────────────
+
+class EconomicEvent(Base):
+    __tablename__ = "economic_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    country: Mapped[str] = mapped_column(String(8), index=True)
+    event_date: Mapped[datetime] = mapped_column(DateTime, index=True)
+    actual_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expected_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    previous_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    importance: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("event_type", "country", "event_date", name="uq_economic_event"),
+    )
+
+
+class EarningsEvent(Base):
+    __tablename__ = "earnings_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    report_date: Mapped[date] = mapped_column(Date, index=True)
+    period: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    fiscal_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fiscal_quarter: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eps_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eps_actual: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_actual: Mapped[float | None] = mapped_column(Float, nullable=True)
+    surprise_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_surprise_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_strength_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    post_earnings_return_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    post_earnings_return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", "fiscal_year", "fiscal_quarter", name="uq_earnings_stock_period"),
+        Index("ix_earnings_stock_date", "stock_id", "report_date"),
+    )
+
+
+class InsiderTransaction(Base):
+    __tablename__ = "insider_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    insider_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    insider_role: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    transaction_type: Mapped[str] = mapped_column(String(32))
+    shares: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    price_per_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    transaction_date: Mapped[date] = mapped_column(Date, index=True)
+    filing_date: Mapped[date] = mapped_column(Date, index=True)
+    accession_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("accession_number", name="uq_insider_accession"),
+        Index("ix_insider_stock_date", "stock_id", "transaction_date"),
+    )
+
+
+class CongressTrade(Base):
+    __tablename__ = "congress_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    politician_name: Mapped[str] = mapped_column(String(255), index=True)
+    party: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    chamber: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    state: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    stock_id: Mapped[int | None] = mapped_column(ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)
+    transaction_type: Mapped[str] = mapped_column(String(32))
+    amount_range: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    amount_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trade_date: Mapped[date | None] = mapped_column(Date, index=True, nullable=True)
+    disclosure_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("politician_name", "ticker", "trade_date", "transaction_type", name="uq_congress_trade"),
+        Index("ix_congress_ticker_date", "ticker", "trade_date"),
+    )
+
+
+class InstitutionalHolding(Base):
+    __tablename__ = "institutional_holdings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fund_name: Mapped[str] = mapped_column(String(255), index=True)
+    fund_cik: Mapped[str] = mapped_column(String(32), index=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    period_date: Mapped[date] = mapped_column(Date, index=True)
+    shares: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    value_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("fund_cik", "stock_id", "period_date", name="uq_inst_holding"),
+    )
+
+
+class InstitutionalTransaction(Base):
+    __tablename__ = "institutional_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fund_name: Mapped[str] = mapped_column(String(255), index=True)
+    fund_cik: Mapped[str] = mapped_column(String(32))
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    period_date: Mapped[date] = mapped_column(Date, index=True)
+    change_type: Mapped[str] = mapped_column(String(32))
+    shares_change: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    value_change_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("fund_cik", "stock_id", "period_date", name="uq_inst_txn"),
+    )
+
+
+class PoliticalEvent(Base):
+    __tablename__ = "political_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int | None] = mapped_column(ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(512))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    amount_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    agency: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    event_date: Mapped[date] = mapped_column(Date, index=True)
+    impact: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class CatalystScore(Base):
+    __tablename__ = "catalyst_scores"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    catalyst_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    insider_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    congress_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    institutional_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    economic_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    composite_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_days_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_insider_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_congress_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", name="uq_catalyst_stock"),
+    )

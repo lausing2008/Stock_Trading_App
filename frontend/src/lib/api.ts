@@ -463,6 +463,23 @@ export const api = {
   mlFeatureImportance: (symbol: string, model = 'xgboost') =>
     request<FeatureImportanceResult>(`/ml/features/${symbol}?model=${model}`),
 
+  // ── Event Intelligence ──────────────────────────────────────────────────
+  eventsOverview: () => request<EventIntelOverview>('/events/overview'),
+  eventsEconomic: (days = 14, market = 'US') => request<EconomicEventsResponse>(`/events/economic?days=${days}&market=${market}`),
+  eventsEarningsCalendar: (days = 14) => request<EarningsEvent[]>(`/events/earnings/calendar?days=${days}`),
+  eventsEarningsSymbol: (symbol: string) => request<EarningsEvent[]>(`/events/earnings?symbol=${symbol}`),
+  eventsInsider: (symbol: string, days = 90) => request<InsiderResponse>(`/events/insider/${symbol}?days=${days}`),
+  eventsInsiderLeaderboard: (days = 30) => request<InsiderLeaderItem[]>(`/events/insider/leaderboard?days=${days}`),
+  eventsCongress: (symbol: string, days = 90) => request<CongressResponse>(`/events/congress/${symbol}?days=${days}`),
+  eventsCongressLeaderboard: (days = 90) => request<CongressLeaderItem[]>(`/events/congress/leaderboard?days=${days}`),
+  eventsCongressRecent: (days = 30) => request<CongressTrade[]>(`/events/congress/recent?days=${days}`),
+  eventsInstitutional: (symbol: string) => request<InstitutionalResponse>(`/events/institutional/${symbol}`),
+  eventsPolitical: (days = 30) => request<PoliticalEvent[]>(`/events/political?days=${days}`),
+  catalystScore: (symbol: string) => request<CatalystScore>(`/catalyst/${symbol}`),
+  catalystLeaderboard: (limit = 20) => request<CatalystLeaderItem[]>(`/catalyst/leaderboard?limit=${limit}`),
+  riskLeaderboard: (limit = 20) => request<CatalystLeaderItem[]>(`/catalyst/risk-leaderboard?limit=${limit}`),
+  compositeLeaderboard: (limit = 20) => request<CatalystLeaderItem[]>(`/catalyst/composite-leaderboard?limit=${limit}`),
+
   // ── Broker integration ──────────────────────────────────────────────────
   brokerList: () => request<BrokerConnection[]>('/broker/connections'),
   brokerCreate: (body: CreateBrokerConnectionPayload) =>
@@ -1520,4 +1537,149 @@ export type DeDivergenceResponse = {
   agreement_rate_pct: number | null;
   divergences: DeDivergenceEvent[];
   agreements: DeAgreementEvent[];
+};
+
+// ── Event Intelligence types ─────────────────────────────────────────────────
+
+export type EconomicEvent = {
+  id: number;
+  event_name: string;
+  event_type: string;
+  market: string;
+  event_date: string;
+  event_time: string | null;
+  previous_value: number | null;
+  forecast_value: number | null;
+  actual_value: number | null;
+  impact_level: string | null;
+  notes: string | null;
+};
+
+export type EconomicEventsResponse = {
+  events: EconomicEvent[];
+  fomc_days_away: number | null;
+};
+
+export type EarningsEvent = {
+  id: number;
+  symbol: string;
+  earnings_date: string;
+  estimated_eps: number | null;
+  actual_eps: number | null;
+  estimated_revenue: number | null;
+  actual_revenue: number | null;
+  beat_rate: number | null;
+  avg_beat_pct: number | null;
+  surprise_pct: number | null;
+  is_upcoming: boolean;
+};
+
+export type InsiderTransaction = {
+  id: number;
+  symbol: string;
+  insider_name: string;
+  insider_role: string;
+  transaction_type: string;
+  shares: number | null;
+  price_per_share: number | null;
+  total_value: number | null;
+  transaction_date: string;
+  filing_date: string | null;
+};
+
+export type InsiderResponse = {
+  symbol: string;
+  score: number;
+  transactions: InsiderTransaction[];
+};
+
+export type InsiderLeaderItem = {
+  symbol: string;
+  score: number;
+  buy_count: number;
+  sell_count: number;
+  net_value: number | null;
+};
+
+export type CongressTrade = {
+  id: number;
+  symbol: string;
+  politician_name: string;
+  chamber: string;
+  party: string | null;
+  transaction_type: string;
+  amount_range: string | null;
+  transaction_date: string;
+  disclosure_date: string | null;
+  asset_description: string | null;
+};
+
+export type CongressResponse = {
+  symbol: string;
+  score: number;
+  trades: CongressTrade[];
+};
+
+export type CongressLeaderItem = {
+  symbol: string;
+  score: number;
+  buy_count: number;
+  sell_count: number;
+  politician_count: number;
+};
+
+export type InstitutionalHolding = {
+  fund_name: string;
+  shares: number | null;
+  value_usd: number | null;
+  pct_portfolio: number | null;
+  change_shares: number | null;
+  filing_date: string;
+};
+
+export type InstitutionalResponse = {
+  symbol: string;
+  score: number;
+  fund_count: number;
+  total_value_usd: number | null;
+  holdings: InstitutionalHolding[];
+};
+
+export type PoliticalEvent = {
+  id: number;
+  symbol: string | null;
+  company_name: string;
+  agency: string | null;
+  contract_amount: number | null;
+  award_date: string;
+  description: string | null;
+  sector: string | null;
+};
+
+export type CatalystScore = {
+  symbol: string;
+  earnings_score: number | null;
+  insider_score: number | null;
+  congress_score: number | null;
+  institutional_score: number | null;
+  political_score: number | null;
+  catalyst_score: number | null;
+  risk_score: number | null;
+  composite_score: number | null;
+  updated_at: string;
+};
+
+export type CatalystLeaderItem = {
+  symbol: string;
+  score: number;
+};
+
+export type EventIntelOverview = {
+  economic: { upcoming_count: number; fomc_days_away: number | null };
+  earnings: { upcoming_count: number };
+  insider: { top_buys: InsiderLeaderItem[] };
+  congress: { top_buys: CongressLeaderItem[] };
+  catalyst_leaders: CatalystLeaderItem[];
+  risk_leaders: CatalystLeaderItem[];
+  composite_leaders: CatalystLeaderItem[];
 };

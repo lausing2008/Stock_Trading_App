@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7048,6 +7048,52 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 72 — Event Intelligence Platform (2026-06-21) ──────────────────────────────────────────
+  {
+    id: 'TIER72-EI-SERVICE',
+    tier: 72, severity: 'high', defaultStatus: 'done',
+    file: 'services/event-intelligence/, shared/db/migrations/versions/003_event_intelligence_tables.py',
+    implementedNote: 'Done 2026-06-21: New event-intelligence service (port 8010) with 7 data modules: economic (FRED API + FOMC calendar), earnings (yfinance history + calendar), insider (SEC EDGAR Form 4), congress (House/Senate Stock Watcher S3 JSON), institutional (13F-HR for 7 major funds), political (USASpending.gov contracts), catalyst (scoring engine). 8 new DB tables via Alembic migration 003. APScheduler runs daily syncs at UTC 06:00–08:00, catalyst recompute 4×/day, institutional weekly.',
+    effort: '8h',
+    impact: 'High — adds a new intelligence layer: economic calendar, earnings beat rates, insider buying pressure, congress trades, institutional conviction, political contract tailwinds',
+    title: 'Event Intelligence Platform: 7-module service with FRED, SEC EDGAR, Congress, Institutional, USASpending data',
+    what: 'No event-driven context existed alongside TA/ML signals. A BUY signal had no visibility into whether insiders were selling, FOMC was in 3 days, or the company just disclosed a massive government contract. Signals were purely price-based.',
+    fix: 'New bounded service aggregates 5 free data sources into catalyst scores (0–100), risk scores, and composite scores. Exposed via /events/* and /catalyst/* routes. Docs in docs/EVENT_INTELLIGENCE.md.',
+  },
+  {
+    id: 'TIER72-EI-SCORING',
+    tier: 72, severity: 'high', defaultStatus: 'done',
+    file: 'services/event-intelligence/src/services/catalyst.py',
+    implementedNote: 'Done 2026-06-21: Scoring engine computes 5 component scores: earnings (proximity decay + historical beat rate), insider (−100 to +100, role-weighted: CEO/CFO 1.5×, Director 0.8×, Officer 1.0×), congress (0–100, net purchase bias, multi-politician bonus), institutional (fund count + value weighted, buy change bonus), political (contract value log-scaled). Catalyst score = weighted composite of components. Risk score = inverse of earnings proximity + insider selling + FOMC proximity. AI Composite = 0.5×catalyst + 0.3×(100−risk) + 0.2×earnings.',
+    effort: '3h',
+    impact: 'High — actionable scores surface which stocks have aligned smart-money signals; catalyst_score, insider_score, congress_score, composite_score injected into signal engine reasons dict',
+    title: 'Catalyst scoring engine: earnings + insider + congress + institutional + political → composite score',
+    what: 'Raw event data alone is insufficient for signal integration. A BUY signal needs to know the net directional pressure from each event type, normalized to a comparable scale.',
+    fix: 'compute_and_store() fetches all event types for a symbol, runs 5 scoring functions, writes to catalyst_scores table. Signal engine _bulk_persist calls GET /catalyst/{symbol} once per symbol and adds catalyst_score/insider_score/congress_score/composite_score to reasons dict.',
+  },
+  {
+    id: 'TIER72-EI-FRONTEND',
+    tier: 72, severity: 'medium', defaultStatus: 'done',
+    file: 'frontend/src/pages/intelligence.tsx, frontend/src/lib/api.ts',
+    implementedNote: 'Done 2026-06-21: New /intelligence page with 8 tabs: Overview (summary cards + top insider/congress/composite leaders), Economic Calendar (FRED events + FOMC countdown), Earnings Calendar (yfinance upcoming + EPS surprise %), Insider Activity (leaderboard: score bar, buy/sell count, net value), Congress Trades (leaderboard + recent trades by politician), Catalyst Leaders (top 50 by catalyst score), Risk Leaders (top 50 by risk score), Political Contracts (USASpending.gov awards). 15 new api.ts methods + 12 new TypeScript types (EconomicEvent, EarningsEvent, InsiderTransaction, CongressTrade, CatalystScore, etc.).',
+    effort: '3h',
+    impact: 'Medium — investment intelligence dashboard accessible from the main app; all event data browsable with score bars and color coding',
+    title: '/intelligence page: 8-tab event intelligence dashboard',
+    what: 'All event data was in the DB but not visible. Users had no way to browse insider activity, upcoming FOMC dates, or see which stocks have the strongest congressional buying interest.',
+    fix: 'New /intelligence page renders all event categories with tables, score bars, and leaderboards. Tabs: Overview · Economic Calendar · Earnings Calendar · Insider Activity · Congress Trades · Catalyst Leaders · Risk Leaders · Political Contracts.',
+  },
+  {
+    id: 'TIER72-EI-SIGNAL-WIRING',
+    tier: 72, severity: 'medium', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:243',
+    implementedNote: 'Done 2026-06-21: _bulk_persist() fetches GET /catalyst/{symbol} (with service token auth) once per symbol before DB writes. If response is 200, adds catalyst_score, insider_score, congress_score, composite_score to ai.reasons for all 4 styles. Fail-silent (try/except): event-intelligence unavailable or not yet synced never blocks signal generation. Scores appear in signal detail popup and reasons audit trail.',
+    effort: '30m',
+    impact: 'Medium — catalyst intelligence now flows into the signal reasons audit trail; visible in signal detail popup; future scoring models can use as feature',
+    title: 'Catalyst scores wired into signal engine _bulk_persist reasons dict',
+    what: 'catalyst_score is computed by event-intelligence but invisible to the signal engine. Signals stored in DB had no awareness of catalyst context.',
+    fix: 'One GET /catalyst/{symbol} call per symbol in _bulk_persist; if score exists, inject into reasons for all 4 style horizons before the INSERT ... ON CONFLICT upsert.',
+  },
+
   // ── Tier 71 — Tech Debt: Dead Code + Gate Auth + Signal Upsert + Health Dashboard (2026-06-21) ─
   {
     id: 'TIER71-DEAD-CODE',
@@ -7296,6 +7342,7 @@ const TIER_LABEL: Record<Tier, string> = {
   69: 'Tier 69 — Refactoring & Tech Debt: Dead Code + Health Dashboard + DB Constraint',
   70: 'Tier 70 — Deep Audit Fixes: Parallel ML + OOS Flag + R:R Ratio + Research Dedup',
   71: 'Tier 71 — Tech Debt: Dead Code + Gate Auth + Signal Upsert + Health Dashboard',
+  72: 'Tier 72 — Event Intelligence Platform: Economic · Earnings · Insider · Congress · Catalyst',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7370,6 +7417,7 @@ const TIER_COLOR: Record<Tier, string> = {
   69: '#34d399',
   70: '#818cf8',
   71: '#6ee7b7',
+  72: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
