@@ -206,7 +206,7 @@ export const api = {
   congressTrades: (days = 90, politician?: string) => {
     const params = new URLSearchParams({ days: String(days) });
     if (politician) params.set('politician', politician);
-    return request<CongressTrade[]>(`/congress/trades?${params}`);
+    return request<CongressTradeRecord[]>(`/congress/trades?${params}`);
   },
 
   // Signal accuracy tracker
