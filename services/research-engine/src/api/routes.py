@@ -84,7 +84,7 @@ def _svc_token() -> str:
     from jose import jwt as _jwt
     payload = {
         "sub": "research-engine",
-        "jti": "research-engine-service",
+        "jti": str(__import__("uuid").uuid4()),
         "exp": int(_time.time()) + 365 * 86400,
     }
     _svc_token_cache = _jwt.encode(payload, _s.jwt_secret, algorithm="HS256")

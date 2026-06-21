@@ -738,6 +738,7 @@ class EarningsEvent(Base):
     __table_args__ = (
         UniqueConstraint("stock_id", "fiscal_year", "fiscal_quarter", name="uq_earnings_stock_period"),
         Index("ix_earnings_stock_date", "stock_id", "report_date"),
+        Index("ix_earnings_report_date", "report_date"),
     )
 
 
@@ -802,6 +803,7 @@ class InstitutionalHolding(Base):
 
     __table_args__ = (
         UniqueConstraint("fund_cik", "stock_id", "period_date", name="uq_inst_holding"),
+        Index("ix_inst_holding_value", "value_usd"),
     )
 
 

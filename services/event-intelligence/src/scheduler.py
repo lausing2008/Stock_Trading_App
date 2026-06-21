@@ -51,7 +51,21 @@ async def job_sync_political():
 
 
 async def job_recompute_catalyst():
-    await _run("recompute_catalyst", catalyst.recompute_all())
+    # Fetch latest ta_score per stock from signals table
+    from db import SessionLocal
+    from sqlalchemy import text
+    _tech_scores = {}
+    try:
+        with SessionLocal() as _s:
+            rows = _s.execute(text(
+                "SELECT DISTINCT ON (stock_id) stock_id, (reasons->>'ta_score')::float AS ta_score "
+                "FROM signals WHERE reasons->>'ta_score' IS NOT NULL "
+                "ORDER BY stock_id, ts DESC"
+            )).fetchall()
+            _tech_scores = {r[0]: float(r[1]) for r in rows if r[1] is not None}
+    except Exception:
+        pass
+    await _run("recompute_catalyst", catalyst.recompute_all(technical_scores=_tech_scores))
 
 
 async def start_scheduler():

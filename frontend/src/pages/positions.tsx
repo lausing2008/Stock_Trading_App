@@ -4,7 +4,7 @@ import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect } from 'react';
-import { api, type LatestPrice, type RankingRow, type SignalSummary, type WatchlistItem, type UserPosition } from '@/lib/api';
+import { api, type LatestPrice, type RankingRow, type SignalSummary, type WatchlistItem, type UserPosition, type ResearchSummary } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
 import { getUsername } from '@/lib/auth';
 
@@ -26,6 +26,14 @@ function sigStyle(label: string) {
   return                       { color: '#facc15', bg: 'rgba(250,204,21,0.1)', border: 'rgba(250,204,21,0.25)' };
 }
 function signalFromScore(s?: number | null) { if (s == null) return null; return s >= 65 ? 'BUY' : s >= 40 ? 'HOLD' : 'SELL'; }
+function researchStyle(rec: string) {
+  if (rec === 'STRONG BUY') return { color: '#4ade80',  bg: 'rgba(74,222,128,0.12)',  border: 'rgba(74,222,128,0.3)'  };
+  if (rec === 'BUY')        return { color: '#86efac',  bg: 'rgba(134,239,172,0.1)',  border: 'rgba(134,239,172,0.25)' };
+  if (rec === 'WATCH')      return { color: '#facc15',  bg: 'rgba(250,204,21,0.1)',   border: 'rgba(250,204,21,0.25)'  };
+  if (rec === 'AVOID')      return { color: '#f97316',  bg: 'rgba(249,115,22,0.1)',   border: 'rgba(249,115,22,0.25)'  };
+  if (rec === 'SELL')       return { color: '#f87171',  bg: 'rgba(239,68,68,0.1)',    border: 'rgba(239,68,68,0.25)'   };
+  return                           { color: '#64748b',  bg: 'rgba(100,116,139,0.08)', border: 'rgba(100,116,139,0.2)'  };
+}
 
 function exportCSV(rows: { symbol: string; shares: number; avgCost: number; curPrice: number | null; mktVal: number | null; pnl: number | null; pnlPct: number | null; currency: string }[]) {
   const header = 'Symbol,Shares,Avg Cost,Current Price,Market Value,P&L ($),P&L (%),Currency';
@@ -108,6 +116,14 @@ export default function Positions() {
   const { data: rankingsData }  = useSWR<{ rankings: RankingRow[] }>(`${u}:rankings-all`, () => api.rankings());
   const { data: signalsData }   = useSWR<SignalSummary[]>(`${u}:signals-${getSignalStyle()}`, () => api.allSignals(getSignalStyle()));
   const { data: watchlistData, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>(`${u}:watchlist`, () => api.listWatchlist());
+
+  /* INT-9: research verdicts for all position symbols */
+  const positionSymbols = useMemo(() => positions.map(p => p.symbol), [positions]);
+  const { data: researchData } = useSWR<Record<string, ResearchSummary>>(
+    positionSymbols.length > 0 ? `${u}:research-batch:${positionSymbols.join(',')}` : null,
+    () => api.getResearchBatch(positionSymbols),
+    { revalidateOnFocus: false, dedupingInterval: 300_000 }
+  );
 
   /* pre-fill symbol from ?add= query (coming from watchlist) */
   useEffect(() => {
@@ -437,6 +453,17 @@ export default function Positions() {
                       {r.changePct != null && <span style={{ color: r.changeUp ? '#4ade80' : '#f87171' }}>{r.changeUp ? '▲' : '▼'} {Math.abs(r.changePct).toFixed(2)}%</span>}
                       {r.rank?.score != null && <span style={{ color: scoreColor(r.rank.score) }}>K{r.rank.score.toFixed(0)}</span>}
                     </div>
+                    {researchData?.[r.symbol] && (() => {
+                      const rec = researchData[r.symbol].recommendation;
+                      const rs = researchStyle(rec);
+                      return (
+                        <div style={{ marginTop: '4px' }}>
+                          <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', color: rs.color, background: rs.bg, border: `1px solid ${rs.border}`, letterSpacing: '0.04em' }}>
+                            Research: {rec}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div style={{ textAlign: 'right', fontSize: '12px', color: '#cbd5e1', fontWeight: 600 }}>{fmt(r.shares, 2).replace(/\.?0+$/, '')}</div>

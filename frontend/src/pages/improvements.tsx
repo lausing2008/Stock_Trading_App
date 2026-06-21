@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7048,6 +7048,74 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 75 — Audit Round 2 Remaining Fixes + Positions Research (2026-06-21) ──────────────────────
+  {
+    id: 'TIER75-DAILY-PNL-DE',
+    tier: 75, severity: 'high', defaultStatus: 'done',
+    file: 'services/market-data/src/services/paper_trading_engine.py:1632,1796,2085',
+    implementedNote: 'Done 2026-06-21: (1) Added daily_pnl_pct parameter to _call_decision_engine() (default 0.0). (2) Added _daily_pnl_pct = 0.0 variable before the daily loss circuit breaker block. (3) Inside the block, after daily_net_pnl is computed: _daily_pnl_pct = round(daily_net_pnl / equity * 100, 2). (4) Call site now passes daily_pnl_pct=_daily_pnl_pct. Decision Engine now receives the actual daily P&L for its hard-reject check.',
+    effort: '30m',
+    impact: 'High — DE daily loss circuit breaker was receiving 0.0 every call and never firing; DE logs were misleading. Now DE sees actual realized P&L for independent validation.',
+    title: 'Fix: daily_pnl_pct=0.0 hardcoded in Decision Engine call — actual value now passed',
+    what: '_call_decision_engine() hardcoded "daily_pnl_pct": 0.0 in the payload. DE check_hard_rejects() uses this to enforce daily loss limit — since it always received 0, the DE daily loss circuit breaker was permanently bypassed.',
+    fix: 'Compute _daily_pnl_pct from DB before the symbol loop. Pass actual value to DE.',
+  },
+  {
+    id: 'TIER75-CATALYST-TA-SCORE',
+    tier: 75, severity: 'high', defaultStatus: 'done',
+    file: 'services/event-intelligence/src/api/routes.py:168, services/signal-engine/src/api/routes.py:248, services/event-intelligence/src/scheduler.py',
+    implementedNote: 'Done 2026-06-21: (1) GET /catalyst/{symbol} now accepts optional technical_score query param (default 50.0). If not cached, compute_and_store() receives the real TA score. (2) Signal engine extracts ta_score from signal.reasons when calling /catalyst/{symbol} and passes it as ?technical_score=X. (3) EI scheduler recompute_catalyst job now fetches latest ta_score per stock from signals table (DISTINCT ON stock_id ORDER BY ts DESC) and passes the dict to recompute_all(). Composite score (25% TA weight) now uses real TA data.',
+    effort: '1h',
+    impact: 'High — composite_score was 75% correct; the 25% TA component was always neutral (50/100) regardless of actual RSI/MACD/trend. Stocks with TA score 90 and 20 were indistinguishable on composite.',
+    title: 'Fix: catalyst.compute_and_store() always used technical_score=50 — now uses real TA score',
+    what: 'compute_and_store(stock_id) defaulted technical_score=50.0. Signal engine called GET /catalyst/{symbol} without passing ta_score. Scheduled recompute_all() also used ts.get(stock_id, 50.0) for all stocks. 25% of composite score was always neutral.',
+    fix: 'Added technical_score query param to catalyst route. Signal engine passes ta_score from reasons. Scheduler queries DB for latest ta_score per stock.',
+  },
+  {
+    id: 'TIER75-CATALYST-ASYNC',
+    tier: 75, severity: 'low', defaultStatus: 'done',
+    file: 'services/event-intelligence/src/services/catalyst.py:256',
+    implementedNote: 'Done 2026-06-21: recompute_all() now uses await asyncio.to_thread(compute_and_store, stock_id, ts.get(stock_id, 50.0)) for each stock instead of a blocking synchronous call. Also adds await asyncio.sleep(0) after each stock to yield control back to the event loop. APScheduler\'s AsyncIOScheduler no longer blocks other async handlers during the 4× daily recompute runs.',
+    effort: '15m',
+    impact: 'Low-medium — during 4× daily catalyst recompute runs across 100+ stocks, the event loop was blocked for the entire duration. Other requests to event-intelligence service queued up behind it.',
+    title: 'Fix: catalyst.recompute_all() was async but blocked event loop with synchronous DB writes',
+    what: 'async def recompute_all() called synchronous compute_and_store() in a for loop, blocking the event loop on every DB write. APScheduler AsyncIOScheduler runs jobs in the event loop.',
+    fix: 'Replaced compute_and_store() calls with await asyncio.to_thread(compute_and_store, ...). Added await asyncio.sleep(0) between stocks.',
+  },
+  {
+    id: 'TIER75-UUID-JTIS',
+    tier: 75, severity: 'low', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:50, services/research-engine/src/api/routes.py:87, services/decision-engine/src/api/core/aggregator.py:28, services/market-data/src/services/paper_trading_engine.py',
+    implementedNote: 'Done 2026-06-21: Replaced static JTI strings with str(__import__("uuid").uuid4()) in all 4 service token generators. signal-engine: "signal-engine-service" → uuid4(). research-engine: "research-engine-service" → uuid4(). decision-engine: "decision-engine-service" → uuid4(). paper_trading_engine: "paper-engine-service" → uuid4(). Each container now generates a unique per-instance JTI at startup; tokens can be individually revoked via blacklist.',
+    effort: '15m',
+    impact: 'Low — predictable static JTIs meant all containers shared identical tokens that could not be individually invalidated. UUID JTIs allow per-instance revocation.',
+    title: 'Fix: Static JTI strings on 4 service tokens replaced with uuid4() per container instance',
+    what: 'All 4 internal service token generators used hardcoded JTI strings ("signal-engine-service" etc). Multiple containers shared identical tokens; blacklist entry for one would block all.',
+    fix: 'str(__import__("uuid").uuid4()) generates a unique JTI per container startup. Token is still cached (one per container lifetime).',
+  },
+  {
+    id: 'TIER75-DB-INDEXES',
+    tier: 75, severity: 'low', defaultStatus: 'done',
+    file: 'shared/db/models.py',
+    implementedNote: 'Done 2026-06-21: (1) Added Index("ix_earnings_report_date", "report_date") to EarningsEvent.__table_args__. get_upcoming_earnings() queries by report_date range only (no stock_id filter) — the composite ix_earnings_stock_date index on (stock_id, report_date) was unusable for this query. (2) Added Index("ix_inst_holding_value", "value_usd") to InstitutionalHolding.__table_args__. get_institutional_leaderboard() sorts by value_usd.desc() — was doing full-table sort with no index.',
+    effort: '15m',
+    impact: 'Low — two sequential scans replaced with index seeks on hot query paths: earnings calendar on every /events/overview load, institutional leaderboard on Intelligence page.',
+    title: 'Fix: Missing DB indexes on EarningsEvent.report_date and InstitutionalHolding.value_usd',
+    what: 'get_upcoming_earnings() did full sequential scan on earnings_events filtered by date range — composite (stock_id, report_date) index was unusable without a stock_id filter. get_institutional_leaderboard() sorted value_usd with no index.',
+    fix: 'Added standalone Index("ix_earnings_report_date", "report_date") and Index("ix_inst_holding_value", "value_usd").',
+  },
+  {
+    id: 'TIER75-POSITIONS-RESEARCH',
+    tier: 75, severity: 'medium', defaultStatus: 'done',
+    file: 'frontend/src/pages/positions.tsx',
+    implementedNote: 'Done 2026-06-21: Positions page now shows research verdict badge for each position. Added ResearchSummary import from api. Added useSWR hook keyed on all position symbols that fetches api.researchSummary() in parallel for all symbols and stores results as Record<string, ResearchSummary>. Each position row renders a colored badge: STRONG BUY (green), BUY (light green), WATCH (yellow), AVOID (orange), SELL (red). Badge only renders if data is available (no loading state intrudes on empty/loading positions).',
+    effort: '1h',
+    impact: 'Medium — positions page (manually tracked real holdings) had no research context. Users could hold a stock the AI rates SELL with no visual indicator on the page they check their portfolio.',
+    title: 'INT-9 (positions.tsx): Research verdict badge on each manually-tracked position',
+    what: 'positions.tsx had no research integration. The paper-portfolio page already had research (INT-9 done earlier), but the real positions tracker (for manually entered holdings) did not.',
+    fix: 'Added parallel research summary fetch via useSWR. Color-coded recommendation badge rendered in each position row.',
+  },
+
   // ── Tier 74 — Deep Audit Round 2 Fixes: EI Bugs + Decision Engine + Research Integration (2026-06-21) ──
   {
     id: 'TIER74-INSIDER-CIK',
@@ -7474,6 +7542,7 @@ const TIER_LABEL: Record<Tier, string> = {
   72: 'Tier 72 — Event Intelligence Platform: Economic · Earnings · Insider · Congress · Catalyst',
   73: 'Tier 73 — Gate Unification + Signal Config + Event Intel Integration (2026-06-21)',
   74: 'Tier 74 — Deep Audit Round 2: EI Bugs + Decision Engine + Research Integration (2026-06-21)',
+  75: 'Tier 75 — Audit Round 2 Remaining: daily_pnl + TA scores + async + UUIDs + indexes + positions research',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7551,6 +7620,7 @@ const TIER_COLOR: Record<Tier, string> = {
   72: '#f59e0b',
   73: '#34d399',
   74: '#f59e0b',
+  75: '#a78bfa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

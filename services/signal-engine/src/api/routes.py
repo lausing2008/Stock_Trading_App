@@ -47,7 +47,7 @@ def _service_token() -> str:
     payload = {
         "sub": "signal-engine",
         "exp": int(time.time()) + 365 * 86400,
-        "jti": "signal-engine-service",
+        "jti": str(__import__("uuid").uuid4()),
     }
     _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
     return _service_token_cache
@@ -245,8 +245,13 @@ def _bulk_persist(symbols: list[str]) -> None:
             _catalyst: dict | None = None
             try:
                 import httpx as _httpx_cat
+                _ta_score = 50.0
+                if all_sig:
+                    _first_reasons = (next(iter(all_sig.values())).reasons or {})
+                    _ta_score = float(_first_reasons.get("ta_score", 50.0))
                 _cr = _httpx_cat.get(
                     f"{_settings.event_intelligence_url}/catalyst/{symbol}",
+                    params={"technical_score": _ta_score},
                     headers={"Authorization": f"Bearer {_service_token()}"},
                     timeout=2.0,
                 )

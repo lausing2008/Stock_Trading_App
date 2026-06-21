@@ -69,7 +69,7 @@ def _svc_token() -> str:
     from jose import jwt as _jwt
     _s = _gs_tok()
     _svc_token_cache = _jwt.encode(
-        {"sub": "paper-engine", "exp": int(time.time()) + 365 * 86400, "jti": "paper-engine-service"},
+        {"sub": "paper-engine", "exp": int(time.time()) + 365 * 86400, "jti": str(__import__("uuid").uuid4())},
         _s.jwt_secret, algorithm="HS256",
     )
     return _svc_token_cache
@@ -1629,6 +1629,7 @@ def _call_decision_engine(
     equity: float,
     open_count: int,
     cfg: dict,
+    daily_pnl_pct: float = 0.0,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -1649,7 +1650,7 @@ def _call_decision_engine(
                 "live_price":       live_price,
                 "game_plan":        game_plan,
                 "market":           cfg.get("market", "US"),
-                "daily_pnl_pct":    0.0,
+                "daily_pnl_pct":    daily_pnl_pct,
                 "config_overrides": {
                     "min_entry_score":        cfg.get("min_entry_score", 4),
                     "min_confidence":         cfg.get("min_confidence", 62.0),
@@ -1792,6 +1793,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 return
 
     # ── Daily realized-loss circuit breaker (net P&L — winners offset losers) ──────
+    _daily_pnl_pct = 0.0  # captured for DE call below
     max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
     if max_daily_loss and max_daily_loss > 0 and equity > 0:
         from zoneinfo import ZoneInfo
@@ -1804,6 +1806,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 PaperTrade.exit_time >= today_open,
             )
         ).scalar() or 0.0
+        _daily_pnl_pct = round(daily_net_pnl / equity * 100, 2)
         if daily_net_pnl < 0 and abs(daily_net_pnl) / equity > max_daily_loss:
             log.warning("paper.daily_loss_limit",
                         portfolio=portfolio.name,
@@ -2079,6 +2082,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 equity=equity,
                 open_count=open_count,
                 cfg=cfg,
+                daily_pnl_pct=_daily_pnl_pct,
             )
             if de_result is not None:
                 should_enter, de_verdict, score, de_blocked = de_result

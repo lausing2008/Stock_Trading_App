@@ -165,12 +165,12 @@ async def recompute_catalyst(_: str = Depends(get_current_username)):
 
 
 @router.get("/catalyst/{symbol}")
-def get_catalyst(symbol: str):
+def get_catalyst(symbol: str, technical_score: float = Query(50.0, ge=0.0, le=100.0)):
     stock_id = _symbol_to_id(symbol)
     score = catalyst.get_catalyst(stock_id)
     if score is None:
         # Compute on demand if not yet cached
-        score = catalyst.compute_and_store(stock_id)
+        score = catalyst.compute_and_store(stock_id, technical_score=technical_score)
     score["symbol"] = symbol.upper()
     return score
 

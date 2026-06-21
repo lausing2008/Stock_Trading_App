@@ -255,6 +255,7 @@ def get_composite_leaderboard(limit: int = 20) -> list[dict]:
 
 async def recompute_all(technical_scores: dict[int, float] | None = None) -> dict:
     """Recompute catalyst scores for all tracked stocks."""
+    import asyncio as _aio
     with SessionLocal() as s:
         stocks = s.execute(select(Stock.id, Stock.symbol)).all()
 
@@ -262,10 +263,11 @@ async def recompute_all(technical_scores: dict[int, float] | None = None) -> dic
     computed = 0
     for stock_id, symbol in stocks:
         try:
-            compute_and_store(stock_id, technical_score=ts.get(stock_id, 50.0))
+            await _aio.to_thread(compute_and_store, stock_id, ts.get(stock_id, 50.0))
             computed += 1
         except Exception as exc:
             log.warning("catalyst.compute_fail", symbol=symbol, error=str(exc))
+        await _aio.sleep(0)  # yield control back to event loop
 
     return {"computed": computed, "total": len(stocks)}
 

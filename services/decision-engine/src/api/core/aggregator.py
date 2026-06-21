@@ -25,7 +25,7 @@ def _svc_token() -> str:
         return _svc_token_cache
     payload = {
         "sub": "decision-engine",
-        "jti": "decision-engine-service",
+        "jti": str(__import__("uuid").uuid4()),
         "exp": int(_time.time()) + 365 * 86400,
     }
     _svc_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
