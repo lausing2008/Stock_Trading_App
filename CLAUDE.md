@@ -68,7 +68,14 @@ throw new Error('Unauthorized'); // locally valid but server rejected — don't 
 4. On EC2: `cd /home/ec2-user/Stock_Trading_App && git pull origin prod`
    - If there are local changes on EC2 blocking the pull: `git stash && git pull origin prod`
    - If there are untracked files blocking: move them to /tmp first, then pull
-5. **Frontend:** needs rebuild: `docker compose -f docker/docker-compose.yml build frontend && docker compose -f docker/docker-compose.yml up -d frontend`
+5. **Frontend:** needs rebuild — use legacy build to bypass BuildKit cache bug:
+   ```
+   DOCKER_BUILDKIT=0 docker build --no-cache -f frontend/Dockerfile -t stockai-frontend:latest . && \
+   docker compose -f docker/docker-compose.yml up -d --force-recreate frontend
+   ```
+   **WARNING:** `docker compose build --no-cache frontend` uses BuildKit which silently serves
+   cached layers even with `--no-cache`, producing a stale image. Always use `DOCKER_BUILDKIT=0`
+   for frontend builds to guarantee the latest source is compiled.
 6. **Backend services:** `docker cp` changed files to `/app/shared/` (for shared/) and `/app/src/` (for service-specific files), then `docker restart <container>`
    - **IMPORTANT:** `shared/db/models.py` and `shared/common/` must be copied to `/app/shared/db/` and `/app/shared/common/` (NOT `/app/src/db/`!)
    - Use: `docker cp shared/db/__init__.py <container>:/app/shared/db/__init__.py`
