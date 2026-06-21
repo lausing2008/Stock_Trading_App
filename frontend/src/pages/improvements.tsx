@@ -6390,13 +6390,14 @@ const ITEMS: Item[] = [
     implementedNote: 'Fixed 2026-06-19. RL status + entry factor weights visible in board ML tab.',
   },
   {
-    id: 'AUD19-SEC2', tier: 55, severity: 'low',
-    title: 'AUD19-SEC2: Broker OAuth credentials stored as plaintext JSON in DB config column',
-    file: 'shared/db/models.py:534 BrokerConnection.config',
+    id: 'AUD19-SEC2', tier: 55, severity: 'low', defaultStatus: 'done',
+    title: 'AUD19-SEC2 (FIXED): Broker OAuth credentials encrypted at rest with Fernet',
+    file: 'services/market-data/src/api/broker.py',
     effort: '2h',
     impact: 'Low (mitigated by DB network isolation) — OAuth consumer_key, consumer_secret, oauth_token, oauth_token_secret stored as plaintext JSON. A DB dump (backup, pg_dump, misconfigured port) exposes all broker credentials in plaintext.',
     what: 'BrokerConnection.config stores full OAuth credential bundle as plaintext JSON. DB is only accessible from within Docker network (not publicly exposed), so the attack surface is a compromised container or a backup file.',
     fix: 'Encrypt config JSON with Fernet using JWT secret as key: key = base64.urlsafe_b64encode(hashlib.sha256(jwt_secret.encode()).digest()); f = Fernet(key). Encrypt on write, decrypt on read. DB dumps then contain ciphertext only.',
+    implementedNote: 'Fixed 2026-06-21. _encrypt_config()/_decrypt_config() helpers in broker.py. All writes now call _encrypt_config(), all reads call _decrypt_config(). Legacy plaintext rows (no _enc key) pass through unchanged for backward compatibility.',
   },
   {
     id: 'AUD19-DB3', tier: 55, severity: 'low', defaultStatus: 'done',

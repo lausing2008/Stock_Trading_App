@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from common.logging import get_logger
+from common.config import get_settings
 from db import BrokerConnection, PaperPortfolio, get_session
 from .auth import get_current_user, User
 
@@ -30,6 +31,28 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/broker", tags=["broker"])
 
 _SUPPORTED_TYPES = ("etrade", "etrade_sandbox", "fidelity_manual")
+
+
+# ── Credential encryption (Fernet with SHA-256 of JWT secret as key) ─────────
+
+def _fernet():
+    import base64, hashlib
+    from cryptography.fernet import Fernet
+    raw = hashlib.sha256(get_settings().jwt_secret.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(raw))
+
+
+def _encrypt_config(config: dict) -> dict:
+    import json
+    return {"_enc": _fernet().encrypt(json.dumps(config).encode()).decode()}
+
+
+def _decrypt_config(stored: dict) -> dict:
+    """Decrypt config blob. Returns plaintext dict for legacy rows that have no _enc key."""
+    if "_enc" not in stored:
+        return dict(stored)
+    import json
+    return json.loads(_fernet().decrypt(stored["_enc"].encode()))
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -132,7 +155,7 @@ def create_connection(
         name         = body.name.strip(),
         broker_type  = body.broker_type,
         account_id   = body.account_number if body.broker_type == "fidelity_manual" else None,
-        config       = config,
+        config       = _encrypt_config(config),
         is_authorized= body.broker_type == "fidelity_manual",  # manual never needs OAuth
     )
     session.add(conn)
@@ -189,14 +212,14 @@ def oauth_start(
         raise HTTPException(400, "OAuth is only available for E*Trade connections")
 
     from services.broker import EtradeBroker
-    broker = EtradeBroker(dict(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
+    broker = EtradeBroker(_decrypt_config(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
     try:
         authorize_url = broker.start_oauth()
     except Exception as exc:
         raise HTTPException(502, f"E*Trade OAuth start failed: {exc}")
 
     # Persist request tokens back to DB
-    conn.config = dict(broker._config)
+    conn.config = _encrypt_config(dict(broker._config))
     conn.is_authorized = False
     session.commit()
 
@@ -219,23 +242,24 @@ def oauth_complete(
         raise HTTPException(400, "OAuth is only available for E*Trade connections")
 
     from services.broker import EtradeBroker
-    broker = EtradeBroker(dict(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
+    broker = EtradeBroker(_decrypt_config(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
     try:
         broker.complete_oauth(body.verifier.strip())
     except Exception as exc:
         raise HTTPException(502, f"E*Trade OAuth complete failed: {exc}")
 
     # Persist access tokens; fetch account list to populate account_id
-    conn.config = dict(broker._config)
+    _new_config = dict(broker._config)
     conn.is_authorized = True
     try:
         accounts = broker.list_accounts()
         if accounts:
             acct = accounts[0]
             conn.account_id = acct.get("accountId")
-            conn.config["account_id_key"] = acct.get("accountIdKey", "")
+            _new_config["account_id_key"] = acct.get("accountIdKey", "")
     except Exception:
         pass
+    conn.config = _encrypt_config(_new_config)
     session.commit()
     log.info("broker.oauth_complete", user=current.username, conn_id=conn_id, account=conn.account_id)
     return {"status": "authorized", "account_id": conn.account_id}
@@ -255,7 +279,7 @@ def reconnect(
         raise HTTPException(400, "Not yet authorized — run OAuth flow first")
 
     from services.broker import EtradeBroker
-    broker = EtradeBroker(dict(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
+    broker = EtradeBroker(_decrypt_config(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
     try:
         broker.renew_access_token()
     except Exception as exc:
@@ -277,7 +301,7 @@ def get_account_info(
         raise HTTPException(400, "Broker not yet authorized")
 
     from services.broker import get_broker
-    broker = get_broker(conn.broker_type, dict(conn.config))
+    broker = get_broker(conn.broker_type, _decrypt_config(conn.config))
     try:
         acct = broker.get_account(conn.account_id or None)
     except Exception as exc:
