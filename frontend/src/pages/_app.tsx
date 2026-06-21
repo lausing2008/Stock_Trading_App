@@ -77,6 +77,7 @@ const NAV_GROUPS: NavGroupDef[] = [
       { label: 'Signal Accuracy',  href: '/signal-accuracy',  color: '#a78bfa' },
       { label: 'Signal Filters',   href: '/signal-filters',   color: '#f97316' },
       { label: 'Signal Quality',   href: '/signal-quality',   color: '#818cf8', tag: 'new' },
+      { label: 'Signal Tuning',    href: '/signal-tuning',    color: '#a78bfa', tag: 'new' },
       { label: 'Trade Performance', href: '/trade-performance', color: '#34d399' },
       { label: 'Signal Log',       href: '/admin-signals',    color: '#f87171' },
       { label: 'System Health',    href: '/admin-health',     color: '#38bdf8' },

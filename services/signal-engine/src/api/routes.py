@@ -3248,6 +3248,111 @@ def signal_watchdog(
     return {"actions": actions, "status": status}
 
 
+@router.get("/tune_status")
+def tune_status(
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Read-only snapshot of all self-tuning system state (TIER88).
+
+    Returns per-style: hardcoded defaults, Redis overrides (watchdog/calibrated/
+    auto-tuner), effective values (priority: watchdog > calibrated > default),
+    14-day rolling win rate, 7-day BUY signal count, and watchdog state.
+    No side effects — safe to poll from the frontend.
+    """
+    from ..generators.signals import _STYLE_PROFILES
+
+    redis_client = _get_redis()
+    _14D = date.today() - timedelta(days=14)
+    _7D  = date.today() - timedelta(days=7)
+
+    styles_out: dict = {}
+    for style in ("SHORT", "SWING", "LONG", "GROWTH"):
+        p = _STYLE_PROFILES[style]
+
+        # Read all Redis overrides
+        watchdog_threshold     = _redis_get_float(f"stockai:watchdog:{style}:threshold")
+        calibrated_threshold   = _redis_get_float(f"stockai:signal_thresholds:{style}")
+        ml_weight_cap_tuned    = _redis_get_float(f"stockai:style_tune:{style}:ml_weight_cap")
+        adx_min_tuned          = _redis_get_float(f"stockai:style_tune:{style}:adx_min")
+        breadth_comp_tuned     = _redis_get_float(f"stockai:style_tune:{style}:breadth_compression")
+        tighten_count          = int(redis_client.get(f"stockai:watchdog:{style}:tighten_count") or 0)
+
+        # Effective values — priority: watchdog > calibrated > hardcoded
+        eff_threshold = watchdog_threshold or calibrated_threshold or p["buy_threshold"]["bull"]
+        eff_ml_cap    = ml_weight_cap_tuned if ml_weight_cap_tuned is not None else p["ml_weight_cap"]
+        eff_adx_min   = adx_min_tuned       if adx_min_tuned is not None       else p.get("adx_min")
+        eff_breadth   = breadth_comp_tuned  if breadth_comp_tuned is not None  else p.get("breadth_compression")
+
+        # 14-day win rate
+        outcomes_14d = session.execute(
+            select(SignalOutcome).where(
+                SignalOutcome.signal_date >= _14D,
+                SignalOutcome.is_correct.is_not(None),
+                SignalOutcome.signal_direction == "BUY",
+                SignalOutcome.horizon == SignalHorizon[style],
+            )
+        ).scalars().all()
+
+        win_rate_14d: float | None = None
+        if outcomes_14d:
+            wins = sum(1 for o in outcomes_14d if o.is_correct)
+            win_rate_14d = round(wins / len(outcomes_14d), 3)
+
+        # 7-day BUY signal count
+        signals_7d = session.execute(
+            select(func.count(Signal.id)).where(
+                Signal.ts >= _7D,
+                Signal.signal == SignalType.BUY,
+                Signal.horizon == SignalHorizon[style],
+            )
+        ).scalar() or 0
+
+        # Watchdog status label
+        if watchdog_threshold is not None:
+            watchdog_status = "max_tighten_review" if tighten_count >= 3 else f"tightened_{tighten_count}x"
+        else:
+            watchdog_status = "nominal"
+
+        styles_out[style] = {
+            "defaults": {
+                "buy_threshold_bull": p["buy_threshold"]["bull"],
+                "ml_weight_cap": p["ml_weight_cap"],
+                "adx_min": p.get("adx_min"),
+                "breadth_compression": p.get("breadth_compression"),
+            },
+            "redis_overrides": {
+                "watchdog_threshold": watchdog_threshold,
+                "calibrated_threshold": calibrated_threshold,
+                "ml_weight_cap": ml_weight_cap_tuned,
+                "adx_min": adx_min_tuned,
+                "breadth_compression": breadth_comp_tuned,
+            },
+            "effective": {
+                "buy_threshold_bull": round(eff_threshold, 4),
+                "ml_weight_cap": round(eff_ml_cap, 4),
+                "adx_min": round(eff_adx_min, 1) if eff_adx_min is not None else None,
+                "breadth_compression": round(eff_breadth, 3) if eff_breadth is not None else None,
+            },
+            "performance": {
+                "win_rate_14d": win_rate_14d,
+                "n_outcomes_14d": len(outcomes_14d),
+                "signals_7d": signals_7d,
+            },
+            "watchdog": {
+                "status": watchdog_status,
+                "tighten_count": tighten_count,
+                "current_threshold": watchdog_threshold,
+            },
+        }
+
+    return {
+        "as_of": date.today().isoformat(),
+        "config_loaded_at": thresholds_loaded_at(),
+        "styles": styles_out,
+    }
+
+
 _DECAY_DAYS = [1, 2, 3, 5, 7, 10, 15, 20, 30]
 
 

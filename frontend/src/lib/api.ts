@@ -272,6 +272,17 @@ export const api = {
       factors: { factor: string; win_pct: number; los_pct: number; edge: number; win_count: number; los_count: number }[];
       message?: string;
     }>(`/signals/factor_attribution?horizon=${horizon}&lookback_days=${lookbackDays}&min_count=${minCount}`),
+  signalTuneStatus: () =>
+    request<{
+      as_of: string; config_loaded_at: string | null;
+      styles: Record<string, {
+        defaults: { buy_threshold_bull: number; ml_weight_cap: number; adx_min: number | null; breadth_compression: number | null };
+        redis_overrides: { watchdog_threshold: number | null; calibrated_threshold: number | null; ml_weight_cap: number | null; adx_min: number | null; breadth_compression: number | null };
+        effective: { buy_threshold_bull: number; ml_weight_cap: number; adx_min: number | null; breadth_compression: number | null };
+        performance: { win_rate_14d: number | null; n_outcomes_14d: number; signals_7d: number };
+        watchdog: { status: string; tighten_count: number; current_threshold: number | null };
+      }>;
+    }>('/signals/tune_status'),
   filterAudit: (lookbackDays = 180, style = 'SWING', holdDays = 10) =>
     request<{
       lookback_days: number; style: string; hold_days: number;

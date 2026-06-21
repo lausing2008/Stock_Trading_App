@@ -7029,13 +7029,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'TIER68-SIGNAL-CONFIG',
-    tier: 68, severity: 'medium', defaultStatus: 'todo',
-    file: 'signal-engine/src/generators/signals.py',
+    tier: 68, severity: 'medium', defaultStatus: 'done',
+    file: 'services/signal-engine/config/signal_thresholds.json · services/signal-engine/src/config.py',
     effort: '3h',
     impact: 'Medium — 20+ hardcoded thresholds currently require code deploy + docker restart to change; config-driven approach enables A/B testing and live tuning',
     title: 'Config-driven signal thresholds — move 20+ magic numbers to signal_thresholds.json',
     what: 'Signals.py has 20+ hardcoded values: ML soft-caps (0.05, 0.95), RSI sweet-spot range (45, 65), disagreement thresholds (0.35, 0.25), breadth floor (0.40), weekly gate thresholds (75), pattern recency window (20 bars), S/R proximity (1.5%), outcome hold days per horizon. Each change requires a code edit + docker cp + docker restart. Some thresholds should vary by market regime.',
     fix: 'Create services/signal-engine/config/signal_thresholds.json with all 20+ values. Load at startup with pydantic validation. Add POST /signals/admin/reload_config (admin JWT required) to hot-reload without restart. Add GET /signals/admin/config to show current values + last-modified date. This unblocks rapid A/B testing of threshold changes.',
+    implementedNote: 'Done (prior session): signal_thresholds.json fully populated with 6 sections (ml, rsi, market, pattern, signals, horizons). config.py hot-reload module with thread-safe _lock. GET /signals/admin/config returns current values + loaded_at timestamp. POST /signals/admin/reload_config hot-reloads without container restart. Signals.py reads these via get_thresholds() for RSI sweet-spot, ML soft-caps, disagree bands, AUC ramp, breadth floor, S/R proximity, hold days, etc.',
   },
   {
     id: 'TIER68-WEEKLY-GATE',
@@ -7065,14 +7066,14 @@ const ITEMS: Item[] = [
   // ── Tier 88 — Self-Tuning Dashboard (roadmap) ─────────────────────────────
   {
     id: 'TIER88-SELF-TUNING-DASHBOARD',
-    tier: 88, severity: 'feature', defaultStatus: 'todo',
-    file: 'frontend/src/pages/improvements.tsx, services/signal-engine/src/api/routes.py',
-    implementedNote: 'Roadmap: A dedicated /signal-tuning page showing: (1) Current vs tuned parameters per style (Redis overrides vs hardcoded defaults); (2) 14-day rolling win rate trend sparkline per style; (3) Watchdog action history (last 10 threshold adjustments with before/after values + trigger date); (4) Auto-calibration schedule (next run date + last applied thresholds); (5) Manual override form to force-apply specific parameter values. Gives operators visibility into the self-training loop without reading Redis directly.',
+    tier: 88, severity: 'feature', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:GET /signals/tune_status · frontend/src/pages/signal-tuning.tsx',
     effort: '1 week',
     impact: 'Medium — operational visibility. Without this page, operators cannot see what the self-tuning system has done or why win rates changed.',
     title: 'Self-tuning dashboard: visibility into style parameters, win rates, and watchdog history',
     what: 'The self-tuning system (Tier 85 auto-tuner + Tier 86 watchdog) writes Redis keys but provides no UI. Operators cannot see whether the system has tightened thresholds, what the current effective parameters are, or whether a style is in watchdog emergency mode.',
     fix: 'Add /signal-tuning page: fetch GET /signals/tune_status (new endpoint returning all Redis overrides + defaults + 14d win rates + watchdog history). Render parameter table and win rate sparklines.',
+    implementedNote: 'Done 2026-06-21: GET /signals/tune_status reads all Redis keys for 4 styles (watchdog threshold, calibrated threshold, ml_weight_cap, adx_min, breadth_compression), computes effective values (priority: watchdog > calibrated > hardcoded default), queries 14d win rate + outcome count + 7d BUY signal count. New /signal-tuning admin page shows per-style cards with win rate badge (green/yellow/red), watchdog status badge, parameter table (default | effective | source), and self-tuning system legend. Added to Admin nav.',
   },
 
   // ── Tier 87 — Outcome-Informed ML Retraining (roadmap) ───────────────────
