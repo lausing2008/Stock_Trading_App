@@ -37,7 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -324,6 +324,12 @@ export default function StockDetail() {
   const { data: signalHistory } = useSWR<SignalHistoryPoint[]>(
     symbol ? `signal-history-${symbol}-${pageStyle || 'SWING'}` : null,
     () => api.signalHistory(symbol, pageStyle || 'SWING', 60),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: symbolOutcomes } = useSWR(
+    symbol ? `symbol-outcomes-${symbol}` : null,
+    () => api.symbolOutcomes(symbol),
     { revalidateOnFocus: false },
   );
 
@@ -1908,6 +1914,21 @@ Return ONLY valid JSON — no markdown, no prose:
                       )}
                     </div>
                   )}
+                  {(() => {
+                    const symBySym = symbolOutcomes?.by_symbol;
+                    if (!symBySym?.length) return null;
+                    const row = symBySym[0];
+                    if (row.count < 3) return null;
+                    const wr = Math.round(row.win_rate * 100);
+                    const wrColor = wr >= 55 ? '#4ade80' : wr >= 45 ? '#facc15' : '#f87171';
+                    return (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} title={`${row.count} closed signals in last 90d`}>
+                        <span style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>90d accuracy</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: wrColor }}>{wr}%WR</span>
+                        <span style={{ fontSize: 9, color: '#334155' }}>({row.count})</span>
+                      </div>
+                    );
+                  })()}
                 </div>
                 {/* Alignment indicator (INT-2) */}
                 {alignLabel && (

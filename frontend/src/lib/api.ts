@@ -250,6 +250,11 @@ export const api = {
     if (market) params.set('market', market);
     return request<OutcomesSummary>(`/signals/outcomes/summary?${params}`);
   },
+  symbolOutcomes: (symbol: string, horizon?: string, days = 90) => {
+    const params = new URLSearchParams({ symbol, days: String(days) });
+    if (horizon) params.set('horizon', horizon);
+    return request<OutcomesSummary>(`/signals/outcomes/summary?${params}`);
+  },
   evaluateOutcomes: () =>
     request<{ evaluated: number; skipped_open: number; skipped_no_price: number; updated_windows: number }>(
       '/signals/outcomes/evaluate', { method: 'POST' }

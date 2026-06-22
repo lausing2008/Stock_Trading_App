@@ -2494,6 +2494,7 @@ def outcomes_summary(
     horizon: str | None = Query(None, description="SHORT | SWING | LONG"),
     days: int = Query(90, description="Look-back window in calendar days"),
     market: str | None = Query(None, description="US | HK — filter by stock market"),
+    symbol: str | None = Query(None, description="Filter to a single symbol (e.g. AAPL)"),
     session: Session = Depends(get_session),
 ):
     """Return win-rate and return stats from the signal_outcomes table.
@@ -2514,10 +2515,13 @@ def outcomes_summary(
             q = q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))
         except ValueError:
             raise HTTPException(400, f"Unknown horizon: {horizon}")
-    if market:
-        q = q.join(Stock, Stock.id == SignalOutcome.stock_id).where(
-            Stock.market == market.upper()
-        )
+    _needs_stock_join = market or symbol
+    if _needs_stock_join:
+        q = q.join(Stock, Stock.id == SignalOutcome.stock_id)
+        if market:
+            q = q.where(Stock.market == market.upper())
+        if symbol:
+            q = q.where(Stock.symbol == symbol.upper())
 
     outcomes = session.execute(q).scalars().all()
 
