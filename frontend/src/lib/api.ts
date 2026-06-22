@@ -1290,6 +1290,7 @@ export type PaperPosition = {
   sector: string | null;
   decision_notes: string[];
   entry_reasons: Record<string, unknown>;
+  current_signal: string | null;
 };
 
 export type PaperTrade = {

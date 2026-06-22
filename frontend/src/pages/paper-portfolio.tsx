@@ -1617,8 +1617,8 @@ export default function PaperPortfolioPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ color: '#64748b', borderBottom: '1px solid #334155' }}>
-                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', '% Port', 'P&L', 'Range', 'Stop', 'Status', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Research', ''].map(h => (
-                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 500 }} title={h === 'Range' ? 'Entry → Current → Target progress bar. Shows how far current price has moved toward take-profit.' : undefined}>{h}</th>
+                    {['Symbol', 'Entry', 'Current', 'Shares', 'Value', '% Port', 'P&L', 'Range', 'Stop', 'Status', 'Target', 'Days', 'Score', 'R:R', 'Conf', 'Signal', 'Research', ''].map(h => (
+                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 500 }} title={h === 'Range' ? 'Entry → Current → Target progress bar. Shows how far current price has moved toward take-profit.' : h === 'Signal' ? 'Current SWING signal from DB — flip to SELL may indicate exit opportunity' : undefined}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1714,6 +1714,21 @@ export default function PaperPortfolioPage() {
                       <td style={{ padding: '9px 10px' }}>{p.confidence_at_entry != null ? `${p.confidence_at_entry.toFixed(0)}%` : '—'}</td>
                       <td style={{ padding: '9px 10px' }}>
                         {(() => {
+                          const sig = p.current_signal;
+                          if (!sig) return <span style={{ fontSize: 10, color: '#334155' }}>—</span>;
+                          const SC: Record<string, string> = { BUY: '#22c55e', HOLD: '#facc15', WAIT: '#f97316', SELL: '#ef4444' };
+                          const col = SC[sig] ?? '#94a3b8';
+                          const isSell = sig === 'SELL';
+                          return (
+                            <span style={{ fontSize: 10, fontWeight: 700, color: col, background: `${col}22`, border: isSell ? `1px solid ${col}66` : 'none', padding: '2px 6px', borderRadius: 3 }}
+                                  title={isSell ? '⚠️ Signal flipped to SELL — consider exiting' : undefined}>
+                              {isSell ? '⚠ ' : ''}{sig}
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td style={{ padding: '9px 10px' }}>
+                        {(() => {
                           const rs = posResearchMap[p.symbol];
                           if (!rs) return <span style={{ fontSize: 10, color: '#334155' }}>—</span>;
                           const RC: Record<string, string> = { 'STRONG BUY': '#4ade80', BUY: '#86efac', WATCH: '#facc15', AVOID: '#fb923c', SELL: '#f87171' };
@@ -1740,7 +1755,7 @@ export default function PaperPortfolioPage() {
                     </tr>
                     {isExpanded && (
                       <tr style={{ borderBottom: '1px solid #1e293b', background: 'rgba(15,23,42,0.6)' }}>
-                        <td colSpan={15} style={{ padding: '12px 16px' }}>
+                        <td colSpan={16} style={{ padding: '12px 16px' }}>
                           <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
                             {p.decision_notes?.length > 0 && (
                               <div>

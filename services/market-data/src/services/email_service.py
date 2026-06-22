@@ -541,6 +541,14 @@ def send_morning_digest_email(
             ml_str = f"{ml*100:.0f}%" if ml else "—"
             score_str = f"{o['score']:.0f}" if o.get("score") is not None else "—"
             price_str = f"${o['price']:,.2f}" if o.get("price") else "—"
+            conf = o.get("confidence")
+            conf_str = f"{conf:.0f}%" if conf is not None else "—"
+            dte = o.get("days_to_earnings")
+            earnings_badge = ""
+            earnings_text = ""
+            if dte is not None and 0 <= dte <= 5:
+                earnings_badge = f' <span style="background:#fef3c733;color:#f59e0b;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;border:1px solid #fde68a">⚠️ Earn {dte}d</span>'
+                earnings_text = f" ⚠️Earn {dte}d"
             bullets = o.get("reasons_bullets") or []
             bullets_html = ""
             if bullets:
@@ -549,18 +557,18 @@ def send_morning_digest_email(
             rows_html += (
                 f'<tr style="border-bottom:1px solid #f1f5f9">'
                 f'<td style="padding:7px 10px">'
-                f'<div style="font-weight:700;font-size:13px">{o["symbol"]}</div>'
+                f'<div style="font-weight:700;font-size:13px">{o["symbol"]}{earnings_badge}</div>'
                 f'{bullets_html}'
                 f'</td>'
                 f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{o.get("name","")[:22]}</td>'
                 f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{accent}">{score_str}</td>'
                 f'<td style="padding:7px 10px"><span style="background:{sig_color}22;color:{sig_color};font-size:11px;font-weight:700;padding:2px 6px;border-radius:4px">{sig}</span></td>'
-                f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{ml_str}</td>'
+                f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{conf_str}</td>'
                 f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{price_str}</td>'
                 f'</tr>'
             )
             bullet_text = f"     → {' · '.join(bullets)}\n" if bullets else ""
-            rows_text += f"  {i}. {o['symbol']:6} Score {score_str:4}  Signal {sig:4}  ML {ml_str:4}  {o.get('name','')[:20]}\n{bullet_text}"
+            rows_text += f"  {i}. {o['symbol']:6}{earnings_text} Score {score_str:4}  Signal {sig:4}  Conf {conf_str:5}  {o.get('name','')[:20]}\n{bullet_text}"
 
         if not rows_html:
             return "", ""
@@ -573,7 +581,7 @@ def send_morning_digest_email(
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Name</th>
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Score</th>
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Signal</th>
-          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">ML%</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Conf%</th>
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Price</th>
         </tr>
         {rows_html}
@@ -591,6 +599,7 @@ def send_morning_digest_email(
     # ── Open positions section ────────────────────────────────────────────────
     pos_rows_html = ""
     pos_rows_text = ""
+    _sig_colors = {"BUY": "#22c55e", "HOLD": "#facc15", "WAIT": "#f97316", "SELL": "#ef4444"}
     for p in open_positions:
         pnl = p.get("pnl_pct", 0.0) or 0.0
         pnl_color = "#22c55e" if pnl >= 0 else "#ef4444"
@@ -600,16 +609,28 @@ def send_morning_digest_email(
         last_p = p.get("last_price")
         price_str = f"${last_p:,.2f}" if last_p else "—"
         entry_str = f"${p['entry_price']:,.2f}"
+        cur_sig = p.get("current_signal") or ""
+        sig_c = _sig_colors.get(cur_sig, "#94a3b8")
+        sig_badge = (
+            f'<span style="background:{sig_c}22;color:{sig_c};font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px">{cur_sig}</span>'
+            if cur_sig else '<span style="color:#94a3b8;font-size:11px">—</span>'
+        )
+        exit_warn = (
+            ' <span style="color:#ef4444;font-size:10px;font-weight:700">⚠️ Exit?</span>'
+            if cur_sig == "SELL" else ""
+        )
         pos_rows_html += (
             f'<tr style="border-bottom:1px solid #f1f5f9">'
-            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{p["symbol"]}</td>'
+            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{p["symbol"]}{exit_warn}</td>'
             f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{entry_str} → {price_str}</td>'
             f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{pnl_color}">{pnl_str}</td>'
+            f'<td style="padding:7px 10px">{sig_badge}</td>'
             f'<td style="padding:7px 10px;font-size:12px;color:#ef4444">{stop_str}</td>'
             f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{p.get("hold_days",0)}d</td>'
             f'</tr>'
         )
-        pos_rows_text += f"  {p['symbol']:6} {entry_str} → {price_str}  P&L {pnl_str}  Stop {stop_str}  {p.get('hold_days',0)}d\n"
+        sig_text = f"[{cur_sig}]" if cur_sig else ""
+        pos_rows_text += f"  {p['symbol']:6} {entry_str} → {price_str}  P&L {pnl_str}  Sig {sig_text:6}  Stop {stop_str}  {p.get('hold_days',0)}d\n"
 
     pos_section_html = ""
     if pos_rows_html:
@@ -621,6 +642,7 @@ def send_morning_digest_email(
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Symbol</th>
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Entry → Close</th>
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">P&L</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Signal</th>
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Stop Distance</th>
           <th style="padding:6px 10px;font-size:11px;color:#475569;font-weight:600;text-align:left">Held</th>
         </tr>
@@ -744,12 +766,27 @@ def send_morning_digest_email(
       </table>
     </div>"""
 
+    # ── BEAR regime warning banner ────────────────────────────────────────────
+    bear_banner_html = ""
+    bear_banner_text = ""
+    if state == "bear":
+        bear_banner_html = (
+            '<div style="margin-top:14px;background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px">'
+            '<div style="font-size:12px;font-weight:700;color:#dc2626">⚠️ Bear Market Active</div>'
+            '<div style="font-size:11px;color:#7f1d1d;margin-top:3px">'
+            'Higher ML thresholds applied. Only BUY-signal opportunities shown. '
+            'Reduce position sizing and prioritise capital preservation.'
+            '</div></div>'
+        )
+        bear_banner_text = "\n⚠️  BEAR MARKET ACTIVE — higher thresholds; reduce size\n"
+
     _market_name = {"US": "US Markets (NYSE/NASDAQ)", "HK": "HK Market (HKEX)"}.get(market.upper(), market.upper())
     subject = f"📊 Morning Digest [{market.upper()}]: StockAI — {date_str} | Regime: {sl}"
     body_text = (
         f"StockAI Morning Digest [{market.upper()}] — {date_str}\n"
         f"Market Regime: {sl}  |  SPY: {spy_str}  |  VIX: {vix_str}\n"
         + ("\n".join(regime_notes or []))
+        + bear_banner_text
         + opp_section_text
         + pos_section_text
         + "\nNot financial advice. Paper trading simulation only.\n"
@@ -775,6 +812,7 @@ def send_morning_digest_email(
         {f'<div style="flex:1"><ul style="margin:0;padding-left:16px">{regime_notes_html}</ul></div>' if regime_notes_html else ''}
       </div>
     </div>
+    {bear_banner_html}
 
     {opp_section_html}
     {pos_section_html}

@@ -2110,22 +2110,31 @@ def send_morning_digest(market: str = "US") -> None:
                 for stock, ranking, signal in top_rows:
                     ml_prob = None
                     reasons_bullets: list[str] = []
+                    days_to_earnings: int | None = None
                     if signal and signal.reasons:
                         try:
                             ml_prob = float(signal.reasons.get("ml_probability") or 0) or None
                         except (TypeError, ValueError):
                             ml_prob = None
                         reasons_bullets = _reason_bullets(signal.reasons)
+                        dte = signal.reasons.get("days_to_earnings")
+                        if dte is not None:
+                            try:
+                                days_to_earnings = int(dte)
+                            except (TypeError, ValueError):
+                                pass
                     result.append({
-                        "symbol":          stock.symbol,
-                        "name":            stock.name or "",
-                        "score":           float(ranking.score) if ranking.score is not None else None,
-                        "signal":          signal.signal if signal else None,
-                        "ml_prob":         ml_prob,
-                        "sector":          stock.sector or "",
-                        "market":          stock.market.value if stock.market else "",
-                        "price":           price_map.get(stock.symbol),
-                        "reasons_bullets": reasons_bullets,
+                        "symbol":           stock.symbol,
+                        "name":             stock.name or "",
+                        "score":            float(ranking.score) if ranking.score is not None else None,
+                        "signal":           signal.signal if signal else None,
+                        "confidence":       float(signal.confidence) if signal and signal.confidence is not None else None,
+                        "ml_prob":          ml_prob,
+                        "sector":           stock.sector or "",
+                        "market":           stock.market.value if stock.market else "",
+                        "price":            price_map.get(stock.symbol),
+                        "reasons_bullets":  reasons_bullets,
+                        "days_to_earnings": days_to_earnings,
                     })
                 return result
 
@@ -2158,6 +2167,22 @@ def send_morning_digest(market: str = "US") -> None:
                 ).all()
                 close_map = {sym: float(close) for sym, close in c_rows}
 
+            # Current SWING signal per open position symbol
+            pos_signal_map: dict[str, str] = {}
+            if open_symbols:
+                pos_sig_subq = (
+                    select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+                    .where(Signal.horizon == "SWING")
+                    .group_by(Signal.stock_id)
+                    .subquery()
+                )
+                pos_sig_rows = session.execute(
+                    select(Stock.symbol, Signal.signal)
+                    .join(pos_sig_subq, Stock.id == pos_sig_subq.c.stock_id)
+                    .join(Signal, (Signal.stock_id == pos_sig_subq.c.stock_id) & (Signal.ts == pos_sig_subq.c.max_ts) & (Signal.horizon == "SWING"))
+                    .where(Stock.symbol.in_(open_symbols))
+                ).all()
+                pos_signal_map = {sym: sig for sym, sig in pos_sig_rows}
 
             open_positions = []
             for trade in open_trades:
@@ -2169,13 +2194,14 @@ def send_morning_digest(market: str = "US") -> None:
                 if last_price and trade.current_stop:
                     stop_dist_pct = (last_price - trade.current_stop) / last_price * 100
                 open_positions.append({
-                    "symbol":       trade.symbol,
-                    "entry_price":  float(trade.entry_price),
-                    "last_price":   last_price,
-                    "pnl_pct":      pnl_pct,
-                    "current_stop": float(trade.current_stop) if trade.current_stop else None,
+                    "symbol":        trade.symbol,
+                    "entry_price":   float(trade.entry_price),
+                    "last_price":    last_price,
+                    "pnl_pct":       pnl_pct,
+                    "current_stop":  float(trade.current_stop) if trade.current_stop else None,
                     "stop_dist_pct": stop_dist_pct,
-                    "hold_days":    trade.hold_days or 0,
+                    "hold_days":     trade.hold_days or 0,
+                    "current_signal": pos_signal_map.get(trade.symbol),
                 })
             open_positions.sort(key=lambda p: p.get("pnl_pct") or 0, reverse=True)
 

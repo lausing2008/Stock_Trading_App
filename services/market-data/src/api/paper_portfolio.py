@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from db import PaperEquityCurve, PaperPortfolio, PaperTrade, SessionLocal, get_session
+from db import PaperEquityCurve, PaperPortfolio, PaperTrade, SessionLocal, Signal, SignalHorizon, get_session
 from db.models import User, Stock, Price, TimeFrame
 from .auth import get_current_user, get_admin_user
 from common.config import get_settings
@@ -302,6 +302,24 @@ def get_positions(
         .order_by(desc(PaperTrade.entry_date))
     ).scalars().all()
 
+    # Fetch latest SWING signal per open position symbol
+    symbols = list({t.symbol for t in trades})
+    current_signals: dict[str, str] = {}
+    if symbols:
+        sig_subq = (
+            select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+            .where(Signal.horizon == SignalHorizon.SWING)
+            .group_by(Signal.stock_id)
+            .subquery()
+        )
+        sig_rows = session.execute(
+            select(Stock.symbol, Signal.signal)
+            .join(sig_subq, Stock.id == sig_subq.c.stock_id)
+            .join(Signal, (Signal.stock_id == sig_subq.c.stock_id) & (Signal.ts == sig_subq.c.max_ts) & (Signal.horizon == SignalHorizon.SWING))
+            .where(Stock.symbol.in_(symbols))
+        ).all()
+        current_signals = {sym: sig.value if hasattr(sig, "value") else str(sig) for sym, sig in sig_rows}
+
     return [
         {
             "id": t.id,
@@ -327,6 +345,7 @@ def get_positions(
             "sector": t.sector,
             "decision_notes": t.entry_decision_notes or [],
             "entry_reasons": t.entry_reasons or {},
+            "current_signal": current_signals.get(t.symbol),
         }
         for t in trades
     ]

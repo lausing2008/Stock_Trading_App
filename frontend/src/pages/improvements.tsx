@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,84 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 103 — Paper Portfolio: Current Signal Column ───────────────────────
+  {
+    id: 'TIER103-PORTFOLIO-SIGNAL-COLUMN',
+    tier: 103 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/api/paper_portfolio.py:get_positions() + frontend/src/pages/paper-portfolio.tsx',
+    effort: '30m',
+    impact: 'High — open position rows now show their current SWING signal badge (BUY/HOLD/SELL). A red ⚠ SELL badge flags positions where the signal has flipped bearish, prompting manual review.',
+    title: 'Paper portfolio: show current SWING signal per open position',
+    what: 'The open positions table had no indication of whether the entry signal was still bullish. A BUY entry that later flipped to SELL had no visible warning — users had to navigate to each stock page to check.',
+    fix: 'get_positions() now queries the latest SWING signal per symbol in a single batch join and returns current_signal. Frontend adds a Signal column with colour-coded badge; SELL shows ⚠ prefix and tooltip.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
+  // ── Tier 102 — Bear Regime Warning Banner in Morning Digest ─────────────────
+  {
+    id: 'TIER102-DIGEST-BEAR-BANNER',
+    tier: 102 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/email_service.py:send_morning_digest_email()',
+    effort: '20m',
+    impact: 'Medium — when S&P is in bear mode, a red warning banner now appears below the regime card: "Bear Market Active — higher thresholds required. Reduce position sizing." Keeps the digest actionable in downturns.',
+    title: 'Morning digest: red bear-market warning banner + plain-text note',
+    what: 'Digest showed the regime badge (BEAR, red) but no explicit guidance text. Users in bear regime still saw the same layout as bull regime with no callout about elevated risk.',
+    fix: 'Added bear_banner_html / bear_banner_text blocks rendered immediately after the regime card when state == "bear". HTML version uses a red bordered card with explicit sizing advice; plain-text appends a short ⚠️ line.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
+  // ── Tier 101 — Current Signal for Open Positions in Digest ──────────────────
+  {
+    id: 'TIER101-DIGEST-POSITION-SIGNAL',
+    tier: 101 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/scheduler.py:send_morning_digest() + email_service.py',
+    effort: '25m',
+    impact: 'High — open position rows in morning digest now show a signal badge (BUY/HOLD/SELL) and a ⚠️ Exit? warning for SELL signals. Saves opening the app to check each position manually.',
+    title: 'Morning digest: current signal badge per open position + SELL exit warning',
+    what: 'Open positions in the digest showed P&L and stop distance but not the current signal. If a position flipped to SELL overnight, there was no indication in the email.',
+    fix: 'Added pos_signal_map query in scheduler.py using same latest-SWING-signal subquery pattern. Passed as current_signal in each position dict. email_service renders a coloured badge; SELL shows ⚠️ Exit? in red.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
+  // ── Tier 100 — Earnings Warning + Confidence in Digest Opportunity Rows ──────
+  {
+    id: 'TIER100-DIGEST-EARNINGS-CONF',
+    tier: 100 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/scheduler.py:_top5_for_horizon() + email_service.py:_opp_table()',
+    effort: '30m',
+    impact: 'High — digest opportunity rows now show confidence % (replacing ML% column header) and a ⚠️ Earn Xd badge when earnings are ≤ 5 days away. Prevents blindly acting on signals right before an earnings event.',
+    title: 'Morning digest: earnings proximity warning + confidence score per opportunity',
+    what: 'Digest showed ML probability but not signal confidence (which is broader). More importantly, it had no warning when a BUY signal was right before an earnings announcement — acting on such signals is high risk.',
+    fix: '_top5_for_horizon() now reads signal.confidence and signal.reasons["days_to_earnings"]. _opp_table() renders confidence in the ML% column and adds an amber ⚠️ Earn Xd badge to the symbol cell when DTE ≤ 5.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
+  // ── Tier 99 — Signal Reasons in Morning Digest + Signal Log Market Filter ────
+  {
+    id: 'TIER99-DIGEST-REASONS',
+    tier: 99, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/scheduler.py:_top5_for_horizon() + email_service.py:_opp_table()',
+    effort: '45m',
+    impact: 'Medium — morning digest opportunity rows now show up to 3 reason bullets (RSI level, trend status, MACD state, patterns) under each symbol. Users can judge entries without opening the app.',
+    title: 'Morning digest: signal reason bullets per opportunity + signal log market filter',
+    what: 'Digest showed symbol + signal type but not WHY. Signal Filter Monitor had no market filter — HK and US signals were mixed without a way to separate them.',
+    fix: '_reason_bullets() helper extracts RSI/trend/MACD/pattern context from signal.reasons dict. Rendered as italic dot-separated line under symbol. Admin-signals.tsx gets US/HK/All market dropdown wired to the existing backend market= param.',
+    implementedNote: 'Done 2026-06-21. Both local and EC2 deployed.',
+  },
+
+  // ── Tier 98 — Signal Log Market Filter ───────────────────────────────────────
+  {
+    id: 'TIER98-SIGNAL-LOG-MARKET-FILTER',
+    tier: 98, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/admin-signals.tsx + frontend/src/lib/api.ts',
+    effort: '15m',
+    impact: 'Low-medium — Signal Filter Monitor now has a market dropdown (All / US / HK) that filters the log to one market. Useful when reviewing HK signal quality separately from US.',
+    title: 'Signal Filter Monitor: add US/HK market filter dropdown',
+    what: 'The signal log mixed US and HK entries with no way to filter. Backend /admin/signal-log already supported market= param but the frontend never wired it up.',
+    fix: 'Added marketFilter state, select dropdown in filter row, and passed market to getAdminSignalLog(). SWR cache key includes marketFilter so changes trigger refetch.',
+    implementedNote: 'Done 2026-06-21. Bundled into SA-33 commit with TIER99.',
+  },
+
   // ── Tier 97 — Top/Bottom Performers in Morning Digest ────────────────────────
   {
     id: 'TIER97-DIGEST-SYMBOL-LEADERBOARD',
@@ -7876,6 +7954,12 @@ const TIER_LABEL: Record<Tier, string> = {
   95: 'Tier 95 — post-tune_all signal refresh: new models used immediately (done)',
   96: 'Tier 96 — ML model AUC in signal alert emails (done)',
   97: 'Tier 97 — Morning digest: top/bottom 5 symbol leaderboard by avg return (done)',
+  98: 'Tier 98 — Signal Filter Monitor: US/HK market filter dropdown (done)',
+  99: 'Tier 99 — Morning digest: signal reason bullets per opportunity (done)',
+  100: 'Tier 100 — Morning digest: earnings warning + confidence score per opportunity (done)',
+  101: 'Tier 101 — Morning digest: current signal badge + exit warning per open position (done)',
+  102: 'Tier 102 — Morning digest: bear regime warning banner (done)',
+  103: 'Tier 103 — Paper portfolio: current SWING signal column per open position (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -7976,6 +8060,12 @@ const TIER_COLOR: Record<Tier, string> = {
   95: '#fb7185',
   96: '#c084fc',
   97: '#38bdf8',
+  98: '#a3e635',
+  99: '#34d399',
+  100: '#6ee7b7',
+  101: '#5eead4',
+  102: '#38bdf8',
+  103: '#818cf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
