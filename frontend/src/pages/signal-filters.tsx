@@ -712,10 +712,18 @@ export default function SignalFiltersPage() {
 
                     {/* Signal badge + SA-19 pillar mini-bars */}
                     <td style={TD}>
-                      <span style={{
-                        padding: '2px 8px', borderRadius: 5, fontSize: 11, fontWeight: 700,
-                        background: sigColor + '22', color: sigColor, border: `1px solid ${sigColor}44`,
-                      }}>{row.signal}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{
+                          padding: '2px 8px', borderRadius: 5, fontSize: 11, fontWeight: 700,
+                          background: sigColor + '22', color: sigColor, border: `1px solid ${sigColor}44`,
+                        }}>{row.signal}</span>
+                        {row.signal === 'HOLD' && row.bullish_probability != null && row.bullish_probability >= 0.55 && row.bullish_probability < 0.65 && (
+                          <span style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', padding: '1px 4px', borderRadius: 3, whiteSpace: 'nowrap' }}
+                                title={`Near BUY threshold — bullish probability ${(row.bullish_probability * 100).toFixed(1)}% (threshold: 65%)`}>
+                            ~BUY
+                          </span>
+                        )}
+                      </div>
                       {row.pillar_trend != null && (
                         <span
                           style={{ display: 'flex', gap: 3, marginTop: 3, alignItems: 'center' }}

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 120 — Signal Filter: ~BUY Badge on Near-Threshold HOLD Signals ───────
+  {
+    id: 'TIER120-NEAR-BUY-BADGE',
+    tier: 120 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/signal-filters.tsx:signal cell',
+    effort: '15m',
+    impact: 'Medium — HOLD signals with bullish_probability 55–64% (near the 65% BUY threshold) now show an amber "~BUY" micro-badge. Makes it easy to spot stocks that are one strong session away from triggering a buy without scanning the Bull% column numbers.',
+    title: 'Signal Filter: ~BUY badge on near-threshold HOLD signals (55–64% bullish prob)',
+    what: 'A HOLD signal at 64% bullish probability is materially different from a HOLD at 45%. Previously you had to read the Bull% column to spot these. They are the most actionable watchlist items — one more positive catalyst flips them to BUY.',
+    fix: 'Added an amber "~BUY" span after the HOLD badge when bullish_probability ∈ [0.55, 0.65). Tooltip shows exact probability and the threshold. No backend changes.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
   // ── Tier 119 — Paper Portfolio: Exit Reason Breakdown Pills ───────────────────
   {
     id: 'TIER119-EXIT-BREAKDOWN',
@@ -8184,6 +8197,7 @@ const TIER_LABEL: Record<Tier, string> = {
   117: 'Tier 117 — Rankings table: Conf% column (signal confidence, colour-coded) (done)',
   118: 'Tier 118 — Rankings table: Bull% column (ML bullish probability, consistent with Signal Filter) (done)',
   119: 'Tier 119 — Paper portfolio closed trades: exit reason breakdown pills in stats bar (done)',
+  120: 'Tier 120 — Signal Filter: ~BUY badge on HOLD signals near buy threshold (55–64% bullish prob) (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8306,6 +8320,7 @@ const TIER_COLOR: Record<Tier, string> = {
   117: '#34d399',
   118: '#60a5fa',
   119: '#a78bfa',
+  120: '#fbbf24',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
