@@ -338,16 +338,17 @@ def _bulk_persist(symbols: list[str]) -> None:
                     s.execute(
                         text("""
                             INSERT INTO signals
-                                (stock_id, signal, horizon, confidence, bullish_probability, reasons)
+                                (stock_id, signal, horizon, confidence, bullish_probability, reasons, source)
                             VALUES
                                 (:sid, CAST(:sig AS signaltype), CAST(:hor AS signalhorizon),
-                                 :conf, :bp, CAST(:rsns AS jsonb))
+                                 :conf, :bp, CAST(:rsns AS jsonb), :src)
                             ON CONFLICT (stock_id, horizon, date_trunc('day', ts))
                             DO UPDATE SET
                                 signal              = EXCLUDED.signal,
                                 confidence          = EXCLUDED.confidence,
                                 bullish_probability = EXCLUDED.bullish_probability,
                                 reasons             = EXCLUDED.reasons,
+                                source              = EXCLUDED.source,
                                 ts                  = NOW()
                         """),
                         dict(
@@ -357,6 +358,7 @@ def _bulk_persist(symbols: list[str]) -> None:
                             conf=ai.confidence,
                             bp=ai.bullish_probability,
                             rsns=json.dumps(ai.reasons),
+                            src="signal-engine",
                         ),
                     )
 
