@@ -89,6 +89,7 @@ def send_signal_alert_email(
     near_conviction: bool = False,
     near_conviction_failed: list[str] | None = None,
     horizon: str | None = None,
+    win_rate_90d: tuple[float, int] | None = None,
 ) -> bool:
     direction_map = {
         ("SELL", "HOLD"): ("cautious",  "moving out of sell territory"),
@@ -210,6 +211,7 @@ def send_signal_alert_email(
         ("ML model AUC",          _ml_auc_note(reasons.get("ml_test_auc"))),
         ("Next earnings",         earnings_note),
         ("Insider activity (6M)", insider_note),
+        ("90d signal accuracy",   f"{round(win_rate_90d[0]*100)}%WR ({win_rate_90d[1]} outcomes)" if win_rate_90d else "—"),
     ]
 
     rows_html = "".join(

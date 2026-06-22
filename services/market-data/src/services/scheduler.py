@@ -1081,6 +1081,20 @@ def check_signal_alerts() -> None:
             except Exception:
                 pass
 
+            # Fetch 90d per-symbol outcomes in one call for WR badge in alert emails
+            sym_wr_map: dict[str, tuple[float, int]] = {}
+            try:
+                wr_r = httpx.get(
+                    f"{_settings.signal_engine_url}/signals/outcomes/summary",
+                    params={"days": "90"}, timeout=10,
+                )
+                if wr_r.status_code == 200:
+                    for _s in wr_r.json().get("by_symbol", []):
+                        if (_s.get("count") or 0) >= 3:
+                            sym_wr_map[_s["symbol"]] = (float(_s.get("win_rate") or 0), _s["count"])
+            except Exception:
+                pass
+
             # Current live regime — used only for non-BUY confidence gate (lighter path).
             # The BUY conviction gate now reads regime from each signal's stored reasons dict
             # so gate and signal generation always operate in the same market context.
@@ -1258,6 +1272,7 @@ def check_signal_alerts() -> None:
                     near_conviction=near_conviction,
                     near_conviction_failed=near_conviction_failed,
                     horizon=style,
+                    win_rate_90d=sym_wr_map.get(alert.symbol),
                 )
                 if email_ok:
                     alert.last_signal = current  # advance state only after successful send
