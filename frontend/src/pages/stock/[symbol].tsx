@@ -875,7 +875,21 @@ Return ONLY valid JSON — no markdown, no prose:
             return (
               <div className={`rounded-md border px-4 py-2 text-center ${borderCls}`}>
                 <div className={`text-xs font-medium mb-0.5 ${labelCls}`}>AI Signal</div>
-                <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                  <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
+                  {(s === 'HOLD' || s === 'WAIT') && data.signal.bullish_probability != null && (() => {
+                    const bp = data.signal.bullish_probability;
+                    if (bp >= 0.55 && bp < 0.65) return (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', padding: '2px 6px', borderRadius: 4 }}
+                            title={`Near BUY — ${(bp * 100).toFixed(1)}% bullish probability`}>~BUY</span>
+                    );
+                    if (bp > 0.35 && bp <= 0.45) return (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.35)', padding: '2px 6px', borderRadius: 4 }}
+                            title={`Near SELL — ${(bp * 100).toFixed(1)}% bullish probability`}>~SELL</span>
+                    );
+                    return null;
+                  })()}
+                </div>
                 <div className="text-xs text-slate-500 mt-0.5">{((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}% bullish</div>
               </div>
             );
