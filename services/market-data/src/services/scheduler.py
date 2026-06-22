@@ -2080,23 +2080,52 @@ def send_morning_digest(market: str = "US") -> None:
                     ).all()
                     price_map = {sym: float(close) for sym, close in prows}
 
+                def _reason_bullets(r: dict) -> list[str]:
+                    """Pick up to 3 short reason bullets from a signal reasons dict."""
+                    bullets: list[str] = []
+                    rsi = r.get("rsi")
+                    if rsi is not None:
+                        rv = float(rsi)
+                        label = "oversold" if rv <= 35 else "momentum" if rv >= 65 else ""
+                        bullets.append(f"RSI {rv:.0f}" + (f" — {label}" if label else ""))
+                    if r.get("sma50_above_sma200") and r.get("trend_above_sma50"):
+                        bullets.append("Uptrend: above SMA50 + golden cross")
+                    elif r.get("trend_above_sma50"):
+                        bullets.append("Above SMA50")
+                    if r.get("macd_zero_cross_up"):
+                        bullets.append("MACD zero-line crossup")
+                    elif r.get("macd_rising"):
+                        bullets.append("MACD histogram rising")
+                    if "double_bottom" in (r.get("active_patterns") or []):
+                        bullets.append("Double bottom pattern")
+                    if "breakout" in (r.get("active_patterns") or []):
+                        bullets.append("Volume breakout")
+                    ml_prob = r.get("ml_probability")
+                    ml_auc = r.get("ml_test_auc")
+                    if ml_prob and float(ml_prob) >= 0.65 and ml_auc and float(ml_auc) >= 0.60:
+                        bullets.append(f"ML {float(ml_prob)*100:.0f}% bullish (AUC {float(ml_auc):.2f})")
+                    return bullets[:3]
+
                 result = []
                 for stock, ranking, signal in top_rows:
                     ml_prob = None
+                    reasons_bullets: list[str] = []
                     if signal and signal.reasons:
                         try:
                             ml_prob = float(signal.reasons.get("ml_probability") or 0) or None
                         except (TypeError, ValueError):
                             ml_prob = None
+                        reasons_bullets = _reason_bullets(signal.reasons)
                     result.append({
-                        "symbol":  stock.symbol,
-                        "name":    stock.name or "",
-                        "score":   float(ranking.score) if ranking.score is not None else None,
-                        "signal":  signal.signal if signal else None,
-                        "ml_prob": ml_prob,
-                        "sector":  stock.sector or "",
-                        "market":  stock.market.value if stock.market else "",
-                        "price":   price_map.get(stock.symbol),
+                        "symbol":          stock.symbol,
+                        "name":            stock.name or "",
+                        "score":           float(ranking.score) if ranking.score is not None else None,
+                        "signal":          signal.signal if signal else None,
+                        "ml_prob":         ml_prob,
+                        "sector":          stock.sector or "",
+                        "market":          stock.market.value if stock.market else "",
+                        "price":           price_map.get(stock.symbol),
+                        "reasons_bullets": reasons_bullets,
                     })
                 return result
 

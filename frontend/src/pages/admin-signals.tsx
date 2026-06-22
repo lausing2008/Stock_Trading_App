@@ -128,18 +128,20 @@ export default function AdminSignalsPage() {
   const [symbolFilter, setSymbolFilter] = useState('');
   const [signalFilter, setSignalFilter] = useState<typeof SIGNAL_OPTS[number]>('ALL');
   const [horizonFilter, setHorizonFilter] = useState<typeof HORIZON_OPTS[number]>('ALL');
+  const [marketFilter, setMarketFilter] = useState<'ALL' | 'US' | 'HK'>('ALL');
   const [daysBack, setDaysBack] = useState<typeof DAYS_OPTS[number]>(30);
   const [page, setPage] = useState(1);
 
   // Fetch
   const { data, isLoading, error } = useSWR(
     userRole === 'admin'
-      ? ['admin-signal-log', symbolFilter, signalFilter, horizonFilter, daysBack, page]
+      ? ['admin-signal-log', symbolFilter, signalFilter, horizonFilter, marketFilter, daysBack, page]
       : null,
     () => api.getAdminSignalLog({
       symbol: symbolFilter.trim().toUpperCase() || undefined,
       signal_type: signalFilter !== 'ALL' ? signalFilter : undefined,
       horizon: horizonFilter !== 'ALL' ? horizonFilter : undefined,
+      market: marketFilter !== 'ALL' ? marketFilter : undefined,
       days_back: daysBack,
       page,
       limit: PAGE_LIMIT,
@@ -240,6 +242,11 @@ export default function AdminSignalsPage() {
         </select>
         <select value={horizonFilter} onChange={e => { setHorizonFilter(e.target.value as typeof HORIZON_OPTS[number]); handleFilterChange(); }} style={inp}>
           {HORIZON_OPTS.map(h => <option key={h}>{h}</option>)}
+        </select>
+        <select value={marketFilter} onChange={e => { setMarketFilter(e.target.value as 'ALL' | 'US' | 'HK'); handleFilterChange(); }} style={inp}>
+          <option value="ALL">All markets</option>
+          <option value="US">US</option>
+          <option value="HK">HK</option>
         </select>
         <select value={daysBack} onChange={e => { setDaysBack(Number(e.target.value) as typeof DAYS_OPTS[number]); handleFilterChange(); }} style={inp}>
           {DAYS_OPTS.map(d => <option key={d} value={d}>Last {d}d</option>)}

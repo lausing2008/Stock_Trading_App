@@ -541,9 +541,17 @@ def send_morning_digest_email(
             ml_str = f"{ml*100:.0f}%" if ml else "—"
             score_str = f"{o['score']:.0f}" if o.get("score") is not None else "—"
             price_str = f"${o['price']:,.2f}" if o.get("price") else "—"
+            bullets = o.get("reasons_bullets") or []
+            bullets_html = ""
+            if bullets:
+                dots = " · ".join(bullets)
+                bullets_html = f'<div style="font-size:10px;color:#64748b;margin-top:2px;font-style:italic">{dots}</div>'
             rows_html += (
                 f'<tr style="border-bottom:1px solid #f1f5f9">'
-                f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{o["symbol"]}</td>'
+                f'<td style="padding:7px 10px">'
+                f'<div style="font-weight:700;font-size:13px">{o["symbol"]}</div>'
+                f'{bullets_html}'
+                f'</td>'
                 f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{o.get("name","")[:22]}</td>'
                 f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{accent}">{score_str}</td>'
                 f'<td style="padding:7px 10px"><span style="background:{sig_color}22;color:{sig_color};font-size:11px;font-weight:700;padding:2px 6px;border-radius:4px">{sig}</span></td>'
@@ -551,7 +559,8 @@ def send_morning_digest_email(
                 f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{price_str}</td>'
                 f'</tr>'
             )
-            rows_text += f"  {i}. {o['symbol']:6} Score {score_str:4}  Signal {sig:4}  ML {ml_str:4}  {o.get('name','')[:20]}\n"
+            bullet_text = f"     → {' · '.join(bullets)}\n" if bullets else ""
+            rows_text += f"  {i}. {o['symbol']:6} Score {score_str:4}  Signal {sig:4}  ML {ml_str:4}  {o.get('name','')[:20]}\n{bullet_text}"
 
         if not rows_html:
             return "", ""

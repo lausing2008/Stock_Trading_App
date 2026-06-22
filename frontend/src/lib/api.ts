@@ -183,7 +183,7 @@ export const api = {
 
   getAdminSignalLog: (params?: {
     symbol?: string; signal_type?: string; horizon?: string;
-    days_back?: number; page?: number; limit?: number;
+    days_back?: number; page?: number; limit?: number; market?: string;
   }) => {
     const p = new URLSearchParams();
     if (params?.symbol) p.set('symbol', params.symbol);
@@ -192,6 +192,7 @@ export const api = {
     if (params?.days_back != null) p.set('days_back', String(params.days_back));
     if (params?.page != null) p.set('page', String(params.page));
     if (params?.limit != null) p.set('limit', String(params.limit));
+    if (params?.market) p.set('market', params.market);
     return request<AdminSignalLogResponse>(`/admin/signal-log?${p.toString()}`);
   },
 
