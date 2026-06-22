@@ -2480,25 +2480,75 @@ def detect_patterns(
     def _add(name: str, label: str, description: str, bullish: bool) -> None:
         patterns.append({"name": name, "label": label, "description": description, "bullish": bullish})
 
-    # 1. Golden Cross — EMA50 crossed above EMA200 within last 5 bars
+    # 1. Golden Cross / Death Cross — EMA50 vs EMA200
+    # Guards: (a) verify EMA50 is STILL above EMA200 before showing golden cross badge —
+    # otherwise a cross that fired 4 days ago but has already reversed keeps showing as bullish.
+    # (b) Add spread-velocity context: "spread narrowing" is an early reversal warning.
     if len(close) >= 200:
         ema50 = close.ewm(span=50, adjust=False).mean()
         ema200 = close.ewm(span=200, adjust=False).mean()
+        currently_golden = bool(ema50.iloc[-1] > ema200.iloc[-1])
+
+        gc_fired = dc_fired = False
         for i in range(max(-5, -len(close) + 1), 0):
             if ema50.iloc[i - 1] < ema200.iloc[i - 1] and ema50.iloc[i] >= ema200.iloc[i]:
-                _add("golden_cross", "Golden Cross", f"EMA50 crossed above EMA200 ({ema200.iloc[-1]:.2f})", True)
+                gc_fired = True
+                break
+            if ema50.iloc[i - 1] > ema200.iloc[i - 1] and ema50.iloc[i] <= ema200.iloc[i]:
+                dc_fired = True
                 break
 
-    # 2. MACD Bullish Cross — MACD crossed above signal within last 3 bars
+        spread_now = float(ema50.iloc[-1] - ema200.iloc[-1])
+        spread_5d  = float(ema50.iloc[-6] - ema200.iloc[-6]) if len(close) >= 7 else spread_now
+        gc_expanding = spread_now > spread_5d
+
+        if gc_fired and currently_golden:
+            suffix = " • spread expanding" if gc_expanding else " • spread narrowing ⚠"
+            _add("golden_cross", f"Golden Cross{suffix}",
+                 f"EMA50 crossed above EMA200 ({ema200.iloc[-1]:.2f})", True)
+        elif dc_fired and not currently_golden:
+            _add("death_cross", "Death Cross",
+                 f"EMA50 crossed below EMA200 ({ema200.iloc[-1]:.2f})", False)
+        elif currently_golden and not gc_expanding:
+            # In golden territory but spread narrowing — early warning before death cross
+            _add("gc_narrowing", "GC Spread Narrowing ⚠",
+                 f"EMA50 above EMA200 but gap shrinking — momentum fading ({ema200.iloc[-1]:.2f})", False)
+
+    # 2. MACD Cross — verify MACD is still above signal before showing bullish badge
+    # Also detect histogram fading: positive MACD but slope declining (momentum exhaustion).
     if len(close) >= 35:
         ema12 = close.ewm(span=12, adjust=False).mean()
         ema26 = close.ewm(span=26, adjust=False).mean()
-        macd = ema12 - ema26
-        sig = macd.ewm(span=9, adjust=False).mean()
+        macd_line = ema12 - ema26
+        sig_line = macd_line.ewm(span=9, adjust=False).mean()
+        hist = macd_line - sig_line
+        currently_bull_macd = bool(macd_line.iloc[-1] > sig_line.iloc[-1])
+        hist_slope = float(hist.iloc[-1] - hist.iloc[-3]) if len(hist.dropna()) >= 4 else 0.0
+        hist_fading = bool(hist.iloc[-1] > 0 and hist_slope < 0)
+
+        bull_cross = bear_cross = False
         for i in range(max(-3, -len(close) + 1), 0):
-            if macd.iloc[i - 1] < sig.iloc[i - 1] and macd.iloc[i] >= sig.iloc[i]:
-                _add("macd_bullish_cross", "MACD Cross ↑", f"MACD crossed above signal ({sig.iloc[-1]:.3f})", True)
+            if macd_line.iloc[i - 1] < sig_line.iloc[i - 1] and macd_line.iloc[i] >= sig_line.iloc[i]:
+                bull_cross = True
                 break
+            if macd_line.iloc[i - 1] > sig_line.iloc[i - 1] and macd_line.iloc[i] <= sig_line.iloc[i]:
+                bear_cross = True
+                break
+
+        if bull_cross and currently_bull_macd:
+            if hist_fading:
+                _add("macd_bullish_cross", "MACD Cross ↑ • hist fading ⚠",
+                     f"MACD crossed signal but momentum slowing (slope {hist_slope:.4f})", True)
+            else:
+                _add("macd_bullish_cross", "MACD Cross ↑",
+                     f"MACD crossed above signal ({sig_line.iloc[-1]:.3f})", True)
+        elif bear_cross and not currently_bull_macd:
+            _add("macd_bear_cross", "MACD Cross ↓",
+                 f"MACD crossed below signal ({sig_line.iloc[-1]:.3f})", False)
+        elif currently_bull_macd and hist_fading:
+            # No recent cross but histogram positive and fading — surfaces the exhaustion signal
+            _add("macd_fading", "MACD Hist Fading ⚠",
+                 f"MACD positive but momentum slowing (3-bar slope {hist_slope:.4f})", False)
 
     # 3. RSI Oversold Bounce — RSI crossed above 30 within last 3 bars
     if len(close) >= 16:
