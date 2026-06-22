@@ -2,6 +2,9 @@
 import time as _time
 
 from fastapi import Header, HTTPException
+# Module-level import: missing python-jose causes clear ImportError at startup
+# instead of a silent HTTP 401 on every authenticated request (recurring BUG).
+from jose import JWTError, jwt as _jwt
 
 from common.config import get_settings
 from common.redis_client import get_redis
@@ -40,8 +43,7 @@ def get_current_username(authorization: str | None = Header(default=None)) -> st
         raise HTTPException(401, "Not authenticated")
     token = authorization.removeprefix("Bearer ")
     try:
-        from jose import JWTError, jwt
-        payload = jwt.decode(token, _settings.jwt_secret, algorithms=[_ALGORITHM])
+        payload = _jwt.decode(token, _settings.jwt_secret, algorithms=[_ALGORITHM])
         username: str = payload.get("sub", "")
         if not username:
             raise HTTPException(401, "Invalid token")

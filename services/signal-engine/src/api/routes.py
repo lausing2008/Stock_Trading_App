@@ -285,12 +285,15 @@ def _bulk_persist(symbols: list[str]) -> None:
                     # Upsert: one signal row per (stock, horizon, calendar day).
                     # Conflict on the unique index uq_signals_stock_horizon_day
                     # → update in place so signal type changes within a day overwrite rather than grow the table.
+                    # Use CAST() instead of ::type to avoid SQLAlchemy named-param
+                    # binding ambiguity with PostgreSQL :: cast syntax (BUG-6).
                     s.execute(
                         text("""
                             INSERT INTO signals
                                 (stock_id, signal, horizon, confidence, bullish_probability, reasons)
                             VALUES
-                                (:sid, :sig::signaltype, :hor::signalhorizon, :conf, :bp, :rsns::jsonb)
+                                (:sid, CAST(:sig AS signaltype), CAST(:hor AS signalhorizon),
+                                 :conf, :bp, CAST(:rsns AS jsonb))
                             ON CONFLICT (stock_id, horizon, date_trunc('day', ts))
                             DO UPDATE SET
                                 signal              = EXCLUDED.signal,
@@ -1780,7 +1783,6 @@ def calibrate_ta_weights(
         "above_sma50", "sma50_above_sma200", "golden_cross_event",
         "rsi_sweet_spot", "rsi_mild_oversold", "rsi_mild_overbought",
         "stoch_oversold", "stoch_cross_up",
-        "rsi_divergence_bullish",
         "macd_strong", "macd_positive", "macd_zero_cross_up",
         "bb_mid_zone", "price_above_vwap",
         "bullish_trend", "obv_trend_bullish", "volume_surge",
@@ -1797,7 +1799,6 @@ def calibrate_ta_weights(
         "rsi_mild_overbought":    lambda r: 65 <= (r.get("rsi") or 0) < 72,
         "stoch_oversold":         lambda r: bool(r.get("stoch_rsi_oversold")),
         "stoch_cross_up":         lambda r: bool(r.get("stoch_rsi_cross_up")),
-        "rsi_divergence_bullish": lambda r: r.get("rsi_divergence") == "bullish",
         "macd_strong":            lambda r: (r.get("macd_hist") or 0) > 0 and bool(r.get("macd_rising")),
         "macd_positive":          lambda r: (r.get("macd_hist") or 0) > 0 and not bool(r.get("macd_rising")),
         "macd_zero_cross_up":     lambda r: bool(r.get("macd_zero_cross_up")),

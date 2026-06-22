@@ -1160,6 +1160,7 @@ def check_signal_alerts() -> None:
                 # send (see `if email_ok` below), so a failed send can be retried next run.
 
                 conviction_passed: list[str] | None = None
+                conviction_tier: str = "full"  # default; overwritten by _is_conviction_buy on BUY path
                 near_conviction = False
                 near_conviction_failed: list[str] = []
                 if is_bullish:
@@ -1214,7 +1215,9 @@ def check_signal_alerts() -> None:
                             log.info("signal_alert.skipped_cooldown", symbol=alert.symbol,
                                      prev=prev, current=current,
                                      sent_ago_min=round(sent_ago.total_seconds() / 60, 1))
-                            alert.last_signal = current
+                            # Do NOT advance last_signal — if we set it to current now, the
+                            # next run sees prev==current and never detects the transition.
+                            # Keep last_signal at prev so the email fires once cooldown expires.
                             continue
 
                 # Guard: no email address → log and advance state to avoid infinite retry
