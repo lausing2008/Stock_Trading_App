@@ -523,7 +523,9 @@ def send_morning_digest_email(
     sl = _state_label.get(state, state.upper())
 
     # ── Market pulse section ──────────────────────────────────────────────────
-    spy_str = f"${spy_price:,.2f}" if spy_price else "—"
+    _idx_label = "HSI" if market.upper() == "HK" else "SPY"
+    _price_fmt = lambda p: f"HK${p:,.0f}" if market.upper() == "HK" else f"${p:,.2f}"
+    spy_str = _price_fmt(spy_price) if spy_price else "—"
     vix_str = f"{vix:.1f}" if vix else "—"
     regime_notes_html = "".join(
         f'<li style="font-size:12px;color:#64748b;margin:2px 0">{n}</li>'
@@ -784,7 +786,7 @@ def send_morning_digest_email(
     subject = f"📊 Morning Digest [{market.upper()}]: StockAI — {date_str} | Regime: {sl}"
     body_text = (
         f"StockAI Morning Digest [{market.upper()}] — {date_str}\n"
-        f"Market Regime: {sl}  |  SPY: {spy_str}  |  VIX: {vix_str}\n"
+        f"Market Regime: {sl}  |  {_idx_label}: {spy_str}  |  VIX: {vix_str}\n"
         + ("\n".join(regime_notes or []))
         + bear_banner_text
         + opp_section_text
@@ -806,7 +808,7 @@ def send_morning_digest_email(
           <div style="font-size:22px;font-weight:800;color:{sc}">{sl}</div>
         </div>
         <div style="border-left:1px solid #e2e8f0;padding-left:14px">
-          <div style="font-size:11px;color:#64748b">SPY <strong style="color:#1e293b">{spy_str}</strong></div>
+          <div style="font-size:11px;color:#64748b">{_idx_label} <strong style="color:#1e293b">{spy_str}</strong></div>
           <div style="font-size:11px;color:#64748b;margin-top:3px">VIX <strong style="color:#1e293b">{vix_str}</strong></div>
         </div>
         {f'<div style="flex:1"><ul style="margin:0;padding-left:16px">{regime_notes_html}</ul></div>' if regime_notes_html else ''}

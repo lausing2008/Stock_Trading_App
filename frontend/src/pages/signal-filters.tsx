@@ -327,6 +327,14 @@ export default function SignalFiltersPage() {
     });
   }
 
+  const symbolWR = useMemo(() => {
+    const map: Record<string, { wr: number; n: number }> = {};
+    for (const s of outcomesSummary?.by_symbol ?? []) {
+      if (s.count >= 3) map[s.symbol] = { wr: s.win_rate, n: s.count };
+    }
+    return map;
+  }, [outcomesSummary]);
+
   const rows = useMemo(() => {
     let r = data ?? [];
 
@@ -678,10 +686,23 @@ export default function SignalFiltersPage() {
                   >
                     {/* Symbol — sticky left */}
                     <td style={{ ...TD, position: 'sticky', left: 0, zIndex: 1, background: hasGate ? '#1a0f10' : row.suppression_count >= 3 ? '#130f0b' : '#0b1420' }}>
-                      <Link href={`/stock/${row.symbol}`} style={{ color: '#818cf8', textDecoration: 'none', fontWeight: 600 }}>
-                        {row.symbol}
-                      </Link>
-                      <span style={{ color: '#334155', marginLeft: 6, fontSize: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                        <Link href={`/stock/${row.symbol}`} style={{ color: '#818cf8', textDecoration: 'none', fontWeight: 600 }}>
+                          {row.symbol}
+                        </Link>
+                        {symbolWR[row.symbol] && (() => {
+                          const { wr, n } = symbolWR[row.symbol];
+                          const wrPct = Math.round(wr * 100);
+                          const col = wrPct >= 55 ? '#22c55e' : wrPct >= 45 ? '#f59e0b' : '#ef4444';
+                          return (
+                            <span style={{ fontSize: 9, fontWeight: 700, color: col, background: `${col}18`, border: `1px solid ${col}44`, padding: '1px 4px', borderRadius: 3 }}
+                                  title={`90d win rate: ${wrPct}% (${n} outcomes)`}>
+                              {wrPct}%WR
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      <span style={{ color: '#334155', fontSize: 10 }}>
                         {row.name.length > 20 ? row.name.slice(0, 20) + '…' : row.name}
                       </span>
                     </td>
