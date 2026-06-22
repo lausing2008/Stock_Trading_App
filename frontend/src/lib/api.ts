@@ -1273,6 +1273,7 @@ export type PaperPortfolioSummary = {
   info_ratio: number | null;
   config: PaperPortfolioConfig;
   created_at: string | null;
+  exit_breakdown: Record<string, number>;
 };
 
 export type PaperPosition = {

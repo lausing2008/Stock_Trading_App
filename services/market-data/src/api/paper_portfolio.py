@@ -243,6 +243,11 @@ def get_summary(
             hsi_return = round((latest_curve.hsi_close / first.hsi_close - 1) * 100, 2)
             outperformance_vs_hsi = round(total_return_pct - hsi_return, 2)
 
+    exit_breakdown: dict[str, int] = {}
+    for t in closed_trades:
+        key = t.exit_reason or "unknown"
+        exit_breakdown[key] = exit_breakdown.get(key, 0) + 1
+
     return {
         "portfolio_id": p.id,
         "name": p.name,
@@ -284,6 +289,7 @@ def get_summary(
         "regime_notes": p.config.get("regime_notes", []),
         "config": p.config,
         "created_at": p.created_at.isoformat() if p.created_at else None,
+        "exit_breakdown": exit_breakdown,
     }
 
 

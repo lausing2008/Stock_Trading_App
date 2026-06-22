@@ -2077,6 +2077,25 @@ export default function PaperPortfolioPage() {
                     <span style={{ fontSize: 14, fontWeight: 700, color: s.color }}>{s.value}</span>
                   </div>
                 ))}
+                {summary.exit_breakdown && Object.keys(summary.exit_breakdown).length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, borderLeft: '1px solid #1e293b', paddingLeft: 12 }}>
+                    <span style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Exit Reasons</span>
+                    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                      {Object.entries(summary.exit_breakdown)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([reason, count]) => {
+                          const col = reason === 'stop_loss' ? '#f87171' : reason === 'take_profit' ? '#4ade80' : reason === 'signal' ? '#818cf8' : reason === 'hold_days' ? '#f59e0b' : '#64748b';
+                          const label = reason === 'stop_loss' ? 'SL' : reason === 'take_profit' ? 'TP' : reason === 'signal' ? 'Sig' : reason === 'hold_days' ? 'Days' : reason.slice(0, 5);
+                          return (
+                            <span key={reason} style={{ fontSize: 11, fontWeight: 700, color: col, background: `${col}18`, border: `1px solid ${col}44`, padding: '1px 5px', borderRadius: 3 }}
+                                  title={`${reason}: ${count} trades`}>
+                              {label} {count}
+                            </span>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
