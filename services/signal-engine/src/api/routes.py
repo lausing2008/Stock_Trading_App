@@ -33,6 +33,13 @@ def _cache_set(key: str, value, ttl: int = 3600) -> None:
     except Exception:
         pass
 
+def _redis_get_float(key: str) -> float | None:
+    try:
+        val = _get_redis().get(key)
+        return float(val) if val is not None else None
+    except Exception:
+        return None
+
 
 _service_token_cache: str = ""
 _service_token_exp: float = 0.0  # epoch seconds when the cached token expires
