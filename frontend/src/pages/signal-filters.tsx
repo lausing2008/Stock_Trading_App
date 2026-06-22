@@ -723,6 +723,12 @@ export default function SignalFiltersPage() {
                             ~BUY
                           </span>
                         )}
+                        {(row.signal === 'HOLD' || row.signal === 'WAIT') && row.bullish_probability != null && row.bullish_probability > 0.35 && row.bullish_probability <= 0.45 && (
+                          <span style={{ fontSize: 9, fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', padding: '1px 4px', borderRadius: 3, whiteSpace: 'nowrap' }}
+                                title={`Near SELL — bullish probability ${(row.bullish_probability * 100).toFixed(1)}% (sell zone: ≤35%)`}>
+                            ~SELL
+                          </span>
+                        )}
                       </div>
                       {row.pillar_trend != null && (
                         <span

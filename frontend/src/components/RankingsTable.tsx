@@ -152,6 +152,12 @@ export default function RankingsTable({
                       ~BUY
                     </span>
                   )}
+                  {(signal === 'HOLD' || signal === 'WAIT') && sig?.bullish_probability != null && sig.bullish_probability > 0.35 && sig.bullish_probability <= 0.45 && (
+                    <span style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', padding: '1px 4px', borderRadius: 3, marginLeft: 4, whiteSpace: 'nowrap' }}
+                          title={`Near SELL — ${(sig.bullish_probability * 100).toFixed(1)}% bullish probability (sell zone: ≤35%)`}>
+                      ~SELL
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right text-xs font-semibold" style={{
                   color: sig?.bullish_probability == null ? '#475569'

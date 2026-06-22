@@ -1136,6 +1136,16 @@ export default function Watchlist() {
                       </span>
                     );
                   })()}
+                  {(sigLabel === 'HOLD' || sigLabel === 'WAIT') && (() => {
+                    const bp = signalMap[item.symbol]?.bullish_probability;
+                    if (bp == null || bp <= 0.35 || bp > 0.45) return null;
+                    return (
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', padding: '2px 5px', borderRadius: '3px' }}
+                            title={`Near SELL — bullish probability ${(bp * 100).toFixed(1)}% (sell zone: ≤35%)`}>
+                        ~SELL
+                      </span>
+                    );
+                  })()}
                   {symbolWR[item.symbol] && (() => {
                     const { wr, n } = symbolWR[item.symbol];
                     const wrPct = Math.round(wr * 100);
