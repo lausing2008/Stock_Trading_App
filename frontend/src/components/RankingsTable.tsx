@@ -146,6 +146,12 @@ export default function RankingsTable({
                       background: signal === 'BUY' ? 'rgba(74,222,128,0.12)' : signal === 'SELL' ? 'rgba(248,113,113,0.12)' : 'rgba(100,116,139,0.12)',
                     }}>{signal}</span>
                   ) : <span className="text-slate-700">—</span>}
+                  {signal === 'HOLD' && sig?.bullish_probability != null && sig.bullish_probability >= 0.55 && sig.bullish_probability < 0.65 && (
+                    <span style={{ fontSize: '9px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', padding: '1px 4px', borderRadius: 3, marginLeft: 4, whiteSpace: 'nowrap' }}
+                          title={`Near BUY — ${(sig.bullish_probability * 100).toFixed(1)}% bullish probability (threshold: 65%)`}>
+                      ~BUY
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right text-xs font-semibold" style={{
                   color: sig?.bullish_probability == null ? '#475569'
