@@ -7093,7 +7093,7 @@ const ITEMS: Item[] = [
   // ── Tier 94 — tune_all Reliability + Sector ETF Daily Refresh ───────────────
   {
     id: 'TIER94-TUNE-ALL-RELIABILITY',
-    tier: 94, severity: 'bug', defaultStatus: 'done',
+    tier: 94, severity: 'high', defaultStatus: 'done',
     file: 'services/ml-prediction/src/training/tuner.py, services/ml-prediction/src/api/routes.py, services/market-data/src/services/scheduler.py',
     effort: '1h',
     impact: 'High — tune_all was silently killing itself at IBM (ValueError: single-class fold) and had no error isolation, so a crash on symbol N left symbols N+1 through 142 never retrained. Also, sector ETF prices (XLK/XLF/SPY etc.) were active=False so they were never refreshed — sector_rs ML features (TIER90) were using 3-week-stale ETF data.',
