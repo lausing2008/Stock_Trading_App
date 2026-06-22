@@ -3,7 +3,7 @@ import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import MarketClosedBanner from '@/components/MarketClosedBanner';
-import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem, type DecisionResult } from '@/lib/api';
+import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem, type DecisionResult, type OutcomesSummary } from '@/lib/api';
 import { storage } from '@/lib/storage';
 import { getSignalStyle } from '@/lib/settings';
 
@@ -565,6 +565,18 @@ export default function Watchlist() {
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-' + effectiveStyle, () => api.allSignals(effectiveStyle));
+  const { data: outcomesSummary } = useSWR<OutcomesSummary>(
+    ['outcomes-summary-wl', effectiveStyle],
+    () => api.outcomesSummary(effectiveStyle, 90),
+    { revalidateOnFocus: false },
+  );
+  const symbolWR = useMemo(() => {
+    const m: Record<string, { wr: number; n: number }> = {};
+    for (const s of outcomesSummary?.by_symbol ?? []) {
+      if (s.count >= 3) m[s.symbol] = { wr: s.win_rate, n: s.count };
+    }
+    return m;
+  }, [outcomesSummary]);
 
   const { data: alertsData, mutate: mutateAlerts } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { refreshInterval: 30_000 });
   const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { refreshInterval: 60_000 });
@@ -1114,6 +1126,17 @@ export default function Watchlist() {
                   {sig && sigLabel && (
                     <span style={{ fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '5px', color: sig.color, background: sig.bg, border: `1px solid ${sig.border}`, letterSpacing: '0.05em' }}>{sigLabel}</span>
                   )}
+                  {symbolWR[item.symbol] && (() => {
+                    const { wr, n } = symbolWR[item.symbol];
+                    const wrPct = Math.round(wr * 100);
+                    const col = wrPct >= 55 ? '#22c55e' : wrPct >= 45 ? '#f59e0b' : '#ef4444';
+                    return (
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: col, background: `${col}18`, border: `1px solid ${col}44`, padding: '2px 5px', borderRadius: '3px' }}
+                            title={`90d win rate: ${wrPct}% (${n} outcomes)`}>
+                        {wrPct}%WR
+                      </span>
+                    );
+                  })()}
                   {rank?.score != null && (
                     <div style={{ flex: 1 }}>
                       <div style={{ height: '4px', borderRadius: '2px', background: '#1e293b', overflow: 'hidden' }}>

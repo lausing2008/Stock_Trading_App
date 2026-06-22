@@ -527,6 +527,11 @@ def send_morning_digest_email(
     _price_fmt = lambda p: f"HK${p:,.0f}" if market.upper() == "HK" else f"${p:,.2f}"
     spy_str = _price_fmt(spy_price) if spy_price else "—"
     vix_str = f"{vix:.1f}" if vix else "—"
+    ret20 = regime.get("spy_20d_ret")
+    ret20_str = (f"+{ret20:.1f}%" if ret20 and ret20 > 0 else f"{ret20:.1f}%" if ret20 is not None else None)
+    ret20_color = "#22c55e" if ret20 and ret20 > 0 else "#ef4444" if ret20 is not None and ret20 < 0 else "#94a3b8"
+    vix_trend = regime.get("vix_5d_trend")
+    breadth_weak = regime.get("breadth_weak", False)
     regime_notes_html = "".join(
         f'<li style="font-size:12px;color:#64748b;margin:2px 0">{n}</li>'
         for n in (regime_notes or [])[:4]
@@ -786,7 +791,7 @@ def send_morning_digest_email(
     subject = f"📊 Morning Digest [{market.upper()}]: StockAI — {date_str} | Regime: {sl}"
     body_text = (
         f"StockAI Morning Digest [{market.upper()}] — {date_str}\n"
-        f"Market Regime: {sl}  |  {_idx_label}: {spy_str}  |  VIX: {vix_str}\n"
+        f"Market Regime: {sl}  |  {_idx_label}: {spy_str}{f' ({ret20_str} 20d)' if ret20_str else ''}  |  VIX: {vix_str}{f' ({vix_trend})' if vix_trend else ''}\n"
         + ("\n".join(regime_notes or []))
         + bear_banner_text
         + opp_section_text
@@ -808,8 +813,9 @@ def send_morning_digest_email(
           <div style="font-size:22px;font-weight:800;color:{sc}">{sl}</div>
         </div>
         <div style="border-left:1px solid #e2e8f0;padding-left:14px">
-          <div style="font-size:11px;color:#64748b">{_idx_label} <strong style="color:#1e293b">{spy_str}</strong></div>
-          <div style="font-size:11px;color:#64748b;margin-top:3px">VIX <strong style="color:#1e293b">{vix_str}</strong></div>
+          <div style="font-size:11px;color:#64748b">{_idx_label} <strong style="color:#1e293b">{spy_str}</strong>{f' <span style="font-size:10px;color:{ret20_color};font-weight:700">{ret20_str} 20d</span>' if ret20_str else ''}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:3px">VIX <strong style="color:#1e293b">{vix_str}</strong>{f' <span style="font-size:10px;color:#f97316">↑trend</span>' if vix_trend == "rising" else ''}</div>
+          {f'<div style="font-size:10px;color:#f59e0b;margin-top:3px">⚠ Breadth weak (small/mid-caps below 200MA)</div>' if breadth_weak else ''}
         </div>
         {f'<div style="flex:1"><ul style="margin:0;padding-left:16px">{regime_notes_html}</ul></div>' if regime_notes_html else ''}
       </div>

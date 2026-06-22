@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,32 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 107 — Morning Digest: 20d Return + VIX Trend in Regime Card ────────
+  {
+    id: 'TIER107-DIGEST-REGIME-20D',
+    tier: 107 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/email_service.py:send_morning_digest_email()',
+    effort: '20m',
+    impact: 'Medium — the regime card in the morning digest now shows the SPY/HSI 20-day return (e.g. "+2.1% 20d" in green or "-3.4% 20d" in red), rising VIX trend indicator (↑trend in orange), and a breadth-weak warning when small/mid-caps are both below their 200MA.',
+    title: 'Morning digest: 20d index return + VIX trend + breadth warning in regime card',
+    what: 'The regime card showed price and VIX level but not momentum (20d return) or breadth context. Users couldn\'t tell from the email whether the market was trending up or down over the past month.',
+    fix: 'Read spy_20d_ret, vix_5d_trend, breadth_weak from regime dict (already computed by paper_trading_engine). Render inline next to price: "+2.1% 20d" coloured green/red, "↑trend" orange if VIX rising, amber breadth-weak row if both IWM+MDY below 200MA.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
+  // ── Tier 106 — Watchlist: Win-Rate Badge per Stock Card ─────────────────────
+  {
+    id: 'TIER106-WATCHLIST-WR-BADGE',
+    tier: 106 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/watchlist.tsx',
+    effort: '25m',
+    impact: 'Medium — watchlist stock cards now show a small coloured XX%WR badge next to the signal badge, using 90d outcomes data (same as signal-filters). Green ≥55%, amber ≥45%, red <45%. Requires ≥3 outcomes to show.',
+    title: 'Watchlist: 90d win-rate badge per stock card',
+    what: 'Watchlist cards showed signal + K-Score but no historical win-rate indicator. Signal quality varied significantly by symbol but there was no way to see this without navigating to the signal quality page.',
+    fix: 'Added useSWR for api.outcomesSummary(style, 90) and symbolWR lookup map. Badge rendered in the signal row next to the signal badge. Same colour coding as signal-filters win-rate badge.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
   // ── Tier 105 — Signal Filter: Win-Rate Badge per Symbol ─────────────────────
   {
     id: 'TIER105-SIGNAL-FILTER-WR-BADGE',
@@ -7988,6 +8014,8 @@ const TIER_LABEL: Record<Tier, string> = {
   103: 'Tier 103 — Paper portfolio: current SWING signal column per open position (done)',
   104: 'Tier 104 — HK morning digest: show HSI label instead of SPY (done)',
   105: 'Tier 105 — Signal Filter: 90d win-rate badge per symbol (done)',
+  106: 'Tier 106 — Watchlist: 90d win-rate badge per stock card (done)',
+  107: 'Tier 107 — Morning digest: 20d return + VIX trend in regime card (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8096,6 +8124,8 @@ const TIER_COLOR: Record<Tier, string> = {
   103: '#818cf8',
   104: '#a78bfa',
   105: '#f472b6',
+  106: '#e879f9',
+  107: '#fb923c',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
