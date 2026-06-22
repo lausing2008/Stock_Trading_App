@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 121 — Watchlist: ~BUY Badge on Near-Threshold HOLD Cards ────────────
+  {
+    id: 'TIER121-WATCHLIST-NEAR-BUY',
+    tier: 121 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/watchlist.tsx:stock card signal row',
+    effort: '10m',
+    impact: 'Low — watchlist stock cards now show the amber ~BUY badge for HOLD signals near the buy threshold (55–64% bullish prob), consistent with Signal Filter. No backend changes.',
+    title: 'Watchlist: ~BUY badge on near-threshold HOLD cards (55–64% bullish prob)',
+    what: 'Signal Filter showed ~BUY badge but watchlist cards did not. Inconsistent — if you add a stock to watchlist you lose the near-BUY indicator.',
+    fix: 'Added same ~BUY badge logic to watchlist.tsx stock card signal row. Uses signalMap[item.symbol].bullish_probability already fetched via allSignals.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
   // ── Tier 120 — Signal Filter: ~BUY Badge on Near-Threshold HOLD Signals ───────
   {
     id: 'TIER120-NEAR-BUY-BADGE',
@@ -8198,6 +8211,7 @@ const TIER_LABEL: Record<Tier, string> = {
   118: 'Tier 118 — Rankings table: Bull% column (ML bullish probability, consistent with Signal Filter) (done)',
   119: 'Tier 119 — Paper portfolio closed trades: exit reason breakdown pills in stats bar (done)',
   120: 'Tier 120 — Signal Filter: ~BUY badge on HOLD signals near buy threshold (55–64% bullish prob) (done)',
+  121: 'Tier 121 — Watchlist: ~BUY badge on near-threshold HOLD cards (consistent with Signal Filter) (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8321,6 +8335,7 @@ const TIER_COLOR: Record<Tier, string> = {
   118: '#60a5fa',
   119: '#a78bfa',
   120: '#fbbf24',
+  121: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

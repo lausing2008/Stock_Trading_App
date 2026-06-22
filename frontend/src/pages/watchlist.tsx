@@ -1126,6 +1126,16 @@ export default function Watchlist() {
                   {sig && sigLabel && (
                     <span style={{ fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '5px', color: sig.color, background: sig.bg, border: `1px solid ${sig.border}`, letterSpacing: '0.05em' }}>{sigLabel}</span>
                   )}
+                  {sigLabel === 'HOLD' && (() => {
+                    const bp = signalMap[item.symbol]?.bullish_probability;
+                    if (bp == null || bp < 0.55 || bp >= 0.65) return null;
+                    return (
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', padding: '2px 5px', borderRadius: '3px' }}
+                            title={`Near BUY — bullish probability ${(bp * 100).toFixed(1)}% (threshold: 65%)`}>
+                        ~BUY
+                      </span>
+                    );
+                  })()}
                   {symbolWR[item.symbol] && (() => {
                     const { wr, n } = symbolWR[item.symbol];
                     const wrPct = Math.round(wr * 100);
