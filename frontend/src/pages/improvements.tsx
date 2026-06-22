@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 125 — Signal Alert Email Subject: Confidence + Bullish Prob ─────────
+  {
+    id: 'TIER125-ALERT-EMAIL-SUBJECT',
+    tier: 125 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/services/email_service.py:send_signal_alert_email() ~line 406',
+    effort: '10m',
+    impact: 'Low — signal alert email subject now reads "Signal Alert: AAPL HOLD → BUY [SWING] · 72% conf · 68%BP" instead of "(Analyst: BULLISH)". Inbox scanning is much faster — no need to open email to see signal strength.',
+    title: 'Signal alert email subject: add confidence and bullish probability',
+    what: 'Subject was "Signal Alert: AAPL HOLD → BUY [SWING] (Analyst: BULLISH)". The analyst mood is already described well in the body. The subject is more useful if it shows actual numeric confidence.',
+    fix: 'Replaced "(Analyst: ...)" suffix with " · XX% conf · YY%BP" tags. Both confidence and bullish_prob are already extracted from signal_data at subject-build time — no extra calls.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
   // ── Tier 124 — Stock Detail: ~BUY / ~SELL Badge in AI Signal Card ────────────
   {
     id: 'TIER124-STOCK-DETAIL-NEAR-BADGE',
@@ -8254,6 +8267,7 @@ const TIER_LABEL: Record<Tier, string> = {
   122: 'Tier 122 — Rankings table: ~BUY badge on near-threshold HOLD rows (55–64% bullish prob) (done)',
   123: 'Tier 123 — Signal Filter + Watchlist + Rankings: ~SELL badge on near-sell-threshold HOLD/WAIT rows (36–45% bullish prob) (done)',
   124: 'Tier 124 — Stock detail: ~BUY / ~SELL badge in AI Signal card header (done)',
+  125: 'Tier 125 — Signal alert email subject: add confidence % and bullish probability (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8381,6 +8395,7 @@ const TIER_COLOR: Record<Tier, string> = {
   122: '#fb923c',
   123: '#f87171',
   124: '#e879f9',
+  125: '#818cf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

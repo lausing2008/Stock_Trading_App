@@ -403,7 +403,9 @@ Key Risk: {risk}
     else:
         subject_prefix = "Signal Alert"
     horizon_tag = f" [{horizon}]" if horizon else ""
-    subject = f"{subject_prefix}: {symbol} {prev_signal} → {new_signal}{horizon_tag} (Analyst: {analyst.upper()})"
+    _conf_tag = f" · {float(confidence):.0f}% conf" if confidence is not None else ""
+    _bp_tag = f" · {float(bullish_prob)*100:.0f}%BP" if bullish_prob is not None else ""
+    subject = f"{subject_prefix}: {symbol} {prev_signal} → {new_signal}{horizon_tag}{_conf_tag}{_bp_tag}"
     cta = (
         "AI signal has reversed — consider reviewing your position.\n"
         if is_exit_alert else
