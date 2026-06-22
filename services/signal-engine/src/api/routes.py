@@ -188,6 +188,50 @@ def all_latest_signals(
     ]
 
 
+@router.get("/consensus")
+def signal_consensus(
+    market: str | None = Query(None, description="Filter by market: US or HK"),
+    session: Session = Depends(get_session),
+):
+    """Return the latest signal for every active stock across all 4 horizons in one call.
+
+    Response: { symbol: { SHORT: {signal, confidence, bullish_probability, ts, stability_days},
+                           SWING: {...}, LONG: {...}, GROWTH: {...} } }
+    Only includes horizons that have a stored signal.
+    """
+    latest_subq = (
+        select(Signal.stock_id, Signal.horizon, func.max(Signal.ts).label("max_ts"))
+        .group_by(Signal.stock_id, Signal.horizon)
+        .subquery()
+    )
+    q = (
+        select(Stock.symbol, Signal.stock_id, Signal.signal, Signal.horizon,
+               Signal.confidence, Signal.bullish_probability, Signal.ts)
+        .join(Signal, Stock.id == Signal.stock_id)
+        .join(latest_subq, (Signal.stock_id == latest_subq.c.stock_id)
+              & (Signal.horizon == latest_subq.c.horizon)
+              & (Signal.ts == latest_subq.c.max_ts))
+        .where(Stock.active.is_(True))
+    )
+    if market:
+        q = q.where(Stock.market == market.upper())
+
+    rows = session.execute(q).all()
+    result: dict[str, dict] = {}
+    for row in rows:
+        sym = row.symbol
+        hor = row.horizon.value
+        if sym not in result:
+            result[sym] = {}
+        result[sym][hor] = {
+            "signal": row.signal.value,
+            "confidence": row.confidence,
+            "bullish_probability": row.bullish_probability,
+            "ts": row.ts.isoformat() if row.ts else None,
+        }
+    return result
+
+
 @router.post("/refresh")
 def refresh_signals(
     tasks: BackgroundTasks,

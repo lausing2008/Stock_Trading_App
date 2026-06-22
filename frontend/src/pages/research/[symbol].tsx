@@ -584,7 +584,11 @@ export default function ResearchPage() {
                   <Section title="Valuation">
                     <DataRow label="P/E (Trailing)" value={f.valuation.pe != null ? f.valuation.pe.toString() : '—'} />
                     <DataRow label="P/E (Forward)" value={f.valuation.forward_pe != null ? f.valuation.forward_pe.toString() : '—'} />
-                    <DataRow label="PEG Ratio" value={f.valuation.peg != null ? f.valuation.peg.toString() : '—'} />
+                    <DataRow
+                      label={f.valuation.peg_growth_source === 'revenue_growth' ? 'PEG Ratio (rev. proxy)' : 'PEG Ratio'}
+                      value={f.valuation.peg != null ? f.valuation.peg.toString() : '—'}
+                      color={f.valuation.peg_growth_source === 'revenue_growth' ? '#f59e0b' : undefined}
+                    />
                     <DataRow label="Price/Sales (EV/Rev)" value={f.valuation.price_sales != null ? f.valuation.price_sales.toString() : '—'} />
                     <DataRow label="EV/EBITDA" value={f.valuation.ev_ebitda != null ? f.valuation.ev_ebitda.toString() : '—'} />
                     <DataRow label="Valuation" value={f.valuation.assessment} color={f.valuation.assessment === 'Undervalued' ? '#4ade80' : f.valuation.assessment === 'Overvalued' ? '#f87171' : '#facc15'} />

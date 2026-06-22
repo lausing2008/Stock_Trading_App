@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,58 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 132 — Signal Filter Monitor: Watchdog Status Banner ────────────────
+  {
+    id: 'TIER132-WATCHDOG-BANNER',
+    tier: 132 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/signal-filters.tsx:watchdog status banner',
+    effort: '20m',
+    impact: 'Medium — operators can now see directly in the Signal Filter Monitor if any trading style is under watchdog emergency tightening. Previously the watchdog status was only visible on the /signal-tuning admin page.',
+    title: 'Signal Filter Monitor: watchdog status banner for tightened styles',
+    what: 'The self-healing watchdog (Tier 86) tightens buy thresholds when 14d win rate < 38%. This state was only visible on the /signal-tuning admin page — not on the Signal Filter Monitor which operators use daily.',
+    fix: 'Fetch GET /signals/tune_status on signal-filters page. When any style has watchdog.status === "tightened", show a red banner below the stat pills: "⚠ SWING Watchdog — Win rate low — threshold tightened ×2 — 34% WR (14d)".',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
+  // ── Tier 131 — Research Page: PEG Source Label ───────────────────────────────
+  {
+    id: 'TIER131-PEG-SOURCE-LABEL',
+    tier: 131 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/research/[symbol].tsx:Valuation section ~line 587, frontend/src/lib/api.ts:ResearchReport type, services/research-engine/src/api/routes.py',
+    effort: '15m',
+    impact: 'Low — PEG ratio now clearly shows when it\'s computed from revenue growth (weaker substitute) rather than earnings growth. Asset-heavy stocks where revenue grows faster than earnings can appear falsely undervalued on PEG.',
+    title: 'Research page: label PEG ratio as "(rev. proxy)" when earnings_growth absent',
+    what: 'The research engine PEG now prefers earnings_growth and falls back to revenue_growth, exposing peg_growth_source. The frontend was not using this field.',
+    fix: 'Show "PEG Ratio (rev. proxy)" in amber when peg_growth_source === "revenue_growth". Updated ResearchReport type to include peg_growth_source.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
+  // ── Tier 130 — Watchlist: Signal Staleness Indicator ─────────────────────────
+  {
+    id: 'TIER130-SIGNAL-STALENESS',
+    tier: 130 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/watchlist.tsx:card signal row',
+    effort: '15m',
+    impact: 'Low — users can now see at a glance if a signal on their watchlist is stale (amber = >24h, red = >72h). Previously the signal age was only visible in the Signal Filter Monitor.',
+    title: 'Watchlist: signal staleness indicator (age badge on cards)',
+    what: 'Watchlist cards showed the signal but not how old it was. A signal could be 3 days old without any visual cue.',
+    fix: 'Show a small "2d" age badge in amber (>24h) or red (>72h) next to the confidence percentage on each watchlist card. Hidden when signal is fresh (<24h).',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
+  // ── Tier 129 — Watchlist: Multi-Horizon Consensus Badges ─────────────────────
+  {
+    id: 'TIER129-MULTI-HORIZON-CONSENSUS',
+    tier: 129 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/watchlist.tsx, services/signal-engine/src/api/routes.py:GET /signals/consensus, frontend/src/lib/api.ts:signalConsensus()',
+    effort: '1h',
+    impact: 'High — watchlist cards now show how many of the 4 trading horizons agree on a BUY. A stock with "3/4 BUY" (SHORT, SWING, LONG all BUY but GROWTH SELL) is a much stronger conviction entry than one with only SWING BUY.',
+    title: 'Watchlist: multi-horizon signal consensus mini-badges (S/W/L/G) + 3/4 BUY indicator',
+    what: 'Watchlist cards showed only the signal for the active style. There was no way to see if the other 3 horizons agreed or disagreed without navigating to the stock detail page.',
+    fix: 'New GET /signals/consensus endpoint returns all 4 horizon signals for every active stock in one call. Watchlist cards show colored S/W/L/G letter badges (green=BUY, red=SELL, blue=HOLD, amber=WAIT). When ≥3 of 4 are BUY, a green "3/4" or "4/4" pill is added.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
   // ── Tier 128 — Signal Filter Monitor: US/HK Market Filter ────────────────────
 
   {
@@ -8480,6 +8532,10 @@ const TIER_LABEL: Record<Tier, string> = {
   126: 'Tier 126 — Full system audit 2026-06-21: 8 bugs found and fixed',
   127: 'Tier 127 — Audit 2026-06-21: warnings and hardening (6/7 done)',
   128: 'Tier 128 — Signal Filter Monitor: US/HK market filter (done)',
+  129: 'Tier 129 — Multi-horizon signal consensus badges on watchlist (done)',
+  130: 'Tier 130 — Signal staleness indicator on watchlist cards (done)',
+  131: 'Tier 131 — Research page: PEG ratio source label (done)',
+  132: 'Tier 132 — Signal Filter Monitor: watchdog status banner (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8611,6 +8667,10 @@ const TIER_COLOR: Record<Tier, string> = {
   126: '#f87171',
   127: '#fbbf24',
   128: '#0ea5e9',
+  129: '#22c55e',
+  130: '#f59e0b',
+  131: '#a78bfa',
+  132: '#f87171',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

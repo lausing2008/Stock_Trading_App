@@ -318,6 +318,11 @@ export default function SignalFiltersPage() {
     () => api.outcomesSummary(style, 90),
     { revalidateOnFocus: false },
   );
+  const { data: tuneStatus } = useSWR(
+    authed ? 'tune-status' : null,
+    () => api.signalTuneStatus(),
+    { revalidateOnFocus: false, revalidateOnMount: true },
+  );
 
   function handleSort(key: SortKey) {
     if (key === sortKey) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -493,6 +498,29 @@ export default function SignalFiltersPage() {
           </div>
         ))}
       </div>
+
+      {/* Watchdog status banner */}
+      {tuneStatus && (() => {
+        const tightened = Object.entries(tuneStatus.styles).filter(([, s]) => s.watchdog?.status === 'tightened');
+        if (!tightened.length) return null;
+        return (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            {tightened.map(([styleName, s]) => (
+              <div key={styleName} style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+                background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)',
+                borderRadius: 8, fontSize: 12,
+              }}>
+                <span style={{ color: '#f87171', fontWeight: 700 }}>⚠ {styleName} Watchdog</span>
+                <span style={{ color: '#94a3b8' }}>Win rate low — threshold tightened ×{s.watchdog.tighten_count}</span>
+                {s.performance.win_rate_14d != null && (
+                  <span style={{ color: '#ef4444', fontWeight: 600 }}>{(s.performance.win_rate_14d * 100).toFixed(0)}% WR (14d)</span>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ── Controls ─────────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>

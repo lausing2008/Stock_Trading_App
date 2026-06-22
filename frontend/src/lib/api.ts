@@ -85,6 +85,7 @@ export const api = {
     return request<Signal>(`/signals/${symbol}?${params}`);
   },
   allSignals: (style?: string) => request<SignalSummary[]>(`/signals${style ? `?style=${style}` : ''}`),
+  signalConsensus: (market?: string) => request<Record<string, Record<string, { signal: string; confidence: number; bullish_probability: number | null; ts: string | null }>>>(`/signals/consensus${market ? `?market=${market}` : ''}`),
   convictionAll: () => request<Record<string, { sent: boolean; passed: string[]; failed: string[]; signal: string; ts: string }>>('/stocks/conviction'),
   kellySize: (style: string, lookbackDays?: number) => request<{ kelly_f: number | null; quarter_kelly: number | null; recommended_risk_pct: number; win_rate: number | null; avg_win_pct: number | null; avg_loss_pct: number | null; reward_risk_ratio: number | null; trades_count: number; note?: string }>(`/paper-portfolio/kelly?style=${style}${lookbackDays ? `&lookback_days=${lookbackDays}` : ''}`),
   signalHistory: (symbol: string, style = 'SWING', days = 60) =>
@@ -1091,7 +1092,7 @@ export type ResearchReport = {
     margins: { gross: number | null; operating: number | null; net: number | null; comparison: string };
     balance_sheet: { cash: number; debt: number; de_ratio: number | null; assessment: string };
     cash_flow: { operating_cf: number | null; fcf: number | null; fcf_margin: number | null; assessment: string };
-    valuation: { pe: number | null; forward_pe: number | null; peg: number | null; price_sales: number | null; ev_ebitda: number | null; assessment: string };
+    valuation: { pe: number | null; forward_pe: number | null; peg: number | null; peg_growth_source: string | null; price_sales: number | null; ev_ebitda: number | null; assessment: string };
     profitability: { roe: number | null; roa: number | null; grade: string };
   };
   company: {

@@ -565,6 +565,11 @@ export default function Watchlist() {
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-' + effectiveStyle, () => api.allSignals(effectiveStyle));
+  const { data: consensusData } = useSWR<Record<string, Record<string, { signal: string; confidence: number; bullish_probability: number | null; ts: string | null }>>>(
+    'signals-consensus',
+    () => api.signalConsensus(),
+    { revalidateOnFocus: false },
+  );
   const { data: outcomesSummary } = useSWR<OutcomesSummary>(
     ['outcomes-summary-wl', effectiveStyle],
     () => api.outcomesSummary(effectiveStyle, 90),
@@ -1166,6 +1171,50 @@ export default function Watchlist() {
                             title={`Signal confidence: ${conf.toFixed(0)}%`}>
                         {conf.toFixed(0)}%
                       </span>
+                    );
+                  })()}
+                  {(() => {
+                    const ts = signalMap[item.symbol]?.ts;
+                    if (!ts) return null;
+                    const ageHours = (Date.now() - new Date(ts).getTime()) / 3_600_000;
+                    if (ageHours < 24) return null;
+                    const ageDays = Math.floor(ageHours / 24);
+                    const col = ageHours > 72 ? '#ef4444' : '#f59e0b';
+                    return (
+                      <span style={{ fontSize: '8px', fontWeight: 600, color: col, opacity: 0.8 }}
+                            title={`Signal is ${ageDays}d old — may need refresh`}>
+                        {ageDays}d
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    const cons = consensusData?.[item.symbol];
+                    if (!cons) return null;
+                    const HORIZONS = ['SHORT', 'SWING', 'LONG', 'GROWTH'] as const;
+                    const LABELS: Record<string, string> = { SHORT: 'S', SWING: 'W', LONG: 'L', GROWTH: 'G' };
+                    const SIG_COL: Record<string, string> = { BUY: '#22c55e', SELL: '#ef4444', HOLD: '#38bdf8', WAIT: '#f59e0b' };
+                    const buyCount = HORIZONS.filter(h => cons[h]?.signal === 'BUY').length;
+                    const hasAny = HORIZONS.some(h => cons[h]);
+                    if (!hasAny) return null;
+                    return (
+                      <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}
+                           title={`Multi-horizon signals: ${HORIZONS.map(h => `${h}: ${cons[h]?.signal ?? '—'}`).join(', ')}`}>
+                        {HORIZONS.map(h => {
+                          const s = cons[h];
+                          if (!s) return <span key={h} style={{ fontSize: '8px', color: '#334155', fontWeight: 600 }}>{LABELS[h]}–</span>;
+                          const col = SIG_COL[s.signal] ?? '#64748b';
+                          return (
+                            <span key={h} style={{ fontSize: '8px', fontWeight: 700, color: col, opacity: 0.85 }}>
+                              {LABELS[h]}
+                            </span>
+                          );
+                        })}
+                        {buyCount >= 3 && (
+                          <span style={{ fontSize: '8px', fontWeight: 700, color: '#22c55e', background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', padding: '1px 3px', borderRadius: '2px', marginLeft: 1 }}>
+                            {buyCount}/4
+                          </span>
+                        )}
+                      </div>
                     );
                   })()}
                   {rank?.score != null && (
