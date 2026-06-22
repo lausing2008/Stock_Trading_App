@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 118 — Rankings Table: Bull% Column ───────────────────────────────────
+  {
+    id: 'TIER118-RANKINGS-BULL',
+    tier: 118 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/components/RankingsTable.tsx',
+    effort: '15m',
+    impact: 'Low — rankings table now shows Bull% (ML bullish probability) alongside Signal, consistent with Signal Filter. Especially useful for HOLD signals near the 65% buy threshold.',
+    title: 'Rankings table: add Bull% column (ML bullish probability)',
+    what: 'Signal Filter showed Bull% as a sortable column but Rankings only showed the discrete Signal label. A HOLD at 64% bullish probability is very different from a HOLD at 45%.',
+    fix: 'Added Bull% header (tooltip: ">65% = BUY threshold") and coloured cell to RankingsTable.tsx. Green ≥65%, neutral ≥50%, red <50%. Uses sig.bullish_probability from existing allSignals fetch — zero extra API calls.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
   // ── Tier 117 — Rankings Table: Conf% Column ───────────────────────────────────
   {
     id: 'TIER117-RANKINGS-CONF',
@@ -8156,6 +8169,7 @@ const TIER_LABEL: Record<Tier, string> = {
   115: 'Tier 115 — Signal alert emails: 90d win-rate row in signal detail table (done)',
   116: 'Tier 116 — Paper portfolio closed trades: stats bar (win rate, avg win/loss, profit factor, expectancy) (done)',
   117: 'Tier 117 — Rankings table: Conf% column (signal confidence, colour-coded) (done)',
+  118: 'Tier 118 — Rankings table: Bull% column (ML bullish probability, consistent with Signal Filter) (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8276,6 +8290,7 @@ const TIER_COLOR: Record<Tier, string> = {
   115: '#fb7185',
   116: '#fbbf24',
   117: '#34d399',
+  118: '#60a5fa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

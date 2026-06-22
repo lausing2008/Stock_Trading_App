@@ -46,6 +46,7 @@ export default function RankingsTable({
             <th className="px-3 py-2 text-right">vs Avg</th>
             <th className="px-3 py-2 text-right">K-Score</th>
             <th className="px-3 py-2 text-center">Signal</th>
+            <th className="px-3 py-2 text-right" title="Fused ML bullish probability (0–100%). >65% = BUY threshold">Bull%</th>
             <th className="px-3 py-2 text-right" title="Signal confidence 0–100: composite measure of signal strength and indicator alignment">Conf%</th>
             <th className="px-3 py-2 text-right" title="Relative Strength vs sector ETF (0-100). >60 = leading sector, <40 = lagging">RS</th>
             <th className="px-3 py-2 text-right">Confluence</th>
@@ -145,6 +146,14 @@ export default function RankingsTable({
                       background: signal === 'BUY' ? 'rgba(74,222,128,0.12)' : signal === 'SELL' ? 'rgba(248,113,113,0.12)' : 'rgba(100,116,139,0.12)',
                     }}>{signal}</span>
                   ) : <span className="text-slate-700">—</span>}
+                </td>
+                <td className="px-3 py-2 text-right text-xs font-semibold" style={{
+                  color: sig?.bullish_probability == null ? '#475569'
+                    : sig.bullish_probability >= 0.65 ? '#4ade80'
+                    : sig.bullish_probability >= 0.5 ? '#94a3b8'
+                    : '#f87171',
+                }}>
+                  {sig?.bullish_probability != null ? `${(sig.bullish_probability * 100).toFixed(1)}%` : '—'}
                 </td>
                 <td className="px-3 py-2 text-right text-xs font-semibold" style={{
                   color: sig?.confidence == null ? '#475569'
