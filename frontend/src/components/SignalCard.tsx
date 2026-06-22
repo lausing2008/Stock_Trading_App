@@ -56,6 +56,8 @@ type Reasons = {
   sma50_above_sma200?: boolean;
   golden_cross_event?: boolean;
   death_cross_event?: boolean;
+  gc_spread_expanding?: boolean;
+  gc_spread_pct?: number | null;
   rsi?: number | null;
   stoch_rsi_k?: number | null;
   stoch_rsi_oversold?: boolean;
@@ -64,6 +66,9 @@ type Reasons = {
   rsi_divergence?: string;
   macd_hist?: number | null;
   macd_rising?: boolean;
+  macd_hist_expanding?: boolean;
+  macd_momentum_fading?: boolean;
+  macd_hist_slope?: number | null;
   macd_zero_cross_up?: boolean;
   bb_pct_b?: number | null;
   adx?: number | null;
@@ -73,6 +78,12 @@ type Reasons = {
   ml_probability?: number | null;
   market_regime?: string;
   ta_score?: number | null;
+  // pillar scores (SA-19)
+  pillar_trend?: number | null;
+  pillar_momentum?: number | null;
+  pillar_volume?: number | null;
+  pillar_structure?: number | null;
+  independent_pillars_active?: number | null;
   // v3 additions
   price_above_vwap?: boolean | null;
   vwma_20?: number | null;
@@ -248,14 +259,19 @@ function buildReasons(r: Reasons): Factor[] {
   }
 
   if (r.sma50_above_sma200 != null) {
+    const spreadNote = r.sma50_above_sma200
+      ? (r.gc_spread_expanding === false ? ' • spread narrowing ⚠' : r.gc_spread_expanding ? ' • spread expanding' : '')
+      : '';
+    const spreadPct = r.gc_spread_pct != null ? ` (${(r.gc_spread_pct * 100).toFixed(1)}%)` : '';
     factors.push({
-      label: r.golden_cross_event ? '✦ Golden Cross' : 'SMA50 vs SMA200',
-      bullish: r.sma50_above_sma200,
+      label: r.golden_cross_event ? '✦ Golden Cross' : `SMA50 vs SMA200${spreadNote}`,
+      bullish: r.sma50_above_sma200 && r.gc_spread_expanding !== false,
+      warning: r.sma50_above_sma200 && r.gc_spread_expanding === false,
       detail: r.golden_cross_event
-        ? 'SMA50 just crossed above SMA200 — long-term bull signal'
+        ? `SMA50 just crossed above SMA200${spreadNote}${spreadPct} — long-term bull signal`
         : r.sma50_above_sma200
-          ? 'SMA50 above SMA200 — bull regime'
-          : 'SMA50 below SMA200 — bear regime',
+          ? `SMA50 above SMA200${spreadPct}${r.gc_spread_expanding === false ? ' — gap shrinking, momentum fading' : r.gc_spread_expanding ? ' — gap widening, trend strengthening' : ' — bull regime'}`
+          : `SMA50 below SMA200${spreadPct} — bear regime`,
     });
   }
 
@@ -313,18 +329,24 @@ function buildReasons(r: Reasons): Factor[] {
     });
   }
 
-  // MACD
+  // MACD — use 3-bar slope (macd_hist_expanding) if available, else fall back to macd_rising
   if (r.macd_hist != null) {
     const bullish = r.macd_hist > 0;
     const zeroCross = r.macd_zero_cross_up;
+    const expanding = r.macd_hist_expanding !== undefined ? r.macd_hist_expanding : r.macd_rising;
+    const fading = r.macd_momentum_fading === true;
+    const slopeStr = r.macd_hist_slope != null ? ` slope ${r.macd_hist_slope > 0 ? '+' : ''}${r.macd_hist_slope.toFixed(4)}` : '';
     factors.push({
-      label: zeroCross ? '✦ MACD Zero Cross' : 'MACD',
-      bullish: bullish || (zeroCross ?? false),
+      label: zeroCross ? '✦ MACD Zero Cross' : fading ? 'MACD (momentum fading ⚠)' : 'MACD',
+      bullish: (bullish || (zeroCross ?? false)) && !fading,
+      warning: fading,
       detail: zeroCross
         ? `MACD just crossed above zero — trend direction confirmed bullish`
-        : bullish
-          ? `Histogram +${r.macd_hist.toFixed(3)}${r.macd_rising ? ' ↑ rising' : ''} — bullish momentum`
-          : `Histogram ${r.macd_hist.toFixed(3)}${r.macd_rising ? ' ↑ recovering' : ' ↓ falling'} — bearish momentum`,
+        : fading
+          ? `Histogram +${r.macd_hist.toFixed(3)}${slopeStr} — positive but slope declining, momentum exhausting`
+          : bullish
+            ? `Histogram +${r.macd_hist.toFixed(3)}${expanding ? ' ↑ expanding' : ''}${slopeStr} — bullish momentum`
+            : `Histogram ${r.macd_hist.toFixed(3)}${expanding ? ' ↑ recovering' : ' ↓ falling'}${slopeStr} — bearish momentum`,
     });
   }
 
@@ -447,6 +469,35 @@ export default function SignalCard({ signal }: { signal: Signal }) {
               </div>
             </div>
           ))}
+          {/* Pillar score bars — show when at least 2 pillar scores are present */}
+          {reasons && (reasons.pillar_trend != null || reasons.pillar_momentum != null) && (() => {
+            const pillars = [
+              { label: 'Trend',     val: reasons.pillar_trend },
+              { label: 'Momentum',  val: reasons.pillar_momentum },
+              { label: 'Volume',    val: reasons.pillar_volume },
+              { label: 'Structure', val: reasons.pillar_structure },
+            ].filter(p => p.val != null) as { label: string; val: number }[];
+            return (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #1e293b' }}>
+                <div style={{ fontSize: 9, color: '#334155', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 5 }}>Pillar Scores</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {pillars.map(p => {
+                    const pct = Math.round(p.val * 100);
+                    const col = p.val >= 0.6 ? '#4ade80' : p.val >= 0.4 ? '#fbbf24' : '#f87171';
+                    return (
+                      <div key={p.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 9, color: '#475569', width: 54, flexShrink: 0 }}>{p.label}</span>
+                        <div style={{ flex: 1, height: 4, background: '#1e293b', borderRadius: 2, overflow: 'hidden' }}>
+                          <div style={{ width: `${pct}%`, height: '100%', background: col, borderRadius: 2 }} />
+                        </div>
+                        <span style={{ fontSize: 9, color: col, width: 24, textAlign: 'right', flexShrink: 0 }}>{pct}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
           {taScore != null && (
             <div className="mt-2 pt-2 border-t border-slate-800 text-xs text-slate-500">
               TA composite score: <span className="text-slate-300 font-medium">{(taScore * 100).toFixed(0)}/100</span>

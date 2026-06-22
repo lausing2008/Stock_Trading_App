@@ -567,7 +567,8 @@ ${Object.entries(fib).map(([k, v]) => `  ${k}%: $${(v as number).toFixed(2)}`).j
 
 TECHNICAL INDICATORS:
   RSI(14): ${reasons.rsi != null ? Number(reasons.rsi).toFixed(1) : '?'}
-  MACD hist: ${reasons.macd_hist != null ? Number(reasons.macd_hist).toFixed(3) : '?'} (${reasons.macd_rising ? 'rising' : 'falling'})
+  MACD hist: ${reasons.macd_hist != null ? Number(reasons.macd_hist).toFixed(3) : '?'} (${reasons.macd_momentum_fading ? 'fading ⚠ — momentum exhausting' : reasons.macd_hist_expanding !== undefined ? (reasons.macd_hist_expanding ? 'expanding' : 'contracting') : (reasons.macd_rising ? 'rising' : 'falling')})${reasons.macd_hist_slope != null ? ` slope: ${Number(reasons.macd_hist_slope).toFixed(4)}` : ''}
+  GC spread: ${reasons.gc_spread_pct != null ? `${(Number(reasons.gc_spread_pct)*100).toFixed(1)}%` : '?'} (${reasons.gc_spread_expanding === true ? 'expanding' : reasons.gc_spread_expanding === false ? 'narrowing ⚠' : 'unknown'})
   Above SMA50: ${reasons.trend_above_sma50 ? 'Yes' : 'No'} | SMA50>SMA200: ${reasons.sma50_above_sma200 ? 'Yes' : 'No'}
   ADX: ${reasons.adx != null ? Number(reasons.adx).toFixed(1) : '?'} | Stoch RSI %K: ${reasons.stoch_rsi_k != null ? (Number(reasons.stoch_rsi_k) * 100).toFixed(0) : '?'}%
   VWMA(20d): ${reasons.price_above_vwap === true ? 'Price ABOVE VWMA' : reasons.price_above_vwap === false ? 'Price BELOW VWMA' : 'N/A'}${reasons.vwma_20 != null ? ` ($${Number(reasons.vwma_20).toFixed(2)})` : ''}
@@ -1798,13 +1799,14 @@ Return ONLY valid JSON — no markdown, no prose:
                       const rsiLo = selectedHorizon === 'GROWTH' ? 50 : 45;
                       const rsiHi = selectedHorizon === 'GROWTH' ? 85 : 72;
                       const macdHist = Number(r.macd_hist || 0);
-                      const macdRising = Boolean(r.macd_rising);
+                      const macdExpanding = r.macd_hist_expanding !== undefined ? Boolean(r.macd_hist_expanding) : Boolean(r.macd_rising);
+                      const macdFading = Boolean(r.macd_momentum_fading);
                       const macdCross = Boolean(r.macd_zero_cross_up);
                       const layers = [
                         { key: 'ks',  label: 'K-Score',  ok: kscore != null && kscore >= 55,  detail: kscore != null ? `${kscore.toFixed(0)} (min 55)` : 'unavailable', soft: false },
                         { key: 'up',  label: 'Uptrend',  ok: selectedHorizon === 'GROWTH' ? Boolean(r.trend_above_sma50) : Boolean(r.sma50_above_sma200) && Boolean(r.trend_above_sma50), detail: selectedHorizon === 'GROWTH' ? 'price > SMA50' : 'SMA50>200 & price>SMA50', soft: false },
                         { key: 'rsi', label: 'RSI',      ok: rsi != null && rsi >= rsiLo && rsi <= rsiHi, detail: rsi != null ? `${rsi.toFixed(0)} (${rsiLo}–${rsiHi})` : 'n/a', soft: false },
-                        { key: 'mac', label: 'MACD',     ok: macdHist > 0 || macdRising || macdCross, detail: `hist ${macdHist.toFixed(3)} ${macdRising ? '↑' : '↓'}`, soft: true },
+                        { key: 'mac', label: 'MACD',     ok: (macdHist > 0 || macdCross) && !macdFading, detail: `hist ${macdHist.toFixed(3)} ${macdExpanding ? '↑ expanding' : macdFading ? '⚠ fading' : '↓'}`, soft: true },
                         { key: 'obv', label: 'OBV',      ok: Boolean(r.obv_trend_bullish), detail: Boolean(r.obv_trend_bullish) ? 'confirming' : 'not confirming', soft: true },
                         { key: 'adx', label: 'ADX',      ok: Boolean(r.adx_trending), detail: r.adx != null ? `ADX ${Number(r.adx).toFixed(0)} (min 25)` : 'n/a', soft: true },
                         { key: 'ml',  label: 'ML Model', ok: mlProb == null || mlWeight === 0 || mlProb > mlThresh, detail: mlProb != null ? (mlWeight === 0 ? `AUC<0.50 — zero weight, gate skipped` : `${(mlProb*100).toFixed(0)}% vs ${(mlThresh*100).toFixed(0)}% (${regime})`) : 'no model', soft: true },

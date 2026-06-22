@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,41 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 135 — SignalCard: Pillar Bars + GC Spread + MACD Fading ─────────────
+  {
+    id: 'TIER135-SIGNALCARD-PILLAR-BARS',
+    tier: 135 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/components/SignalCard.tsx:buildReasons() + pillar bar section',
+    effort: '1h',
+    impact: 'Medium — "Why this signal" now shows 4 pillar score mini-bars (Trend/Momentum/Volume/Structure) as colored progress bars. Green ≥60, amber 40-60, red <40. Gives instant visual decomposition of what drove the signal score without reading individual indicators.',
+    title: 'SignalCard: add Pillar Scores bar chart below "Why this signal" factors',
+    what: 'The signal scoring engine computes 4 independent pillar scores (pillar_trend, pillar_momentum, pillar_volume, pillar_structure) stored in the reasons dict. These were never surfaced in the UI — the "Why this signal" section only showed individual indicator flags.',
+    fix: 'Added pillar score types to Reasons. Renders 4 mini progress bars (54px label, flex bar, numeric value) below the factor list when pillar data is present. Colors: green ≥60, amber 40-60, red <40.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'TIER135-SIGNALCARD-GC-SPREAD',
+    tier: 135 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/components/SignalCard.tsx:buildReasons() SMA50 vs SMA200 factor',
+    effort: '30m',
+    impact: 'Medium — "SMA50 vs SMA200" bullet now shows the spread velocity: "SMA50 above SMA200 • spread narrowing ⚠" when gc_spread_expanding=false, and "• spread expanding" when growing. Warns traders when golden cross territory is being eroded before a death cross forms.',
+    title: 'SignalCard: SMA50 vs SMA200 bullet shows gc_spread_expanding context and spread %',
+    what: 'The SMA50 vs SMA200 factor showed only "SMA50 above SMA200 — bull regime" regardless of whether the spread was growing (healthy trend) or shrinking (imminent reversal). gc_spread_pct and gc_spread_expanding were computed but never shown.',
+    fix: 'Added spreadNote ("• spread narrowing ⚠" or "• spread expanding") and spreadPct to the label and detail. Factor shows warning=true when in golden territory with narrowing spread.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'TIER135-SIGNALCARD-MACD-FADING',
+    tier: 135 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/components/SignalCard.tsx:buildReasons() MACD factor, frontend/src/pages/stock/[symbol].tsx:conviction gate + game plan context',
+    effort: '30m',
+    impact: 'High — MACD bullet now shows "MACD (momentum fading ⚠)" with warning styling when macd_momentum_fading=true (histogram positive but 3-bar slope negative). The conviction gate MACD row now uses macd_hist_expanding (3-bar slope) instead of macd_rising (1-bar, noisy). Game plan AI context includes GC spread % and MACD slope for better trade plan generation.',
+    title: 'SignalCard: MACD bullet shows macd_momentum_fading warning; conviction gate uses 3-bar slope',
+    what: 'MACD factor showed "Histogram +0.139 ↑ rising — bullish momentum" even when the 3-bar histogram slope was negative (momentum already fading). The conviction gate used macd_rising (single-bar) which flips every bar. The AI game plan context had no GC spread or MACD slope data.',
+    fix: 'MACD factor: uses macd_hist_expanding (3-bar), shows warning label and amber ⚠ symbol when fading. Conviction gate MACD row: ok only when hist>0 AND not fading; detail shows "↑ expanding" / "⚠ fading". Added GC spread line to AI context string.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
   // ── Tier 134 — Live Pattern Badges: Current-State Validation + Fading Warnings ─
   {
     id: 'TIER134-PATTERN-SOURCE-BUG',
@@ -8597,6 +8632,7 @@ const TIER_LABEL: Record<Tier, string> = {
   132: 'Tier 132 — Signal Filter Monitor: watchdog status banner (done)',
   133: 'Tier 133 — MACD histogram slope + GC spread velocity (done)',
   134: 'Tier 134 — Live pattern badges: current-state validation + fading warnings (done)',
+  135: 'Tier 135 — SignalCard: pillar bars + GC spread + MACD fading in Why this signal (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8734,6 +8770,7 @@ const TIER_COLOR: Record<Tier, string> = {
   132: '#f87171',
   133: '#34d399',
   134: '#fb923c',
+  135: '#818cf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
