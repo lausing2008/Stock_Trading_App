@@ -473,6 +473,50 @@ def get_trades(
     }
 
 
+# ── Trades CSV export ─────────────────────────────────────────────────────────
+
+@router.get("/trades/csv")
+def get_trades_csv(
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    import csv, io
+    from fastapi.responses import StreamingResponse
+    p = _get_portfolio(session, portfolio_id)
+    trades = session.execute(
+        select(PaperTrade)
+        .where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "closed")
+        .order_by(desc(PaperTrade.exit_time))
+    ).scalars().all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "symbol", "style", "entry_date", "exit_date", "entry_price", "exit_price",
+        "shares", "pnl", "pct_return", "hold_days", "exit_reason",
+        "stop_loss", "take_profit", "rr_ratio", "entry_score", "confidence",
+    ])
+    for t in trades:
+        writer.writerow([
+            t.symbol, t.trading_style,
+            t.entry_date.isoformat() if t.entry_date else "",
+            t.exit_time.date().isoformat() if t.exit_time else "",
+            t.entry_price, t.exit_price,
+            round(t.shares, 4), round(t.pnl or 0, 2),
+            round(t.pct_return or 0, 4), t.hold_days, t.exit_reason,
+            t.stop_loss, t.take_profit, t.rr_ratio_at_entry,
+            t.entry_score, t.confidence_at_entry,
+        ])
+    buf.seek(0)
+    filename = f"paper_trades_portfolio_{p.id}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 # ── Equity curve ──────────────────────────────────────────────────────────────
 
 @router.get("/equity-curve")

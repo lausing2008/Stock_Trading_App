@@ -416,6 +416,10 @@ export const api = {
     if (params?.portfolioId) p.set('portfolio_id', String(params.portfolioId));
     return request<PaperTradesResponse>(`/paper-portfolio/trades?${p}`);
   },
+  paperTradesCsvUrl: (portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return `${BASE}/paper-portfolio/trades/csv${q}`;
+  },
   paperEquityCurve: (days = 180, portfolioId?: number | null) => {
     const q = portfolioId ? `&portfolio_id=${portfolioId}` : '';
     return request<PaperEquityPoint[]>(`/paper-portfolio/equity-curve?days=${days}${q}`);

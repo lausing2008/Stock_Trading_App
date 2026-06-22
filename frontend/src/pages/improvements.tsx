@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,32 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 111 — Paper Portfolio: Export All CSV (Backend Endpoint) ─────────────
+  {
+    id: 'TIER111-PORTFOLIO-CSV-BACKEND',
+    tier: 111 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'services/market-data/src/api/paper_portfolio.py:GET /trades/csv + frontend/src/pages/paper-portfolio.tsx',
+    effort: '25m',
+    impact: 'Medium — the CSV export button on Closed Trades now downloads ALL closed trades (not just the current page of 50) via a backend streaming endpoint. Users analysing 100+ trades in Excel no longer need to paginate and combine CSV files.',
+    title: 'Paper portfolio: backend CSV export for all closed trades (all pages)',
+    what: 'The existing client-side CSV export only captured the current page of 50 trades. Users with >50 closed trades had to paginate and merge CSVs manually.',
+    fix: 'Added GET /paper-portfolio/trades/csv endpoint (StreamingResponse, text/csv). Frontend fetch() with auth header streams the blob and triggers browser download. Button label changed to "Export All CSV".',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
+  // ── Tier 110 — Paper Portfolio: Positions Totals Row ──────────────────────────
+  {
+    id: 'TIER110-PORTFOLIO-TOTALS-ROW',
+    tier: 110 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: '20m',
+    impact: 'Medium — the open positions table now shows a sticky totals footer row: total position count, SELL warning count, total position value, and total unrealized P&L. Useful at a glance when reviewing multiple positions.',
+    title: 'Paper portfolio: positions table totals footer row (value + unrealized P&L + SELL count)',
+    what: 'The positions table had a summary bar above (green/red count + total P&L) but no aggregated footer row in the table itself. Users had to mentally sum position values across rows.',
+    fix: 'Added <tfoot> row after all position rows showing count, SELL warning count (red), total position value, and total unrealized P&L (coloured). Uses colSpan to align with the table structure.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
   // ── Tier 109 — Morning Digest: 90d Win-Rate Badge per Opportunity Row ────────
   {
     id: 'TIER109-DIGEST-OPP-WR-BADGE',
@@ -8044,6 +8070,8 @@ const TIER_LABEL: Record<Tier, string> = {
   107: 'Tier 107 — Morning digest: 20d return + VIX trend in regime card (done)',
   108: 'Tier 108 — Stock detail: 90d per-symbol win-rate accuracy stat (done)',
   109: 'Tier 109 — Morning digest: 90d win-rate badge per opportunity row (done)',
+  110: 'Tier 110 — Paper portfolio: positions totals row + full CSV export (done)',
+  111: 'Tier 111 — Paper portfolio: Export All CSV from backend (all trades, not just page) (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8156,6 +8184,8 @@ const TIER_COLOR: Record<Tier, string> = {
   107: '#fb923c',
   108: '#34d399',
   109: '#a3e635',
+  110: '#2dd4bf',
+  111: '#38bdf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

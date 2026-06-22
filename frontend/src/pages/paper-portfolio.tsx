@@ -1799,6 +1799,29 @@ export default function PaperPortfolioPage() {
                   });
                   })()}
                 </tbody>
+                {positions && positions.length > 0 && (() => {
+                  const totalPV = positions.reduce((s, p) => s + p.position_value, 0);
+                  const totalUnreal = positions.reduce((s, p) => s + p.unrealized_pnl, 0);
+                  const totalUnrealColor = totalUnreal >= 0 ? '#22c55e' : '#ef4444';
+                  const sellCount = positions.filter(p => p.current_signal === 'SELL').length;
+                  return (
+                    <tfoot>
+                      <tr style={{ borderTop: '2px solid #334155', background: '#0f172a', fontWeight: 700 }}>
+                        <td style={{ padding: '8px 10px', color: '#94a3b8', fontSize: 12 }}>
+                          {positions.length} positions{sellCount > 0 ? ` · ` : ''}
+                          {sellCount > 0 && <span style={{ color: '#ef4444', fontSize: 11 }}>{sellCount} SELL ⚠</span>}
+                        </td>
+                        <td colSpan={3} />
+                        <td style={{ padding: '8px 10px', color: '#e2e8f0', fontSize: 13 }}>${totalPV.toFixed(0)}</td>
+                        <td colSpan={1} />
+                        <td style={{ padding: '8px 10px', color: totalUnrealColor, fontSize: 13 }}>
+                          {totalUnreal >= 0 ? '+' : ''}${totalUnreal.toFixed(0)}
+                        </td>
+                        <td colSpan={9} />
+                      </tr>
+                    </tfoot>
+                  );
+                })()}
               </table>
             )}
           </div>
@@ -2026,34 +2049,20 @@ export default function PaperPortfolioPage() {
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
               {trades?.items?.length ? (
                 <button
-                  onClick={() => {
-                    const headers = ['Symbol','Style','Entry Date','Exit Date','Entry $','Exit $','P&L %','P&L $','Shares','Days','Exit Reason','Stop Loss','R:R','Score','Confidence'];
-                    const rows = (trades.items ?? []).map(t => [
-                      t.symbol,
-                      t.trading_style ?? '',
-                      t.entry_date ?? '',
-                      t.exit_time ?? '',
-                      t.entry_price.toFixed(2),
-                      t.exit_price != null ? t.exit_price.toFixed(2) : '',
-                      t.pct_return != null ? t.pct_return.toFixed(2) : '',
-                      t.pnl != null ? t.pnl.toFixed(2) : '',
-                      t.shares.toFixed(4),
-                      t.hold_days,
-                      t.exit_reason ?? '',
-                      t.stop_loss.toFixed(2),
-                      t.rr_ratio_at_entry != null ? t.rr_ratio_at_entry.toFixed(2) : '',
-                      t.entry_score ?? '',
-                      t.confidence_at_entry != null ? t.confidence_at_entry.toFixed(0) : '',
-                    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
-                    const csv = [headers.join(','), ...rows].join('\n');
+                  onClick={async () => {
+                    const url = api.paperTradesCsvUrl(selectedPortfolioId);
+                    const token = typeof window !== 'undefined' ? localStorage.getItem('stockai_jwt') : null;
+                    const r = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+                    if (!r.ok) return;
+                    const blob = await r.blob();
                     const a = document.createElement('a');
-                    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+                    a.href = URL.createObjectURL(blob);
                     a.download = `paper-trades-${new Date().toISOString().slice(0, 10)}.csv`;
                     a.click();
                   }}
                   style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid #334155', background: '#0f172a', color: '#94a3b8', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
                 >
-                  ↓ Export CSV
+                  ↓ Export All CSV
                 </button>
               ) : null}
             </div>
