@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,30 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 136 — BUG-14/BUG-15 Bug Fixes ──────────────────────────────────────
+  {
+    id: 'BUG-14-VOLUME-SPIKE-ALERT-500',
+    tier: 136 as const, severity: 'critical', defaultStatus: 'done',
+    file: 'shared/db/models.py:AlertCondition, scripts/migrations/009_add_volume_spike_pct_alert_conditions.sql',
+    effort: '30m',
+    impact: 'Critical — Volume Spike and % Below 52-Week High alert types now create successfully. Previously every POST /alerts with these conditions returned 500 Internal Server Error, making the conditions unusable despite being visible in the dropdown.',
+    title: 'BUG-14: Volume Spike / % Below 52-Week High alert creation returns 500',
+    what: 'SA-11 added VOLUME_SPIKE and PCT_BELOW_52WK_HIGH to the Python AlertCondition enum but the corresponding DB migration was never run on EC2. SQLAlchemy SAEnum stores enum values by .name (uppercase: VOLUME_SPIKE) not .value (lowercase: volume_spike). The DB had the lowercase values but not the uppercase ones that SQLAlchemy actually writes — causing psycopg2 InvalidTextRepresentation on INSERT.',
+    fix: 'Migration 009 adds both uppercase (VOLUME_SPIKE, PCT_BELOW_52WK_HIGH) and lowercase variants to the alertcondition PostgreSQL ENUM type using IF NOT EXISTS. Ran on EC2. No code change required — bug was purely a missing DB migration.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'BUG-15-SIGNAL-TUNING-500',
+    tier: 136 as const, severity: 'critical', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:_redis_get_float + tune_status, services/signal-engine/requirements.txt',
+    effort: '30m',
+    impact: 'Critical — Signal Self-Tuning Status page (Admin → Signal Tuning) now loads correctly. Previously showed "Failed to load: 500 Internal Server Error" on every page open, making the entire self-tuning monitoring system invisible.',
+    title: 'BUG-15: Signal Self-Tuning page "Failed to load: 500 Internal Server Error"',
+    what: 'Two compounding bugs in the signal-engine tune_status endpoint: (1) redis Python package missing from requirements.txt — _get_redis() import redis raised ModuleNotFoundError; (2) _redis_get_float() helper function called by tune_status was never defined in routes.py — NameError after redis was installed.',
+    fix: 'Added redis==5.0.8 to signal-engine requirements.txt. Added _redis_get_float(key) helper after existing cache helpers in routes.py — safely reads a Redis key and returns float or None. Installed redis package in running container immediately; will persist in next image rebuild.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
   // ── Tier 135 — SignalCard: Pillar Bars + GC Spread + MACD Fading ─────────────
   {
     id: 'TIER135-SIGNALCARD-PILLAR-BARS',
@@ -8633,6 +8657,7 @@ const TIER_LABEL: Record<Tier, string> = {
   133: 'Tier 133 — MACD histogram slope + GC spread velocity (done)',
   134: 'Tier 134 — Live pattern badges: current-state validation + fading warnings (done)',
   135: 'Tier 135 — SignalCard: pillar bars + GC spread + MACD fading in Why this signal (done)',
+  136: 'Tier 136 — BUG-14/BUG-15: Volume Spike alert 500 + Signal Tuning page 500 (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8771,6 +8796,7 @@ const TIER_COLOR: Record<Tier, string> = {
   133: '#34d399',
   134: '#fb923c',
   135: '#818cf8',
+  136: '#f87171',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
