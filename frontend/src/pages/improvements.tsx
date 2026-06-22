@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,30 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 133 — MACD Histogram Slope + GC Spread Velocity ────────────────────
+  {
+    id: 'TIER133-MACD-HIST-SLOPE',
+    tier: 133 as const, severity: 'high', defaultStatus: 'done',
+    file: 'services/signal-engine/src/generators/signals.py:_ta_score()',
+    effort: '1h',
+    impact: 'High — replaces single-bar macd_rising (extremely noisy) with a 3-bar histogram slope that detects momentum exhaustion 2-3 bars before price drops. Adds macd_momentum_fading penalty (hist > 0 but slope < 0): score falls from 0.7 → 0.5. Case study: 6613.HK had both golden cross and MACD cross but dropped sharply — histogram slope was already negative when the BUY fired.',
+    title: 'MACD: 3-bar histogram slope replaces single-bar macd_rising; adds macd_momentum_fading penalty',
+    what: 'macd_rising compared hist[-1] vs hist[-2] — one-bar noise causes the flag to flip on every bar. A stock with a positive histogram that is clearly fading (slope negative over 3 bars) was still scoring 0.7 in the momentum pillar, same as a strong bull setup.',
+    fix: 'Compute macd_hist_slope = hist[-1] - hist[-3] (3-bar, smoother). macd_hist_expanding = slope > 0. macd_momentum_fading = hist > 0 and not expanding. Score: 1.0 if expanding, 0.9 if zero-cross, 0.5 if fading (was 0.7), 0.0 otherwise. Added to _flag_map and _TA_WEIGHTS_DEFAULT (weight 0.08).',
+    implementedNote: 'Done 2026-06-21.',
+  },
+  {
+    id: 'TIER133-GC-SPREAD-VELOCITY',
+    tier: 133 as const, severity: 'high', defaultStatus: 'done',
+    file: 'services/signal-engine/src/generators/signals.py:_ta_score() TREND pillar',
+    effort: '1h',
+    impact: 'High — golden_cross_event was a one-day binary: fires on the cross day and never again. The sustained sma50_above_sma200 flag ignored whether the spread was widening (healthy) or narrowing (50 SMA curling back, early reversal warning). In golden territory with narrowing spread, sma50_above_sma200 pillar contribution drops from 0.8 → 0.4 — enough to prevent BUY on momentum exhaustion.',
+    title: 'Golden cross: add gc_spread_expanding velocity; sustained golden territory penalised when spread narrowing',
+    what: 'After a golden cross, sma50_above_sma200 stays True for months while the stock rolls over. There was no distinction between "50 SMA strongly diverging from 200" (healthy) and "50 SMA converging back toward 200" (impending death cross). golden_cross_event only fired on day 1 and then vanished from scoring.',
+    fix: 'gc_spread_expanding = spread(now) > spread(5d ago). sma50_above_sma200 pillar contribution: 0.8 if expanding, 0.4 if narrowing. GC event score: 1.0 (volume+expanding), 0.8 (expanding), 0.5 (not expanding — fresh cross but spread already reversing). gc_spread_pct and gc_spread_expanding added to reasons dict and _flag_map.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
   // ── Tier 132 — Signal Filter Monitor: Watchdog Status Banner ────────────────
   {
     id: 'TIER132-WATCHDOG-BANNER',
@@ -8536,6 +8560,7 @@ const TIER_LABEL: Record<Tier, string> = {
   130: 'Tier 130 — Signal staleness indicator on watchlist cards (done)',
   131: 'Tier 131 — Research page: PEG ratio source label (done)',
   132: 'Tier 132 — Signal Filter Monitor: watchdog status banner (done)',
+  133: 'Tier 133 — MACD histogram slope + GC spread velocity (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8671,6 +8696,7 @@ const TIER_COLOR: Record<Tier, string> = {
   130: '#f59e0b',
   131: '#a78bfa',
   132: '#f87171',
+  133: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

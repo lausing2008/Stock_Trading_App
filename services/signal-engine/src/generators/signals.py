@@ -111,6 +111,8 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "sma50_above_sma200":       0.10,
     "golden_cross_event":       0.10,
     "death_cross_penalty":      0.10,
+    "gc_spread_expanding":      0.06,
+    "gc_spread_narrowing":      0.06,
     "rsi_sweet_spot":           0.15,
     "rsi_mild_oversold":        0.08,
     "rsi_mild_overbought":      0.06,
@@ -121,6 +123,7 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "macd_strong":              0.15,
     "macd_positive":            0.08,
     "macd_zero_cross_up":       0.05,
+    "macd_momentum_fading":     0.08,
     "bb_mid_zone":              0.10,
     "price_above_vwap":         0.08,
     "price_below_vwap_penalty": 0.05,
@@ -850,10 +853,23 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
         golden_cross_event = bool(prev50 <= prev200 and sma50 > sma200)
         death_cross_event  = bool(prev50 >= prev200 and sma50 < sma200)
 
+    # GC spread velocity: is the 50/200 spread still widening (bullish) or narrowing (exhaustion)?
+    # Narrowing spread in golden territory is an early warning even before a death cross forms.
+    gc_spread_pct = None
+    gc_spread_expanding = False
+    if not pd.isna(sma50) and not pd.isna(sma200) and sma200 > 0:
+        gc_spread_pct = round(float((sma50 - sma200) / sma200), 4)
+        if len(sma50_s.dropna()) >= 6 and len(sma200_s.dropna()) >= 6:
+            spread_now = float(sma50_s.iloc[-1] - sma200_s.iloc[-1])
+            spread_5d  = float(sma50_s.iloc[-6] - sma200_s.iloc[-6])
+            gc_spread_expanding = bool(spread_now > spread_5d)
+
     reasons["trend_above_sma50"]    = above_sma50
     reasons["sma50_above_sma200"]   = sma50_above_sma200
     reasons["golden_cross_event"]   = golden_cross_event
     reasons["death_cross_event"]    = death_cross_event
+    reasons["gc_spread_pct"]        = gc_spread_pct
+    reasons["gc_spread_expanding"]  = gc_spread_expanding
 
     # ── RSI (full series — needed for StochRSI and divergence) ────────────
     d = close.diff()
@@ -889,12 +905,21 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     hist = macd_line - macd_line.ewm(span=9, adjust=False).mean()
     macd_hist  = float(hist.iloc[-1])
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
+    # 3-bar histogram slope: smoother than single-bar, catches momentum exhaustion earlier.
+    # A falling slope on a positive histogram (macd_momentum_fading) is the key warning:
+    # it precedes price drops by 2-3 bars and was the root cause of false BUYs like 6613.HK.
+    macd_hist_slope = float(hist.iloc[-1] - hist.iloc[-3]) if len(hist.dropna()) >= 4 else 0.0
+    macd_hist_expanding  = macd_hist_slope > 0
+    macd_momentum_fading = (macd_hist > 0) and (not macd_hist_expanding)
     macd_zero_cross_up = False
     if len(macd_line.dropna()) >= 2:
         macd_zero_cross_up = bool(macd_line.iloc[-1] > 0 and macd_line.iloc[-2] <= 0)
-    reasons["macd_hist"]          = macd_hist
-    reasons["macd_rising"]        = macd_rising
-    reasons["macd_zero_cross_up"] = macd_zero_cross_up
+    reasons["macd_hist"]             = macd_hist
+    reasons["macd_rising"]           = macd_rising
+    reasons["macd_hist_slope"]       = round(macd_hist_slope, 5)
+    reasons["macd_hist_expanding"]   = macd_hist_expanding
+    reasons["macd_momentum_fading"]  = macd_momentum_fading
+    reasons["macd_zero_cross_up"]    = macd_zero_cross_up
 
     # ── Bollinger Bands %B ────────────────────────────────────────────────
     sma20 = close.rolling(20).mean()
@@ -960,17 +985,25 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     # TREND pillar — structural price direction
     # Supertrend included (10%): complements SMA/ADX trend confirmation.
     # Cross-up gets extra weight (1.0) vs sustained bullish (0.7).
+    # GC spread velocity: golden territory with narrowing spread scores 0.4 (not 1.0) —
+    # 50 SMA curling back toward 200 is early-warning reversal even before a death cross.
     if death_cross_event or st_cross_down:
         p_trend = 0.0  # confirmed downtrend; hard override
     else:
-        _gc_score = 1.0 if (golden_cross_event and _vz > 0.5) else (0.7 if golden_cross_event else 0.0)
+        _gc_score = (
+            1.0 if (golden_cross_event and _vz > 0.5 and gc_spread_expanding) else
+            0.8 if (golden_cross_event and gc_spread_expanding) else
+            0.5 if golden_cross_event else  # fresh cross but spread already narrowing
+            0.0
+        )
+        _sma_golden_score = (0.8 if gc_spread_expanding else 0.4) if sma50_above_sma200 else 0.0
         _st_score = 1.0 if st_cross_up else (0.7 if st_trend == 1 else 0.0)
         p_trend = (
-            (1.0 if above_sma50 else 0.0)        * 0.30 +
-            (1.0 if sma50_above_sma200 else 0.0)  * 0.25 +
-            (1.0 if bullish_trend else 0.0)        * 0.20 +
-            _gc_score                              * 0.15 +
-            _st_score                              * 0.10
+            (1.0 if above_sma50 else 0.0) * 0.30 +
+            _sma_golden_score              * 0.25 +
+            (1.0 if bullish_trend else 0.0) * 0.20 +
+            _gc_score                       * 0.15 +
+            _st_score                       * 0.10
         )
 
     # MOMENTUM pillar — oscillator-based rate of change
@@ -982,9 +1015,13 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
         0.5 if (rsi_val is not None and 65 <= rsi_val < 72) else
         0.0
     )
+    # Use 3-bar histogram slope (macd_hist_expanding) instead of single-bar macd_rising.
+    # macd_momentum_fading: histogram positive but slope negative — momentum exhaustion,
+    # scores 0.5 instead of 0.7 to avoid rewarding a decaying BUY edge.
     macd_score = (
-        1.0 if (macd_hist > 0 and macd_rising) else
+        1.0 if (macd_hist > 0 and macd_hist_expanding) else
         0.9 if macd_zero_cross_up else
+        0.5 if macd_momentum_fading else
         0.7 if macd_hist > 0 else
         0.0
     )
@@ -1035,15 +1072,18 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
             "sma50_above_sma200":       +1 if sma50_above_sma200 else 0,
             "golden_cross_event":       +1 if golden_cross_event else 0,
             "death_cross_penalty":      -1 if death_cross_event else 0,
+            "gc_spread_expanding":      +1 if gc_spread_expanding else 0,
+            "gc_spread_narrowing":      -1 if (sma50_above_sma200 and not gc_spread_expanding) else 0,
             "rsi_sweet_spot":           +1 if (rsi_val is not None and 45 < rsi_val < 65) else 0,
             "rsi_mild_oversold":        +1 if (rsi_val is not None and 35 < rsi_val <= 45) else 0,
             "rsi_mild_overbought":      -1 if (rsi_val is not None and 65 <= rsi_val < 72) else 0,
             "stoch_oversold":           +1 if stoch_oversold else 0,
             "stoch_overbought_penalty": -1 if stoch_overbought else 0,
             "stoch_cross_up":           +1 if stoch_cross_up else 0,
-            "macd_strong":              +1 if (macd_hist > 0 and macd_rising) else 0,
+            "macd_strong":              +1 if (macd_hist > 0 and macd_hist_expanding) else 0,
             "macd_positive":            +1 if macd_hist > 0 else 0,
             "macd_zero_cross_up":       +1 if macd_zero_cross_up else 0,
+            "macd_momentum_fading":     -1 if macd_momentum_fading else 0,
             "bb_mid_zone":              +1 if (0.2 < bb_pct_b < 0.8) else 0,
             "price_above_vwap":         +1 if price_above_vwap is True else 0,
             "price_below_vwap_penalty": -1 if price_above_vwap is False else 0,
