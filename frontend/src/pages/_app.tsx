@@ -385,6 +385,7 @@ export default function App({ Component, pageProps }: AppProps) {
           const r = await fetch('/api/gate');
           const { enabled } = await r.json() as { enabled: boolean };
           if (enabled) {
+            setChecked(true);
             router.replace(`/gate?next=${encodeURIComponent(router.pathname)}`);
             return;
           }

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,195 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 126 — Full System Audit 2026-06-21: 8 Bugs Found and Fixed ──────────
+
+  {
+    id: 'BUG-6-SQL-CAST-HK-SIGNALS',
+    tier: 126 as const, severity: 'critical', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:_bulk_persist() ~line 185',
+    effort: '30m',
+    impact: 'Critical — ALL HK signal writes were silently failing since the signal-engine image rebuild (2026-06-18). `:sig::signaltype` leaves the SQLAlchemy named param unbound; psycopg2 receives a literal colon-colon cast and raises SyntaxError. US signals stayed fresher because individual stock page visits trigger the per-symbol GET path (different code). HK stocks with few page views were frozen for 3 days.',
+    title: 'BUG-6: SQLAlchemy text() fails to bind named params followed by ::type PostgreSQL casts',
+    what: 'INSERT INTO signals used `:sig::signaltype` and `:hor::signalhorizon` and `:rsns::jsonb`. SQLAlchemy\'s text() parameter regex matches `:word` and stops — the `::type` suffix is left in the compiled SQL as-is but the parameter is unbound. psycopg2 receives literal `:sig::signaltype` and raises `psycopg2.errors.SyntaxError`. The except block swallowed it silently.',
+    fix: 'Replace all `::type` casts with `CAST(:param AS type)` syntax. This is safe across all SQLAlchemy + psycopg2 versions. Rule: never use PostgreSQL `::` cast shorthand with SQLAlchemy text() named parameters in the same expression.',
+    implementedNote: 'Fixed 2026-06-21. All three casts updated: sig, hor, rsns.',
+  },
+
+  {
+    id: 'BUG-7-CONVICTION-TIER-UNBOUND',
+    tier: 126 as const, severity: 'critical', defaultStatus: 'done',
+    file: 'services/market-data/src/services/scheduler.py:check_signal_alerts() ~line 1285',
+    effort: '10m',
+    impact: 'High — any signal transition OUT of BUY (e.g. BUY→SELL) would crash the alert checker with UnboundLocalError, silently skipping the email and all subsequent alerts in that scheduler run.',
+    title: 'BUG-7: UnboundLocalError: conviction_tier on bearish alert path',
+    what: '`conviction_tier` was assigned inside `if current == "BUY"` branch only, then referenced unconditionally at line 1285 in the alert-send path. Any non-BUY new signal (SELL, HOLD, WAIT) reached the reference with conviction_tier undefined.',
+    fix: 'Initialize conviction_tier = "full" before the conditional block. The value is only meaningful for BUY signals (conviction_buy template); for non-BUY signals the default "full" is safe and the template variable is not used.',
+    implementedNote: 'Fixed 2026-06-21.',
+  },
+
+  {
+    id: 'BUG-8-COOLDOWN-STATE-ADVANCE',
+    tier: 126 as const, severity: 'high', defaultStatus: 'done',
+    file: 'services/market-data/src/services/scheduler.py:check_signal_alerts() ~line 1270',
+    effort: '10m',
+    impact: 'High — after a signal alert was suppressed by the 2-hour cooldown, the alert was permanently suppressed even after the cooldown expired. A BUY→HOLD→BUY cycle within 2 hours would never send the second BUY email even after waiting 3 hours.',
+    title: 'BUG-8: Cooldown skip advances last_signal without sending email, permanently suppressing future alerts',
+    what: 'The cooldown-skip path set `alert.last_signal = current` without sending an email. On the next run, the checker sees `prev == current` (no transition) and skips. The transition is masked forever — the email for the initial transition never fires after cooldown expires.',
+    fix: 'Remove `alert.last_signal = current` from the cooldown-skip path. Keep prev state so the next run still detects the transition and sends when cooldown expires.',
+    implementedNote: 'Fixed 2026-06-21.',
+  },
+
+  {
+    id: 'BUG-9-EXIT-BREAKDOWN-WRONG-KEYS',
+    tier: 126 as const, severity: 'medium', defaultStatus: 'done',
+    file: 'frontend/src/pages/paper-portfolio.tsx:stats bar exit breakdown ~line 2087',
+    effort: '10m',
+    impact: 'Medium — all exit breakdown pills in the closed trades stats bar rendered as grey fallback with truncated reason names (e.g. "stop_" or "targe"). No colored SL/TP/Sig/Days badges were ever shown.',
+    title: 'BUG-9: Exit breakdown pills use wrong key names — never match backend values',
+    what: 'The inline color/label map used `stop_loss`, `take_profit`, `signal`, `hold_days` but the backend (paper_trading_engine.py) stores `stop_hit`, `target_reached`, `signal_exit`, `time_stop`, `hold_stall_timeout`, `momentum_exit`, `manual_exit`, `manual_reset`. Also missing from EXIT_COLORS/EXIT_LABELS: hold_stall_timeout, manual_exit.',
+    fix: 'Replace inline ternary chain with EXIT_COLORS/EXIT_LABELS lookups (already defined at module level). Add missing exit reasons to both constants. Also updated EXIT_LABELS to use short badge labels (SL, TP, Sig, Days, Stall, Mom, Manual, Reset).',
+    implementedNote: 'Fixed 2026-06-21.',
+  },
+
+  {
+    id: 'BUG-10-TFOOT-COLSPAN',
+    tier: 126 as const, severity: 'low', defaultStatus: 'done',
+    file: 'frontend/src/pages/paper-portfolio.tsx:positions tfoot ~line 1820',
+    effort: '5m',
+    impact: 'Low — the totals row in the positions table was visually misaligned. The tfoot cells summed to 16 columns but the thead has 18 (Research and exit Action columns were added without updating tfoot).',
+    title: 'BUG-10: Positions tfoot colSpan sum is 16, thead has 18 columns',
+    what: 'tfoot last colSpan was 9; should be 11. thead columns are: Symbol, Entry, Current, Shares, Value, % Port, P&L, Range, Stop, Status, Target, Days, Score, R:R, Conf, Signal, Research, (action) = 18.',
+    fix: 'Changed last `<td colSpan={9} />` to `<td colSpan={11} />`.',
+    implementedNote: 'Fixed 2026-06-21.',
+  },
+
+  {
+    id: 'BUG-11-GATE-REDIRECT-NO-CHECKED',
+    tier: 126 as const, severity: 'medium', defaultStatus: 'done',
+    file: 'frontend/src/pages/_app.tsx:doCheck() ~line 388',
+    effort: '5m',
+    impact: 'Medium — when the gate feature was enabled, users navigating to a protected route saw a blank page during the redirect to /gate. The app rendered null (checked === false) and never transitioned out of the loading state.',
+    title: 'BUG-11: Gate redirect path returns without calling setChecked(true) — blank screen',
+    what: 'doCheck() gate branch called `router.replace(\'/gate?...\')` then `return` without calling setChecked(true). Line 490 renders null when checked === false. The other two exit paths (session found, login redirect) both call setChecked(true) before returning.',
+    fix: 'Add `setChecked(true)` before the gate router.replace call.',
+    implementedNote: 'Fixed 2026-06-21.',
+  },
+
+  {
+    id: 'BUG-12-STOCK-SYMBOL-UNDEFINED',
+    tier: 126 as const, severity: 'low', defaultStatus: 'done',
+    file: 'services/signal-engine/src/generators/signals.py:_apply_style_signal() ~line 1399',
+    effort: '5m',
+    impact: 'Low — the pillar_gate.missing_key warning log always emitted symbol="?" even when the symbol was available. The `dir()` check is not a locals() check and always returns False for dynamically-scoped names.',
+    title: 'BUG-12: `stock_symbol` undefined in pillar_gate warning log — bogus dir() check',
+    what: '`symbol=stock_symbol if \'stock_symbol\' in dir() else "?"` — `dir()` returns module/class attributes, not local variables. The check is always False so the symbol is always "?". The function has no symbol parameter at all.',
+    fix: 'Log `style=style_key` instead (the style parameter IS available) so the warning at least identifies which style profile triggered it.',
+    implementedNote: 'Fixed 2026-06-21.',
+  },
+
+  {
+    id: 'BUG-SIGNAL-FILTER-COLSPAN',
+    tier: 126 as const, severity: 'low', defaultStatus: 'done',
+    file: 'frontend/src/pages/signal-filters.tsx:loading row colSpan ~line 924',
+    effort: '5m',
+    impact: 'Low — the loading/empty state row in Signal Filter was 3 columns wider than the actual table, causing a small visual layout glitch.',
+    title: 'Signal Filter: loading row colSpan was 19+CONDITIONS.length, should be 16+CONDITIONS.length',
+    what: '7 static pre-condition columns + CONDITIONS.length + 9 static post-condition columns = 16+CONDITIONS.length. The value 19 overcounted by 3.',
+    fix: 'Changed colSpan to `{16 + CONDITIONS.length}`.',
+    implementedNote: 'Fixed 2026-06-21 by frontend audit agent.',
+  },
+
+  {
+    id: 'BUG-RANKINGS-WR-MARKET-FILTER',
+    tier: 126 as const, severity: 'medium', defaultStatus: 'done',
+    file: 'frontend/src/pages/rankings.tsx:outcomesSummary SWR ~line 47',
+    effort: '10m',
+    impact: 'Medium — when viewing HK rankings, the 90-day win-rate badges in the WR column were showing blended US+HK outcomes instead of HK-only. A HK stock with a SELL record could show a high US SWING win rate.',
+    title: 'Rankings: 90d WR badges blended US+HK outcomes when viewing HK market',
+    what: '`api.outcomesSummary(getSignalStyle(), 90)` called without market parameter. Both US and HK outcomes were returned and mixed together in the per-symbol win-rate map.',
+    fix: 'Pass `market` to outcomesSummary and include market in the SWR cache key.',
+    implementedNote: 'Fixed 2026-06-21 by frontend audit agent.',
+  },
+
+  // ── Tier 127 — Audit 2026-06-21: Warnings and Hardening Backlog ──────────────
+
+  {
+    id: 'WARN-SERVICE-TOKEN-NO-REFRESH',
+    tier: 127 as const, severity: 'medium', defaultStatus: 'pending',
+    file: 'services/signal-engine/src/api/routes.py:_service_token() ~line 37',
+    effort: '20m',
+    impact: 'Medium — if the signal-engine container runs for 358+ days without a restart, the cached service token will expire silently. All service-to-service calls from signal-engine (research divergence check) will start failing with 401 at that point.',
+    title: 'signal-engine _service_token() caches forever with no expiry refresh',
+    what: 'Token exp is set to +365 days. The cache is set once and returned forever. market-data scheduler has the correct pattern: proactively refresh 7 days before expiry. signal-engine should match.',
+    fix: 'Store token creation time alongside the cache. In _service_token(), check if token is within 7 days of expiry and regenerate. Same pattern as market-data _service_token_cache.',
+  },
+
+  {
+    id: 'WARN-REDIS-ALLKEYS-LRU-BLACKLIST',
+    tier: 127 as const, severity: 'medium', defaultStatus: 'pending',
+    file: 'docker/docker-compose.yml:redis command ~line 31',
+    effort: '30m',
+    impact: 'Medium — under memory pressure (Redis at 256MB), the allkeys-lru policy can evict auth:blacklist:{jti} entries before their TTL. A revoked JWT would be valid again for the remainder of its expiry window. Only affects users whose logout Redis entry is evicted on a heavily-loaded instance.',
+    title: 'Redis allkeys-lru eviction can silently reinstate revoked JWTs',
+    what: 'maxmemory 256mb with allkeys-lru evicts any key including auth blacklist entries. The per-process in-memory fallback (jwt_auth.py _BLACKLIST_MEM) only covers requests hitting the same container instance.',
+    fix: 'Change to volatile-lru (only evicts keys with a TTL set) or move auth blacklist to a dedicated Redis DB. Alternatively, increase Redis maxmemory to 512MB since the current usage is well below 256MB on t3.medium.',
+  },
+
+  {
+    id: 'WARN-JOSE-VERSION-PINNING',
+    tier: 127 as const, severity: 'low', defaultStatus: 'pending',
+    file: 'services/*/requirements.txt',
+    effort: '15m',
+    impact: 'Low — 5 services pin python-jose==3.3.0, 6 services use >=3.3.0. A pip install on a floor-pinned service could pull a newer jose version with API changes, creating divergence between containers.',
+    title: 'python-jose version pinning inconsistent across services (== vs >=)',
+    what: 'signal-engine, ml-prediction, portfolio-optimizer, ranking-engine, technical-analysis pin ==3.3.0. market-data, api-gateway, research-engine, strategy-engine use >=3.3.0.',
+    fix: 'Standardize all services to python-jose[cryptography]==3.3.0.',
+  },
+
+  {
+    id: 'WARN-SIGNAL-UNIQUE-CONSTRAINT',
+    tier: 127 as const, severity: 'medium', defaultStatus: 'pending',
+    file: 'shared/db/models.py:Signal model ~line 157',
+    effort: '45m',
+    impact: 'Medium — without a unique constraint on (stock_id, horizon), duplicate signal rows can accumulate if a refresh runs twice concurrently. evaluate_signal_outcomes already works around this with a dedup set, confirming duplicates are possible at the DB layer.',
+    title: 'DB: Signal table has no unique constraint on (stock_id, horizon)',
+    what: 'The ON CONFLICT clause in signal_engine routes.py uses `ON CONFLICT (stock_id, horizon, date_trunc(\'day\', ts))` — this requires a matching unique index to work. Without it, the ON CONFLICT never fires and INSERT just appends duplicate rows. Requires a DB migration.',
+    fix: 'Add a partial unique index: `CREATE UNIQUE INDEX uq_signals_stock_horizon_day ON signals (stock_id, horizon, date_trunc(\'day\', ts));` Requires explicit authorization for DB schema migration.',
+  },
+
+  {
+    id: 'WARN-BREAKEVEN-WIN-RATE',
+    tier: 127 as const, severity: 'low', defaultStatus: 'pending',
+    file: 'services/signal-engine/src/api/routes.py:evaluate_signal_outcomes ~line 3914',
+    effort: '15m',
+    impact: 'Low — breakeven trades (pct_return == 0.0) are counted as incorrect for both BUY and SELL signals, deflating measured win rates slightly.',
+    title: 'Breakeven trades (0% return) counted as incorrect in win-rate calculation',
+    what: 'The outcome evaluation counts a BUY as correct only if pct_return > 0.0, and SELL only if < 0.0. A trade that breaks exactly even is counted as a loss for both.',
+    fix: 'Treat breakeven as correct (>= 0.0 for BUY, <= 0.0 for SELL) or as a neutral non-counted outcome (best: exclude from win-rate denominator).',
+  },
+
+  {
+    id: 'WARN-PEG-REVENUE-GROWTH-SUB',
+    tier: 127 as const, severity: 'low', defaultStatus: 'pending',
+    file: 'services/research-engine/src/api/routes.py:PEG calculation ~line 621',
+    effort: '20m',
+    impact: 'Low — high-revenue / low-earnings stocks can appear undervalued on PEG when the substituted revenue_growth is high. The metric label does not indicate the substitution.',
+    title: 'Research engine: PEG ratio silently substitutes revenue_growth when earnings_growth is absent',
+    what: 'When earnings_growth is None, the code uses revenue_growth as a proxy without logging or surfacing the substitution. This misclassifies asset-heavy stocks where revenue grows faster than earnings.',
+    fix: 'Log the substitution in the reasons dict and label the metric "PEG (revenue proxy)" in the frontend display. Alternatively, show PEG as N/A when earnings_growth is absent.',
+  },
+
+  {
+    id: 'WARN-PUSH-CONFIG-EVERY-NAV',
+    tier: 127 as const, severity: 'low', defaultStatus: 'pending',
+    file: 'frontend/src/pages/_app.tsx:doCheck() ~line 370',
+    effort: '10m',
+    impact: 'Low — api.pushConfig() fires a POST /admin/config on every client-side page navigation when API keys are set. On a session with many page transitions, this sends dozens of unnecessary writes.',
+    title: '_app.tsx pushConfig fires POST /admin/config on every page navigation',
+    what: 'doCheck() is called on every router.pathname change. When a session is found and API keys are present in localStorage, it calls api.pushConfig() each time. A module-level boolean flag should guard this to once-per-session.',
+    fix: 'Add a module-level `let configPushed = false` boolean. Set it to true after the first successful pushConfig call and skip subsequent calls.',
+  },
+
   // ── Tier 124 — Stock Detail: ~BUY / ~SELL Badge in AI Signal Card ────────────
   {
     id: 'TIER124-STOCK-DETAIL-NEAR-BADGE',
@@ -8268,6 +8457,8 @@ const TIER_LABEL: Record<Tier, string> = {
   123: 'Tier 123 — Signal Filter + Watchlist + Rankings: ~SELL badge on near-sell-threshold HOLD/WAIT rows (36–45% bullish prob) (done)',
   124: 'Tier 124 — Stock detail: ~BUY / ~SELL badge in AI Signal card header (done)',
   125: 'Tier 125 — Signal alert email subject: add confidence % and bullish probability (done)',
+  126: 'Tier 126 — Full system audit 2026-06-21: 8 bugs found and fixed',
+  127: 'Tier 127 — Audit 2026-06-21: warnings and hardening backlog',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8396,6 +8587,8 @@ const TIER_COLOR: Record<Tier, string> = {
   123: '#f87171',
   124: '#e879f9',
   125: '#818cf8',
+  126: '#f87171',
+  127: '#fbbf24',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

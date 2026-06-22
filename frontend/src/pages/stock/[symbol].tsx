@@ -327,7 +327,7 @@ export default function StockDetail() {
     { revalidateOnFocus: false },
   );
 
-  const activeHorizon = pageStyle || 'SWING';
+  const activeHorizon = selectedHorizon || 'SWING';
   const { data: symbolOutcomes } = useSWR(
     symbol ? `symbol-outcomes-${symbol}-${activeHorizon}` : null,
     () => api.symbolOutcomes(symbol, activeHorizon),
@@ -1932,7 +1932,7 @@ Return ONLY valid JSON — no markdown, no prose:
                   {(() => {
                     const symBySym = symbolOutcomes?.by_symbol;
                     if (!symBySym?.length) return null;
-                    const row = symBySym[0];
+                    const row = symBySym.find(r => r.symbol === symbol) ?? symBySym[0];
                     if (row.count < 3) return null;
                     const wr = Math.round(row.win_rate * 100);
                     const wrColor = wr >= 55 ? '#4ade80' : wr >= 45 ? '#facc15' : '#f87171';

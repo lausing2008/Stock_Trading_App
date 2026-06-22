@@ -59,16 +59,20 @@ const EXIT_COLORS: Record<string, string> = {
   target_reached: '#22c55e',
   signal_exit: '#f59e0b',
   time_stop: '#94a3b8',
+  hold_stall_timeout: '#64748b',
   momentum_exit: '#a78bfa',
+  manual_exit: '#475569',
   manual_reset: '#64748b',
 };
 
 const EXIT_LABELS: Record<string, string> = {
-  stop_hit: 'Stop Hit',
-  target_reached: 'Target',
-  signal_exit: 'Signal Exit',
-  time_stop: 'Time Stop',
-  momentum_exit: 'Momentum Exit',
+  stop_hit: 'SL',
+  target_reached: 'TP',
+  signal_exit: 'Sig',
+  time_stop: 'Days',
+  hold_stall_timeout: 'Stall',
+  momentum_exit: 'Mom',
+  manual_exit: 'Manual',
   manual_reset: 'Reset',
 };
 
@@ -1817,7 +1821,7 @@ export default function PaperPortfolioPage() {
                         <td style={{ padding: '8px 10px', color: totalUnrealColor, fontSize: 13 }}>
                           {totalUnreal >= 0 ? '+' : ''}${totalUnreal.toFixed(0)}
                         </td>
-                        <td colSpan={9} />
+                        <td colSpan={11} />
                       </tr>
                     </tfoot>
                   );
@@ -2084,8 +2088,8 @@ export default function PaperPortfolioPage() {
                       {Object.entries(summary.exit_breakdown)
                         .sort((a, b) => b[1] - a[1])
                         .map(([reason, count]) => {
-                          const col = reason === 'stop_loss' ? '#f87171' : reason === 'take_profit' ? '#4ade80' : reason === 'signal' ? '#818cf8' : reason === 'hold_days' ? '#f59e0b' : '#64748b';
-                          const label = reason === 'stop_loss' ? 'SL' : reason === 'take_profit' ? 'TP' : reason === 'signal' ? 'Sig' : reason === 'hold_days' ? 'Days' : reason.slice(0, 5);
+                          const col = EXIT_COLORS[reason] ?? '#94a3b8';
+                          const label = EXIT_LABELS[reason] ?? reason.slice(0, 5);
                           return (
                             <span key={reason} style={{ fontSize: 11, fontWeight: 700, color: col, background: `${col}18`, border: `1px solid ${col}44`, padding: '1px 5px', borderRadius: 3 }}
                                   title={`${reason}: ${count} trades`}>

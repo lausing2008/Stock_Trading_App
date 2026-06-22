@@ -44,8 +44,8 @@ export default function RankingsPage() {
 
   const { data: sectorEtf } = useSWR('sector-rotation-etf', () => api.sectorRotationEtf(), { revalidateOnFocus: false });
   const { data: outcomesSummary } = useSWR(
-    'outcomes-summary-rankings-' + getSignalStyle(),
-    () => api.outcomesSummary(getSignalStyle(), 90),
+    'outcomes-summary-rankings-' + getSignalStyle() + '-' + market,
+    () => api.outcomesSummary(getSignalStyle(), 90, market || undefined),
     { revalidateOnFocus: false },
   );
   const symbolWR = useMemo(() => {

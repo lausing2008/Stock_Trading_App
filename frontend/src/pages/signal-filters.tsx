@@ -725,7 +725,7 @@ export default function SignalFiltersPage() {
                         )}
                         {(row.signal === 'HOLD' || row.signal === 'WAIT') && row.bullish_probability != null && row.bullish_probability > 0.35 && row.bullish_probability <= 0.45 && (
                           <span style={{ fontSize: 9, fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', padding: '1px 4px', borderRadius: 3, whiteSpace: 'nowrap' }}
-                                title={`Near SELL — bullish probability ${(row.bullish_probability * 100).toFixed(1)}% (sell zone: ≤35%)`}>
+                                title={`Near SELL — bullish probability ${(row.bullish_probability * 100).toFixed(1)}% (approaching sell zone: ≤35%)`}>
                             ~SELL
                           </span>
                         )}
@@ -921,7 +921,7 @@ export default function SignalFiltersPage() {
               })}
               {rows.length === 0 && !isLoading && (
                 <tr>
-                  <td colSpan={19 + CONDITIONS.length} style={{ textAlign: 'center', padding: 48, color: '#475569' }}>
+                  <td colSpan={16 + CONDITIONS.length} style={{ textAlign: 'center', padding: 48, color: '#475569' }}>
                     No stocks match the current filters.
                     {condFilters.size > 0 && (
                       <button onClick={() => setCondFilters(new Set())} style={{

@@ -1396,7 +1396,7 @@ def _apply_style_signal(
     _pillars_raw = base_reasons.get("independent_pillars_active")
     if _pillars_raw is None:
         import structlog as _sl
-        _sl.get_logger().warning("pillar_gate.missing_key", symbol=stock_symbol if 'stock_symbol' in dir() else "?")
+        _sl.get_logger().warning("pillar_gate.missing_key", style=style_key)
         _pillars = 2  # neutral fallback: no gate, no boost
     else:
         _pillars = int(_pillars_raw)
