@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,41 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 134 — Live Pattern Badges: Current-State Validation + Fading Warnings ─
+  {
+    id: 'TIER134-PATTERN-SOURCE-BUG',
+    tier: 134 as const, severity: 'critical', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:_bulk_persist() INSERT INTO signals',
+    effort: '10m',
+    impact: 'Critical — every signal write from signal-engine was failing silently with psycopg2.errors.NotNullViolation on the source column. The signals table had source VARCHAR NOT NULL (no default) added at some point, but the INSERT never included it. Signals were not being written to the DB on every scheduled refresh.',
+    title: 'BUG-13: signal INSERT missing source column — all signal writes failing',
+    what: 'The signals table has a source VARCHAR NOT NULL column (all existing rows have source="signal-engine"). The INSERT in _bulk_persist listed (stock_id, signal, horizon, confidence, bullish_probability, reasons) but omitted source. Every write silently failed with NOT NULL violation.',
+    fix: 'Added source to INSERT column list and parameters dict: src="signal-engine". Also added source=EXCLUDED.source to the ON CONFLICT DO UPDATE clause.',
+    implementedNote: 'Done 2026-06-22. Discovered during deploy of Tier 133 — container restart triggered a refresh which logged the violation.',
+  },
+  {
+    id: 'TIER134-PATTERN-BADGE-VALIDATION',
+    tier: 134 as const, severity: 'high', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:detect_patterns()',
+    effort: '1h',
+    impact: 'High — Live Pattern Signals badges on the stock detail page were showing stale bullish patterns (Golden Cross, MACD Cross ↑) even after the pattern had already reversed. For 6613.HK: the golden cross fired days ago but the stock was dropping hard; both badges kept showing because only the cross event was checked, not the current state of EMA50 vs EMA200 or MACD vs signal line.',
+    title: 'Live pattern badges: verify current state before showing (stale cross badge fix)',
+    what: 'Golden Cross badge fired if EMA50 crossed above EMA200 within any of the last 5 bars — but never checked if EMA50 was STILL above EMA200 now. MACD Cross ↑ same issue over 3 bars. A reversal happening the day after the cross kept showing bullish badges for 4 more days.',
+    fix: 'Added currently_golden and currently_bull_macd checks. Golden Cross badge now only shows if EMA50 is still > EMA200 at the current bar. MACD Cross ↑ only shows if MACD is still > signal. Death Cross and MACD Cross ↓ badges added for the opposite cases.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'TIER134-PATTERN-FADING-WARNINGS',
+    tier: 134 as const, severity: 'high', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:detect_patterns()',
+    effort: '45m',
+    impact: 'High — new warning badges surface momentum exhaustion that was previously invisible. "GC Spread Narrowing ⚠" shows when EMA50 > EMA200 but the gap is shrinking (50 SMA curling back — early death cross warning). "MACD Cross ↑ • hist fading ⚠" shows when MACD is positive but the 3-bar histogram slope is negative — the exact pattern that caused the 6613.HK false BUY.',
+    title: 'Live pattern badges: add spread-narrowing and histogram-fading warning badges',
+    what: 'Golden Cross was shown identically whether the EMA spread was widening (strong momentum) or narrowing (imminent reversal). MACD Cross ↑ was shown identically whether the histogram was growing or fading.',
+    fix: 'Golden Cross now appends "• spread expanding" or "• spread narrowing ⚠" based on comparing spread[-1] vs spread[-6]. If in golden territory with no recent cross but spread narrowing: shows standalone "GC Spread Narrowing ⚠" badge. MACD Cross ↑ appends "• hist fading ⚠" when 3-bar histogram slope is negative. If MACD positive but no recent cross and histogram fading: shows "MACD Hist Fading ⚠" badge.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
   // ── Tier 133 — MACD Histogram Slope + GC Spread Velocity ────────────────────
   {
     id: 'TIER133-MACD-HIST-SLOPE',
@@ -8561,6 +8596,7 @@ const TIER_LABEL: Record<Tier, string> = {
   131: 'Tier 131 — Research page: PEG ratio source label (done)',
   132: 'Tier 132 — Signal Filter Monitor: watchdog status banner (done)',
   133: 'Tier 133 — MACD histogram slope + GC spread velocity (done)',
+  134: 'Tier 134 — Live pattern badges: current-state validation + fading warnings (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8697,6 +8733,7 @@ const TIER_COLOR: Record<Tier, string> = {
   131: '#a78bfa',
   132: '#f87171',
   133: '#34d399',
+  134: '#fb923c',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
