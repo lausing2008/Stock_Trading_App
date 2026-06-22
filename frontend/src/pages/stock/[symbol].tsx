@@ -327,9 +327,10 @@ export default function StockDetail() {
     { revalidateOnFocus: false },
   );
 
+  const activeHorizon = pageStyle || 'SWING';
   const { data: symbolOutcomes } = useSWR(
-    symbol ? `symbol-outcomes-${symbol}` : null,
-    () => api.symbolOutcomes(symbol),
+    symbol ? `symbol-outcomes-${symbol}-${activeHorizon}` : null,
+    () => api.symbolOutcomes(symbol, activeHorizon),
     { revalidateOnFocus: false },
   );
 
@@ -1923,7 +1924,7 @@ Return ONLY valid JSON — no markdown, no prose:
                     const wrColor = wr >= 55 ? '#4ade80' : wr >= 45 ? '#facc15' : '#f87171';
                     return (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} title={`${row.count} closed signals in last 90d`}>
-                        <span style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>90d accuracy</span>
+                        <span style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{activeHorizon} 90d</span>
                         <span style={{ fontSize: 12, fontWeight: 700, color: wrColor }}>{wr}%WR</span>
                         <span style={{ fontSize: 9, color: '#334155' }}>({row.count})</span>
                       </div>

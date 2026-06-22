@@ -537,6 +537,12 @@ def send_morning_digest_email(
         for n in (regime_notes or [])[:4]
     )
 
+    # ── Symbol 90d win-rate lookup (from signal_performance.by_symbol) ─────────
+    _sym_wr: dict[str, tuple[float, int]] = {}  # symbol → (win_rate_pct, count)
+    for _s in (signal_performance or {}).get("by_symbol", []):
+        if (_s.get("count") or 0) >= 3:
+            _sym_wr[_s["symbol"]] = (round((_s.get("win_rate") or 0) * 100), _s["count"])
+
     # ── Opportunity table helper ──────────────────────────────────────────────
     def _opp_table(opportunities: list, label: str, accent: str) -> tuple[str, str]:
         rows_html = ""
@@ -556,6 +562,13 @@ def send_morning_digest_email(
             if dte is not None and 0 <= dte <= 5:
                 earnings_badge = f' <span style="background:#fef3c733;color:#f59e0b;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;border:1px solid #fde68a">⚠️ Earn {dte}d</span>'
                 earnings_text = f" ⚠️Earn {dte}d"
+            wr_badge = ""
+            wr_text = ""
+            if o["symbol"] in _sym_wr:
+                wr_pct, wr_n = _sym_wr[o["symbol"]]
+                wr_color = "#22c55e" if wr_pct >= 55 else "#f59e0b" if wr_pct >= 45 else "#ef4444"
+                wr_badge = f' <span style="color:{wr_color};font-size:10px;font-weight:700" title="{wr_n} outcomes 90d">{wr_pct}%WR</span>'
+                wr_text = f" {wr_pct}%WR"
             bullets = o.get("reasons_bullets") or []
             bullets_html = ""
             if bullets:
@@ -564,7 +577,7 @@ def send_morning_digest_email(
             rows_html += (
                 f'<tr style="border-bottom:1px solid #f1f5f9">'
                 f'<td style="padding:7px 10px">'
-                f'<div style="font-weight:700;font-size:13px">{o["symbol"]}{earnings_badge}</div>'
+                f'<div style="font-weight:700;font-size:13px">{o["symbol"]}{earnings_badge}{wr_badge}</div>'
                 f'{bullets_html}'
                 f'</td>'
                 f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{o.get("name","")[:22]}</td>'
@@ -575,7 +588,7 @@ def send_morning_digest_email(
                 f'</tr>'
             )
             bullet_text = f"     → {' · '.join(bullets)}\n" if bullets else ""
-            rows_text += f"  {i}. {o['symbol']:6}{earnings_text} Score {score_str:4}  Signal {sig:4}  Conf {conf_str:5}  {o.get('name','')[:20]}\n{bullet_text}"
+            rows_text += f"  {i}. {o['symbol']:6}{earnings_text}{wr_text} Score {score_str:4}  Signal {sig:4}  Conf {conf_str:5}  {o.get('name','')[:20]}\n{bullet_text}"
 
         if not rows_html:
             return "", ""
