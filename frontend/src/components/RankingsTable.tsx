@@ -1,4 +1,5 @@
 import type { RankingRow, LatestPrice, SignalSummary } from '@/lib/api';
+type SymbolWR = Record<string, { wr: number; n: number }>;
 import { confluenceScore, confluenceGrade } from '@/lib/confluence';
 
 type PriceMap = Record<string, LatestPrice>;
@@ -18,6 +19,7 @@ export default function RankingsTable({
   selectedSymbols,
   onToggleCompare,
   boardSet,
+  symbolWR,
 }: {
   rows: RankingRow[];
   prices?: PriceMap;
@@ -25,6 +27,7 @@ export default function RankingsTable({
   selectedSymbols?: Set<string>;
   onToggleCompare?: (symbol: string) => void;
   boardSet?: Set<string>;
+  symbolWR?: SymbolWR;
 }) {
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
@@ -92,6 +95,17 @@ export default function RankingsTable({
                 <td className="px-3 py-2 font-medium">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <a href={`/stock/${r.symbol}`} className="text-indigo-400 hover:underline">{r.symbol}</a>
+                    {symbolWR?.[r.symbol] && (() => {
+                      const { wr, n } = symbolWR[r.symbol];
+                      const wrPct = Math.round(wr * 100);
+                      const col = wrPct >= 55 ? '#22c55e' : wrPct >= 45 ? '#f59e0b' : '#ef4444';
+                      return (
+                        <span style={{ fontSize: '9px', fontWeight: 700, color: col, background: `${col}18`, border: `1px solid ${col}44`, padding: '1px 4px', borderRadius: '3px', whiteSpace: 'nowrap' }}
+                              title={`90d win rate: ${wrPct}% (${n} outcomes)`}>
+                          {wrPct}%WR
+                        </span>
+                      );
+                    })()}
                     {boardSet?.has(r.symbol) && (
                       <span style={{ fontSize: '9px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', color: '#34d399', background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.3)', whiteSpace: 'nowrap' }}>
                         ✓ On Board

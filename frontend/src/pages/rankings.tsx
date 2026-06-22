@@ -43,6 +43,18 @@ export default function RankingsPage() {
   const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage !== 'closed').map(p => p.symbol) ?? []), [boardData]);
 
   const { data: sectorEtf } = useSWR('sector-rotation-etf', () => api.sectorRotationEtf(), { revalidateOnFocus: false });
+  const { data: outcomesSummary } = useSWR(
+    'outcomes-summary-rankings-' + getSignalStyle(),
+    () => api.outcomesSummary(getSignalStyle(), 90),
+    { revalidateOnFocus: false },
+  );
+  const symbolWR = useMemo(() => {
+    const m: Record<string, { wr: number; n: number }> = {};
+    for (const s of outcomesSummary?.by_symbol ?? []) {
+      if (s.count >= 3) m[s.symbol] = { wr: s.win_rate, n: s.count };
+    }
+    return m;
+  }, [outcomesSummary]);
 
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
@@ -272,6 +284,7 @@ export default function RankingsPage() {
           selectedSymbols={compareSymbols}
           onToggleCompare={toggleCompare}
           boardSet={boardSet}
+          symbolWR={symbolWR}
         />
       )}
       {compareOpen && compareRows.length >= 2 && (

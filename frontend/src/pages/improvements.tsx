@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 114 — Rankings: 90d Win-Rate Badge per Symbol Row ───────────────────
+  {
+    id: 'TIER114-RANKINGS-WR-BADGE',
+    tier: 114 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/components/RankingsTable.tsx + frontend/src/pages/rankings.tsx',
+    effort: '25m',
+    impact: 'Low-medium — rankings rows now show a coloured XX%WR badge next to each symbol link (green ≥55%, amber ≥45%, red <45%, min 3 outcomes). Consistent with signal-filters and watchlist. Users can compare historical signal accuracy while browsing rankings.',
+    title: 'Rankings: 90d win-rate badge per symbol row',
+    what: 'Rankings showed K-Score, signal, confluence, and fair price but no historical signal accuracy per symbol. A high K-Score stock with 30%WR history is a worse setup than a lower-ranked stock with 65%WR.',
+    fix: 'Added symbolWR? prop to RankingsTable component. Rankings page fetches outcomesSummary and builds symbolWR map (min 3 outcomes). Badge rendered inline in symbol cell next to the link.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
   // ── Tier 113 — Watchlist: Confidence % Badge in Stock Card ───────────────────
   {
     id: 'TIER113-WATCHLIST-CONF-BADGE',
@@ -8100,6 +8113,7 @@ const TIER_LABEL: Record<Tier, string> = {
   111: 'Tier 111 — Paper portfolio: Export All CSV from backend (all trades, not just page) (done)',
   112: 'Tier 112 — Signal Filter: sortable Conf% column added (done)',
   113: 'Tier 113 — Watchlist: confidence % shown inline next to WR badge (done)',
+  114: 'Tier 114 — Rankings: 90d win-rate badge per symbol row (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8216,6 +8230,7 @@ const TIER_COLOR: Record<Tier, string> = {
   111: '#38bdf8',
   112: '#818cf8',
   113: '#c084fc',
+  114: '#f472b6',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
