@@ -7178,7 +7178,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-SERVICE-TOKEN-NO-REFRESH',
-    tier: 127 as const, severity: 'medium', defaultStatus: 'pending',
+    tier: 127 as const, severity: 'medium', defaultStatus: 'todo',
     file: 'services/signal-engine/src/api/routes.py:_service_token() ~line 37',
     effort: '20m',
     impact: 'Medium — if the signal-engine container runs for 358+ days without a restart, the cached service token will expire silently. All service-to-service calls from signal-engine (research divergence check) will start failing with 401 at that point.',
@@ -7189,7 +7189,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-REDIS-ALLKEYS-LRU-BLACKLIST',
-    tier: 127 as const, severity: 'medium', defaultStatus: 'pending',
+    tier: 127 as const, severity: 'medium', defaultStatus: 'todo',
     file: 'docker/docker-compose.yml:redis command ~line 31',
     effort: '30m',
     impact: 'Medium — under memory pressure (Redis at 256MB), the allkeys-lru policy can evict auth:blacklist:{jti} entries before their TTL. A revoked JWT would be valid again for the remainder of its expiry window. Only affects users whose logout Redis entry is evicted on a heavily-loaded instance.',
@@ -7200,7 +7200,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-JOSE-VERSION-PINNING',
-    tier: 127 as const, severity: 'low', defaultStatus: 'pending',
+    tier: 127 as const, severity: 'low', defaultStatus: 'todo',
     file: 'services/*/requirements.txt',
     effort: '15m',
     impact: 'Low — 5 services pin python-jose==3.3.0, 6 services use >=3.3.0. A pip install on a floor-pinned service could pull a newer jose version with API changes, creating divergence between containers.',
@@ -7211,7 +7211,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-SIGNAL-UNIQUE-CONSTRAINT',
-    tier: 127 as const, severity: 'medium', defaultStatus: 'pending',
+    tier: 127 as const, severity: 'medium', defaultStatus: 'todo',
     file: 'shared/db/models.py:Signal model ~line 157',
     effort: '45m',
     impact: 'Medium — without a unique constraint on (stock_id, horizon), duplicate signal rows can accumulate if a refresh runs twice concurrently. evaluate_signal_outcomes already works around this with a dedup set, confirming duplicates are possible at the DB layer.',
@@ -7222,7 +7222,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-BREAKEVEN-WIN-RATE',
-    tier: 127 as const, severity: 'low', defaultStatus: 'pending',
+    tier: 127 as const, severity: 'low', defaultStatus: 'todo',
     file: 'services/signal-engine/src/api/routes.py:evaluate_signal_outcomes ~line 3914',
     effort: '15m',
     impact: 'Low — breakeven trades (pct_return == 0.0) are counted as incorrect for both BUY and SELL signals, deflating measured win rates slightly.',
@@ -7233,7 +7233,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-PEG-REVENUE-GROWTH-SUB',
-    tier: 127 as const, severity: 'low', defaultStatus: 'pending',
+    tier: 127 as const, severity: 'low', defaultStatus: 'todo',
     file: 'services/research-engine/src/api/routes.py:PEG calculation ~line 621',
     effort: '20m',
     impact: 'Low — high-revenue / low-earnings stocks can appear undervalued on PEG when the substituted revenue_growth is high. The metric label does not indicate the substitution.',
@@ -7244,7 +7244,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-PUSH-CONFIG-EVERY-NAV',
-    tier: 127 as const, severity: 'low', defaultStatus: 'pending',
+    tier: 127 as const, severity: 'low', defaultStatus: 'todo',
     file: 'frontend/src/pages/_app.tsx:doCheck() ~line 370',
     effort: '10m',
     impact: 'Low — api.pushConfig() fires a POST /admin/config on every client-side page navigation when API keys are set. On a session with many page transitions, this sends dozens of unnecessary writes.',
