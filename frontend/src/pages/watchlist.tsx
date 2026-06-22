@@ -1137,6 +1137,17 @@ export default function Watchlist() {
                       </span>
                     );
                   })()}
+                  {(() => {
+                    const conf = signalMap[item.symbol]?.confidence;
+                    if (conf == null) return null;
+                    const col = conf >= 70 ? '#22c55e' : conf >= 55 ? '#f59e0b' : '#f87171';
+                    return (
+                      <span style={{ fontSize: '9px', fontWeight: 600, color: col, padding: '1px 4px' }}
+                            title={`Signal confidence: ${conf.toFixed(0)}%`}>
+                        {conf.toFixed(0)}%
+                      </span>
+                    );
+                  })()}
                   {rank?.score != null && (
                     <div style={{ flex: 1 }}>
                       <div style={{ height: '4px', borderRadius: '2px', background: '#1e293b', overflow: 'hidden' }}>

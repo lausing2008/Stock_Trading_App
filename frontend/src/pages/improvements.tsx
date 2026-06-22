@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 113 — Watchlist: Confidence % Badge in Stock Card ───────────────────
+  {
+    id: 'TIER113-WATCHLIST-CONF-BADGE',
+    tier: 113 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/watchlist.tsx',
+    effort: '15m',
+    impact: 'Low — watchlist stock cards now show a small coloured confidence percentage inline next to the WR badge. Green ≥70%, amber ≥55%, red <55%. Zero network cost — confidence is already in the signalMap from the allSignals fetch.',
+    title: 'Watchlist: show signal confidence % inline in stock card signal row',
+    what: 'Watchlist cards showed signal badge + WR badge but not signal confidence. A BUY at 45% confidence is very different from BUY at 78% confidence — this was invisible from the watchlist.',
+    fix: 'Read signalMap[item.symbol]?.confidence (already fetched). Render as a small coloured inline span after the WR badge. No additional API calls.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
   // ── Tier 112 — Signal Filter: Sortable Confidence Column ─────────────────────
   {
     id: 'TIER112-SIGNAL-FILTER-CONF-COL',
@@ -8086,6 +8099,7 @@ const TIER_LABEL: Record<Tier, string> = {
   110: 'Tier 110 — Paper portfolio: positions totals row + full CSV export (done)',
   111: 'Tier 111 — Paper portfolio: Export All CSV from backend (all trades, not just page) (done)',
   112: 'Tier 112 — Signal Filter: sortable Conf% column added (done)',
+  113: 'Tier 113 — Watchlist: confidence % shown inline next to WR badge (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8201,6 +8215,7 @@ const TIER_COLOR: Record<Tier, string> = {
   110: '#2dd4bf',
   111: '#38bdf8',
   112: '#818cf8',
+  113: '#c084fc',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
