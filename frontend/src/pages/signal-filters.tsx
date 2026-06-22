@@ -28,7 +28,7 @@ const CONDITIONS: { key: CondKey; label: string; short: string; color: string; t
 ];
 
 type SortKey =
-  | 'symbol' | 'signal' | 'ts' | 'bullish_probability' | 'suppression_count'
+  | 'symbol' | 'signal' | 'ts' | 'bullish_probability' | 'suppression_count' | 'confidence'
   | 'weekly_rsi' | 'rsi' | 'adx' | 'days_to_earnings' | 'news_sentiment' | 'rs_score' | 'breadth_pct';
 
 // Tooltip text for every sortable column header
@@ -37,6 +37,7 @@ const COL_TIPS: Record<SortKey, string> = {
   signal:             'Current signal from the latest AI analysis: BUY / HOLD / WAIT / SELL.',
   ts:                 'When this signal was last computed. Sort ascending = stalest first (needs refresh). Sort descending = freshest first.',
   bullish_probability:'Fused probability score (0–100%) after all filters applied. Above 50% = bullish lean. BUY threshold is 65% (SWING bull regime).',
+  confidence:         'Signal confidence 0–100: composite measure combining ML probability margin, TA alignment, volume confirmation, and news sentiment. Higher = stronger setup.',
   suppression_count:  'Number of suppression conditions currently active for this stock. Higher = signal is being held back by more filters.',
   weekly_rsi:         'RSI(14) computed on weekly bars (daily OHLCV resampled to Monday-anchored weeks). Below 40 = weekly bearish momentum. Used by the Weekly Gate.',
   rsi:                'Daily RSI(14). Below 35 = oversold (potential entry zone, green). Above 70 = overbought (yellow). Drives the TA score.',
@@ -49,7 +50,7 @@ const COL_TIPS: Record<SortKey, string> = {
 
 const SORT_LABELS: Record<SortKey, string> = {
   symbol: 'Symbol', signal: 'Signal', ts: 'Age', bullish_probability: 'Bull%',
-  suppression_count: 'Filters', weekly_rsi: 'W.RSI', rsi: 'RSI',
+  confidence: 'Conf%', suppression_count: 'Filters', weekly_rsi: 'W.RSI', rsi: 'RSI',
   adx: 'ADX', days_to_earnings: 'Earn.d', news_sentiment: 'News',
   rs_score: 'RS', breadth_pct: 'Breadth',
 };
@@ -82,6 +83,7 @@ function numVal(row: SuppressedSignalRow, key: SortKey): number {
   if (key === 'signal') return ['BUY', 'HOLD', 'WAIT', 'SELL'].indexOf(row.signal);
   if (key === 'ts') return row.ts ? new Date(row.ts).getTime() : 0;
   if (key === 'bullish_probability') return row.bullish_probability ?? 0;
+  if (key === 'confidence') return row.confidence ?? 0;
   if (key === 'suppression_count') return row.suppression_count;
   if (key === 'weekly_rsi') return row.weekly_rsi ?? 999;
   if (key === 'rsi') return row.rsi ?? 999;
@@ -610,6 +612,7 @@ export default function SignalFiltersPage() {
                   </span>
                 </th>
                 <SortTh col="bullish_probability" label="Bull%"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortTh col="confidence"          label="Conf%"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="suppression_count"  label="Filters"  sortKey={sortKey} dir={sortDir} onSort={handleSort} />
 
                 {/* Condition columns — coloured, not sortable, each has ! tooltip */}
@@ -784,6 +787,17 @@ export default function SignalFiltersPage() {
                       {row.bullish_probability != null ? `${(row.bullish_probability * 100).toFixed(1)}%` : '—'}
                     </td>
 
+                    {/* Conf% */}
+                    {(() => {
+                      const conf = row.confidence;
+                      const confColor = conf == null ? '#64748b' : conf >= 70 ? '#22c55e' : conf >= 55 ? '#facc15' : '#f87171';
+                      return (
+                        <td style={{ ...TD, color: confColor, fontWeight: conf != null && conf >= 70 ? 700 : 400 }}>
+                          {conf != null ? `${conf.toFixed(0)}%` : '—'}
+                        </td>
+                      );
+                    })()}
+
                     {/* Filter count badge */}
                     <td style={{ ...TD, textAlign: 'center' }}>
                       <CountBadge n={row.suppression_count} />
@@ -893,7 +907,7 @@ export default function SignalFiltersPage() {
               })}
               {rows.length === 0 && !isLoading && (
                 <tr>
-                  <td colSpan={18 + CONDITIONS.length} style={{ textAlign: 'center', padding: 48, color: '#475569' }}>
+                  <td colSpan={19 + CONDITIONS.length} style={{ textAlign: 'center', padding: 48, color: '#475569' }}>
                     No stocks match the current filters.
                     {condFilters.size > 0 && (
                       <button onClick={() => setCondFilters(new Set())} style={{

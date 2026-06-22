@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 112 — Signal Filter: Sortable Confidence Column ─────────────────────
+  {
+    id: 'TIER112-SIGNAL-FILTER-CONF-COL',
+    tier: 112 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/signal-filters.tsx',
+    effort: '20m',
+    impact: 'Low-medium — Signal Filter now shows a sortable Conf% column next to Bull%. Users can sort by confidence (green ≥70%, amber ≥55%, red <55%) to surface the strongest setups. Confidence combines ML margin, TA alignment, volume, and news — more holistic than Bull% alone.',
+    title: 'Signal Filter: add sortable Conf% column (signal confidence 0–100)',
+    what: 'The signal confidence score was computed and stored in the DB but not visible in the Signal Filter table. Users had to click through to each stock detail page to see it.',
+    fix: 'Added "confidence" to SortKey type, COL_TIPS, SORT_LABELS, numVal(). Added SortTh header between Bull% and Filters. Added Conf% table cell with colour coding (green ≥70%, amber ≥55%, red <55%). Updated colSpan from 18 to 19.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
   // ── Tier 111 — Paper Portfolio: Export All CSV (Backend Endpoint) ─────────────
   {
     id: 'TIER111-PORTFOLIO-CSV-BACKEND',
@@ -8072,6 +8085,7 @@ const TIER_LABEL: Record<Tier, string> = {
   109: 'Tier 109 — Morning digest: 90d win-rate badge per opportunity row (done)',
   110: 'Tier 110 — Paper portfolio: positions totals row + full CSV export (done)',
   111: 'Tier 111 — Paper portfolio: Export All CSV from backend (all trades, not just page) (done)',
+  112: 'Tier 112 — Signal Filter: sortable Conf% column added (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8186,6 +8200,7 @@ const TIER_COLOR: Record<Tier, string> = {
   109: '#a3e635',
   110: '#2dd4bf',
   111: '#38bdf8',
+  112: '#818cf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
