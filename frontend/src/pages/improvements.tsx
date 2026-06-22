@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7051,6 +7051,19 @@ const ITEMS: Item[] = [
     fix: 'Add RSI dip duration check: if weekly RSI < 38 for < 5 consecutive bars (brief dip), apply 0.65× instead of 0.40×. If weekly RSI < 38 for ≥ 20 bars (confirmed downtrend), keep full 0.40×. Store weekly_gate_reason ("brief_dip" vs "extended_downtrend") in reasons dict for frontend display.',
   },
 
+  // ── Tier 116 — Paper Portfolio Closed Trades: Stats Bar ───────────────────────
+  {
+    id: 'TIER116-PAPER-TRADES-STATS',
+    tier: 116 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/paper-portfolio.tsx:Closed Trades tab',
+    effort: '20m',
+    impact: 'Medium — closed trades tab now shows a stats bar (Total Closed, Win Rate, Avg Win/Loss, Profit Factor, Expectancy) above the table. Saves clicking to the Overview tab to check portfolio performance metrics while reviewing individual trades.',
+    title: 'Paper portfolio closed trades: stats bar above trade table',
+    what: 'Closed Trades tab had the export button and the table, but no summary stats. Users had to go back to the Overview tab to see win rate and profit factor while reviewing individual trades.',
+    fix: 'Added a stats bar using existing summary.win_rate_pct, avg_win_pct, avg_loss_pct, profit_factor, expectancy_pct. No additional API calls — summary is already fetched for the page. Colour-coded: green ≥55% WR, amber ≥45%, red below.',
+    implementedNote: 'Done 2026-06-21.',
+  },
+
   // ── Tier 115 — Signal Alert Emails: 90d Win-Rate in Detail Table ─────────────
   {
     id: 'TIER115-ALERT-EMAIL-WR',
@@ -8128,6 +8141,7 @@ const TIER_LABEL: Record<Tier, string> = {
   113: 'Tier 113 — Watchlist: confidence % shown inline next to WR badge (done)',
   114: 'Tier 114 — Rankings: 90d win-rate badge per symbol row (done)',
   115: 'Tier 115 — Signal alert emails: 90d win-rate row in signal detail table (done)',
+  116: 'Tier 116 — Paper portfolio closed trades: stats bar (win rate, avg win/loss, profit factor, expectancy) (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8246,6 +8260,7 @@ const TIER_COLOR: Record<Tier, string> = {
   113: '#c084fc',
   114: '#f472b6',
   115: '#fb7185',
+  116: '#fbbf24',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

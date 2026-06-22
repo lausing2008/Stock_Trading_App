@@ -2046,6 +2046,39 @@ export default function PaperPortfolioPage() {
         {/* Closed Trades tab */}
         {tab === 'Closed Trades' && (
           <div>
+            {/* Stats bar */}
+            {summary.closed_trades > 0 && (
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14, padding: '10px 14px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8 }}>
+                {[
+                  { label: 'Closed', value: String(summary.closed_trades), color: '#94a3b8' },
+                  {
+                    label: 'Win Rate',
+                    value: `${summary.win_rate_pct.toFixed(1)}%`,
+                    color: summary.win_rate_pct >= 55 ? '#22c55e' : summary.win_rate_pct >= 45 ? '#f59e0b' : '#ef4444',
+                  },
+                  {
+                    label: 'Avg Win / Loss',
+                    value: `${fmtPct(summary.avg_win_pct, 1)} / ${fmtPct(summary.avg_loss_pct, 1)}`,
+                    color: summary.avg_win_pct > Math.abs(summary.avg_loss_pct ?? 0) ? '#22c55e' : '#f59e0b',
+                  },
+                  ...(summary.profit_factor != null ? [{
+                    label: 'Profit Factor',
+                    value: summary.profit_factor.toFixed(2),
+                    color: summary.profit_factor >= 1.5 ? '#22c55e' : summary.profit_factor >= 1 ? '#f59e0b' : '#ef4444',
+                  }] : []),
+                  ...(summary.expectancy_pct != null ? [{
+                    label: 'Expectancy',
+                    value: `${summary.expectancy_pct >= 0 ? '+' : ''}${summary.expectancy_pct.toFixed(1)}%`,
+                    color: summary.expectancy_pct >= 0 ? '#22c55e' : '#ef4444',
+                  }] : []),
+                ].map(s => (
+                  <div key={s.label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <span style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{s.label}</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: s.color }}>{s.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
               {trades?.items?.length ? (
                 <button
