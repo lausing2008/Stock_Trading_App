@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,20 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 128 — Signal Filter Monitor: US/HK Market Filter ────────────────────
+
+  {
+    id: 'TIER128-SIGNAL-FILTER-MARKET',
+    tier: 128 as const, severity: 'feature', defaultStatus: 'done',
+    file: 'frontend/src/pages/signal-filters.tsx, services/signal-engine/src/api/routes.py:GET /signals/suppressed, frontend/src/lib/api.ts:suppressedSignals()',
+    effort: '30m',
+    impact: 'Medium — Signal Filter Monitor previously showed all 142 stocks (US + HK) mixed together with no way to view only one market. HK stocks have different signal characteristics, trading hours, and suppression patterns. Filtering by market lets you focus on one market at a time.',
+    title: 'Signal Filter Monitor: US/HK market filter button group',
+    what: 'The suppressed signals endpoint accepted only a style param. The Signal Filter frontend had no market selector. US and HK stocks were always shown together.',
+    fix: 'Added market?: string query param to GET /signals/suppressed (backend filters Stock.market). Added market state + URL persistence + ALL/US/HK button group UI to signal-filters.tsx. Updated suppressedSignals() API client. SWR cache key includes market to refetch on switch.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
   // ── Tier 126 — Full System Audit 2026-06-21: 8 Bugs Found and Fixed ──────────
 
   {
@@ -7178,35 +7192,38 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-SERVICE-TOKEN-NO-REFRESH',
-    tier: 127 as const, severity: 'medium', defaultStatus: 'todo',
+    tier: 127 as const, severity: 'medium', defaultStatus: 'done',
     file: 'services/signal-engine/src/api/routes.py:_service_token() ~line 37',
     effort: '20m',
     impact: 'Medium — if the signal-engine container runs for 358+ days without a restart, the cached service token will expire silently. All service-to-service calls from signal-engine (research divergence check) will start failing with 401 at that point.',
     title: 'signal-engine _service_token() caches forever with no expiry refresh',
     what: 'Token exp is set to +365 days. The cache is set once and returned forever. market-data scheduler has the correct pattern: proactively refresh 7 days before expiry. signal-engine should match.',
     fix: 'Store token creation time alongside the cache. In _service_token(), check if token is within 7 days of expiry and regenerate. Same pattern as market-data _service_token_cache.',
+    implementedNote: 'Fixed 2026-06-22. Added _service_token_exp float; refreshes 7 days before expiry.',
   },
 
   {
     id: 'WARN-REDIS-ALLKEYS-LRU-BLACKLIST',
-    tier: 127 as const, severity: 'medium', defaultStatus: 'todo',
+    tier: 127 as const, severity: 'medium', defaultStatus: 'done',
     file: 'docker/docker-compose.yml:redis command ~line 31',
     effort: '30m',
     impact: 'Medium — under memory pressure (Redis at 256MB), the allkeys-lru policy can evict auth:blacklist:{jti} entries before their TTL. A revoked JWT would be valid again for the remainder of its expiry window. Only affects users whose logout Redis entry is evicted on a heavily-loaded instance.',
     title: 'Redis allkeys-lru eviction can silently reinstate revoked JWTs',
     what: 'maxmemory 256mb with allkeys-lru evicts any key including auth blacklist entries. The per-process in-memory fallback (jwt_auth.py _BLACKLIST_MEM) only covers requests hitting the same container instance.',
     fix: 'Change to volatile-lru (only evicts keys with a TTL set) or move auth blacklist to a dedicated Redis DB. Alternatively, increase Redis maxmemory to 512MB since the current usage is well below 256MB on t3.medium.',
+    implementedNote: 'Fixed 2026-06-22. Changed docker-compose.yml redis command: allkeys-lru → volatile-lru. Auth blacklist keys have explicit TTLs so they are protected; non-TTL operational cache keys remain evictable.',
   },
 
   {
     id: 'WARN-JOSE-VERSION-PINNING',
-    tier: 127 as const, severity: 'low', defaultStatus: 'todo',
+    tier: 127 as const, severity: 'low', defaultStatus: 'done',
     file: 'services/*/requirements.txt',
     effort: '15m',
     impact: 'Low — 5 services pin python-jose==3.3.0, 6 services use >=3.3.0. A pip install on a floor-pinned service could pull a newer jose version with API changes, creating divergence between containers.',
     title: 'python-jose version pinning inconsistent across services (== vs >=)',
     what: 'signal-engine, ml-prediction, portfolio-optimizer, ranking-engine, technical-analysis pin ==3.3.0. market-data, api-gateway, research-engine, strategy-engine use >=3.3.0.',
     fix: 'Standardize all services to python-jose[cryptography]==3.3.0.',
+    implementedNote: 'Fixed 2026-06-22. Updated 6 requirements.txt files (market-data, event-intelligence, decision-engine, api-gateway, research-engine, strategy-engine) from >= to ==3.3.0.',
   },
 
   {
@@ -7222,35 +7239,38 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-BREAKEVEN-WIN-RATE',
-    tier: 127 as const, severity: 'low', defaultStatus: 'todo',
-    file: 'services/signal-engine/src/api/routes.py:evaluate_signal_outcomes ~line 3914',
+    tier: 127 as const, severity: 'low', defaultStatus: 'done',
+    file: 'services/signal-engine/src/api/routes.py:evaluate_signal_outcomes ~line 477',
     effort: '15m',
     impact: 'Low — breakeven trades (pct_return == 0.0) are counted as incorrect for both BUY and SELL signals, deflating measured win rates slightly.',
     title: 'Breakeven trades (0% return) counted as incorrect in win-rate calculation',
     what: 'The outcome evaluation counts a BUY as correct only if pct_return > 0.0, and SELL only if < 0.0. A trade that breaks exactly even is counted as a loss for both.',
-    fix: 'Treat breakeven as correct (>= 0.0 for BUY, <= 0.0 for SELL) or as a neutral non-counted outcome (best: exclude from win-rate denominator).',
+    fix: 'Treat breakeven as correct (>= 0.0 for BUY, <= 0.0 for SELL).',
+    implementedNote: 'Fixed 2026-06-22. Changed `pct_change > 0` → `>= 0` for BUY, `< 0` → `<= 0` for SELL.',
   },
 
   {
     id: 'WARN-PEG-REVENUE-GROWTH-SUB',
-    tier: 127 as const, severity: 'low', defaultStatus: 'todo',
+    tier: 127 as const, severity: 'low', defaultStatus: 'done',
     file: 'services/research-engine/src/api/routes.py:PEG calculation ~line 621',
     effort: '20m',
     impact: 'Low — high-revenue / low-earnings stocks can appear undervalued on PEG when the substituted revenue_growth is high. The metric label does not indicate the substitution.',
     title: 'Research engine: PEG ratio silently substitutes revenue_growth when earnings_growth is absent',
     what: 'When earnings_growth is None, the code uses revenue_growth as a proxy without logging or surfacing the substitution. This misclassifies asset-heavy stocks where revenue grows faster than earnings.',
-    fix: 'Log the substitution in the reasons dict and label the metric "PEG (revenue proxy)" in the frontend display. Alternatively, show PEG as N/A when earnings_growth is absent.',
+    fix: 'Prefer earnings_growth; fall back to revenue_growth. Add peg_growth_source field to response so frontend can label "PEG (rev. proxy)".',
+    implementedNote: 'Fixed 2026-06-22. PEG now uses earnings_growth first; falls back to revenue_growth only if absent. peg_growth_source returned in valuation object ("earnings_growth" or "revenue_growth").',
   },
 
   {
     id: 'WARN-PUSH-CONFIG-EVERY-NAV',
-    tier: 127 as const, severity: 'low', defaultStatus: 'todo',
+    tier: 127 as const, severity: 'low', defaultStatus: 'done',
     file: 'frontend/src/pages/_app.tsx:doCheck() ~line 370',
     effort: '10m',
     impact: 'Low — api.pushConfig() fires a POST /admin/config on every client-side page navigation when API keys are set. On a session with many page transitions, this sends dozens of unnecessary writes.',
     title: '_app.tsx pushConfig fires POST /admin/config on every page navigation',
     what: 'doCheck() is called on every router.pathname change. When a session is found and API keys are present in localStorage, it calls api.pushConfig() each time. A module-level boolean flag should guard this to once-per-session.',
     fix: 'Add a module-level `let configPushed = false` boolean. Set it to true after the first successful pushConfig call and skip subsequent calls.',
+    implementedNote: 'Fixed 2026-06-22. Module-level `let _configPushed = false` added. Set to true on first push; all subsequent calls skipped.',
   },
 
   // ── Tier 124 — Stock Detail: ~BUY / ~SELL Badge in AI Signal Card ────────────
@@ -8458,7 +8478,8 @@ const TIER_LABEL: Record<Tier, string> = {
   124: 'Tier 124 — Stock detail: ~BUY / ~SELL badge in AI Signal card header (done)',
   125: 'Tier 125 — Signal alert email subject: add confidence % and bullish probability (done)',
   126: 'Tier 126 — Full system audit 2026-06-21: 8 bugs found and fixed',
-  127: 'Tier 127 — Audit 2026-06-21: warnings and hardening backlog',
+  127: 'Tier 127 — Audit 2026-06-21: warnings and hardening (6/7 done)',
+  128: 'Tier 128 — Signal Filter Monitor: US/HK market filter (done)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -8589,6 +8610,7 @@ const TIER_COLOR: Record<Tier, string> = {
   125: '#818cf8',
   126: '#f87171',
   127: '#fbbf24',
+  128: '#0ea5e9',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

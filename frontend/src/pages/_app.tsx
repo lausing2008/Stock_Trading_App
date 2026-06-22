@@ -13,6 +13,7 @@ import { api, type Stock } from '@/lib/api';
 
 const PUBLIC_PATHS = ['/login', '/gate'];
 const GATE_COOKIE  = 'stockai_gate';
+let _configPushed = false;
 
 function hasGateCookie() {
   if (typeof document === 'undefined') return false;
@@ -368,7 +369,8 @@ export default function App({ Component, pageProps }: AppProps) {
         setRole(session.role);
         setImpersonating(getImpersonatedUser());
         const settings = loadSettings();
-        if (settings.polygonApiKey || settings.alphaVantageApiKey) {
+        if (!_configPushed && (settings.polygonApiKey || settings.alphaVantageApiKey)) {
+          _configPushed = true;
           api.pushConfig({
             polygon_api_key: settings.polygonApiKey || undefined,
             alpha_vantage_api_key: settings.alphaVantageApiKey || undefined,

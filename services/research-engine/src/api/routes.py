@@ -619,9 +619,16 @@ def _score_fundamental(fund: dict, sector: str = "Unknown", price: float = 0.0) 
             val_assess = "Overvalued"; score -= 5
 
     peg = None
-    if pe and rev_growth and rev_growth > 0:
-        g = rev_growth * 100  # yfinance returns decimal fraction
+    peg_growth_source = None
+    _eps_g = fund.get("earnings_growth")
+    if pe and _eps_g and _eps_g > 0:
+        g = _eps_g * 100
         peg = round(pe / g, 2) if g > 0 else None
+        peg_growth_source = "earnings_growth"
+    elif pe and rev_growth and rev_growth > 0:
+        g = rev_growth * 100
+        peg = round(pe / g, 2) if g > 0 else None
+        peg_growth_source = "revenue_growth"  # substitution — less reliable for asset-heavy stocks
     if peg is not None:
         if peg < 1.0:
             score += 5
@@ -708,6 +715,7 @@ def _score_fundamental(fund: dict, sector: str = "Unknown", price: float = 0.0) 
             "pe": round(pe, 1) if pe else None,
             "forward_pe": round(fpe, 1) if fpe else None,
             "peg": peg,
+            "peg_growth_source": peg_growth_source,
             "price_sales": round(ps, 1) if ps else None,
             "ev_ebitda": round(ev_ebitda, 1) if ev_ebitda else None,
             "assessment": val_assess,

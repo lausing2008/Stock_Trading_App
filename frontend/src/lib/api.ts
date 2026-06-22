@@ -236,8 +236,8 @@ export const api = {
     if (opts?.minConfidence != null && opts.minConfidence > 0) params.set('min_confidence', String(opts.minConfidence));
     return request<TradePerformanceReport>(`/signals/trade_performance?${params}`);
   },
-  suppressedSignals: (style = 'SWING') =>
-    request<SuppressedSignalRow[]>(`/signals/suppressed?style=${style}`),
+  suppressedSignals: (style = 'SWING', market?: string) =>
+    request<SuppressedSignalRow[]>(`/signals/suppressed?style=${style}${market ? `&market=${market}` : ''}`),
   rollingAccuracy: (window = 30, lookbackDays = 180) =>
     request<{ window: number; lookback_days: number; series: { date: string; accuracy: number; signal_count: number }[]; drift_warning: boolean; latest_accuracy: number | null }>(`/signals/rolling_accuracy?window=${window}&lookback_days=${lookbackDays}`),
   walkForward: (testDays = 30, holdDays = 5, lookbackDays = 365) =>

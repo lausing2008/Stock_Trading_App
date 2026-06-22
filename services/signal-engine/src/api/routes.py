@@ -35,21 +35,25 @@ def _cache_set(key: str, value, ttl: int = 3600) -> None:
 
 
 _service_token_cache: str = ""
+_service_token_exp: float = 0.0  # epoch seconds when the cached token expires
 
 
 def _service_token() -> str:
-    """Long-lived JWT for signal-engine → internal service calls (sub='signal-engine')."""
-    global _service_token_cache
-    if _service_token_cache:
-        return _service_token_cache
+    """Long-lived JWT for signal-engine → internal service calls (sub='signal-engine').
+    Refreshes 7 days before expiry so the cached token is never used stale."""
+    global _service_token_cache, _service_token_exp
     import time
     from jose import jwt as _jwt
+    if _service_token_cache and time.time() < _service_token_exp - 7 * 86400:
+        return _service_token_cache
+    exp = int(time.time()) + 365 * 86400
     payload = {
         "sub": "signal-engine",
-        "exp": int(time.time()) + 365 * 86400,
+        "exp": exp,
         "jti": str(__import__("uuid").uuid4()),
     }
     _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+    _service_token_exp = float(exp)
     return _service_token_cache
 
 
@@ -470,7 +474,7 @@ def signal_accuracy(
 
         pct_change  = (exit_close - entry_close) / entry_close * 100
         signal_type = sig.signal.value
-        correct     = (signal_type == "BUY" and pct_change > 0) or (signal_type == "SELL" and pct_change < 0)
+        correct     = (signal_type == "BUY" and pct_change >= 0) or (signal_type == "SELL" and pct_change <= 0)
 
         results.append({
             "symbol": sym,
@@ -1374,6 +1378,7 @@ def trade_performance(
 @router.get("/suppressed")
 def suppressed_signals(
     style: str = Query("SWING", description="Trading style: SHORT, SWING, LONG"),
+    market: str | None = Query(None, description="Filter by market: US or HK"),
     session: Session = Depends(get_session),
 ):
     """All active stocks with their latest signal and full suppression condition breakdown.
@@ -1410,6 +1415,9 @@ def suppressed_signals(
         q = q.where(Signal.horizon == SignalHorizon(horizon_filter))
     except ValueError:
         pass
+
+    if market:
+        q = q.where(Stock.market == market.upper())
 
     rows = session.execute(q).all()
 

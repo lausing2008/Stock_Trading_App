@@ -266,6 +266,7 @@ export default function SignalFiltersPage() {
   }, [router]);
 
   const [style, setStyle] = useState<string>('SWING');
+  const [market, setMarket] = useState<string>('ALL');
   const [sigFilter, setSigFilter] = useState<string>('ALL');
   const [condFilters, setCondFilters] = useState<Set<CondKey>>(new Set());
   const [onlySuppressed, setOnlySuppressed] = useState(false);
@@ -282,6 +283,7 @@ export default function SignalFiltersPage() {
     urlReady.current = true;
     const q = router.query;
     if (q.style && STYLES.includes(q.style as typeof STYLES[number])) setStyle(q.style as string);
+    if (q.market && ['US', 'HK'].includes(q.market as string)) setMarket(q.market as string);
     if (q.sig && SIGNAL_OPTS.includes(q.sig as typeof SIGNAL_OPTS[number])) setSigFilter(q.sig as string);
     if (q.cond) setCondFilters(new Set((q.cond as string).split(',').filter(Boolean) as CondKey[]));
     if (q.sup === '1') setOnlySuppressed(true);
@@ -295,6 +297,7 @@ export default function SignalFiltersPage() {
     if (!urlReady.current) return;
     const q: Record<string, string> = {};
     if (style !== 'SWING') q.style = style;
+    if (market !== 'ALL') q.market = market;
     if (sigFilter !== 'ALL') q.sig = sigFilter;
     if (condFilters.size > 0) q.cond = [...condFilters].join(',');
     if (onlySuppressed) q.sup = '1';
@@ -302,11 +305,11 @@ export default function SignalFiltersPage() {
     if (sortKey !== 'suppression_count') q.sort = sortKey;
     if (sortDir !== 'desc') q.dir = sortDir;
     router.replace({ pathname: router.pathname, query: q }, undefined, { shallow: true });
-  }, [style, sigFilter, condFilters, onlySuppressed, search, sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [style, market, sigFilter, condFilters, onlySuppressed, search, sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data, isLoading, error, mutate } = useSWR(
-    authed ? ['suppressed', style] : null,
-    () => api.suppressedSignals(style),
+    authed ? ['suppressed', style, market] : null,
+    () => api.suppressedSignals(style, market === 'ALL' ? undefined : market),
     { revalidateOnFocus: false },
   );
 
@@ -501,6 +504,17 @@ export default function SignalFiltersPage() {
               background: style === s ? '#6366f1' : 'transparent',
               color: style === s ? '#fff' : '#64748b',
             }}>{s}</button>
+          ))}
+        </div>
+
+        {/* Market */}
+        <div style={{ display: 'flex', gap: 2, background: '#0b1420', padding: 3, borderRadius: 8, border: '1px solid #1e293b' }}>
+          {(['ALL', 'US', 'HK'] as const).map(m => (
+            <button key={m} onClick={() => setMarket(m)} style={{
+              padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+              background: market === m ? '#0ea5e9' : 'transparent',
+              color: market === m ? '#fff' : '#64748b',
+            }}>{m}</button>
           ))}
         </div>
 

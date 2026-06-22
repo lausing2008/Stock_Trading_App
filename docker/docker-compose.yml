@@ -28,7 +28,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy volatile-lru
     #ports: ["6379:6379"]
     networks: [stockai-net]
     volumes:
