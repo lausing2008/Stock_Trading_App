@@ -67,6 +67,7 @@ def _compute_us() -> dict:
         "spy_20d_ret": None, "qqq_price": None, "qqq_ema50": None,
         "vix_5d_trend": None, "vix_term_inverted": False,
         "breadth_weak": False, "breadth_size_mult": 1.0,
+        "is_pre_choppy": False, "is_pre_risk_off": False,
         "notes": [],
     }
 
@@ -165,6 +166,15 @@ def _compute_us() -> dict:
     else:
         result["state"] = "neutral"
         notes.append("Neutral: mixed signals")
+
+    # Pre-regime early-warning flags (F11) — only relevant in bull/neutral
+    if result["state"] in ("bull", "neutral"):
+        if spy and e50 and 1.0 < spy / e50 <= 1.03:
+            result["is_pre_choppy"] = True
+            notes.append(f"Pre-choppy: SPY within 3% above EMA50 ({spy / e50 - 1:.1%})")
+        if vix and 18 < vix < 25 and result.get("vix_5d_trend") == "rising":
+            result["is_pre_risk_off"] = True
+            notes.append(f"Pre-risk-off: VIX={vix:.1f} rising into warning zone")
 
     return result
 

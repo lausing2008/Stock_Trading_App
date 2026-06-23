@@ -332,11 +332,36 @@ def _bulk_persist(symbols: list[str]) -> None:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
                 if not stock:
                     continue
+
+                # F2: load prior confidence for each horizon to compute confidence_delta
+                prior_conf: dict[str, float | None] = {}
+                try:
+                    from sqlalchemy import text as _text2
+                    rows = s.execute(_text2("""
+                        SELECT horizon::text, confidence FROM signals
+                        WHERE stock_id = :sid
+                        ORDER BY ts DESC
+                    """), {"sid": stock.id}).fetchall()
+                    seen: set[str] = set()
+                    for row in rows:
+                        if row[0] not in seen:
+                            prior_conf[row[0]] = float(row[1]) if row[1] is not None else None
+                            seen.add(row[0])
+                except Exception:
+                    pass
+
                 # Cache the research summary once per symbol (shared across styles)
                 _research_summary: dict | None = None
                 _research_fetched = False
                 for style_key, ai in all_sig.items():
                     horizon_enum = SignalHorizon(ai.horizon)
+                    # F2: annotate confidence_delta before upsert
+                    prev = prior_conf.get(ai.horizon)
+                    if prev is not None and ai.confidence is not None:
+                        delta = round(float(ai.confidence) - float(prev), 1)
+                        if ai.reasons is None:
+                            ai.reasons = {}
+                        ai.reasons["confidence_delta"] = delta
                     # Upsert: one signal row per (stock, horizon, calendar day).
                     # Conflict on the unique index uq_signals_stock_horizon_day
                     # → update in place so signal type changes within a day overwrite rather than grow the table.

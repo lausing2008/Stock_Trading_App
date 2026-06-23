@@ -62,6 +62,7 @@ class Multipliers(BaseModel):
     confidence: float = 1.0
     consensus: float = 1.0
     earnings: float = 1.0
+    breadth: float = 1.0
 
 
 # ── Main response ──────────────────────────────────────────────────────────────

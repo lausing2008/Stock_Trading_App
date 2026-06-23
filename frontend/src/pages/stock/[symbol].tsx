@@ -188,6 +188,7 @@ export default function StockDetail() {
   // live=false → reads stored DB signal (matches signal filter); Refresh button uses live=true
   const { data: sigShort,  mutate: mutateSigShort }  = useSWR(symbol ? `sig-${symbol}-SHORT`  : null, () => api.signal(symbol, 'SHORT',  false), { revalidateOnFocus: false });
   const { data: sigSwing,  mutate: mutateSigSwing }  = useSWR(symbol ? `sig-${symbol}-SWING`  : null, () => api.signal(symbol, 'SWING',  false), { revalidateOnFocus: false });
+  const { data: tuneStatus } = useSWR('tune-status', () => api.signalTuneStatus(), { refreshInterval: 5 * 60_000, revalidateOnFocus: false });
   const { data: sigLong,   mutate: mutateSigLong }   = useSWR(symbol ? `sig-${symbol}-LONG`   : null, () => api.signal(symbol, 'LONG',   false), { revalidateOnFocus: false });
   const { data: sigGrowth, mutate: mutateSigGrowth } = useSWR(symbol ? `sig-${symbol}-GROWTH` : null, () => api.signal(symbol, 'GROWTH', false), { revalidateOnFocus: false });
   const allHorizonSignals: { label: string; horizon: string; sig: typeof sigShort }[] = [
@@ -870,8 +871,9 @@ Return ONLY valid JSON — no markdown, no prose:
               )}
             </div>
           )}
-          {data.signal && (() => {
-            const s = data.signal.signal;
+          {(sigSwing ?? data.signal) && (() => {
+            const badgeSig = sigSwing ?? data.signal;
+            const s = badgeSig!.signal;
             const borderCls = s === 'BUY' ? 'border-green-800 bg-green-950/40' : s === 'SELL' ? 'border-red-800 bg-red-950/40' : s === 'WAIT' ? 'border-orange-800 bg-orange-950/40' : 'border-yellow-800 bg-yellow-950/40';
             const labelCls  = s === 'BUY' ? 'text-green-400'  : s === 'SELL' ? 'text-red-400'  : s === 'WAIT' ? 'text-orange-400'  : 'text-yellow-400';
             const valueCls  = s === 'BUY' ? 'text-green-300'  : s === 'SELL' ? 'text-red-300'  : s === 'WAIT' ? 'text-orange-300'  : 'text-yellow-300';
@@ -880,8 +882,8 @@ Return ONLY valid JSON — no markdown, no prose:
                 <div className={`text-xs font-medium mb-0.5 ${labelCls}`}>AI Signal</div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                   <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
-                  {(s === 'HOLD' || s === 'WAIT') && data.signal.bullish_probability != null && (() => {
-                    const bp = data.signal.bullish_probability;
+                  {(s === 'HOLD' || s === 'WAIT') && badgeSig!.bullish_probability != null && (() => {
+                    const bp = badgeSig!.bullish_probability;
                     if (bp >= 0.55 && bp < 0.65) return (
                       <span style={{ fontSize: 10, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', padding: '2px 6px', borderRadius: 4 }}
                             title={`Near BUY — ${(bp * 100).toFixed(1)}% bullish probability`}>~BUY</span>
@@ -893,7 +895,7 @@ Return ONLY valid JSON — no markdown, no prose:
                     return null;
                   })()}
                 </div>
-                <div className="text-xs text-slate-500 mt-0.5">{((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}% bullish</div>
+                <div className="text-xs text-slate-500 mt-0.5">{((badgeSig!.bullish_probability ?? 0) * 100).toFixed(0)}% bullish · stored SWING</div>
               </div>
             );
           })()}
@@ -1791,8 +1793,16 @@ Return ONLY valid JSON — no markdown, no prose:
                       const r = activeSig.reasons as Record<string, unknown>;
                       const kscore = data?.ranking?.score;
                       const regime = (r.market_regime as string) || 'unknown';
-                      const mlThreshMap: Record<string, number> = { bull: 0.65, neutral: 0.70, high_vol: 0.78, bear: 0.78 };
-                      const mlThresh = mlThreshMap[regime] ?? 0.70;
+                      // H2: use effective thresholds from tune_status watchdog/calibration (5-min cache)
+                      const tuneStyleData = tuneStatus?.styles?.[selectedHorizon];
+                      const baseMlThresh = tuneStyleData?.effective?.buy_threshold_bull ?? 0.558;
+                      const mlThreshMap: Record<string, number> = {
+                        bull: baseMlThresh,
+                        neutral: Math.min(baseMlThresh + 0.05, 0.82),
+                        high_vol: Math.min(baseMlThresh + 0.12, 0.85),
+                        bear: Math.min(baseMlThresh + 0.12, 0.85),
+                      };
+                      const mlThresh = mlThreshMap[regime] ?? Math.min(baseMlThresh + 0.05, 0.82);
                       const mlProb = r.ml_probability != null ? Number(r.ml_probability) : null;
                       // ml_weight=0 means model AUC<0.50 — signal-engine gave it zero weight,
                       // so the gate mirrors that: soft-pass ML (same logic as Python gate)

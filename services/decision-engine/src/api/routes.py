@@ -104,9 +104,15 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         if research_score is not None:
             research_score = float(research_score)
 
-    # 6. Market regime
-    regime = get_regime(req.market)
+    # 6. Market regime — auto-detect HK from symbol suffix (F7)
+    market = req.market
+    if symbol.endswith(".HK") and market == "US":
+        market = "HK"
+    regime = get_regime(market)
     regime_state = regime.get("state", "neutral")
+    breadth_size_mult = float(regime.get("breadth_size_mult", 1.0))
+    is_pre_choppy = bool(regime.get("is_pre_choppy", False))
+    is_pre_risk_off = bool(regime.get("is_pre_risk_off", False))
 
     # 7. Hard rejects — special-case: no signal data means symbol is unknown
     if signal_data is None:
@@ -118,7 +124,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         return DecisionResult(
             symbol=symbol, style=style,
             verdict="BLOCKED", score=-99, min_score=min_score_for_regime(regime_state, cfg),
-            factors=factors, multipliers=Multipliers(),
+            factors=Factors(regime=regime_state), multipliers=Multipliers(),
             score_breakdown=[], blocked_reason=no_signal_reason,
             latency_ms=latency, timestamp=datetime.now(timezone.utc).isoformat(),
         )
@@ -172,6 +178,8 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         research_score_val=research_score,
         regime_state=regime_state,
         cfg=cfg,
+        is_pre_choppy=is_pre_choppy,
+        is_pre_risk_off=is_pre_risk_off,
     )
     min_score = min_score_for_regime(regime_state, cfg)
 
@@ -187,6 +195,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         cross_style_buys=cross_buys,
         days_to_earnings=dte_int,
         cfg=cfg,
+        breadth_size_mult=breadth_size_mult,
     )
 
     # 10. Verdict

@@ -115,6 +115,15 @@ type Reasons = {
   // SA-27: OOS accuracy suppression flag
   ml_oos_suppressed?: boolean;
   low_oos_accuracy?: boolean;
+  // H3: additional context factors
+  breadth_compression?: number | null;
+  pullback_recovery?: string | null;
+  news_sentiment_flag?: string | null;
+  rs_flag?: string | null;
+  sector_headwind?: boolean | null;
+  short_interest_flag?: string | null;
+  analyst_momentum?: string | null;
+  analyst_momentum_adj?: number | null;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
@@ -396,6 +405,79 @@ function buildReasons(r: Reasons): Factor[] {
       bullish,
       detail: `XGBoost predicts ${pct}% probability of upward move`,
     });
+  }
+
+  // ── Additional context factors (H3) ───────────────────────────────────────
+
+  // Market breadth compression
+  if (r.breadth_compression != null && r.breadth_compression < 1.0) {
+    const pct = Math.round((1 - r.breadth_compression) * 100);
+    factors.push({
+      label: `Breadth Compressed −${pct}%`,
+      bullish: false,
+      warning: r.breadth_compression <= 0.92,
+      detail: `Market breadth weak — signal compressed by ${pct}% (small/mid caps lagging)`,
+    });
+  }
+
+  // Sector headwind
+  if (r.sector_headwind === true) {
+    factors.push({
+      label: 'Sector Headwind',
+      bullish: false,
+      detail: 'Sector is underperforming — signal confidence reduced',
+    });
+  }
+
+  // Relative strength vs sector
+  if (r.rs_flag && r.rs_flag !== 'in_line_or_leading') {
+    factors.push({
+      label: 'RS: Lagging Sector',
+      bullish: false,
+      detail: r.rs_flag === 'lagging_sector_floor_applied'
+        ? 'Lagging sector but positive absolute return — floor applied, partial signal'
+        : 'Stock underperforming its sector — signal reduced',
+    });
+  } else if (r.rs_flag === 'in_line_or_leading') {
+    factors.push({ label: 'RS: Leading Sector', bullish: true, detail: 'Stock at or above sector performance — no drag on signal' });
+  }
+
+  // Analyst momentum
+  if (r.analyst_momentum && r.analyst_momentum !== 'neutral') {
+    const isBull = r.analyst_momentum === 'strong_upgrade' || r.analyst_momentum === 'mild_upgrade';
+    const adj = r.analyst_momentum_adj != null ? ` (${r.analyst_momentum_adj > 0 ? '+' : ''}${(r.analyst_momentum_adj * 100).toFixed(0)}%)` : '';
+    factors.push({
+      label: isBull ? 'Analyst Upgrades' : 'Analyst Downgrades',
+      bullish: isBull,
+      detail: `${r.analyst_momentum.replace(/_/g, ' ')} — analyst sentiment ${isBull ? 'improving' : 'worsening'}${adj}`,
+    });
+  }
+
+  // Short interest
+  if (r.short_interest_flag === 'very_high_squeeze_potential') {
+    factors.push({ label: 'High Short Interest', bullish: true, detail: 'Very high short interest — squeeze potential if price rises' });
+  } else if (r.short_interest_flag === 'elevated_short_interest') {
+    factors.push({ label: 'Elevated Short Interest', bullish: false, warning: true, detail: 'Above-average short interest — elevated overhead pressure' });
+  }
+
+  // News sentiment
+  if (r.news_sentiment_flag === 'strongly_negative') {
+    factors.push({ label: 'News: Strongly Negative', bullish: false, warning: true, detail: 'Recent news sentiment strongly negative — signal confidence reduced' });
+  } else if (r.news_sentiment_flag === 'negative') {
+    factors.push({ label: 'News: Negative', bullish: false, detail: 'Recent news sentiment negative — mild signal headwind' });
+  }
+
+  // Pullback recovery
+  if (r.pullback_recovery === 'confirmed' || r.pullback_recovery === 'confirmed_vol') {
+    factors.push({
+      label: r.pullback_recovery === 'confirmed_vol' ? '✦ Pullback Recovery' : 'Pullback Recovery',
+      bullish: true,
+      detail: r.pullback_recovery === 'confirmed_vol'
+        ? 'Pullback recovered with volume confirmation — high-quality entry setup'
+        : 'Pullback recovered — signal quality boost applied',
+    });
+  } else if (r.pullback_recovery === 'no_recovery_yet') {
+    factors.push({ label: 'Pullback: No Recovery', bullish: false, detail: 'In pullback with no recovery confirmation yet — wait for bounce' });
   }
 
   return factors;

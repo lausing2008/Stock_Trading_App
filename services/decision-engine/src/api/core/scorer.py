@@ -31,6 +31,8 @@ def compute_score(
     research_score_val: float | None,
     regime_state: str,
     cfg: dict,
+    is_pre_choppy: bool = False,
+    is_pre_risk_off: bool = False,
 ) -> tuple[int, list[ScoreItem]]:
     """Return (total_score, breakdown_list)."""
     reasons  = signal_data.get("reasons") or {}
@@ -151,6 +153,16 @@ def compute_score(
             pts, note = 0, f"Neutral catalyst signal (score={cs:.0f})"
         score += pts
         breakdown.append(ScoreItem(layer="catalyst", pts=pts, note=note))
+
+    # ── Layer 3g: Pre-regime early-warning (F11) ──────────────────────────────
+    if is_pre_risk_off:
+        pts, note = -1, "Pre-risk-off: VIX rising into warning zone — conditions deteriorating"
+        score += pts
+        breakdown.append(ScoreItem(layer="pre_regime", pts=pts, note=note))
+    elif is_pre_choppy:
+        pts, note = -1, "Pre-choppy: SPY hugging EMA50 — trend weakening, raise bar"
+        score += pts
+        breakdown.append(ScoreItem(layer="pre_regime", pts=pts, note=note))
 
     # ── Layer 4: Research alignment ───────────────────────────────────────────
     if research_rec:
