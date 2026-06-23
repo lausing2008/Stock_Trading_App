@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,65 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 146 — Deep Audit: Frontend (Paper Portfolio page) ──────────────────
+  {
+    id: 'FE-F1-JOURNAL-PCT-DOUBLE-MULTIPLY',
+    tier: 146 as const, severity: 'critical',
+    file: 'frontend/src/pages/paper-portfolio.tsx:1989',
+    effort: '2m',
+    impact: 'Critical — Journal tab showed 100× inflated P&L for every closed trade. A 5.2% win was displayed as "✓ WIN 520.00%". pct_return is stored as a whole percentage (round(pnl_pct * 100, 4)) but the template literal applied *100 again.',
+    title: 'FE-F1: Journal WIN/LOSS badge multiplied pct_return by 100 again — 5.2% showed as 520%',
+    what: '`${(d.pct_return * 100).toFixed(2)}%` — pct_return is already stored as 5.2 (whole %), so this produces 520.00%. The global fmtPct() helper is correct (no multiply); it was not used here.',
+    fix: 'Changed to `{fmtPct(d.pct_return)}` — uses the shared formatter which appends % with sign, no multiplication.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'FE-F12-FOOTER-HARDCODED-GROWTH',
+    tier: 146 as const, severity: 'medium',
+    file: 'frontend/src/pages/paper-portfolio.tsx:2511',
+    effort: '2m',
+    impact: 'Medium — "How it works" explainer at the bottom of the paper portfolio page hardcoded "GROWTH-style BUY signals" regardless of the portfolio\'s configured trading_style. A SWING-style portfolio read "It scans for fresh GROWTH-style BUY signals", misleading users about what the engine actually does.',
+    title: 'FE-F12: Paper portfolio footer hardcoded "GROWTH-style" — ignored actual portfolio trading_style',
+    what: 'Static JSX text: `It scans for fresh GROWTH-style BUY signals`. summary.trading_style holds the real style (SWING, GROWTH, LONG) for each portfolio.',
+    fix: 'Changed to `It scans for fresh {summary.trading_style}-style BUY signals` using JSX interpolation.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+
+  // ── Tier 145 — Deep Audit: Portfolio Optimizer + Market Data ─────────────────
+  {
+    id: 'PO-F1-SOLVER-NO-SUCCESS-CHECK',
+    tier: 145 as const, severity: 'high',
+    file: 'services/portfolio-optimizer/src/optimizers/methods.py:117',
+    effort: '5m',
+    impact: 'High — SLSQP optimizer result was used unconditionally regardless of convergence. When the solver fails (ill-conditioned covariance, degenerate return series), res.x is a partial/garbage solution that may violate weight bounds or produce extreme concentrations. Silent garbage allocations can blow position limits.',
+    title: 'PO-F1: Optimizer res.success never checked — solver failure silently returns garbage portfolio weights',
+    what: '`w = _normalize(np.clip(res.x, 0, None))` runs immediately after minimize() with no res.success guard. Applied to both mean_variance() and ai_allocation() methods.',
+    fix: 'Changed to `w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)`. Solver failure now falls back to equal-weight allocation instead of propagating a bad result.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'MD-F1-FUNDAMENTALS-NO-AUTH',
+    tier: 145 as const, severity: 'high',
+    file: 'services/market-data/src/api/routes.py:784',
+    effort: '5m',
+    impact: 'High — GET /stocks/{symbol}/fundamentals?refresh=true had no authentication guard. Any caller reachable inside the Docker network could trigger a live yfinance fetch for any symbol, bypassing the 24-hour Redis cache. Under load, this allows cache-busting DoS: repeated refresh calls spawn concurrent yfinance threads per symbol.',
+    title: 'MD-F1: GET /fundamentals had no auth — unauthenticated ?refresh=true could bypass 24h cache and DoS yfinance',
+    what: 'Endpoint signature lacked `Depends(get_current_user)`. The ?refresh=true parameter forces a live yfinance.Ticker().info call, which is network I/O. Without auth, any client can force unbounded fetches.',
+    fix: 'Added `_user=Depends(get_current_user)` to get_fundamentals() endpoint. Uses the already-imported get_current_user from .auth.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'MD-F11-AVG-VOLUME-ALWAYS-NONE',
+    tier: 145 as const, severity: 'medium',
+    file: 'services/market-data/src/api/routes.py',
+    effort: '15m',
+    impact: 'Medium — avg_volume was always None in the bulk fundamentals path. The code fetched only 2 days of history (period="2d") then required len(vols) >= 5 before computing an average — a condition that can never be satisfied with 2 bars. Stocks shown in screener/rankings always had null avg_volume.',
+    title: 'MD-F11 (deferred): avg_volume always None in bulk path — period="2d" gives 2 bars but >= 5 required',
+    what: 'The 5-bar minimum was designed for the single-symbol path (which uses period="3mo"). The bulk path reused the same check but fetched only 2 days.',
+    fix: 'Deferred — needs targeted fix per path: use period="1mo" in bulk path and lower the >= 5 threshold, or compute avg_volume from the existing DB prices table.',
+    implementedNote: 'Deferred — cross-path fix needed.',
+  },
+
   // ── Tier 144 — Deep Audit: Event Intelligence Engine ─────────────────────────
   {
     id: 'EI-F5-EPS-FALSY-ZERO',
@@ -9405,6 +9464,8 @@ const TIER_LABEL: Record<Tier, string> = {
   142: 'Tier 142 — Deep audit: Technical Analysis Engine — 2 fixed (2 deferred)',
   143: 'Tier 143 — Deep audit: Ranking Engine + Strategy Engine — 4 fixed (2 deferred)',
   144: 'Tier 144 — Deep audit: Event Intelligence Engine — 2 fixed (2 deferred)',
+  145: 'Tier 145 — Deep audit: Portfolio Optimizer + Market Data — 2 fixed (1 deferred)',
+  146: 'Tier 146 — Deep audit: Frontend (Paper Portfolio) — 2 fixed',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -9552,6 +9613,8 @@ const TIER_COLOR: Record<Tier, string> = {
   142: '#a78bfa',
   143: '#fb923c',
   144: '#4ade80',
+  145: '#38bdf8',
+  146: '#e879f9',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

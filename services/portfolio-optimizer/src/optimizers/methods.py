@@ -114,7 +114,7 @@ def mean_variance(returns: pd.DataFrame, max_weight: float = 0.40) -> PortfolioW
         method="SLSQP",
         options={"ftol": 1e-9, "maxiter": 1000},
     )
-    w = _normalize(np.clip(res.x, 0, None))
+    w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
     return _pack(symbols, w, "mean_variance", mu, cov, returns)
 
 
@@ -142,7 +142,7 @@ def risk_parity(returns: pd.DataFrame, max_weight: float = 0.60) -> PortfolioWei
         method="SLSQP",
         options={"ftol": 1e-12, "maxiter": 2000},
     )
-    w = _normalize(np.clip(res.x, 1e-6, None))
+    w = _normalize(np.clip(res.x, 1e-6, None)) if res.success else np.full(n, 1.0 / n)
     return _pack(symbols, w, "risk_parity", mu, cov, returns)
 
 
@@ -242,7 +242,7 @@ def ai_allocation(
         method="SLSQP",
         options={"ftol": 1e-9, "maxiter": 1000},
     )
-    w = _normalize(np.clip(res.x, 0, None))
+    w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
     w_scaled = w * (1 - cash_floor)
     cash = round(1 - float(w_scaled.sum()), 4)
     return _pack(keep, w_scaled, "ai_allocation", blended_mu, cov, ret_sub, cash=cash)

@@ -1986,7 +1986,7 @@ export default function PaperPortfolioPage() {
                       <span style={{ fontSize: 10, background: 'rgba(148,163,184,0.1)', border: '1px solid #334155', borderRadius: 4, padding: '2px 6px', color: '#94a3b8' }}>{d.trading_style}</span>
                       {isClosed ? (
                         <span style={{ fontSize: 11, fontWeight: 700, color: isWin ? '#22c55e' : '#ef4444', background: isWin ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', padding: '2px 8px', borderRadius: 4 }}>
-                          {isWin ? '✓ WIN' : '✗ LOSS'} {d.pct_return != null ? `${(d.pct_return * 100).toFixed(2)}%` : ''}
+                          {isWin ? '✓ WIN' : '✗ LOSS'} {d.pct_return != null ? fmtPct(d.pct_return) : ''}
                         </span>
                       ) : (
                         <span style={{ fontSize: 10, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '2px 6px', borderRadius: 4 }}>OPEN</span>
@@ -2508,7 +2508,7 @@ export default function PaperPortfolioPage() {
         {/* Explainer */}
         <div style={{ marginTop: 32, background: '#1e293b', borderRadius: 10, padding: 16, border: '1px solid #334155', fontSize: 12, color: '#64748b', lineHeight: 1.6 }}>
           <strong style={{ color: '#94a3b8' }}>How it works:</strong> The paper engine runs every 5–10 minutes during market hours.
-          It scans for fresh GROWTH-style BUY signals, scores entry quality (R:R, RSI, regime, sector, conviction),
+          It scans for fresh {summary.trading_style}-style BUY signals, scores entry quality (R:R, RSI, regime, sector, conviction),
           and enters simulated positions when the score meets the threshold. It monitors all open positions each cycle,
           updating trailing stops and exiting when stops, targets, signal reversals, or time limits are reached.
           Initial capital: {fmtCurrency(summary.initial_capital, selectedMarket)}. Risk per trade: {(summary.config.risk_per_trade_pct * 100).toFixed(0)}% of equity.
