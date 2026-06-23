@@ -46,8 +46,9 @@ def _default_game_plan(live_price: float, style: str, atr_14: float | None = Non
     p = _STYLE_PARAMS.get(style.upper(), _STYLE_PARAMS["SWING"])
     fixed_stop = live_price * p["stop_pct"]
     if atr_14 and atr_14 > 0:
-        # ATR-based stop: 2× ATR below entry; floored by fixed % so stop never exceeds style max loss
-        atr_stop = live_price - 2.0 * atr_14
+        # GROWTH stocks need wider stops — 2.5× ATR vs 2.0× for other styles.
+        atr_mult = 2.5 if style.upper() == "GROWTH" else 2.0
+        atr_stop = live_price - atr_mult * atr_14
         stop = max(atr_stop, fixed_stop)
         # Target: 2:1 R:R off the actual stop used
         rr_target = live_price + 2.0 * (live_price - stop)

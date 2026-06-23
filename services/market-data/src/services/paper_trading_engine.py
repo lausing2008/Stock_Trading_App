@@ -214,8 +214,9 @@ def _round_step(price: float) -> float:
 _STYLE_OVERRIDES: dict[str, dict] = {
     "GROWTH": {
         "max_hold_days": 60, "trail_atr_mult": 2.0,
-        # Trail arms early so gains are protected; breakeven at +2% locks capital fast.
-        "trail_trigger_pct": 0.04, "breakeven_trigger_pct": 0.02,
+        # Trail arms at +4%; breakeven at +4% (aligns with breakout_pct=1.035) to avoid
+        # stopping out on normal volatility before the stock clears the entry zone.
+        "trail_trigger_pct": 0.04, "breakeven_trigger_pct": 0.04,
         # Scale out later for GROWTH (35% target) — don't cut winners short.
         "partial_tp_pct": 0.12, "partial_tp2_pct": 0.22,
         "wait_exit_days": 5, "min_confidence": 45.0, "min_kscore": 48.0,
@@ -1001,7 +1002,9 @@ def _build_game_plan_for_style(
 
     # Stop: ATR-based is more adaptive than fixed %
     if atr and atr > 0:
-        stop = round((current_price - atr * (2.5 if style == "GROWTH" else 2.0)) / step) * step
+        # GROWTH stocks are high-volatility; wider ATR multiplier avoids premature stops.
+        atr_mult = 3.0 if style.upper() == "GROWTH" else 2.0
+        stop = round((current_price - atr * atr_mult) / step) * step
         stop = max(stop, round(current_price * params["stop_pct"] / step) * step)
     else:
         stop = round(current_price * params["stop_pct"] / step) * step
