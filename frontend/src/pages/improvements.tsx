@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,109 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 148 — Deep Audit: Frontend (Stock Detail + Signal Filter + Admin) ───
+  {
+    id: 'FE-F3-SORTINO-DENOMINATOR',
+    tier: 148 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/stock/[symbol].tsx:778',
+    effort: '2m',
+    impact: 'High — Sortino ratio displayed on the stock detail page was inflated by up to ~1.6× for typical stocks. The downside deviation divided by the count of negative-return days (downside.length) instead of total trading days (n). For a stock with 40% losing days, the denominator was 40% of what it should be, making the Sortino ratio ~1.58× too high. Users saw safer-looking risk-adjusted returns and may have over-allocated.',
+    title: 'FE-F3: Sortino ratio overstated — downside deviation divided by losing-day count instead of total days',
+    what: '`Math.sqrt(downside.reduce(...b**2, 0) / downside.length)` — divides by count of negative days. Standard Sortino downside deviation divides sum of squared negative returns by total n periods, same denominator as Sharpe volatility.',
+    fix: 'Changed `/downside.length` to `/n` (total return count). Sortino now uses the same denominator as Sharpe, matching standard finance library implementations.',
+    implementedNote: 'Done 2026-06-23.',
+  },
+  {
+    id: 'FE-F4-GROWTH-GAME-PLAN-NO-RULES',
+    tier: 148 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/stock/[symbol].tsx:505',
+    effort: '10m',
+    impact: 'High — clicking "Generate Game Plan" on the GROWTH horizon tab sent SWING trade rules to the AI (1.5–5.5% stop, swing entry levels). The AI produced a plan titled "GROWTH" but with SWING parameters — wrong stop distances, wrong hold periods, wrong entry spacing. Users trading GROWTH momentum would receive actively misleading position sizing and entry guidance.',
+    title: 'FE-F4: GROWTH horizon Game Plan silently fell back to SWING rules — AI given wrong stop/target parameters',
+    what: '`styleRules` only defined SHORT, SWING, LONG. GROWTH horizon produced `styleRules["GROWTH"]` = undefined, then `?? styleRules["SWING"]` silently used SWING parameters.',
+    fix: 'Added GROWTH entry to styleRules with appropriate momentum parameters (6% stop, 15–20% target, trail after +8%, wider entry spacing). Also added GROWTH to styleLabels and updated tradeStyle TypeScript type.',
+    implementedNote: 'Done 2026-06-23.',
+  },
+  {
+    id: 'FE-A1-HEADER-BADGE-ALWAYS-SWING',
+    tier: 148 as const, severity: 'medium',
+    file: 'frontend/src/pages/stock/[symbol].tsx:874',
+    effort: '30m',
+    impact: 'Medium — the "AI Signal" badge in the stock page header always displays the SWING signal regardless of which horizon tab is active. User switches to the LONG tab (SELL signal) but the header still shows BUY. Two contradictory signals visible simultaneously on the same page.',
+    title: 'FE-A1 (deferred): Header AI Signal badge always shows SWING — does not update when horizon tab changes',
+    what: '`const badgeSig = sigSwing ?? data.signal` — hardcoded to sigSwing. The four horizon tab signals (sigSwing, sigGrowth, sigLong, sigShort) are fetched separately via SWR; the badge should use the tab-active one.',
+    fix: 'Deferred — requires passing the active horizon signal down to the header badge component, and a loading state while the tab-specific SWR resolves.',
+    implementedNote: 'Deferred — header badge refactor needed.',
+  },
+  {
+    id: 'FE-A2-ADMIN-WIN-RATE-PER-PAGE',
+    tier: 148 as const, severity: 'medium',
+    file: 'frontend/src/pages/admin-signals.tsx:176',
+    effort: '20m',
+    impact: 'Medium — the "Win rate (resolved)" stat on the admin signals page is computed from the current 50-item page only (items.filter(...)). It changes as the admin paginates — e.g. 71% on page 1, 58% on page 3. The label implies a system-wide accuracy figure but it is actually per-page.',
+    title: 'FE-A2 (deferred): Admin signal win rate computed from current page only — changes on every page turn',
+    what: 'const resolved = items.filter(i => i.is_correct != null) operates on the 50-item page fetch. Global win rate needs a separate API aggregation call.',
+    fix: 'Deferred — add a dedicated /signals/outcomes/win-rate-summary endpoint that returns total resolved count and win count, then fetch it separately in the admin page.',
+    implementedNote: 'Deferred — requires dedicated API endpoint.',
+  },
+  {
+    id: 'FE-A3-CSV-MARKET-BLANK',
+    tier: 148 as const, severity: 'low',
+    file: 'frontend/src/pages/signal-filter.tsx:437',
+    effort: '5m',
+    impact: 'Low — CSV export from the Signal Filter page always writes an empty string for the Market column. Every exported row has a blank Market cell despite the column header saying "Market". Export is useless for market-based filtering.',
+    title: 'FE-A3 (deferred): Signal filter CSV export writes empty string for Market column',
+    what: 'The CSV row template hardcodes "" for the market field. The signal object has a market property from the stock data but it was not included in the export row.',
+    fix: 'Deferred — add `s.market ?? ""` to the CSV row template.',
+    implementedNote: 'Deferred — trivial one-line fix.',
+  },
+
+  // ── Tier 147 — Deep Audit: Research Engine + Signal Engine ───────────────────
+  {
+    id: 'SE-F4-SIGNAL-GET-NO-AUTH',
+    tier: 147 as const, severity: 'high',
+    file: 'services/signal-engine/src/api/routes.py:93',
+    effort: '10m',
+    impact: 'High — GET /signals and GET /signals/consensus have no Depends(get_current_username) guard. Any unauthenticated HTTP caller on the internal Docker network can retrieve the full BUY/SELL signal database for every tracked stock including confidence levels, bullish probability, and reason JSON.',
+    title: 'SE-F4 (deferred): GET /signals and /signals/consensus unauthenticated — full signal DB readable without JWT',
+    what: 'Both endpoints lack auth dependency. The API gateway proxies /signals/* with auth, but direct calls to signal-engine:8005 from any internal container bypass this.',
+    fix: 'Deferred — add Depends(get_current_username) to both endpoints. Note: GET /signals/{symbol}?persist=true (used by aggregate overview) is currently unauthenticated by design and must remain so for internal service use.',
+    implementedNote: 'Deferred — requires careful audit of all internal callers to ensure they pass service tokens.',
+  },
+  {
+    id: 'RE-F1-DATETIME-NAIVE-AWARE-MIX',
+    tier: 147 as const, severity: 'high',
+    file: 'services/research-engine/src/api/routes.py:1454',
+    effort: '10m',
+    impact: 'High — research report generated_at timestamp built with datetime.utcnow() (naive) while cache TTL checks use datetime.now(timezone.utc) (aware). On Python 3.11+, subtracting aware minus naive raises TypeError, crashing cache freshness checks. On older Python with non-UTC server timezone, reports appear stale when fresh, causing unnecessary regenerations.',
+    title: 'RE-F1 (deferred): Research engine mixes naive datetime.utcnow() with aware datetime.now(timezone.utc) — TypeError on Python 3.11+',
+    what: 'generated_at = datetime.utcnow() (naive). Cache TTL check: (datetime.now(timezone.utc) - generated_at).seconds — aware minus naive raises TypeError in Python 3.11+.',
+    fix: 'Deferred — replace all datetime.utcnow() calls with datetime.now(timezone.utc) in research-engine routes. Low urgency if EC2 runs Python 3.10.',
+    implementedNote: 'Deferred — datetime audit needed across research-engine.',
+  },
+  {
+    id: 'SE-F5-DIVERGENCE-BARE-EXCEPT',
+    tier: 147 as const, severity: 'medium',
+    file: 'services/signal-engine/src/api/routes.py:429',
+    effort: '5m',
+    impact: 'Medium — _bulk_persist research divergence check wraps the entire research HTTP call in `except Exception: pass` with no log. When research-engine is down or returns an error, the failure is completely silent — admins cannot distinguish "no divergence found" from "divergence check failed".',
+    title: 'SE-F5 (deferred): Research divergence check in _bulk_persist swallows all exceptions silently',
+    what: 'except Exception: pass after GET /research/{symbol}/summary — HTTP errors, JSON parse failures, and connection refused all disappear with no log entry.',
+    fix: 'Deferred — change to `except Exception as e: log.debug("divergence_check.failed", symbol=symbol, error=str(e))` to preserve silent-failure behavior but make it observable.',
+    implementedNote: 'Deferred — low-risk logging change.',
+  },
+  {
+    id: 'SE-F2-SAME-DAY-CLOSE-LOOKAHEAD',
+    tier: 147 as const, severity: 'critical',
+    file: 'services/signal-engine/src/api/routes.py:4027',
+    effort: '2h',
+    impact: 'Critical — signal outcome evaluation uses the signal_date closing price as entry price. A BUY signal generated at market close on day T uses that day\'s close as entry, but the actual trade would execute at day T+1 open. This lookahead bias systematically understates losses (actual fills are higher) and overstates wins, corrupting all accuracy metrics, calibration thresholds, and the self-tuning watchdog.',
+    title: 'SE-F2: Signal outcome entry price uses same-day close — lookahead bias corrupts all accuracy and calibration metrics',
+    what: 'evaluate_signal_outcomes() fetches close price for signal_date and uses it as entry_price. Real execution is T+1 open at best. All is_correct flags, win rates, avg_return_pct, and watchdog thresholds derived from biased data.',
+    fix: 'Deferred — change entry price lookup to next trading day open (requires T+1 intraday data or using next daily open). All existing signal_outcomes rows would need to be re-evaluated.',
+    implementedNote: 'Deferred — requires T+1 price data and full re-evaluation of historical outcomes.',
+  },
+
   // ── Tier 146 — Deep Audit: Frontend (Paper Portfolio page) ──────────────────
   {
     id: 'FE-F1-JOURNAL-PCT-DOUBLE-MULTIPLY',
@@ -9466,6 +9569,8 @@ const TIER_LABEL: Record<Tier, string> = {
   144: 'Tier 144 — Deep audit: Event Intelligence Engine — 2 fixed (2 deferred)',
   145: 'Tier 145 — Deep audit: Portfolio Optimizer + Market Data — 2 fixed (1 deferred)',
   146: 'Tier 146 — Deep audit: Frontend (Paper Portfolio) — 2 fixed',
+  147: 'Tier 147 — Deep audit: Research Engine + Signal Engine — 1 deferred (3 deferred)',
+  148: 'Tier 148 — Deep audit: Frontend (Stock Detail + Admin) — 2 fixed (3 deferred)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -9615,6 +9720,8 @@ const TIER_COLOR: Record<Tier, string> = {
   144: '#4ade80',
   145: '#38bdf8',
   146: '#e879f9',
+  147: '#f59e0b',
+  148: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

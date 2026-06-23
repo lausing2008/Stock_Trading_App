@@ -502,11 +502,12 @@ export default function StockDetail() {
     const fund = data.fundamentals;
     const levels = data.levels;
 
-    const tradeStyle = (sig?.horizon ?? 'SWING').toUpperCase() as 'SHORT' | 'SWING' | 'LONG';
+    const tradeStyle = (sig?.horizon ?? 'SWING').toUpperCase() as 'SHORT' | 'SWING' | 'LONG' | 'GROWTH';
     const styleLabels: Record<string, string> = {
       SHORT: 'Short-Term (1–5 Days)',
       SWING: 'Swing (5–30 Days)',
       LONG: 'Position (1–12 Months)',
+      GROWTH: 'Growth Momentum (10–20 Days)',
     };
     const styleRules: Record<string, string> = {
       SHORT: `TRADING STYLE: SHORT-TERM (1–5 days)
@@ -529,6 +530,13 @@ export default function StockDetail() {
 - Stop loss: 10% below current — wide stop allows for normal volatility; weekly close below invalidates thesis
 - Take profit: analyst mean/high target or +25% from current (position trade requires large reward/risk)
 - Note this is a multi-month hold; size for volatility and manage around earnings`,
+      GROWTH: `TRADING STYLE: GROWTH MOMENTUM (10–20 days)
+- Entry 1: at or just above nearest support below current price (typically 1.5–2.5% below)
+- Entry 2: at a deeper support level for averaging down (typically 4–5% below)
+- Breakout entry: above nearest resistance — take 60% size on confirmed momentum
+- Stop loss: just below the lowest entry support (typically 6% below) — wider than SWING to tolerate momentum volatility
+- Take profit: +15–20% from current or nearest resistance; consider partial exit at +10%
+- Note this is a higher-volatility momentum style; size accordingly and trail stop after +8% gain`,
     };
     const planLabel = styleLabels[tradeStyle] ?? tradeStyle;
     const styleInstruction = styleRules[tradeStyle] ?? styleRules['SWING'];
@@ -775,7 +783,7 @@ Return ONLY valid JSON — no markdown, no prose:
     // Sortino: downside std (returns below 0 only)
     const downside = returns.filter(r => r < 0);
     const downsideStd = downside.length > 1
-      ? Math.sqrt(downside.reduce((a, b) => a + b ** 2, 0) / downside.length)
+      ? Math.sqrt(downside.reduce((a, b) => a + b ** 2, 0) / n)
       : std;
     // Max drawdown over the window
     let peak = window[0], maxDD = 0;
