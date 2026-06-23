@@ -101,7 +101,7 @@ def send_signal_alert_email(
         ("BUY",  "WAIT"): ("bearish",   "deteriorating from BUY — consider reviewing position"),
         ("BUY",  "SELL"): ("bearish",   "reversing from BUY to SELL — exit signal"),
     }
-    mood, desc = direction_map.get((prev_signal, new_signal), ("bullish", "improving"))
+    mood, desc = direction_map.get((prev_signal, new_signal), ("neutral", "unchanged"))
     color = "#22c55e" if mood == "bullish" else "#ef4444" if mood == "bearish" else "#facc15"
 
     _signal_color = {"BUY": "#22c55e", "HOLD": "#facc15", "WAIT": "#f97316", "SELL": "#ef4444"}

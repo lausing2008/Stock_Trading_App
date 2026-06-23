@@ -1318,9 +1318,9 @@ def _yf_fundamentals(sym: str) -> dict:
         return {
             "revenue_growth":    info.get("revenueGrowth"),
             "earnings_growth":   info.get("earningsGrowth"),
-            "profit_margins":    info.get("profitMargins"),
-            "gross_margins":     info.get("grossMargins"),
-            "operating_margins": info.get("operatingMargins"),
+            "profit_margin":     info.get("profitMargins"),
+            "gross_margin":      info.get("grossMargins"),
+            "operating_margin":  info.get("operatingMargins"),
             "total_revenue":     info.get("totalRevenue"),
             "total_cash":        info.get("totalCash"),
             "total_debt":        info.get("totalDebt"),
@@ -1479,19 +1479,26 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     entry = _cache.get(sym)
     if entry:
         report, ts = entry
-        if (datetime.now(timezone.utc) - ts).total_seconds() < 21_600:
+        quality = report.get("report_quality", "full")
+        ttl = CACHE_TTL_FALLBACK_SEC if quality == "fallback" else CACHE_TTL_PARTIAL_SEC if quality == "partial" else CACHE_TTL_SEC
+        if (datetime.now(timezone.utc) - ts).total_seconds() < ttl:
             return report
 
     # Deduplicate concurrent AI calls for the same symbol using asyncio.Event.
     # If a request is already in-flight, wait for it to finish, then return from cache.
     if sym in _inflight_research:
-        await _inflight_research[sym].wait()
-        entry = _cache.get(sym)
-        if entry:
-            report, ts = entry
-            if (datetime.now(timezone.utc) - ts).total_seconds() < 21_600:
-                return report
-        # Fell through (first caller had an error) — proceed to compute ourselves
+        try:
+            await asyncio.wait_for(_inflight_research[sym].wait(), timeout=60.0)
+        except asyncio.TimeoutError:
+            # Original caller died without cleaning up — remove stale event and compute ourselves
+            _inflight_research.pop(sym, None)
+        else:
+            entry = _cache.get(sym)
+            if entry:
+                report, ts = entry
+                if (datetime.now(timezone.utc) - ts).total_seconds() < 21_600:
+                    return report
+            # Fell through (first caller had an error) — proceed to compute ourselves
     else:
         _inflight_research[sym] = asyncio.Event()
 

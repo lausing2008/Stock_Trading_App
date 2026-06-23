@@ -3889,7 +3889,7 @@ _OUTCOME_HOLD_DAYS: dict[str, int] = {
 
 
 @router.post("/outcomes/evaluate")
-def evaluate_signal_outcomes(session: Session = Depends(get_session)):
+def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = Depends(get_current_username)):
     """Evaluate closed signal outcomes and persist them to signal_outcomes.
 
     For each BUY/SELL signal whose hold window has expired:
@@ -3975,7 +3975,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
     def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int):
         """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None)."""
         target = entry_date + timedelta(days=days)
-        if target >= today:
+        if target > today:
             return None, None, None
         result = _lookup_outcome_price(stock_id, target)
         if result is None or entry_price <= 0:
@@ -4032,7 +4032,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         entry_date, entry_price = entry_result
         exit_target = entry_date + timedelta(days=hold_days)
 
-        if exit_target >= today:
+        if exit_target > today:
             skipped_open += 1
             continue
 

@@ -1352,7 +1352,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                         # AUD19-DB3: cutoffs are calendar-day approximations of trading-day horizons.
                         # 7 calendar days ≈ 5 trading days (SHORT), 14 ≈ 10 (SWING), 15+ ≈ 11–20+ (LONG).
                         _bucket = "5d" if days_held <= 7 else ("10d" if days_held <= 14 else "20d")
-                        setattr(_so, f"return_{_bucket}", round(pnl_pct * 100, 4))
+                        setattr(_so, f"return_{_bucket}", round(pnl_pct, 4))
                         setattr(_so, f"is_correct_{_bucket}", pnl_dollar > 0)
                         session.flush()
                 except Exception as _soe:
