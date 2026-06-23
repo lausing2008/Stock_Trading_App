@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,131 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 142 — Deep Audit: Technical Analysis Engine ─────────────────────────
+  {
+    id: 'TA-F2-RSI-NAN-VS-100',
+    tier: 142 as const, severity: 'high',
+    file: 'services/technical-analysis/src/indicators/core.py:23',
+    effort: '5m',
+    impact: 'High — RSI returned NaN instead of 100 for stocks with 14 consecutive up-days (avg_loss=0). Signal engine treated NaN as neutral, emitting BUY signals on stocks at peak overbought — opposite of intended RSI overbought protection.',
+    title: 'TA-F2: RSI returned NaN instead of 100 when avg_loss=0 (monotone rising series)',
+    what: 'Wilder\'s spec: when avg_loss=0, RSI=100. Code did avg_loss.replace(0, np.nan) making RS=NaN and RSI=NaN. Any stock with 14 consecutive up-days got NaN instead of 100.',
+    fix: 'After computing rsi_val = 100 - (100 / (1 + rs)), added .fillna(100). NaN positions are exactly where avg_loss=0 (no prior loss), so RSI=100 is correct per specification.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'TA-F6-BOLLINGER-DDOF',
+    tier: 142 as const, severity: 'low',
+    file: 'services/technical-analysis/src/indicators/core.py:43',
+    effort: '2m',
+    impact: 'Low — Bollinger Bands were ~2.6% wider than TradingView reference (ddof=1 sample std vs ddof=0 population std). Band breakout signals fired slightly later; overbought thresholds diverged from what users see on external charts.',
+    title: 'TA-F6: Bollinger Bands used sample std (ddof=1) instead of population std (ddof=0)',
+    what: 'John Bollinger\'s original spec uses population std (ddof=0). pandas rolling().std() defaults to ddof=1 (Bessel\'s correction). For 20-bar window, bands were sqrt(20/19) ≈ 1.026× wider than the reference.',
+    fix: 'Changed .std() to .std(ddof=0) in bollinger_bands(). Bands now match TradingView and most charting platforms.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'TA-D1-VWAP-CUMULATIVE',
+    tier: 142 as const, severity: 'medium',
+    file: 'services/technical-analysis/src/indicators/core.py:49',
+    effort: '30m',
+    impact: 'Medium — VWAP was computed as a cumulative sum over all 400 daily bars (~14 months). The returned "VWAP" was the 14-month volume-weighted average price, not the current session VWAP. For trending stocks it was 10–30% from current price and misleadingly labeled as support/resistance.',
+    title: 'TA-D1 (deferred): VWAP is cumulative over 400 bars — not a meaningful intraday or rolling level',
+    what: 'Conventional VWAP resets per session (intraday) or uses a 20-day rolling window. The current implementation never resets, anchoring to a price level from a year ago.',
+    fix: 'Deferred — replace with 20-day rolling VWAP or remove from indicator payload. Requires frontend chart update to handle changed semantics.',
+    implementedNote: 'Deferred — design decision needed on rolling window length.',
+  },
+  {
+    id: 'TA-D2-PATTERN-INDEX-FRAME',
+    tier: 142 as const, severity: 'medium',
+    file: 'services/technical-analysis/src/patterns/recognizer.py:169',
+    effort: '1h',
+    impact: 'Medium — triangle pattern start_idx/end_idx are relative to df.tail(window) (recent slice), while head-and-shoulders and cup-and-handle indices are relative to the full df. A consumer mapping indices to timestamps gets the wrong date for triangle patterns.',
+    title: 'TA-D2 (deferred): Pattern start_idx/end_idx have inconsistent reference frame across pattern types',
+    what: 'detect_triangle uses sub = df.tail(window) then returns positional indices 0..(window-1). Other patterns return indices relative to the full dataframe. Same field name, different semantics.',
+    fix: 'Deferred — normalize all pattern detectors to return absolute date-based index (timestamp) rather than positional integer, so consumers always map correctly regardless of pattern type.',
+    implementedNote: 'Deferred — requires audit of all pattern consumers in research-engine and signal-engine.',
+  },
+
+  // ── Tier 141 — Deep Audit: API Gateway + Scheduler + ML Pipeline ─────────────
+  {
+    id: 'AG-F1-AGGREGATE-NO-AUTH',
+    tier: 141 as const, severity: 'critical',
+    file: 'services/api-gateway/src/api/aggregate.py:28',
+    effort: '5m',
+    impact: 'Critical — GET /aggregate/overview/{symbol} was completely unauthenticated. Any caller without a JWT could retrieve the full dashboard payload: price history, indicators, patterns, S/R levels, signals, rankings, and fundamentals. All stock intelligence data was publicly accessible.',
+    title: 'AG-F1: /aggregate/overview/{symbol} had no authentication — full stock data exposed publicly',
+    what: 'The aggregate router is registered before the proxy catch-all, so FastAPI routes /aggregate/* to aggregate.py. That file had no Depends(get_current_username) and proxy.py\'s _require_auth() never fires for it.',
+    fix: 'Added Depends import and `_: str = Depends(get_current_username)` parameter to overview(). Also added `from common.jwt_auth import get_current_username` import.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'AG-F9-AI-PROXY-401-PASSTHROUGH',
+    tier: 141 as const, severity: 'high',
+    file: 'services/api-gateway/src/api/ai_proxy.py:118',
+    effort: '5m',
+    impact: 'High — when the admin\'s Anthropic or DeepSeek API key expired, the provider returned HTTP 401, which the gateway forwarded as HTTP 401 to the browser. The frontend api.ts 401 handler could interpret this as a session expiry and delete the user\'s JWT, logging them out when using the AI chat feature.',
+    title: 'AG-F9: AI provider 401/4xx errors passed through as HTTP 401, triggering frontend JWT logout handler',
+    what: 'Both _claude() and _deepseek() did raise HTTPException(r.status_code, ...) — proxying the upstream error status directly. A 401 from Anthropic is a backend config issue (bad API key), not a user auth failure.',
+    fix: 'Changed raise HTTPException(r.status_code, ...) to raise HTTPException(502, ...) for both Claude and DeepSeek error paths. 502 clearly signals "upstream service error" and never triggers the frontend\'s JWT logout flow.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'AG-F10-MAXTOKENS-UNBOUNDED',
+    tier: 141 as const, severity: 'medium',
+    file: 'services/api-gateway/src/api/ai_proxy.py:61',
+    effort: '2m',
+    impact: 'Medium — any authenticated user could set max_tokens=100000 in an AI chat request, billing the admin\'s shared API key for up to 64k output tokens per request. A handful of such requests could exhaust the monthly API budget.',
+    title: 'AG-F10: AiChatRequest.max_tokens had no upper bound — users could drain shared API key',
+    what: 'max_tokens: int = 2048 with no Field validation. Any authenticated user could override to an arbitrarily large value in their POST body.',
+    fix: 'Changed to max_tokens: int = Field(default=2048, ge=1, le=4096). Added Field import from pydantic. Cap of 4096 is sufficient for all legitimate AI assistant interactions.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'MD-F2-MORNING-DIGEST-PRIVACY',
+    tier: 141 as const, severity: 'critical',
+    file: 'services/market-data/src/services/scheduler.py:2174',
+    effort: '20m',
+    impact: 'Critical — in a multi-user deployment, every user\'s morning digest email showed ALL users\' open paper trade positions (symbols, entry prices, P&L, stop levels). User A could see User B\'s portfolio in their daily email.',
+    title: 'MD-F2: Morning digest emailed all users\' paper positions to every recipient — multi-user privacy leak',
+    what: 'open_positions was built once from all PaperTrade rows (no user_id filter) then passed identically to every user\'s send_morning_digest_email() call. The market filter excluded the wrong market\'s stocks but never filtered by portfolio owner.',
+    fix: 'Added portfolio_user_map (portfolio_id → user_id) built from PaperPortfolio query. Grouped positions into positions_by_user: dict[int, list[dict]] during trade iteration. In the send loop, each user now receives positions_by_user.get(user.id, []) — only their own trades.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'MD-F3-PREMARKT-GUARD-LOGIC',
+    tier: 141 as const, severity: 'medium',
+    file: 'services/market-data/src/services/scheduler.py:1880',
+    effort: '5m',
+    impact: 'Medium — short intraday trigger check ran at 9:00–9:29 ET (pre-market) due to a boolean operator precedence bug. Wasted DB queries and yfinance calls during 6 pre-market minutes. No incorrect signals emitted (yfinance returns empty DataFrames pre-market) but adds unnecessary load.',
+    title: 'MD-F3: Short intraday trigger market-hours guard passed for 9:00–9:29 ET (pre-market)',
+    what: 'Condition: `hour >= 9 AND (hour < 16 OR (hour == 9 AND minute >= 30))`. At 9:00–9:29, hour < 16 is True so the OR short-circuits — the 9:30 minute check never evaluates. Correct: `(hour > 9 OR (hour == 9 AND minute >= 30)) AND hour < 16`.',
+    fix: 'Rewrote guard as `(now_et.hour > 9 or (now_et.hour == 9 and now_et.minute >= 30)) and now_et.hour < 16`. Now correctly excludes 9:00–9:29 ET.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'ML-F4-OUTCOME-HORIZON-HARDCODED',
+    tier: 141 as const, severity: 'high',
+    file: 'services/ml-prediction/src/training/trainer.py:371',
+    effort: '5m',
+    impact: 'High — _load_outcome_features() always called build_features(df, horizon=5) regardless of the style being trained (SWING=10, LONG=20, GROWTH=15). The dead-zone filter inside build_features uses horizon to compute forward return thresholds, so LONG/GROWTH outcome rows were labelled with SWING-horizon thresholds. This added incorrectly-labelled rows into LONG/GROWTH training sets, degrading precision.',
+    title: 'ML-F4: Outcome feature reconstruction hardcoded horizon=5 for all styles (should be 10/20/15)',
+    what: 'Line 371: `build_features(df, horizon=5, macro_df=None)` — the horizon parameter was never derived from the style argument passed to _load_outcome_features(). LONG outcomes were reconstructed with a 5-day forward window instead of 20.',
+    fix: 'Added `_outcome_horizon = {"SWING": 10, "LONG": 20, "GROWTH": 15, "SHORT": 5}.get(style.upper(), 10)` then used `build_features(df, horizon=_outcome_horizon, macro_df=None)`. Mirrors the _HORIZON_BY_STYLE dict in routes.py.',
+    implementedNote: 'Done 2026-06-22.',
+  },
+  {
+    id: 'AG-D1-ADMIN-ROLE-GATEWAY',
+    tier: 141 as const, severity: 'high',
+    file: 'services/api-gateway/src/api/proxy.py:87',
+    effort: '1h',
+    impact: 'High — gateway _require_auth() validates JWT presence/expiry only, not the role claim. Any authenticated non-admin user can call /admin/* endpoints. The only enforcement is market-data\'s get_admin_user() dependency — if any admin route there is missing Depends(), it is a full privilege escalation with no gateway backstop.',
+    title: 'AG-D1 (deferred): Gateway does not enforce admin role on /admin/* — relies solely on backend Depends()',
+    what: 'proxy.py _require_auth() checks token validity but not payload claims. All /admin/* routes in market-data use get_admin_user() — but an accidental missing Depends() in a new route would be exploitable.',
+    fix: 'Deferred — add role=admin check to gateway _require_auth() when path starts with /admin/. Requires reading the role claim from the decoded JWT in the gateway layer.',
+    implementedNote: 'Deferred — low immediate risk since market-data admin routes consistently use get_admin_user().',
+  },
+
   // ── Tier 140 — Deep Audit: Signal Outcomes + Research Engine + Alert System ───
   {
     id: 'SO-F1-SCALE-MISMATCH',
@@ -9162,6 +9287,8 @@ const TIER_LABEL: Record<Tier, string> = {
   138: 'Tier 138 — Deep audit: Decision Engine — 8/12 fixed (4 deferred)',
   139: 'Tier 139 — Deep audit: Paper Trading Engine — 13/14 fixed (PT-14 deferred)',
   140: 'Tier 140 — Deep audit: Signal Outcomes + Research Engine + Alerts — 7 fixed',
+  141: 'Tier 141 — Deep audit: API Gateway + Scheduler + ML Pipeline — 6 fixed (1 deferred)',
+  142: 'Tier 142 — Deep audit: Technical Analysis Engine — 2 fixed (2 deferred)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -9305,6 +9432,8 @@ const TIER_COLOR: Record<Tier, string> = {
   138: '#f59e0b',
   139: '#34d399',
   140: '#60a5fa',
+  141: '#f472b6',
+  142: '#a78bfa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
