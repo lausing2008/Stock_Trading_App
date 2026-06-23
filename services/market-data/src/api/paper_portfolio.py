@@ -397,7 +397,7 @@ def manual_exit_trade(
 
     now = datetime.utcnow()
     trade.stage        = "closed"
-    trade.exit_date    = now.date()
+    trade.hold_days    = int(np.busday_count(trade.entry_date, now.date() + timedelta(days=1))) if trade.entry_date else 0
     trade.exit_time    = now
     trade.exit_price   = exit_p
     trade.exit_reason  = "manual_exit"
@@ -699,6 +699,7 @@ def reset_portfolio(
     for t in open_trades:
         exit_price = t.current_price or t.entry_price
         t.stage = "closed"
+        t.hold_days = int(np.busday_count(t.entry_date, now.date() + timedelta(days=1))) if t.entry_date else 0
         t.exit_time = now
         t.exit_price = exit_price
         t.exit_reason = "manual_reset"
@@ -977,7 +978,7 @@ def run_paper_trading_step(
         # Temporarily patch the market hours check to always return True
         import src.services.paper_trading_engine as _eng
         _orig = _eng._is_market_hours
-        _eng._is_market_hours = lambda: True
+        _eng._is_market_hours = lambda *args: True
         try:
             paper_trading_step()
         finally:

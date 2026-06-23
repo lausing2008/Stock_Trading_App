@@ -231,6 +231,7 @@ _STYLE_OVERRIDES: dict[str, dict] = {
     "LONG": {
         "max_hold_days": 90, "trail_atr_mult": 2.0,
         "trail_trigger_pct": 0.06, "breakeven_trigger_pct": 0.04,
+        "partial_tp_pct": 0.15, "partial_tp2_pct": 0.20,
         "wait_exit_days": 7, "min_confidence": 40.0, "min_kscore": 50.0,
     },
 }
@@ -1055,6 +1056,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             .join(latest_ts_subq,
                   (Signal.stock_id == latest_ts_subq.c.stock_id) &
                   (Signal.ts == latest_ts_subq.c.max_ts))
+            .where(Signal.horizon == style)
         ).all()
         for sig, stk in batch_sigs:
             latest_signals[stk.symbol] = sig
@@ -1188,11 +1190,16 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             pass
 
     now = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _et_date = now.astimezone(_ZI("America/New_York")).date()
+    except Exception:
+        _et_date = now.date()
 
     for trade in open_trades:
         # PT-B3: hold days in trading days (excludes weekends/holidays)
         # +1 so today counts as day 1 (busday_count is exclusive of end date)
-        days_held = int(np.busday_count(trade.entry_date, date.today() + timedelta(days=1)))
+        days_held = int(np.busday_count(trade.entry_date, _et_date + timedelta(days=1)))
         trade.hold_days = days_held
 
         live_price = live_prices.get(trade.symbol)
@@ -1262,7 +1269,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         elif sig_type == "HOLD":
             stall_days = cfg.get("hold_stall_days", 30)
             stall_max_gain = cfg.get("hold_stall_max_gain", 0.05)
-            if days_held >= stall_days and pnl_pct < stall_max_gain:
+            if days_held >= stall_days and pnl_pct < 0:
                 exit_reason = "hold_stall_timeout"
                 exit_notes = {**_base_notes,
                     "message": f"HOLD stall: {days_held}d with only {pnl_pct*100:.1f}% gain (threshold +{stall_max_gain*100:.0f}%) — freeing capital",
@@ -1283,6 +1290,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                     Stock.symbol == trade.symbol,
                     Signal.horizon == style,
                     Signal.signal != "WAIT",
+                    Signal.ts >= trade.entry_time,
                 )
             ).scalar()
 
@@ -1317,6 +1325,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             exit_value = round(exit_price * trade.shares, 2)
             pnl_dollar = round((exit_price - entry) * trade.shares, 2)
             pnl_pct    = (exit_price - entry) / entry  # recalc with slipped exit
+            exit_notes["pnl_pct"] = round(pnl_pct * 100, 2)  # overwrite pre-slippage value
             trade.stage               = "closed"
             trade.exit_time           = now
             trade.exit_price          = exit_price
@@ -1493,7 +1502,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                 from sqlalchemy import text as sa_text
                 sig_reasons = session.execute(
                     sa_text("SELECT reasons FROM signals WHERE stock_id = :sid AND horizon = :h ORDER BY ts DESC LIMIT 1"),
-                    {"sid": trade.stock_id, "h": trade.style or cfg.get("trading_style", "GROWTH")},
+                    {"sid": trade.stock_id, "h": trade.trading_style or cfg.get("trading_style", "GROWTH")},
                 ).mappings().one_or_none()
                 sig_reasons = dict(sig_reasons["reasons"] or {}) if sig_reasons else {}
             except Exception:
@@ -1947,7 +1956,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # Eliminates N+1 queries for open-risk, sector value, and sector count checks.
     _prefetched_open: list[tuple] = session.execute(
         select(PaperTrade, Stock)
-        .join(Stock, PaperTrade.symbol == Stock.symbol)
+        .join(Stock, PaperTrade.stock_id == Stock.id)
         .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
     ).all()
 
@@ -1977,7 +1986,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         _si_already = any("SCALE_IN" in str(n) for n in _si_notes_list)
                         _si_conf = float(sig.confidence or 0.0)
                         if not _si_already and _si_pnl_pct >= 0.05 and _si_conf >= 60.0:
-                            _si_add_value = _si_trade.entry_price * _si_trade.shares * 0.25
+                            _si_add_value = _si_live * _si_trade.shares * 0.25
                             if portfolio.current_cash >= _si_add_value * 1.1:
                                 _si_slippage = cfg.get("entry_slippage_pct", 0.001)
                                 _si_add_shares = round(_si_add_value / (_si_live * (1 + _si_slippage)), 4)
@@ -2079,7 +2088,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             from common.config import get_settings as _gs_gate
             _gate_settings = _gs_gate()
             _gate_redis = _redis_lib.Redis.from_url(_gate_settings.redis_url, decode_responses=True)
-            _style = signal_data.get("horizon", "SWING")
+            _style = style
             _cgval = _gate_redis.get(f"conv_gate:{stock.symbol}:{_style}")
             if _cgval:
                 _cgdata = json.loads(_cgval)
