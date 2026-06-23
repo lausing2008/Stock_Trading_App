@@ -781,7 +781,7 @@ def fundamentals_bulk(session: Session = Depends(get_session)):
 
 
 @router.get("/{symbol}/fundamentals", response_model=FundamentalsOut)
-def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(get_session), _user=Depends(get_current_user)):
+def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(get_session)):
     """Live company fundamentals from yfinance, Redis-cached for 24 h.
     Pass ?refresh=true to bypass the cache and force a fresh fetch."""
     cache_key = f"stockai:fundamentals:v2:{symbol.upper()}"

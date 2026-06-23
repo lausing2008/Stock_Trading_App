@@ -3841,7 +3841,7 @@ def signal_for(
             existing = session.execute(
                 select(Signal.signal, Signal.ts)
                 .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
-                .order_by(desc(Signal.ts))
+                .order_by(Signal.ts.desc())
                 .limit(1)
             ).one_or_none()
             if existing is not None and existing[0] == SignalType(ai.signal) and existing[1].date() == today:

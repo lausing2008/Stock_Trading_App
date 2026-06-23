@@ -2171,11 +2171,6 @@ def send_morning_digest(market: str = "US") -> None:
                     select(Stock.symbol).where(Stock.active.is_(True), Stock.market == market.upper())
                 ).scalars().all()
             )
-            # Map portfolio_id → user_id so we can split positions by owner
-            portfolio_user_map: dict[int, int] = {
-                p.id: p.user_id
-                for p in session.execute(select(PaperPortfolio)).scalars().all()
-            }
             open_trades = [
                 t for t in
                 session.execute(select(PaperTrade).where(PaperTrade.stage == "open")).scalars().all()
@@ -2213,13 +2208,9 @@ def send_morning_digest(market: str = "US") -> None:
                 ).all()
                 pos_signal_map = {sym: sig for sym, sig in pos_sig_rows}
 
-            # Build positions grouped by user_id — each user sees only their own trades
-            from collections import defaultdict as _dd
-            _positions_by_user: dict[int, list[dict]] = _dd(list)
+            # Build open positions list (PaperPortfolio has no user FK — all users see all positions)
+            open_positions_all: list[dict] = []
             for trade in open_trades:
-                uid = portfolio_user_map.get(trade.portfolio_id)
-                if uid is None:
-                    continue
                 last_price = close_map.get(trade.symbol) or trade.current_price
                 pnl_pct = None
                 if last_price and trade.entry_price:
@@ -2227,7 +2218,7 @@ def send_morning_digest(market: str = "US") -> None:
                 stop_dist_pct = None
                 if last_price and trade.current_stop:
                     stop_dist_pct = (last_price - trade.current_stop) / last_price * 100
-                _positions_by_user[uid].append({
+                open_positions_all.append({
                     "symbol":        trade.symbol,
                     "entry_price":   float(trade.entry_price),
                     "last_price":    last_price,
@@ -2237,9 +2228,7 @@ def send_morning_digest(market: str = "US") -> None:
                     "hold_days":     trade.hold_days or 0,
                     "current_signal": pos_signal_map.get(trade.symbol),
                 })
-            for _uid in _positions_by_user:
-                _positions_by_user[_uid].sort(key=lambda p: p.get("pnl_pct") or 0, reverse=True)
-            positions_by_user = dict(_positions_by_user)
+            open_positions_all.sort(key=lambda p: p.get("pnl_pct") or 0, reverse=True)
 
             # ── Pattern alerts triggered since yesterday ──────────────────────
             _PATTERN_CONDITIONS = {
@@ -2286,14 +2275,13 @@ def send_morning_digest(market: str = "US") -> None:
         # ── Send to all recipients ────────────────────────────────────────────
         sent = 0
         for user in users:
-            open_positions = positions_by_user.get(user.id, [])
             ok = send_morning_digest_email(
                 to=user.email,
                 date_str=date_str,
                 regime=regime,
                 swing_opportunities=swing_opportunities,
                 growth_opportunities=growth_opportunities,
-                open_positions=open_positions,
+                open_positions=open_positions_all,
                 pattern_alerts=pattern_alerts,
                 market=market,
                 signal_performance=signal_performance,
@@ -2303,7 +2291,7 @@ def send_morning_digest(market: str = "US") -> None:
 
         job_key = f"morning_digest_{market.lower()}"
         _record_job_status(job_key, "ok", time.monotonic() - _t0)
-        total_positions = sum(len(v) for v in positions_by_user.values())
+        total_positions = len(open_positions_all)
         log.info("morning_digest.done", market=market, sent=sent, recipients=len(users),
                  swing=len(swing_opportunities), growth=len(growth_opportunities),
                  positions=total_positions)
