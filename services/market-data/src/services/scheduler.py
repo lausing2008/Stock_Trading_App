@@ -549,7 +549,7 @@ def _confluence_score_full(
     )
 
 
-def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str | None = None) -> tuple[bool, str, list[str], list[str]]:
+def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: str | None = None, rankings_api_ok: bool = True) -> tuple[bool, str, list[str], list[str]]:
     """Check all conviction layers for a BUY signal across all 4 framework layers.
 
     Returns (all_passed, conviction_tier, passed_layers, failed_layers).
@@ -586,7 +586,10 @@ def _is_conviction_buy(signal_data: dict, kscore: float | None = None, regime: s
 
     # Layer 2 — K-Score conviction (≥ 55 = positive territory)
     if kscore is None:
-        failed.append("K-Score unavailable (rankings API down) — cannot verify conviction")
+        if rankings_api_ok:
+            failed.append("K-Score unavailable (not yet ranked) — cannot verify conviction")
+        else:
+            failed.append("K-Score unavailable (rankings API down) — cannot verify conviction")
     elif kscore >= 55:
         passed.append(f"K-Score: {kscore:.0f} — conviction positive")
     else:
@@ -1075,9 +1078,11 @@ def check_signal_alerts() -> None:
 
             # Fetch K-Scores in one bulk call for Layer 2 conviction check
             kscores: dict[str, float] = {}
+            rankings_api_ok: bool = False
             try:
                 r = httpx.get(f"{_settings.ranking_engine_url}/rankings", timeout=15)
                 if r.status_code == 200:
+                    rankings_api_ok = True
                     for row in r.json().get("rankings", []):
                         if row.get("score") is not None:
                             kscores[row["symbol"]] = float(row["score"])
@@ -1123,7 +1128,7 @@ def check_signal_alerts() -> None:
                     if current == "BUY":
                         sig_data = signal_details.get(key) or {}
                         all_pass, _tier, passed, failed = _is_conviction_buy(
-                            sig_data, kscore=kscores.get(alert.symbol)
+                            sig_data, kscore=kscores.get(alert.symbol), rankings_api_ok=rankings_api_ok
                         )
                         db_sent_at = alert.last_sent_at.isoformat() if alert.last_sent_at else None
                         _store_conviction(alert.symbol, style, True, passed, failed, current, sent_at=db_sent_at)
@@ -1173,7 +1178,7 @@ def check_signal_alerts() -> None:
                     if current == "BUY":
                         # Full 4-layer conviction gate (CB-4: "near" tier allows 1 soft fail)
                         all_pass, conviction_tier, passed, failed = _is_conviction_buy(
-                            sig_data, kscore=kscores.get(alert.symbol)
+                            sig_data, kscore=kscores.get(alert.symbol), rankings_api_ok=rankings_api_ok
                         )
                         if not all_pass:
                             log.info(

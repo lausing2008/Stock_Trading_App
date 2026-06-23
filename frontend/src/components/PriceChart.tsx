@@ -137,8 +137,19 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   useEffect(() => {
     if (!isIntraday) { setIntradayPrices(null); return; }
     setIntradayLoading(true);
-    api.getPrices(symbol, '5m', 100)
-      .then(data => setIntradayPrices(data))
+    // Pass today's UTC date so only the current session is returned — prevents
+    // the overnight gap from appearing as a disconnection and avoids showing
+    // yesterday's higher prices as a false spike in the Y-axis range.
+    const todayUTC = new Date().toISOString().slice(0, 10);
+    api.getPrices(symbol, '5m', 200, todayUTC)
+      .then(data => {
+        // Safety: if today returned very few bars (< 5, e.g. pre-market),
+        // fall back to 100 bars without the date filter to show recent history.
+        if (data.length < 5) {
+          return api.getPrices(symbol, '5m', 100).then(d => setIntradayPrices(d));
+        }
+        setIntradayPrices(data);
+      })
       .catch(() => setIntradayPrices([]))
       .finally(() => setIntradayLoading(false));
   }, [isIntraday, symbol]);

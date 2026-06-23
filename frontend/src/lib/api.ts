@@ -53,8 +53,8 @@ export const api = {
   latestPrices: () => request<LatestPrice[]>(`/stocks/latest_prices`),
   latestPricesFor: (symbols: string[]) => request<LatestPrice[]>(`/stocks/latest_prices?symbols=${symbols.join(',')}`),
   getStock: (symbol: string) => request<Stock>(`/stocks/${symbol}`),
-  getPrices: (symbol: string, tf = '1d', limit = 400) =>
-    request<Price[]>(`/stocks/${symbol}/prices?timeframe=${tf}&limit=${limit}`),
+  getPrices: (symbol: string, tf = '1d', limit = 400, start?: string) =>
+    request<Price[]>(`/stocks/${symbol}/prices?timeframe=${tf}&limit=${limit}${start ? `&start=${start}` : ''}`),
   overview: (symbol: string) => request<Overview>(`/aggregate/overview/${symbol}`),
   refreshFundamentals: (symbol: string) => request<unknown>(`/stocks/${symbol}/fundamentals?refresh=true`),
   rankings: (market?: string) => {

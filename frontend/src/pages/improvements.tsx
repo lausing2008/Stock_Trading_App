@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7062,6 +7062,65 @@ const ITEMS: Item[] = [
     what: 'Subject was "Signal Alert: AAPL HOLD → BUY [SWING] (Analyst: BULLISH)". The analyst mood is already described well in the body. The subject is more useful if it shows actual numeric confidence.',
     fix: 'Replaced "(Analyst: ...)" suffix with " · XX% conf · YY%BP" tags. Both confidence and bullish_prob are already extracted from signal_data at subject-build time — no extra calls.',
     implementedNote: 'Done 2026-06-21.',
+  },
+
+  // ── Tier 150 — Production fixes: Signal alert conviction + K-Score diagnosis ──
+  {
+    id: 'ALERT-F1-KSCORE-MISLEADING-MSG',
+    tier: 150 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/scheduler.py:589',
+    effort: '10m',
+    impact: 'Medium — Signal filter showed "K-Score unavailable (rankings API down)" for any stock with no K-Score, whether because the API was unreachable or simply because the stock had never been ranked. Users (and developers) misread this as a service outage when SNDK and AMAT just were not in the 141-stock ranking universe. Caused unnecessary investigation into a healthy ranking engine.',
+    title: 'ALERT-F1: Misleading "rankings API down" message for unranked stocks — K-Score None conflates API failure with missing ranking row',
+    what: '_is_conviction_buy() receives kscore=None for two distinct reasons: (1) the /rankings API call failed (network/timeout/500) or (2) the API succeeded but the symbol has no ranking entry. Both cases produced the same "rankings API down" message. The scheduler fetched /rankings without tracking whether the call succeeded, so callers could not distinguish the two cases.',
+    fix: 'Added rankings_api_ok: bool flag in check_signal_alerts(): set to True on 200 response, stays False on exception/non-200. Passed to _is_conviction_buy() which now shows "not yet ranked" vs "rankings API down" depending on the flag.',
+    implementedNote: 'Done 2026-06-23 — scheduler.py: added rankings_api_ok bool, differentiated message in _is_conviction_buy().',
+  },
+  {
+    id: 'ALERT-F2-SNDK-NOT-RANKED',
+    tier: 150 as const, severity: 'low',
+    file: 'services/ranking-engine/src/api/routes.py',
+    effort: '30m',
+    impact: 'Low — SNDK (SanDisk, recently spun off from Western Digital) had 100% confidence BUY signal but no K-Score row in the ranking universe (141 US stocks ranked, SNDK not among them). Conviction gate hard-blocked the email. Other newly listed stocks will hit this same gap.',
+    title: 'ALERT-F2 (deferred): Newly listed stocks bypass K-Score gate because they are not in the ranking universe',
+    what: 'The ranking engine ranks a fixed universe of ~141 stocks. Stocks added to watchlists after the initial ingest (e.g. SNDK post-spin-off) generate signals but have no ranking row. The conviction gate treats missing K-Score as a hard block.',
+    fix: 'Deferred — options: (1) soft-pass K-Score gate for stocks with signal age < 30 days and confidence > 90%, (2) auto-trigger ranking refresh when a signal alert fires for an unranked stock, (3) expand the ranking universe to include all watchlist stocks on each refresh.',
+    implementedNote: 'Deferred — root cause documented. Workaround: manually trigger POST /rankings/refresh to add SNDK to the ranked universe.',
+  },
+
+  // ── Tier 149 — Production fixes: Decision Engine + Paper Trading tuning ──────
+  {
+    id: 'DE-F1-FETCH-ALL-2-VS-3',
+    tier: 149 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/aggregator.py',
+    effort: '30m',
+    impact: 'Critical — Decision Engine page (DE Audit tab, /decide/ endpoints) returned 500 Internal Server Error on every request. POST /decide/{symbol} and GET /decide/{symbol}/explain both crashed with ValueError: not enough values to unpack (expected 3, got 2). The DE Audit tab was completely non-functional for all portfolios.',
+    title: 'DE-F1: Decision Engine 500 — fetch_all() returned 2 values but routes.py unpacked 3 (EC2 container had stale aggregator.py)',
+    what: 'routes.py line 59 unpacks `signal_data, research_data, yf_price = await fetch_all(symbol, style)`. The EC2 container had an old aggregator.py that returned only `(signal_data, research_data)` — the yfinance price fallback had been added to the local version but never deployed to the container. Attempted docker cp via stdin failed silently (created 0-byte file). The container image also predated the core/ subdirectory refactor, causing import errors on restart.',
+    fix: 'Rebuilt decision-engine image from EC2 source (git pull already up-to-date; image was simply stale). Force-recreated container. Verified fetch_all returns 3 values and GET /decide/MU/explain?style=GROWTH returns 200 BUY.',
+    implementedNote: 'Done 2026-06-23 — rebuilt stockai-decision-engine image; force-recreated container.',
+  },
+  {
+    id: 'DE-T1-GROWTH-BREAKEVEN-TOO-TIGHT',
+    tier: 149 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py:218',
+    effort: '5m',
+    impact: 'High — GROWTH paper trades (MU, SMTC, SOFI, UPST) were stopping out at ≈−0.10% because the breakeven stop armed at only +2% gain. For a GROWTH stock targeting +35%, the +2% breakeven trigger fired while the stock was still inside its entry zone (breakout is at +3.5%). Any normal intraday fluctuation after a small bounce would immediately stop the trade at entry, burning commission and missing the actual move.',
+    title: 'DE-T1: GROWTH breakeven stop trigger too tight (2%) — arms before stock clears entry zone, causes premature stop-outs',
+    what: 'breakeven_trigger_pct was 0.02 for GROWTH. The entry zone breakout is at entry × 1.035 (+3.5%). Arming breakeven at +2% means the stop moves to entry before the stock has even left the entry zone. Volatile stocks like MU/SMTC routinely oscillate ±2% intraday, guaranteeing a stop-out on any pullback.',
+    fix: 'Changed breakeven_trigger_pct from 0.02 → 0.04 for GROWTH. Now aligns with the breakout level (+3.5%) so breakeven only arms after the stock has confirmed a breakout, not on normal entry-zone noise.',
+    implementedNote: 'Done 2026-06-23 — paper_trading_engine.py _STYLE_OVERRIDES["GROWTH"]["breakeven_trigger_pct"] = 0.04.',
+  },
+  {
+    id: 'DE-T2-GROWTH-ATR-STOP-WIDER',
+    tier: 149 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py:1003',
+    effort: '5m',
+    impact: 'High — GROWTH stops were too tight for high-volatility stocks. Using 2.5× ATR for the initial stop placed MU\'s stop at entry − $37.5 (ATR ~$15). For a $1096 stock targeting +35%, a $37.5 stop is only 3.4% — well within normal daily noise. ATR-based stops need extra width for GROWTH-style momentum trades.',
+    title: 'DE-T2: GROWTH ATR stop multiplier too tight (2.5×) — widened to 3.0× for high-volatility tolerance',
+    what: 'GROWTH uses the same 2.5× ATR multiplier as other styles in _build_game_plan_for_style. GROWTH targets volatile momentum stocks (target +35%) so their ATR is proportionally larger and the stop needs proportionally more room. Decision engine aggregator.py also used flat 2.0× ATR regardless of style.',
+    fix: 'paper_trading_engine.py: GROWTH ATR mult 2.5× → 3.0×. aggregator.py: made ATR mult style-aware — GROWTH=2.5×, others=2.0×.',
+    implementedNote: 'Done 2026-06-23 — paper_trading_engine.py line 1003 + aggregator.py _default_game_plan.',
   },
 
   // ── Tier 148 — Deep Audit: Frontend (Stock Detail + Signal Filter + Admin) ───
