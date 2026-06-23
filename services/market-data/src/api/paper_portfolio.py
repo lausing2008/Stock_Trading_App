@@ -99,8 +99,8 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
     downside_dev = math.sqrt(sum(downside_sq) / max(n, 1)) * math.sqrt(252)
     sortino = round((annualised_return - risk_free) / downside_dev, 2) if downside_dev > 0 else None
 
-    # Calmar = annualised return / max drawdown
-    calmar = round(annualised_return / max_dd, 2) if max_dd > 0 else None
+    # Calmar = CAGR / max drawdown (use geometric compound rate, not arithmetic mean * 252)
+    calmar = round((cagr_pct / 100) / max_dd, 2) if max_dd > 0 and cagr_pct is not None else None
 
     return {
         "sharpe": sharpe,
@@ -145,8 +145,8 @@ def _compute_alpha_beta(curve_rows: list) -> dict:
     # Jensen's alpha: annualised excess return above what beta predicts
     alpha = round((mean_p - beta * mean_s) * 252 * 100, 2)
 
-    # Information ratio: annualised active return / tracking error
-    active = [p_rets[i] - beta * s_rets[i] for i in range(n)]
+    # Information ratio: annualised active return / tracking error (benchmark-relative, not beta-adjusted)
+    active = [p_rets[i] - s_rets[i] for i in range(n)]
     mean_active = sum(active) / n
     var_active  = sum((r - mean_active) ** 2 for r in active) / max(n - 1, 1)
     te = math.sqrt(var_active * 252) if var_active > 0 else 0
@@ -641,6 +641,8 @@ def configure_portfolio(
         "min_confidence", "min_kscore", "min_rr_ratio", "min_entry_score",
         "max_hold_days", "trail_atr_mult", "trail_trigger_pct", "breakeven_trigger_pct",
         "wait_exit_days", "enabled", "paused",
+        "max_loss_per_trade_pct", "max_portfolio_drawdown_pct", "max_daily_loss_pct",
+        "max_open_risk_pct", "hold_stall_max_gain",
     }
     # PT-H1: Validate decimal fraction params — reject values that look like % integers
     # (e.g. risk_per_trade_pct=1 meaning "1%" but engine expects 0.01).
@@ -835,7 +837,7 @@ def get_attribution(
         return {
             "count": len(bucket),
             "win_rate": round(len(wins) / len(bucket) * 100, 1),
-            "avg_return": round(sum(returns) / len(returns) * 100, 2) if returns else None,
+            "avg_return": round(sum(returns) / len(returns), 2) if returns else None,
             "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
         }
 
@@ -1573,7 +1575,7 @@ def kelly_sizing(
         "quarter_kelly": round(quarter_kelly, 4),
         "recommended_risk_pct": recommended_risk_pct,
         "win_rate": round(p, 4),
-        "avg_win_pct": round(avg_win * 100, 2),
-        "avg_loss_pct": round(avg_loss * 100, 2),
+        "avg_win_pct": round(avg_win, 2),
+        "avg_loss_pct": round(avg_loss, 2),
         "reward_risk_ratio": round(b, 2),
     }

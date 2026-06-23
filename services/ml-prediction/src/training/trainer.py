@@ -31,6 +31,13 @@ from ..models import BaseModel, get_model
 log = get_logger("trainer")
 _settings = get_settings()
 
+_HORIZON_BY_STYLE: dict[str, int] = {
+    "SHORT":  5,
+    "SWING":  10,
+    "LONG":   20,
+    "GROWTH": 15,
+}
+
 _MIN_PRECISION = 0.60  # fallback precision floor (SWING)
 
 # SHORT trades have little time to recover from false entries — require tighter precision.
@@ -363,9 +370,10 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
         "ts": p.ts,
         "open": p.open, "high": p.high, "low": p.low, "close": p.close, "volume": p.volume,
     } for p in prices])
+    # Keep "ts" as a column (build_features reads df["ts"] internally).
+    # Sort by date so rolling windows are computed in chronological order.
     df["ts"] = pd.to_datetime(df["ts"])
-    df = df.set_index("ts").sort_index()
-    df.index = df.index.normalize()  # strip time component for date alignment
+    df = df.sort_values("ts").reset_index(drop=True)
 
     try:
         _outcome_horizon = {"SWING": 10, "LONG": 20, "GROWTH": 15, "SHORT": 5}.get(style.upper(), 10)
@@ -376,8 +384,12 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
     if X_full.empty:
         return pd.DataFrame(), pd.Series(dtype=int)
 
-    # Filter to only outcome dates
-    X_full.index = X_full.index.normalize()
+    # Assign a date-based index so we can look up rows by signal_date.
+    # build_features returns X with df's RangeIndex; map each position back to
+    # the normalized date from the "ts" column using the surviving mask positions.
+    ts_dates = df["ts"].dt.normalize().iloc[X_full.index]
+    X_full.index = ts_dates.values
+
     outcome_idx = [d for d in [pd.Timestamp(d) for d in signal_date_set] if d in X_full.index]
     if not outcome_idx:
         return pd.DataFrame(), pd.Series(dtype=int)
@@ -462,10 +474,20 @@ def train_model(
                 X_out = X_out.drop(index=overlap_idx, errors="ignore")
                 y_out = y_out.drop(index=overlap_idx, errors="ignore")
                 if len(X_out) >= 5:
-                    # Track which dates are outcome rows for later 2× weighting
-                    outcome_dates_set = set(X_out.index)
-                    X = pd.concat([X[shared_cols], X_out]).sort_index()
-                    y_dir = pd.concat([y_dir, y_out]).reindex(X.index)
+                    # Track outcome row positions by integer index (after ignore_index=True reset).
+                    # Append at the TAIL so they land past the 70% CV split boundary —
+                    # keeping CV folds uncontaminated. 2× weighting fires when the dataset
+                    # is small enough that outcome rows fall within the 70% train window.
+                    _n_before_concat = len(X[shared_cols])
+                    outcome_dates_set = set(range(_n_before_concat, _n_before_concat + len(X_out)))
+                    X = pd.concat([X[shared_cols], X_out], ignore_index=True)
+                    y_dir = pd.concat([y_dir, y_out], ignore_index=True)
+                    # Extend y_ret to match new X length; outcome rows get NaN forward
+                    # returns (unknown) — they are excluded from IC computation below
+                    # because NaN rows produce NaN IC which is filtered out.
+                    y_ret = pd.concat(
+                        [y_ret, pd.Series([np.nan] * len(X_out))], ignore_index=True
+                    )
                     n_outcome_rows = len(X_out)
                     log.info("train.outcome_augment", symbol=symbol, n_outcomes=n_outcome_rows)
     except Exception as _oe:
@@ -510,10 +532,13 @@ def train_model(
         oos_precisions.append(float(precision_score(y_cv_val, preds_binary, zero_division=0)))
         oos_recalls.append(float(recall_score(y_cv_val, preds_binary, zero_division=0)))
 
-        # IC: Spearman corr between predicted probability and actual return
+        # IC: Spearman corr between predicted probability and actual return.
+        # Drop any rows where y_ret is NaN (e.g. outcome-augmented rows have no
+        # synthetic forward return; they never appear in CV folds but guard anyway).
         ret_cv_val = y_ret.iloc[val_idx].values
-        if len(ret_cv_val) >= 5:
-            ic, _ = spearmanr(preds_proba, ret_cv_val)
+        _valid_ic = ~np.isnan(ret_cv_val)
+        if _valid_ic.sum() >= 5:
+            ic, _ = spearmanr(preds_proba[_valid_ic], ret_cv_val[_valid_ic])
             if not np.isnan(ic):
                 oos_ics.append(float(ic))
 
@@ -547,9 +572,10 @@ def train_model(
     # ML-FIX-2: recency + balanced class weights blended for final training
     _recency_w = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
     train_weights = _blend_weights(y_train.values, _recency_w)
-    # Tier 87: apply 2× multiplier to outcome rows (real live-trading labels)
+    # Tier 87: apply 2× multiplier to outcome rows (real live-trading labels).
+    # outcome_dates_set holds integer positions; X_train.index is a RangeIndex after ignore_index=True.
     if outcome_dates_set:
-        _outcome_mask = np.array([d in outcome_dates_set for d in X_train.index])
+        _outcome_mask = np.array([i in outcome_dates_set for i in X_train.index])
         train_weights[_outcome_mask] *= 2.0
 
     # Early stopping on the dedicated early-stop set (X_es_s); LightGBM handles via its own

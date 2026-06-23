@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,98 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 152 — Deep audit: ML Prediction + Strategy Engine — 3 fixed ───────
+  {
+    id: 'ML-F1-HORIZON-BY-STYLE-NAMEEERROR',
+    tier: 152 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/training/trainer.py:1047',
+    effort: '5m',
+    impact: 'Critical — GET /ml/walkforward/{symbol} crashed with NameError: name \'_HORIZON_BY_STYLE\' is not defined on every request. The walk-forward endpoint was completely non-functional for all symbols and styles. The constant was defined in routes.py but not imported into trainer.py where it was referenced.',
+    title: 'ML-F1: NameError — _HORIZON_BY_STYLE used in trainer.py but never defined there',
+    what: '_HORIZON_BY_STYLE maps style → forward-return horizon days (SHORT=5, SWING=10, LONG=20, GROWTH=15). It was defined in routes.py but trainer.py referenced it on line 1047 without importing it. Adding the dict to trainer.py is the right fix (avoids circular import and keeps the definition local to where it is used).',
+    fix: 'Added _HORIZON_BY_STYLE dict at module level in trainer.py (after get_logger call). Same values as routes.py.',
+    implementedNote: 'Done 2026-06-23 — trainer.py: added _HORIZON_BY_STYLE = {"SHORT": 5, "SWING": 10, "LONG": 20, "GROWTH": 15}.',
+  },
+  {
+    id: 'ML-F2-OUTCOME-WEIGHT-INDEX-MISMATCH',
+    tier: 152 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/training/trainer.py:473',
+    effort: '10m',
+    impact: 'High — Live paper-trade outcome rows (real buy/sell labels from closed trades) were supposed to receive 2× sample weight during model training to make the model learn faster from actual trading results. The weighting silently never fired: after pd.concat with ignore_index=True the DataFrame index becomes integers (0, 1, 2, ...), but outcome_dates_set held the original Timestamps from X_out.index. Comparing integer indices against Timestamps always returns False, so train_weights was never multiplied.',
+    title: 'ML-F2: Outcome 2× weight no-op — Timestamp vs integer index mismatch after pd.concat(ignore_index=True)',
+    what: 'outcome_dates_set = set(X_out.index) saved DatetimeIndex Timestamps. After pd.concat([X, X_out], ignore_index=True), X_train.index is RangeIndex(0, split_train). The check `[d in outcome_dates_set for d in X_train.index]` compared ints to Timestamps — always False.',
+    fix: 'Changed tracking to integer positions: record n_before_concat = len(X[shared_cols]) before concat, then outcome_dates_set = set(range(n_before_concat, n_before_concat + len(X_out))). The mask check now compares ints to ints.',
+    implementedNote: 'Done 2026-06-23 — trainer.py: replaced outcome_dates_set = set(X_out.index) with integer position range tracking.',
+  },
+  {
+    id: 'SE-F1-EQUITY-CURVE-NO-FEE-DRAG',
+    tier: 152 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/strategy-engine/src/backtest/engine.py:77',
+    effort: '15m',
+    impact: 'High — Backtest total_return, CAGR, and Sharpe were overstated because the equity curve used raw close-price returns while entry/exit prices already baked in fee+slippage. For a strategy with 50 round-trips at 0.07% total cost, total_return was inflated by ~3.5pp. Users comparing strategies would see inflated performance for any strategy with more trades.',
+    title: 'SE-F1: Equity curve missing fee drag — raw close returns used instead of fee-adjusted entry/exit prices',
+    what: 'Entry price = close * (1 + fee + slippage), exit price = close * (1 − fee − slippage). These fee-adjusted prices are stored in trades[] but the equity curve used feat["close"].pct_change() — raw pre-fee returns. The equity curve and total_return ignored the actual cost basis.',
+    fix: 'Build adj_close from feat["close"]. At each entry bar multiply by (1 + fee + slippage); at each exit bar multiply by (1 − fee − slippage). Compute rets from adj_close.pct_change() * pos_shifted. This correctly reflects the fee-adjusted cost basis in every bar\'s return.',
+    implementedNote: 'Done 2026-06-23 — engine.py: adj_close series adjusts close at entry/exit bars before pct_change computation.',
+  },
+
+  // ── Tier 151 — Deep audit: Paper Portfolio Analytics — 5 fixed ──────────────
+  {
+    id: 'PP-F1-AVG-RETURN-100X',
+    tier: 151 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py:838',
+    effort: '2m',
+    impact: 'Critical — The "avg_return" field in the attribution breakdown (returned by GET /paper/attribution) was 100× larger than the actual value. A trade with 4.2% average return showed as 420.00%. pct_return is stored as whole-percent (e.g. 4.2 for 4.2%), so summing and averaging gives whole-percent values already. Multiplying by 100 again inflated every displayed return 100-fold.',
+    title: 'PP-F1: avg_return in attribution 100× wrong — pct_return already stored as whole percent, spurious × 100',
+    what: 'Line 838: `round(sum(returns) / len(returns) * 100, 2)`. returns = [t.pct_return for t in bucket] where pct_return is e.g. 4.2. The average is already 4.2; multiplying by 100 gives 420.',
+    fix: 'Removed * 100. avg_return is now `round(sum(returns) / len(returns), 2)`.',
+    implementedNote: 'Done 2026-06-23 — paper_portfolio.py line 838: removed * 100 from avg_return calculation.',
+  },
+  {
+    id: 'PP-F2-KELLY-WIN-LOSS-PCT-100X',
+    tier: 151 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py:1576',
+    effort: '2m',
+    impact: 'High — Kelly position sizer endpoint (GET /paper/kelly/{style}) returned avg_win_pct and avg_loss_pct as 100× their true values. A strategy with 4.2% average win and 2.1% average loss showed avg_win_pct=420, avg_loss_pct=210. The reward_risk_ratio b was computed correctly (b = avg_win / avg_loss before the × 100), so Kelly fraction was correct — but any UI or user reading avg_win/loss_pct would see wildly wrong numbers.',
+    title: 'PP-F2: Kelly avg_win_pct / avg_loss_pct 100× wrong — pct_return already whole percent, spurious × 100',
+    what: 'Lines 1576-1577: `round(avg_win * 100, 2)` and `round(avg_loss * 100, 2)`. avg_win / avg_loss computed from t.pct_return values (already whole percent like 4.2). The × 100 inflates display values 100×.',
+    fix: 'Removed * 100. avg_win_pct = round(avg_win, 2), avg_loss_pct = round(avg_loss, 2).',
+    implementedNote: 'Done 2026-06-23 — paper_portfolio.py lines 1576-1577: removed × 100.',
+  },
+  {
+    id: 'PP-F3-ALLOWED-KEYS-MISSING',
+    tier: 151 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py:639',
+    effort: '5m',
+    impact: 'High — 5 config keys that were validated and range-checked were silently dropped on PATCH /paper/config because they were missing from allowed_keys. Sending max_loss_per_trade_pct=0.02 would pass range validation (0.005–0.10) but be filtered out by the allowed_keys guard. The portfolio config would remain unchanged with no error, making it impossible to set these 5 risk parameters via the API.',
+    title: 'PP-F3: 5 config keys validated but silently dropped — present in _RANGE_CHECKS but missing from allowed_keys',
+    what: 'allowed_keys had 14 keys; _RANGE_CHECKS had 10 keys. 5 keys in _RANGE_CHECKS were absent from allowed_keys: max_loss_per_trade_pct, max_portfolio_drawdown_pct, max_daily_loss_pct, max_open_risk_pct, hold_stall_max_gain. Range validation ran on them but the update dict filtered them out.',
+    fix: 'Added all 5 missing keys to allowed_keys set.',
+    implementedNote: 'Done 2026-06-23 — paper_portfolio.py line 639: added max_loss_per_trade_pct, max_portfolio_drawdown_pct, max_daily_loss_pct, max_open_risk_pct, hold_stall_max_gain to allowed_keys.',
+  },
+  {
+    id: 'PP-F4-INFO-RATIO-BETA-ADJUSTED',
+    tier: 151 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py:149',
+    effort: '5m',
+    impact: 'Medium — Information Ratio displayed on the performance page was actually the Appraisal Ratio (Jensen\'s alpha / tracking error), not the standard Information Ratio. IR measures outperformance relative to benchmark: (portfolio_return − benchmark_return) / tracking_error. The code subtracted beta × benchmark instead of just benchmark, making it a different metric entirely. For high-beta portfolios the IR could appear better than it actually is.',
+    title: 'PP-F4: info_ratio is Appraisal Ratio not Information Ratio — uses (p − β·s) instead of (p − s)',
+    what: 'Line 149: active = [p_rets[i] - beta * s_rets[i] for i in range(n)]. This computes the residual from the CAPM prediction (alpha), not simple excess return over SPY. Standard IR = (Rp − Rb) / TE where Rb is the raw benchmark return.',
+    fix: 'Changed to active = [p_rets[i] - s_rets[i] for i in range(n)]. Tracking error and IR now measure simple benchmark-relative performance.',
+    implementedNote: 'Done 2026-06-23 — paper_portfolio.py line 149: removed beta multiplication from active return.',
+  },
+  {
+    id: 'PP-F5-CALMAR-ARITHMETIC-RETURN',
+    tier: 151 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py:103',
+    effort: '5m',
+    impact: 'Medium — Calmar ratio was computed with arithmetic annualized return (mean_daily_return × 252) instead of CAGR. For volatile portfolios these diverge significantly: a portfolio with +5% / −4% alternating daily has arithmetic mean ≈ +0.5%/day (126% annual) but CAGR ≈ +21% due to volatility drag. Using arithmetic return inflates Calmar for volatile portfolios, making them appear to have better risk-adjusted return.',
+    title: 'PP-F5: Calmar ratio uses arithmetic annualized return (mean × 252) instead of CAGR',
+    what: 'Line 92: annualised_return = mean_r * 252. Line 103: calmar = round(annualised_return / max_dd, 2). Standard Calmar = CAGR / max_drawdown. cagr_pct is already computed as a geometric compound rate; using it gives the correct ratio.',
+    fix: 'Changed calmar = round((cagr_pct / 100) / max_dd, 2) — uses CAGR (geometric) rather than arithmetic mean × 252.',
+    implementedNote: 'Done 2026-06-23 — paper_portfolio.py line 103: Calmar now uses cagr_pct/100 / max_dd.',
+  },
+
   // ── Tier 150 — Production fixes: Signal alert conviction + K-Score diagnosis ──
   {
     id: 'ALERT-F1-KSCORE-MISLEADING-MSG',
@@ -9630,6 +9722,10 @@ const TIER_LABEL: Record<Tier, string> = {
   146: 'Tier 146 — Deep audit: Frontend (Paper Portfolio) — 2 fixed',
   147: 'Tier 147 — Deep audit: Research Engine + Signal Engine — 1 deferred (3 deferred)',
   148: 'Tier 148 — Deep audit: Frontend (Stock Detail + Admin) — 2 fixed (3 deferred)',
+  149: 'Tier 149 — Production fixes: Decision Engine 500 + GROWTH stop tuning — 3 fixed',
+  150: 'Tier 150 — Production fixes: Signal alert K-Score conviction message — 1 fixed (1 deferred)',
+  151: 'Tier 151 — Deep audit: Paper Portfolio Analytics — 5 fixed',
+  152: 'Tier 152 — Deep audit: ML Prediction + Strategy Engine — 3 fixed',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -9781,6 +9877,10 @@ const TIER_COLOR: Record<Tier, string> = {
   146: '#e879f9',
   147: '#f59e0b',
   148: '#34d399',
+  149: '#f87171',
+  150: '#38bdf8',
+  151: '#fb923c',
+  152: '#a78bfa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

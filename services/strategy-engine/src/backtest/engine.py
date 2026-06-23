@@ -73,9 +73,17 @@ class BacktestEngine:
             exit_prices.append(exit_p)
             trades[-1].update({"exit_ts": str(feat["ts"].iloc[-1]), "exit": exit_p, "ret": exit_p / entry_p - 1})
 
-        # Shift position by 1: fill at bar i close → first return is bar i → bar i+1
+        # Shift position by 1: fill at bar i close → first return is bar i → bar i+1.
+        # Adjust close at entry bars (pay fee) and exit bars (receive fee discount) so
+        # the equity curve correctly reflects fee drag rather than using raw close prices.
+        adj_close = feat["close"].copy().astype(float)
+        for _i in range(1, len(feat)):
+            if position[_i] == 1 and position[_i - 1] == 0:   # entry bar
+                adj_close.iloc[_i] *= (1.0 + self.slippage + self.fee)
+            elif position[_i] == 0 and position[_i - 1] == 1:  # exit bar
+                adj_close.iloc[_i] *= (1.0 - self.slippage - self.fee)
         pos_shifted = pd.Series(position).shift(1, fill_value=0).values
-        rets = feat["close"].pct_change().fillna(0) * pos_shifted
+        rets = adj_close.pct_change().fillna(0) * pos_shifted
         equity = (1 + rets).cumprod()
         dd = 1 - equity / equity.cummax()
 
