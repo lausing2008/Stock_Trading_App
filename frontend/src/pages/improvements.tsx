@@ -7067,7 +7067,7 @@ const ITEMS: Item[] = [
   // ── Tier 146 — Deep Audit: Frontend (Paper Portfolio page) ──────────────────
   {
     id: 'FE-F1-JOURNAL-PCT-DOUBLE-MULTIPLY',
-    tier: 146 as const, severity: 'critical',
+    tier: 146 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'frontend/src/pages/paper-portfolio.tsx:1989',
     effort: '2m',
     impact: 'Critical — Journal tab showed 100× inflated P&L for every closed trade. A 5.2% win was displayed as "✓ WIN 520.00%". pct_return is stored as a whole percentage (round(pnl_pct * 100, 4)) but the template literal applied *100 again.',
@@ -7078,7 +7078,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'FE-F12-FOOTER-HARDCODED-GROWTH',
-    tier: 146 as const, severity: 'medium',
+    tier: 146 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'frontend/src/pages/paper-portfolio.tsx:2511',
     effort: '2m',
     impact: 'Medium — "How it works" explainer at the bottom of the paper portfolio page hardcoded "GROWTH-style BUY signals" regardless of the portfolio\'s configured trading_style. A SWING-style portfolio read "It scans for fresh GROWTH-style BUY signals", misleading users about what the engine actually does.',
@@ -7091,7 +7091,7 @@ const ITEMS: Item[] = [
   // ── Tier 145 — Deep Audit: Portfolio Optimizer + Market Data ─────────────────
   {
     id: 'PO-F1-SOLVER-NO-SUCCESS-CHECK',
-    tier: 145 as const, severity: 'high',
+    tier: 145 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/portfolio-optimizer/src/optimizers/methods.py:117',
     effort: '5m',
     impact: 'High — SLSQP optimizer result was used unconditionally regardless of convergence. When the solver fails (ill-conditioned covariance, degenerate return series), res.x is a partial/garbage solution that may violate weight bounds or produce extreme concentrations. Silent garbage allocations can blow position limits.',
@@ -7102,7 +7102,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'MD-F1-FUNDAMENTALS-NO-AUTH',
-    tier: 145 as const, severity: 'high',
+    tier: 145 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/market-data/src/api/routes.py:784',
     effort: '5m',
     impact: 'High — GET /stocks/{symbol}/fundamentals?refresh=true had no authentication guard. Any caller reachable inside the Docker network could trigger a live yfinance fetch for any symbol, bypassing the 24-hour Redis cache. Under load, this allows cache-busting DoS: repeated refresh calls spawn concurrent yfinance threads per symbol.',
@@ -7126,7 +7126,7 @@ const ITEMS: Item[] = [
   // ── Tier 144 — Deep Audit: Event Intelligence Engine ─────────────────────────
   {
     id: 'EI-F5-EPS-FALSY-ZERO',
-    tier: 144 as const, severity: 'high',
+    tier: 144 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/services/earnings.py:37',
     effort: '5m',
     impact: 'High — EPS surprise was None for any company reporting near-zero expected EPS (e.g. turnaround story with analyst estimate of $0.01 rounded to 0.0). `if eps_est and ...` treated 0.0 as falsy, setting surprise_pct=None and earnings_strength_score to neutral (50) regardless of actual beat size.',
@@ -7137,7 +7137,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'EI-F12-FOMC-DATES-EXPIRE',
-    tier: 144 as const, severity: 'critical',
+    tier: 144 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/services/economic.py:19',
     effort: '10m',
     impact: 'Critical — FOMC dates were hardcoded through 2026-12-09 only. After that date, days_to_next_fomc() would silently return None, _compute_economic_score() would return 0.0, and FOMC risk would vanish from all catalyst and composite scores with no error or log.',
@@ -7172,7 +7172,7 @@ const ITEMS: Item[] = [
   // ── Tier 143 — Deep Audit: Ranking Engine + Strategy Engine ──────────────────
   {
     id: 'RK-F2-REFRESH-NO-AUTH',
-    tier: 143 as const, severity: 'high',
+    tier: 143 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/ranking-engine/src/api/routes.py:711',
     effort: '5m',
     impact: 'High — POST /rankings/refresh had no authentication guard. Any process reachable inside the Docker network could trigger a full re-score of every active stock (O(N_stocks × price_history)), saturating the ranking-engine thread pool and starving leaderboard reads.',
@@ -7183,7 +7183,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'RK-F5-SCREENER-SIGNAL-AMBIGUOUS',
-    tier: 143 as const, severity: 'high',
+    tier: 143 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/ranking-engine/src/api/routes.py:447',
     effort: '10m',
     impact: 'High — screener signal join grouped by stock_id and max(ts) with no horizon filter. Multiple horizons (SWING, GROWTH, LONG) written in the same bulk-persist second all share the same max_ts, so the dict comprehension kept the last row in arbitrary DB storage order. A stock could show SELL in the screener when its SWING signal was BUY.',
@@ -7194,7 +7194,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'RK-F3-VALUE-PROXY-DIV-ZERO',
-    tier: 143 as const, severity: 'medium',
+    tier: 143 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/ranking-engine/src/scoring/kscore.py:123',
     effort: '5m',
     impact: 'Medium — _value_proxy() divided by high_52 without a zero guard. A stock with all-zero price history (bad data import) would produce NaN discount, NaN raw_score, and NaN propagated into the composite K-Score. Score stored as None in rankings table with no error logged.',
@@ -7205,7 +7205,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'SE-F3-SORTINO-CALMAR-NULL',
-    tier: 143 as const, severity: 'low',
+    tier: 143 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/strategy-engine/src/api/routes.py:249',
     effort: '2m',
     impact: 'Low — GET /backtests/{bid} always returned sortino=null and calmar=null even though both metrics are stored in the bt.equity_curve JSON column. The list endpoint (GET /backtests) correctly read them from equity_curve. Only the detail endpoint was affected.',
@@ -7240,7 +7240,7 @@ const ITEMS: Item[] = [
   // ── Tier 142 — Deep Audit: Technical Analysis Engine ─────────────────────────
   {
     id: 'TA-F2-RSI-NAN-VS-100',
-    tier: 142 as const, severity: 'high',
+    tier: 142 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/technical-analysis/src/indicators/core.py:23',
     effort: '5m',
     impact: 'High — RSI returned NaN instead of 100 for stocks with 14 consecutive up-days (avg_loss=0). Signal engine treated NaN as neutral, emitting BUY signals on stocks at peak overbought — opposite of intended RSI overbought protection.',
@@ -7251,7 +7251,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'TA-F6-BOLLINGER-DDOF',
-    tier: 142 as const, severity: 'low',
+    tier: 142 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/technical-analysis/src/indicators/core.py:43',
     effort: '2m',
     impact: 'Low — Bollinger Bands were ~2.6% wider than TradingView reference (ddof=1 sample std vs ddof=0 population std). Band breakout signals fired slightly later; overbought thresholds diverged from what users see on external charts.',
@@ -7286,7 +7286,7 @@ const ITEMS: Item[] = [
   // ── Tier 141 — Deep Audit: API Gateway + Scheduler + ML Pipeline ─────────────
   {
     id: 'AG-F1-AGGREGATE-NO-AUTH',
-    tier: 141 as const, severity: 'critical',
+    tier: 141 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'services/api-gateway/src/api/aggregate.py:28',
     effort: '5m',
     impact: 'Critical — GET /aggregate/overview/{symbol} was completely unauthenticated. Any caller without a JWT could retrieve the full dashboard payload: price history, indicators, patterns, S/R levels, signals, rankings, and fundamentals. All stock intelligence data was publicly accessible.',
@@ -7297,7 +7297,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'AG-F9-AI-PROXY-401-PASSTHROUGH',
-    tier: 141 as const, severity: 'high',
+    tier: 141 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/api-gateway/src/api/ai_proxy.py:118',
     effort: '5m',
     impact: 'High — when the admin\'s Anthropic or DeepSeek API key expired, the provider returned HTTP 401, which the gateway forwarded as HTTP 401 to the browser. The frontend api.ts 401 handler could interpret this as a session expiry and delete the user\'s JWT, logging them out when using the AI chat feature.',
@@ -7308,7 +7308,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'AG-F10-MAXTOKENS-UNBOUNDED',
-    tier: 141 as const, severity: 'medium',
+    tier: 141 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/api-gateway/src/api/ai_proxy.py:61',
     effort: '2m',
     impact: 'Medium — any authenticated user could set max_tokens=100000 in an AI chat request, billing the admin\'s shared API key for up to 64k output tokens per request. A handful of such requests could exhaust the monthly API budget.',
@@ -7319,7 +7319,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'MD-F2-MORNING-DIGEST-PRIVACY',
-    tier: 141 as const, severity: 'critical',
+    tier: 141 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/scheduler.py:2174',
     effort: '20m',
     impact: 'Critical — in a multi-user deployment, every user\'s morning digest email showed ALL users\' open paper trade positions (symbols, entry prices, P&L, stop levels). User A could see User B\'s portfolio in their daily email.',
@@ -7330,7 +7330,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'MD-F3-PREMARKT-GUARD-LOGIC',
-    tier: 141 as const, severity: 'medium',
+    tier: 141 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/scheduler.py:1880',
     effort: '5m',
     impact: 'Medium — short intraday trigger check ran at 9:00–9:29 ET (pre-market) due to a boolean operator precedence bug. Wasted DB queries and yfinance calls during 6 pre-market minutes. No incorrect signals emitted (yfinance returns empty DataFrames pre-market) but adds unnecessary load.',
@@ -7341,7 +7341,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'ML-F4-OUTCOME-HORIZON-HARDCODED',
-    tier: 141 as const, severity: 'high',
+    tier: 141 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/training/trainer.py:371',
     effort: '5m',
     impact: 'High — _load_outcome_features() always called build_features(df, horizon=5) regardless of the style being trained (SWING=10, LONG=20, GROWTH=15). The dead-zone filter inside build_features uses horizon to compute forward return thresholds, so LONG/GROWTH outcome rows were labelled with SWING-horizon thresholds. This added incorrectly-labelled rows into LONG/GROWTH training sets, degrading precision.',
