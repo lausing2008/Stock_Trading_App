@@ -15,7 +15,7 @@ from db import get_session, SessionLocal, EconomicEvent
 log = structlog.get_logger()
 _settings = get_settings()
 
-# FOMC meeting dates 2025–2026 (from Federal Reserve public calendar)
+# FOMC meeting dates 2025–2027 (from Federal Reserve public calendar)
 _FOMC_DATES: list[tuple[str, str, str]] = [
     # (date_str, title, importance)
     ("2025-01-29", "FOMC Meeting", "high"),
@@ -34,6 +34,15 @@ _FOMC_DATES: list[tuple[str, str, str]] = [
     ("2026-09-16", "FOMC Meeting", "high"),
     ("2026-10-28", "FOMC Meeting", "high"),
     ("2026-12-09", "FOMC Meeting", "high"),
+    # 2027 — approximate dates following standard 8-per-year pattern
+    ("2027-01-27", "FOMC Meeting", "high"),
+    ("2027-03-17", "FOMC Meeting", "high"),
+    ("2027-04-28", "FOMC Meeting", "high"),
+    ("2027-06-16", "FOMC Meeting", "high"),
+    ("2027-07-28", "FOMC Meeting", "high"),
+    ("2027-09-15", "FOMC Meeting", "high"),
+    ("2027-10-27", "FOMC Meeting", "high"),
+    ("2027-12-08", "FOMC Meeting", "high"),
 ]
 
 # FRED series IDs → (event_type, title, importance)

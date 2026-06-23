@@ -121,6 +121,8 @@ def _value_proxy(df: pd.DataFrame) -> float:
     Cap score at 25 in that case so it can't drag down the composite K-Score.
     """
     high_52  = df["close"].tail(252).max()
+    if not high_52 or high_52 <= 0:
+        return 50.0
     discount = 1 - df["close"].iloc[-1] / high_52
     raw_score = float(np.clip(discount * 200, 0, 100))
 

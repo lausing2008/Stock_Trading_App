@@ -34,7 +34,7 @@ def _fetch_earnings_for_symbol(symbol: str, stock_id: int) -> int:
                             eps_est = row.get("epsEstimate") if pd.notna(row.get("epsEstimate")) else None
                             eps_act = row.get("epsActual") if pd.notna(row.get("epsActual")) else None
                             surprise = None
-                            if eps_est and eps_act and eps_est != 0:
+                            if eps_est is not None and eps_act is not None and eps_est != 0:
                                 surprise = round((eps_act - eps_est) / abs(eps_est) * 100, 2)
                             # Infer quarter from month
                             fq = (report_date.month - 1) // 3 + 1

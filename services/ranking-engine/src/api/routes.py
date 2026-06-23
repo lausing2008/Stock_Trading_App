@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from common.jwt_auth import get_current_username
 from db import Fundamental, Price, Ranking, Signal, SignalType, Stock, TimeFrame, get_session
 
 from ..scoring import compute_kscore
@@ -443,9 +444,11 @@ def screen(
 
     rows = session.execute(stmt).all()
 
-    # Latest signal per stock
+    # Latest SWING signal per stock — pin to SWING so multiple horizons written in the
+    # same second don't produce arbitrary signal values in the screener display.
     sig_subq = (
         select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+        .where(Signal.horizon == "SWING")
         .group_by(Signal.stock_id)
         .subquery()
     )
@@ -454,6 +457,7 @@ def screen(
         .join(sig_subq,
               (Signal.stock_id == sig_subq.c.stock_id)
               & (Signal.ts == sig_subq.c.max_ts))
+        .where(Signal.horizon == "SWING")
     ).all()
     sig_map: dict[int, dict] = {
         r.stock_id: {"signal": r.signal.value, "confidence": float(r.confidence), "horizon": r.horizon.value}
@@ -713,6 +717,7 @@ def refresh(
     tasks: BackgroundTasks,
     market: str | None = None,
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Compute + persist rankings for the whole universe."""
     stmt = select(Stock).where(Stock.active.is_(True))
