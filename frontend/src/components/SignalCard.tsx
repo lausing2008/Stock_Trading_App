@@ -123,7 +123,7 @@ function buildReasons(r: Reasons): Factor[] {
   const factors: Factor[] = [];
 
   // Earnings proximity — shown first when present
-  if (r.earnings_warning === 'critical') {
+  if (r.earnings_warning === 'critical' || r.earnings_warning === 'short_imminent_event') {
     factors.push({
       label: 'Earnings in ≤2 Days',
       bullish: false,
@@ -136,6 +136,13 @@ function buildReasons(r: Reasons): Factor[] {
       bullish: false,
       warning: true,
       detail: 'Approaching earnings — signal strength reduced, position sizing caution advised',
+    });
+  } else if (r.earnings_warning === 'watch') {
+    factors.push({
+      label: `Earnings in ${r.days_to_earnings}d`,
+      bullish: false,
+      warning: true,
+      detail: 'Earnings approaching — elevated uncertainty, reduce position size and tighten stop',
     });
   } else if (r.earnings_warning === 'note') {
     factors.push({
@@ -304,16 +311,21 @@ function buildReasons(r: Reasons): Factor[] {
     const oversold   = r.stoch_rsi_oversold;
     const overbought = r.stoch_rsi_overbought;
     const crossUp    = r.stoch_rsi_cross_up;
+    // Bullish: oversold bounce (crossUp from <20) or healthy neutral zone (20–80, not overbought)
+    // Warning: overbought (>80) — elevated pullback risk
+    const isBullish = (crossUp ?? false) || oversold || (!overbought && !oversold);
+    const isWarning = overbought === true;
     factors.push({
       label: `Stoch RSI ${k.toFixed(0)}`,
-      bullish: oversold || (crossUp ?? false),
+      bullish: isBullish && !isWarning,
+      warning: isWarning,
       detail: crossUp
         ? `%K ${k.toFixed(0)} — just crossed up from oversold (strong entry signal)`
         : oversold
-          ? `%K ${k.toFixed(0)} — oversold zone (<20), RSI at a low extreme`
+          ? `%K ${k.toFixed(0)} — oversold zone (<20), potential reversal`
           : overbought
-            ? `%K ${k.toFixed(0)} — overbought zone (>80), RSI at a high extreme`
-            : `%K ${k.toFixed(0)} — neutral zone`,
+            ? `%K ${k.toFixed(0)} — overbought zone (>80), elevated pullback risk`
+            : `%K ${k.toFixed(0)} — neutral zone (20–80), healthy momentum`,
     });
   }
 
@@ -430,7 +442,7 @@ export default function SignalCard({ signal }: { signal: Signal }) {
       {/* Scores */}
       <div className="grid grid-cols-3 gap-2 mb-3">
         <div className="text-center">
-          <div className="text-lg font-bold text-slate-100">{(signal.confidence ?? 0).toFixed(0)}</div>
+          <div className="text-lg font-bold text-slate-100" title="TA composite score (0–100): higher = stronger conviction">{(signal.confidence ?? 0).toFixed(0)}%</div>
           <div className="text-xs text-slate-500">Confidence</div>
         </div>
         <div className="text-center">

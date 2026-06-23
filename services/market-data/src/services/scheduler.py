@@ -78,6 +78,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 
 from common.config import get_settings
 from common.logging import get_logger
@@ -951,7 +952,9 @@ def check_signal_alerts() -> None:
         pass  # Redis unavailable — allow through; deduplication falls back to DB last_signal
     try:
         with SessionLocal() as session:
-            alerts = session.execute(select(SignalAlert)).scalars().all()
+            alerts = session.execute(
+                select(SignalAlert).options(selectinload(SignalAlert.user))
+            ).scalars().all()
             if not alerts:
                 return
 
@@ -1221,7 +1224,10 @@ def check_signal_alerts() -> None:
                             continue
 
                 # Guard: no email address → log and advance state to avoid infinite retry
-                if not (alert.email or "").strip():
+                effective_email = (alert.email or "").strip() or (
+                    (alert.user.email or "") if alert.user else ""
+                )
+                if not effective_email:
                     log.warning("signal_alert.skipped", symbol=alert.symbol, reason="no_email_address")
                     alert.last_signal = current
                     continue
@@ -1263,7 +1269,7 @@ def check_signal_alerts() -> None:
                     )
 
                 email_ok = send_signal_alert_email(
-                    to=alert.email,
+                    to=effective_email,
                     symbol=alert.symbol,
                     prev_signal=prev,
                     new_signal=current,

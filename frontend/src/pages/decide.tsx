@@ -19,8 +19,8 @@ const REGIME_COLOR: Record<string, string> = {
 };
 
 function ScoreBar({ score, minScore }: { score: number; minScore: number }) {
-  const max = Math.max(12, score + 2);
-  const pct = Math.max(0, Math.min(100, (score / max) * 100));
+  const max = 12;
+  const pct = Math.max(0, score) / max * 100;
   const minPct = (minScore / max) * 100;
   const color = score >= minScore ? '#22c55e' : '#ef4444';
   return (
@@ -136,7 +136,7 @@ function PositionCard({ pos }: { pos: PositionPlan }) {
   );
 }
 
-const STYLES = ['SWING', 'GROWTH', 'SHORT', 'LONG'];
+const STYLES = ['SWING', 'GROWTH', 'SCALP', 'INCOME'];
 
 export default function DecidePage() {
   const [symbol, setSymbol] = useState('');

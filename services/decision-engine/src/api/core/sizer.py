@@ -113,9 +113,9 @@ def compute_position(
         if stop_dist * shares > max_loss:
             shares = max_loss / stop_dist
 
-    # Max position size cap
+    # Max position size cap (earnings_mult already applied via risk_dollar above)
     max_pos_pct = cfg.get("max_position_pct", 0.10)
-    max_pos_value = equity * max_pos_pct * earnings_mult
+    max_pos_value = equity * max_pos_pct
     position_value = shares * live_price
     if position_value > max_pos_value:
         shares = max_pos_value / live_price

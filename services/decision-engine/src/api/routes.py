@@ -82,6 +82,19 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     dte_int        = int(dte) if dte is not None else None
     cross_buys     = int(reasons.get("cross_style_buys", 0))
 
+    # Compute signal age for Factors display
+    sig_age_h: float | None = None
+    sig_ts = (signal_data or {}).get("ts")
+    if sig_ts is not None:
+        try:
+            if isinstance(sig_ts, str):
+                ts_aware = datetime.fromisoformat(sig_ts.replace("Z", "+00:00"))
+            else:
+                ts_aware = sig_ts.replace(tzinfo=timezone.utc) if sig_ts.tzinfo is None else sig_ts
+            sig_age_h = (datetime.now(timezone.utc) - ts_aware).total_seconds() / 3600
+        except Exception:
+            pass
+
     # 5. Resolve research fields
     research_rec   = None
     research_score = None
@@ -95,7 +108,21 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     regime = get_regime(req.market)
     regime_state = regime.get("state", "neutral")
 
-    # 7. Hard rejects
+    # 7. Hard rejects — special-case: no signal data means symbol is unknown
+    if signal_data is None:
+        latency = int((_time.monotonic() - t0) * 1000)
+        no_signal_reason = (
+            "No stored signal for this symbol — open the stock detail page first to generate one."
+        )
+        log.info("decision.blocked", symbol=symbol, style=style, reason=no_signal_reason)
+        return DecisionResult(
+            symbol=symbol, style=style,
+            verdict="BLOCKED", score=-99, min_score=min_score_for_regime(regime_state, cfg),
+            factors=factors, multipliers=Multipliers(),
+            score_breakdown=[], blocked_reason=no_signal_reason,
+            latency_ms=latency, timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
     reject_reason = check_hard_rejects(
         signal_direction=sig_direction,
         confidence=confidence,
@@ -114,12 +141,13 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     factors = Factors(
         signal_direction=sig_direction,
         signal_confidence=round(confidence, 2),
-        ml_bull_prob=float(reasons.get("ml_probability", 0) or (signal_data or {}).get("bullish_probability") or 0) or None,
+        ml_bull_prob=float((signal_data or {}).get("bullish_probability") or reasons.get("ml_probability") or 0) or None,
         research_recommendation=research_rec,
         research_score=research_score,
         regime=regime_state,
         volume_z=float(reasons["volume_z"]) if reasons.get("volume_z") is not None else None,
         days_to_earnings=dte_int,
+        signal_age_h=round(sig_age_h, 2) if sig_age_h is not None else None,
         conf_delta=float(reasons.get("confidence_delta") or (signal_data or {}).get("confidence_delta") or 0) or None,
         cross_style_buys=cross_buys,
     )
@@ -192,22 +220,6 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
-@router.post("/decide/{symbol}", response_model=DecisionResult)
-async def decide(
-    symbol: str,
-    req: DecisionRequest,
-    _: str = Depends(get_current_username),
-):
-    """Evaluate whether to enter a position in {symbol} right now.
-
-    Aggregates signal engine, ML probability, research recommendation, and market
-    regime into a single verdict (BUY / HOLD / SKIP / BLOCKED) with full position
-    sizing and per-layer score breakdown.
-    """
-    symbol = symbol.upper()
-    return await _decide(symbol, req)
-
-
 @router.post("/decide/batch", response_model=list[DecisionResult])
 async def decide_batch(
     req: BatchDecisionRequest,
@@ -245,6 +257,22 @@ async def decide_batch(
     return sorted(output, key=lambda r: r.score, reverse=True)
 
 
+@router.post("/decide/{symbol}", response_model=DecisionResult)
+async def decide(
+    symbol: str,
+    req: DecisionRequest,
+    _: str = Depends(get_current_username),
+):
+    """Evaluate whether to enter a position in {symbol} right now.
+
+    Aggregates signal engine, ML probability, research recommendation, and market
+    regime into a single verdict (BUY / HOLD / SKIP / BLOCKED) with full position
+    sizing and per-layer score breakdown.
+    """
+    symbol = symbol.upper()
+    return await _decide(symbol, req)
+
+
 @router.get("/decide/{symbol}/explain")
 async def explain(
     symbol: str,
@@ -263,8 +291,7 @@ async def explain(
         "Score breakdown:",
     ]
     for item in result.score_breakdown:
-        sign = "+" if item.pts > 0 else ""
-        lines.append(f"  [{sign}{item.pts:+d}] {item.layer}: {item.note}")
+        lines.append(f"  [{item.pts:+d}] {item.layer}: {item.note}")
 
     if result.blocked_reason:
         lines.append(f"\nBlocked: {result.blocked_reason}")

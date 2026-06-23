@@ -321,13 +321,13 @@ export default function StockDetail() {
     { revalidateOnFocus: false },
   );
 
+  const activeHorizon = selectedHorizon || 'SWING';
+
   const { data: signalHistory } = useSWR<SignalHistoryPoint[]>(
-    symbol ? `signal-history-${symbol}-${pageStyle || 'SWING'}` : null,
-    () => api.signalHistory(symbol, pageStyle || 'SWING', 60),
+    symbol ? `signal-history-${symbol}-${activeHorizon}` : null,
+    () => api.signalHistory(symbol, activeHorizon, 60),
     { revalidateOnFocus: false },
   );
-
-  const activeHorizon = selectedHorizon || 'SWING';
   const { data: symbolOutcomes } = useSWR(
     symbol ? `symbol-outcomes-${symbol}-${activeHorizon}` : null,
     () => api.symbolOutcomes(symbol, activeHorizon),
@@ -494,7 +494,9 @@ export default function StockDetail() {
 
     const lp = allPrices?.find(p => p.symbol === symbol);
     const currentPrice = lp?.price ?? (data.prices?.at(-1)?.close ?? null);
-    const sig = data.signal;
+    // Use the signal for the active horizon tab, not just the default SWING signal
+    const sig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+      ?? (selectedHorizon === 'SWING' ? data.signal : data.signal);
     const rank = data.ranking;
     const fund = data.fundamentals;
     const levels = data.levels;
@@ -2275,8 +2277,14 @@ Return ONLY valid JSON — no markdown, no prose:
             );
           })()}
 
-          {/* Game Plan — only for bullish/neutral signals where a buy plan makes sense */}
-          {isAiConfigured() && data.signal?.signal !== 'SELL' && (
+          {/* Game Plan — only for BUY/HOLD signals; hidden for WAIT/SELL */}
+          {isAiConfigured() && (() => {
+            const gpSig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+              ?? (selectedHorizon === 'SWING' ? data.signal : data.signal);
+            const gpDirection = gpSig?.signal;
+            if (gpDirection === 'WAIT' || gpDirection === 'SELL') return null;
+            const gpButtonLabel = 'Generate 10-Day Game Plan';
+            return (
             <div>
               {/* Generate button */}
               {!gamePlan && !gamePlanLoading && (
@@ -2292,7 +2300,7 @@ Return ONLY valid JSON — no markdown, no prose:
                   }}
                 >
                   <span style={{ fontSize: '14px' }}>📋</span>
-                  <span style={{ flex: 1 }}>Generate 10-Day Game Plan</span>
+                  <span style={{ flex: 1 }}>{gpButtonLabel}</span>
                   <span style={{ fontSize: '10px', color: '#22c55e', opacity: 0.7 }}>AI</span>
                 </button>
               )}
@@ -2418,7 +2426,8 @@ Return ONLY valid JSON — no markdown, no prose:
                 </div>
               )}
             </div>
-          )}
+          );
+          })()}
 
         </div>
       </div>

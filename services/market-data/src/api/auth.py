@@ -9,12 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import SessionLocal, User, UserRole, get_session
+from db import SessionLocal, SignalAlert, User, UserRole, get_session
 
 log = get_logger("auth")
 
@@ -283,7 +283,23 @@ def update_me(
 ):
     user = session.get(User, current.id)
     if body.email is not None:
-        user.email = body.email.strip() or None
+        old_email = user.email
+        new_email = body.email.strip() or None
+        user.email = new_email
+        # Cascade: update any signal alert subscriptions that stored the old email
+        if old_email and new_email and old_email != new_email:
+            session.execute(
+                update(SignalAlert)
+                .where(SignalAlert.user_id == user.id, SignalAlert.email == old_email)
+                .values(email=new_email)
+            )
+        elif old_email and not new_email:
+            # Email cleared — null out stored alert emails so fallback reads user.email (now None)
+            session.execute(
+                update(SignalAlert)
+                .where(SignalAlert.user_id == user.id, SignalAlert.email == old_email)
+                .values(email=None)
+            )
     session.commit()
     session.refresh(user)
     return UserOut(
