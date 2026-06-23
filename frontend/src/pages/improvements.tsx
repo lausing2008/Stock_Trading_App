@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,120 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 144 — Deep Audit: Event Intelligence Engine ─────────────────────────
+  {
+    id: 'EI-F5-EPS-FALSY-ZERO',
+    tier: 144 as const, severity: 'high',
+    file: 'services/event-intelligence/src/services/earnings.py:37',
+    effort: '5m',
+    impact: 'High — EPS surprise was None for any company reporting near-zero expected EPS (e.g. turnaround story with analyst estimate of $0.01 rounded to 0.0). `if eps_est and ...` treated 0.0 as falsy, setting surprise_pct=None and earnings_strength_score to neutral (50) regardless of actual beat size.',
+    title: 'EI-F5: EPS surprise computation treated eps_est=0 as falsy — surprise always None for near-zero estimates',
+    what: '`if eps_est and eps_act and eps_est != 0:` — when eps_est is 0.0, Python evaluates it as falsy before reaching the eps_est != 0 guard. The redundant != 0 check never fires.',
+    fix: 'Changed to `if eps_est is not None and eps_act is not None and eps_est != 0:` — explicit None checks, preserving the divide-by-zero guard.',
+    implementedNote: 'Done 2026-06-23.',
+  },
+  {
+    id: 'EI-F12-FOMC-DATES-EXPIRE',
+    tier: 144 as const, severity: 'critical',
+    file: 'services/event-intelligence/src/services/economic.py:19',
+    effort: '10m',
+    impact: 'Critical — FOMC dates were hardcoded through 2026-12-09 only. After that date, days_to_next_fomc() would silently return None, _compute_economic_score() would return 0.0, and FOMC risk would vanish from all catalyst and composite scores with no error or log.',
+    title: 'EI-F12: FOMC dates hardcoded through Dec 2026 only — economic risk silently zeroes out after 2026-12-09',
+    what: '_FOMC_DATES list ended at ("2026-12-09", ...). After that date, days_to_next_fomc() returns None, which suppresses the entire FOMC risk block in _compute_risk_score().',
+    fix: 'Extended _FOMC_DATES with 8 approximate 2027 meeting dates (Jan 27 through Dec 08) following the standard Fed 8-per-year pattern. Updated comment to "2025–2027".',
+    implementedNote: 'Done 2026-06-23.',
+  },
+  {
+    id: 'EI-F4-INSTITUTIONAL-NAME-MATCH',
+    tier: 144 as const, severity: 'high',
+    file: 'services/event-intelligence/src/services/institutional.py:124',
+    effort: '2h',
+    impact: 'High — 13F stock matching used a name-prefix heuristic (sym in name_upper or name_upper.startswith(sym[:4])). Short tickers like "C" matched any company starting with "C", attributing wrong institutional holdings to wrong stocks and corrupting institutional_score.',
+    title: 'EI-F4 (deferred): 13F parsing matches stocks by name prefix — false positives for short tickers',
+    what: 'The issuer_name fallback in 13F XML parsing uses fragile substring matching. "CAT", "C", "BA" can match completely unrelated company names. Should use CUSIP or ticker symbol directly from XML.',
+    fix: 'Deferred — requires CUSIP→ticker lookup table or SEC EDGAR ticker mapping API. Interim mitigation: require minimum ticker length ≥ 3 chars for name-prefix matching.',
+    implementedNote: 'Deferred — CUSIP/ticker mapping needed.',
+  },
+  {
+    id: 'EI-F10-CATALYST-RECOMPUTE-ORDER',
+    tier: 144 as const, severity: 'medium',
+    file: 'services/event-intelligence/src/scheduler.py:91',
+    effort: '5m',
+    impact: 'Medium — catalyst recompute runs at 06:00 UTC, before earnings sync at 06:30 UTC and insider sync at 07:00 UTC. A stock that just reported earnings gets its catalyst score recomputed with yesterday\'s data, and the earnings boost is invisible for ~5.5 hours (until 12:00 UTC recompute).',
+    title: 'EI-D1 (deferred): Catalyst recompute schedule precedes earnings/insider sync — 5.5h stale window',
+    what: 'APScheduler job order: 00:00 UTC catalyst, 06:00 UTC catalyst, 06:30 UTC earnings sync, 07:00 UTC insider sync, 12:00 UTC catalyst. The 06:00 catalyst run uses prior-day data.',
+    fix: 'Deferred — move morning catalyst recompute to 07:30 UTC (after all data syncs complete). Low-risk schedule change.',
+    implementedNote: 'Deferred — scheduler config change.',
+  },
+
+  // ── Tier 143 — Deep Audit: Ranking Engine + Strategy Engine ──────────────────
+  {
+    id: 'RK-F2-REFRESH-NO-AUTH',
+    tier: 143 as const, severity: 'high',
+    file: 'services/ranking-engine/src/api/routes.py:711',
+    effort: '5m',
+    impact: 'High — POST /rankings/refresh had no authentication guard. Any process reachable inside the Docker network could trigger a full re-score of every active stock (O(N_stocks × price_history)), saturating the ranking-engine thread pool and starving leaderboard reads.',
+    title: 'RK-F2: POST /rankings/refresh had no auth — any internal caller could trigger full market re-score',
+    what: 'The refresh endpoint used Depends(get_session) but no Depends(get_current_username). Added get_current_username import from common.jwt_auth and auth guard.',
+    fix: 'Added `from common.jwt_auth import get_current_username` import and `_: str = Depends(get_current_username)` parameter to refresh().',
+    implementedNote: 'Done 2026-06-23.',
+  },
+  {
+    id: 'RK-F5-SCREENER-SIGNAL-AMBIGUOUS',
+    tier: 143 as const, severity: 'high',
+    file: 'services/ranking-engine/src/api/routes.py:447',
+    effort: '10m',
+    impact: 'High — screener signal join grouped by stock_id and max(ts) with no horizon filter. Multiple horizons (SWING, GROWTH, LONG) written in the same bulk-persist second all share the same max_ts, so the dict comprehension kept the last row in arbitrary DB storage order. A stock could show SELL in the screener when its SWING signal was BUY.',
+    title: 'RK-F5: Screener signal join was ambiguous when multiple horizons share the same timestamp',
+    what: 'sig_subq had no WHERE horizon filter — both the subquery and outer join could match any horizon. For stocks with simultaneous multi-horizon refreshes, the displayed signal was non-deterministic.',
+    fix: 'Added .where(Signal.horizon == "SWING") to both the sig_subq subquery and the outer Signal query. Screener now deterministically shows the SWING signal, consistent with the Signal Filter page.',
+    implementedNote: 'Done 2026-06-23.',
+  },
+  {
+    id: 'RK-F3-VALUE-PROXY-DIV-ZERO',
+    tier: 143 as const, severity: 'medium',
+    file: 'services/ranking-engine/src/scoring/kscore.py:123',
+    effort: '5m',
+    impact: 'Medium — _value_proxy() divided by high_52 without a zero guard. A stock with all-zero price history (bad data import) would produce NaN discount, NaN raw_score, and NaN propagated into the composite K-Score. Score stored as None in rankings table with no error logged.',
+    title: 'RK-F3: _value_proxy() could divide by zero when 52-week high is 0 — NaN propagates to composite score',
+    what: 'high_52 = df["close"].tail(252).max() — if all 252 closing prices are zero (bad ingestion), high_52=0 and discount = 1 - close/0 = NaN. np.clip(NaN, 0, 100) = NaN.',
+    fix: 'Added early return `if not high_52 or high_52 <= 0: return 50.0` before the division. Returns neutral score for invalid data.',
+    implementedNote: 'Done 2026-06-23.',
+  },
+  {
+    id: 'SE-F3-SORTINO-CALMAR-NULL',
+    tier: 143 as const, severity: 'low',
+    file: 'services/strategy-engine/src/api/routes.py:249',
+    effort: '2m',
+    impact: 'Low — GET /backtests/{bid} always returned sortino=null and calmar=null even though both metrics are stored in the bt.equity_curve JSON column. The list endpoint (GET /backtests) correctly read them from equity_curve. Only the detail endpoint was affected.',
+    title: 'SE-F3: GET /backtests/{bid} returned sortino=null and calmar=null — values hardcoded None despite being in DB',
+    what: 'Lines 249-250 hardcoded `"sortino": None, "calmar": None`. The list endpoint at line 215-216 correctly used `(bt.equity_curve or {}).get("sortino")` — the detail endpoint was never updated to match.',
+    fix: 'Changed to `(bt.equity_curve or {}).get("sortino")` and `(bt.equity_curve or {}).get("calmar")` to mirror the list endpoint.',
+    implementedNote: 'Done 2026-06-23.',
+  },
+  {
+    id: 'SE-D1-EQUITY-CURVE-COSTS',
+    tier: 143 as const, severity: 'medium',
+    file: 'services/strategy-engine/src/backtest/engine.py:77',
+    effort: '2h',
+    impact: 'Medium — equity curve computed from raw close pct_change() with no cost deduction, while individual trade returns correctly subtract slippage+fee. Sharpe/CAGR/total_return (equity-curve based) are overstated vs win_rate/profit_factor (trade-based). The two sets of metrics are inconsistent.',
+    title: 'SE-D1 (deferred): Equity curve overstates returns — costs excluded from curve but included in trade P&L',
+    what: 'Equity curve: (1 + raw_close_pct_change * position).cumprod(). Trades: exit / (entry*(1+slip+fee)) - 1. Sharpe and CAGR use the cost-free curve; win_rate and PF use cost-adjusted trades.',
+    fix: 'Deferred — requires reconstructing equity curve from per-trade cost-adjusted fills rather than close prices.',
+    implementedNote: 'Deferred — requires backtest engine refactor.',
+  },
+  {
+    id: 'RK-D1-SCREENER-FULL-SCAN',
+    tier: 143 as const, severity: 'medium',
+    file: 'services/ranking-engine/src/api/routes.py:447',
+    effort: '30m',
+    impact: 'Medium — screen() sig_subq has no WHERE clause on stock_ids from the screener result set. As the signals table grows it becomes a full-table aggregation on every screener request. Response times degrade from ms to seconds with no index benefit.',
+    title: 'RK-D1 (deferred): Screener signal query is a full signals table scan — no stock_id pre-filter',
+    what: 'The sig_subq aggregates max(Signal.ts) GROUP BY stock_id across all signals. With 200+ stocks × 4 horizons × 3 years of signals this table grows unbounded and the screener query gets slower over time.',
+    fix: 'Deferred — pre-filter sig_subq with .where(Signal.stock_id.in_([r[0].id for r in rows])) using the already-fetched screener rows.',
+    implementedNote: 'Deferred — simple optimization, low urgency while signals table is small.',
+  },
+
   // ── Tier 142 — Deep Audit: Technical Analysis Engine ─────────────────────────
   {
     id: 'TA-F2-RSI-NAN-VS-100',
@@ -9289,6 +9403,8 @@ const TIER_LABEL: Record<Tier, string> = {
   140: 'Tier 140 — Deep audit: Signal Outcomes + Research Engine + Alerts — 7 fixed',
   141: 'Tier 141 — Deep audit: API Gateway + Scheduler + ML Pipeline — 6 fixed (1 deferred)',
   142: 'Tier 142 — Deep audit: Technical Analysis Engine — 2 fixed (2 deferred)',
+  143: 'Tier 143 — Deep audit: Ranking Engine + Strategy Engine — 4 fixed (2 deferred)',
+  144: 'Tier 144 — Deep audit: Event Intelligence Engine — 2 fixed (2 deferred)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -9434,6 +9550,8 @@ const TIER_COLOR: Record<Tier, string> = {
   140: '#60a5fa',
   141: '#f472b6',
   142: '#a78bfa',
+  143: '#fb923c',
+  144: '#4ade80',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
