@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7064,6 +7064,92 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-21.',
   },
 
+  // ── Tier 140 — Deep Audit: Signal Outcomes + Research Engine + Alert System ───
+  {
+    id: 'SO-F1-SCALE-MISMATCH',
+    tier: 140 as const, severity: 'critical',
+    file: 'services/market-data/src/services/paper_trading_engine.py:1355',
+    effort: '5m',
+    impact: 'Critical — paper trading exit writeback stored return_5d/10d/20d as percent-scale (e.g. 3.5) while evaluate_signal_outcomes stores decimal (e.g. 0.035). The outcomes_summary endpoint multiplied all return_Nd by 100 for display, so paper-trading-sourced rows showed 350% instead of 3.5% in multi-window analytics and IC analysis.',
+    title: 'SO-F1: return_{5d/10d/20d} paper-trading writeback was 100× inflated — percent vs decimal mismatch',
+    what: '`setattr(_so, f"return_{_bucket}", round(pnl_pct * 100, 4))` stored percent-scale. evaluate_signal_outcomes stores raw decimal ratio. outcomes_summary multiplied by 100 for display — 100× wrong for paper trading rows.',
+    fix: 'Changed to `round(pnl_pct, 4)` — stores decimal to match evaluate_signal_outcomes.',
+    implementedNote: 'Done 2026-06-22.',
+    defaultStatus: 'done' as const,
+  },
+  {
+    id: 'SO-F4-EVALUATION-CUTOFF',
+    tier: 140 as const, severity: 'high',
+    file: 'services/signal-engine/src/api/routes.py:3978,4035',
+    effort: '5m',
+    impact: 'High — signals whose hold window closed exactly today were deferred to tomorrow\'s run even though today\'s closing bar was available post-close. Systematic 1-day lag in outcome evaluation. Also affected multi-window returns (5d/10d/20d).',
+    title: 'SO-F4: off-by-one in evaluation cutoff — >= today should be > today',
+    what: '`if exit_target >= today: continue` deferred same-day evaluations. At post-close (16:30 ET) today\'s prices are settled. Changed to `> today` in both _window_return and the main evaluation loop.',
+    fix: 'Changed both `>= today` comparisons to `> today`.',
+    implementedNote: 'Done 2026-06-22.',
+    defaultStatus: 'done' as const,
+  },
+  {
+    id: 'SO-F9-EVALUATE-NO-AUTH',
+    tier: 140 as const, severity: 'medium',
+    file: 'services/signal-engine/src/api/routes.py:3892',
+    effort: '5m',
+    impact: 'Medium — POST /outcomes/evaluate was the only write endpoint without JWT auth. Any service on the internal Docker network could trigger bulk outcome evaluation, potentially creating duplicate rows or overwriting recent results.',
+    title: 'SO-F9: POST /outcomes/evaluate was unauthenticated — only write endpoint without JWT',
+    what: 'All other mutating signal-engine endpoints (/refresh, /reset, calibrate_ml_weight, calibrate_conviction_weights) require JWT. evaluate_signal_outcomes had no auth dependency.',
+    fix: 'Added `_: str = Depends(get_current_username)` to the endpoint signature.',
+    implementedNote: 'Done 2026-06-22.',
+    defaultStatus: 'done' as const,
+  },
+  {
+    id: 'RE-F1-INFLIGHT-DEADLOCK',
+    tier: 140 as const, severity: 'critical',
+    file: 'services/research-engine/src/api/routes.py:1487',
+    effort: '15m',
+    impact: 'Critical — if generate_research() threw an exception after setting _inflight_research[sym] (e.g. yfinance 404, network error, scoring crash), the asyncio.Event was left un-set in _inflight_research. All subsequent callers for the same symbol waited forever — symbol permanently unresearchable until container restart.',
+    title: 'RE-F1: _inflight_research deadlock — exception in generate_research leaves event permanently un-set',
+    what: '_inflight_research[sym] = asyncio.Event() at line 1496. Cleanup at line 1665 only runs in the happy path. Exceptions anywhere in between leave the event in the dict un-set. Future callers await forever.',
+    fix: 'Added 60s asyncio.wait_for timeout to the inflight wait. If original caller dies, waiters timeout after 60s, pop the stale event, and compute themselves.',
+    implementedNote: 'Done 2026-06-22.',
+    defaultStatus: 'done' as const,
+  },
+  {
+    id: 'RE-F2-YF-MARGIN-KEY-MISMATCH',
+    tier: 140 as const, severity: 'high',
+    file: 'services/research-engine/src/api/routes.py:1321',
+    effort: '5m',
+    impact: 'High — when market-data fundamentals cache was cold, _yf_fundamentals() fallback returned "profit_margins"/"gross_margins"/"operating_margins" but _score_fundamental() read "profit_margin"/"gross_margin"/"operating_margin" (no trailing s). All three margin fields were silently None — up to ±15 scoring points wrong.',
+    title: 'RE-F2: _yf_fundamentals() returned wrong key names — margin scores silently 0 on cold cache',
+    what: 'Key names differed by a trailing "s". _score_fundamental() found None for all margin fields, skipped the margin scoring block entirely, and defaulted comparisons to "Inline with sector average" regardless of actual margins.',
+    fix: 'Changed yf_fundamentals return keys: profit_margins→profit_margin, gross_margins→gross_margin, operating_margins→operating_margin.',
+    implementedNote: 'Done 2026-06-22.',
+    defaultStatus: 'done' as const,
+  },
+  {
+    id: 'RE-F4-POST-CACHE-TTL-HARDCODED',
+    tier: 140 as const, severity: 'high',
+    file: 'services/research-engine/src/api/routes.py:1482',
+    effort: '10m',
+    impact: 'High — POST /research/{symbol} (used by generate_research) had a hardcoded 6-hour cache check. But fallback reports (AI timeout/error) have a 5-minute TTL and partial reports have a 30-minute TTL. A fallback report from a transient AI outage blocked regeneration for up to 6 hours even after the AI recovered. GET endpoint correctly used quality-aware TTL; POST was inconsistent.',
+    title: 'RE-F4: generate_research() cache check hardcoded 6h — ignores 5-min fallback TTL',
+    what: 'Cache check: `if age < 21_600: return report` regardless of report_quality. CACHE_TTL_FALLBACK_SEC=300, CACHE_TTL_PARTIAL_SEC=1800, CACHE_TTL_SEC=86400. Fallback reports were served for up to 6h instead of expiring in 5min.',
+    fix: 'Changed to quality-aware TTL lookup: `quality = report.get("report_quality", "full"); ttl = CACHE_TTL_FALLBACK_SEC if quality=="fallback" else ...`',
+    implementedNote: 'Done 2026-06-22.',
+    defaultStatus: 'done' as const,
+  },
+  {
+    id: 'AL-F9-DIRECTION-MAP-FALLBACK',
+    tier: 140 as const, severity: 'medium',
+    file: 'services/market-data/src/services/email_service.py:104',
+    effort: '5m',
+    impact: 'Medium — any signal transition not in direction_map (e.g. SELL→WAIT, HOLD→SELL, or future signal types) defaulted to mood="bullish" with green email styling. A SELL→WAIT email rendered bullish-green, misleading users into thinking the signal improved.',
+    title: 'AL-F9: direction_map fallback was ("bullish","improving") — unknown transitions sent green emails',
+    what: '`direction_map.get((prev_signal, new_signal), ("bullish", "improving"))` — the fallback caused any unrecognised pair to render with green bullish framing and "improving" description.',
+    fix: 'Changed fallback to `("neutral", "unchanged")` — yellow framing for unknown transitions.',
+    implementedNote: 'Done 2026-06-22.',
+    defaultStatus: 'done' as const,
+  },
+
   // ── Tier 139 — Deep Audit: Paper Trading Engine — all 13 fixed ───────────────
   {
     id: 'PT-01-LAMBDA-ARGS',
@@ -9075,6 +9161,7 @@ const TIER_LABEL: Record<Tier, string> = {
   137: 'Tier 137 — Deep audit: Stock Detail AI Signal — 7/9 fixed (3 deferred)',
   138: 'Tier 138 — Deep audit: Decision Engine — 8/12 fixed (4 deferred)',
   139: 'Tier 139 — Deep audit: Paper Trading Engine — 13/14 fixed (PT-14 deferred)',
+  140: 'Tier 140 — Deep audit: Signal Outcomes + Research Engine + Alerts — 7 fixed',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -9217,6 +9304,7 @@ const TIER_COLOR: Record<Tier, string> = {
   137: '#fb923c',
   138: '#f59e0b',
   139: '#34d399',
+  140: '#60a5fa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
