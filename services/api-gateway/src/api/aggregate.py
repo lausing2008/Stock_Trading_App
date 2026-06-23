@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from common.config import get_settings
+from common.jwt_auth import get_current_username
 
 router = APIRouter(prefix="/aggregate", tags=["aggregate"])
 _settings = get_settings()
@@ -26,7 +27,7 @@ async def _get(client: httpx.AsyncClient, url: str):
 
 
 @router.get("/overview/{symbol}")
-async def overview(symbol: str):
+async def overview(symbol: str, _: str = Depends(get_current_username)):
     """One-shot: price tail, indicators, levels, signal, ranking, ML prediction."""
     async with httpx.AsyncClient() as client:
         tasks = {

@@ -21,7 +21,8 @@ def rsi(close: pd.Series, window: int = 14) -> pd.Series:
     avg_gain = gain.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
     avg_loss = loss.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    rsi_val = 100 - (100 / (1 + rs))
+    return rsi_val.fillna(100)  # avg_loss=0 → RSI=100 per Wilder's spec
 
 
 def macd(
@@ -40,7 +41,7 @@ def macd(
 
 def bollinger_bands(close: pd.Series, window: int = 20, n_std: float = 2.0) -> pd.DataFrame:
     mid = close.rolling(window, min_periods=window).mean()
-    std = close.rolling(window, min_periods=window).std()
+    std = close.rolling(window, min_periods=window).std(ddof=0)
     return pd.DataFrame(
         {"bb_mid": mid, "bb_upper": mid + n_std * std, "bb_lower": mid - n_std * std}
     )

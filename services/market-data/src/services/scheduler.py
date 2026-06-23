@@ -1877,7 +1877,7 @@ def _check_short_intraday_triggers(market: str) -> None:
     # market hours guard: US 09:30–16:00 ET, HK 09:30–16:00 HKT
     if market == "US":
         now_et = _dt.now(ZoneInfo("America/New_York"))
-        if not (now_et.hour >= 9 and (now_et.hour < 16 or (now_et.hour == 9 and now_et.minute >= 30))):
+        if not ((now_et.hour > 9 or (now_et.hour == 9 and now_et.minute >= 30)) and now_et.hour < 16):
             return
     elif market == "HK":
         now_hk = _dt.now(ZoneInfo("Asia/Hong_Kong"))
@@ -2165,12 +2165,17 @@ def send_morning_digest(market: str = "US") -> None:
             swing_opportunities = _top5_for_horizon("SWING")
             growth_opportunities = _top5_for_horizon("GROWTH")
 
-            # ── Open paper positions (filtered to this market's stocks) ──────
+            # ── Open paper positions (per-user, filtered to this market's stocks) ─
             market_symbols_set = set(
                 session.execute(
                     select(Stock.symbol).where(Stock.active.is_(True), Stock.market == market.upper())
                 ).scalars().all()
             )
+            # Map portfolio_id → user_id so we can split positions by owner
+            portfolio_user_map: dict[int, int] = {
+                p.id: p.user_id
+                for p in session.execute(select(PaperPortfolio)).scalars().all()
+            }
             open_trades = [
                 t for t in
                 session.execute(select(PaperTrade).where(PaperTrade.stage == "open")).scalars().all()
@@ -2208,8 +2213,13 @@ def send_morning_digest(market: str = "US") -> None:
                 ).all()
                 pos_signal_map = {sym: sig for sym, sig in pos_sig_rows}
 
-            open_positions = []
+            # Build positions grouped by user_id — each user sees only their own trades
+            from collections import defaultdict as _dd
+            _positions_by_user: dict[int, list[dict]] = _dd(list)
             for trade in open_trades:
+                uid = portfolio_user_map.get(trade.portfolio_id)
+                if uid is None:
+                    continue
                 last_price = close_map.get(trade.symbol) or trade.current_price
                 pnl_pct = None
                 if last_price and trade.entry_price:
@@ -2217,7 +2227,7 @@ def send_morning_digest(market: str = "US") -> None:
                 stop_dist_pct = None
                 if last_price and trade.current_stop:
                     stop_dist_pct = (last_price - trade.current_stop) / last_price * 100
-                open_positions.append({
+                _positions_by_user[uid].append({
                     "symbol":        trade.symbol,
                     "entry_price":   float(trade.entry_price),
                     "last_price":    last_price,
@@ -2227,7 +2237,9 @@ def send_morning_digest(market: str = "US") -> None:
                     "hold_days":     trade.hold_days or 0,
                     "current_signal": pos_signal_map.get(trade.symbol),
                 })
-            open_positions.sort(key=lambda p: p.get("pnl_pct") or 0, reverse=True)
+            for _uid in _positions_by_user:
+                _positions_by_user[_uid].sort(key=lambda p: p.get("pnl_pct") or 0, reverse=True)
+            positions_by_user = dict(_positions_by_user)
 
             # ── Pattern alerts triggered since yesterday ──────────────────────
             _PATTERN_CONDITIONS = {
@@ -2274,6 +2286,7 @@ def send_morning_digest(market: str = "US") -> None:
         # ── Send to all recipients ────────────────────────────────────────────
         sent = 0
         for user in users:
+            open_positions = positions_by_user.get(user.id, [])
             ok = send_morning_digest_email(
                 to=user.email,
                 date_str=date_str,
@@ -2290,9 +2303,10 @@ def send_morning_digest(market: str = "US") -> None:
 
         job_key = f"morning_digest_{market.lower()}"
         _record_job_status(job_key, "ok", time.monotonic() - _t0)
+        total_positions = sum(len(v) for v in positions_by_user.values())
         log.info("morning_digest.done", market=market, sent=sent, recipients=len(users),
                  swing=len(swing_opportunities), growth=len(growth_opportunities),
-                 positions=len(open_positions))
+                 positions=total_positions)
 
     except Exception as exc:
         log.error("morning_digest.failed", market=market, error=str(exc), exc_info=True)

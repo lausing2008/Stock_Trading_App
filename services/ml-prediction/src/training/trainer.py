@@ -368,7 +368,8 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
     df.index = df.index.normalize()  # strip time component for date alignment
 
     try:
-        X_full, y_dir, _ = build_features(df, horizon=5, macro_df=None)
+        _outcome_horizon = {"SWING": 10, "LONG": 20, "GROWTH": 15, "SHORT": 5}.get(style.upper(), 10)
+        X_full, y_dir, _ = build_features(df, horizon=_outcome_horizon, macro_df=None)
     except Exception:
         return pd.DataFrame(), pd.Series(dtype=int)
 
