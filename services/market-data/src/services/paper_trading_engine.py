@@ -2260,10 +2260,15 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         shares         = round(shares, 4)
         position_value = round(shares * live_price, 2)
 
-        # FIN-07: skip near-zero share positions that would pollute the journal
-        if shares < 0.01 or position_value <= 0:
-            log.info("paper.skip_min_shares", symbol=stock.symbol,
-                     shares=shares, position_value=position_value)
+        # FIN-07: skip near-zero share positions that would pollute the journal.
+        # Also serves as an implicit ATR-volatility filter: extreme ATR → wide stop →
+        # tiny shares (via max_loss_per_trade_pct cap) → position_value < min_position_value → skip.
+        min_pos_val = cfg.get("min_position_value", 200.0)
+        if shares < 0.01 or position_value <= 0 or position_value < min_pos_val:
+            atr_pct = round(atr / live_price * 100, 1) if (atr and live_price > 0) else None
+            log.info("paper.skip_min_position", symbol=stock.symbol,
+                     shares=shares, position_value=position_value, min_required=min_pos_val,
+                     atr_pct=atr_pct, stop_dist=round(stop_distance, 2))
             continue
 
         # Cap position at max_position_pct of equity
