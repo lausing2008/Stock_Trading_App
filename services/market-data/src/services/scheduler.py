@@ -2348,7 +2348,12 @@ def send_paper_portfolio_digest() -> None:
                             PaperTrade.exit_time >= today_utc_start,
                         ).order_by(_desc(PaperTrade.exit_time))
                     ).scalars().all()
-                    equity = p.current_cash
+                    # Include market value of open positions (not just cash)
+                    positions_value = sum(
+                        float(t.current_price or t.entry_price) * float(t.shares)
+                        for t in open_trades if t.shares and t.shares > 0
+                    )
+                    equity = float(p.current_cash) + positions_value
                     total_return_pct = round((equity / float(p.initial_capital) - 1) * 100, 2)
                     total_pnl = round(equity - float(p.initial_capital), 2)
                     today_closed_list = [
