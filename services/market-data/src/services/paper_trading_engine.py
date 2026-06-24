@@ -696,14 +696,15 @@ _hk_regime_cache_ts: float = 0.0
 
 
 def _fetch_hk_market_regime(cfg: dict) -> dict:
-    """Basic HK regime detection: HSI vs 200-day SMA.
+    """HK regime detection using dual SMA (50 + 200).
 
     Returns a simplified regime dict compatible with the US version.
-    No VIX equivalent — uses HSI distance from 200SMA as the sole signal:
-      bull   : HSI > 200 SMA and 20d return > 0
-      neutral: HSI > 200 SMA but 20d return ≤ 0 (topping / momentum fade)
-      choppy : HSI within ±2% of 200 SMA
-      bear   : HSI < 200 SMA
+    No VIX equivalent — uses HSI position vs both SMA50 and SMA200:
+      bull     : HSI > SMA200 and 20d return > 0
+      neutral  : HSI > SMA200 but 20d return ≤ 0 (topping / momentum fade)
+      choppy   : HSI below SMA200 but above SMA50 (recovering), or within ±5% of SMA200
+      risk_off : HSI 8–15% below SMA200 AND below SMA50 (sustained downtrend, 50% size)
+      bear     : HSI > 15% below SMA200 AND below SMA50 (extreme crash, hard block)
     """
     global _hk_regime_cache, _hk_regime_cache_ts
     import time as _time
@@ -729,36 +730,44 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
 
         hsi_price = float(closes.iloc[-1])
         sma200 = float(closes.tail(200).mean()) if len(closes) >= 200 else float(closes.mean())
+        sma50  = float(closes.tail(50).mean())  if len(closes) >= 50  else float(closes.mean())
         sma20  = float(closes.tail(20).mean())
         ret20  = (hsi_price / float(closes.iloc[-20]) - 1) if len(closes) >= 20 else 0.0
 
-        pct_above = (hsi_price / sma200 - 1) if sma200 else 0.0
+        pct_above_200 = (hsi_price / sma200 - 1) if sma200 else 0.0
+        pct_above_50  = (hsi_price / sma50  - 1) if sma50  else 0.0
+        above_sma50   = hsi_price >= sma50
         result["spy_price"]   = hsi_price      # reuse field for UI compat
         result["spy_ema200"]  = sma200
+        result["spy_ema50"]   = sma50
         result["spy_ema20"]   = sma20
         result["spy_20d_ret"] = round(ret20 * 100, 2)
 
-        # HK regime tiers (no VIX equivalent, so use HSI distance from 200 SMA):
-        #   bear     : HSI > 8% below 200 SMA — hard block (extreme crash)
-        #   risk_off : HSI 2–8% below 200 SMA — 60% position size, tighter thresholds
-        #   choppy   : HSI within ±2% of 200 SMA
-        #   neutral  : HSI above 200 SMA, 20d return ≤ 0
-        #   bull     : HSI above 200 SMA, 20d return > 0
-        if hsi_price < sma200 * 0.92:
+        # HK regime — dual-SMA (50 + 200) to distinguish recovery from sustained downtrend.
+        # SMA200 alone is too restrictive: a market recovering from a trough is below its SMA200
+        # but above its SMA50. Treating that as risk_off blocks trades in a rising market.
+        #
+        #   bear     : HSI > 15% below SMA200 AND below SMA50 — extreme crash, hard block
+        #   risk_off : HSI > 8% below SMA200 AND below SMA50 — sustained downtrend (50% size)
+        #   choppy   : HSI below SMA200 but ABOVE SMA50 (recovering), or within ±5% of SMA200
+        #   neutral  : HSI above SMA200, 20d return ≤ 0
+        #   bull     : HSI above SMA200, 20d return > 0
+        if hsi_price < sma200 * 0.85 and not above_sma50:
             result["state"] = "bear"
-            result["notes"].append(f"HSI {pct_above*100:.1f}% below 200 SMA → bear")
-        elif hsi_price < sma200 * 0.98:
+            result["notes"].append(f"HSI {pct_above_200*100:.1f}% below SMA200 + below SMA50 → bear")
+        elif hsi_price < sma200 * 0.92 and not above_sma50:
             result["state"] = "risk_off"
-            result["notes"].append(f"HSI {pct_above*100:.1f}% below 200 SMA → risk_off (60% size)")
-        elif abs(pct_above) < 0.02:
+            result["notes"].append(f"HSI {pct_above_200*100:.1f}% below SMA200 + below SMA50 → risk_off (50% size)")
+        elif hsi_price < sma200:
+            # Below SMA200 but above SMA50: short-term trend is up — recovering market
             result["state"] = "choppy"
-            result["notes"].append("HSI within ±2% of 200 SMA → choppy")
+            result["notes"].append(f"HSI {pct_above_200*100:.1f}% below SMA200 but above SMA50 ({pct_above_50*100:.1f}%) → choppy (recovering)")
         elif ret20 <= 0:
             result["state"] = "neutral"
-            result["notes"].append(f"HSI above 200 SMA but 20d return {ret20*100:.1f}% → neutral")
+            result["notes"].append(f"HSI above SMA200 but 20d return {ret20*100:.1f}% → neutral")
         else:
             result["state"] = "bull"
-            result["notes"].append(f"HSI {pct_above*100:.1f}% above 200 SMA + positive 20d return → bull")
+            result["notes"].append(f"HSI {pct_above_200*100:.1f}% above SMA200 + positive 20d return → bull")
 
     except Exception as exc:
         log.warning("paper.hk_regime_fetch_failed", error=str(exc))
