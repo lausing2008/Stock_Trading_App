@@ -738,9 +738,18 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
         result["spy_ema20"]   = sma20
         result["spy_20d_ret"] = round(ret20 * 100, 2)
 
-        if hsi_price < sma200 * 0.98:
+        # HK regime tiers (no VIX equivalent, so use HSI distance from 200 SMA):
+        #   bear     : HSI > 8% below 200 SMA — hard block (extreme crash)
+        #   risk_off : HSI 2–8% below 200 SMA — 60% position size, tighter thresholds
+        #   choppy   : HSI within ±2% of 200 SMA
+        #   neutral  : HSI above 200 SMA, 20d return ≤ 0
+        #   bull     : HSI above 200 SMA, 20d return > 0
+        if hsi_price < sma200 * 0.92:
             result["state"] = "bear"
             result["notes"].append(f"HSI {pct_above*100:.1f}% below 200 SMA → bear")
+        elif hsi_price < sma200 * 0.98:
+            result["state"] = "risk_off"
+            result["notes"].append(f"HSI {pct_above*100:.1f}% below 200 SMA → risk_off (60% size)")
         elif abs(pct_above) < 0.02:
             result["state"] = "choppy"
             result["notes"].append("HSI within ±2% of 200 SMA → choppy")
