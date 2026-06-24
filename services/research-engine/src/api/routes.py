@@ -180,7 +180,7 @@ def _score_technical(stock: dict, prices: list, indicators: dict, levels: dict, 
     vols = [p.get("volume") or 0 for p in (prices or [])]
     cur_vol = vols[-1] if vols else 0
     avg20 = sum(vols[-20:]) / len(vols[-20:]) if len(vols) >= 20 else 0
-    rvol = round(cur_vol / avg20, 2) if avg20 > 0 else 1.0
+    rvol = round(cur_vol / avg20, 2) if avg20 > 0 else 0.0
 
     # ATR
     atr_val = _atr(prices or [])
@@ -1453,7 +1453,7 @@ async def _generate_with_service_token(sym: str) -> None:
         import uuid as _uuid
         from jose import jwt as _jwt
         from datetime import timedelta
-        expire = datetime.utcnow() + timedelta(hours=1)
+        expire = datetime.now(timezone.utc) + timedelta(hours=1)
         token = _jwt.encode(
             {"sub": "service", "role": "admin", "exp": expire, "jti": str(_uuid.uuid4())},
             _s.jwt_secret, algorithm="HS256",
@@ -1615,7 +1615,7 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
     report = {
         "symbol": sym,
         "company_name": stock.get("name", sym),
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "report_quality": report_quality,
         "current_price": price,
         "market_cap": fund.get("market_cap"),

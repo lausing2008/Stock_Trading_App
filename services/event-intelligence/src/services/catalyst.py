@@ -103,11 +103,11 @@ def _compute_composite(
         0.25 * technical_score
         + 0.20 * catalyst_score
         + 0.20 * earnings_score
-        + 0.15 * max(insider_score, 0)
+        + 0.15 * insider_score
         + 0.10 * congress_score
         + 0.10 * institutional_score
     )
-    risk_dampen = 1.0 - 0.05 * (risk_score / 100.0)
+    risk_dampen = 1.0 - 0.40 * (risk_score / 100.0)
     return min(100.0, max(0.0, raw * risk_dampen))
 
 
@@ -121,7 +121,7 @@ def compute_and_store(stock_id: int, technical_score: float = 50.0, atr_pct: flo
     risk_score = _compute_risk_score(stock_id, days_out, insider_score, atr_pct)
 
     catalyst_score = (
-        0.35 * max(insider_score, 0)
+        0.35 * insider_score
         + 0.30 * earnings_score
         + 0.25 * congress_score
         + 0.10 * economic_score

@@ -1829,7 +1829,7 @@ export default function SignalAccuracyPage() {
                       </span>
                     </td>
                     <td style={{ padding: '7px 10px', color: '#94a3b8' }}>
-                      {r.confidence.toFixed(0)}
+                      {r.confidence.toFixed(0)}%
                       <div style={{ fontSize: 10, color: '#475569' }}>
                         {r.bullish_probability != null ? `${(r.bullish_probability * 100).toFixed(0)}% bull` : ''}
                       </div>

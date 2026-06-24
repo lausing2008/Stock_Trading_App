@@ -1817,8 +1817,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     _daily_pnl_pct = 0.0  # captured for DE call below
     max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
     if max_daily_loss and max_daily_loss > 0 and equity > 0:
-        from zoneinfo import ZoneInfo
-        today_open = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_open = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
         daily_net_pnl = session.execute(
             select(func.sum(PaperTrade.pnl))
             .where(
@@ -1882,8 +1881,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # ── Max entries per day ───────────────────────────────────────────────────────
     max_entries_day = cfg.get("max_entries_per_day", 5)
     if max_entries_day and max_entries_day > 0:
-        from zoneinfo import ZoneInfo
-        today_start = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
         entries_today = session.execute(
             select(func.count()).select_from(PaperTrade)
             .where(

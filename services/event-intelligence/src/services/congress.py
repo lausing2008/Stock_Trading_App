@@ -223,7 +223,7 @@ def compute_congress_score(stock_id: int, days: int = 90) -> float:
     elif purchases > 2:
         score += 10
 
-    return max(0.0, min(100.0, score))
+    return min(100.0, max(-100.0, score))
 
 
 def days_since_last_congress_buy(stock_id: int) -> int | None:

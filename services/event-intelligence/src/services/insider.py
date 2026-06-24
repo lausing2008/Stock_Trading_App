@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import structlog
@@ -40,7 +40,7 @@ _TRANSACTION_CODES = {
 
 async def _fetch_form4_filings(client: httpx.AsyncClient, ticker: str, days: int = 90) -> list[dict]:
     """Search SEC EDGAR for recent Form 4 filings for a ticker."""
-    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         r = await client.get(
             _EDGAR_BROWSE,

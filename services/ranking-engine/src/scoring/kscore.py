@@ -96,11 +96,11 @@ def _technical_score(df: pd.DataFrame) -> float:
 
 def _momentum_score(df: pd.DataFrame) -> float:
     c = df["close"]
-    if len(c) < 126:
+    if len(c) < 127:
         return 50.0
-    r1m = c.iloc[-1] / c.iloc[-21]  - 1
-    r3m = c.iloc[-1] / c.iloc[-63]  - 1
-    r6m = c.iloc[-1] / c.iloc[-126] - 1
+    r1m = c.iloc[-1] / c.iloc[-22]  - 1
+    r3m = c.iloc[-1] / c.iloc[-64]  - 1
+    r6m = c.iloc[-1] / c.iloc[-127] - 1
     raw = 0.5 * r3m + 0.3 * r6m + 0.2 * r1m
     return float(np.clip(50 + raw * 150, 0, 100))
 
@@ -122,7 +122,7 @@ def _value_proxy(df: pd.DataFrame) -> float:
     Cap score at 25 in that case so it can't drag down the composite K-Score.
     """
     high_52  = df["close"].tail(252).max()
-    if not high_52 or high_52 <= 0:
+    if not high_52 or pd.isna(high_52) or high_52 <= 0:
         return 50.0
     discount = 1 - df["close"].iloc[-1] / high_52
     raw_score = float(np.clip(discount * 200, 0, 100))

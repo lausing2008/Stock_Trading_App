@@ -80,41 +80,10 @@ def get_indicators(
     return IndicatorOut(ts=[t.isoformat() for t in df["ts"]], values=values)
 
 
-@router.get("/{symbol}/patterns")
-def get_patterns(
-    symbol: str,
-    timeframe: str = "1d",
-    days: int = 400,
-    session: Session = Depends(get_session),
-):
-    df = _load_prices(session, symbol, timeframe, days)
-    return {"symbol": symbol, "patterns": detect_patterns(df)}
-
-
-@router.get("/{symbol}/levels")
-def get_levels(
-    symbol: str,
-    timeframe: str = "1d",
-    days: int = 400,
-    session: Session = Depends(get_session),
-):
-    df = _load_prices(session, symbol, timeframe, days)
-    levels = detect_support_resistance(df)
-    lines = detect_trendlines(df)
-    # Use a recent 90-bar swing for Fibonacci levels — the full 400-bar history
-    # produces levels anchored to all-time highs/lows that are rarely relevant.
-    swing = df.tail(90)
-    fib = fibonacci_retracement(float(swing["high"].max()), float(swing["low"].min()))
-    return {
-        "symbol": symbol,
-        "support_resistance": [vars(L) for L in levels],
-        "trendlines": [vars(T) for T in lines],
-        "fibonacci": fib,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Bulk pattern scan — module-level cache (TTL = 6 hours)
+# NOTE: must be registered BEFORE /{symbol}/patterns or FastAPI will
+# interpret "patterns" as a symbol value and return 404 for this route.
 # ---------------------------------------------------------------------------
 _patterns_bulk_cache: dict = {}  # {market_key: (timestamp, {symbol: [pattern_names]})}
 
@@ -124,6 +93,7 @@ def get_patterns_bulk(
     market: str | None = None,
     session: Session = Depends(get_session),
 ):
+
     import time as _time
 
     market_key = market if market is not None else "__all__"
@@ -178,3 +148,34 @@ def get_patterns_bulk(
 
     _patterns_bulk_cache[market_key] = (now, result)
     return {"patterns": result, "count": len(result)}
+
+
+@router.get("/{symbol}/patterns")
+def get_patterns(
+    symbol: str,
+    timeframe: str = "1d",
+    days: int = 400,
+    session: Session = Depends(get_session),
+):
+    df = _load_prices(session, symbol, timeframe, days)
+    return {"symbol": symbol, "patterns": detect_patterns(df)}
+
+
+@router.get("/{symbol}/levels")
+def get_levels(
+    symbol: str,
+    timeframe: str = "1d",
+    days: int = 400,
+    session: Session = Depends(get_session),
+):
+    df = _load_prices(session, symbol, timeframe, days)
+    levels = detect_support_resistance(df)
+    lines = detect_trendlines(df)
+    swing = df.tail(90)
+    fib = fibonacci_retracement(float(swing["high"].max()), float(swing["low"].min()))
+    return {
+        "symbol": symbol,
+        "support_resistance": [vars(L) for L in levels],
+        "trendlines": [vars(T) for T in lines],
+        "fibonacci": fib,
+    }

@@ -2325,12 +2325,12 @@ def send_paper_portfolio_digest() -> None:
                 if not user.email:
                     continue
                 portfolios = session.execute(
-                    _sel(PaperPortfolio).where(PaperPortfolio.user_id == user.id)
+                    _sel(PaperPortfolio).where(PaperPortfolio.is_active.is_(True))
                 ).scalars().all()
                 if not portfolios:
                     continue
                 for p in portfolios:
-                    from ..api.paper_portfolio import _portfolio_risk_metrics, _get_portfolio
+                    from ..api.paper_portfolio import _portfolio_risk_metrics
                     from ..db.models import PaperEquityCurve
                     # Summary metrics
                     curve_rows = session.execute(
@@ -2340,23 +2340,23 @@ def send_paper_portfolio_digest() -> None:
                     open_trades = session.execute(
                         _sel(PaperTrade).where(PaperTrade.portfolio_id == p.id, PaperTrade.stage == "open")
                     ).scalars().all()
-                    today = _date.today()
+                    today_utc_start = datetime.combine(_date.today(), datetime.min.time())
                     closed_today = session.execute(
                         _sel(PaperTrade).where(
                             PaperTrade.portfolio_id == p.id,
                             PaperTrade.stage == "closed",
-                            PaperTrade.closed_at >= datetime.combine(today, datetime.min.time()).replace(tzinfo=timezone.utc),  # type: ignore[arg-type]
-                        ).order_by(_desc(PaperTrade.closed_at))
+                            PaperTrade.exit_time >= today_utc_start,
+                        ).order_by(_desc(PaperTrade.exit_time))
                     ).scalars().all()
-                    equity = p.current_equity or p.initial_capital
-                    total_return_pct = round((equity / p.initial_capital - 1) * 100, 2)
-                    total_pnl = round(equity - p.initial_capital, 2)
+                    equity = p.current_cash
+                    total_return_pct = round((equity / float(p.initial_capital) - 1) * 100, 2)
+                    total_pnl = round(equity - float(p.initial_capital), 2)
                     today_closed_list = [
-                        {"symbol": t.symbol, "pnl": t.pnl or 0.0, "pnl_pct": t.pnl_pct or 0.0, "exit_reason": t.exit_reason or ""}
+                        {"symbol": t.symbol, "pnl": float(t.pnl or 0), "pnl_pct": float(t.pct_return or 0), "exit_reason": t.exit_reason or ""}
                         for t in closed_today
                     ]
                     top_positions = sorted(
-                        [{"symbol": t.symbol, "unrealized_pct": t.unrealized_pct or 0.0, "style": t.trading_style or ""} for t in open_trades],
+                        [{"symbol": t.symbol, "unrealized_pct": round(((t.current_price or t.entry_price) / float(t.entry_price) - 1) * 100, 2) if t.entry_price else 0.0, "style": t.trading_style or ""} for t in open_trades],
                         key=lambda x: abs(x["unrealized_pct"]), reverse=True
                     )
                     ok = send_paper_portfolio_digest_email(

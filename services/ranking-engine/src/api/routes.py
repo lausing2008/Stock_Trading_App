@@ -209,29 +209,29 @@ def _sector_relative_scores(
 
             # Value: invert percentile (lower ratio → higher score)
             if symbol in pe_map and len(pe_map) >= 3:
-                peers = list(pe_map.values())
+                peers = [v for s2, v in pe_map.items() if s2 != symbol]
                 rank  = _percentile_rank(pe_map[symbol], peers)
                 val_parts.append(100 - rank)  # invert
 
             if symbol in pb_map and len(pb_map) >= 3:
-                peers = list(pb_map.values())
+                peers = [v for s2, v in pb_map.items() if s2 != symbol]
                 rank  = _percentile_rank(pb_map[symbol], peers)
                 val_parts.append(100 - rank)
 
             if symbol in ev_map and len(ev_map) >= 3:
-                peers = list(ev_map.values())
+                peers = [v for s2, v in ev_map.items() if s2 != symbol]
                 rank  = _percentile_rank(ev_map[symbol], peers)
                 val_parts.append(100 - rank)
 
             # Growth: direct percentile (higher growth → higher score)
             if symbol in earn_g_map and len(earn_g_map) >= 3:
-                grow_parts.append(_percentile_rank(earn_g_map[symbol], list(earn_g_map.values())))
+                grow_parts.append(_percentile_rank(earn_g_map[symbol], [v for s2, v in earn_g_map.items() if s2 != symbol]))
 
             if symbol in rev_g_map and len(rev_g_map) >= 3:
-                grow_parts.append(_percentile_rank(rev_g_map[symbol], list(rev_g_map.values())))
+                grow_parts.append(_percentile_rank(rev_g_map[symbol], [v for s2, v in rev_g_map.items() if s2 != symbol]))
 
             if symbol in roe_map and len(roe_map) >= 3:
-                grow_parts.append(_percentile_rank(roe_map[symbol], list(roe_map.values())))
+                grow_parts.append(_percentile_rank(roe_map[symbol], [v for s2, v in roe_map.items() if s2 != symbol]))
 
             entry: dict[str, float] = {}
             if val_parts:
@@ -496,7 +496,7 @@ def screen(
             "growth": _f(ranking.growth),
             "rs_score": _f(ranking.rs_score),
             "signal": sig_value,
-            "confidence": _f(confidence) if confidence else None,
+            "confidence": _f(confidence) if confidence is not None else None,
             "horizon": sig.get("horizon"),
         })
 
