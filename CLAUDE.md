@@ -339,8 +339,12 @@ Now the render loop is driven by TIER_LABEL — any tier added there automatical
 3. Add `N: 'Tier N — ...'` to `TIER_LABEL`
 4. Add `N: '#hexcolor'` to `TIER_COLOR`
 5. The render loop (`tiers` variable) is now automatic — no manual update needed.
-6. Rebuild frontend: `docker compose -f docker/docker-compose.yml build --no-cache frontend && docker compose -f docker/docker-compose.yml up -d frontend`
-   (Use `--no-cache` to prevent Docker from serving a stale Next.js build layer)
+6. Rebuild frontend using the legacy (non-BuildKit) build to guarantee fresh content:
+   ```
+   DOCKER_BUILDKIT=0 docker build --no-cache -f frontend/Dockerfile -t stockai-frontend:latest . && \
+   docker compose -f docker/docker-compose.yml up -d --force-recreate frontend
+   ```
+   **Do NOT use** `docker compose build --no-cache frontend` — BuildKit silently serves cached layers.
 
 ---
 
