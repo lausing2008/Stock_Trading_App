@@ -9110,13 +9110,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'WARN-SIGNAL-UNIQUE-CONSTRAINT',
-    tier: 127 as const, severity: 'medium', defaultStatus: 'todo',
+    tier: 127 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'shared/db/models.py:Signal model ~line 157',
     effort: '45m',
     impact: 'Medium — without a unique constraint on (stock_id, horizon), duplicate signal rows can accumulate if a refresh runs twice concurrently. evaluate_signal_outcomes already works around this with a dedup set, confirming duplicates are possible at the DB layer.',
     title: 'DB: Signal table has no unique constraint on (stock_id, horizon)',
     what: 'The ON CONFLICT clause in signal_engine routes.py uses `ON CONFLICT (stock_id, horizon, date_trunc(\'day\', ts))` — this requires a matching unique index to work. Without it, the ON CONFLICT never fires and INSERT just appends duplicate rows. Requires a DB migration.',
     fix: 'Add a partial unique index: `CREATE UNIQUE INDEX uq_signals_stock_horizon_day ON signals (stock_id, horizon, date_trunc(\'day\', ts));` Requires explicit authorization for DB schema migration.',
+    implementedNote: 'Done — uq_signals_stock_horizon_day exists in production DB (function-based index, created manually). Documented in CLAUDE.md and shared/db/models.py. ON CONFLICT DO UPDATE upsert is working correctly.',
   },
 
   {
