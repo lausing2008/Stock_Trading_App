@@ -475,7 +475,7 @@ export const api = {
       `/paper-portfolio/tune-params?style=${style}&n_trials=${nTrials}`, { method: 'POST' }
     ),
   rlStatus: () => request<{
-    status: 'trained' | 'not_trained';
+    status: 'trained' | 'ready' | 'not_trained';
     n_trades?: number; win_rate?: number; threshold?: number;
     feature_importance?: Record<string, number>; trained_at?: string;
   }>('/rl-agent/status'),
