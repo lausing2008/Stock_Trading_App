@@ -127,7 +127,7 @@ def _yf_last_price(symbol: str) -> float | None:
 
 async def _fetch_price_fallback(symbol: str) -> float | None:
     """Async wrapper: fetch price via yfinance in executor thread."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_yf_executor, _yf_last_price, symbol)
 
 

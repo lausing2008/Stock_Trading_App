@@ -245,4 +245,10 @@ def ai_allocation(
     w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
     w_scaled = w * (1 - cash_floor)
     cash = round(1 - float(w_scaled.sum()), 4)
-    return _pack(keep, w_scaled, "ai_allocation", blended_mu, cov, ret_sub, cash=cash)
+    # Compute risk/return metrics on w (fully invested, sums to 1.0) so they are
+    # comparable to mean_variance/risk_parity/HRP outputs. w_scaled (which sums to
+    # 1-cash_floor) would understate expected_return and Sharpe by the cash fraction.
+    m = _metrics(w, blended_mu, cov, ret_sub)
+    return PortfolioWeights("ai_allocation",
+                            {s: float(round(wi, 4)) for s, wi in zip(keep, w_scaled)},
+                            cash=cash, **m)

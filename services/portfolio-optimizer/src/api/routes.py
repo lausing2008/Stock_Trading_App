@@ -57,9 +57,15 @@ def _fetch_closes(symbols: list[str], lookback_days: int) -> tuple[pd.DataFrame,
     if not good:
         return pd.DataFrame(), dropped
 
-    # Forward-fill gaps (weekends/holidays) then drop any remaining leading NaNs
-    result = merged[good].ffill().dropna()
-    return result, dropped
+    # Forward-fill gaps (weekends/holidays).
+    filled = merged[good].ffill()
+    # Drop symbols that still have NaNs after ffill — these have leading NaNs (started trading
+    # partway through the lookback window). Leaving them in would cause dropna() to remove those
+    # leading rows for ALL symbols, silently shortening everyone's history.
+    good2 = [c for c in filled.columns if not filled[c].isna().any()]
+    newly_dropped = [s for s in good if s not in good2]
+    result = filled[good2].dropna()
+    return result, dropped + newly_dropped
 
 
 def _fetch_scores(symbols: list[str]) -> dict[str, float]:

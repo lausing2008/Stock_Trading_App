@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7099,6 +7099,76 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-23 — engine.py: adj_close series adjusts close at entry/exit bars before pct_change computation.',
   },
 
+  // ── Tier 156 — HK paper trading regime filter ────────────────────────────────
+  {
+    id: 'HK-REGIME-RISK-OFF-TIER',
+    tier: 156 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py:741',
+    effort: '15m',
+    impact: 'High — HK paper trading was completely frozen whenever HSI dropped more than 2% below its 200 SMA. At -8.5% below SMA, no entries were allowed. The entire HK portfolio sat idle during normal market corrections that do not constitute a structural bear market.',
+    title: 'HK-F1: HK regime filter blocked all entries at >2% below 200 SMA — too aggressive without VIX',
+    what: 'For US, "bear" requires VIX spike + SPY below 50 EMA + QQQ confirmation. For HK there is no VIX, so the threshold was "HSI > 2% below 200 SMA → bear → hard block". Any correction immediately froze entries.',
+    fix: 'Add 5-tier HK regime: bear (>8% below SMA) = hard block; risk_off (2–8% below) = 50% size + tighter score threshold; choppy (±2%) = 75% size; neutral/bull = normal. At -8.5% the portfolio now enters risk_off, not bear.',
+    implementedNote: 'Done 2026-06-23 — paper_trading_engine.py: HK regime now has 5 tiers; hard block only at >8% below 200 SMA.',
+  },
+
+  // ── Tier 155 — Deep audit: Research Engine + Portfolio Optimizer + Decision Engine — 5 fixed ─
+  {
+    id: 'RE-F1-FCF-MARGIN-ZERO-REVENUE',
+    tier: 155 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/research-engine/src/api/routes.py:590',
+    effort: '5m',
+    impact: 'High — For any company with total_revenue=0 (early-stage biotech, holding companies), fcf_margin was computed as raw FCF dollars treated as a percent. A company with FCF=$500M and revenue=0 received fcf_margin=50,000,000%, triggering the "Excellent (≥20%)" branch and adding +10 to the fundamental score incorrectly.',
+    title: 'RE-F1: fcf_margin computed wrong when total_revenue=0 — raw FCF treated as percent',
+    what: 'revenue = fund.get("total_revenue") or 1 — if revenue is 0, it becomes 1. fcf_margin = fcf / 1 * 100 = raw FCF dollars as a percentage. For companies with large absolute FCF but zero reported revenue, fundamental score was wildly inflated.',
+    fix: 'revenue = fund.get("total_revenue"); fcf_margin = (fcf / revenue * 100) if (revenue and revenue != 0) else None',
+    implementedNote: 'Done 2026-06-23 — research-engine routes.py: revenue guard now skips fcf_margin when revenue is 0 or None.',
+  },
+  {
+    id: 'RE-F2-INFLIGHT-WAITER-STALE-TTL',
+    tier: 155 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/research-engine/src/api/routes.py:1499',
+    effort: '5m',
+    impact: 'Medium — When request B waited for an in-flight request A and A returned a "fallback" quality report (TTL=300s), request B used a hardcoded 21,600s staleness check. The 5-minute-old fallback passed the check, so request B returned a stale fallback report for up to 5 hours 55 minutes longer than the normal cache path would have allowed.',
+    title: 'RE-F2: In-flight research waiters use hardcoded 6h staleness check instead of quality-based TTL',
+    what: 'After waiting for an in-flight event, the code checked age < 21_600 (6 hours). The main cache path uses per-quality TTLs: fallback=300s, partial=3600s, full=86400s. A fallback report 5 minutes old would pass the waiter check but fail the main check.',
+    fix: 'Use the same quality-based TTL lookup as the main cache path.',
+    implementedNote: 'Done 2026-06-23 — research-engine routes.py: waiter now uses CACHE_TTL_FALLBACK/PARTIAL/SEC based on report_quality.',
+  },
+  {
+    id: 'DE-F1-GET-EVENT-LOOP-DEPRECATED',
+    tier: 155 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/aggregator.py:131',
+    effort: '2m',
+    impact: 'Medium — asyncio.get_event_loop() inside an async function is deprecated in Python 3.10+ and will raise RuntimeError on Python 3.13+. When it fails, _fetch_price_fallback() raises instead of returning a yfinance price, causing all symbols without a stored signal price to return HTTPException 422 instead of a decision result.',
+    title: 'DE-F1: asyncio.get_event_loop() deprecated — will raise RuntimeError on Python 3.13+',
+    what: 'Inside an async function, get_event_loop() should be get_running_loop(). The running loop is always available inside a coroutine; get_event_loop() is only needed in synchronous code.',
+    fix: 'loop = asyncio.get_running_loop()',
+    implementedNote: 'Done 2026-06-23 — aggregator.py: get_event_loop() → get_running_loop().',
+  },
+  {
+    id: 'PO-F1-FFILL-DROPNA-TRUNCATION',
+    tier: 155 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/portfolio-optimizer/src/api/routes.py:61',
+    effort: '10m',
+    impact: 'High — When any symbol in a portfolio had leading NaNs (recently listed, started trading partway through the lookback window), ffill().dropna() removed those leading rows for ALL symbols. A portfolio with AAPL (260 days) + a 45-day-old stock would only have 45 days of data for the optimization, producing high-noise covariance estimates.',
+    title: 'PO-F1: ffill().dropna() silently truncates all symbol history when any symbol has leading NaNs',
+    what: 'merged[good].ffill().dropna() — ffill() cannot fill leading NaNs (they have no prior value). dropna() then removes those leading rows from the entire DataFrame. The MIN_ROWS check at line 54 runs before the merge, so a symbol with exactly 45 non-null values passes and then causes 215 rows to disappear for all other symbols.',
+    fix: 'After ffill(), drop symbols that still have any NaN (these are recently-listed symbols with leading NaNs), add them to the dropped list, then dropna() on the remaining symbols.',
+    implementedNote: 'Done 2026-06-23 — routes.py: newly_dropped list filters symbols with leading NaNs before dropna().',
+  },
+  {
+    id: 'PO-F2-AI-ALLOC-METRICS-SCALED',
+    tier: 155 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/portfolio-optimizer/src/optimizers/methods.py:248',
+    effort: '10m',
+    impact: 'Medium — ai_allocation passed w_scaled (summing to 0.95 with cash_floor=0.05) to _metrics(). Expected return was understated by 5%, expected vol by 5%, and Sharpe was (0.95×ret − RISK_FREE) / (0.95×vol) ≠ true Sharpe. Comparing ai_allocation metrics against mean_variance or risk_parity (which have no cash floor and report true metrics) would mislead users.',
+    title: 'PO-F2: ai_allocation reports metrics on w_scaled (0.95 sum) — Sharpe/return understated vs other methods',
+    what: '_pack(keep, w_scaled, "ai_allocation", blended_mu, cov, ret_sub, cash=cash) — _metrics(w_scaled) underestimates because w_scaled sums to 1-cash_floor. All other methods pass w summing to 1.0.',
+    fix: 'Compute m = _metrics(w, blended_mu, cov, ret_sub) using the fully-invested w; use w_scaled only for the actual allocation weights in the PortfolioWeights output.',
+    implementedNote: 'Done 2026-06-23 — methods.py: ai_allocation now computes metrics on w (sum=1), stores w_scaled as weights.',
+  },
+
   // ── Tier 154 — Deep audit: Ranking Engine, TA, Portfolio Optimizer — 7 fixed ─
   {
     id: 'TA-F1-TRIANGLE-IDX-OFFSET',
@@ -9875,6 +9945,8 @@ const TIER_LABEL: Record<Tier, string> = {
   152: 'Tier 152 — Deep audit: ML Prediction + Strategy Engine — 3 fixed',
   153: 'Tier 153 — Deep audit: Paper Portfolio UI + Event Intelligence — 8 fixed',
   154: 'Tier 154 — Deep audit: Ranking Engine, TA, Portfolio Optimizer — 5 fixed',
+  155: 'Tier 155 — Deep audit: Research Engine + Portfolio Optimizer + Decision Engine — 5 fixed',
+  156: 'Tier 156 — HK paper trading regime filter: add risk_off tier (was hard-blocking at -2% below SMA)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10032,6 +10104,8 @@ const TIER_COLOR: Record<Tier, string> = {
   152: '#a78bfa',
   153: '#34d399',
   154: '#f87171',
+  155: '#38bdf8',
+  156: '#4ade80',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

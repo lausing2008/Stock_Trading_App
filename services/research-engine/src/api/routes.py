@@ -587,9 +587,11 @@ def _score_fundamental(fund: dict, sector: str = "Unknown", price: float = 0.0) 
     ocf = fund.get("operating_cashflow")
     fcf = fund.get("free_cashflow")
     fcf_assess = "Unknown"
-    revenue = fund.get("total_revenue") or 1
+    revenue = fund.get("total_revenue")
     if fcf is not None:
-        fcf_margin = fcf / revenue * 100 if revenue else None
+        # Guard against revenue=0 (holding companies, early-stage biotech): treating 0 as 1
+        # makes fcf_margin equal the raw FCF dollar value in percent — astronomically wrong.
+        fcf_margin = (fcf / revenue * 100) if (revenue and revenue != 0) else None
         if fcf > 0 and fcf_margin and fcf_margin >= 20:
             fcf_assess = "Excellent"; score += 10
         elif fcf and fcf > 0:
@@ -1496,7 +1498,11 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
             entry = _cache.get(sym)
             if entry:
                 report, ts = entry
-                if (datetime.now(timezone.utc) - ts).total_seconds() < 21_600:
+                # Use the same quality-based TTL as the main cache path, not a hardcoded value.
+                # A fallback-quality report has TTL=300s; returning it for 6h would be stale.
+                _q = report.get("report_quality", "full")
+                _waiter_ttl = CACHE_TTL_FALLBACK_SEC if _q == "fallback" else CACHE_TTL_PARTIAL_SEC if _q == "partial" else CACHE_TTL_SEC
+                if (datetime.now(timezone.utc) - ts).total_seconds() < _waiter_ttl:
                     return report
             # Fell through (first caller had an error) — proceed to compute ourselves
     else:
