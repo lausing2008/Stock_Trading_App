@@ -1761,9 +1761,10 @@ def _apply_style_signal(
         # Graduated compression: brief dips (< 5 bars) get 0.65× — could recover quickly.
         # Confirmed downtrends (≥ 20 bars) get 0.40× — structurally broken weekly chart.
         # Linear interpolation between 5 and 20 bars.
-        _consec = weekly_tech.get("weekly_rsi_consec_low", 99)
-        if _consec == 99 and "weekly_rsi_consec_low" not in weekly_tech:
+        _consec = weekly_tech.get("weekly_rsi_consec_low", -1)   # -1 = sentinel for missing key (99 is a valid real count)
+        if _consec == -1:
             log.warning("weekly_gate.consec_key_missing", symbol="unknown", note="defaulting to max compression")
+            _consec = 20  # treat missing as confirmed downtrend → max compression
         if _consec < 5:
             _mult = 0.65
         elif _consec >= 20:
@@ -1924,7 +1925,8 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     _atr_14 = float(_atr_series.iloc[-1]) if not pd.isna(_atr_series.iloc[-1]) else None
     reasons["last_price"] = round(_last_price, 4)
     reasons["atr_14"] = round(_atr_14, 4) if _atr_14 is not None else None
-    reasons["atr_14_pct"] = round(_atr_14 / _last_price, 4) if (_atr_14 and _last_price > 0) else None
+    # Use `is not None` not truthiness — _atr_14 == 0.0 is falsy but is a valid zero-ATR measurement.
+    reasons["atr_14_pct"] = round(_atr_14 / _last_price, 4) if (_atr_14 is not None and _last_price > 0) else None
 
     reasons["days_to_earnings"]   = days_to_earnings
     reasons["news_sentiment"]     = news_sentiment

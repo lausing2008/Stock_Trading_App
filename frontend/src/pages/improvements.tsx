@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7099,6 +7099,96 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-23 — engine.py: adj_close series adjusts close at entry/exit bars before pct_change computation.',
   },
 
+  // ── Tier 157 — Deep audit: Strategy Engine + Signal Engine + Paper Portfolio — 8 fixed ─
+  {
+    id: 'SE-BACKTEST-NAN-VOL',
+    tier: 157 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/strategy-engine/src/backtest/engine.py:93',
+    effort: '5m',
+    impact: 'High — Sharpe and Sortino both show NaN for any single-bar backtest or strategy with all-identical returns. The `or 1e-9` guard was intended to handle zero-vol but NaN is truthy in Python — NaN bypasses `or` and propagates to both metrics. All backtests shorter than 2 bars or with no price variance were silently broken.',
+    title: 'SE-F1: ann_vol/sortino_vol `or 1e-9` guard does not catch NaN — Sharpe/Sortino propagate NaN',
+    what: 'rets.std() * sqrt(252) or 1e-9 — Python `or` evaluates the left side for truthiness. NaN is truthy, so `NaN or 1e-9` = NaN. Sharpe = (mean * 252 - rf) / NaN = NaN. Same for sortino_vol.',
+    fix: 'Explicit NaN check: `_raw = rets.std() * sqrt(252); ann_vol = float(_raw) if not isnan(_raw) and _raw > 0 else 1e-9`',
+    implementedNote: 'Done 2026-06-24 — engine.py: both vol denominators use explicit isnan + > 0 guard.',
+  },
+  {
+    id: 'SE-BACKTEST-CALMAR-ZERO-DD',
+    tier: 157 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/strategy-engine/src/backtest/engine.py:98',
+    effort: '5m',
+    impact: 'Medium — A strategy with perfect performance (25% CAGR, zero drawdown) returned calmar=0.0, indistinguishable from a break-even or losing strategy. Strategy ranking logic could incorrectly score the best strategies last.',
+    title: 'SE-F2: calmar returns 0.0 for zero-drawdown strategies — worst possible value for the best result',
+    what: '`float(cagr / dd.max()) if dd.max() > 0 else 0.0` — returns 0.0 (worst calmar) when there is no drawdown (best calmar). Should return None (no drawdown → undefined, not zero).',
+    fix: 'Return None when dd.max() == 0; mark BacktestResult.calmar as float | None.',
+    implementedNote: 'Done 2026-06-24 — engine.py: calmar is None for zero-drawdown; BacktestResult type updated.',
+  },
+  {
+    id: 'SE-BACKTEST-PROFIT-FACTOR-NOISE',
+    tier: 157 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/strategy-engine/src/backtest/engine.py:104',
+    effort: '2m',
+    impact: 'Medium — If floating-point arithmetic produces tiny non-zero losses (e.g. -1e-17), gross_loss = -sum(...) is a tiny positive truthy value. `tiny or 1e-9` returns tiny, making profit_factor astronomically large and misrepresenting a near-breakeven strategy as having infinite edge.',
+    title: 'SE-F3: profit_factor gross_loss `or 1e-9` bypassed by float-noise — returns infinite profit_factor',
+    what: '`gross_loss = -sum(...) or 1e-9` — the `or` guard is designed for gross_loss=0 but any tiny non-zero result is truthy and bypasses the guard. profit_factor = gross_win / 1e-17 = astronomically large.',
+    fix: 'Use `max(-sum(...), 1e-9)` instead — always ensures a minimum floor regardless of float noise.',
+    implementedNote: 'Done 2026-06-24 — engine.py: gross_loss uses max(..., 1e-9).',
+  },
+  {
+    id: 'SIG-ATR-ZERO-FALSY',
+    tier: 157 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/generators/signals.py:1927',
+    effort: '2m',
+    impact: 'Medium — For thinly-traded stocks with no price movement in the ATR window (ATR = 0.0), atr_14_pct was set to None instead of 0.0. Downstream consumers treating None as "unavailable" and 0.0 as "measured zero" would skip ATR-based stop-loss sizing for a stock with confirmed zero volatility.',
+    title: 'SIG-F1: atr_14_pct=None when ATR is exactly 0.0 — 0.0 is falsy and bypasses the truthiness check',
+    what: '`if (_atr_14 and _last_price > 0)` — 0.0 is falsy in Python, so a stock with zero ATR stores None instead of 0.0.',
+    fix: 'Use `if (_atr_14 is not None and _last_price > 0)` — explicit None check instead of truthiness.',
+    implementedNote: 'Done 2026-06-24 — signals.py: atr_14_pct guard uses `is not None`.',
+  },
+  {
+    id: 'SIG-WEEKLY-RSI-SENTINEL',
+    tier: 157 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/generators/signals.py:1764',
+    effort: '5m',
+    impact: 'Medium — weekly_rsi_consec_low used 99 as both the missing-key sentinel AND a valid extreme count (99 consecutive low-RSI bars in a prolonged bear market). Any stock with exactly 99 consecutive bars would trigger the missing-key warning, generating false alert noise and misleading diagnostics.',
+    title: 'SIG-F2: weekly_rsi_consec_low default=99 is also a valid count — false-positive missing-key warning',
+    what: '`_consec = weekly_tech.get("weekly_rsi_consec_low", 99)` followed by `if _consec == 99 and key not in weekly_tech`. The sentinel 99 collides with a valid (extreme) real count.',
+    fix: 'Use -1 as sentinel (not a valid bar count), default to max compression (20 bars) when key is missing.',
+    implementedNote: 'Done 2026-06-24 — signals.py: sentinel changed to -1; missing key defaults to _consec=20 (max compression).',
+  },
+  {
+    id: 'PP-KELLY-WIN-RATE-BREAKEVEN',
+    tier: 157 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py:1558',
+    effort: '5m',
+    impact: 'Medium — Kelly win rate denominator included all trades (wins + losses + breakeven) but numerator only counted wins. With N breakeven trades, p was understated, q was overstated, and kelly_f was deflated below its true value. recommended_risk_pct could drop from 2% to 1% incorrectly, causing the engine to trade smaller than the edge warrants.',
+    title: 'PP-F8: Kelly win rate denominator includes breakeven trades — p understated, kelly_f deflated',
+    what: 'p = len(wins) / len(trades) — trades includes breakeven (pct_return==0) but wins does not. Correct denominator is decisive trades: len(wins) + len(losses).',
+    fix: 'decisive = len(wins) + len(losses); p = len(wins) / decisive if decisive > 0 else 0.5',
+    implementedNote: 'Done 2026-06-24 — paper_portfolio.py: Kelly win rate uses decisive (wins+losses) denominator.',
+  },
+  {
+    id: 'PP-AVG-LOSS-SIGN',
+    tier: 157 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py:266',
+    effort: '5m',
+    impact: 'Medium — /summary returns avg_loss_pct as a negative signed value (e.g. -3.5). /kelly returns avg_loss_pct as a positive magnitude (e.g. +3.5). Any frontend or downstream code comparing both fields gets sign-flipped values; displaying /summary avg_loss_pct as "average loss" shows a negative when a positive magnitude is expected.',
+    title: 'PP-F9: avg_loss_pct sign inconsistency — /summary returns negative, /kelly returns positive',
+    what: 'avg_loss = sum(t.pct_return for t in losses) / count → negative. /kelly uses abs(t.pct_return). Both return the same field name but with opposite signs. Expectancy calculation in /summary is mathematically correct with signed avg_loss, but the returned value should be a magnitude.',
+    fix: 'Return abs(avg_loss) in /summary avg_loss_pct field to match /kelly.',
+    implementedNote: 'Done 2026-06-24 — paper_portfolio.py: avg_loss_pct returned as abs() in /summary.',
+  },
+  {
+    id: 'PP-OPTUNA-LOOKAHEAD',
+    tier: 157 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py:1146',
+    effort: '10m',
+    impact: 'Medium — Optuna trade simulation price series had no upper date limit. For a trade closed 10 days ago, the price walk-forward could extend 90 days into the "future" (relative to the trade). The fallback exit used prices[-1] (today\'s close), giving trials with large max_hold_days a lookahead advantage, biasing Optuna toward larger hold periods even when the actual edge doesn\'t support it.',
+    title: 'PP-F10: Optuna trade simulation uses today\'s price as fallback exit — lookahead bias for closed trades',
+    what: 'price_map fetches all bars from cutoff to present with no upper bound. In _simulate_trade_sharpe, bars beyond the actual trade close date are future data. prices[-1] fallback uses today\'s close for any simulation that doesn\'t hit stop/TP/max_hold_days within the actual hold period.',
+    fix: 'Add exit_date to _TradeProxy; in walk-forward loop, break when d > exit_date. Price series remains shared but simulation caps at actual close date.',
+    implementedNote: 'Done 2026-06-24 — paper_portfolio.py: _TradeProxy.exit_date added; simulation loop breaks at actual trade close date.',
+  },
+
   // ── Tier 156 — HK paper trading regime filter ────────────────────────────────
   {
     id: 'HK-REGIME-RISK-OFF-TIER',
@@ -9947,6 +10037,7 @@ const TIER_LABEL: Record<Tier, string> = {
   154: 'Tier 154 — Deep audit: Ranking Engine, TA, Portfolio Optimizer — 5 fixed',
   155: 'Tier 155 — Deep audit: Research Engine + Portfolio Optimizer + Decision Engine — 5 fixed',
   156: 'Tier 156 — HK paper trading regime filter: add risk_off tier (was hard-blocking at -2% below SMA)',
+  157: 'Tier 157 — Deep audit: Strategy Engine + Signal Engine + Paper Portfolio — 8 fixed',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10106,6 +10197,7 @@ const TIER_COLOR: Record<Tier, string> = {
   154: '#f87171',
   155: '#38bdf8',
   156: '#4ade80',
+  157: '#fb923c',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

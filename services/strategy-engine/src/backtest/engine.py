@@ -23,7 +23,7 @@ class BacktestResult:
     cagr: float
     sharpe: float
     sortino: float
-    calmar: float
+    calmar: float | None
     max_drawdown: float
     win_rate: float
     profit_factor: float
@@ -90,18 +90,23 @@ class BacktestEngine:
         total_return = float(equity.iloc[-1] - 1) if len(equity) else 0.0
         years = max((feat["ts"].iloc[-1] - feat["ts"].iloc[0]).days / 365.25, 1e-6)
         cagr = (equity.iloc[-1]) ** (1 / years) - 1 if equity.iloc[-1] > 0 else -1.0
-        ann_vol = rets.std() * np.sqrt(252) or 1e-9
+        # `or 1e-9` does NOT catch NaN — NaN is truthy in Python, so it bypasses `or`.
+        # Use explicit NaN + zero checks for all volatility denominators.
+        _ann_vol_raw = rets.std() * np.sqrt(252)
+        ann_vol = float(_ann_vol_raw) if (not np.isnan(_ann_vol_raw) and _ann_vol_raw > 0) else 1e-9
         rf_annual = 0.05  # current T-bill rate; sharpe was overstated by ~1pt at rf=0
         sharpe = float((rets.mean() * 252 - rf_annual) / ann_vol)
-        sortino_vol = rets[rets < 0].std() * np.sqrt(252) or 1e-9
+        _sortino_vol_raw = rets[rets < 0].std() * np.sqrt(252)
+        sortino_vol = float(_sortino_vol_raw) if (not np.isnan(_sortino_vol_raw) and _sortino_vol_raw > 0) else 1e-9
         sortino = float((rets.mean() * 252 - rf_annual) / sortino_vol)
-        calmar = float(cagr / dd.max()) if dd.max() > 0 else 0.0
+        # Return None (not 0.0) for zero-drawdown — 0.0 is indistinguishable from a losing strategy.
+        calmar = float(cagr / dd.max()) if dd.max() > 0 else None
 
         wins = [t for t in trades if "ret" in t and t["ret"] > 0]
         losses = [t for t in trades if "ret" in t and t["ret"] <= 0]
         win_rate = len(wins) / len(trades) if trades else 0.0
         gross_win = sum(t["ret"] for t in wins)
-        gross_loss = -sum(t["ret"] for t in losses) or 1e-9
+        gross_loss = max(-sum(t["ret"] for t in losses), 1e-9)  # max() avoids float-noise bypass that `or` misses
         profit_factor = float(gross_win / gross_loss)
 
         equity_curve = [
@@ -113,7 +118,7 @@ class BacktestEngine:
             cagr=round(float(cagr), 4),
             sharpe=round(sharpe, 4),
             sortino=round(sortino, 4),
-            calmar=round(calmar, 4),
+            calmar=round(calmar, 4) if calmar is not None else None,
             max_drawdown=round(float(dd.max()), 4),
             win_rate=round(win_rate, 4),
             profit_factor=round(profit_factor, 4),

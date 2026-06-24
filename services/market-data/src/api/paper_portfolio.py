@@ -263,7 +263,7 @@ def get_summary(
         "closed_trades": len(closed_trades),
         "win_rate_pct": win_rate,
         "avg_win_pct": avg_win,
-        "avg_loss_pct": avg_loss,
+        "avg_loss_pct": round(abs(avg_loss), 2) if avg_loss else avg_loss,  # return positive magnitude (Kelly endpoint also returns positive)
         "profit_factor": profit_factor,
         "avg_hold_days": avg_hold_days,
         "expectancy_pct": expectancy,
@@ -1125,6 +1125,7 @@ def _simulate_trade_sharpe(
         entry_price = t.entry_price
         stop_level = entry_price * stop_pct
         tp_level   = entry_price * tp_pct
+        exit_date  = getattr(t, "exit_date", None)  # actual close date; prevents lookahead
         # Walk forward from entry_date
         exit_return: float | None = None
         days_held = 0
@@ -1133,6 +1134,10 @@ def _simulate_trade_sharpe(
                 continue
             if d == entry_date:
                 continue  # skip entry day itself
+            # Never simulate past the actual close date — prices beyond exit_date are future
+            # data relative to when the trade was open, introducing lookahead bias.
+            if exit_date and d > exit_date:
+                break
             days_held += 1
             if close <= stop_level:
                 exit_return = (stop_level / entry_price) - 1
@@ -1210,15 +1215,17 @@ def _run_optuna_for_style(style: str, n_trials: int, portfolio_id: int | None = 
             price_map[sym] = [(r.ts.date(), r.close) for r in rows]
 
         # Snapshot trades list (detach from session)
-        trade_snapshots = [(t.symbol, t.entry_date, t.entry_price) for t in trades]
+        trade_snapshots = [(t.symbol, t.entry_date, t.entry_price,
+                        t.exit_time.date() if t.exit_time else None) for t in trades]
 
     class _TradeProxy:
-        def __init__(self, symbol, entry_date, entry_price):
+        def __init__(self, symbol, entry_date, entry_price, exit_date=None):
             self.symbol = symbol
             self.entry_date = entry_date
             self.entry_price = entry_price
+            self.exit_date = exit_date  # actual close date; caps lookahead in simulation
 
-    trade_objs = [_TradeProxy(s, d, p) for s, d, p in trade_snapshots]
+    trade_objs = [_TradeProxy(s, d, p, ex) for s, d, p, ex in trade_snapshots]
 
     fallback = _FALLBACK_PARAMS.get(style, _FALLBACK_PARAMS["SWING"])
 
@@ -1555,7 +1562,11 @@ def kelly_sizing(
 
     wins = [t.pct_return for t in trades if t.pct_return and t.pct_return > 0]
     losses = [abs(t.pct_return) for t in trades if t.pct_return and t.pct_return < 0]
-    p = len(wins) / len(trades)
+    # Denominator must be decisive trades (wins + losses), not all trades.
+    # Breakeven trades (pct_return==0.0) are excluded from both lists but were
+    # included in `trades`, which would understate p and deflate kelly_f.
+    decisive = len(wins) + len(losses)
+    p = len(wins) / decisive if decisive > 0 else 0.5
     q = 1.0 - p
     avg_win = float(np.mean(wins)) if wins else 0.0
     avg_loss = float(np.mean(losses)) if losses else 0.01
