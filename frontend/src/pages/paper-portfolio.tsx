@@ -1785,6 +1785,9 @@ export default function PaperPortfolioPage() {
                                     ['Pillars', reasons.independent_pillars_active as string | null],
                                     ['Weekly', reasons.weekly_trend as string | null],
                                     ['Regime', reasons.market_regime as string | null],
+                                    ['High', p.highest_price != null ? `$${p.highest_price.toFixed(2)}` : null],
+                                    ['Max %', p.highest_price != null && p.entry_price > 0 ? `+${((p.highest_price / p.entry_price - 1) * 100).toFixed(1)}%` : null],
+                                    ['Entry Regime', p.market_regime_at_entry as string | null],
                                   ].filter(([, v]) => v !== null && v !== undefined).map(([label, val]) => (
                                     <React.Fragment key={label as string}>
                                       <span style={{ fontSize: 10, color: '#475569' }}>{label}</span>
@@ -1914,9 +1917,10 @@ export default function PaperPortfolioPage() {
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
                                   {reasonKeys.map(k => {
                                     const v = reasons[k];
-                                    const display = typeof v === 'number' ? (v as number).toFixed(2) : String(v);
-                                    const isPos = typeof v === 'number' && (v as number) > 0;
-                                    const isNeg = typeof v === 'number' && (v as number) < 0;
+                                    const isNum = typeof v === 'number' && !isNaN(v as number);
+                                    const display = isNum ? (v as number).toFixed(2) : (v == null || (typeof v === 'number' && isNaN(v as number))) ? '—' : String(v);
+                                    const isPos = isNum && (v as number) > 0;
+                                    const isNeg = isNum && (v as number) < 0;
                                     return (
                                       <span key={k} style={{ fontSize: 11, color: isPos ? '#4ade80' : isNeg ? '#f87171' : '#94a3b8' }}>
                                         {k.replace(/_/g, ' ')}: <strong>{display}</strong>
