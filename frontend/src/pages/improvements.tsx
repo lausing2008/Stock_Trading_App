@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7189,6 +7189,30 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper_portfolio.py: _TradeProxy.exit_date added; simulation loop breaks at actual trade close date.',
   },
 
+  // ── Tier 165 — Paper portfolio UX fixes ──────────────────────────────────────────────────
+  {
+    id: 'T165-NAN-DISPLAY-GUARD',
+    tier: 165 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/paper-portfolio.tsx:1917',
+    effort: '10m',
+    impact: 'Low — `typeof NaN === "number"` is true in JS, so signal reason values that are NaN (e.g., from a failed calculation in signal engine) rendered literally as "NaN" instead of "—". Affected the AI Signal Reasons panel in the expanded position row.',
+    title: 'T165-A: Paper portfolio signal reasons display renders NaN literally instead of "—"',
+    what: '`typeof v === "number" ? v.toFixed(2) : String(v)` — when v is NaN, typeof check is True and NaN.toFixed(2) = "NaN" (a string). The isPos/isNeg checks also use `v > 0` / `v < 0` which return false for NaN, so color defaults to neutral — but the value "NaN" is still shown.',
+    fix: 'Added `const isNum = typeof v === "number" && !isNaN(v)` guard. NaN values now display "—" instead of "NaN".',
+    implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx line ~1917 NaN guard added.',
+  },
+  {
+    id: 'T165-HIGHEST-PRICE-UI',
+    tier: 165 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/paper-portfolio.tsx:1792',
+    effort: '15m',
+    impact: 'Low — highest_price was in the PaperPosition API type but never displayed. Traders can\'t see what the maximum unrealized gain was or whether a position ever hit its target.',
+    title: 'T165-B: Paper portfolio expanded row missing highest_price, max unrealized %, and entry regime',
+    what: 'p.highest_price and p.market_regime_at_entry were in PaperPosition type (api.ts:1295) but never shown in any UI panel. Signal Factors panel in the expanded row only showed TA Score, ML Prob, ML Agreement, Pillars, Weekly trend, Regime (from signal, not from position).',
+    fix: 'Added High ($X.XX), Max % (peak unrealized gain from entry = (highest_price/entry_price-1)*100%), and Entry Regime to the Signal Factors grid in the expanded position row. Only shown when non-null.',
+    implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
+  },
+
   // ── Tier 164 — Paper trading min_position_value guard ────────────────────────────────────
   {
     id: 'T164-MIN-POSITION-VALUE',
@@ -10412,6 +10436,7 @@ const TIER_LABEL: Record<Tier, string> = {
   162: 'Tier 162 — Deep audit: 3 bugs in ranking-engine, ml-prediction, technical-analysis',
   163: 'Tier 163 — Market-data API audit: fear_greed off-by-one + full scheduler/gateway review',
   164: 'Tier 164 — Paper trading min_position_value guard — prevents micro-positions from extreme ATR',
+  165: 'Tier 165 — Paper portfolio UX: NaN display guard + highest_price / entry regime in expanded row',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10579,6 +10604,7 @@ const TIER_COLOR: Record<Tier, string> = {
   162: '#fb923c',
   163: '#c084fc',
   164: '#34d399',
+  165: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
