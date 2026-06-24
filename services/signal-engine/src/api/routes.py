@@ -1141,6 +1141,7 @@ def trade_performance(
     lookback_days: int = Query(180, ge=7, le=730),
     symbol: str | None = None,
     horizon: str = Query("SWING", regex="^(SHORT|SWING|LONG|GROWTH)$"),
+    market: str | None = Query(None, regex="^(US|HK)$", description="Filter to one market"),
     wait_exits: bool = Query(False, description="Treat same-horizon WAIT as exit (exits when momentum fades)"),
     max_hold_days: int | None = Query(None, ge=1, le=365, description="Force-close after N days. Defaults: SHORT=7, SWING=25, LONG=90"),
     min_confidence: float = Query(0.0, ge=0, le=100, description="Only include BUY signals with confidence >= this value"),
@@ -1181,6 +1182,8 @@ def trade_performance(
     )
     if symbol:
         q = q.where(Stock.symbol == symbol.upper())
+    if market:
+        q = q.where(Stock.market == market.upper())
     if min_confidence > 0:
         q = q.where(Signal.confidence >= min_confidence)
     buy_rows = session.execute(q).all()

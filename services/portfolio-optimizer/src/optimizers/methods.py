@@ -234,15 +234,19 @@ def ai_allocation(
         vol = float(np.sqrt(np.clip(w @ cov @ w, 1e-12, None)))
         return -(ret - RISK_FREE) / vol
 
-    x0 = np.full(n, 1 / n)
-    res = minimize(
-        neg_sharpe, x0,
-        bounds=[(0.0, max_weight)] * n,
-        constraints=[{"type": "eq", "fun": lambda w: w.sum() - 1.0}],
-        method="SLSQP",
-        options={"ftol": 1e-9, "maxiter": 1000},
-    )
-    w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
+    if n == 1:
+        # Single stock: SLSQP is infeasible (max_weight=0.40 < required sum=1.0), skip it
+        w = np.array([1.0])
+    else:
+        x0 = np.full(n, 1 / n)
+        res = minimize(
+            neg_sharpe, x0,
+            bounds=[(0.0, max_weight)] * n,
+            constraints=[{"type": "eq", "fun": lambda w: w.sum() - 1.0}],
+            method="SLSQP",
+            options={"ftol": 1e-9, "maxiter": 1000},
+        )
+        w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
     w_scaled = w * (1 - cash_floor)
     cash = round(1 - float(w_scaled.sum()), 4)
     # Compute risk/return metrics on w (fully invested, sums to 1.0) so they are

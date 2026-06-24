@@ -271,7 +271,7 @@ def delete_backtest(
     if not strat or strat.owner != username:
         raise HTTPException(403, "Not your backtest")
     session.delete(bt)
-    # Clean up orphaned strategy (no other backtests use it)
+    session.flush()   # apply delete before the count so orphan check sees the updated state
     remaining = session.query(Backtest).filter(Backtest.strategy_id == strat.id).count()
     if remaining == 0:
         session.delete(strat)

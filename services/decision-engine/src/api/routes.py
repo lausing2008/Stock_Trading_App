@@ -144,17 +144,21 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         research_rec=research_rec,
     )
 
+    # Explicit None checks so 0.0 values are preserved (truthy-or chain would coerce 0.0 → None)
+    _sd = signal_data or {}
+    _bp = _sd.get("bullish_probability") if _sd.get("bullish_probability") is not None else reasons.get("ml_probability")
+    _cd = reasons.get("confidence_delta") if reasons.get("confidence_delta") is not None else _sd.get("confidence_delta")
     factors = Factors(
         signal_direction=sig_direction,
         signal_confidence=round(confidence, 2),
-        ml_bull_prob=float((signal_data or {}).get("bullish_probability") or reasons.get("ml_probability") or 0) or None,
+        ml_bull_prob=float(_bp) if _bp is not None else None,
         research_recommendation=research_rec,
         research_score=research_score,
         regime=regime_state,
         volume_z=float(reasons["volume_z"]) if reasons.get("volume_z") is not None else None,
         days_to_earnings=dte_int,
         signal_age_h=round(sig_age_h, 2) if sig_age_h is not None else None,
-        conf_delta=float(reasons.get("confidence_delta") or (signal_data or {}).get("confidence_delta") or 0) or None,
+        conf_delta=float(_cd) if _cd is not None else None,
         cross_style_buys=cross_buys,
     )
 

@@ -87,13 +87,13 @@ def _compute_us() -> dict:
     iwm_s   = _s("IWM")
     mdy_s   = _s("MDY")
 
-    if spy_s is not None and len(spy_s) >= 20:
+    if spy_s is not None and len(spy_s) >= 21:
         result["spy_price"]  = float(spy_s.iloc[-1])
         result["spy_ema20"]  = float(spy_s.ewm(span=20, adjust=False).mean().iloc[-1])
         result["spy_ema50"]  = float(spy_s.ewm(span=50, adjust=False).mean().iloc[-1])
         if len(spy_s) >= 200:
             result["spy_ema200"] = float(spy_s.ewm(span=200, adjust=False).mean().iloc[-1])
-        result["spy_20d_ret"] = round((float(spy_s.iloc[-1]) / float(spy_s.iloc[-20]) - 1) * 100, 2)
+        result["spy_20d_ret"] = round((float(spy_s.iloc[-1]) / float(spy_s.iloc[-21]) - 1) * 100, 2)
 
     if qqq_s is not None and len(qqq_s) >= 50:
         result["qqq_price"] = float(qqq_s.iloc[-1])

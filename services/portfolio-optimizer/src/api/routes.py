@@ -75,7 +75,8 @@ def _fetch_scores(symbols: list[str]) -> dict[str, float]:
             try:
                 r = c.get(f"{_settings.ranking_engine_url}/rankings/{s}")
                 if r.status_code == 200:
-                    scores[s] = float(r.json().get("score", 0))
+                    val = r.json().get("score")
+                    scores[s] = float(val) if val is not None else 0.0
             except Exception:
                 continue
     return scores

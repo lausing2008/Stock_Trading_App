@@ -169,6 +169,10 @@ class Signal(Base):
     __table_args__ = (
         Index("ix_signals_stock_ts", "stock_id", "ts"),
         Index("ix_signals_stock_horizon_ts", "stock_id", "horizon", "ts"),
+        # DB also has: UNIQUE (stock_id, horizon, date_trunc('day', ts)) — uq_signals_stock_horizon_day
+        # This is a function-based index, not expressible as UniqueConstraint in SQLAlchemy.
+        # Created manually: CREATE UNIQUE INDEX uq_signals_stock_horizon_day ON signals
+        #   USING btree (stock_id, horizon, date_trunc('day', ts));
     )
 
 

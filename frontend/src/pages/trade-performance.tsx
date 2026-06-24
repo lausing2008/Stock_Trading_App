@@ -163,12 +163,13 @@ function EquityCurve({ points, spyReturn }: { points: EquityPoint[]; spyReturn: 
 }
 
 const HORIZON_OPTIONS = [
-  { label: 'SHORT  (1–5d)',   value: 'SHORT' },
-  { label: 'SWING  (5–20d)',  value: 'SWING' },
-  { label: 'LONG  (30–90d)', value: 'LONG'  },
+  { label: 'SHORT  (1–5d)',   value: 'SHORT'  },
+  { label: 'SWING  (5–20d)',  value: 'SWING'  },
+  { label: 'LONG  (30–90d)', value: 'LONG'   },
+  { label: 'GROWTH',          value: 'GROWTH' },
 ];
 
-const MAX_HOLD_DEFAULTS: Record<string, number> = { SHORT: 7, SWING: 25, LONG: 90 };
+const MAX_HOLD_DEFAULTS: Record<string, number> = { SHORT: 7, SWING: 25, LONG: 90, GROWTH: 25 };
 
 export default function TradePerformancePage() {
   const router = useRouter();
@@ -182,7 +183,8 @@ export default function TradePerformancePage() {
   }, [router]);
 
   const [lookback, setLookback]           = useState(180);
-  const [horizon, setHorizon]             = useState<'SHORT' | 'SWING' | 'LONG'>('SWING');
+  const [horizon, setHorizon]             = useState<'SHORT' | 'SWING' | 'LONG' | 'GROWTH'>('SWING');
+  const [marketFilter, setMarketFilter]   = useState<'ALL' | 'US' | 'HK'>('ALL');
   const [waitExits, setWaitExits]         = useState(false);
   const [useMaxHold, setUseMaxHold]       = useState(true);
   const [maxHoldDays, setMaxHoldDays]     = useState<number>(25);
@@ -193,8 +195,9 @@ export default function TradePerformancePage() {
   const [sortBy, setSortBy]               = useState<'date' | 'return' | 'hold'>('date');
 
   const { data, isLoading, error } = useSWR(
-    authed ? ['trade-performance', lookback, horizon, waitExits, useMaxHold, maxHoldDays, minConfidence] : null,
+    authed ? ['trade-performance', lookback, horizon, marketFilter, waitExits, useMaxHold, maxHoldDays, minConfidence] : null,
     () => api.tradePerformance(lookback, undefined, horizon, {
+      market: marketFilter !== 'ALL' ? marketFilter : undefined,
       waitExits,
       maxHoldDays: useMaxHold ? maxHoldDays : undefined,
       minConfidence: minConfidence > 0 ? minConfidence : undefined,
@@ -241,12 +244,25 @@ export default function TradePerformancePage() {
         {/* Horizon selector */}
         <div style={{ display: 'flex', gap: 4 }}>
           {HORIZON_OPTIONS.map(o => (
-            <button key={o.value} onClick={() => { setHorizon(o.value as 'SHORT' | 'SWING' | 'LONG'); setMaxHoldDays(MAX_HOLD_DEFAULTS[o.value]); }}
+            <button key={o.value} onClick={() => { setHorizon(o.value as 'SHORT' | 'SWING' | 'LONG' | 'GROWTH'); setMaxHoldDays(MAX_HOLD_DEFAULTS[o.value]); }}
               style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
                 borderColor: horizon === o.value ? '#4ade80' : '#1e293b',
                 background: horizon === o.value ? 'rgba(74,222,128,0.12)' : 'transparent',
                 color: horizon === o.value ? '#4ade80' : '#64748b' }}>
               {o.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ width: 1, background: '#1e293b', alignSelf: 'stretch' }} />
+        {/* Market filter */}
+        <div style={{ display: 'flex', gap: 4 }}>
+          {(['ALL', 'US', 'HK'] as const).map(m => (
+            <button key={m} onClick={() => setMarketFilter(m)}
+              style={{ padding: '4px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                borderColor: marketFilter === m ? '#f97316' : '#1e293b',
+                background: marketFilter === m ? 'rgba(249,115,22,0.12)' : 'transparent',
+                color: marketFilter === m ? '#fb923c' : '#64748b' }}>
+              {m === 'ALL' ? 'All Markets' : m}
             </button>
           ))}
         </div>

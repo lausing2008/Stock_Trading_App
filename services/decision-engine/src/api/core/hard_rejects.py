@@ -41,14 +41,13 @@ def check_hard_rejects(
 
     stop_dist    = live_price - stop_price
     min_stop_dist = max(live_price * 0.005, 0.05)
+    if stop_dist <= 0:
+        return f"Stop ${stop_price:.2f} is above price ${live_price:.2f} — invalid setup"
     if stop_dist < min_stop_dist:
         return (
             f"Stop ${stop_price:.2f} too close to price ${live_price:.2f} "
             f"(distance ${stop_dist:.4f} < min ${min_stop_dist:.4f})"
         )
-
-    if stop_dist <= 0:
-        return f"Stop ${stop_price:.2f} is above price ${live_price:.2f} — invalid setup"
 
     rr = (take_profit - live_price) / stop_dist
     min_rr = cfg.get("min_rr_ratio", 2.0)
