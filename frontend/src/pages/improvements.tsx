@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7189,6 +7189,98 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper_portfolio.py: _TradeProxy.exit_date added; simulation loop breaks at actual trade close date.',
   },
 
+  // ── Tier 161 — HK regime dual-SMA in decide endpoint + SMA50 on regime page ──
+  {
+    id: 'T161-HK-REGIME-DECIDE',
+    tier: 161 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/regime.py:185',
+    effort: '10m',
+    impact: 'Medium — the /decide/regime?market=HK endpoint used the old SMA200-only logic (3 states: bear/choppy/bull) while paper trading used the new dual-SMA (5 states). Regime page showed different classification than what paper trading used internally.',
+    title: 'T161-A: Decision-engine HK regime used old SMA200-only logic — diverged from paper trading',
+    what: 'regime.py HK branch: `if hsi < e200 * 0.97 → bear, elif hsi < e200 → choppy, else bull`. Paper trading engine already uses dual-SMA (50+200) with 5 states. These were inconsistent.',
+    fix: 'Updated decide endpoint HK branch to match paper trading: dual-SMA classification, 5 states (bear/risk_off/choppy/neutral/bull), exposed hsi_ema50 field.',
+    implementedNote: 'Done 2026-06-24 — regime.py HK branch rewritten with dual-SMA. api.ts RegimeStatus type updated. regime.tsx shows HSI / SMA50 / SMA200 (three columns).',
+  },
+
+  // ── Tier 160 — 7 audit bugs + trade-performance market/GROWTH filter ─────────
+  {
+    id: 'T160-DECISION-ML-BULL-PROB',
+    tier: 160 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/routes.py:150',
+    effort: '5m',
+    impact: 'Medium — a genuinely bearish ML signal (bullish_probability=0.0) was indistinguishable from "no ML signal". The Factors object received None instead of 0.0, potentially allowing a decision that should have been suppressed by 0% bullish probability.',
+    title: 'T160-A: Decision-engine ml_bull_prob — falsy-or chain coerces 0.0 to None',
+    what: '`float(... or 0) or None` — `if 0.0` is falsy; a 0% bullish probability was silently dropped as None. Same pattern for conf_delta at line 157.',
+    fix: 'Compute _bp and _cd as local variables with explicit `is not None` guards before the Factors() constructor.',
+    implementedNote: 'Done 2026-06-24 — decision-engine routes.py lines 150-157.',
+  },
+  {
+    id: 'T160-DECISION-HARD-REJECT-DEAD',
+    tier: 160 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/hard_rejects.py:50',
+    effort: '2m',
+    impact: 'Low — dead code only; no user impact. But confusing code suggests stop_dist<=0 was a separate case, when it is always caught by the earlier < min_stop_dist check.',
+    title: 'T160-B: hard_rejects.py stop_dist<=0 branch is unreachable dead code',
+    what: '`min_stop_dist = max(price * 0.005, 0.05) > 0`, so `stop_dist <= 0 < min_stop_dist` always fires the earlier check first.',
+    fix: 'Moved the `<= 0` check before `< min_stop_dist` so each case has a clear, reachable path with an accurate error message.',
+    implementedNote: 'Done 2026-06-24 — hard_rejects.py lines 42-51 reordered.',
+  },
+  {
+    id: 'T160-DECISION-REGIME-OFFBYONE',
+    tier: 160 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/regime.py:96',
+    effort: '2m',
+    impact: 'Low — display only; spy_20d_ret showed 19-day return labelled as 20-day. Not used in regime classification.',
+    title: 'T160-C: regime.py spy_20d_ret off-by-one — iloc[-20] spans 19 bars',
+    what: '`spy_s.iloc[-1] / spy_s.iloc[-20]` — iloc is 0-indexed; iloc[-20] is 19 intervals prior. Fixed to iloc[-21].',
+    fix: 'Changed iloc[-20] → iloc[-21], length guard 20 → 21.',
+    implementedNote: 'Done 2026-06-24 — regime.py line 96.',
+  },
+  {
+    id: 'T160-STRATEGY-ORPHAN-FLUSH',
+    tier: 160 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/strategy-engine/src/api/routes.py:274',
+    effort: '3m',
+    impact: 'Medium — every deleted backtest left its parent strategy in the DB (orphan). Over time, the strategies table accumulated stale rows with no associated backtests.',
+    title: 'T160-D: Strategy orphan cleanup never fires — missing flush() before count query',
+    what: 'SessionLocal uses autoflush=False. `session.delete(bt)` marks the row pending but does not flush. The subsequent `COUNT(*)` query sees bt still present → remaining >= 1 → strategy never deleted.',
+    fix: '`session.flush()` after `session.delete(bt)` so the count sees the updated state.',
+    implementedNote: 'Done 2026-06-24 — strategy-engine routes.py line 274.',
+  },
+  {
+    id: 'T160-PORTFOLIO-SCORE-NULL',
+    tier: 160 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/portfolio-optimizer/src/api/routes.py:78',
+    effort: '3m',
+    impact: 'Medium — if K-Score computation yields NaN (insufficient price history), ranking-engine returns {"score": null}. dict.get("score", 0) returns None (key exists, value null). float(None) raises TypeError, swallowed by except, stock silently excluded from portfolio.',
+    title: 'T160-E: Portfolio optimizer float(None) TypeError when K-Score is null',
+    what: '`float(r.json().get("score", 0))` — the default 0 only applies when the key is absent. JSON null → Python None → float(None) raises TypeError.',
+    fix: '`val = r.json().get("score"); scores[s] = float(val) if val is not None else 0.0`',
+    implementedNote: 'Done 2026-06-24 — portfolio-optimizer routes.py line 78.',
+  },
+  {
+    id: 'T160-PORTFOLIO-N1-INFEASIBLE',
+    tier: 160 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/portfolio-optimizer/src/optimizers/methods.py:237',
+    effort: '3m',
+    impact: 'Low — result is numerically correct (fallback to equal weights = [1.0]), but optimizer always fails and logs a spurious solver failure when exactly 1 stock passes the min_score filter.',
+    title: 'T160-F: ai_allocation SLSQP always infeasible with exactly 1 stock (max_weight=0.40 < sum=1.0)',
+    what: 'With n=1 and bounds=[(0.0, 0.40)], the equality constraint w.sum()==1.0 is strictly infeasible. SLSQP always fails; fallback gives correct weight [1.0] but wastes a solver call.',
+    fix: 'Short-circuit: `if n == 1: w = np.array([1.0])` before calling minimize.',
+    implementedNote: 'Done 2026-06-24 — methods.py: n==1 early return before minimize call.',
+  },
+  {
+    id: 'T160-TRADE-PERF-MARKET-FILTER',
+    tier: 160 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/trade-performance.tsx:186 + services/signal-engine/src/api/routes.py:1143',
+    effort: '15m',
+    impact: 'Low — users with both US and HK positions could not isolate performance by market. GROWTH style was missing from the horizon selector despite being a valid signal horizon.',
+    title: 'T160-G: Trade performance page missing market filter and GROWTH horizon',
+    what: 'No market filter; no GROWTH in HORIZON_OPTIONS; signal-engine trade_performance endpoint had no ?market= param.',
+    fix: 'Added All Markets / US / HK filter buttons, GROWTH horizon option (max_hold default 25d), and ?market= param to the API call and endpoint.',
+    implementedNote: 'Done 2026-06-24 — trade-performance.tsx + api.ts + signal-engine routes.py.',
+  },
+
   // ── Tier 159 — Deep audit: 14 bugs across 9 services (2026-06-24) ────────────
   {
     id: 'AUD-159-CATALYST-RISK-DAMPEN',
@@ -10231,6 +10323,8 @@ const TIER_LABEL: Record<Tier, string> = {
   157: 'Tier 157 — Deep audit: Strategy Engine + Signal Engine + Paper Portfolio — 8 fixed',
   158: 'Tier 158 — Production fixes: Conf% display, Filter Audit 500, Event Intelligence crash, Watchlist market filter',
   159: 'Tier 159 — Deep audit: 14 bugs across 9 services (catalyst, congress, insider, research, ranking, TA, scheduler, paper trading, signal accuracy)',
+  160: 'Tier 160 — Deep audit: 7 bugs in decision/strategy/portfolio-optimizer + trade-performance market filter + GROWTH',
+  161: 'Tier 161 — HK regime dual-SMA in decide endpoint + SMA50 shown on Regime page',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10393,6 +10487,8 @@ const TIER_COLOR: Record<Tier, string> = {
   157: '#fb923c',
   158: '#a78bfa',
   159: '#f472b6',
+  160: '#38bdf8',
+  161: '#4ade80',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
