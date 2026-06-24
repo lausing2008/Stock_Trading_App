@@ -1547,6 +1547,7 @@ export type RegimeStatus = {
   breadth_weak: boolean;
   breadth_size_mult: number;
   hsi_price: number | null;
+  hsi_ema50: number | null;
   hsi_ema200: number | null;
   notes: string[];
 };

@@ -120,9 +120,12 @@ function RegimeCard({ market, data, loading }: { market: string; data: RegimeSta
       )}
 
       {market === 'HK' && data && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginBottom: 12 }}>
           <StatPill label="HSI" value={fmt(data.hsi_price, 0)} />
-          <StatPill label="HSI EMA200" value={fmt(data.hsi_ema200, 0)} color={
+          <StatPill label="HSI SMA50" value={fmt(data.hsi_ema50, 0)} color={
+            data.hsi_price && data.hsi_ema50 ? (data.hsi_price > data.hsi_ema50 ? '#22c55e' : '#ef4444') : '#94a3b8'
+          } />
+          <StatPill label="HSI SMA200" value={fmt(data.hsi_ema200, 0)} color={
             data.hsi_price && data.hsi_ema200 ? (data.hsi_price > data.hsi_ema200 ? '#22c55e' : '#ef4444') : '#94a3b8'
           } />
         </div>

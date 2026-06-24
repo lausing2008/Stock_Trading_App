@@ -184,25 +184,34 @@ def _compute_hk() -> dict:
 
     result: dict = {
         "state": "neutral", "vix": None, "notes": [],
-        "hsi_price": None, "hsi_ema200": None,
+        "hsi_price": None, "hsi_ema50": None, "hsi_ema200": None,
     }
     try:
         raw = yf.download("^HSI", period="300d", auto_adjust=True, progress=False)
         closes = raw["Close"].dropna() if "Close" in raw.columns else raw.dropna()
-        if len(closes) >= 200:
-            hsi   = float(closes.iloc[-1])
-            e200  = float(closes.ewm(span=200, adjust=False).mean().iloc[-1])
-            result["hsi_price"]   = hsi
-            result["hsi_ema200"]  = e200
-            if hsi < e200 * 0.97:
+        if len(closes) >= 50:
+            hsi  = float(closes.iloc[-1])
+            e50  = float(closes.tail(50).mean())
+            e200 = float(closes.tail(200).mean()) if len(closes) >= 200 else float(closes.mean())
+            result["hsi_price"]  = hsi
+            result["hsi_ema50"]  = e50
+            result["hsi_ema200"] = e200
+            # Dual-SMA classification: SMA50 distinguishes recovery from sustained downtrend
+            pct = hsi / e200 - 1
+            above_sma50 = hsi >= e50
+            if hsi < e200 * 0.85 and not above_sma50:
                 result["state"] = "bear"
-                result["notes"].append(f"HK Bear: HSI={hsi:.0f} < EMA200={e200:.0f}")
+                result["notes"].append(f"HSI {pct*100:.1f}% below SMA200 + below SMA50 → bear")
+            elif hsi < e200 * 0.92 and not above_sma50:
+                result["state"] = "risk_off"
+                result["notes"].append(f"HSI {pct*100:.1f}% below SMA200 + below SMA50 → risk_off")
             elif hsi < e200:
                 result["state"] = "choppy"
-                result["notes"].append(f"HK Choppy: HSI slightly below EMA200")
+                result["notes"].append(f"HSI {pct*100:.1f}% below SMA200 but above SMA50 → choppy (recovering)")
             else:
-                result["state"] = "bull"
-                result["notes"].append(f"HK Bull: HSI above EMA200")
+                ret20 = (hsi / float(closes.iloc[-20]) - 1) if len(closes) >= 20 else 0.0
+                result["state"] = "bull" if ret20 > 0 else "neutral"
+                result["notes"].append(f"HSI {pct*100:.1f}% above SMA200 → {'bull' if ret20 > 0 else 'neutral'}")
     except Exception as exc:
         result["notes"].append(f"HK regime fetch failed: {exc}")
     return result
