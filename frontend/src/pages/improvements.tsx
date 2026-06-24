@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,19 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 167 — Ranking-engine NaN SMA bias for short-history stocks ─────────────────────
+  {
+    id: 'T167-RANKING-NAN-SMA-BIAS',
+    tier: 167 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/ranking-engine/src/scoring/kscore.py:73',
+    effort: '15m',
+    impact: 'Medium — stocks with < 50 or < 200 bars of price history (IPOs, newly-added watchlist stocks) scored ~36 points lower in the technical component than identical stocks with full history. Python evaluates `price > NaN` as False, so above_sma50, above_sma200, and sma50_above_sma200 all returned 0 instead of a neutral value. A new IPO with excellent RSI and ADX was ranked far below established stocks of equal quality.',
+    title: 'T167-A: Ranking-engine _technical_score() systematically underscores IPO/short-history stocks due to NaN SMA comparisons',
+    what: '`sma50 = close.rolling(50).mean().iloc[-1]` returns NaN when len(close) < 50. `1 if close.iloc[-1] > NaN else 0` evaluates to 0 (NaN comparisons always return False). Three SMA components all score 0, dragging base from 30+ down to 0. _momentum_score() already handled this correctly with `if len(c) < 127: return 50.0`, but _technical_score() had no guard.',
+    fix: 'Each SMA component now uses pd.isna() to detect NaN: `(1 if close > sma50 else 0) if not pd.isna(sma50) else 0.5`. Missing SMA = 0.5 (neutral), so new stocks are scored as unknown rather than bad trend.',
+    implementedNote: 'Done 2026-06-24 — kscore.py updated, stockai-ranking-engine-1 restarted.',
+  },
+
   // ── Tier 166 — Strategy DSL KeyError + decision-engine silent failure ───────────────────
   {
     id: 'T166-STRATEGY-DSL-KEYERROR',
@@ -10462,6 +10475,7 @@ const TIER_LABEL: Record<Tier, string> = {
   164: 'Tier 164 — Paper trading min_position_value guard — prevents micro-positions from extreme ATR',
   165: 'Tier 165 — Paper portfolio UX: NaN display guard + highest_price / entry regime in expanded row',
   166: 'Tier 166 — Strategy DSL KeyError → 422 + decision-engine silent timestamp failure',
+  167: 'Tier 167 — Ranking-engine NaN SMA bias for short-history stocks',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10631,6 +10645,7 @@ const TIER_COLOR: Record<Tier, string> = {
   164: '#34d399',
   165: '#f59e0b',
   166: '#38bdf8',
+  167: '#a78bfa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
