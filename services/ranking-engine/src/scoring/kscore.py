@@ -70,9 +70,14 @@ def _technical_score(df: pd.DataFrame) -> float:
     close = df["close"]
     sma50  = close.rolling(50).mean().iloc[-1]
     sma200 = close.rolling(200).mean().iloc[-1]
-    above_sma50        = 1 if close.iloc[-1] > sma50  else 0
-    above_sma200       = 1 if close.iloc[-1] > sma200 else 0
-    sma50_above_sma200 = 1 if sma50 > sma200           else 0
+    _s50_ok  = not pd.isna(sma50)
+    _s200_ok = not pd.isna(sma200)
+    # Use 0.5 (neutral) when SMA is NaN — stocks with < 50/200 bars of history
+    # (IPOs, new additions) otherwise score 0/1 for each missing component,
+    # systematically underranking them relative to stocks with full history.
+    above_sma50        = (1 if close.iloc[-1] > sma50  else 0) if _s50_ok               else 0.5
+    above_sma200       = (1 if close.iloc[-1] > sma200 else 0) if _s200_ok              else 0.5
+    sma50_above_sma200 = (1 if sma50 > sma200           else 0) if (_s50_ok and _s200_ok) else 0.5
 
     r = _rsi(close).iloc[-1]
     # Asymmetric: optimal zone is 50-70 (bullish momentum). Oversold (<30) and
