@@ -387,7 +387,7 @@ def manual_exit_trade(
         exit_price = float(info.last_price)
     except Exception:
         pass
-    if not exit_price:
+    if exit_price is None or exit_price <= 0:
         exit_price = trade.current_price or trade.entry_price
 
     cfg = p.config or {}

@@ -63,8 +63,8 @@ async def job_recompute_catalyst():
                 "ORDER BY stock_id, ts DESC"
             )).fetchall()
             _tech_scores = {r[0]: float(r[1]) for r in rows if r[1] is not None}
-    except Exception:
-        pass
+    except Exception as exc:
+        log.error("scheduler.tech_scores_fetch_failed", error=str(exc))
     await _run("recompute_catalyst", catalyst.recompute_all(technical_scores=_tech_scores))
 
 
