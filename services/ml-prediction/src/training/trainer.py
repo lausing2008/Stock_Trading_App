@@ -107,7 +107,7 @@ def _load_fundamentals(symbol: str) -> dict | None:
     row = rows[0]
     fcf = row.free_cashflow
     mkt = row.market_cap
-    fcf_yield = (fcf / mkt) if (fcf and mkt and mkt > 0) else None
+    fcf_yield = (fcf / mkt) if (fcf is not None and mkt is not None and mkt > 0) else None
     # short_ratio_delta: negative = short covering (bullish), positive = building shorts (bearish)
     short_ratio_delta: float | None = None
     if len(rows) >= 2 and row.short_ratio is not None and rows[1].short_ratio is not None:

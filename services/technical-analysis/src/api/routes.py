@@ -172,7 +172,10 @@ def get_levels(
     levels = detect_support_resistance(df)
     lines = detect_trendlines(df)
     swing = df.tail(90)
-    fib = fibonacci_retracement(float(swing["high"].max()), float(swing["low"].min()))
+    swing_high = swing["high"].max()
+    swing_low = swing["low"].min()
+    import math as _math
+    fib = fibonacci_retracement(float(swing_high), float(swing_low)) if not _math.isnan(swing_high) else {}
     return {
         "symbol": symbol,
         "support_resistance": [vars(L) for L in levels],

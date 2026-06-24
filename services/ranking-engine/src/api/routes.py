@@ -41,7 +41,7 @@ def _fetch_patterns_bulk() -> dict[str, list[str]]:
         with httpx.Client(timeout=90) as c:
             r = c.get(f"{_TA_URL}/ta/patterns/bulk", timeout=90)
             if r.status_code == 200:
-                _patterns_cache_data = r.json().get("patterns", {})
+                _patterns_cache_data = r.json().get("patterns") or {}
                 _patterns_cache_ts = _time.time()
     except Exception:
         pass
