@@ -910,7 +910,9 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     # it precedes price drops by 2-3 bars and was the root cause of false BUYs like 6613.HK.
     macd_hist_slope = float(hist.iloc[-1] - hist.iloc[-3]) if len(hist.dropna()) >= 4 else 0.0
     macd_hist_expanding  = macd_hist_slope > 0
-    macd_momentum_fading = (macd_hist > 0) and (not macd_hist_expanding)
+    # Only flag fading when slope is strictly negative — flat (slope==0) scores 0.7 in macd_score,
+    # not 0.5, so that branch is reachable.
+    macd_momentum_fading = (macd_hist > 0) and (macd_hist_slope < 0)
     macd_zero_cross_up = False
     if len(macd_line.dropna()) >= 2:
         macd_zero_cross_up = bool(macd_line.iloc[-1] > 0 and macd_line.iloc[-2] <= 0)

@@ -1274,10 +1274,15 @@ def trade_performance(
         if sid in in_open_trade:
             continue
 
-        entry_date = sig.ts.date() + timedelta(days=1)  # execute next day, consistent with /accuracy
-        entry_price = price_on_or_before(sid, entry_date)
-        if entry_price is None:
+        # Entry on the first trading day with actual price data after the signal date.
+        # price_on_or_before(signal_date + 1 calendar day) was wrong for Friday signals:
+        # signal_date + 1 = Saturday → price_on_or_before returns Friday's close (lookahead).
+        _sid_ts = _price_ts.get(sid, [])
+        _entry_idx = bisect.bisect_right(_sid_ts, sig.ts.date())
+        if _entry_idx >= len(_sid_ts):
             continue
+        entry_date = _sid_ts[_entry_idx]
+        entry_price = _price_close[sid][_entry_idx]
 
         exit_ts, exit_signal_val = next_exit(sid, sig.ts)
 
@@ -1887,8 +1892,8 @@ def calibrate_ta_weights(
         "rsi_mild_overbought":    lambda r: 65 <= (r.get("rsi") or 0) < 72,
         "stoch_oversold":         lambda r: bool(r.get("stoch_rsi_oversold")),
         "stoch_cross_up":         lambda r: bool(r.get("stoch_rsi_cross_up")),
-        "macd_strong":            lambda r: (r.get("macd_hist") or 0) > 0 and bool(r.get("macd_rising")),
-        "macd_positive":          lambda r: (r.get("macd_hist") or 0) > 0 and not bool(r.get("macd_rising")),
+        "macd_strong":            lambda r: (r.get("macd_hist") or 0) > 0 and bool(r.get("macd_hist_expanding")),
+        "macd_positive":          lambda r: (r.get("macd_hist") or 0) > 0 and not bool(r.get("macd_hist_expanding")),
         "macd_zero_cross_up":     lambda r: bool(r.get("macd_zero_cross_up")),
         "bb_mid_zone":            lambda r: 0.2 < (r.get("bb_pct_b") or 0) < 0.8,
         "price_above_vwap":       lambda r: r.get("price_above_vwap") is True,

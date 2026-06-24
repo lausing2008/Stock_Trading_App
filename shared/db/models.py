@@ -845,6 +845,25 @@ class PoliticalEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class StockConnectFlow(Base):
+    """Daily Stock Connect southbound flow per HK stock (mainland investors buying HK)."""
+    __tablename__ = "stock_connect_flows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    flow_date: Mapped[date] = mapped_column(Date, index=True)
+    net_shares: Mapped[float | None] = mapped_column(Float, nullable=True)   # daily change in mainland holdings (shares)
+    net_hkd_m: Mapped[float | None] = mapped_column(Float, nullable=True)    # net buy value in HKD millions
+    holdings_shares: Mapped[float | None] = mapped_column(Float, nullable=True)  # total mainland holdings (shares)
+    holdings_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # % of total issued shares held by mainland
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)         # 0-100 southbound momentum score
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", "flow_date", name="uq_stock_connect_flow"),
+    )
+
+
 class CatalystScore(Base):
     __tablename__ = "catalyst_scores"
 
