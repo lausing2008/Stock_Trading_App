@@ -596,6 +596,7 @@ export default function Watchlist() {
   const [moving, setMoving] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [sigFilter, setSigFilter] = useState<SigFilter>('ALL');
+  const [marketFilter, setMarketFilter] = useState<'ALL' | 'US' | 'HK'>('ALL');
   const [sortKey, setSortKey] = useState<SortKey>('symbol');
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [noteModal, setNoteModal] = useState<string | null>(null);
@@ -799,6 +800,7 @@ export default function Watchlist() {
   /* Filtered + sorted */
   const visible = useMemo(() => {
     let list = (data ?? []).filter(item => {
+      if (marketFilter !== 'ALL' && item.market !== marketFilter) return false;
       if (sigFilter === 'ALL') return true;
       return getSignal(item.symbol) === sigFilter;
     });
@@ -816,7 +818,7 @@ export default function Watchlist() {
       return 0;
     });
     return list;
-  }, [data, sigFilter, sortKey, priceMap, rankMap, signalMap]);
+  }, [data, sigFilter, marketFilter, sortKey, priceMap, rankMap, signalMap]);
 
   const noteItem  = noteModal  ? data?.find(d => d.symbol === noteModal)  : null;
   const alertItem = alertModal ? data?.find(d => d.symbol === alertModal) : null;
@@ -1047,6 +1049,13 @@ export default function Watchlist() {
             {(['ALL', 'BUY', 'HOLD', 'WAIT', 'SELL'] as SigFilter[]).map(f => (
               <button key={f} onClick={() => setSigFilter(f)} style={{ padding: '6px 12px', border: 'none', cursor: 'pointer', transition: 'all 0.15s', background: sigFilter === f ? (f === 'BUY' ? 'rgba(34,197,94,0.2)' : f === 'SELL' ? 'rgba(239,68,68,0.2)' : f === 'WAIT' ? 'rgba(251,146,60,0.15)' : f === 'HOLD' ? 'rgba(250,204,21,0.15)' : '#334155') : 'transparent', color: sigFilter === f ? (f === 'BUY' ? '#4ade80' : f === 'SELL' ? '#f87171' : f === 'WAIT' ? '#fb923c' : f === 'HOLD' ? '#facc15' : '#e2e8f0') : '#64748b' }}>
                 {f}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', borderRadius: '6px', border: '1px solid #334155', overflow: 'hidden', fontSize: '12px', fontWeight: 600 }}>
+            {(['ALL', 'US', 'HK'] as const).map(m => (
+              <button key={m} onClick={() => setMarketFilter(m)} style={{ padding: '6px 12px', border: 'none', cursor: 'pointer', transition: 'all 0.15s', background: marketFilter === m ? (m === 'HK' ? 'rgba(251,146,60,0.2)' : m === 'US' ? 'rgba(99,102,241,0.2)' : '#334155') : 'transparent', color: marketFilter === m ? (m === 'HK' ? '#fb923c' : m === 'US' ? '#818cf8' : '#e2e8f0') : '#64748b' }}>
+                {m === 'ALL' ? 'All Markets' : m}
               </button>
             ))}
           </div>
