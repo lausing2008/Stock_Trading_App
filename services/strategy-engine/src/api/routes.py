@@ -143,7 +143,10 @@ def backtest(
         raise HTTPException(404, f"No data for {body.symbol}")
 
     engine = BacktestEngine()
-    result = engine.run(df, rule_dsl.get("entry"), rule_dsl.get("exit"))
+    try:
+        result = engine.run(df, rule_dsl.get("entry"), rule_dsl.get("exit"))
+    except ValueError as exc:
+        raise HTTPException(422, f"Invalid rule_dsl: {exc}") from exc
 
     # Fetch SPY benchmark for the same date range
     spy_df = _fetch_prices_df("SPY", start, end)

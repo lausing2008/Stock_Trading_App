@@ -92,8 +92,8 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
             else:
                 ts_aware = sig_ts.replace(tzinfo=timezone.utc) if sig_ts.tzinfo is None else sig_ts
             sig_age_h = (datetime.now(timezone.utc) - ts_aware).total_seconds() / 3600
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("decision.sig_ts_parse_failed", ts=sig_ts, error=str(exc))
 
     # 5. Resolve research fields
     research_rec   = None
