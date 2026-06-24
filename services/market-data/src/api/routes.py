@@ -380,7 +380,7 @@ def _compute_fear_greed() -> dict:
             v = float(vix_close.iloc[i])
             s = float(spx_close.iloc[i])
             ma = float(spx_close.rolling(125).mean().iloc[i])
-            r = float(spx_close.iloc[i] / spx_close.iloc[i - 20] - 1) if abs(i - 20) <= len(spx_close) - 1 else 0.0
+            r = float(spx_close.iloc[i] / spx_close.iloc[i - 20] - 1) if abs(i - 20) <= len(spx_close) else 0.0
             vm = float(vix_close.rolling(20).mean().iloc[i])
             vs = 100 - min(max((v - 10) / 30 * 100, 0), 100)
             ms = 75.0 if s > ma else 25.0
