@@ -1272,7 +1272,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         elif sig_type == "HOLD":
             stall_days = cfg.get("hold_stall_days", 30)
             stall_max_gain = cfg.get("hold_stall_max_gain", 0.05)
-            if days_held >= stall_days and pnl_pct < 0:
+            if days_held >= stall_days and pnl_pct < stall_max_gain:
                 exit_reason = "hold_stall_timeout"
                 exit_notes = {**_base_notes,
                     "message": f"HOLD stall: {days_held}d with only {pnl_pct*100:.1f}% gain (threshold +{stall_max_gain*100:.0f}%) — freeing capital",

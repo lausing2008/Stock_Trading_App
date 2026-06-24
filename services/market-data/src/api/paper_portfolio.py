@@ -2,7 +2,7 @@
 import json
 import math
 import threading
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -196,7 +196,7 @@ def get_summary(
     equity = p.current_cash + open_value
 
     wins = [t for t in closed_trades if (t.pnl or 0) > 0]
-    losses = [t for t in closed_trades if (t.pnl or 0) <= 0]
+    losses = [t for t in closed_trades if (t.pnl or 0) < 0]
     win_rate = round(len(wins) / max(len(closed_trades), 1) * 100, 1)
     avg_win  = round(sum(t.pct_return or 0 for t in wins) / max(len(wins), 1), 2)
     avg_loss = round(sum(t.pct_return or 0 for t in losses) / max(len(losses), 1), 2)
@@ -308,20 +308,25 @@ def get_positions(
         .order_by(desc(PaperTrade.entry_date))
     ).scalars().all()
 
-    # Fetch latest SWING signal per open position symbol
+    # Fetch latest signal for each open position using the portfolio's trading style as horizon
+    portfolio_style = p.config.get("trading_style", "SWING").upper()
+    try:
+        sig_horizon = SignalHorizon(portfolio_style)
+    except ValueError:
+        sig_horizon = SignalHorizon.SWING
     symbols = list({t.symbol for t in trades})
     current_signals: dict[str, str] = {}
     if symbols:
         sig_subq = (
             select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
-            .where(Signal.horizon == SignalHorizon.SWING)
+            .where(Signal.horizon == sig_horizon)
             .group_by(Signal.stock_id)
             .subquery()
         )
         sig_rows = session.execute(
             select(Stock.symbol, Signal.signal)
             .join(sig_subq, Stock.id == sig_subq.c.stock_id)
-            .join(Signal, (Signal.stock_id == sig_subq.c.stock_id) & (Signal.ts == sig_subq.c.max_ts) & (Signal.horizon == SignalHorizon.SWING))
+            .join(Signal, (Signal.stock_id == sig_subq.c.stock_id) & (Signal.ts == sig_subq.c.max_ts) & (Signal.horizon == sig_horizon))
             .where(Stock.symbol.in_(symbols))
         ).all()
         current_signals = {sym: sig.value if hasattr(sig, "value") else str(sig) for sym, sig in sig_rows}
@@ -829,7 +834,7 @@ def get_attribution(
         if not bucket:
             return {"count": 0, "win_rate": None, "avg_return": None, "profit_factor": None}
         wins = [t for t in bucket if (t.pnl or 0) > 0]
-        losses = [t for t in bucket if (t.pnl or 0) <= 0]
+        losses = [t for t in bucket if (t.pnl or 0) < 0]
         returns = [t.pct_return for t in bucket if t.pct_return is not None]
         gross_win = sum(t.pnl for t in wins if t.pnl)
         gross_loss = abs(sum(t.pnl for t in losses if t.pnl))
@@ -1522,7 +1527,7 @@ def kelly_sizing(
       p = win rate, q = 1-p, b = avg_win_pct / avg_loss_pct
     Position sizing: use quarter-Kelly (0.25×f*) to account for model uncertainty.
     """
-    cutoff = date.today() - timedelta(days=lookback_days)
+    cutoff = datetime.combine(date.today() - timedelta(days=lookback_days), time.min)
     with SessionLocal() as session:
         trades = session.execute(
             select(PaperTrade)

@@ -2090,7 +2090,10 @@ def get_prices(
     except ValueError:
         raise HTTPException(400, f"Invalid timeframe '{timeframe}'. Valid values: {[v.value for v in TimeFrame]}")
     if not end:
-        end = date.today()
+        # Use tomorrow as upper bound so all of today's intraday bars are included.
+        # date.today() converts to midnight 00:00:00 UTC in PostgreSQL, which excludes
+        # any bar timestamped after midnight today (i.e. all intraday 5m/1m bars).
+        end = date.today() + timedelta(days=1)
     if start and end and start > end:
         raise HTTPException(400, "start date must not be after end date")
 
