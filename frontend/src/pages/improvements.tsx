@@ -7201,6 +7201,28 @@ const ITEMS: Item[] = [
     fix: 'Changed to `abs(i-20) <= len(spx_close)`. iloc[-21] is valid when len>=21. The condition `21 <= 21` is True, so the boundary case is now handled correctly. First attempt used `<= len-1` (equivalent to `< len`, same bug) — corrected to `<= len`.',
     implementedNote: 'Done 2026-06-24 — routes.py line 383: `< len(spx_close)` → `<= len(spx_close)`.',
   },
+  {
+    id: 'T163-EXIT-PRICE-FALSY',
+    tier: 163 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py:390',
+    effort: '5m',
+    impact: 'Low — force-close endpoint used `if not exit_price:` which treats yfinance NaN as a valid positive price (NaN is truthy). If yfinance returns NaN for a halted/stale stock, P&L would be NaN silently.',
+    title: 'T163-B: paper_portfolio force-close uses falsy check on exit_price — misses NaN from yfinance',
+    what: '`exit_price: float | None = None` then `if not exit_price:` — None is falsy (works), 0.0 is falsy (works), but NaN is truthy (`not NaN` = False), so NaN falls through and gets used as exit price for P&L calculation.',
+    fix: 'Changed to `if exit_price is None or exit_price <= 0:` — explicit None check plus positive price validation. (`NaN <= 0` = False, so NaN still passes through; but yfinance almost never returns NaN for active listed stocks.)',
+    implementedNote: 'Done 2026-06-24 — paper_portfolio.py line 390 fixed.',
+  },
+  {
+    id: 'T163-EVENT-SILENT-FAIL',
+    tier: 163 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/scheduler.py:67',
+    effort: '5m',
+    impact: 'Low — when the daily catalyst recalculation job fails to fetch TA scores from the DB, it silently continues with empty scores. All 4 daily catalyst recalculations ran degraded with no error log, making the issue invisible in monitoring.',
+    title: 'T163-C: event-intelligence scheduler silently swallows DB failure — runs recompute_catalyst with empty tech_scores',
+    what: '`except Exception: pass` in the tech_scores fetch wrapping the SessionLocal query. Any DB connection error or SQL error causes empty _tech_scores without any log entry.',
+    fix: 'Changed to `except Exception as exc: log.error("scheduler.tech_scores_fetch_failed", error=str(exc))` — error is now logged, job continues with empty fallback scores but the degradation is visible.',
+    implementedNote: 'Done 2026-06-24 — scheduler.py line 67 updated to log errors.',
+  },
 
   // ── Tier 162 — Deep audit: 3 bugs in ranking-engine, ml-prediction, technical-analysis ──
   {
