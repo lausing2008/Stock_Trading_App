@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,30 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 166 — Strategy DSL KeyError + decision-engine silent failure ───────────────────
+  {
+    id: 'T166-STRATEGY-DSL-KEYERROR',
+    tier: 166 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/strategy-engine/src/dsl/evaluator.py:101',
+    effort: '20m',
+    impact: 'Medium — malformed user-supplied strategy rule_dsl caused unhandled KeyError (missing "nodes"/"node"/"left"/"right" keys) that propagated as a 500 Internal Server Error from the backtest endpoint instead of a descriptive 422 validation error. Users with typos in their DSL JSON saw a generic server error with no guidance.',
+    title: 'T166-A: Strategy backtest crashes with KeyError on malformed rule_dsl instead of 422',
+    what: 'evaluate_rule() used rule["nodes"] (dict key access) for "and"/"or" nodes, rule["node"] for "not", and rule["left"]/rule["right"] for comparison nodes. Missing any of these raises KeyError, not ValueError. The backtest route did not catch the exception, so it propagated as HTTP 500.',
+    fix: 'evaluate_rule() now uses rule.get("nodes") with an explicit ValueError("\'and\' node requires a non-empty \'nodes\' list") for missing/empty nodes. Same guard for "node", "left", "right". routes.py wraps engine.run() in try/except ValueError and raises HTTPException(422, f"Invalid rule_dsl: {exc}").',
+    implementedNote: 'Done 2026-06-24 — evaluator.py + routes.py updated, stockai-strategy-engine-1 restarted.',
+  },
+  {
+    id: 'T166-DECISION-SIG-TS-SILENT',
+    tier: 166 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/routes.py:95',
+    effort: '5m',
+    impact: 'Low — signal timestamp parse errors were silently swallowed (except Exception: pass). Malformed "ts" from signal-engine would leave sig_age_h=None with no trace in logs, making it impossible to diagnose upstream data quality issues.',
+    title: 'T166-B: Decision engine swallows signal timestamp parse errors silently',
+    what: 'Signal age is computed from signal_data["ts"]. The try/except had bare `pass`, consistent with the same pattern fixed in event-intelligence (Tier 163). No warning was emitted when fromisoformat() failed.',
+    fix: 'except Exception as exc → log.warning("decision.sig_ts_parse_failed", ts=sig_ts, error=str(exc)). Matches the Tier 163 pattern.',
+    implementedNote: 'Done 2026-06-24 — decision-engine routes.py updated, stockai-decision-engine-1 restarted.',
+  },
+
   // ── Tier 164 — Paper trading min_position_value guard ────────────────────────────────────
   {
     id: 'T164-MIN-POSITION-VALUE',
@@ -10437,6 +10461,7 @@ const TIER_LABEL: Record<Tier, string> = {
   163: 'Tier 163 — Market-data API audit: fear_greed off-by-one + full scheduler/gateway review',
   164: 'Tier 164 — Paper trading min_position_value guard — prevents micro-positions from extreme ATR',
   165: 'Tier 165 — Paper portfolio UX: NaN display guard + highest_price / entry regime in expanded row',
+  166: 'Tier 166 — Strategy DSL KeyError → 422 + decision-engine silent timestamp failure',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10605,6 +10630,7 @@ const TIER_COLOR: Record<Tier, string> = {
   163: '#c084fc',
   164: '#34d399',
   165: '#f59e0b',
+  166: '#38bdf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
