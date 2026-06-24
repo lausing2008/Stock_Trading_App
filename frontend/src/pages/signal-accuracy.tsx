@@ -454,7 +454,7 @@ function WalkForwardSection() {
                       <td style={{ padding: '5px 8px' }}>
                         <span style={{ fontWeight: 700, color: s.signal === 'BUY' ? '#4ade80' : '#f87171' }}>{s.signal}</span>
                       </td>
-                      <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{s.confidence != null ? `${(s.confidence * 100).toFixed(0)}%` : '—'}</td>
+                      <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{s.confidence != null ? `${s.confidence.toFixed(0)}%` : '—'}</td>
                       <td style={{ padding: '5px 8px', color: '#64748b' }}>{s.entry_price.toFixed(2)}</td>
                       <td style={{ padding: '5px 8px', color: '#64748b' }}>{s.exit_price.toFixed(2)}</td>
                       <td style={{ padding: '5px 8px', fontWeight: 600, color: s.pct_change > 0 ? '#4ade80' : '#f87171' }}>
