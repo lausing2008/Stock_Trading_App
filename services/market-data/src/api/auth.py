@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import SessionLocal, SignalAlert, User, UserRole, get_session
+from db import SessionLocal, PriceAlert, SignalAlert, User, UserRole, get_session
 
 log = get_logger("auth")
 
@@ -307,6 +307,32 @@ def update_me(
         is_active=user.is_active, email=user.email,
         created_at=user.created_at.isoformat(),
     )
+
+
+@router.post("/sync-alert-email")
+def sync_alert_email(
+    current: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Push the user's profile email to every price alert and signal alert they own."""
+    user = session.get(User, current.id)
+    if not user or not user.email:
+        raise HTTPException(status_code=400, detail="No email set on your profile. Save an email first.")
+    email = user.email
+    price_updated = session.execute(
+        update(PriceAlert)
+        .where(PriceAlert.user_id == user.id)
+        .values(email=email)
+    ).rowcount
+    signal_updated = session.execute(
+        update(SignalAlert)
+        .where(SignalAlert.user_id == user.id)
+        .values(email=email)
+    ).rowcount
+    session.commit()
+    log.info("alert_email.synced", user=user.username, email=email,
+             price_alerts=price_updated, signal_alerts=signal_updated)
+    return {"ok": True, "email": email, "price_alerts_updated": price_updated, "signal_alerts_updated": signal_updated}
 
 
 @router.put("/change-password")

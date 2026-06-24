@@ -164,6 +164,8 @@ export const api = {
   getMe: () => request<AppUser>(`/auth/me`),
   updateProfile: (body: { email?: string }) =>
     request<AppUser>(`/auth/me`, { method: 'PUT', body: JSON.stringify(body) }),
+  syncAlertEmail: () =>
+    request<{ ok: boolean; email: string; price_alerts_updated: number; signal_alerts_updated: number }>(`/auth/sync-alert-email`, { method: 'POST' }),
 
   // User management (admin)
   listUsers: () => request<AppUser[]>(`/auth/users`),

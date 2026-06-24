@@ -119,6 +119,7 @@ export default function SettingsPage() {
   const [profileEmail, setProfileEmail] = useState('');
   const [emailMsg, setEmailMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [emailSaving, setEmailSaving] = useState(false);
+  const [syncingEmail, setSyncingEmail] = useState(false);
 
   useEffect(() => {
     api.getMe().then(u => { if (u.email) setProfileEmail(u.email); }).catch(() => {});
@@ -131,12 +132,30 @@ export default function SettingsPage() {
     try {
       await api.updateProfile({ email: profileEmail.trim() || undefined });
       if (profileEmail.trim()) localStorage.setItem('stockai_alert_email', profileEmail.trim());
-      setEmailMsg({ ok: true, text: 'Email saved.' });
+      // Auto-sync to all alerts after saving
+      if (profileEmail.trim()) {
+        try { await api.syncAlertEmail(); } catch {}
+      }
+      setEmailMsg({ ok: true, text: 'Email saved and synced to all alerts.' });
       setTimeout(() => setEmailMsg(null), 3000);
     } catch {
       setEmailMsg({ ok: false, text: 'Failed to save email.' });
     } finally {
       setEmailSaving(false);
+    }
+  }
+
+  async function handleSyncEmail() {
+    setSyncingEmail(true);
+    setEmailMsg(null);
+    try {
+      const r = await api.syncAlertEmail();
+      setEmailMsg({ ok: true, text: `Synced to ${r.price_alerts_updated} price alert${r.price_alerts_updated !== 1 ? 's' : ''} and ${r.signal_alerts_updated} signal alert${r.signal_alerts_updated !== 1 ? 's' : ''}.` });
+      setTimeout(() => setEmailMsg(null), 4000);
+    } catch (err: any) {
+      setEmailMsg({ ok: false, text: err?.message || 'Sync failed — make sure you have an email saved.' });
+    } finally {
+      setSyncingEmail(false);
     }
   }
 
@@ -1079,7 +1098,7 @@ export default function SettingsPage() {
               placeholder="you@example.com"
               style={inp}
             />
-            <div style={hint}>Price alert emails are sent here. Set it once — no need to type it per alert.</div>
+            <div style={hint}>Price &amp; signal alert emails are sent here. Saving auto-syncs to all your existing alerts.</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingBottom: '2px' }}>
             {emailMsg && (
@@ -1087,10 +1106,18 @@ export default function SettingsPage() {
             )}
             <button
               type="submit"
-              disabled={emailSaving}
-              style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#f59e0b', color: '#0f172a', fontSize: '13px', fontWeight: 700, cursor: emailSaving ? 'not-allowed' : 'pointer', opacity: emailSaving ? 0.6 : 1 }}
+              disabled={emailSaving || syncingEmail}
+              style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#f59e0b', color: '#0f172a', fontSize: '13px', fontWeight: 700, cursor: (emailSaving || syncingEmail) ? 'not-allowed' : 'pointer', opacity: (emailSaving || syncingEmail) ? 0.6 : 1 }}
             >
               {emailSaving ? 'Saving…' : 'Save Email'}
+            </button>
+            <button
+              type="button"
+              onClick={handleSyncEmail}
+              disabled={syncingEmail || emailSaving}
+              style={{ padding: '8px 18px', borderRadius: '8px', border: '1px solid #334155', background: 'transparent', color: '#94a3b8', fontSize: '13px', fontWeight: 600, cursor: (syncingEmail || emailSaving) ? 'not-allowed' : 'pointer', opacity: (syncingEmail || emailSaving) ? 0.6 : 1 }}
+            >
+              {syncingEmail ? 'Syncing…' : 'Sync to all alerts'}
             </button>
           </div>
         </form>
