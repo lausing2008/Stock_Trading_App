@@ -839,17 +839,21 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     # ── Feature attribution (top-5 drivers) ────────────────────────────────────
     # Approximation: importance × sign(scaled_value) gives a directional contribution.
     # Positive = pushes toward BUY, negative = pushes toward SELL.
+    # Use Xs[-1] (scaled by StandardScaler) not raw X values — always-positive features
+    # like ATR/RSI/volume have np.sign(raw) = +1 regardless of whether the value is high
+    # or low relative to history. The scaled value is centered around the feature mean so
+    # sign correctly reflects whether the feature is above or below its historical baseline.
     feature_attributions: dict[str, float] = {}
     try:
         fi = bundle.get("feature_importance", {})
-        if fi and not X.empty:
-            latest = X.iloc[-1]
-            for feat, imp in fi.items():
-                if feat in latest.index:
-                    val = latest[feat]
-                    if not np.isnan(val) and imp > 0:
-                        # Directional contribution: positive features push BUY
-                        feature_attributions[feat] = round(float(imp * np.sign(val)), 5)
+        if fi and not X_aligned.empty and Xs is not None and len(Xs) > 0:
+            latest_scaled = Xs[-1]
+            for idx, feat in enumerate(saved_cols):
+                imp = fi.get(feat, 0.0)
+                if imp > 0 and idx < len(latest_scaled):
+                    sval = latest_scaled[idx]
+                    if not np.isnan(sval):
+                        feature_attributions[feat] = round(float(imp * np.sign(sval)), 5)
             # Return top 5 by absolute contribution
             top5 = sorted(feature_attributions.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
             feature_attributions = dict(top5)
@@ -1084,14 +1088,16 @@ def validate_walkforward(
         label_threshold = compute_label_threshold(df_train.iloc[-min(252, len(df_train)):], horizon)
 
         try:
+            # SE-F2: pass fund_data={} for historical windows to avoid lookahead bias.
+            # Today's fundamentals (P/E, EPS, etc.) are unknown for past windows.
             X_tr, y_tr, _ = build_features(
                 df_train, horizon=horizon, macro_df=macro_df,
-                label_threshold=label_threshold, fund_data=fund_data,
+                label_threshold=label_threshold, fund_data={},
                 sector_df=wf_sector_df,
             )
             X_te, y_te, y_ret_te = build_features(
                 df_test, horizon=horizon, macro_df=macro_df,
-                label_threshold=label_threshold, fund_data=fund_data,
+                label_threshold=label_threshold, fund_data={},
                 sector_df=wf_sector_df,
             )
         except Exception:

@@ -563,7 +563,6 @@ def get_decisions(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
     symbol: str | None = Query(None),
-    decision: str | None = Query(None),   # ENTER | WAIT | SKIP
     days_back: int = Query(30, ge=1, le=180),
     portfolio_id: int | None = Query(None),
     _: User = Depends(get_current_user),
@@ -1159,10 +1158,10 @@ def _simulate_trade_sharpe(
     return (mean_r / std_r) * ann_factor
 
 
-def _run_optuna_for_style(style: str, n_trials: int) -> dict:
+def _run_optuna_for_style(style: str, n_trials: int, portfolio_id: int | None = None) -> dict:
     """Run Optuna to tune stop_pct, tp_pct, max_hold_days for one style.
 
-    Uses all closed paper trades of the given style as the dataset.
+    Uses closed paper trades of the given style (filtered to portfolio_id when provided).
     Runs inline — call from a background thread.
     """
     try:
@@ -1174,14 +1173,15 @@ def _run_optuna_for_style(style: str, n_trials: int) -> dict:
     from db import SessionLocal
 
     with SessionLocal() as session:
-        trades = session.execute(
-            select(PaperTrade).where(
-                PaperTrade.stage == "closed",
-                PaperTrade.trading_style == style,
-                PaperTrade.entry_price.is_not(None),
-                PaperTrade.entry_date.is_not(None),
-            )
-        ).scalars().all()
+        q = select(PaperTrade).where(
+            PaperTrade.stage == "closed",
+            PaperTrade.trading_style == style,
+            PaperTrade.entry_price.is_not(None),
+            PaperTrade.entry_date.is_not(None),
+        )
+        if portfolio_id is not None:
+            q = q.where(PaperTrade.portfolio_id == portfolio_id)
+        trades = session.execute(q).scalars().all()
 
         if len(trades) < 10:
             return {"error": f"Not enough closed {style} trades ({len(trades)}); need ≥ 10"}
@@ -1247,10 +1247,10 @@ def _run_optuna_for_style(style: str, n_trials: int) -> dict:
     }
 
 
-def _tune_and_save(style: str, n_trials: int) -> None:
+def _tune_and_save(style: str, n_trials: int, portfolio_id: int | None = None) -> None:
     """Background task: run Optuna for style, merge results into trade_params.json."""
     try:
-        result = _run_optuna_for_style(style, n_trials)
+        result = _run_optuna_for_style(style, n_trials, portfolio_id=portfolio_id)
         if "error" not in result:
             current = _load_trade_params()
             current[style] = result
@@ -1294,12 +1294,13 @@ def tune_trade_params(
     background_tasks: BackgroundTasks,
     style: str = Query("SWING"),
     n_trials: int = Query(80, ge=20, le=300),
+    portfolio_id: int | None = Query(None),
     _: User = Depends(get_admin_user),
 ) -> dict:
     """Start Optuna tuning for stop_pct / tp_pct / max_hold_days for one trading style.
 
     Runs in the background. Poll GET /trade-params to see when is_running=False.
-    Uses all closed paper trades of the given style as the optimization dataset.
+    When portfolio_id is provided, uses only that portfolio's closed trades.
     """
     style = style.upper()
     if style not in _FALLBACK_PARAMS:
@@ -1308,8 +1309,8 @@ def tune_trade_params(
         if _tune_running.get(style):
             return {"status": "already_running", "style": style}
         _tune_running[style] = True
-    background_tasks.add_task(_tune_and_save, style, n_trials)
-    return {"status": "started", "style": style, "n_trials": n_trials}
+    background_tasks.add_task(_tune_and_save, style, n_trials, portfolio_id)
+    return {"status": "started", "style": style, "n_trials": n_trials, "portfolio_id": portfolio_id}
 
 
 # ── PT-3: Entry score calibration — logistic regression on closed paper trades ──
