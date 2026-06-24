@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7189,6 +7189,41 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper_portfolio.py: _TradeProxy.exit_date added; simulation loop breaks at actual trade close date.',
   },
 
+  // ── Tier 162 — Deep audit: 3 bugs in ranking-engine, ml-prediction, technical-analysis ──
+  {
+    id: 'T162-RANKING-PATTERNS-NULL',
+    tier: 162 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/ranking-engine/src/api/routes.py:44',
+    effort: '5m',
+    impact: 'Medium — if the TA service returns {"patterns": null} (empty DB, first boot), _patterns_cache_data is set to None. All subsequent callers that do _patterns_cache_data.get(sym,[]) throw AttributeError, breaking every ranking request.',
+    title: 'T162-A: ranking-engine dict.get("patterns", {}) returns None when JSON value is null',
+    what: '`r.json().get("patterns", {})` — when the TA endpoint returns `{"patterns": null}`, `.get()` returns None (not the default {}) because the key exists with a null value. The default only applies when the key is absent.',
+    fix: 'Changed to `r.json().get("patterns") or {}` — the `or {}` fallback applies to both missing keys and null values.',
+    implementedNote: 'Done 2026-06-24 — routes.py line 44 fixed.',
+  },
+  {
+    id: 'T162-ML-FCF-FALSY-ZERO',
+    tier: 162 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/training/trainer.py:110',
+    effort: '5m',
+    impact: 'Low — companies with zero free cash flow (legitimate value) have their fcf_yield feature set to None instead of 0.0. This loses a real signal (FCF = 0 is meaningfully different from missing FCF data).',
+    title: 'T162-B: ml-prediction fcf_yield treats 0.0 free cash flow as missing — falsy-zero bug',
+    what: '`if (fcf and mkt and mkt > 0)` — `fcf = 0.0` is falsy in Python, so zero-FCF companies get fcf_yield=None instead of 0.0. Affects ML feature vector for any company with exactly zero FCF.',
+    fix: 'Changed to `if (fcf is not None and mkt is not None and mkt > 0)` — explicitly distinguishes 0.0 from missing data.',
+    implementedNote: 'Done 2026-06-24 — trainer.py line 110 fixed.',
+  },
+  {
+    id: 'T162-TA-FIBONACCI-NAN',
+    tier: 162 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/technical-analysis/src/api/routes.py:175',
+    effort: '5m',
+    impact: 'Low — if the last 90 bars of price data have all-NaN highs (data gap or corrupted fetch), float(NaN) propagates into fibonacci_retracement and produces garbage retracement levels. Rare in practice but can silently poison the TA response.',
+    title: 'T162-C: technical-analysis fibonacci_retracement receives NaN when swing window has all-null highs',
+    what: '`fib = fibonacci_retracement(float(swing["high"].max()), ...)` — if swing["high"].max() is NaN (data gap), float(NaN) is passed in and fibonacci levels are all NaN.',
+    fix: 'Added isnan guard: `fib = fibonacci_retracement(...) if not math.isnan(swing_high) else {}`. Returns empty dict on bad data.',
+    implementedNote: 'Done 2026-06-24 — routes.py line 175 fixed with isnan guard.',
+  },
+
   // ── Tier 161 — HK regime dual-SMA in decide endpoint + SMA50 on regime page ──
   {
     id: 'T161-HK-REGIME-DECIDE',
@@ -10325,6 +10360,7 @@ const TIER_LABEL: Record<Tier, string> = {
   159: 'Tier 159 — Deep audit: 14 bugs across 9 services (catalyst, congress, insider, research, ranking, TA, scheduler, paper trading, signal accuracy)',
   160: 'Tier 160 — Deep audit: 7 bugs in decision/strategy/portfolio-optimizer + trade-performance market filter + GROWTH',
   161: 'Tier 161 — HK regime dual-SMA in decide endpoint + SMA50 shown on Regime page',
+  162: 'Tier 162 — Deep audit: 3 bugs in ranking-engine, ml-prediction, technical-analysis',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10489,6 +10525,7 @@ const TIER_COLOR: Record<Tier, string> = {
   159: '#f472b6',
   160: '#38bdf8',
   161: '#4ade80',
+  162: '#fb923c',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
