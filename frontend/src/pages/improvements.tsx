@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7189,6 +7189,19 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper_portfolio.py: _TradeProxy.exit_date added; simulation loop breaks at actual trade close date.',
   },
 
+  // ── Tier 164 — Paper trading min_position_value guard ────────────────────────────────────
+  {
+    id: 'T164-MIN-POSITION-VALUE',
+    tier: 164 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py:2264',
+    effort: '15m',
+    impact: 'Low — prevents micro-positions ($10–$50) from entering the paper portfolio. Previous guard only blocked shares < 0.01 or position_value <= 0. A stock with extreme ATR (e.g., 12% daily range) results in a 3×ATR stop that is far from price. Kelly risk formula gives tiny shares (via max_loss_per_trade_pct cap), producing a $40 position — too small to be meaningful and pollutes journal/metrics.',
+    title: 'T164-A: Paper trading entry scan allows micro-positions — minimum position dollar value not enforced',
+    what: 'Position sizing: risk_dollar / stop_distance = shares. Wide ATR → wide stop → small shares (capped by max_loss_per_trade_pct). Previous check: `if shares < 0.01 or position_value <= 0`. A $50 position on a $200 stop would pass. No minimum dollar value was checked.',
+    fix: 'Added `min_position_value = cfg.get("min_position_value", 200.0)` and `position_value < min_pos_val` to the skip condition. Also serves as implicit ATR-volatility filter. Improved log message includes atr_pct and stop_dist for debugging.',
+    implementedNote: 'Done 2026-06-24 — paper_trading_engine.py FIN-07 check extended with configurable min_position_value ($200 default).',
+  },
+
   // ── Tier 163 — Market-data API routes audit: fear_greed off-by-one ─────────────────────
   {
     id: 'T163-FEAR-GREED-OFFBYONE',
@@ -10398,6 +10411,7 @@ const TIER_LABEL: Record<Tier, string> = {
   161: 'Tier 161 — HK regime dual-SMA in decide endpoint + SMA50 shown on Regime page',
   162: 'Tier 162 — Deep audit: 3 bugs in ranking-engine, ml-prediction, technical-analysis',
   163: 'Tier 163 — Market-data API audit: fear_greed off-by-one + full scheduler/gateway review',
+  164: 'Tier 164 — Paper trading min_position_value guard — prevents micro-positions from extreme ATR',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10564,6 +10578,7 @@ const TIER_COLOR: Record<Tier, string> = {
   161: '#4ade80',
   162: '#fb923c',
   163: '#c084fc',
+  164: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
