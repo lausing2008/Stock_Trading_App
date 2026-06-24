@@ -41,7 +41,7 @@ def macd(
 
 def bollinger_bands(close: pd.Series, window: int = 20, n_std: float = 2.0) -> pd.DataFrame:
     mid = close.rolling(window, min_periods=window).mean()
-    std = close.rolling(window, min_periods=window).std(ddof=0)
+    std = close.rolling(window, min_periods=window).std(ddof=1)
     return pd.DataFrame(
         {"bb_mid": mid, "bb_upper": mid + n_std * std, "bb_lower": mid - n_std * std}
     )

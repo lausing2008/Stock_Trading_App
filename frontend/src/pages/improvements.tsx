@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7099,6 +7099,153 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-23 — engine.py: adj_close series adjusts close at entry/exit bars before pct_change computation.',
   },
 
+  // ── Tier 154 — Deep audit: Ranking Engine, TA, Portfolio Optimizer — 7 fixed ─
+  {
+    id: 'TA-F1-TRIANGLE-IDX-OFFSET',
+    tier: 154 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/technical-analysis/src/patterns/recognizer.py:185',
+    effort: '15m',
+    impact: 'Critical — Triangle pattern overlays were rendered ~18 months too early on the chart because pivot indices were sub-window-relative (0–59) instead of absolute df positions. All 3 triangle types (ascending, descending, symmetric) were affected.',
+    title: 'TA-F1: detect_triangle returns sub-window pivot indices — overlays render 18 months too early',
+    what: '_find_pivots returns 0-based positions within df.tail(60). PatternHit start_idx/end_idx were these raw sub-indices. Every other detector (flag, cup-and-handle) correctly adds len(df)−window as an offset; triangle was the only one that did not.',
+    fix: 'Compute offset = len(df) − len(sub). Set start = offset + min(highs_idx[0], lows_idx[0]); end = offset + max(highs_idx[-1], lows_idx[-1]).',
+    implementedNote: 'Done 2026-06-23 — recognizer.py: offset added to all triangle PatternHit indices.',
+  },
+  {
+    id: 'RANK-F1-RSI-NAN-KSCORE',
+    tier: 154 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/ranking-engine/src/scoring/kscore.py:42',
+    effort: '5m',
+    impact: 'High — Monotonically rising stocks (e.g. recent IPOs with no down days) produced NaN RSI → NaN K-Score and were silently dropped from the leaderboard. The fix already existed in core.py rsi() (fillna(100)) but was absent in kscore.py\'s private _rsi().',
+    title: 'RANK-F1: _rsi() NaN propagation drops monotonically-rising stocks from K-Score leaderboard',
+    what: 'When avg_loss == 0 (no down days), l.replace(0, np.nan) makes rs = NaN. 100 − 100/(1+NaN) = NaN, which propagates through _technical_score → compute_kscore → routes._clean() → stock dropped. Core.py\'s rsi() already had fillna(100); kscore.py did not.',
+    fix: 'Add .fillna(100) to the return value: return (100 − 100 / (1 + rs)).fillna(100)',
+    implementedNote: 'Done 2026-06-23 — kscore.py _rsi(): added .fillna(100).',
+  },
+  {
+    id: 'TA-F2-BOLLINGER-DDOF',
+    tier: 154 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/technical-analysis/src/indicators/core.py:44',
+    effort: '2m',
+    impact: 'High — Bollinger Bands were ~2.5% narrower than the standard (John Bollinger\'s) definition because population std (ddof=0) was used instead of sample std (ddof=1). False band-touch signals fired more often. All band-width thresholds were miscalibrated.',
+    title: 'TA-F2: Bollinger Bands uses population std (ddof=0) — bands 2.5% too narrow',
+    what: 'close.rolling(window).std(ddof=0) computes σ_N. The standard formula uses ddof=1 (σ_{N-1}). For a 20-period window, bands are measurably narrower than charting platforms show.',
+    fix: 'Change ddof=0 to ddof=1.',
+    implementedNote: 'Done 2026-06-23 — core.py bollinger_bands: ddof=0 → ddof=1.',
+  },
+  {
+    id: 'RANK-F2-MARKET-CAP-NAN-CRASH',
+    tier: 154 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/ranking-engine/src/api/routes.py:652',
+    effort: '5m',
+    impact: 'Medium — int(NaN) raises ValueError when yfinance returns NaN for a missing market_cap. The leaderboard endpoint crashes for any stock with a missing market_cap, returning 500. All other fundamental fields use the NaN-safe _cf() helper.',
+    title: 'RANK-F2: market_cap conversion bypasses _cf() NaN guard — crashes with ValueError on missing data',
+    what: 'int(fund.market_cap) if fund and fund.market_cap else None — the truthiness check passes on float NaN (NaN is truthy), then int(NaN) raises ValueError. Every other field on the same dict uses _cf().',
+    fix: 'Use int(_cf(fund.market_cap)) if fund and _cf(fund.market_cap) is not None else None.',
+    implementedNote: 'Done 2026-06-23 — routes.py: market_cap now routed through _cf() before int() cast.',
+  },
+  {
+    id: 'TA-F3-FIBONACCI-FULL-HISTORY',
+    tier: 154 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/technical-analysis/src/api/routes.py:104',
+    effort: '5m',
+    impact: 'Medium — Fibonacci retracement levels used the 18-month all-time high/low. For a stock ranging $50–$150 over 18 months, the 0.618 level is ~$88 — a historically irrelevant price that the stock has not been near in months. Traders using Fib levels for entries/exits were misled.',
+    title: 'TA-F3: Fibonacci retracement computed over full 400-bar history — stale and irrelevant levels',
+    what: 'fibonacci_retracement(df["high"].max(), df["low"].min()) — df spans up to 400 trading days (~18 months). The S/R detector uses df.tail(90) correctly; Fib was the only one using full history.',
+    fix: 'Use df.tail(90) for the swing high/low: swing = df.tail(90); fib = fibonacci_retracement(swing["high"].max(), swing["low"].min())',
+    implementedNote: 'Done 2026-06-23 — routes.py: Fibonacci now uses last 90 bars.',
+  },
+
+  // ── Tier 153 — Deep audit: Paper Portfolio UI + Event Intelligence — 8 fixed ─
+  {
+    id: 'PP-UI-RL-STATUS-MISMATCH',
+    tier: 153 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/paper-portfolio.tsx:947',
+    effort: '5m',
+    impact: 'High — RL Policy panel always showed "Not trained" even after the policy was ready. Backend returns status="ready"; frontend only checked status==="trained". Users could not see trained model metrics (n_trades, win_rate, threshold).',
+    title: 'PP-UI-F1: RL Policy status "trained" vs "ready" mismatch — trained stats never displayed',
+    what: 'rl?.status === "trained" was used in 3 places (badge color, stats panel condition). Backend returns "ready" on success. None of the checks matched.',
+    fix: 'Accept both: (rl?.status === "trained" || rl?.status === "ready") in all 3 locations.',
+    implementedNote: 'Done 2026-06-23 — paper-portfolio.tsx: all rl.status checks accept both "trained" and "ready".',
+  },
+  {
+    id: 'PP-UI-STOP-LOSS-NOT-CURRENT',
+    tier: 153 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/paper-portfolio.tsx:2266',
+    effort: '5m',
+    impact: 'High — Risk tab totalAtRisk and per-row dollarRisk used p.stop_loss (entry-day stop) instead of p.current_stop (trailing stop). After a trailing stop update, the reported dollar risk could be significantly overstated (full original stop distance vs current, tighter stop).',
+    title: 'PP-UI-F2: Risk tab uses entry stop_loss instead of current_stop — dollar risk overstated after trailing stop',
+    what: 'totalAtRisk and dollarRisk both used p.stop_loss. The sort/color logic on the same row correctly used p.current_stop ?? p.stop_loss. Only the dollar risk calculation was wrong.',
+    fix: 'Replace p.stop_loss with p.current_stop ?? p.stop_loss in both the reduce() and the per-row dollarRisk constant.',
+    implementedNote: 'Done 2026-06-23 — paper-portfolio.tsx: both stop_loss references updated to current_stop ?? stop_loss.',
+  },
+  {
+    id: 'PP-UI-CONFIDENCE-NO-PCT',
+    tier: 153 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/paper-portfolio.tsx:2159',
+    effort: '2m',
+    impact: 'Low — Confidence column showed a bare number (e.g. "72") instead of "72%". Users could not distinguish whether it was a 0-1 or 0-100 scale.',
+    title: 'PP-UI-F3: Confidence column missing % suffix',
+    what: 't.confidence_at_entry.toFixed(0) — no "%" appended. Every other percentage column in the same table includes the suffix.',
+    fix: 'Append "%" to the template string.',
+    implementedNote: 'Done 2026-06-23 — paper-portfolio.tsx: confidence cell now shows "72%".',
+  },
+  {
+    id: 'PP-UI-WIN-RATE-NULL-CRASH',
+    tier: 153 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/paper-portfolio.tsx:377',
+    effort: '2m',
+    impact: 'Medium — portfolio.win_rate_pct.toFixed(0) crashed with TypeError when win_rate_pct was null (new portfolio with no closed trades). The portfolio header was blank instead of showing "—".',
+    title: 'PP-UI-F4: win_rate_pct.toFixed(0) crashes on new portfolio with no closed trades',
+    what: 'win_rate_pct is null until the first closed trade. No null guard was present.',
+    fix: 'Guard: portfolio.win_rate_pct != null ? ${portfolio.win_rate_pct.toFixed(0)}% : "—"',
+    implementedNote: 'Done 2026-06-23 — paper-portfolio.tsx: win_rate_pct null guard added.',
+  },
+  {
+    id: 'EI-F1-INSIDER-SHARES-FALLBACK',
+    tier: 153 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/services/insider.py:106',
+    effort: '5m',
+    impact: 'High — When transactionShares was absent from Form 4 XML (some filings omit it), the fallback used sharesOwnedFollowingTransaction — the insider\'s total post-trade holding (e.g. 500,000 shares) instead of the transaction size (e.g. 10,000). This inflated insider trade values by 10–50× and made insider_score meaningless for any stock with missing transactionShares.',
+    title: 'EI-F1: insider.py falls back to sharesOwnedFollowingTransaction when transactionShares absent — value 10-50× overstated',
+    what: 'shares_str = _tag("transactionShares") or _tag("sharesOwnedFollowingTransaction") or "0". The fallback field is post-trade holdings, not the traded amount. Correct behaviour: treat absent transactionShares as 0.',
+    fix: 'Remove the fallback: shares_str = _tag("transactionShares") or "0"',
+    implementedNote: 'Done 2026-06-23 — insider.py: sharesOwnedFollowingTransaction fallback removed.',
+  },
+  {
+    id: 'EI-F2-CONGRESS-DEAD-RISK-BRANCH',
+    tier: 153 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/services/catalyst.py:78',
+    effort: '10m',
+    impact: 'High — The congress selling risk check (if congress < 0: risk += 15) was permanently dead because compute_congress_score() always returns ≥0 (clamped by max(0.0, ...)). Congress selling activity never added to risk_score regardless of how many members were selling.',
+    title: 'EI-F2: Congress selling risk branch always False — compute_congress_score() clamped to ≥0',
+    what: 'compute_congress_score returns max(0.0, min(100.0, score)). The check if congress < 0 is unreachable. Congress net-selling was never reflected in risk_score.',
+    fix: 'Import get_congress_for_symbol directly, compute _cong_sells and _cong_buys, then check if _cong_sells > _cong_buys: risk += 15.',
+    implementedNote: 'Done 2026-06-23 — catalyst.py: replaced clamped-score check with direct trade count comparison.',
+  },
+  {
+    id: 'PROXY-F1-REDIS-POOL',
+    tier: 153 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/api-gateway/src/api/proxy.py:71',
+    effort: '10m',
+    impact: 'Medium — _is_blacklisted() created a new Redis TCP connection on every authenticated request. Under load this exhausts file descriptors and slows auth checks. A module-level connection pool was missing.',
+    title: 'PROXY-F1: Redis connection created per request — no connection pooling',
+    what: '_is_blacklisted() called redis.from_url() each time. ConnectionPool.from_url() + Redis(connection_pool=...) pattern was needed.',
+    fix: 'Add _redis_pool at module level; _get_redis() initialises it lazily. _is_blacklisted() uses _get_redis().',
+    implementedNote: 'Done 2026-06-23 — proxy.py: module-level ConnectionPool added.',
+  },
+  {
+    id: 'PROXY-F2-BLACKLIST-WIPE',
+    tier: 153 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/api-gateway/src/api/proxy.py:88',
+    effort: '10m',
+    impact: 'Medium — When _BLACKLIST_MEM exceeded 2000 entries, _BLACKLIST_MEM.clear() atomically wiped all revoked JTIs. Any logout-ed token in that cache was temporarily accepted until Redis was re-queried on the next request.',
+    title: 'PROXY-F2: _BLACKLIST_MEM.clear() security hole — evicts all revoked tokens atomically',
+    what: 'clear() removed all entries including still-valid revoked JTIs, creating a window where logged-out tokens were accepted (fail-open).',
+    fix: 'Evict expired entries first; if still >2000, drop the oldest 500 only — never clear() all.',
+    implementedNote: 'Done 2026-06-23 — proxy.py: graceful eviction replaces clear().',
+  },
+
   // ── Tier 151 — Deep audit: Paper Portfolio Analytics — 5 fixed ──────────────
   {
     id: 'PP-F1-AVG-RETURN-100X',
@@ -9726,6 +9873,8 @@ const TIER_LABEL: Record<Tier, string> = {
   150: 'Tier 150 — Production fixes: Signal alert K-Score conviction message — 1 fixed (1 deferred)',
   151: 'Tier 151 — Deep audit: Paper Portfolio Analytics — 5 fixed',
   152: 'Tier 152 — Deep audit: ML Prediction + Strategy Engine — 3 fixed',
+  153: 'Tier 153 — Deep audit: Paper Portfolio UI + Event Intelligence — 8 fixed',
+  154: 'Tier 154 — Deep audit: Ranking Engine, TA, Portfolio Optimizer — 5 fixed',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -9881,6 +10030,8 @@ const TIER_COLOR: Record<Tier, string> = {
   150: '#38bdf8',
   151: '#fb923c',
   152: '#a78bfa',
+  153: '#34d399',
+  154: '#f87171',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

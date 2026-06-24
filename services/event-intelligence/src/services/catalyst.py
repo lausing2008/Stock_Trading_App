@@ -11,7 +11,7 @@ from db import get_session, SessionLocal, CatalystScore, Stock
 
 from .earnings import get_days_to_earnings, get_beat_rate
 from .insider import compute_insider_score
-from .congress import compute_congress_score, days_since_last_congress_buy
+from .congress import compute_congress_score, days_since_last_congress_buy, get_congress_for_symbol
 from .institutional import compute_institutional_score
 from .economic import days_to_next_fomc
 from .insider import get_insider_for_symbol
@@ -73,9 +73,12 @@ def _compute_risk_score(
     if insider_score < -30: risk += 25
     elif insider_score < -10: risk += 12
 
-    # Congress selling risk
-    congress = compute_congress_score(stock_id)
-    if congress < 0:
+    # Congress selling risk — compute_congress_score is clamped to ≥0, so check net
+    # trade direction directly from raw trades instead.
+    _cong_trades = get_congress_for_symbol(stock_id, days=90)
+    _cong_sells = sum(1 for t in _cong_trades if t["transaction_type"] == "sale")
+    _cong_buys  = sum(1 for t in _cong_trades if t["transaction_type"] == "purchase")
+    if _cong_sells > _cong_buys:
         risk += 15
 
     # FOMC risk

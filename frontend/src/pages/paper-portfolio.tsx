@@ -374,7 +374,7 @@ function PortfolioCard({
         {fmtCurrency(portfolio.current_equity, portfolio.market)}
       </div>
       <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: '#94a3b8' }}>
-        <span>Win {portfolio.win_rate_pct.toFixed(0)}%</span>
+        <span>Win {portfolio.win_rate_pct != null ? `${portfolio.win_rate_pct.toFixed(0)}%` : '—'}</span>
         <span>Sharpe {portfolio.sharpe != null ? portfolio.sharpe.toFixed(2) : '—'}</span>
         <span>{portfolio.open_positions} open</span>
       </div>
@@ -944,12 +944,12 @@ function MLIntelligencePanel() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#818cf8' }}>RL Policy (AL-1)</span>
             <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4,
-              background: rl?.status === 'trained' ? 'rgba(34,197,94,0.15)' : 'rgba(100,116,139,0.15)',
-              color: rl?.status === 'trained' ? '#4ade80' : '#64748b' }}>
+              background: (rl?.status === 'trained' || rl?.status === 'ready') ? 'rgba(34,197,94,0.15)' : 'rgba(100,116,139,0.15)',
+              color: (rl?.status === 'trained' || rl?.status === 'ready') ? '#4ade80' : '#64748b' }}>
               {rl?.status ?? '...'}
             </span>
           </div>
-          {rl?.status === 'trained' ? (
+          {(rl?.status === 'trained' || rl?.status === 'ready') ? (
             <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.8 }}>
               <div><span style={labelStyle}>Trades used:</span> <span style={valStyle}>{rl.n_trades}</span></div>
               <div><span style={labelStyle}>Win rate:</span> <span style={{ ...valStyle, color: (rl.win_rate ?? 0) >= 0.5 ? '#4ade80' : '#f87171' }}>{rl.win_rate != null ? `${(rl.win_rate * 100).toFixed(1)}%` : '—'}</span></div>
@@ -2156,7 +2156,7 @@ export default function PaperPortfolioPage() {
                         <td style={{ padding: '9px 10px' }}>{t.rr_ratio_at_entry != null ? `${t.rr_ratio_at_entry.toFixed(1)}:1` : '—'}</td>
                         <td style={{ padding: '9px 10px' }}>{t.entry_score ?? '—'}</td>
                         <td style={{ padding: '9px 10px', color: t.confidence_at_entry != null ? (t.confidence_at_entry >= 50 ? '#94a3b8' : '#f97316') : '#475569', fontSize: 11 }}>
-                          {t.confidence_at_entry != null ? `${t.confidence_at_entry.toFixed(0)}` : '—'}
+                          {t.confidence_at_entry != null ? `${t.confidence_at_entry.toFixed(0)}%` : '—'}
                         </td>
                       </tr>
                     ))}
@@ -2263,7 +2263,7 @@ export default function PaperPortfolioPage() {
         {tab === 'Risk' && (() => {
           const pos = positions ?? [];
           const totalEquity = summary?.current_equity ?? summary?.initial_capital ?? 1;
-          const totalAtRisk = pos.reduce((s, p) => s + (p.entry_price - p.stop_loss) * p.shares, 0);
+          const totalAtRisk = pos.reduce((s, p) => s + (p.entry_price - (p.current_stop ?? p.stop_loss)) * p.shares, 0);
           const totalPositionValue = pos.reduce((s, p) => s + p.position_value, 0);
           const totalUnrealized = pos.reduce((s, p) => s + p.unrealized_pnl, 0);
           // Sector concentration
@@ -2328,7 +2328,7 @@ export default function PaperPortfolioPage() {
                             const cur = p.current_price ?? p.entry_price;
                             const stop = p.current_stop ?? p.stop_loss;
                             const stopDist = ((cur - stop) / cur) * 100;
-                            const dollarRisk = (p.entry_price - p.stop_loss) * p.shares;
+                            const dollarRisk = (p.entry_price - (p.current_stop ?? p.stop_loss)) * p.shares;
                             const sizePct = (p.position_value / totalEquity) * 100;
                             const danger = stopDist < 3;
                             const warn = stopDist < 6;

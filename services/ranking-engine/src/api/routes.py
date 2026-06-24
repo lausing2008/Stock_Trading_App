@@ -649,7 +649,7 @@ def leaderboard(
             "earnings_growth":   _cf(fund.earnings_growth) if fund else None,
             "debt_to_equity":    _cf(fund.debt_to_equity) if fund else None,
             "price_to_book":     _cf(fund.price_to_book) if fund else None,
-            "market_cap":        int(fund.market_cap) if fund and fund.market_cap else None,
+            "market_cap":        int(_cf(fund.market_cap)) if fund and _cf(fund.market_cap) is not None else None,
         }
         for stock, ranking, fund in rows
     ]

@@ -6,6 +6,7 @@ from __future__ import annotations
 import time as _time
 
 import httpx
+import redis as _redis_lib
 import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
 from jose import JWTError, jwt
@@ -63,6 +64,19 @@ _BLACKLIST_PREFIX = "auth:blacklist:"
 _BLACKLIST_MEM: dict[str, float] = {}   # jti → expiry unix timestamp
 _BLACKLIST_MEM_TTL = 3600               # 1 hour
 
+# Module-level connection pool — avoids creating a new TCP connection per request
+_redis_pool: "_redis_lib.ConnectionPool | None" = None
+
+
+def _get_redis() -> "_redis_lib.Redis":
+    global _redis_pool
+    if _redis_pool is None:
+        _redis_pool = _redis_lib.ConnectionPool.from_url(
+            _settings.redis_url, decode_responses=True,
+            socket_connect_timeout=1, max_connections=20,
+        )
+    return _redis_lib.Redis(connection_pool=_redis_pool)
+
 
 def _is_blacklisted(jti: str) -> bool:
     now = _time.time()
@@ -71,13 +85,19 @@ def _is_blacklisted(jti: str) -> bool:
     if exp is not None and exp > now:
         return True
     try:
-        import redis as redis_lib
-        r = redis_lib.from_url(_settings.redis_url, decode_responses=True, socket_connect_timeout=1)
+        r = _get_redis()
         revoked = bool(r.exists(f"{_BLACKLIST_PREFIX}{jti}"))
         if revoked:
             _BLACKLIST_MEM[jti] = now + _BLACKLIST_MEM_TTL
-            if len(_BLACKLIST_MEM) > 2000:   # bounded eviction
-                _BLACKLIST_MEM.clear()
+            if len(_BLACKLIST_MEM) > 2000:
+                # Evict expired entries first; if still too large, drop the oldest 500
+                _now = _time.time()
+                expired_keys = [k for k, v in _BLACKLIST_MEM.items() if v <= _now]
+                for k in expired_keys:
+                    _BLACKLIST_MEM.pop(k, None)
+                if len(_BLACKLIST_MEM) > 2000:
+                    for k in list(_BLACKLIST_MEM)[:500]:
+                        _BLACKLIST_MEM.pop(k, None)
         return revoked
     except Exception:
         # Redis unavailable — use in-memory cache as fallback (fail-closed for known JTIs)

@@ -1716,7 +1716,9 @@ def filter_audit(
     from collections import defaultdict
     prices_by_stock: dict[int, list[tuple]] = defaultdict(list)
     for p in price_rows:
-        prices_by_stock[p.stock_id].append((p.ts, float(p.close)))
+        # Convert datetime → date so _nearest_price can compare against date objects
+        _d = p.ts.date() if hasattr(p.ts, "date") else p.ts
+        prices_by_stock[p.stock_id].append((_d, float(p.close)))
 
     def _nearest_price(stock_id: int, target: date) -> float | None:
         candidates = prices_by_stock.get(stock_id, [])

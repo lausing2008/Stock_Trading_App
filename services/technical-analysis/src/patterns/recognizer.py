@@ -169,6 +169,9 @@ def detect_double_top_bottom(df: pd.DataFrame) -> list[PatternHit]:
 def detect_triangle(df: pd.DataFrame, window: int = 60) -> list[PatternHit]:
     """Ascending/descending/symmetric triangles via converging pivot slopes."""
     sub = df.tail(window)
+    # _find_pivots returns 0-based indices within the sub-window slice; convert
+    # to absolute df positions by adding the slice offset.
+    offset = len(df) - len(sub)
     highs_idx, lows_idx = _find_pivots(sub["close"], order=3)
     if len(highs_idx) < 2 or len(lows_idx) < 2:
         return []
@@ -182,7 +185,9 @@ def detect_triangle(df: pd.DataFrame, window: int = 60) -> list[PatternHit]:
         kind = "descending_triangle"
     else:
         return []
-    return [PatternHit(kind, int(highs_idx[0]), int(lows_idx[-1]), 0.6, {"high_slope": float(hs), "low_slope": float(ls)})]
+    start = offset + int(min(highs_idx[0], lows_idx[0]))
+    end   = offset + int(max(highs_idx[-1], lows_idx[-1]))
+    return [PatternHit(kind, start, end, 0.6, {"high_slope": float(hs), "low_slope": float(ls)})]
 
 
 def detect_flag_pennant(df: pd.DataFrame, pole_window: int = 10, flag_window: int = 20) -> list[PatternHit]:

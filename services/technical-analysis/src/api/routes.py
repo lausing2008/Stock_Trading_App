@@ -101,7 +101,10 @@ def get_levels(
     df = _load_prices(session, symbol, timeframe, days)
     levels = detect_support_resistance(df)
     lines = detect_trendlines(df)
-    fib = fibonacci_retracement(float(df["high"].max()), float(df["low"].min()))
+    # Use a recent 90-bar swing for Fibonacci levels — the full 400-bar history
+    # produces levels anchored to all-time highs/lows that are rarely relevant.
+    swing = df.tail(90)
+    fib = fibonacci_retracement(float(swing["high"].max()), float(swing["low"].min()))
     return {
         "symbol": symbol,
         "support_resistance": [vars(L) for L in levels],

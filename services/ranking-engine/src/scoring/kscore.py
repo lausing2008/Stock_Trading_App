@@ -39,7 +39,8 @@ def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
     g = d.clip(lower=0).ewm(alpha=1 / w, adjust=False).mean()
     l = (-d.clip(upper=0)).ewm(alpha=1 / w, adjust=False).mean()
     rs = g / l.replace(0, np.nan)
-    return 100 - 100 / (1 + rs)
+    # When l == 0 (no down days), rs is NaN — treat as RSI=100 (all gains, no losses).
+    return (100 - 100 / (1 + rs)).fillna(100)
 
 
 def _adx_value(df: pd.DataFrame, period: int = 14) -> float:

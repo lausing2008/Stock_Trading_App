@@ -103,7 +103,9 @@ def _extract_form4_data(xml: str, accession: str) -> dict | None:
     insider_name = _tag("rptOwnerName") or _tag("reportingOwnerName")
     role_raw = _tag("officerTitle") or _tag("isDirector") or ""
     txn_code = _tag("transactionCode") or ""
-    shares_str = _tag("transactionShares") or _tag("sharesOwnedFollowingTransaction") or "0"
+    # Do NOT fall back to sharesOwnedFollowingTransaction — that is the insider's total
+    # post-trade position (e.g. 500,000 shares), not the number of shares transacted.
+    shares_str = _tag("transactionShares") or "0"
     price_str = _tag("transactionPricePerShare") or "0"
     date_str = _tag("transactionDate") or _tag("periodOfReport")
 
