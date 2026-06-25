@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,19 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 184 — Decision Engine: extended-move filter + drawdown-aware score floor ──────────
+  {
+    id: 'T184-DE-HUMAN-LIKE',
+    tier: 184 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/scorer.py · services/decision-engine/src/api/core/hard_rejects.py · services/decision-engine/src/api/routes.py · services/market-data/src/services/paper_trading_engine.py',
+    effort: '2h',
+    impact: 'High — two human behavioral patterns were missing from the Decision Engine: (1) humans never chase stocks that already ran 6%+ past the breakout — the DE had no hard block for this, only a soft -3 penalty from Layer 1 which other factors could offset. (2) humans get more selective after losing streaks — the DE used the same min_score=4 regardless of whether it had been losing 7 of 10 trades.',
+    title: 'T184: Human-like DE — extended-move hard block + drawdown-aware score floor',
+    what: '(1) No hard reject for extreme extension: a stock up 10% past the breakout would get -3 from Layer 1 (price_zone) but could still score ≥ 4 via volume/research/regime/ML, allowing a high-chase entry. (2) No concept of "losing streak caution": min_score was fixed at the configured value regardless of recent portfolio performance. (3) No layer measuring how far the stock had moved since the signal was originally calibrated — entry2 in the game plan encodes the signal-time price but was unused in this way.',
+    fix: '(1) hard_rejects.py: new check — if live_price > breakout × 1.06, BLOCKED with "extended move, wait for pullback". Threshold configurable via max_breakout_extension_pct in config_overrides. (2) scorer.py Layer 3h (entry_drift): +1 if price pulled back below entry2 (excellent entry), 0 if in-zone, -1 if 4-8% above entry2, -2 if >8% above (strong chase). Uses game_plan["entry2"] as the signal-calibrated reference price. (3) scorer.py min_score_for_regime(): reads cfg["recent_win_rate"]; if < 0.30, min_score += 1. (4) paper_trading_engine.py: _recent_win_rate() queries last 20 closed trades per portfolio, passes result to DE via config_overrides["recent_win_rate"].',
+    implementedNote: 'Done 2026-06-24. Deployed to decision-engine and market-data containers.',
+  },
+
   // ── Tier 183 — Improvements tracker: extend Tier union to 200, document T178-T183 ──────────
   {
     id: 'T183-IMPROVEMENTS-TRACKER-EXTEND',
@@ -10733,6 +10746,7 @@ const TIER_LABEL: Record<Tier, string> = {
   181: 'Tier 181 — Congress score column added to Signal Filter page (alongside Insider score)',
   182: 'Tier 182 — stop_cooldown_hours exposed in paper portfolio Config Panel UI',
   183: 'Tier 183 — Tier union extended to 200; T178-T183 documented in improvements tracker',
+  184: 'Tier 184 — Decision Engine: extended-move hard block (>6% past breakout) + drawdown-aware score floor',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10919,6 +10933,7 @@ const TIER_COLOR: Record<Tier, string> = {
   181: '#60a5fa',
   182: '#60a5fa',
   183: '#94a3b8',
+  184: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
