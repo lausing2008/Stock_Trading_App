@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,19 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 172 — Wire catalyst scores (insider/congress) into fused_prob ────────────────────
+  {
+    id: 'T172-CATALYST-INTO-FUSED-PROB',
+    tier: 172 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/api/routes.py:318',
+    effort: '1h',
+    impact: 'High — insider_score and congress_score were stored in signal reasons[] but had zero effect on trade signals. Stocks with heavy insider buying (score > 60) now get a +0.03 fused_prob boost; heavy insider selling (< -30) gets −0.03. Congress net buying (> 50) adds +0.02. This closes the gap between "data collected" and "data used" — event intelligence now influences which signals cross the BUY threshold.',
+    title: 'T172-A: Wire insider_score + congress_score into fused_prob',
+    what: 'After Tier 169 fixed the EDGAR pipeline (221 insider transactions, 68 symbols), the scores were stored in signal.reasons[] as metadata but the bullish_probability stored in the DB was unchanged. The paper trading entry gate reads fused_prob — so all the insider data was invisible to actual trade decisions.',
+    fix: 'In signal-engine routes.py _bulk_persist(): after enriching reasons[] with catalyst scores, also adjust ai.bullish_probability: insider > 60 → +0.03, > 30 → +0.015, < −30 → −0.03, < −10 → −0.015; congress > 50 → +0.02, > 25 → +0.01. Adjustment stored in reasons["catalyst_prob_adj"] for auditability. Also added T172-B: insider/congress as ±1 scoring factors in paper_trading_engine _should_enter() — insider > 60 or congress > 50 each add +1 to entry score.',
+    implementedNote: 'Implemented 2026-06-24. routes.py + paper_trading_engine.py updated. Deployment: docker cp to signal-engine + market-data, restart both.',
+  },
+
   // ── Tier 171 — Strategy/workflow analysis: return targets + paid API evaluation ──────────
   {
     id: 'T171-RETURN-TARGET-ANALYSIS',
@@ -10565,6 +10578,7 @@ const TIER_LABEL: Record<Tier, string> = {
   169: 'Tier 169 — Insider EDGAR pipeline broken: wrong param + XSL/regex mismatch (0 rows)',
   170: 'Tier 170 — Event intelligence page blank: api-gateway missing catalyst/events routes',
   171: 'Tier 171 — Strategy/workflow analysis: how to reach 10-15% returns + 60-70% win rate; paid API evaluation',
+  172: 'Tier 172 — Wire catalyst scores (insider/congress) into fused_prob — event intelligence now affects trade signals',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10739,6 +10753,7 @@ const TIER_COLOR: Record<Tier, string> = {
   169: '#34d399',
   170: '#60a5fa',
   171: '#fbbf24',
+  172: '#a78bfa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

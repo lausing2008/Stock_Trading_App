@@ -973,6 +973,25 @@ def _should_enter(
         score -= 1
         notes.append("No cross-horizon support in bear/choppy regime — conviction penalty")
 
+    # ── T172-B: Catalyst intelligence scoring ─────────────────────────────────
+    # insider_score and congress_score are stored in signal.reasons by signal-engine.
+    # Real-money conviction (insider buys/sells) gets ±1; congress net buying gets +1.
+    _insider_sc  = reasons.get("insider_score")
+    _congress_sc = reasons.get("congress_score")
+    if _insider_sc is not None:
+        _insider_sc = float(_insider_sc)
+        if _insider_sc > 60:
+            score += 1
+            notes.append(f"Strong insider buying (score {_insider_sc:.0f}) — real-money conviction")
+        elif _insider_sc < -30:
+            score -= 1
+            notes.append(f"Significant insider selling (score {_insider_sc:.0f}) — management caution")
+    if _congress_sc is not None:
+        _congress_sc = float(_congress_sc)
+        if _congress_sc > 50:
+            score += 1
+            notes.append(f"Congress net buying (score {_congress_sc:.0f}) — informed capital inflow")
+
     # ── Decision ─────────────────────────────────────────────────────────────
 
     # PT-3: Use calibrated logistic weights when available (>=100 closed trades).

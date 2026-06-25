@@ -316,17 +316,38 @@ def _bulk_persist(symbols: list[str]) -> None:
                 pass
 
             if _catalyst:
+                _insider_s  = _catalyst.get("insider_score")
+                _congress_s = _catalyst.get("congress_score")
                 for _ai in all_sig.values():
                     if _ai.reasons is None:
                         _ai.reasons = {}
                     if _catalyst.get("catalyst_score") is not None:
                         _ai.reasons["catalyst_score"] = round(_catalyst["catalyst_score"], 1)
-                    if _catalyst.get("insider_score") is not None:
-                        _ai.reasons["insider_score"] = round(_catalyst["insider_score"], 1)
-                    if _catalyst.get("congress_score") is not None:
-                        _ai.reasons["congress_score"] = round(_catalyst["congress_score"], 1)
+                    if _insider_s is not None:
+                        _ai.reasons["insider_score"] = round(_insider_s, 1)
+                    if _congress_s is not None:
+                        _ai.reasons["congress_score"] = round(_congress_s, 1)
                     if _catalyst.get("composite_score") is not None:
                         _ai.reasons["composite_score"] = round(_catalyst["composite_score"], 1)
+
+                    # T172-A: wire catalyst scores into fused_prob — small directional nudge
+                    # Insider buying/selling is the strongest real-money conviction signal.
+                    # Congress score is 0-100 (clamped non-negative in catalyst.py).
+                    _cat_adj = 0.0
+                    if _insider_s is not None:
+                        if _insider_s > 60:    _cat_adj += 0.03   # strong cluster of insider buys
+                        elif _insider_s > 30:  _cat_adj += 0.015
+                        elif _insider_s < -30: _cat_adj -= 0.03   # heavy insider selling
+                        elif _insider_s < -10: _cat_adj -= 0.015
+                    if _congress_s is not None:
+                        if _congress_s > 50:   _cat_adj += 0.02   # meaningful congress net buying
+                        elif _congress_s > 25: _cat_adj += 0.01
+                    if _cat_adj != 0.0 and _ai.bullish_probability is not None:
+                        import numpy as _np_cat
+                        _ai.bullish_probability = round(
+                            float(_np_cat.clip(_ai.bullish_probability + _cat_adj, 0.0, 1.0)), 4
+                        )
+                        _ai.reasons["catalyst_prob_adj"] = round(_cat_adj, 3)
 
             with SessionLocal() as s:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
