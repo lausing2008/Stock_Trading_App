@@ -2050,6 +2050,24 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         mdy_vs_ema200=live_regime.get("mdy_vs_ema200"),
                         note="IWM/MDY breadth below 200EMA — reducing position size")
 
+    # T189: Regime-aware entry throttle — choppy/risk_off regimes cap new entries at 1/day.
+    # Human traders become more selective in difficult markets and don't force setups.
+    if cfg.get("regime_entry_throttle", True) and regime_state in ("choppy", "risk_off"):
+        _te_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
+        _te_count = session.execute(
+            select(func.count()).select_from(PaperTrade).where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.entry_time >= _te_start,
+            )
+        ).scalar() or 0
+        if _te_count >= 1:
+            log.info("paper.regime_entry_throttle",
+                     portfolio=portfolio.name,
+                     regime=regime_state,
+                     entries_today=_te_count,
+                     note="choppy/risk_off: max 1 new entry per day")
+            return
+
     # PT-D6: Re-sort candidates by composite priority — confidence + K-Score + breakout context
     def _composite_priority(row):
         sig_r, _, rank_r = row
@@ -2346,7 +2364,17 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             consensus_size_mult = 1.07
             notes = notes + [f"Size 1.07× (partial consensus: 1 other style BUY)"]
 
-        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult * consensus_size_mult
+        # T188: Score-to-size multiplier — high-conviction DE scores get more capital, marginal scores less.
+        # Score just at min threshold (excess=0): 0.75×. Score +2 above (normal): 1.0×. Score +4+: 1.25×.
+        _min_score_cfg = cfg.get("min_entry_score", 4)
+        if gate_source == "de" and de_result is not None:
+            _score_excess = score - _min_score_cfg
+            score_size_mult = round(max(0.75, min(1.25, 0.75 + _score_excess * 0.125)), 3)
+            if score_size_mult != 1.0:
+                notes = notes + [f"Size {score_size_mult:.2f}× (DE score {score}, excess {_score_excess:+d} from min {_min_score_cfg})"]
+        else:
+            score_size_mult = 1.0
+        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult * consensus_size_mult * score_size_mult
         shares         = risk_dollar / stop_distance
 
         # PA-C1: Max dollar loss per trade — prevents wide ATR stops from risking > 2% equity

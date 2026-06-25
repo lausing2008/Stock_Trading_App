@@ -79,6 +79,9 @@ def check_hard_rejects(
 
     rr = (take_profit - live_price) / stop_dist
     min_rr = cfg.get("min_rr_ratio", 2.0)
+    # T190: In choppy/risk_off regimes human traders demand better setups — require higher R:R.
+    if regime_state in ("choppy", "risk_off"):
+        min_rr = max(min_rr, cfg.get("regime_min_rr_ratio", 3.0))
     if rr < min_rr:
         return f"R:R {rr:.2f}:1 below minimum {min_rr:.1f}:1"
 
