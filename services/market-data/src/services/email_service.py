@@ -193,6 +193,20 @@ def send_signal_alert_email(
     regime_note = {"bull": "Bull (S&P above 200MA) — normal thresholds",
                    "bear": "Bear (S&P below 200MA) — higher BUY threshold applied"}.get(regime, "Unknown")
 
+    # T174: catalyst intelligence scores from event-intelligence service (stored in signal reasons)
+    _cat_score    = reasons.get("catalyst_score")
+    _ins_score    = reasons.get("insider_score")
+    _cong_score   = reasons.get("congress_score")
+    _cat_prob_adj = reasons.get("catalyst_prob_adj")
+    def _catalyst_note(score, adj=None) -> str:
+        if score is None:
+            return "—"
+        label = "Strong" if score >= 60 else "Moderate" if score >= 30 else "Weak" if score >= 0 else "Selling pressure"
+        s = f"{float(score):.0f}  ({label})"
+        if adj and adj != 0:
+            s += f"  → fused_prob adj {'+' if adj > 0 else ''}{float(adj)*100:.1f}%"
+        return s
+
     reason_rows = [
         ("Market regime",         regime_note),
         ("Trend above SMA50",     _yn(reasons.get("trend_above_sma50"))),
@@ -211,6 +225,9 @@ def send_signal_alert_email(
         ("ML model AUC",          _ml_auc_note(reasons.get("ml_test_auc"))),
         ("Next earnings",         earnings_note),
         ("Insider activity (6M)", insider_note),
+        ("Catalyst score (EDGAR)", _catalyst_note(_cat_score, _cat_prob_adj)),
+        ("Insider score (EDGAR)",  _catalyst_note(_ins_score)),
+        ("Congress score",         _catalyst_note(_cong_score)),
         ("90d signal accuracy",   f"{round(win_rate_90d[0]*100)}%WR ({win_rate_90d[1]} outcomes)" if win_rate_90d else "—"),
     ]
 

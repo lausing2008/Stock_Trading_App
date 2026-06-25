@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,19 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 174 — Add catalyst scores to signal alert email ─────────────────────────────────
+  {
+    id: 'T174-CATALYST-IN-EMAIL',
+    tier: 174 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/email_service.py:196',
+    effort: '30m',
+    impact: 'Medium — signal alert emails show raw TA metrics but not the event intelligence scores. After T172 wired catalyst into fused_prob, users should see WHY a BUY signal is strong. Email now shows catalyst_score, insider_score (EDGAR-sourced), congress_score, and the catalyst_prob_adj (how much the event data moved the probability). Insider score > 60 with +3% probability adjustment is immediately actionable context.',
+    title: 'T174: Show catalyst/insider/congress scores in signal alert emails',
+    what: 'Signal BUY alert emails showed raw TA indicators (RSI, MACD, OBV, etc.) but not the event intelligence catalyst scores that were stored in signal.reasons[] since Tier 169. After T172, these scores now affect fused_prob — but users receiving BUY alerts had no visibility into the insider conviction backing the signal.',
+    fix: 'Added three rows to email_service.py reason_rows: "Catalyst score (EDGAR)", "Insider score (EDGAR)", "Congress score". Each formatted with descriptive label (Strong/Moderate/Weak/Selling pressure) and the catalyst_prob_adj (+N% fused prob adjustment) when non-zero.',
+    implementedNote: 'Implemented 2026-06-24. email_service.py updated. Deploy: docker cp to market-data, restart.',
+  },
+
   // ── Tier 173 — Strict risk_off entry gate (configurable per-portfolio) ───────────────────
   {
     id: 'T173-RISK-OFF-GATE',
@@ -10593,6 +10606,7 @@ const TIER_LABEL: Record<Tier, string> = {
   171: 'Tier 171 — Strategy/workflow analysis: how to reach 10-15% returns + 60-70% win rate; paid API evaluation',
   172: 'Tier 172 — Wire catalyst scores (insider/congress) into fused_prob — event intelligence now affects trade signals',
   173: 'Tier 173 — Configurable strict risk_off entry gate (regime_risk_off_gate=True blocks all entries, default=False)',
+  174: 'Tier 174 — Signal alert emails now include EDGAR catalyst/insider/congress scores with probability adjustment context',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10769,6 +10783,7 @@ const TIER_COLOR: Record<Tier, string> = {
   171: '#fbbf24',
   172: '#a78bfa',
   173: '#fb923c',
+  174: '#38bdf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
