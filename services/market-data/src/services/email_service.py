@@ -198,12 +198,15 @@ def send_signal_alert_email(
     _ins_score    = reasons.get("insider_score")
     _cong_score   = reasons.get("congress_score")
     _cat_prob_adj = reasons.get("catalyst_prob_adj")
-    def _catalyst_note(score, adj=None) -> str:
+    def _catalyst_note(score, adj=None, is_insider=False) -> str:
         if score is None:
             return "—"
-        label = "Strong" if score >= 60 else "Moderate" if score >= 30 else "Weak" if score >= 0 else "Selling pressure"
-        s = f"{float(score):.0f}  ({label})"
-        if adj and adj != 0:
+        if is_insider:
+            label = "Strong buying" if score >= 60 else "Moderate buying" if score >= 30 else "Mild buying" if score >= 0 else "Mild selling" if score >= -30 else "Significant selling"
+        else:
+            label = "Strong" if score >= 60 else "Moderate" if score >= 30 else "Weak" if score >= 0 else "Selling pressure"
+        s = f"{float(score):.0f} ({label})"
+        if adj:
             s += f"  → fused_prob adj {'+' if adj > 0 else ''}{float(adj)*100:.1f}%"
         return s
 
@@ -226,7 +229,7 @@ def send_signal_alert_email(
         ("Next earnings",         earnings_note),
         ("Insider activity (6M)", insider_note),
         ("Catalyst score (EDGAR)", _catalyst_note(_cat_score, _cat_prob_adj)),
-        ("Insider score (EDGAR)",  _catalyst_note(_ins_score)),
+        ("Insider score (EDGAR)",  _catalyst_note(_ins_score, _cat_prob_adj, is_insider=True)),
         ("Congress score",         _catalyst_note(_cong_score)),
         ("90d signal accuracy",   f"{round(win_rate_90d[0]*100)}%WR ({win_rate_90d[1]} outcomes)" if win_rate_90d else "—"),
     ]

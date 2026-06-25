@@ -20,10 +20,12 @@ def _train_and_reload() -> None:
     try:
         from ..services.rl_agent import run_rl_training
         result = run_rl_training()
-        if "error" in result:
+        if "skipped" in result:
+            log.info("rl_agent.api_train_skipped", reason=result["skipped"])
+        elif "error" in result:
             log.warning("rl_agent.api_train_failed", error=result["error"])
         else:
-            log.info("rl_agent.api_train_done", n_trades=result["n_trades"])
+            log.info("rl_agent.api_train_done", n_trades=result.get("n_trades"))
     except Exception as exc:
         log.exception("rl_agent.api_train_exception", exc=str(exc))
     finally:

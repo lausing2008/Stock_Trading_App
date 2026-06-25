@@ -94,7 +94,7 @@ function numVal(row: SuppressedSignalRow, key: SortKey): number {
   if (key === 'news_sentiment') return row.news_sentiment ?? 50;
   if (key === 'rs_score') return row.rs_score ?? 50;
   if (key === 'breadth_pct') return row.breadth_pct ?? 50;
-  if (key === 'insider_score') return row.insider_score ?? 0;
+  if (key === 'insider_score') return row.insider_score ?? -999;
   return 0;
 }
 

@@ -1758,7 +1758,7 @@ def _weekly_full_refresh() -> None:
         all_symbols = _symbols_for("US") + _symbols_for("HK")
         if not all_symbols:
             log.info("scheduler.weekly_refresh.skip", reason="no_symbols")
-            _record_job_status("weekly_refresh", "skipped", 0.0)
+            _record_job_status("weekly_refresh", "skipped: no symbols", 0.0)
             return
         log.info("scheduler.weekly_refresh_start", count=len(all_symbols))
         ingest_universe(all_symbols, "1d", force=True)
@@ -2143,7 +2143,7 @@ def send_morning_digest(market: str = "US") -> None:
                     _cat = r.get("catalyst_score")
                     if _ins is not None and float(_ins) > 60:
                         bullets.append(f"Insider buying (score {float(_ins):.0f})")
-                    elif _cat is not None and float(_cat) >= 60:
+                    if _cat is not None and float(_cat) >= 60:
                         bullets.append(f"Catalyst signal (score {float(_cat):.0f})")
                     return bullets[:3]
 

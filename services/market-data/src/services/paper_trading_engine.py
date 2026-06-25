@@ -980,7 +980,7 @@ def _should_enter(
     _congress_sc = reasons.get("congress_score")
     if _insider_sc is not None:
         _insider_sc = float(_insider_sc)
-        if _insider_sc > 60:
+        if _insider_sc >= 60:
             score += 1
             notes.append(f"Strong insider buying (score {_insider_sc:.0f}) — real-money conviction")
         elif _insider_sc < -30:
