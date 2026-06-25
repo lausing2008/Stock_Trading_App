@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,45 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 190 — Decision Engine: regime-conditional minimum R:R threshold ────────────────────
+  {
+    id: 'T190-REGIME-MIN-RR',
+    tier: 190 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/hard_rejects.py',
+    effort: '30m',
+    impact: 'Medium — in choppy and risk_off regimes, the DE was using the same minimum R:R (default 2.0:1) regardless of market conditions. Human traders demand better risk/reward in difficult markets — a 2:1 setup that passes muster in a bull market is marginal in choppy conditions.',
+    title: 'T190: Regime-conditional min R:R — require 3.0:1 in choppy/risk_off (vs 2.0:1 in neutral)',
+    what: 'min_rr_ratio was fixed regardless of regime. In choppy markets, noise is higher and trades take longer to play out, compressing realized R:R vs theoretical. A human trader automatically demands tighter/better setups in bad tape.',
+    fix: 'hard_rejects.py: after computing min_rr from cfg (default 2.0), if regime_state is choppy or risk_off, raises min_rr to max(min_rr, cfg.get("regime_min_rr_ratio", 3.0)). Configurable per-portfolio via config_overrides["regime_min_rr_ratio"].',
+    implementedNote: 'Done 2026-06-25. Deployed to decision-engine container.',
+  },
+
+  // ── Tier 189 — Paper trading: regime-aware entry throttle ─────────────────────────────────
+  {
+    id: 'T189-REGIME-ENTRY-THROTTLE',
+    tier: 189 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '45m',
+    impact: 'Medium — in choppy/risk_off regimes, the paper trading engine was still allowed to enter up to max_entries_per_day (default 5) new positions per day. Human traders in difficult markets force themselves to be more selective, often capping new commitments at 1 per day regardless of how many signals fire.',
+    title: 'T189: Regime entry throttle — max 1 new entry/day in choppy/risk_off regime',
+    what: 'The existing max_entries_per_day circuit breaker applied uniformly regardless of regime. In choppy tape, a system could still pile into 5 new positions in a day if enough signals fired. No regime-dependent tightening of daily entry volume existed.',
+    fix: 'paper_trading_engine.py: after the regime filter section (where regime_state is finalized), adds T189 check — if regime_state is choppy or risk_off and cfg.get("regime_entry_throttle", True), counts today\'s entries and returns early if >= 1. Configurable off via regime_entry_throttle=False in config.',
+    implementedNote: 'Done 2026-06-25. Deployed to market-data container.',
+  },
+
+  // ── Tier 188 — Paper trading: score-to-size multiplier ────────────────────────────────────
+  {
+    id: 'T188-SCORE-TO-SIZE',
+    tier: 188 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '45m',
+    impact: 'Medium — the DE score (4–8+) was binary: BUY or not. A score of 8 (all layers positive) and a score of 4 (barely qualifies) produced identical position sizes. Human traders naturally put more capital into high-conviction setups and smaller amounts into marginal entries.',
+    title: 'T188: Score-to-size multiplier — high DE score → bigger position, marginal score → smaller',
+    what: 'After the DE gate, position sizing used the same risk_dollar regardless of how strong the score was above the minimum. A stock scoring 8/8 got the same allocation as one scoring 4/8 (the threshold). The scoring pipeline had no downstream effect on capital allocation.',
+    fix: 'paper_trading_engine.py: when gate_source=="de", computes score_excess = score - min_entry_score. Applies score_size_mult = max(0.75, min(1.25, 0.75 + score_excess × 0.125)): excess=0 → 0.75×, excess=2 → 1.0×, excess=4 → 1.25×. Multiplied into risk_dollar alongside earnings, regime, confidence, and research multipliers. Only applies to primary DE gate (not fallback mode).',
+    implementedNote: 'Done 2026-06-25. Deployed to market-data container.',
+  },
+
   // ── Tier 187 — Decision Engine: consecutive loss cooldown surfaced at DE level ─────────────
   {
     id: 'T187-DE-CONSEC-LOSS',
@@ -10789,6 +10828,9 @@ const TIER_LABEL: Record<Tier, string> = {
   185: 'Tier 185 — Decision Engine: time-of-day gate (block first 30 min open + last 15 min close)',
   186: 'Tier 186 — Decision Engine: sector concentration hard reject (sector-aware for standalone DE calls)',
   187: 'Tier 187 — Decision Engine: consecutive loss cooldown surfaced at DE level',
+  188: 'Tier 188 — Score-to-size multiplier: high DE score → bigger position, marginal → smaller',
+  189: 'Tier 189 — Regime entry throttle: max 1 new position/day in choppy/risk_off',
+  190: 'Tier 190 — Regime-conditional min R:R: require 3.0:1 in choppy/risk_off (vs 2.0 neutral)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10979,6 +11021,9 @@ const TIER_COLOR: Record<Tier, string> = {
   185: '#f59e0b',
   186: '#f59e0b',
   187: '#f59e0b',
+  188: '#f59e0b',
+  189: '#f59e0b',
+  190: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
