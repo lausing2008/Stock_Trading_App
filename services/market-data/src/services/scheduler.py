@@ -1829,7 +1829,12 @@ def _weekly_full_refresh() -> None:
         log.info("scheduler.rl_agent_train_start")
         from .rl_agent import run_rl_training as _rl_train
         rl_result = _rl_train()
-        rl_status = "ok" if "error" not in rl_result else rl_result["error"]
+        if "skipped" in rl_result:
+            rl_status = f"skipped: {rl_result['skipped']}"
+        elif "error" in rl_result:
+            rl_status = rl_result["error"]
+        else:
+            rl_status = "ok"
         _record_job_status("rl_agent_train", rl_status, 0.0)
     except Exception as _exc:
         log.error("scheduler.rl_agent_train_failed", error=str(_exc))

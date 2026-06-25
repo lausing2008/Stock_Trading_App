@@ -180,7 +180,7 @@ def train_rl_agent(trades: list) -> dict[str, Any]:
         rewards.append(reward)
 
     if len(rows) < _MIN_TRADES:
-        return {"error": f"Need ≥{_MIN_TRADES} closed trades with pct_return; have {len(rows)}"}
+        return {"skipped": f"need ≥{_MIN_TRADES} closed trades; have {len(rows)}"}
 
     X = np.array(rows)
     y = np.array(rewards)

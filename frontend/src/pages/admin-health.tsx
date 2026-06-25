@@ -32,6 +32,7 @@ const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string
   db_purge_weekly:           { label: 'DB Weekly Purge',             maxAgeDays: 8,  desc: 'Deletes prices_5m + scheduler_jobs rows older than 90 days (Sun 15:00 PST)' },
   tune_all_sent:             { label: 'Optuna Tune-All',             maxAgeDays: 8,  desc: 'Weekly XGBoost hyperparameter tuning sent to ML service (Optuna search)' },
   calibrate_ta_weights_sent: { label: 'TA Weight Calibration',       maxAgeDays: 8,  desc: 'Weekly TA logistic regression calibration — updates ta_weights.json' },
+  rl_agent_train:            { label: 'RL Agent Train',              maxAgeDays: 8,  desc: 'Contextual bandit (Ridge Q-function) trained on closed paper trades. Requires ≥50 closed trades — shows "skipped" until paper trading accumulates enough history.' },
 };
 
 function relTime(iso: string): string {
@@ -47,10 +48,11 @@ function JobCard({ job }: { job: SchedulerJob }) {
   const ageDays = (Date.now() - new Date(job.last_run).getTime()) / 86400000;
   const stale = ageDays > meta.maxAgeDays;
 
-  const statusColor = job.status === 'ok' ? '#4ade80' : job.status === 'error' ? '#f87171' : '#94a3b8';
-  const statusBg = job.status === 'ok' ? 'rgba(74,222,128,0.08)' : job.status === 'error' ? 'rgba(239,68,68,0.1)' : 'rgba(148,163,184,0.06)';
-  const statusBorder = job.status === 'ok' ? 'rgba(74,222,128,0.2)' : job.status === 'error' ? 'rgba(239,68,68,0.3)' : 'rgba(148,163,184,0.15)';
-  const statusLabel = job.status === 'ok' ? '✓ OK' : job.status === 'error' ? '✗ Error' : '– Skipped';
+  const isSkipped = job.status.startsWith('skipped:') || job.status.startsWith('Need ');
+  const statusColor  = job.status === 'ok' ? '#4ade80' : job.status === 'error' ? '#f87171' : isSkipped ? '#fbbf24' : '#94a3b8';
+  const statusBg     = job.status === 'ok' ? 'rgba(74,222,128,0.08)' : job.status === 'error' ? 'rgba(239,68,68,0.1)' : isSkipped ? 'rgba(251,191,36,0.08)' : 'rgba(148,163,184,0.06)';
+  const statusBorder = job.status === 'ok' ? 'rgba(74,222,128,0.2)'  : job.status === 'error' ? 'rgba(239,68,68,0.3)'   : isSkipped ? 'rgba(251,191,36,0.2)'    : 'rgba(148,163,184,0.15)';
+  const statusLabel  = job.status === 'ok' ? '✓ OK' : job.status === 'error' ? '✗ Error' : isSkipped ? '⊘ Skipped' : '– Unknown';
 
   return (
     <div style={{
