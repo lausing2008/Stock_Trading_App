@@ -1689,6 +1689,27 @@ def _recent_win_rate(session, portfolio_id: int, n: int = 20) -> float | None:
     return wins / len(rows)
 
 
+def _consec_loss_streak(session, portfolio_id: int) -> int:
+    """Count of consecutive losing trades from the tail of closed history."""
+    rows = session.execute(
+        select(PaperTrade.pnl)
+        .where(
+            PaperTrade.portfolio_id == portfolio_id,
+            PaperTrade.stage == "closed",
+            PaperTrade.pnl.isnot(None),
+        )
+        .order_by(PaperTrade.exit_time.desc())
+        .limit(10)
+    ).scalars().all()
+    streak = 0
+    for pnl in rows:
+        if pnl < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
 def _call_decision_engine(
     symbol: str,
     live_price: float,
@@ -1698,6 +1719,9 @@ def _call_decision_engine(
     cfg: dict,
     daily_pnl_pct: float = 0.0,
     recent_win_rate: float | None = None,
+    open_sector_counts: dict | None = None,
+    candidate_sector: str | None = None,
+    consec_losses: int = 0,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -1727,6 +1751,9 @@ def _call_decision_engine(
                     "max_position_pct":       cfg.get("max_position_pct", 0.10),
                     "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),
                     **( {"recent_win_rate": recent_win_rate} if recent_win_rate is not None else {} ),
+                    **( {"open_sector_counts": open_sector_counts, "candidate_sector": candidate_sector}
+                        if open_sector_counts is not None else {} ),
+                    **( {"consec_losses": consec_losses} if consec_losses > 0 else {} ),
                 },
             },
             headers={"Authorization": f"Bearer {_svc_token()}"},
@@ -1863,7 +1890,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
     # ── Daily realized-loss circuit breaker (net P&L — winners offset losers) ──────
     _daily_pnl_pct = 0.0  # captured for DE call below
-    _recent_wr = _recent_win_rate(session, portfolio.id)  # T184: passed to DE for drawdown-aware floor
+    _recent_wr = _recent_win_rate(session, portfolio.id)      # T184: passed to DE for drawdown-aware floor
+    _consec_losses = _consec_loss_streak(session, portfolio.id)  # T187: passed to DE for consec-loss gate
     max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
     if max_daily_loss and max_daily_loss > 0 and equity > 0:
         today_open = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
@@ -1908,24 +1936,14 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             return
 
     # ── Consecutive-loss circuit breaker ─────────────────────────────────────────
+    # Uses precomputed _consec_losses (avoids a second DB query here).
     max_consec_losses = cfg.get("max_consecutive_losses", 3)
-    if max_consec_losses and max_consec_losses > 0:
-        recent_closed = session.execute(
-            select(PaperTrade.pnl)
-            .where(
-                PaperTrade.portfolio_id == portfolio.id,
-                PaperTrade.stage == "closed",
-                PaperTrade.pnl.is_not(None),
-            )
-            .order_by(desc(PaperTrade.exit_time))
-            .limit(max_consec_losses)
-        ).scalars().all()
-        if len(recent_closed) >= max_consec_losses and all(p < 0 for p in recent_closed):
-            log.warning("paper.consecutive_loss_limit",
-                        portfolio=portfolio.name,
-                        consecutive_losses=max_consec_losses,
-                        note="new entries suspended until a trade closes positive")
-            return
+    if max_consec_losses and max_consec_losses > 0 and _consec_losses >= max_consec_losses:
+        log.warning("paper.consecutive_loss_limit",
+                    portfolio=portfolio.name,
+                    consecutive_losses=_consec_losses,
+                    note="new entries suspended until a trade closes positive")
+        return
 
     # ── Max entries per day ───────────────────────────────────────────────────────
     max_entries_day = cfg.get("max_entries_per_day", 5)
@@ -2049,6 +2067,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         .join(Stock, PaperTrade.stock_id == Stock.id)
         .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
     ).all()
+
+    # T186: Pre-compute open sector counts once; passed to DE per candidate for sector gate.
+    from collections import Counter as _Counter
+    _open_sector_counts: dict[str, int] = dict(_Counter(
+        (st.sector or "unclassified") for _, st in _prefetched_open
+    ))
 
     # PT-P2 + PA-F1: batch-fetch ATR for all candidates in ONE yfinance download
     candidate_syms = [stock.symbol for _, stock, _ in buy_signals]
@@ -2209,6 +2233,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 cfg=cfg,
                 daily_pnl_pct=_daily_pnl_pct,
                 recent_win_rate=_recent_wr,
+                open_sector_counts=_open_sector_counts,   # T186: sector gate
+                candidate_sector=stock.sector,             # T186: sector gate
+                consec_losses=_consec_losses,              # T187: streak gate
             )
             if de_result is not None:
                 should_enter, de_verdict, score, de_blocked = de_result
