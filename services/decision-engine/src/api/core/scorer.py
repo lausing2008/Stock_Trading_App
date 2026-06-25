@@ -33,6 +33,7 @@ def compute_score(
     cfg: dict,
     is_pre_choppy: bool = False,
     is_pre_risk_off: bool = False,
+    recent_win_rate: float | None = None,
 ) -> tuple[int, list[ScoreItem]]:
     """Return (total_score, breakdown_list)."""
     reasons  = signal_data.get("reasons") or {}
@@ -164,6 +165,23 @@ def compute_score(
         score += pts
         breakdown.append(ScoreItem(layer="pre_regime", pts=pts, note=note))
 
+    # ── Layer 3h: Entry zone drift — how far has price moved from optimal entry? ─
+    # A stock that has already run 8%+ since the signal was calibrated is chasing.
+    # entry2 is computed from signal-time price; comparing live_price to it reveals drift.
+    entry2 = game_plan.get("entry2")
+    if entry2 and float(entry2) > 0:
+        drift_pct = (live_price / float(entry2) - 1) * 100
+        if drift_pct < -2:
+            pts, note = 1, f"Price {abs(drift_pct):.1f}% below entry zone — stock pulled back, excellent entry"
+        elif drift_pct <= 4:
+            pts, note = 0, f"Price within entry zone (drift {drift_pct:+.1f}% from entry2)"
+        elif drift_pct <= 8:
+            pts, note = -1, f"Price {drift_pct:.1f}% above entry zone — mild chase risk"
+        else:
+            pts, note = -2, f"Price {drift_pct:.1f}% above entry zone — significant chase, wait for pullback"
+        score += pts
+        breakdown.append(ScoreItem(layer="entry_drift", pts=pts, note=note))
+
     # ── Layer 4: Research alignment ───────────────────────────────────────────
     if research_rec:
         rec_upper = research_rec.upper().replace("_", " ")
@@ -183,12 +201,19 @@ def compute_score(
 
 
 def min_score_for_regime(regime_state: str, cfg: dict) -> int:
-    """Regime-adjusted minimum entry score."""
+    """Regime-adjusted minimum entry score.
+
+    Also raises the floor by 1 when recent win rate is below 30% — a human
+    trader who has lost 7 of the last 10 trades gets more selective, not less.
+    """
     base = cfg.get("min_entry_score", 4)
     if regime_state == "bear":
         return 999
     if regime_state == "risk_off":
-        return max(base, cfg.get("regime_risk_off_min_score", 5))
-    if regime_state == "choppy":
-        return max(base, cfg.get("regime_choppy_min_score", 4))
+        base = max(base, cfg.get("regime_risk_off_min_score", 5))
+    elif regime_state == "choppy":
+        base = max(base, cfg.get("regime_choppy_min_score", 4))
+    recent_win_rate = cfg.get("recent_win_rate")
+    if recent_win_rate is not None and float(recent_win_rate) < 0.30:
+        base += 1
     return base

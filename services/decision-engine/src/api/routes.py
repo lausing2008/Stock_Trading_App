@@ -144,6 +144,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         daily_pnl_pct=req.daily_pnl_pct,
         cfg=cfg,
         research_rec=research_rec,
+        game_plan=game_plan,
     )
 
     # Explicit None checks so 0.0 values are preserved (truthy-or chain would coerce 0.0 → None)
@@ -176,6 +177,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         )
 
     # 8. Score
+    recent_win_rate = cfg.get("recent_win_rate")
     score, breakdown = compute_score(
         live_price=live_price,
         game_plan=game_plan,
@@ -186,6 +188,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         cfg=cfg,
         is_pre_choppy=is_pre_choppy,
         is_pre_risk_off=is_pre_risk_off,
+        recent_win_rate=float(recent_win_rate) if recent_win_rate is not None else None,
     )
     min_score = min_score_for_regime(regime_state, cfg)
 

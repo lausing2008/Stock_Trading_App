@@ -1671,6 +1671,24 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
 # ── Entry scanner ─────────────────────────────────────────────────────────────
 
+def _recent_win_rate(session, portfolio_id: int, n: int = 20) -> float | None:
+    """Win rate of the last n closed trades for this portfolio. Returns None if < 5 trades."""
+    rows = session.execute(
+        select(PaperTrade.exit_reason, PaperTrade.realized_pnl)
+        .where(
+            PaperTrade.portfolio_id == portfolio_id,
+            PaperTrade.stage == "closed",
+            PaperTrade.realized_pnl.isnot(None),
+        )
+        .order_by(PaperTrade.exit_time.desc())
+        .limit(n)
+    ).all()
+    if len(rows) < 5:
+        return None
+    wins = sum(1 for _, pnl in rows if pnl > 0)
+    return wins / len(rows)
+
+
 def _call_decision_engine(
     symbol: str,
     live_price: float,
@@ -1679,6 +1697,7 @@ def _call_decision_engine(
     open_count: int,
     cfg: dict,
     daily_pnl_pct: float = 0.0,
+    recent_win_rate: float | None = None,
 ) -> tuple[bool, str, int, str | None] | None:
     """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
 
@@ -1707,6 +1726,7 @@ def _call_decision_engine(
                     "risk_per_trade_pct":     cfg.get("risk_per_trade_pct", 0.01),
                     "max_position_pct":       cfg.get("max_position_pct", 0.10),
                     "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),
+                    **( {"recent_win_rate": recent_win_rate} if recent_win_rate is not None else {} ),
                 },
             },
             headers={"Authorization": f"Bearer {_svc_token()}"},
@@ -1843,6 +1863,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
     # ── Daily realized-loss circuit breaker (net P&L — winners offset losers) ──────
     _daily_pnl_pct = 0.0  # captured for DE call below
+    _recent_wr = _recent_win_rate(session, portfolio.id)  # T184: passed to DE for drawdown-aware floor
     max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
     if max_daily_loss and max_daily_loss > 0 and equity > 0:
         today_open = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
@@ -2187,6 +2208,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 open_count=open_count,
                 cfg=cfg,
                 daily_pnl_pct=_daily_pnl_pct,
+                recent_win_rate=_recent_wr,
             )
             if de_result is not None:
                 should_enter, de_verdict, score, de_blocked = de_result

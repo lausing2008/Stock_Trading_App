@@ -15,6 +15,7 @@ def check_hard_rejects(
     daily_pnl_pct: float,
     cfg: dict,
     research_rec: str | None = None,
+    game_plan: dict | None = None,
 ) -> str | None:
     """Return a human-readable reject reason, or None if all checks pass."""
 
@@ -56,5 +57,18 @@ def check_hard_rejects(
 
     if days_to_earnings is not None and days_to_earnings <= 5:
         return f"Earnings in {days_to_earnings} days — binary event risk"
+
+    # Extended-move guard: stock is >6% above the breakout level the signal was
+    # calibrated to. A human trader waits for a pullback rather than chasing.
+    if game_plan:
+        breakout = game_plan.get("breakout")
+        if breakout and float(breakout) > 0:
+            ext_pct = (live_price / float(breakout) - 1) * 100
+            threshold = cfg.get("max_breakout_extension_pct", 6.0)
+            if ext_pct > threshold:
+                return (
+                    f"Stock {ext_pct:.1f}% above breakout ${breakout:.2f} — "
+                    f"extended move, wait for pullback (threshold {threshold:.0f}%)"
+                )
 
     return None
