@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,45 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 187 — Decision Engine: consecutive loss cooldown surfaced at DE level ─────────────
+  {
+    id: 'T187-DE-CONSEC-LOSS',
+    tier: 187 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/hard_rejects.py · services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'Medium — the paper_trading_engine already had a consecutive-loss circuit breaker that returned early (before any DE call). The DE itself had no awareness of loss streaks, so standalone DE calls (watchlist scan, stock detail page) could approve entries even when the portfolio was mid-streak. Now the streak is passed to the DE via config_overrides and surfaced as a BLOCKED verdict with a human-readable reason.',
+    title: 'T187: DE consecutive loss cooldown — pass streak to DE for hard reject',
+    what: 'The paper_trading_engine circuit breaker at "max_consecutive_losses" (default 3) fires before calling the DE, meaning the DE never saw streak state. For standalone DE calls (watchlist scan button, direct API), the streak was invisible. Also, the circuit breaker used an inline DB query that was redundant after _recent_win_rate() already touched the trades table.',
+    fix: '(1) paper_trading_engine.py: added _consec_loss_streak() helper that queries last 10 closed trades and counts the consecutive-loss tail. (2) Computes _consec_losses once after _recent_wr, before the circuit breaker. (3) Circuit breaker simplified to use precomputed value (eliminates redundant DB query). (4) Passes consec_losses to _call_decision_engine() via config_overrides. (5) hard_rejects.py: if consec_losses >= max_consecutive_losses (default 3), returns BLOCKED "N straight losses — entries suspended until next winning trade".',
+    implementedNote: 'Done 2026-06-24. Deployed to decision-engine and market-data containers.',
+  },
+
+  // ── Tier 186 — Decision Engine: sector concentration hard reject ──────────────────────────
+  {
+    id: 'T186-DE-SECTOR-CONCENTRATION',
+    tier: 186 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/hard_rejects.py · services/market-data/src/services/paper_trading_engine.py',
+    effort: '1.5h',
+    impact: 'Medium — paper_trading_engine already enforced a sector concentration cap (max_sector_positions=3) before executing a trade. But the DE had no knowledge of sector composition, so standalone DE calls (watchlist DE Scan, /decide/{symbol} API) could return BUY even when the portfolio was already at the sector limit. Now the DE is sector-aware and can surface a meaningful BLOCKED reason.',
+    title: 'T186: DE sector concentration gate — block when sector already at max positions',
+    what: 'The sector cap in paper_trading_engine (lines ~2370–2390) ran AFTER the DE call — it blocked execution but the DE still returned BUY. For the watchlist DE Scan, this meant the DE showed BUY for a stock whose sector was already saturated. Human traders never take a 4th semiconductor position without noticing.',
+    fix: '(1) paper_trading_engine.py: pre-computes _open_sector_counts (Counter over open trade sectors) once before the candidate loop, using the pre-fetched _prefetched_open — no additional DB query. (2) Passes open_sector_counts dict and candidate_sector (stock.sector) to _call_decision_engine() per candidate. (3) _call_decision_engine() includes these in config_overrides. (4) hard_rejects.py: reads open_sector_counts and candidate_sector from cfg; if existing sector count >= max_sector_positions (default 3), returns BLOCKED "Sector concentration: N/3 open positions in sector — diversification gate".',
+    implementedNote: 'Done 2026-06-24. Deployed to decision-engine and market-data containers.',
+  },
+
+  // ── Tier 185 — Decision Engine: time-of-day gate ──────────────────────────────────────────
+  {
+    id: 'T185-DE-TIME-OF-DAY',
+    tier: 185 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/hard_rejects.py · services/decision-engine/src/api/routes.py',
+    effort: '45m',
+    impact: 'Medium — human traders almost universally avoid entering positions in the first 30 minutes of market open (price discovery, wide spreads, algos battling) and the last 15 minutes before close (closing auction games, thin liquidity). The DE had no awareness of market session timing and would evaluate and approve entries at any time of day.',
+    title: 'T185: Time-of-day gate — block entries in first 30 min and last 15 min of session',
+    what: 'The DE evaluated all requests identically regardless of time of day. A scan at 9:35 AM ET and one at 2:00 PM ET produced the same verdict. Intraday timing is one of the most consistent edges that experienced traders apply.',
+    fix: '(1) routes.py: passes market= to check_hard_rejects() (was not previously passed). (2) hard_rejects.py: added market: str = "US" parameter. (3) After the earnings proximity check, uses zoneinfo to convert UTC now to ET (US) or HKT (HK). Checks if local time is 9:30–10:00 (570–599 minutes from midnight) → BLOCKED "first 30 min of market open". Checks if 15:45–16:00 (945–959 minutes) → BLOCKED "last 15 min before close". ZoneInfo lookup wrapped in try/except — tz failure allows entry (fail-open). Applies to both US (ET) and HK (HKT) markets.',
+    implementedNote: 'Done 2026-06-24. Deployed to decision-engine container.',
+  },
+
   // ── Tier 184 — Decision Engine: extended-move filter + drawdown-aware score floor ──────────
   {
     id: 'T184-DE-HUMAN-LIKE',
@@ -10747,6 +10786,9 @@ const TIER_LABEL: Record<Tier, string> = {
   182: 'Tier 182 — stop_cooldown_hours exposed in paper portfolio Config Panel UI',
   183: 'Tier 183 — Tier union extended to 200; T178-T183 documented in improvements tracker',
   184: 'Tier 184 — Decision Engine: extended-move hard block (>6% past breakout) + drawdown-aware score floor',
+  185: 'Tier 185 — Decision Engine: time-of-day gate (block first 30 min open + last 15 min close)',
+  186: 'Tier 186 — Decision Engine: sector concentration hard reject (sector-aware for standalone DE calls)',
+  187: 'Tier 187 — Decision Engine: consecutive loss cooldown surfaced at DE level',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10934,6 +10976,9 @@ const TIER_COLOR: Record<Tier, string> = {
   182: '#60a5fa',
   183: '#94a3b8',
   184: '#f59e0b',
+  185: '#f59e0b',
+  186: '#f59e0b',
+  187: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
