@@ -40,13 +40,14 @@ _TRANSACTION_CODES = {
 
 async def _fetch_form4_filings(client: httpx.AsyncClient, ticker: str, days: int = 90) -> list[dict]:
     """Search SEC EDGAR for recent Form 4 filings for a ticker."""
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
     try:
+        # CIK= accepts ticker symbols directly and returns the company's filing Atom feed.
+        # Using company= searches by name and returns company entity records (not filings).
         r = await client.get(
             _EDGAR_BROWSE,
             params={
                 "action": "getcompany",
-                "company": ticker,
+                "CIK": ticker,
                 "type": "4",
                 "dateb": "",
                 "owner": "include",
@@ -60,10 +61,16 @@ async def _fetch_form4_filings(client: httpx.AsyncClient, ticker: str, days: int
         if r.status_code != 200:
             return []
 
-        content = r.text
-        # Extract accession numbers from Atom feed
-        accessions = re.findall(r"Accession-Number: (\d{10}-\d{2}-\d{6})", content)
-        return [{"accession": acc} for acc in accessions[:20]]
+        # The Atom feed uses <accession-number> XML tags (not "Accession-Number:" text).
+        accessions = re.findall(r"<accession-number>(\d{10}-\d{2}-\d{6})</accession-number>", r.text)
+        # Deduplicate — the same accession number appears in both <content> and <id>/<link> tags
+        seen: set[str] = set()
+        unique = []
+        for acc in accessions:
+            if acc not in seen:
+                seen.add(acc)
+                unique.append(acc)
+        return [{"accession": acc} for acc in unique[:20]]
     except Exception as exc:
         log.debug("insider.fetch_fail", ticker=ticker, error=str(exc))
         return []
@@ -80,8 +87,12 @@ async def _parse_form4(client: httpx.AsyncClient, accession: str) -> dict | None
         r = await client.get(url, headers=_HEADERS, timeout=10.0)
         if r.status_code != 200:
             return None
-        # Find the XML document link
-        xml_links = re.findall(r'href="(/Archives/edgar/data/[^"]+\.xml)"', r.text)
+        # Find the raw Form 4 XML — skip XSL-rendered HTML variants (xslF345X06/form4.xml
+        # is linked with text "form4.html"; it returns an HTML page, not parseable XML).
+        xml_links = [
+            l for l in re.findall(r'href="(/Archives/edgar/data/[^"]+\.xml)"', r.text)
+            if "xsl" not in l.lower()
+        ]
         if not xml_links:
             return None
         xml_url = f"https://www.sec.gov{xml_links[0]}"
@@ -97,6 +108,11 @@ async def _parse_form4(client: httpx.AsyncClient, accession: str) -> dict | None
 def _extract_form4_data(xml: str, accession: str) -> dict | None:
     """Extract key fields from Form 4 XML."""
     def _tag(tag: str) -> str | None:
+        # Form 4 XML wraps most fields in <tag><value>content</value></tag>.
+        # Try direct text first, then nested <value>, to handle both formats.
+        m = re.search(rf"<{tag}[^>]*>\s*<value>\s*([^<]+?)\s*</value>", xml, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
         m = re.search(rf"<{tag}[^>]*>([^<]+)</{tag}>", xml, re.IGNORECASE)
         return m.group(1).strip() if m else None
 

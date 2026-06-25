@@ -74,10 +74,19 @@ async def sync_congress_trades(lookback_days: int = 365) -> dict:
         ticker_map: dict[str, int] = {sym: sid for sid, sym in s.execute(select(Stock.id, Stock.symbol)).all()}
 
     total = 0
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         for url, chamber in [(_HOUSE_URL, "House"), (_SENATE_URL, "Senate")]:
             try:
                 r = await client.get(url)
+                if r.status_code == 403:
+                    log.warning(
+                        "congress.source_private",
+                        chamber=chamber,
+                        url=url,
+                        detail="house/senate-stock-watcher S3 buckets are no longer public. "
+                               "Upgrade to Quiver Quantitative API for congress data.",
+                    )
+                    continue
                 if r.status_code != 200:
                     log.warning("congress.fetch_fail", chamber=chamber, status=r.status_code)
                     continue

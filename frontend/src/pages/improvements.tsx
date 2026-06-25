@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,78 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 171 — Strategy/workflow analysis: return targets + paid API evaluation ──────────
+  {
+    id: 'T171-RETURN-TARGET-ANALYSIS',
+    tier: 171 as const, severity: 'feature', defaultStatus: 'todo' as const,
+    file: 'TRADING_WORKFLOW.md',
+    effort: '2-4 weeks',
+    impact: 'High — improving signal quality from the current estimated 40-50% win rate to 60-70% and returns from ~5-7% to 10-15% requires: (1) wiring congress/insider scores into fused_prob (currently metadata only), (2) tighter entry timing using premarket gap+volume, (3) exit discipline (scale-out at R2, hard stop at 8% loss), (4) regime gating (no new longs in risk-off). Free data improvements alone (EDGAR insider now working) can add 3-5% to signal quality. Paid APIs add another layer.',
+    title: 'T171-A: Strategy analysis — path to 10-15% returns and 60-70% win rate',
+    what: 'Current workflow review identified several gaps: (1) congress/insider scores in signal reasons[] but NOT used in fused_prob — these scores affect display only, not trade decisions. (2) Options flow flag (options_flag) also metadata-only. (3) No premarket gap filter — signals generated at close, not re-evaluated premarket. (4) Exits: no scale-out logic at R2, full position held until target or stop. (5) Regime: risk-off regime reduces position size but doesn\'t prevent entries entirely.',
+    fix: 'Wire insider_score and congress_score into fused_prob in signal-engine routes.py. Add options_flag adjustment. Add premarket gap filter (>2% gap-up on high volume = quality entry confirmation). Add scale-out at first target (sell 50%, trail stop for remainder). Implement strict regime gating: no BUY entries when regime_state=risk_off.',
+    implementedNote: 'Analysis only — 2026-06-25. Insider data now flowing (Tier 169). Congress data needs paid API. Wire-in changes deferred to next session.',
+  },
+  {
+    id: 'T171-PAID-API-EVALUATION',
+    tier: 171 as const, severity: 'feature', defaultStatus: 'todo' as const,
+    file: 'services/event-intelligence/src/',
+    effort: '1-2 days per API',
+    impact: 'Medium — evaluated paid API options for data quality improvement. Decision: start with Quiver Quantitative free tier (congress trading, which is the biggest gap) before considering others.',
+    title: 'T171-B: Paid API evaluation — Quiver Quantitative, Polygon, Alpaca, TradingView, BigShort',
+    what: 'Evaluated 8 paid/premium data sources: (1) Quiver Quantitative ($25/mo): congress trading data (our biggest gap), institutional flows, government contracts, Twitter sentiment. Best ROI for our use case. (2) Polygon.io ($29/mo): real-time + historical US options flow, tick data, alternative data. Better than yfinance for intraday signals. (3) Alpaca Markets (free): real-time bars, paper/live broker API, news feed. Strong candidate for live broker integration. (4) TradingView webhooks ($15+/mo): Pine Script signal webhooks. Complex integration, adds latency. (5) BigShort/Finviz: short interest, flow aggregates. (6) Moomoo API: HK market real-time data — best option for HK stocks (yfinance HK data is 15m delayed). Congress data via Quiver is priority #1. Moomoo for HK real-time is priority #2.',
+    fix: 'Priority order for paid API integration: 1) Quiver Quantitative (free tier first — congress trading). 2) Moomoo API for HK real-time quotes. 3) Polygon.io for options flow. 4) Alpaca for broker integration. All require API key in .env file. No free alternative to Quiver for congress data was found accessible from EC2.',
+    implementedNote: 'Analysis only — 2026-06-25. Congress data source (house/senate-stock-watcher) permanently private. Quiver free tier requires API key. Moomoo API needs registration.',
+  },
+
+  // ── Tier 170 — Event intelligence page routes missing in api-gateway ────────────────────
+  {
+    id: 'T170-GATEWAY-MISSING-EI-ROUTES',
+    tier: 170 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/api-gateway/src/api/proxy.py:38',
+    effort: '10m',
+    impact: 'High — the Event Intelligence page (/intelligence) was completely blank for all tabs. Every API call to /catalyst/*, /events/* returned "No route for /catalyst/leaderboard". The catalyst leaderboard, insider tab, congress tab, and composite leaderboard were all inaccessible. The feature was built but the api-gateway container had an old proxy.py that predated the events/catalyst routing additions. api-gateway also had an old config.py missing event_intelligence_url, so even after deploying proxy.py with the correct routes, the URL resolved to None.',
+    title: 'T170-A: api-gateway stale proxy.py + config.py — event intelligence routes never deployed to container',
+    what: 'The local proxy.py had "events" and "catalyst" keys in _ROUTES pointing to _settings.event_intelligence_url, and config.py had event_intelligence_url defined. But the container image baked at an earlier point did not include these. `docker cp shared/common/config.py` was never run for api-gateway, and proxy.py was never deployed after the event-intelligence service was added. Result: catalyst leaderboard returned "No route" 100% of the time.',
+    fix: 'docker cp services/api-gateway/src/api/proxy.py and shared/common/config.py to stockai-api-gateway-1, then docker restart. Also deployed config.py to all other service containers for consistency.',
+    implementedNote: 'Done 2026-06-25 — proxy.py (with events/catalyst routes) and config.py (with event_intelligence_url) deployed to all containers, api-gateway restarted.',
+  },
+  {
+    id: 'T170-CATALYST-MISSING-SCORE-FIELD',
+    tier: 170 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/services/catalyst.py:223',
+    effort: '5m',
+    impact: 'Medium — after fixing the routing, the Catalyst Leaders / Risk Leaders / Composite Leaders leaderboard tabs would show empty score bars. The frontend LeaderboardTab uses item.score but the API returned catalyst_score / risk_score / composite_score with no "score" field. ScoreBar received undefined and rendered an empty bar.',
+    title: 'T170-B: Catalyst leaderboard returns catalyst_score/risk_score fields — frontend expects score',
+    what: 'get_catalyst_leaderboard(), get_risk_leaderboard(), get_composite_leaderboard() all returned _score_to_dict(cs) merged with symbol/company. _score_to_dict() doesn\'t add a "score" key. The CatalystLeaderItem type expects { symbol, score }.',
+    fix: 'Added "score": cs.catalyst_score to get_catalyst_leaderboard(), "score": cs.risk_score to get_risk_leaderboard(), "score": cs.composite_score to get_composite_leaderboard(). Deployed to container.',
+    implementedNote: 'Done 2026-06-25 — catalyst.py updated, stockai-event-intelligence-1 restarted.',
+  },
+
+  // ── Tier 169 — Insider EDGAR pipeline broken since launch ────────────────────────────────
+  {
+    id: 'T169-INSIDER-EDGAR-WRONG-PARAM',
+    tier: 169 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/services/insider.py:42',
+    effort: '30m',
+    impact: 'High — insider transaction data was completely empty since launch. Every sync call returned {"symbols_processed": 68, "rows_upserted": 0}. The insider score in every catalyst computation was 0.0 (neutral), losing a meaningful signal. After fix: 221 insider transactions across 68 symbols synced in first run — TSM (19 purchases), GRNT (18 purchases), SOFI (positive) all scoring correctly.',
+    title: 'T169-A: Insider EDGAR sync fetched 0 rows — company= param returns entity list, not Form 4 filings',
+    what: 'Three bugs compounded: (1) _fetch_form4_filings() used params={"action":"getcompany","company":ticker} — "company=" searches EDGAR for entities named like the ticker, returning a company listing Atom feed (company info cards), NOT Form 4 filing records. (2) Regex r"Accession-Number: (\\d{10}-\\d{2}-\\d{6})" looked for text that doesn\'t exist in the feed — accession numbers are in <accession-number> XML tags. (3) _parse_form4() took xml_links[0] which is the XSL-rendered HTML view (href="xslF345X06/form4.xml") — downloading that returns an HTML page, not Form 4 XML, so _tag() regex matches nothing and returns None.',
+    fix: '(1) Changed company=ticker to CIK=ticker — EDGAR accepts ticker symbols as CIK aliases, returning the company\'s actual Form 4 filing Atom feed. (2) Fixed regex to r"<accession-number>(\\d{10}-\\d{2}-\\d{6})</accession-number>" matching the actual XML tag. Added dedup (same accession appears in both <content> and <link> tags). (3) Filtered XSL paths: xml_links = [l for l in found if "xsl" not in l.lower()]. (4) Fixed _extract_form4_data() _tag() function to handle nested <value> tags (Form 4 XML wraps fields as <transactionShares><value>5000</value></transactionShares>).',
+    implementedNote: 'Done 2026-06-25 — insider.py fixed, deployed, full sync run: 221 rows upserted across 68 symbols. catalyst recompute run after.',
+  },
+  {
+    id: 'T169-CONGRESS-S3-PRIVATE',
+    tier: 169 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/services/congress.py:77',
+    effort: '15m',
+    impact: 'Medium — congress trade sync returns 0 rows permanently. house-stock-watcher-data and senate-stock-watcher-data S3 buckets (us-east-2 and us-west-2) are now private (403 AccessDenied). The community project went private. Congress data requires a paid API (Quiver Quantitative $25/mo). Until then all congress scores are 0.0. Added follow_redirects=True and a clear error log identifying the issue.',
+    title: 'T169-B: Congress data source (house/senate-stock-watcher S3) permanently private — 403 AccessDenied',
+    what: 'The original URLs (s3-us-east-2) returned 301 → s3-us-west-2 → 403. httpx.AsyncClient did not follow redirects by default so it never even saw the 403. capitoltrades.com and housestockwatcher.com are DNS-unreachable from EC2. Quiver Quantitative requires an API key. No free alternative accessible from EC2 was found.',
+    fix: 'Added follow_redirects=True to httpx.AsyncClient. Added explicit 403 handler logging "house/senate-stock-watcher S3 buckets are no longer public — upgrade to Quiver Quantitative API." Congress data remains 0 until paid API is integrated.',
+    implementedNote: 'Done 2026-06-25 — congress.py updated with follow_redirects=True and 403 error message. Congress data requires Quiver API ($25/mo) for real data.',
+  },
+
   // ── Tier 168 — Paper portfolio digest email equity calculation ───────────────────────────
   {
     id: 'T168-DIGEST-CASH-ONLY-EQUITY',
@@ -10490,6 +10562,9 @@ const TIER_LABEL: Record<Tier, string> = {
   166: 'Tier 166 — Strategy DSL KeyError → 422 + decision-engine silent timestamp failure',
   167: 'Tier 167 — Ranking-engine NaN SMA bias for short-history stocks',
   168: 'Tier 168 — Paper portfolio digest email showed cash-only total return',
+  169: 'Tier 169 — Insider EDGAR pipeline broken: wrong param + XSL/regex mismatch (0 rows)',
+  170: 'Tier 170 — Event intelligence page blank: api-gateway missing catalyst/events routes',
+  171: 'Tier 171 — Strategy/workflow analysis: how to reach 10-15% returns + 60-70% win rate; paid API evaluation',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10661,6 +10736,9 @@ const TIER_COLOR: Record<Tier, string> = {
   166: '#38bdf8',
   167: '#a78bfa',
   168: '#fb7185',
+  169: '#34d399',
+  170: '#60a5fa',
+  171: '#fbbf24',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

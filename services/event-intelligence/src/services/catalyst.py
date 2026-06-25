@@ -221,7 +221,7 @@ def get_catalyst_leaderboard(limit: int = 20) -> list[dict]:
             .limit(limit)
         ).all()
         return [
-            {**_score_to_dict(cs), "symbol": sym, "company": name}
+            {**_score_to_dict(cs), "symbol": sym, "company": name, "score": cs.catalyst_score}
             for cs, sym, name in rows
         ]
 
@@ -236,7 +236,7 @@ def get_risk_leaderboard(limit: int = 20) -> list[dict]:
             .limit(limit)
         ).all()
         return [
-            {**_score_to_dict(cs), "symbol": sym, "company": name}
+            {**_score_to_dict(cs), "symbol": sym, "company": name, "score": cs.risk_score}
             for cs, sym, name in rows
         ]
 
@@ -251,7 +251,7 @@ def get_composite_leaderboard(limit: int = 20) -> list[dict]:
             .limit(limit)
         ).all()
         return [
-            {**_score_to_dict(cs), "symbol": sym, "company": name}
+            {**_score_to_dict(cs), "symbol": sym, "company": name, "score": cs.composite_score}
             for cs, sym, name in rows
         ]
 
