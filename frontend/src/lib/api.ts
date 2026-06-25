@@ -605,6 +605,9 @@ export type SuppressedSignalRow = {
   pillar_volume: number | null;
   pillar_structure: number | null;
   pillars_active: number | null;
+  insider_score: number | null;
+  catalyst_score: number | null;
+  catalyst_prob_adj: number | null;
 };
 
 export type Stock = {

@@ -29,7 +29,8 @@ const CONDITIONS: { key: CondKey; label: string; short: string; color: string; t
 
 type SortKey =
   | 'symbol' | 'signal' | 'ts' | 'bullish_probability' | 'suppression_count' | 'confidence'
-  | 'weekly_rsi' | 'rsi' | 'adx' | 'days_to_earnings' | 'news_sentiment' | 'rs_score' | 'breadth_pct';
+  | 'weekly_rsi' | 'rsi' | 'adx' | 'days_to_earnings' | 'news_sentiment' | 'rs_score' | 'breadth_pct'
+  | 'insider_score';
 
 // Tooltip text for every sortable column header
 const COL_TIPS: Record<SortKey, string> = {
@@ -46,13 +47,14 @@ const COL_TIPS: Record<SortKey, string> = {
   news_sentiment:     'Aggregate news sentiment score 0–100 (50 = neutral). Claude Haiku when API key set, otherwise enhanced VADER. Below 25 = strong negative (0.75×). Below 35 = negative (0.85×). SWING only.',
   rs_score:           'Relative Strength score vs sector ETF (XLK, XLV, etc.) on a 20-day return basis. 50 = in-line. Below 40 = lagging (compresses 15%). Above 60 = outperforming.',
   breadth_pct:        'Percentage of all tracked US stocks currently trading above their 200-day SMA. Below 40% = broad market weakness — signal compressed 10% even in a nominally-bull SPY regime.',
+  insider_score:      'Insider score from EDGAR Form 4 filings: +100 = strong net buying by executives/directors; −100 = heavy selling. Weighted by role (CEO=30×, CFO=20×, Director=10×). Positive score also boosts fused_prob (+1.5–3%). US stocks only (last 90 days).',
 };
 
 const SORT_LABELS: Record<SortKey, string> = {
   symbol: 'Symbol', signal: 'Signal', ts: 'Age', bullish_probability: 'Bull%',
   confidence: 'Conf%', suppression_count: 'Filters', weekly_rsi: 'W.RSI', rsi: 'RSI',
   adx: 'ADX', days_to_earnings: 'Earn.d', news_sentiment: 'News',
-  rs_score: 'RS', breadth_pct: 'Breadth',
+  rs_score: 'RS', breadth_pct: 'Breadth', insider_score: 'Insider',
 };
 
 const SIGNAL_COLORS: Record<string, string> = {
@@ -92,6 +94,7 @@ function numVal(row: SuppressedSignalRow, key: SortKey): number {
   if (key === 'news_sentiment') return row.news_sentiment ?? 50;
   if (key === 'rs_score') return row.rs_score ?? 50;
   if (key === 'breadth_pct') return row.breadth_pct ?? 50;
+  if (key === 'insider_score') return row.insider_score ?? 0;
   return 0;
 }
 
@@ -700,6 +703,7 @@ export default function SignalFiltersPage() {
                 <SortTh col="days_to_earnings" label="Earn.d"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="news_sentiment"   label="News"     sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="rs_score"         label="RS"       sortKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortTh col="insider_score"    label="Insider"  sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <th style={TH_STATIC} title="Market regime based on SPY vs 200-day SMA and Fear & Greed score. Bull = SPY above 200MA + F&G ≥ 30. High-Vol = SPY above 200MA but F&G < 30. Bear = SPY below 200MA. Each regime uses a different BUY threshold.">
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Regime
@@ -953,6 +957,25 @@ export default function SignalFiltersPage() {
                     }}>
                       {row.rs_score != null ? fmt(row.rs_score, 0) : '—'}
                     </td>
+
+                    {/* Insider score */}
+                    {(() => {
+                      const ins = row.insider_score;
+                      const adj = row.catalyst_prob_adj;
+                      const insColor = ins == null ? '#475569'
+                        : ins >= 60 ? '#22c55e'
+                        : ins >= 30 ? '#86efac'
+                        : ins <= -30 ? '#ef4444'
+                        : ins < 0 ? '#f87171'
+                        : '#94a3b8';
+                      const tip = ins == null ? 'No EDGAR data (HK stocks or no Form 4 filings in 90 days)'
+                        : `Insider score: ${ins.toFixed(0)}${adj ? ` → fused_prob adj ${adj > 0 ? '+' : ''}${(adj * 100).toFixed(1)}%` : ''}`;
+                      return (
+                        <td style={{ ...TD, color: insColor, fontWeight: ins != null && Math.abs(ins) >= 60 ? 700 : 400 }} title={tip}>
+                          {ins != null ? ins.toFixed(0) : '—'}
+                        </td>
+                      );
+                    })()}
 
                     {/* Regime */}
                     <td style={{ ...TD, color: REGIME_COLORS[row.market_regime ?? ''] ?? '#64748b', fontWeight: 600 }}>

@@ -1594,6 +1594,10 @@ def suppressed_signals(
             "pillar_volume":       r.get("pillar_volume"),
             "pillar_structure":    r.get("pillar_structure"),
             "pillars_active":      r.get("independent_pillars_active"),
+            # T175: catalyst intelligence scores (from event-intelligence, stored in reasons by _bulk_persist)
+            "insider_score":       r.get("insider_score"),
+            "catalyst_score":      r.get("catalyst_score"),
+            "catalyst_prob_adj":   r.get("catalyst_prob_adj"),
         })
 
     # Compute days_active per condition — how many consecutive days each flag has been True.
