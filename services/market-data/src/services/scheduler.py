@@ -2138,6 +2138,13 @@ def send_morning_digest(market: str = "US") -> None:
                     ml_auc = r.get("ml_test_auc")
                     if ml_prob and float(ml_prob) >= 0.65 and ml_auc and float(ml_auc) >= 0.60:
                         bullets.append(f"ML {float(ml_prob)*100:.0f}% bullish (AUC {float(ml_auc):.2f})")
+                    # T174: catalyst conviction bullet (insider/congress)
+                    _ins = r.get("insider_score")
+                    _cat = r.get("catalyst_score")
+                    if _ins is not None and float(_ins) > 60:
+                        bullets.append(f"Insider buying (score {float(_ins):.0f})")
+                    elif _cat is not None and float(_cat) >= 60:
+                        bullets.append(f"Catalyst signal (score {float(_cat):.0f})")
                     return bullets[:3]
 
                 result = []
