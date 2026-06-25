@@ -3869,6 +3869,49 @@ def signal_for(
         raise HTTPException(404, str(exc)) from exc
 
     if persist and stock:
+        # Apply catalyst adjustment (same logic as _bulk_persist) so manual Refresh doesn't
+        # overwrite a catalyst-adjusted bullish_probability with the raw generator value.
+        try:
+            import httpx as _httpx_sf
+            _ta_score_sf = 50.0
+            if all_sig:
+                _ta_score_sf = float((next(iter(all_sig.values())).reasons or {}).get("ta_score", 50.0))
+            _cr_sf = _httpx_sf.get(
+                f"{_settings.event_intelligence_url}/catalyst/{symbol}",
+                params={"technical_score": _ta_score_sf},
+                headers={"Authorization": f"Bearer {_service_token()}"},
+                timeout=2.0,
+            )
+            if _cr_sf.status_code == 200:
+                _cat_sf = _cr_sf.json()
+                _ins_sf = _cat_sf.get("insider_score")
+                _cong_sf = _cat_sf.get("congress_score")
+                for _ai_sf in all_sig.values():
+                    if _ai_sf.reasons is None:
+                        _ai_sf.reasons = {}
+                    if _cat_sf.get("catalyst_score") is not None:
+                        _ai_sf.reasons["catalyst_score"] = round(_cat_sf["catalyst_score"], 1)
+                    if _ins_sf is not None:
+                        _ai_sf.reasons["insider_score"] = round(_ins_sf, 1)
+                    if _cong_sf is not None:
+                        _ai_sf.reasons["congress_score"] = round(_cong_sf, 1)
+                    _adj_sf = 0.0
+                    if _ins_sf is not None:
+                        if _ins_sf > 60:    _adj_sf += 0.03
+                        elif _ins_sf > 30:  _adj_sf += 0.015
+                        elif _ins_sf < -30: _adj_sf -= 0.03
+                        elif _ins_sf < -10: _adj_sf -= 0.015
+                    if _cong_sf is not None:
+                        if _cong_sf > 50:   _adj_sf += 0.02
+                        elif _cong_sf > 25: _adj_sf += 0.01
+                    if _adj_sf != 0.0 and _ai_sf.bullish_probability is not None:
+                        _ai_sf.bullish_probability = round(
+                            float(max(0.0, min(1.0, _ai_sf.bullish_probability + _adj_sf))), 4
+                        )
+                        _ai_sf.reasons["catalyst_prob_adj"] = round(_adj_sf, 3)
+        except Exception:
+            pass  # catalyst enrichment is best-effort; don't block the Refresh
+
         today = date.today()
         for ai in all_sig.values():
             horizon_enum = SignalHorizon(ai.horizon)

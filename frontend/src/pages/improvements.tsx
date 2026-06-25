@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,19 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 177 — Paper trading 2382.HK oscillation + DE timezone + live persist catalyst ────
+  {
+    id: 'T177-PAPER-TRADE-OSCILLATION',
+    tier: 177 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py · services/decision-engine/src/api/routes.py · services/signal-engine/src/api/routes.py',
+    effort: '1.5h',
+    impact: 'High — three bugs were causing real trading damage: (1) paper trading re-entered stocks immediately after a stop loss, compounding losses on the same declining stock (2382.HK lost 3 trades in sequence within 1 hour, all stops). (2) Decision engine was broken for all HK trades due to a timezone mismatch, forcing every HK entry through the weaker _should_enter() fallback instead of the full DE scoring. (3) Manual Refresh on the stock detail page was overwriting catalyst-adjusted bullish_probability with the raw unadjusted value (bug #2 from T176 audit).',
+    title: 'T177: Fix 2382.HK oscillation (post-stop cooldown) + DE timezone bug + live persist catalyst',
+    what: '(1) _scan_for_entries had no per-symbol cooldown after stop_hit exits. After a stop triggered, the next scan (running continuously) would immediately re-enter the same stock at the new lower price if the signal was still BUY. (2) Decision engine routes.py received signal.ts as a naive datetime string from the HTTP request (no Z suffix). fromisoformat returned a naive datetime; subtracting from datetime.now(timezone.utc) raised "can\'t subtract offset-naive and offset-aware datetimes" → fallback to _should_enter(). (3) signal_for() persist path called generate_all_signals() and stored the result directly without applying event-intelligence catalyst adjustments.',
+    fix: '(1) Added per-symbol post-stop cooldown query in _scan_for_entries before the candidate loop: builds _recently_stopped set of symbols that hit a stop within stop_cooldown_hours (default 24h). Added skip check in the candidate loop. (2) decision-engine routes.py: after fromisoformat, added tzinfo=None guard — if parsed datetime is naive, replace with UTC. (3) signal_for() persist path now calls event-intelligence /catalyst/{symbol} (same 2s timeout, fail-silent) and applies the same _cat_adj logic as _bulk_persist before writing to DB.',
+    implementedNote: 'Fixed 2026-06-25. Deployed: paper_trading_engine.py + decision-engine routes.py + signal-engine routes.py. Frontend rebuild for improvements.tsx.',
+  },
+
   // ── Tier 176 — Deep audit: 8 bugs found and fixed (post T172-175 review) ────────────────
   {
     id: 'T176-AUDIT-8-BUGS',
@@ -10632,6 +10645,7 @@ const TIER_LABEL: Record<Tier, string> = {
   171: 'Tier 171 — Strategy/workflow analysis: how to reach 10-15% returns + 60-70% win rate; paid API evaluation',
   172: 'Tier 172 — Wire catalyst scores (insider/congress) into fused_prob — event intelligence now affects trade signals',
   173: 'Tier 173 — Configurable strict risk_off entry gate (regime_risk_off_gate=True blocks all entries, default=False)',
+  177: 'Tier 177 — Paper trading oscillation fix: post-stop 24h cooldown + DE timezone bug + live persist catalyst adjustment',
   176: 'Tier 176 — Deep audit: 8 bugs fixed (rl.py KeyError, off-by-one thresholds, email labels, sort sentinel, morning digest elif)',
   175: 'Tier 175 — Sortable Insider score column on Signal Filter page (EDGAR Form 4, green=buying, red=selling)',
   174: 'Tier 174 — Signal alert emails now include EDGAR catalyst/insider/congress scores with probability adjustment context',
@@ -10811,6 +10825,7 @@ const TIER_COLOR: Record<Tier, string> = {
   171: '#fbbf24',
   172: '#a78bfa',
   173: '#fb923c',
+  177: '#f43f5e',
   176: '#f43f5e',
   175: '#34d399',
   174: '#38bdf8',

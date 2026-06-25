@@ -1921,6 +1921,27 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             log.info("paper.daily_entry_cap", entries_today=entries_today, limit=max_entries_day)
             return
 
+    # ── Per-symbol post-stop cooldown ─────────────────────────────────────────────
+    # After a stop_hit exit, don't re-enter the same stock for stop_cooldown_hours (default 24h).
+    # Prevents immediately re-entering a stock that just hit its stop in a downtrend.
+    stop_cooldown_hours = cfg.get("stop_cooldown_hours", 24)
+    _recently_stopped: set[str] = set()
+    if stop_cooldown_hours > 0:
+        _stop_cutoff = datetime.now(timezone.utc) - timedelta(hours=stop_cooldown_hours)
+        _recently_stopped = set(session.execute(
+            select(PaperTrade.symbol)
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_reason == "stop_hit",
+                PaperTrade.exit_time >= _stop_cutoff,
+            )
+        ).scalars().all())
+        if _recently_stopped:
+            log.info("paper.stop_cooldown_active",
+                     symbols=sorted(_recently_stopped),
+                     cooldown_hours=stop_cooldown_hours)
+
     # ── Regime filter ─────────────────────────────────────────────────────────────
     regime_state = (live_regime or {}).get("state", "neutral")
     regime_size_mult = 1.0
@@ -2016,6 +2037,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     for sig, stock, ranking in buy_signals:
         if open_count + entries_made >= cfg["max_positions"]:
             break
+        if stock.symbol in _recently_stopped:
+            log.info("paper.skip_stop_cooldown", symbol=stock.symbol, cooldown_hours=stop_cooldown_hours)
+            continue
         if stock.symbol in open_symbols:
             # Scale-in: add to profitable position on fresh high-conviction signal
             if cfg.get("scale_in_enabled", True):

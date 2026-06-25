@@ -89,6 +89,8 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         try:
             if isinstance(sig_ts, str):
                 ts_aware = datetime.fromisoformat(sig_ts.replace("Z", "+00:00"))
+                if ts_aware.tzinfo is None:
+                    ts_aware = ts_aware.replace(tzinfo=timezone.utc)
             else:
                 ts_aware = sig_ts.replace(tzinfo=timezone.utc) if sig_ts.tzinfo is None else sig_ts
             sig_age_h = (datetime.now(timezone.utc) - ts_aware).total_seconds() / 3600
