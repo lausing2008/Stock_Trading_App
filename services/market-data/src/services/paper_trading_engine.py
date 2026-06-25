@@ -1933,6 +1933,16 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      notes=live_regime.get("notes"),
                      note="all new entries suspended in bear regime")
             return
+        # T173: strict risk_off gate — block all new entries when regime_risk_off_gate=True.
+        # Default False (preserve existing behaviour: 50% size + tighter score).
+        # Set True per-portfolio to fully suspend entries when SPY is below 50EMA or VIX > 25.
+        if regime_state == "risk_off" and cfg.get("regime_risk_off_gate", False):
+            log.info("paper.regime_gate_risk_off",
+                     portfolio=portfolio.name,
+                     vix=live_regime.get("vix"),
+                     spy=live_regime.get("spy_price"),
+                     note="all new entries suspended in risk_off regime (strict gate enabled)")
+            return
         regime_size_mult = {
             "bull":     cfg.get("regime_bull_size_mult", 1.0),
             "neutral":  1.0,
