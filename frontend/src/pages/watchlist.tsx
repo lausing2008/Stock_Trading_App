@@ -791,11 +791,12 @@ export default function Watchlist() {
   const stats = useMemo(() => {
     const counts = { BUY: 0, HOLD: 0, WAIT: 0, SELL: 0 };
     for (const item of data ?? []) {
+      if (marketFilter !== 'ALL' && item.market !== marketFilter) continue;
       const s = getSignal(item.symbol);
       if (s === 'BUY' || s === 'HOLD' || s === 'WAIT' || s === 'SELL') counts[s]++;
     }
     return counts;
-  }, [data, signalMap, rankMap]);
+  }, [data, signalMap, rankMap, marketFilter]);
 
   /* Filtered + sorted */
   const visible = useMemo(() => {
@@ -990,7 +991,7 @@ export default function Watchlist() {
             </div>
           ))}
           <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '10px 18px', textAlign: 'center', minWidth: '80px' }}>
-            <div style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0', lineHeight: 1 }}>{data.length}</div>
+            <div style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0', lineHeight: 1 }}>{marketFilter === 'ALL' ? data.length : data.filter(d => d.market === marketFilter).length}</div>
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', marginTop: '3px', letterSpacing: '0.06em' }}>TOTAL</div>
           </div>
         </div>
