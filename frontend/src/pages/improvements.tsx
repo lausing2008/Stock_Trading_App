@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,84 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 183 — Improvements tracker: extend Tier union to 200, document T178-T183 ──────────
+  {
+    id: 'T183-IMPROVEMENTS-TRACKER-EXTEND',
+    tier: 183 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/improvements.tsx',
+    effort: '20m',
+    impact: 'Low — maintenance: Tier type union extended to 200 so new tiers (178+) can be added without TypeScript compile errors each session. T178-T183 items documented.',
+    title: 'T183: Extend Tier type union to 200 + document T178-T183',
+    what: 'The Tier type union was a hardcoded literal ending at 177. Adding any new tier required editing line 16 of improvements.tsx first or TypeScript would reject the tier field. Also documents all improvements made in this session (T178-T183).',
+    fix: 'Extended Tier union to 200. Added TIER_LABEL and TIER_COLOR entries for 178-183. Added item blocks for T178-T183.',
+    implementedNote: 'Done 2026-06-24.',
+  },
+
+  // ── Tier 182 — Paper portfolio Config Panel: expose stop_cooldown_hours ──────────────────
+  {
+    id: 'T182-STOP-COOLDOWN-CONFIG-UI',
+    tier: 182 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/paper-portfolio.tsx · frontend/src/lib/api.ts · services/market-data/src/api/paper_portfolio.py',
+    effort: '30m',
+    impact: 'Medium — T177 added per-symbol post-stop cooldown (default 24h) as a key safety mechanism, but the cooldown window was not exposed in the Config Panel UI. Tuning it required editing Python source. Now configurable per-portfolio from the UI.',
+    title: 'T182: Expose stop_cooldown_hours in paper portfolio Config Panel',
+    what: 'stop_cooldown_hours was a config key used by paper_trading_engine._scan_for_entries() but not listed in paper_portfolio.py configure() allowed_keys allowlist, not in PaperPortfolioConfig TypeScript type, and not rendered in ConfigPanel.',
+    fix: 'Added "stop_cooldown_hours" to allowed_keys in configure(). Added stop_cooldown_hours?: number to PaperPortfolioConfig type. Added field("stop_cooldown_hours", "Stop Cooldown (hrs)", 1) to ConfigPanel render.',
+    implementedNote: 'Done 2026-06-24.',
+  },
+
+  // ── Tier 181 — Signal Filter page: add congress_score column ────────────────────────────
+  {
+    id: 'T181-CONGRESS-SCORE-COLUMN',
+    tier: 181 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/signal-filters.tsx · frontend/src/lib/api.ts · services/signal-engine/src/api/routes.py',
+    effort: '45m',
+    impact: 'Low — congress_score was already computed by event-intelligence and stored in signal.reasons["congress_score"] by _bulk_persist, but not surfaced in the signal filter monitoring table. Now visible alongside insider_score so both catalyst boosts are auditable.',
+    title: 'T181: Add congress_score column to Signal Filter page',
+    what: 'congress_score was stored but missing from /signals/suppressed API response and the SuppressedSignalRow TypeScript type. Signal filter table had no congress column.',
+    fix: 'Added "congress_score" to suppressed signals response dict in routes.py. Added congress_score: number | null to SuppressedSignalRow in api.ts. Added SortKey, COL_TIPS, SORT_LABELS, numVal, <SortTh>, and cell renderer to signal-filters.tsx. Color coding mirrors insider: green ≥60, pale-green 30-59, pale-red -1 to -29, red ≤-30.',
+    implementedNote: 'Done 2026-06-24.',
+  },
+
+  // ── Tier 180 — Watchlist DE Scan: respect market filter and visible list ─────────────────
+  {
+    id: 'T180-DE-SCAN-MARKET-FILTER',
+    tier: 180 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/watchlist.tsx',
+    effort: '20m',
+    impact: 'Medium — DE Scan was scanning all watchlist stocks regardless of the active market/signal filter. If the user filtered to HK only, the scan still evaluated US stocks and inferred the market from the first item in the raw list (unreliable for mixed lists).',
+    title: 'T180: DE Scan button respects current market filter and visible stock list',
+    what: 'Two bugs: (1) data.map(i => i.symbol) scanned the full unfiltered list. (2) data[0]?.market === "HK" ? "HK" : "US" inferred market from the first item only — wrong for mixed lists. Both caused the scan to evaluate the wrong set of stocks with the wrong market context.',
+    fix: 'Changed to visible.map(i => i.symbol) so market filter, signal filter, and watchlist tab all apply. Changed market inference to marketFilter !== "ALL" ? marketFilter : "US". Also updated the disabled check to use visible.length instead of data.length.',
+    implementedNote: 'Done 2026-06-24.',
+  },
+
+  // ── Tier 179 — Signal accuracy page: add market filter (US/HK) ──────────────────────────
+  {
+    id: 'T179-SIGNAL-ACCURACY-MARKET-FILTER',
+    tier: 179 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/signal-accuracy.tsx · frontend/src/lib/api.ts · services/signal-engine/src/api/routes.py',
+    effort: '45m',
+    impact: 'Medium — signal accuracy overview showed blended US+HK accuracy with no way to separate the two markets. With HK signals following different regime rules and price dynamics, the blended number hides whether each market\'s model is performing well.',
+    title: 'T179: Signal accuracy Overview tab — add US/HK market filter',
+    what: '/signals/accuracy endpoint had no market parameter. Frontend had no market toggle on the Overview tab (the Outcomes tab already had outcomesMarket). SWR key did not include market context.',
+    fix: 'Added market: str | None = Query(None) to signal_accuracy() endpoint + .where(Stock.market == market.upper()) filter. Added market parameter to api.signalAccuracy(). Added accuracyMarket state + [ALL|US|HK] toggle buttons above the lookback buttons on the Overview tab. SWR key includes accuracyMarket.',
+    implementedNote: 'Done 2026-06-24.',
+  },
+
+  // ── Tier 178 — Watchlist market filter counts ──────────────────────────────────────────
+  {
+    id: 'T178-WATCHLIST-MARKET-FILTER-COUNTS',
+    tier: 178 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/watchlist.tsx',
+    effort: '15m',
+    impact: 'Medium — BUY/HOLD/WAIT/SELL count badges and TOTAL showed global totals regardless of the active market filter. Switching to HK kept displaying the US+HK combined count, making the summary meaningless when filtered.',
+    title: 'T178: Watchlist BUY/HOLD/WAIT/SELL counts respect market filter (US/HK)',
+    what: 'stats useMemo iterated all data without applying marketFilter. TOTAL badge used data.length directly. Both computed global totals even when the user had filtered to a specific market.',
+    fix: 'Added marketFilter !== "ALL" && item.market !== marketFilter continue guard in stats loop. Added marketFilter to stats dependency array. Changed TOTAL to use a filtered count: marketFilter === "ALL" ? data.length : data.filter(d => d.market === marketFilter).length.',
+    implementedNote: 'Done 2026-06-24.',
+  },
+
   // ── Tier 177 — Paper trading 2382.HK oscillation + DE timezone + live persist catalyst ────
   {
     id: 'T177-PAPER-TRADE-OSCILLATION',
@@ -10649,6 +10727,12 @@ const TIER_LABEL: Record<Tier, string> = {
   176: 'Tier 176 — Deep audit: 8 bugs fixed (rl.py KeyError, off-by-one thresholds, email labels, sort sentinel, morning digest elif)',
   175: 'Tier 175 — Sortable Insider score column on Signal Filter page (EDGAR Form 4, green=buying, red=selling)',
   174: 'Tier 174 — Signal alert emails now include EDGAR catalyst/insider/congress scores with probability adjustment context',
+  178: 'Tier 178 — Watchlist BUY/HOLD/WAIT/SELL counts now respect US/HK market filter',
+  179: 'Tier 179 — Signal accuracy Overview tab: US/HK market filter added to backend + frontend',
+  180: 'Tier 180 — DE Scan button uses visible list + correct market (not raw data)',
+  181: 'Tier 181 — Congress score column added to Signal Filter page (alongside Insider score)',
+  182: 'Tier 182 — stop_cooldown_hours exposed in paper portfolio Config Panel UI',
+  183: 'Tier 183 — Tier union extended to 200; T178-T183 documented in improvements tracker',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -10829,6 +10913,12 @@ const TIER_COLOR: Record<Tier, string> = {
   176: '#f43f5e',
   175: '#34d399',
   174: '#38bdf8',
+  178: '#60a5fa',
+  179: '#60a5fa',
+  180: '#60a5fa',
+  181: '#60a5fa',
+  182: '#60a5fa',
+  183: '#94a3b8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

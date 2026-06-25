@@ -214,11 +214,12 @@ export const api = {
   },
 
   // Signal accuracy tracker
-  signalAccuracy: (lookbackDays = 90, symbol?: string, fromDate?: string, toDate?: string, page = 1, pageSize = 200) => {
+  signalAccuracy: (lookbackDays = 90, symbol?: string, fromDate?: string, toDate?: string, page = 1, pageSize = 200, market?: string) => {
     const params = new URLSearchParams({ lookback_days: String(lookbackDays), page: String(page), page_size: String(pageSize) });
     if (symbol) params.set('symbol', symbol);
     if (fromDate) params.set('from_date', fromDate);
     if (toDate) params.set('to_date', toDate);
+    if (market) params.set('market', market);
     return request<SignalAccuracyReport>(`/signals/accuracy?${params}`);
   },
   resetSignals: () => request<{ status: string; deleted: number; repersisting: number }>('/signals/reset', { method: 'POST' }),
@@ -606,6 +607,7 @@ export type SuppressedSignalRow = {
   pillar_structure: number | null;
   pillars_active: number | null;
   insider_score: number | null;
+  congress_score: number | null;
   catalyst_score: number | null;
   catalyst_prob_adj: number | null;
 };
@@ -1236,6 +1238,7 @@ export type PaperPortfolioConfig = {
   breakeven_trigger_pct: number;
   partial_tp_pct: number;
   wait_exit_days: number;
+  stop_cooldown_hours?: number;
   enabled: boolean;
   paused?: boolean;
 };

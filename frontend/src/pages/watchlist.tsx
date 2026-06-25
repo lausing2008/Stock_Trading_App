@@ -870,14 +870,14 @@ export default function Watchlist() {
               setDeScanLoading(true);
               setDeScanResults(null);
               try {
-                const symbols = data.map(i => i.symbol);
-                const market = data[0]?.market === 'HK' ? 'HK' : 'US';
+                const symbols = visible.map(i => i.symbol);
+                const market = marketFilter !== 'ALL' ? marketFilter : 'US';
                 const results = await api.decideBatch(symbols, effectiveStyle, market);
                 setDeScanResults(results);
               } catch { setDeScanResults([]); }
               finally { setDeScanLoading(false); }
             }}
-            disabled={deScanLoading || !data || data.length === 0}
+            disabled={deScanLoading || !data || visible.length === 0}
             style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '6px', border: '1px solid rgba(52,211,153,0.3)', background: deScanLoading ? 'rgba(52,211,153,0.05)' : 'rgba(52,211,153,0.08)', color: deScanLoading ? '#64748b' : '#34d399', cursor: deScanLoading ? 'default' : 'pointer', fontSize: '13px', fontWeight: 600 }}
           >
             {deScanLoading ? 'Scanning…' : '⚡ DE Scan'}

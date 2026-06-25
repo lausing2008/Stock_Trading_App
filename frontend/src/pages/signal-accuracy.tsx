@@ -812,12 +812,13 @@ export default function SignalAccuracyPage() {
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [page, setPage] = useState(1);
+  const [accuracyMarket, setAccuracyMarket] = useState<'ALL' | 'US' | 'HK'>('ALL');
 
   const useDateRange = fromDate !== '' && toDate !== '';
 
   const { data, isLoading, error, mutate } = useSWR(
-    authed ? ['signal-accuracy', lookback, fromDate, toDate, page] : null,
-    () => api.signalAccuracy(lookback, undefined, fromDate || undefined, toDate || undefined, page),
+    authed ? ['signal-accuracy', lookback, fromDate, toDate, page, accuracyMarket] : null,
+    () => api.signalAccuracy(lookback, undefined, fromDate || undefined, toDate || undefined, page, 200, accuracyMarket === 'ALL' ? undefined : accuracyMarket),
     { revalidateOnFocus: false },
   );
 
@@ -1569,6 +1570,17 @@ export default function SignalAccuracyPage() {
       {activeTab === 'overview' && <>
       {/* Controls */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {(['ALL', 'US', 'HK'] as const).map(m => (
+            <button key={m} onClick={() => { setAccuracyMarket(m); setPage(1); }}
+              style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', border: '1px solid',
+                borderColor: accuracyMarket === m ? '#60a5fa' : '#1e293b',
+                background: accuracyMarket === m ? 'rgba(96,165,250,0.12)' : 'transparent',
+                color: accuracyMarket === m ? '#60a5fa' : '#64748b' }}>
+              {m}
+            </button>
+          ))}
+        </div>
         <div style={{ display: 'flex', gap: 4 }}>
           {LOOKBACK_OPTIONS.map(o => (
             <button key={o.value} onClick={() => { setLookback(o.value); setFromDate(''); setToDate(''); setPage(1); }}

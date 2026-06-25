@@ -459,6 +459,7 @@ def _bulk_persist(symbols: list[str]) -> None:
 def signal_accuracy(
     lookback_days: int = Query(90, ge=2, le=365),
     symbol: str | None = None,
+    market: str | None = Query(None, regex="^(US|HK)$"),
     from_date: str | None = None,
     to_date: str | None = None,
     page: int = Query(1, ge=1),
@@ -494,6 +495,8 @@ def signal_accuracy(
     )
     if symbol:
         q = q.where(Stock.symbol == symbol.upper())
+    if market:
+        q = q.where(Stock.market == market.upper())
 
     rows = session.execute(q).all()
     if not rows:
@@ -1594,8 +1597,9 @@ def suppressed_signals(
             "pillar_volume":       r.get("pillar_volume"),
             "pillar_structure":    r.get("pillar_structure"),
             "pillars_active":      r.get("independent_pillars_active"),
-            # T175: catalyst intelligence scores (from event-intelligence, stored in reasons by _bulk_persist)
+            # T175/T181: catalyst intelligence scores (from event-intelligence, stored in reasons by _bulk_persist)
             "insider_score":       r.get("insider_score"),
+            "congress_score":      r.get("congress_score"),
             "catalyst_score":      r.get("catalyst_score"),
             "catalyst_prob_adj":   r.get("catalyst_prob_adj"),
         })

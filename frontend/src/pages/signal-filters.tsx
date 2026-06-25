@@ -30,7 +30,7 @@ const CONDITIONS: { key: CondKey; label: string; short: string; color: string; t
 type SortKey =
   | 'symbol' | 'signal' | 'ts' | 'bullish_probability' | 'suppression_count' | 'confidence'
   | 'weekly_rsi' | 'rsi' | 'adx' | 'days_to_earnings' | 'news_sentiment' | 'rs_score' | 'breadth_pct'
-  | 'insider_score';
+  | 'insider_score' | 'congress_score';
 
 // Tooltip text for every sortable column header
 const COL_TIPS: Record<SortKey, string> = {
@@ -48,13 +48,14 @@ const COL_TIPS: Record<SortKey, string> = {
   rs_score:           'Relative Strength score vs sector ETF (XLK, XLV, etc.) on a 20-day return basis. 50 = in-line. Below 40 = lagging (compresses 15%). Above 60 = outperforming.',
   breadth_pct:        'Percentage of all tracked US stocks currently trading above their 200-day SMA. Below 40% = broad market weakness — signal compressed 10% even in a nominally-bull SPY regime.',
   insider_score:      'Insider score from EDGAR Form 4 filings: +100 = strong net buying by executives/directors; −100 = heavy selling. Weighted by role (CEO=30×, CFO=20×, Director=10×). Positive score also boosts fused_prob (+1.5–3%). US stocks only (last 90 days).',
+  congress_score:     'Congress trading score from recent buy/sell filings. +100 = strong net buying by Congress members; negative = net selling. Positive score boosts fused_prob (+1–2%). US stocks only.',
 };
 
 const SORT_LABELS: Record<SortKey, string> = {
   symbol: 'Symbol', signal: 'Signal', ts: 'Age', bullish_probability: 'Bull%',
   confidence: 'Conf%', suppression_count: 'Filters', weekly_rsi: 'W.RSI', rsi: 'RSI',
   adx: 'ADX', days_to_earnings: 'Earn.d', news_sentiment: 'News',
-  rs_score: 'RS', breadth_pct: 'Breadth', insider_score: 'Insider',
+  rs_score: 'RS', breadth_pct: 'Breadth', insider_score: 'Insider', congress_score: 'Congress',
 };
 
 const SIGNAL_COLORS: Record<string, string> = {
@@ -95,6 +96,7 @@ function numVal(row: SuppressedSignalRow, key: SortKey): number {
   if (key === 'rs_score') return row.rs_score ?? 50;
   if (key === 'breadth_pct') return row.breadth_pct ?? 50;
   if (key === 'insider_score') return row.insider_score ?? -999;
+  if (key === 'congress_score') return row.congress_score ?? -999;
   return 0;
 }
 
@@ -704,6 +706,7 @@ export default function SignalFiltersPage() {
                 <SortTh col="news_sentiment"   label="News"     sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="rs_score"         label="RS"       sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="insider_score"    label="Insider"  sortKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortTh col="congress_score"   label="Congress" sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <th style={TH_STATIC} title="Market regime based on SPY vs 200-day SMA and Fear & Greed score. Bull = SPY above 200MA + F&G ≥ 30. High-Vol = SPY above 200MA but F&G < 30. Bear = SPY below 200MA. Each regime uses a different BUY threshold.">
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Regime
@@ -973,6 +976,24 @@ export default function SignalFiltersPage() {
                       return (
                         <td style={{ ...TD, color: insColor, fontWeight: ins != null && Math.abs(ins) >= 60 ? 700 : 400 }} title={tip}>
                           {ins != null ? ins.toFixed(0) : '—'}
+                        </td>
+                      );
+                    })()}
+
+                    {/* Congress score */}
+                    {(() => {
+                      const cng = row.congress_score;
+                      const cngColor = cng == null ? '#475569'
+                        : cng >= 60 ? '#22c55e'
+                        : cng >= 30 ? '#86efac'
+                        : cng <= -30 ? '#ef4444'
+                        : cng < 0 ? '#f87171'
+                        : '#94a3b8';
+                      const tip = cng == null ? 'No Congress trading data (HK stocks or no recent filings)'
+                        : `Congress score: ${cng.toFixed(0)}`;
+                      return (
+                        <td style={{ ...TD, color: cngColor, fontWeight: cng != null && Math.abs(cng) >= 60 ? 700 : 400 }} title={tip}>
+                          {cng != null ? cng.toFixed(0) : '—'}
                         </td>
                       );
                     })()}

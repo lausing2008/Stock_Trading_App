@@ -892,6 +892,7 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
         {field('partial_tp_pct', 'Partial TP %')}
         {field('trail_trigger_pct', 'Trail Trigger %')}
         {field('breakeven_trigger_pct', 'Breakeven %')}
+        {field('stop_cooldown_hours', 'Stop Cooldown (hrs)', 1)}
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 16, alignItems: 'center' }}>
         <button

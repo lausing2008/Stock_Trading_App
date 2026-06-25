@@ -646,7 +646,7 @@ def configure_portfolio(
         "max_hold_days", "trail_atr_mult", "trail_trigger_pct", "breakeven_trigger_pct",
         "wait_exit_days", "enabled", "paused",
         "max_loss_per_trade_pct", "max_portfolio_drawdown_pct", "max_daily_loss_pct",
-        "max_open_risk_pct", "hold_stall_max_gain",
+        "max_open_risk_pct", "hold_stall_max_gain", "stop_cooldown_hours",
     }
     # PT-H1: Validate decimal fraction params — reject values that look like % integers
     # (e.g. risk_per_trade_pct=1 meaning "1%" but engine expects 0.01).
