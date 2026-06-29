@@ -2126,9 +2126,45 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         (st.sector or "unclassified") for _, st in _prefetched_open
     ))
 
+    # T194: Open exposure cap — block new entries if deployed capital exceeds max % of equity.
+    # A human never commits more than 40% of their capital to open positions simultaneously.
+    _max_exposure_pct = cfg.get("max_open_exposure_pct", 0.40)
+    if _max_exposure_pct and _max_exposure_pct > 0 and equity > 0:
+        _open_exposure = sum(float(t.entry_price) * float(t.shares) for t, _ in _prefetched_open)
+        if _open_exposure / equity > _max_exposure_pct:
+            log.info("paper.open_exposure_cap",
+                     portfolio=portfolio.name,
+                     open_exposure_pct=round(_open_exposure / equity * 100, 1),
+                     max_pct=round(_max_exposure_pct * 100, 1),
+                     note="deployed capital cap reached — no new entries until positions close")
+            return
+
     # PT-P2 + PA-F1: batch-fetch ATR for all candidates in ONE yfinance download
     candidate_syms = [stock.symbol for _, stock, _ in buy_signals]
     atr_cache: dict[str, float | None] = _batch_compute_atr(list(set(candidate_syms)))
+
+    # T196: Batch-fetch daily close at signal date — used to detect price-chasing.
+    # One query per candidate (small N); fail-open if price row missing.
+    _sig_ref_prices: dict[int, float] = {}
+    for _sr, _sk, _ in buy_signals:
+        if _sr.ts is None or _sk.id in _sig_ref_prices:
+            continue
+        _sig_date = (_sr.ts.replace(tzinfo=timezone.utc) if _sr.ts.tzinfo is None else _sr.ts).date()
+        try:
+            _ref_close = session.execute(
+                select(Price.close)
+                .where(
+                    Price.stock_id == _sk.id,
+                    Price.timeframe == TimeFrame.D1,
+                    func.date(Price.ts) <= _sig_date,
+                )
+                .order_by(Price.ts.desc())
+                .limit(1)
+            ).scalar()
+            if _ref_close is not None:
+                _sig_ref_prices[_sk.id] = float(_ref_close)
+        except Exception:
+            pass  # fail-open — missing price row doesn't block the candidate
 
     entries_made = 0
     for sig, stock, ranking in buy_signals:
@@ -2188,19 +2224,36 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      kscore=ranking.score, min=cfg["min_kscore"])
             continue
 
-        # Skip signals older than 120h (5 days) — indicates a failed refresh cycle.
-        # Normal 3-day weekends produce ~84h gaps which safely pass.
+        # T195: Signal staleness gate — configurable max age (default 96h / 4 days).
+        # Tighter than the 5-day query cutoff; handles normal 3-day weekends (≤84h).
+        # A human discards a thesis that has sat untouched for days.
         if sig.ts is not None:
             _ts_aware = sig.ts.replace(tzinfo=timezone.utc) if sig.ts.tzinfo is None else sig.ts
             _sig_age_h = (datetime.now(timezone.utc) - _ts_aware).total_seconds() / 3600
-            if _sig_age_h > 120:
+            _max_age_h = float(cfg.get("max_signal_age_hours", 96))
+            if _sig_age_h > _max_age_h:
                 log.info("paper.skip_stale_signal", symbol=stock.symbol,
-                         age_h=round(_sig_age_h, 1), ts=str(sig.ts)[:19])
+                         age_h=round(_sig_age_h, 1), max_age_h=_max_age_h, ts=str(sig.ts)[:19])
                 continue
 
         live_price = live_prices.get(stock.symbol)
         if not live_price or live_price < 1.00:  # reject $0, pennies, and recently-delisted data
             continue
+
+        # T196: Price drift gate — don't chase a stock that has rallied >N% since signal date.
+        # Reference close fetched pre-loop; fail-open if missing.
+        _max_drift = float(cfg.get("max_price_drift_pct", 3.0)) / 100.0
+        if stock.id in _sig_ref_prices and _max_drift > 0:
+            _drift = live_price / _sig_ref_prices[stock.id] - 1
+            if _drift > _max_drift:
+                log.info("paper.skip_price_drift",
+                         symbol=stock.symbol,
+                         drift_pct=round(_drift * 100, 1),
+                         sig_close=round(_sig_ref_prices[stock.id], 2),
+                         live_price=round(live_price, 2),
+                         max_drift_pct=round(_max_drift * 100, 1),
+                         note="price rallied too far from signal reference — chasing blocked")
+                continue
 
         # Build game plan using cached ATR
         atr = atr_cache.get(stock.symbol)

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7215,6 +7215,45 @@ const ITEMS: Item[] = [
 
   // ── Tier 193 — Decision Engine: market-closed guard ──────────────────────────────────────────
   {
+    id: 'T196-PRICE-DRIFT-GATE',
+    tier: 196 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '45m',
+    impact: 'Medium — prevents chasing setups that have already played out. A signal computed at $100 with target $110 becomes much weaker if the stock is already at $103. The R:R gate catches extreme cases, but a 3% drift is enough to meaningfully reduce margin of safety without failing R:R.',
+    title: 'T196: Price drift gate — block entry if stock rallied >3% since signal was generated',
+    what: 'The paper trading engine entered stocks based on the signal at the signal date price, but by the time the scan runs the stock may have already rallied significantly. The existing R:R gate catches the most extreme cases, but a 3% drift still erodes the setup without triggering R:R rejection.',
+    fix: 'paper_trading_engine.py: batch-queries the daily close on each signal\'s date before the candidate loop (_sig_ref_prices dict). In the loop, after live_price is fetched: if live_price / signal_close > 1 + max_price_drift_pct (default 3.0%), logs paper.skip_price_drift and continues. Fail-open: if no price row found, entry is allowed. Configurable via max_price_drift_pct in portfolio config.',
+    implementedNote: 'Done 2026-06-29. Deployed to market-data container.',
+  },
+
+  // ── Tier 195 — Paper trading: signal staleness gate ───────────────────────────────────────
+  {
+    id: 'T195-SIGNAL-STALENESS-GATE',
+    tier: 195 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '20m',
+    impact: 'Medium — a BUY signal from 4 days ago may represent market conditions that no longer hold. A human trader reviews their watchlist daily and discards setups that haven\'t triggered within a reasonable window. Making this configurable lets each portfolio tune for its style (SWING: 72h, GROWTH: 96h).',
+    title: 'T195: Signal staleness gate — configurable max signal age (default 96h / 4 days)',
+    what: 'The existing staleness check was hardcoded at 120h (5 days) and served as a broken-refresh-cycle guard. 120h is too generous for active trading — a signal from 5 days ago may be based on conditions that have completely changed. No per-portfolio configurability.',
+    fix: 'paper_trading_engine.py: replaced hardcoded 120h threshold with cfg.get("max_signal_age_hours", 96). Default 96h (4 days) handles normal 3-day weekends (≤84h) while being tighter than the old 5-day limit. Configurable per portfolio; logs max_age_h for observability.',
+    implementedNote: 'Done 2026-06-29. Deployed to market-data container.',
+  },
+
+  // ── Tier 194 — Paper trading: open exposure cap ───────────────────────────────────────────
+  {
+    id: 'T194-OPEN-EXPOSURE-CAP',
+    tier: 194 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'Medium — without an exposure cap, the system can have max_positions (e.g. 6) positions all at full size simultaneously, deploying 60%+ of equity at once. A human trader would never deploy more than 40% of capital in paper trades at the same time — the rest is reserved for new opportunities and drawdown buffer.',
+    title: 'T194: Open exposure cap — block new entries if deployed capital > 40% of equity',
+    what: 'The max_positions gate limits position count but not capital concentration. If all 6 positions are large (high-priced stocks, big share sizes), the system could deploy most of the portfolio in active trades. No explicit capital deployment ceiling existed.',
+    fix: 'paper_trading_engine.py: after _prefetched_open and _open_sector_counts, compute _open_exposure = sum(entry_price * shares for all open trades). If _open_exposure / equity > max_open_exposure_pct (default 0.40), return early with paper.open_exposure_cap log. Configurable per portfolio.',
+    implementedNote: 'Done 2026-06-29. Deployed to market-data container.',
+  },
+
+  // ── Tier 193 — Decision Engine: market-closed guard ──────────────────────────────────────
+  {
     id: 'T193-MARKET-CLOSED-GUARD',
     tier: 193 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/decision-engine/src/api/core/hard_rejects.py',
@@ -10873,6 +10912,9 @@ const TIER_LABEL: Record<Tier, string> = {
   191: 'Tier 191 — Weekly gain lock: stop new entries when weekly realized PnL exceeds +1.5%',
   192: 'Tier 192 — VIX-adjusted position sizing: VIX > 25 → 0.75×, VIX > 30 → 0.5×',
   193: 'Tier 193 — Market-closed guard: block DE entries on weekends, pre/after-market, HK lunch',
+  194: 'Tier 194 — Open exposure cap: block new entries if deployed capital > 40% of equity',
+  195: 'Tier 195 — Signal staleness gate: configurable max signal age (default 96h / 4 days)',
+  196: 'Tier 196 — Price drift gate: block entry if stock rallied >3% since signal was generated',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11069,6 +11111,9 @@ const TIER_COLOR: Record<Tier, string> = {
   191: '#f59e0b',
   192: '#f59e0b',
   193: '#f59e0b',
+  194: '#f59e0b',
+  195: '#f59e0b',
+  196: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
