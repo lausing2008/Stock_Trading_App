@@ -1913,7 +1913,7 @@ def _check_short_intraday_triggers(market: str) -> None:
                     Signal.horizon == SignalHorizon.SHORT,
                     Signal.ts >= start_of_day,
                 )
-                .order_by(Signal.ts.desc())
+                .order_by(Stock.id, Signal.ts.desc())
                 .distinct(Stock.id)
             ).all()
 

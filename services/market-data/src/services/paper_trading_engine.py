@@ -1674,11 +1674,11 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 def _recent_win_rate(session, portfolio_id: int, n: int = 20) -> float | None:
     """Win rate of the last n closed trades for this portfolio. Returns None if < 5 trades."""
     rows = session.execute(
-        select(PaperTrade.exit_reason, PaperTrade.realized_pnl)
+        select(PaperTrade.exit_reason, PaperTrade.pnl)
         .where(
             PaperTrade.portfolio_id == portfolio_id,
             PaperTrade.stage == "closed",
-            PaperTrade.realized_pnl.isnot(None),
+            PaperTrade.pnl.isnot(None),
         )
         .order_by(PaperTrade.exit_time.desc())
         .limit(n)
