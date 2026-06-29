@@ -321,17 +321,19 @@ const STYLE_COLORS: Record<string, string> = {
 };
 
 function PortfolioCard({
-  portfolio, selected, isBestSharpe, onSelect,
+  portfolio, selected, isBestSharpe, onSelect, onToggleActive,
 }: {
   portfolio: PaperPortfolioListItem;
   selected: boolean;
   isBestSharpe: boolean;
   onSelect: () => void;
+  onToggleActive: (active: boolean) => void;
 }) {
   const retColor = portfolio.total_return_pct >= 0 ? '#22c55e' : '#ef4444';
   const styleColor = STYLE_COLORS[portfolio.trading_style] ?? '#94a3b8';
-  const state = portfolio.is_running ? 'Running' : portfolio.is_paused ? 'Paused' : 'Stopped';
-  const stateColor = portfolio.is_running ? '#22c55e' : portfolio.is_paused ? '#f59e0b' : '#ef4444';
+  const isActive = portfolio.is_active ?? true;
+  const state = !isActive ? 'Disabled' : portfolio.is_running ? 'Running' : portfolio.is_paused ? 'Paused' : 'Stopped';
+  const stateColor = !isActive ? '#475569' : portfolio.is_running ? '#22c55e' : portfolio.is_paused ? '#f59e0b' : '#ef4444';
 
   return (
     <div
@@ -342,13 +344,25 @@ function PortfolioCard({
         borderRadius: 12, padding: '14px 18px', cursor: 'pointer',
         minWidth: 200, flex: '1 1 200px', maxWidth: 280,
         transition: 'border-color 0.15s, background 0.15s', position: 'relative',
+        opacity: isActive ? 1 : 0.55,
       }}
     >
-      {isBestSharpe && (
+      {isBestSharpe && isActive && (
         <span title="Best Sharpe Ratio" style={{
           position: 'absolute', top: 8, right: 8, fontSize: 13, color: '#f59e0b',
         }}>★</span>
       )}
+      {/* On/Off toggle — stop propagation so clicking it doesn't select the portfolio */}
+      <button
+        title={isActive ? 'Disable portfolio (pause paper trading)' : 'Enable portfolio (resume paper trading)'}
+        onClick={e => { e.stopPropagation(); onToggleActive(!isActive); }}
+        style={{
+          position: 'absolute', top: 8, right: isBestSharpe && isActive ? 28 : 8,
+          padding: '2px 7px', fontSize: 10, fontWeight: 700, borderRadius: 4, border: 'none',
+          cursor: 'pointer', background: isActive ? 'rgba(34,197,94,0.15)' : 'rgba(71,85,105,0.3)',
+          color: isActive ? '#22c55e' : '#64748b',
+        }}
+      >{isActive ? 'ON' : 'OFF'}</button>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{
           fontSize: 10, fontWeight: 700, color: styleColor,
@@ -1340,6 +1354,10 @@ export default function PaperPortfolioPage() {
                 selected={p.id === selectedPortfolioId}
                 isBestSharpe={p.id === bestSharpeId}
                 onSelect={() => { setSelectedPortfolioId(p.id); setTradesPage(1); setDecPage(1); }}
+                onToggleActive={async (active) => {
+                  await api.paperToggleActive(p.id, active);
+                  mutateList();
+                }}
               />
             ))}
           </div>

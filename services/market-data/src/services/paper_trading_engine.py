@@ -1274,11 +1274,21 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         }
 
         if live_price <= stop:
-            exit_reason = "stop_hit"
-            exit_notes = {**_base_notes,
-                "message": f"Stop ${stop:.2f} breached at live price ${live_price:.2f}",
-                "pnl_pct": round(pnl_pct * 100, 2),
-            }
+            # T197: Distinguish break-even stops (stop ≈ entry) from real losses.
+            # A break-even exit means the trade ran positive, came back, and exited flat.
+            _be_tol = entry * 0.005  # 0.5% tolerance around entry
+            if abs(stop - entry) <= _be_tol:
+                exit_reason = "breakeven_stop"
+                exit_notes = {**_base_notes,
+                    "message": f"Break-even stop hit: stop ${stop:.2f} ≈ entry ${entry:.2f}, live ${live_price:.2f}",
+                    "pnl_pct": round(pnl_pct * 100, 2),
+                }
+            else:
+                exit_reason = "stop_hit"
+                exit_notes = {**_base_notes,
+                    "message": f"Stop ${stop:.2f} breached at live price ${live_price:.2f}",
+                    "pnl_pct": round(pnl_pct * 100, 2),
+                }
 
         elif target and live_price >= target:
             exit_reason = "target_reached"
@@ -1995,6 +2005,26 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             log.info("paper.stop_cooldown_active",
                      symbols=sorted(_recently_stopped),
                      cooldown_hours=stop_cooldown_hours)
+
+    # T197: Break-even stop cooldown — shorter than real-loss cooldown (2h default vs 24h).
+    # A break-even exit is less severe than a loss; allow re-entry sooner if setup recovers.
+    be_cooldown_hours = cfg.get("breakeven_cooldown_hours", 2)
+    if be_cooldown_hours > 0:
+        _be_cutoff = datetime.now(timezone.utc) - timedelta(hours=be_cooldown_hours)
+        _be_stopped = set(session.execute(
+            select(PaperTrade.symbol)
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_reason == "breakeven_stop",
+                PaperTrade.exit_time >= _be_cutoff,
+            )
+        ).scalars().all())
+        if _be_stopped:
+            _recently_stopped |= _be_stopped
+            log.info("paper.breakeven_cooldown_active",
+                     symbols=sorted(_be_stopped),
+                     cooldown_hours=be_cooldown_hours)
 
     # ── Regime filter ─────────────────────────────────────────────────────────────
     regime_state = (live_regime or {}).get("state", "neutral")

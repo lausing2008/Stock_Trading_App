@@ -401,6 +401,8 @@ export const api = {
 
   // WF-2 Paper Portfolio
   paperList: () => request<PaperPortfolioListItem[]>('/paper-portfolio/list'),
+  paperToggleActive: (portfolioId: number, active: boolean) =>
+    request<{ ok: boolean; id: number; is_active: boolean }>(`/paper-portfolio/${portfolioId}/active`, { method: 'PATCH', body: JSON.stringify({ active }) }),
   paperCreate: (body: { name: string; trading_style: string; market?: string; initial_capital: number }) =>
     request<{ ok: boolean; portfolio_id: number; name: string }>('/paper-portfolio/create', { method: 'POST', body: JSON.stringify(body) }),
   paperCompare: (days = 180) => request<PaperCompareData[]>(`/paper-portfolio/compare?days=${days}`),
@@ -1194,6 +1196,7 @@ export type PaperPortfolioListItem = {
   sortino: number | null;
   cagr_pct: number | null;
   max_drawdown_pct: number | null;
+  is_active: boolean;
   is_running: boolean;
   is_paused: boolean;
   created_at: string | null;

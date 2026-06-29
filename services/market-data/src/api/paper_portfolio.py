@@ -902,14 +902,32 @@ def get_attribution(
 
 # ── Multi-portfolio: list ─────────────────────────────────────────────────────
 
+@router.patch("/{portfolio_id}/active")
+def toggle_portfolio_active(
+    portfolio_id: int,
+    body: dict,
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Enable or disable a portfolio. Disabled portfolios are skipped by paper_trading_step."""
+    portfolio = session.get(PaperPortfolio, portfolio_id)
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    active = bool(body.get("active", True))
+    portfolio.is_active = active
+    session.commit()
+    log.info("paper.portfolio_toggled", portfolio_id=portfolio_id, name=portfolio.name, is_active=active)
+    return {"ok": True, "id": portfolio_id, "is_active": active}
+
+
 @router.get("/list")
 def list_portfolios(
     _: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    """Lightweight list of all active portfolios with summary stats."""
+    """Lightweight list of all portfolios (active and inactive) with summary stats."""
     portfolios = session.execute(
-        select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)).order_by(PaperPortfolio.id)
+        select(PaperPortfolio).order_by(PaperPortfolio.id)
     ).scalars().all()
 
     result = []
@@ -947,8 +965,9 @@ def list_portfolios(
             "sortino": risk.get("sortino"),
             "cagr_pct": risk.get("cagr_pct"),
             "max_drawdown_pct": risk["max_drawdown_pct"],
-            "is_running": p.config.get("enabled", True) and not p.config.get("paused", False),
-            "is_paused": p.config.get("enabled", True) and bool(p.config.get("paused", False)),
+            "is_active": p.is_active,
+            "is_running": p.is_active and p.config.get("enabled", True) and not p.config.get("paused", False),
+            "is_paused": p.is_active and p.config.get("enabled", True) and bool(p.config.get("paused", False)),
             "created_at": p.created_at.isoformat() if p.created_at else None,
         })
 

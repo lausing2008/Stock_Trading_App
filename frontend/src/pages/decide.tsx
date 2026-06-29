@@ -20,7 +20,14 @@ const REGIME_COLOR: Record<string, string> = {
 
 function ScoreBar({ score, minScore }: { score: number; minScore: number }) {
   const max = 12;
-  const pct = Math.max(0, score) / max * 100;
+  if (score < 0) {
+    return (
+      <div style={{ margin: '16px 0', padding: '8px 12px', background: '#450a0a', borderRadius: 6, fontSize: 13, color: '#fca5a5' }}>
+        Hard rejected before scoring — no score computed
+      </div>
+    );
+  }
+  const pct = score / max * 100;
   const minPct = (minScore / max) * 100;
   const color = score >= minScore ? '#22c55e' : '#ef4444';
   return (
