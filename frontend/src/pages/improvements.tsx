@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,45 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 193 — Decision Engine: market-closed guard ──────────────────────────────────────────
+  {
+    id: 'T193-MARKET-CLOSED-GUARD',
+    tier: 193 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/hard_rejects.py',
+    effort: '30m',
+    impact: 'Medium — the DE had no knowledge of exchange trading hours. A direct /decide/{symbol} API call or watchlist DE Scan at 7 PM ET would return BUY with no indication that the market is closed. Combined with T185 (session edge), the DE now rejects entries at weekends, pre-market, after-hours, and HK lunch break.',
+    title: 'T193: Market-closed guard — block DE entries outside regular exchange trading hours',
+    what: 'T185 blocks entries in the first 30 min and last 15 min of the session. But nothing blocked entries completely outside market hours (weekends, 6 AM pre-market, 5 PM after-hours, HK 12:00–13:00 lunch). Any API call outside market hours could return BUY.',
+    fix: 'hard_rejects.py: added T193 check immediately after the signal direction check (second gate). Uses zoneinfo to convert UTC now to ET (US) or HKT (HK). Blocks on weekdays=5/6 (weekend). For US: blocks if not 9:30–16:00 ET (570–959 min). For HK: blocks if not 9:30–12:00 or 13:00–16:00 HKT (includes lunch break). ZoneInfo failure → fail-open.',
+    implementedNote: 'Done 2026-06-25. Deployed to decision-engine container.',
+  },
+
+  // ── Tier 192 — Paper trading: VIX-adjusted position sizing ───────────────────────────────
+  {
+    id: 'T192-VIX-SIZE-ADJUST',
+    tier: 192 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '45m',
+    impact: 'Medium — in high-VIX environments, ATR expands significantly. Using the same risk_per_trade_pct in a VIX=35 environment as a VIX=15 environment means stops get hit far more often, effectively making the realized risk higher than the configured limit. VIX-adjusted sizing keeps dollar risk consistent regardless of volatility regime.',
+    title: 'T192: VIX-adjusted position sizing — VIX > 25 → 0.75×, VIX > 30 → 0.5× position size',
+    what: 'regime_size_mult applied regime-level adjustments (choppy: 0.75×, risk_off: 0.5×) but had no direct VIX sensitivity. Regime state is a lagging indicator of volatility — VIX can spike to 30 while regime is still "neutral" (e.g., in the early hours of a sell-off). Human traders instinctively size down when the VIX is elevated regardless of their macro regime label.',
+    fix: 'paper_trading_engine.py: after the breadth_size_mult adjustment and before T189 regime throttle, reads live_regime["vix"]. If VIX > 30, caps regime_size_mult at max(existing, 0.50) (vix_high_size_mult). If VIX > 25, caps at max(existing, 0.75) (vix_elevated_size_mult). Uses min() so it never makes sizing MORE aggressive. Configurable off via vix_size_adjust_enabled=False.',
+    implementedNote: 'Done 2026-06-25. Deployed to market-data container.',
+  },
+
+  // ── Tier 191 — Paper trading: weekly gain lock ─────────────────────────────────────────────
+  {
+    id: 'T191-WEEKLY-GAIN-LOCK',
+    tier: 191 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'Medium — the system had a weekly loss circuit breaker (max_weekly_loss_pct) but no corresponding weekly gain lock. Human traders who are up significantly for the week deliberately reduce new commitments to protect profits. Without this, a good week could be fully given back by overtrading on Friday.',
+    title: 'T191: Weekly gain lock — stop new entries when weekly realized PnL exceeds +1.5%',
+    what: 'max_weekly_loss_pct blocked entries when the portfolio lost too much in a week, but nothing stopped entries when the portfolio was already up significantly. The mirror behavior — protecting gains — was missing. Also, the weekly PnL was computed inside a conditional block, so it was unavailable for gain-side checks.',
+    fix: 'paper_trading_engine.py: refactored the weekly circuit breaker to compute weekly_net_pnl once (regardless of which limit is active). Added T191 gain lock: if weekly_net_pnl > 0 and weekly_net_pnl / equity > max_weekly_gain_pct (default 1.5%), returns early with paper.weekly_gain_lock log. Both limits share the same DB query — no extra round-trip.',
+    implementedNote: 'Done 2026-06-25. Deployed to market-data container.',
+  },
+
   // ── Tier 190 — Decision Engine: regime-conditional minimum R:R threshold ────────────────────
   {
     id: 'T190-REGIME-MIN-RR',
@@ -10831,6 +10870,9 @@ const TIER_LABEL: Record<Tier, string> = {
   188: 'Tier 188 — Score-to-size multiplier: high DE score → bigger position, marginal → smaller',
   189: 'Tier 189 — Regime entry throttle: max 1 new position/day in choppy/risk_off',
   190: 'Tier 190 — Regime-conditional min R:R: require 3.0:1 in choppy/risk_off (vs 2.0 neutral)',
+  191: 'Tier 191 — Weekly gain lock: stop new entries when weekly realized PnL exceeds +1.5%',
+  192: 'Tier 192 — VIX-adjusted position sizing: VIX > 25 → 0.75×, VIX > 30 → 0.5×',
+  193: 'Tier 193 — Market-closed guard: block DE entries on weekends, pre/after-market, HK lunch',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11024,6 +11066,9 @@ const TIER_COLOR: Record<Tier, string> = {
   188: '#f59e0b',
   189: '#f59e0b',
   190: '#f59e0b',
+  191: '#f59e0b',
+  192: '#f59e0b',
+  193: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
