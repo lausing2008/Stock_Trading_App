@@ -1913,9 +1913,15 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         note="new entries suspended for today")
             return
 
-    # ── Weekly realized-loss circuit breaker ─────────────────────────────────────
+    # ── Weekly realized P&L checks — loss limit + gain lock ─────────────────────
+    # Compute weekly pnl once; used for both the loss circuit breaker and T191 gain lock.
     max_weekly_loss = cfg.get("max_weekly_loss_pct", 0.08)
-    if max_weekly_loss and max_weekly_loss > 0 and equity > 0:
+    max_weekly_gain = cfg.get("max_weekly_gain_pct", 0.015)  # T191: 1.5% weekly gain → lock
+    _needs_weekly = (
+        (max_weekly_loss and max_weekly_loss > 0) or
+        (max_weekly_gain and max_weekly_gain > 0)
+    )
+    if _needs_weekly and equity > 0:
         from zoneinfo import ZoneInfo
         week_start = datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)
         weekly_net_pnl = session.execute(
@@ -1926,13 +1932,22 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 PaperTrade.exit_time >= week_start,
             )
         ).scalar() or 0.0
-        if weekly_net_pnl < 0 and abs(weekly_net_pnl) / equity > max_weekly_loss:
+        if max_weekly_loss and weekly_net_pnl < 0 and abs(weekly_net_pnl) / equity > max_weekly_loss:
             log.warning("paper.weekly_loss_limit",
                         portfolio=portfolio.name,
                         weekly_net_pnl=round(weekly_net_pnl, 2),
                         weekly_net_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
                         limit_pct=round(max_weekly_loss * 100, 1),
                         note="new entries suspended for remainder of week")
+            return
+        # T191: Weekly gain lock — don't give back a good week by overtrading.
+        # Once weekly realized PnL crosses the gain lock threshold, no new entries until next week.
+        if max_weekly_gain and weekly_net_pnl > 0 and weekly_net_pnl / equity > max_weekly_gain:
+            log.info("paper.weekly_gain_lock",
+                     portfolio=portfolio.name,
+                     weekly_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
+                     lock_pct=round(max_weekly_gain * 100, 1),
+                     note="weekly gain target reached — protecting profits, no new entries")
             return
 
     # ── Consecutive-loss circuit breaker ─────────────────────────────────────────
@@ -2049,6 +2064,25 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         iwm_vs_ema200=live_regime.get("iwm_vs_ema200"),
                         mdy_vs_ema200=live_regime.get("mdy_vs_ema200"),
                         note="IWM/MDY breadth below 200EMA — reducing position size")
+
+    # T192: VIX-adjusted position sizing — high volatility means stops get hit more often;
+    # reduce position size when VIX is elevated so per-trade dollar risk stays consistent.
+    if live_regime and cfg.get("vix_size_adjust_enabled", True):
+        _vix = live_regime.get("vix")
+        if _vix is not None:
+            _vix_f = float(_vix)
+            if _vix_f > 30:
+                _vix_mult = float(cfg.get("vix_high_size_mult", 0.50))
+                if _vix_mult < regime_size_mult:
+                    regime_size_mult = _vix_mult
+                    log.info("paper.vix_size_reduced", vix=round(_vix_f, 1),
+                             mult=_vix_mult, note="VIX > 30 — extreme vol, 0.5× size")
+            elif _vix_f > 25:
+                _vix_mult = float(cfg.get("vix_elevated_size_mult", 0.75))
+                if _vix_mult < regime_size_mult:
+                    regime_size_mult = _vix_mult
+                    log.info("paper.vix_size_reduced", vix=round(_vix_f, 1),
+                             mult=_vix_mult, note="VIX > 25 — elevated vol, 0.75× size")
 
     # T189: Regime-aware entry throttle — choppy/risk_off regimes cap new entries at 1/day.
     # Human traders become more selective in difficult markets and don't force setups.

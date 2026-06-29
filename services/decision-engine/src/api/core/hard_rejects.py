@@ -25,6 +25,33 @@ def check_hard_rejects(
     if signal_direction.upper() != "BUY":
         return f"Signal direction is {signal_direction} — only BUY signals evaluated for entry"
 
+    # T193: Market-closed guard — block entries when the exchange is not open for regular trading.
+    # Complements T185 (session edge). Catches weekends, pre-market, after-hours, and HK lunch.
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _tz = _ZI("America/New_York") if market.upper() != "HK" else _ZI("Asia/Hong_Kong")
+        _local = datetime.now(timezone.utc).astimezone(_tz)
+        _wd = _local.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+        if _wd >= 5:
+            return f"Market closed: weekend ({_local.strftime('%A %H:%M')} local)"
+        _mins = _local.hour * 60 + _local.minute
+        if market.upper() == "HK":
+            # HK: morning 9:30–12:00, afternoon 13:00–16:00
+            if not (570 <= _mins < 720 or 780 <= _mins < 960):
+                return (
+                    f"Market closed: HK exchange not in trading session "
+                    f"({_local.strftime('%H:%M')} HKT)"
+                )
+        else:
+            # US: 9:30–16:00 ET
+            if not (570 <= _mins < 960):
+                return (
+                    f"Market closed: US exchange not in trading session "
+                    f"({_local.strftime('%H:%M')} ET)"
+                )
+    except Exception:
+        pass  # tz lookup failure → allow entry (fail-open)
+
     if cfg.get("research_gating_enabled") and research_rec in ("AVOID", "SELL"):
         return f"Research recommendation is {research_rec} — gated until outlook improves"
 
