@@ -1822,6 +1822,7 @@ def _weekly_full_refresh() -> None:
         _record_job_status("calibrate_entry_weights", status, 0.0)
     except Exception as _exc:
         log.error("scheduler.calibrate_entry_weights_failed", error=str(_exc))
+        _record_job_status("calibrate_entry_weights", "error", 0.0, str(_exc))
 
     # AL-1: train RL Q-function on closed paper trades (Ridge regression → pct_return).
     # Requires ≥50 trades. Saves policy to /data/models/rl_policy.json.
@@ -1838,6 +1839,7 @@ def _weekly_full_refresh() -> None:
         _record_job_status("rl_agent_train", rl_status, 0.0)
     except Exception as _exc:
         log.error("scheduler.rl_agent_train_failed", error=str(_exc))
+        _record_job_status("rl_agent_train", "error", 0.0, str(_exc))
 
 
 def _retrain_meta_model() -> None:
