@@ -1840,6 +1840,26 @@ def _weekly_full_refresh() -> None:
         log.error("scheduler.rl_agent_train_failed", error=str(_exc))
 
 
+def _retrain_meta_model() -> None:
+    """T89: Monthly cross-symbol meta-learning model retraining.
+
+    Trains on all signal_outcomes with is_correct set — improves cold-start
+    priors for new symbols and adds diversity to the ensemble as more outcomes
+    accumulate. Fire-and-forget POST to ml-prediction (runs as background task).
+    """
+    _t0 = time.monotonic()
+    try:
+        log.info("meta_model.retrain_trigger")
+        _post(f"{_settings.ml_prediction_url}/ml/train_meta")
+        elapsed = time.monotonic() - _t0
+        log.info("meta_model.retrain_triggered", elapsed_s=round(elapsed, 1))
+        _record_job_status("meta_model_retrain", "ok", elapsed)
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        log.error("meta_model.retrain_failed", error=str(exc), exc_info=True)
+        _record_job_status("meta_model_retrain", "error", elapsed, str(exc))
+
+
 def _ingest_edgar_8k() -> None:
     """T208: Trigger SEC EDGAR 8-K filing ingest via event-intelligence service.
 
@@ -2669,6 +2689,16 @@ def start_scheduler() -> None:
         id="db_purge_weekly", replace_existing=True, **_JOB_DEFAULTS,
     )
 
+    # ── T89: Monthly meta-learning model retrain — 1st Sunday of each month ──
+    # Cross-symbol XGBoost trained on signal_outcomes improves as more data accumulates.
+    # Fire-and-forget to ml-prediction background task (~5-15 min depending on volume).
+    # CronTrigger day="1-7" + day_of_week="sun" = first Sunday of the month.
+    _scheduler.add_job(
+        _retrain_meta_model,
+        CronTrigger(day_of_week="sun", day="1-7", hour=3, minute=0, timezone="UTC"),
+        id="meta_model_monthly_retrain", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # ── T208: EDGAR 8-K filing ingest — daily 17:30 ET (1.5h after US close) ─
     # Fetches recent 8-K filings for all active US stocks from SEC EDGAR.
     # HK stocks are skipped inside _ingest_edgar_8k (no EDGAR coverage).
@@ -2711,4 +2741,4 @@ def start_scheduler() -> None:
         log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=17)
+    log.info("scheduler.started", jobs=18)

@@ -221,6 +221,41 @@ def _load_earnings_features(symbol: str) -> dict:
     return result
 
 
+def _load_hk_flow_features(symbol: str) -> dict:
+    """Load HKEX Stock Connect southbound flow features for HK-listed symbols.
+
+    Returns {} for non-HK symbols — the caller merges this into fund_data and
+    build_features() will produce NaN for flow_5d_net_hkd / flow_strength on US stocks
+    (XGBoost handles NaN natively, so US models are unaffected).
+    """
+    if not symbol.upper().endswith(".HK"):
+        return {}
+    from sqlalchemy import text as _text
+    try:
+        with SessionLocal() as session:
+            rows = session.execute(_text("""
+                SELECT net_buy_hkd FROM hk_connect_flows
+                WHERE symbol = :sym AND trade_date >= now() - interval '25 days'
+                ORDER BY trade_date DESC LIMIT 20
+            """), {"sym": symbol}).fetchall()
+    except Exception:
+        return {}
+
+    nets = [float(r.net_buy_hkd) for r in rows if r.net_buy_hkd is not None]
+    if not nets:
+        return {}
+
+    flow_5d  = sum(nets[:5])  if len(nets) >= 5  else sum(nets)
+    flow_20d = sum(nets[:20]) if len(nets) >= 20 else sum(nets)
+    avg_20d  = flow_20d / min(len(nets), 20)
+    flow_strength = (flow_5d / 5) / avg_20d if avg_20d != 0 else 0.0
+
+    return {
+        "flow_5d_net_hkd": round(flow_5d / 1e6, 2),    # convert HKD → HKD millions
+        "flow_strength":   round(flow_strength, 3),
+    }
+
+
 def _artifact_path(symbol: str, model_name: str, style: str = "SWING") -> Path:
     """Return the model artifact path for the given symbol, model type, and training style.
 
@@ -472,6 +507,10 @@ def train_model(
         pass
     try:
         fund_data.update(_load_earnings_features(symbol))
+    except Exception:
+        pass
+    try:
+        fund_data.update(_load_hk_flow_features(symbol))
     except Exception:
         pass
 
@@ -827,6 +866,10 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
         infer_fund_data.update(_load_earnings_features(symbol))
     except Exception:
         pass
+    try:
+        infer_fund_data.update(_load_hk_flow_features(symbol))
+    except Exception:
+        pass
 
     # inference_mode=True: keeps the latest bar even without a known future return
     X, _, _ = build_features(
@@ -1132,6 +1175,7 @@ def validate_walkforward(
     try:
         fund_data = _load_fundamentals(symbol) or {}
         fund_data.update(_load_earnings_features(symbol))
+        fund_data.update(_load_hk_flow_features(symbol))
     except Exception:
         pass
 

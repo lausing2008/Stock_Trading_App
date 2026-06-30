@@ -87,9 +87,13 @@ def _get_recent_8k_filings(cik: str, days_back: int = 7) -> list[dict]:
     filed_dates = recent.get("filingDate", [])
     report_dates = recent.get("reportDate", [])
     descriptions = recent.get("primaryDocument", [])
+    # EDGAR submissions API includes item codes inline for 8-K filings.
+    # Each entry is a comma-separated string like "1.01, 7.01" or "2.01".
+    items_list = recent.get("items", [])
 
     results: list[dict] = []
-    for form, acc, filed, report, desc in zip(forms, accessions, filed_dates, report_dates, descriptions):
+    for row in zip(forms, accessions, filed_dates, report_dates, descriptions, items_list or [""]*len(forms)):
+        form, acc, filed, report, desc, items_raw = row
         if form not in ("8-K", "8-K/A"):
             continue
         if filed < cutoff:
@@ -103,6 +107,7 @@ def _get_recent_8k_filings(cik: str, days_back: int = 7) -> list[dict]:
             "filed_date": filed,
             "report_date": report or None,
             "description": str(desc)[:512],
+            "items": str(items_raw)[:512] if items_raw else "",
         })
     return results
 
@@ -158,20 +163,21 @@ def ingest_8k_filings(symbols: list[str], days_back: int = 7) -> dict:
                 if exists:
                     continue
 
-                # is_material: the submissions API doesn't directly return item codes.
-                # We store is_material=False for now; a future enhancement can parse
-                # the filing index page to extract item codes and set this flag.
-                is_material = False
+                # Parse item codes from the EDGAR submissions API inline field.
+                # Items string: e.g. "1.01, 7.01" or "2.01" — split on commas and strip.
+                items_str = filing.get("items", "")
+                filing_items = {i.strip() for i in items_str.split(",") if i.strip()}
+                is_material = bool(filing_items & _MATERIAL_ITEMS)
 
                 try:
                     s.execute(
                         text("""
                             INSERT INTO sec_filings
                                 (symbol, cik, accession, form, filed_date, report_date,
-                                 description, is_material)
+                                 description, items, is_material)
                             VALUES
                                 (:sym, :cik, :acc, :form, CAST(:filed AS date),
-                                 CAST(:report AS date), :desc, :mat)
+                                 CAST(:report AS date), :desc, :items, :mat)
                             ON CONFLICT (accession) DO NOTHING
                         """),
                         {
@@ -182,6 +188,7 @@ def ingest_8k_filings(symbols: list[str], days_back: int = 7) -> dict:
                             "filed": filing["filed_date"],
                             "report": filing["report_date"],
                             "desc": filing["description"],
+                            "items": items_str[:512] if items_str else None,
                             "mat": is_material,
                         },
                     )

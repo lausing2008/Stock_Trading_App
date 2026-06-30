@@ -288,6 +288,9 @@ FUNDAMENTAL_COLUMNS = [
     "avg_revenue_surprise_pct",      # mean revenue surprise % over last 4 quarters
     # T217-B: DDM Dividend Discount Model — NaN for non-dividend stocks
     "ddm_discount",         # (div_yield / 0.07) - 1; positive = undervalued on dividend basis
+    # T219-F: HKEX Stock Connect southbound flow (HK stocks only; NaN for US — XGBoost handles natively)
+    "flow_5d_net_hkd",      # 5-day net mainland→HK buy in HKD millions (positive = net buying)
+    "flow_strength",        # (5d_avg_flow / 20d_avg_flow) — >1 = accelerating mainland buying
 ]
 
 # SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with
