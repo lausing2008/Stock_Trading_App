@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7215,6 +7215,75 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 219 — Index filter, meta-learning, gap filter, EDGAR 8-K, HKEX Stock Connect ─────────
+
+  {
+    id: 'T219-INDEX-MEMBERSHIP-FILTER',
+    tier: 219 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/index_members.py · frontend/src/pages/screener.tsx',
+    effort: '1d',
+    impact: 'Medium — lets users filter screener results to only S&P 500, NASDAQ 100, or Dow 30 stocks. Reduces noise for users who only want to trade liquid large-caps covered by institutional analysts.',
+    title: 'T219-A: Screener index membership filter — S&P 500, NASDAQ 100, Dow 30 toggle buttons',
+    what: 'Screener had no way to restrict results to index members. Users had to manually identify whether a stock was in a major index.',
+    fix: 'Static index_members.py (DOW_30/NASDAQ_100/SP500 sets). stocks.index_membership column populated via POST /admin/backfill-index-membership. Screener UI: toggle buttons with OR-match client-side filtering.',
+    implementedNote: 'Done 2026-06-29. index_members.py: DOW_30 (30), NASDAQ_100 (100), SP500 (~90 well-known). stocks.index_membership comma-separated string. Admin backfill endpoint. Screener: toggle buttons S&P 500 / NDX 100 / Dow 30.',
+  },
+  {
+    id: 'T219-SHORT-SELLING-DASHBOARD',
+    tier: 219 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/short-selling.tsx · services/market-data/src/api/routes.py',
+    effort: '1d',
+    impact: 'Medium — dedicated page for scanning short interest across the watchlist universe. Useful for identifying high-conviction short squeeze setups or stocks to avoid due to elevated short interest.',
+    title: 'T219-B: Short-selling analytics dashboard — sortable short interest table',
+    what: 'Short interest data (short_percent_of_float, short_ratio) was in the DB but only accessible per-stock on the detail page.',
+    fix: 'GET /stocks/short-interest: DISTINCT ON query on fundamentals sorted by as_of DESC, returns top 200 by short float%. /short-selling page with sortable columns, color-coded badges (red ≥20%, orange 10-20%), market filter, search.',
+    implementedNote: 'Done 2026-06-29. Endpoint requires auth. Page added to nav under Research as "Short Interest". Borrow rate and time-series trend deferred (need paid data source).',
+  },
+  {
+    id: 'T219-META-LEARNING-MODEL',
+    tier: 219 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/training/meta_trainer.py · services/ml-prediction/src/training/trainer.py',
+    effort: '1d',
+    impact: 'High — cross-symbol learning captures patterns that generalize across stocks (sector momentum, earnings quality → drift) that per-symbol models miss due to limited training data. New symbols with < 100 signal_outcomes now benefit from cross-stock priors.',
+    title: 'T219-C: Cross-symbol meta-learning model — 4th ensemble member at 15% weight',
+    what: 'Each XGBoost model was trained per-symbol in isolation. New symbols with sparse signal_outcomes had unreliable models.',
+    fix: 'meta_trainer.py trains a single XGBoost on all signal_outcomes cross-symbol + meta features (sector_code, market_cap_bin, horizon_code, confidence, fused_prob, ta_score). Saved to /data/models/meta_model.joblib. Blended as 4th member at 15% in predict_latest_ensemble_three. build_features() gains up_to_date param for look-ahead-safe historical reconstruction.',
+    implementedNote: 'Done 2026-06-29. Inactive until POST /ml/train_meta called (runs as background task). Falls back cleanly when model not trained. Trigger with service JWT after first deploy.',
+  },
+  {
+    id: 'T219-PREMARKET-GAP-FILTER',
+    tier: 219 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'Medium — prevents paper trading from entering at a price significantly above the signal close. Signals are computed at prior close; if a stock gaps up 6% before entry, the original entry thesis (entry zone, R:R) is no longer valid.',
+    title: 'T219-D: Premarket gap filter — reject entry when live price >N% above signal close',
+    what: '_should_enter() had no guard against large gap-ups from the signal price. If NVDA signals BUY at $120 and opens at $130, the engine would still try to enter.',
+    fix: 'max_entry_gap_pct in _DEFAULT_CONFIG. Hard reject: live_price / signal_reasons["last_price"] - 1 > limit → return (False, -99, [gap_up_X%]). SWING=3%, GROWTH=4%, LONG=5%.',
+    implementedNote: 'Done 2026-06-29. Signal reasons["last_price"] is the close at signal-compute time. Configurable per portfolio via portfolio.config["max_entry_gap_pct"].',
+  },
+  {
+    id: 'T219-EDGAR-8K-INGEST',
+    tier: 219 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/services/edgar_8k.py · services/market-data/src/services/scheduler.py',
+    effort: '1d',
+    impact: 'Medium — 8-K filings signal material business events (acquisitions, impairments, officer changes). A BUY signal adjacent to a surprise negative 8-K is a high-probability false positive. Flagging this in signal reasons allows the DE to down-weight confidence.',
+    title: 'T219-E: EDGAR 8-K material event ingest — SEC free public API',
+    what: 'The research engine processed headlines but not structured SEC filings. Material events (item 1.01, 2.01, 2.06, 5.02, 8.01) were invisible to the signal pipeline.',
+    fix: 'edgar_8k.py: SEC company_tickers.json (ticker→CIK), data.sec.gov/submissions/CIK{cik}.json for recent 8-Ks. sec_filings table. Scheduler job Mon-Fri 17:30 ET. Signal-engine: direct DB query adds eight_k_flag/eight_k_date to reasons.',
+    implementedNote: 'Done 2026-06-29. Skips .HK stocks (EDGAR covers US only). is_material flagging deferred (EDGAR submissions API does not expose item codes directly — needs filing index parsing as follow-on). Rate-limited 150ms/CIK to respect SEC fair-use policy.',
+  },
+  {
+    id: 'T219-HK-STOCK-CONNECT',
+    tier: 219 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/hk_connect.py · services/signal-engine/src/generators/signals.py',
+    effort: '1d',
+    impact: 'High for HK portfolio — Southbound Stock Connect flow (mainland institutions buying HK stocks) is one of the strongest documented HK alpha signals. Stocks with rising 5-day net-buy consistently outperform over the following 10–20 days.',
+    title: 'T219-F: HKEX Stock Connect southbound flow data — daily ingest + HK signal enrichment',
+    what: 'HK signal reasons had no mainland institutional flow signal despite HKEX publishing free daily Southbound data per stock.',
+    fix: 'hk_connect.py: GetBuySellTurnOverDetails per HK stock, 200ms rate limit. hk_connect_flows table (UNIQUE symbol+trade_date). Scheduler hk_connect_flows_daily at 17:00 HKT. GET /stocks/hk-connect-flow/{symbol} endpoint. Signal-engine: flow_5d_net_hkd + flow_20d_net_hkd + flow_strength added to .HK signal reasons.',
+    implementedNote: 'Done 2026-06-29. HKEX API may return empty on non-trading days or for stocks outside the Stock Connect scheme — handled gracefully. flow_strength = (5d_avg / 20d_avg) ratio — >1 means accelerating mainland buying.',
+  },
+
   // ── Tier 218 — HK paper trading fixes + ML feature expansion ─────────────────────────────────
 
   {
@@ -11312,6 +11381,7 @@ const TIER_LABEL: Record<Tier, string> = {
   216: 'Tier 216 — Engineering knowledge base: per-service skill.md + agent.md system',
   217: 'Tier 217 — Investment methodology audit: fundamental models, ML approaches, mental models',
   218: 'Tier 218 — HK paper trading fixes + ML feature expansion (PEAD, short float, revenue)',
+  219: 'Tier 219 — Index filter, meta-learning model, gap filter, EDGAR 8-K, HKEX Stock Connect',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11533,6 +11603,7 @@ const TIER_COLOR: Record<Tier, string> = {
   216: '#64748b',
   217: '#0ea5e9',
   218: '#f97316',
+  219: '#22d3ee',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
