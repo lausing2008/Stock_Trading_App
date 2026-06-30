@@ -24,6 +24,7 @@ from .core.models import (
 from .core.regime import get_regime
 from .core.scorer import compute_score, min_score_for_regime
 from .core.sizer import compute_position
+from .llm_scorer import score_with_llm
 
 router = APIRouter()
 log = structlog.get_logger()
@@ -208,7 +209,31 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         breadth_size_mult=breadth_size_mult,
     )
 
-    # 10. Verdict
+    # 10. T203: Optional LLM scoring layer (after hard rejects, before final verdict)
+    llm_verdict_str: str | None = None
+    llm_reasoning: str | None = None
+    if cfg.get("llm_scoring_enabled", False):
+        llm_adj, llm_reasoning = await score_with_llm(
+            symbol=symbol, style=style,
+            sig_direction=sig_direction, confidence=confidence,
+            ml_prob=float(_bp) if _bp is not None else None,
+            game_plan=game_plan, regime_state=regime_state, regime=regime,
+            research_rec=research_rec, research_score=research_score,
+            cross_style_buys=cross_buys,
+            score=score, min_score=min_score,
+            score_breakdown=breakdown,
+            sig_ts=sig_ts, cfg=cfg,
+        )
+        if llm_adj != 0:
+            score += llm_adj
+            breakdown.append(ScoreItem(
+                layer="llm_reasoning",
+                pts=llm_adj,
+                note=f"Claude: {llm_reasoning[:60] if llm_reasoning else 'no note'}",
+            ))
+        llm_verdict_str = ("BUY" if llm_adj > 0 else "SKIP" if llm_adj < 0 else "HOLD")
+
+    # 11. Verdict
     if score >= min_score:
         verdict = "BUY"
     elif score >= min_score - 2:
@@ -223,6 +248,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         symbol=symbol, style=style, verdict=verdict,
         score=score, min_score=min_score,
         regime=regime_state, latency_ms=latency,
+        llm_verdict=llm_verdict_str,
     )
 
     return DecisionResult(
@@ -234,6 +260,8 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         blocked_reason=None,
         latency_ms=latency,
         timestamp=datetime.now(timezone.utc).isoformat(),
+        llm_verdict=llm_verdict_str,
+        llm_reasoning=llm_reasoning,
     )
 
 

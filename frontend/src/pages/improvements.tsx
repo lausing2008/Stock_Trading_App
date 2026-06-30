@@ -7368,13 +7368,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T203-LLM-REASONING-LAYER',
-    tier: 203 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 203 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/decision-engine/src/api/routes.py',
     effort: '1w',
     impact: 'Very High — the DE currently uses rule-based hard rejects + numerical scoring. An LLM layer that reasons over the full signal context (regime, research, sector, recent market behavior) can surface non-obvious patterns and explain decisions in natural language. This is the step from mechanical to intelligent.',
     title: 'T203: LLM reasoning layer — Claude as additional DE scoring component',
     what: 'The current DE scores 9 numerical dimensions. It has no ability to reason about context: "this stock usually rallies into earnings," "the sector just had a major negative catalyst," "the signal fired at the same time as a Fed announcement." These are patterns a human trader would recognize but a rule engine cannot.',
     fix: 'Add an optional llm_scoring stage to the DE pipeline (after hard rejects, alongside numerical scorer). Call claude-sonnet-4-6 with a structured prompt: signal data, game plan, regime, research summary, recent sector performance, last 3 trades in this portfolio. Ask for verdict (BUY/HOLD/SKIP) + confidence + reasoning. Return as additional score layer (weight configurable). Cache responses in Redis by {symbol}:{style}:{sig_ts} to avoid re-calling on the same signal. Cost: ~$0.01/call × 20 calls/day = $0.20/day.',
+    implementedNote: 'Done 2026-06-29. llm_scorer.py in decision-engine: calls claude-haiku-4-5-20251001 after hard rejects pass with signal context (direction, confidence, ML prob, game plan, regime, research rec, score breakdown). Returns BUY/HOLD/SKIP + reasoning. Score adjustment: BUY=+weight, SKIP=-weight (default weight=1). Cached in Redis de:llm:{symbol}:{style}:{date} for 6h. API key from Redis stockai:admin:claude_api_key. Config: llm_scoring_enabled (default False), llm_score_weight=1, llm_model. llm_verdict and llm_reasoning added to DecisionResult.',
   },
 
   {

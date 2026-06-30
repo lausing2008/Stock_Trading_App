@@ -80,6 +80,9 @@ class DecisionResult(BaseModel):
     blocked_reason: str | None = None
     latency_ms: int = 0
     timestamp: str = ""
+    # T203: LLM reasoning layer (optional — only populated when llm_scoring_enabled=True)
+    llm_verdict: str | None = None            # BUY | HOLD | SKIP from Claude
+    llm_reasoning: str | None = None         # one-sentence rationale
 
 
 class BatchDecisionRequest(BaseModel):
