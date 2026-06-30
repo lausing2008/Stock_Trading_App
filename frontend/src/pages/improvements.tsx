@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7284,6 +7284,63 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-29. HKEX API may return empty on non-trading days or for stocks outside the Stock Connect scheme — handled gracefully. flow_strength = (5d_avg / 20d_avg) ratio — >1 means accelerating mainland buying.',
   },
 
+  // ── Tier 221 — Portfolio concentration & risk controls ───────────────────────────────────────
+
+  {
+    id: 'T221-MARKET-CLUSTER-CAP',
+    tier: 221 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'Critical — June 25 data: 5 HK positions all stopped out the same day on a single market move (-$9K total). Without a per-market cap, one index move wipes the entire portfolio. Max 4 positions per market (HK or US) prevents cluster correlation wipeout.',
+    implementedNote: 'T221-B: Added market cluster cap gate before candidate loop. Reads max_market_positions (default 4) from config. Counts open positions by stock.market; returns early if at cap. Structured log: paper.market_cluster_cap.',
+    title: 'Market cluster cap',
+    why: 'HK stocks have 0.85+ correlation to each other — a single market-wide down day stops all positions simultaneously. The June 25 wipeout had 5 HK positions open at once with -$9K total losses.',
+    fix: 'Hard cap: max 4 open positions per market (HK or US). Configured via max_market_positions in portfolio config.',
+  },
+  {
+    id: 'T221-CROSS-PORTFOLIO-DEDUP',
+    tier: 221 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'High — 2382.HK appeared 3 times in open positions (GROWTH + SWING + SWING), tripling single-stock concentration risk. Each portfolio\'s open_symbols check only guards within that portfolio, not cross-portfolio.',
+    implementedNote: 'T221-A: Batch-fetch global open counts for all candidates before the loop. If a symbol already has 1+ open position in any portfolio (max_positions_per_symbol_global=1), skip entry. Structured log: paper.skip_global_symbol_cap.',
+    title: 'Cross-portfolio symbol dedup',
+    why: 'SWING and GROWTH portfolios both entered 2382.HK on the same day. Each portfolio\'s duplicate check only looks within its own positions — cross-portfolio concentration was invisible.',
+    fix: 'Pre-batch global open count per symbol (one query for all candidates). Skip if symbol already open in any portfolio.',
+  },
+  {
+    id: 'T221-STOP-COOLDOWN-5DAY',
+    tier: 221 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'High — 24h cooldown after a stop-hit is too short. Stocks that stop out are in downtrends that typically last 3-7 days. Re-entering the next day means catching a falling knife.',
+    implementedNote: 'T221-D: Changed stop_cooldown_hours default from 24h to 120h (5 trading days). Also added to _DEFAULT_CONFIG explicitly so it shows in portfolio config tuning.',
+    title: 'Stop cooldown: 24h → 5 days',
+    why: 'A stop-hit means price moved against us by 5-12%. Stocks in that situation are in downtrends. 24h was too short to let the momentum exhaust before re-entry.',
+    fix: 'Default stop_cooldown_hours: 120 (5 days). Configurable per-portfolio — can reduce for mean-reversion strategies.',
+  },
+  {
+    id: 'T221-HEAT-BRAKE',
+    tier: 221 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'High — On June 25, stops were being hit one by one, yet the system kept entering new positions. A circuit breaker that detects adverse conditions from recent stop frequency would have prevented the cascade.',
+    implementedNote: 'T221-E: After regime throttle, count stop_hit exits in last heat_brake_window_hours (default 48h). If ≥ heat_brake_max_stops (default 3), suspend all new entries. Structured log: paper.heat_brake_triggered.',
+    title: 'Portfolio heat brake (cascade stop circuit breaker)',
+    why: '3+ stops in 48h is a signal the market is moving against the strategy. Continuing to enter new positions into a losing market compounds losses.',
+    fix: 'Gate: if 3+ stops hit in last 48h → pause all entries. Configurable via heat_brake_max_stops and heat_brake_window_hours.',
+  },
+  {
+    id: 'T221-INDEX-TREND-GATE',
+    tier: 221 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '3h',
+    impact: 'Medium — Entering long positions on a day when the market index is down >1.5% means fighting macro momentum. The existing regime filter catches sustained bear markets but not single bad days.',
+    title: 'Same-day index trend gate',
+    why: 'HK entries on June 25 were made while HSI was down significantly. The SPY-based regime filter was fine (US market stable) but HK had its own down day.',
+    fix: 'Before entry, check today\'s index return (HSI for HK, SPY for US) from live_prices. Skip if index is down >1.5% on the day. Requires HSI to be included in the price fetch for HK portfolios.',
+  },
+
   // ── Tier 220 — Institutional intelligence suite ───────────────────────────────────────────────
 
   {
@@ -11491,6 +11548,7 @@ const TIER_LABEL: Record<Tier, string> = {
   218: 'Tier 218 — HK paper trading fixes + ML feature expansion (PEAD, short float, revenue)',
   219: 'Tier 219 — Index filter, meta-learning model, gap filter, EDGAR 8-K, HKEX Stock Connect',
   220: 'Tier 220 — Institutional intelligence: Form 4 insider signals, Piotroski quality score, short squeeze composite, economic calendar suppression, 13F ownership, earnings revision momentum, sector rotation, congress trades',
+  221: 'Tier 221 — Portfolio concentration & risk controls: market cluster cap, cross-portfolio symbol dedup, stop cooldown 5 days, portfolio heat brake, index trend gate',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11714,6 +11772,7 @@ const TIER_COLOR: Record<Tier, string> = {
   218: '#f97316',
   219: '#22d3ee',
   220: '#a78bfa',
+  221: '#f43f5e',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

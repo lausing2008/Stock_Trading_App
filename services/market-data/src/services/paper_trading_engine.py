@@ -139,6 +139,17 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "hold_stall_days":           30,    # exit if position gains < hold_stall_max_gain for this many days
     "hold_stall_max_gain":       0.05,  # max unrealized gain threshold for stall detection (5%)
     "enforce_market_hours":      True,  # skip new entries outside 9:30–16:00 ET Mon–Fri
+    # T221-D: Post-stop cooldown — 5 days prevents re-entering a stock that's in a downtrend.
+    "stop_cooldown_hours":       120,   # hours after stop_hit before re-entering same symbol (was 24h)
+    # T221-B: Market cluster cap — prevent entering more positions when already at limit for one market.
+    # Multiple correlated positions in HK/US all stop out together on big down days.
+    "max_market_positions":      4,     # max open positions in any single market (HK or US)
+    # T221-E: Portfolio heat brake — if this many stops hit in the window, pause all new entries.
+    "heat_brake_max_stops":      3,     # stop count threshold (3 stops in 48h = adverse conditions)
+    "heat_brake_window_hours":   48,    # lookback window for heat brake
+    # T221-A: Cross-portfolio symbol cap — max total open positions per symbol across ALL portfolios.
+    # Prevents SWING + GROWTH both going long the same stock, tripling concentration risk.
+    "max_positions_per_symbol_global": 1,
     # Regime engine
     "enable_regime_filter":      True,   # master on/off
     "regime_vix_high":           25.0,   # VIX above this → risk_off
@@ -2096,9 +2107,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             return
 
     # ── Per-symbol post-stop cooldown ─────────────────────────────────────────────
-    # After a stop_hit exit, don't re-enter the same stock for stop_cooldown_hours (default 24h).
-    # Prevents immediately re-entering a stock that just hit its stop in a downtrend.
-    stop_cooldown_hours = cfg.get("stop_cooldown_hours", 24)
+    # T221-D: After a stop_hit, don't re-enter for 5 days (120h). A stopped-out stock
+    # is in a downtrend — re-entering the next day means catching a falling knife.
+    stop_cooldown_hours = cfg.get("stop_cooldown_hours", 120)
     _recently_stopped: set[str] = set()
     if stop_cooldown_hours > 0:
         _stop_cutoff = datetime.now(timezone.utc) - timedelta(hours=stop_cooldown_hours)
@@ -2271,6 +2282,29 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      note="choppy/risk_off: max 1 new entry per day")
             return
 
+    # T221-E: Portfolio heat brake — too many stops in recent window = adverse market conditions.
+    # Entering more positions into a market that is stopping us out compounds losses.
+    _heat_max = cfg.get("heat_brake_max_stops", 3)
+    if _heat_max > 0:
+        _heat_h = cfg.get("heat_brake_window_hours", 48)
+        _heat_cutoff = datetime.now(timezone.utc) - timedelta(hours=_heat_h)
+        _recent_stops = session.execute(
+            select(func.count()).select_from(PaperTrade)
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_reason == "stop_hit",
+                PaperTrade.exit_time >= _heat_cutoff,
+            )
+        ).scalar() or 0
+        if _recent_stops >= _heat_max:
+            log.warning("paper.heat_brake_triggered",
+                        portfolio=portfolio.name,
+                        recent_stops=_recent_stops,
+                        window_hours=_heat_h,
+                        note=f"{_recent_stops} stops hit in {_heat_h}h — adverse conditions, pausing entries")
+            return
+
     # PT-D6: Re-sort candidates by composite priority — confidence + K-Score + breakout context
     def _composite_priority(row):
         sig_r, _, rank_r = row
@@ -2294,6 +2328,18 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     _open_sector_counts: dict[str, int] = dict(_Counter(
         (st.sector or "unclassified") for _, st in _prefetched_open
     ))
+
+    # T221-B: Market cluster cap — block new entries when at the per-market position limit.
+    # HK stocks are highly correlated: a market-wide down day stops out all positions simultaneously.
+    _mkt = cfg.get("market", "US")
+    _max_mkt_pos = cfg.get("max_market_positions", 4)
+    _mkt_open_count = sum(1 for _, st in _prefetched_open if st.market == _mkt)
+    if _mkt_open_count >= _max_mkt_pos:
+        log.info("paper.market_cluster_cap",
+                 portfolio=portfolio.name, market=_mkt,
+                 open=_mkt_open_count, max=_max_mkt_pos,
+                 note="market position cap reached — prevent single-market cluster loss")
+        return
 
     # T194: Open exposure cap — block new entries if deployed capital exceeds max % of equity.
     # A human never commits more than 40% of their capital to open positions simultaneously.
@@ -2361,12 +2407,31 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         except Exception:
             pass  # fail-open — missing price row doesn't block the candidate
 
+    # T221-A: Cross-portfolio symbol dedup — batch-fetch global open counts for all candidates.
+    # Prevents SWING + GROWTH both entering the same stock, tripling concentration risk.
+    _max_global_per_sym = cfg.get("max_positions_per_symbol_global", 1)
+    _global_sym_open: dict[str, int] = {}
+    if _max_global_per_sym > 0 and candidate_syms:
+        for _gsym, _gcnt in session.execute(
+            select(PaperTrade.symbol, func.count().label("c"))
+            .where(PaperTrade.stage == "open", PaperTrade.symbol.in_(candidate_syms))
+            .group_by(PaperTrade.symbol)
+        ).all():
+            _global_sym_open[_gsym] = _gcnt
+
     entries_made = 0
     for sig, stock, ranking in buy_signals:
         if open_count + entries_made >= cfg["max_positions"]:
             break
         if stock.symbol in _recently_stopped:
             log.info("paper.skip_stop_cooldown", symbol=stock.symbol, cooldown_hours=stop_cooldown_hours)
+            continue
+        # T221-A: Skip if this symbol already has an open position in another portfolio.
+        if stock.symbol not in open_symbols and _global_sym_open.get(stock.symbol, 0) >= _max_global_per_sym:
+            log.info("paper.skip_global_symbol_cap",
+                     symbol=stock.symbol,
+                     global_open=_global_sym_open.get(stock.symbol, 0),
+                     note="symbol open in another portfolio — cross-portfolio concentration cap")
             continue
         if stock.symbol in open_symbols:
             # Scale-in: add to profitable position on fresh high-conviction signal
