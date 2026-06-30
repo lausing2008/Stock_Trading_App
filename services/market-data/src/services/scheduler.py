@@ -1973,14 +1973,14 @@ def _compute_sector_rotation() -> None:
         with SessionLocal() as sess:
             rows = sess.execute(_text_sr("""
                 SELECT s.sector,
-                       AVG(CASE WHEN r.ranked_at >= NOW() - INTERVAL '7 days' THEN r.kscore END) as recent_kscore,
-                       AVG(CASE WHEN r.ranked_at >= NOW() - INTERVAL '35 days' AND r.ranked_at < NOW() - INTERVAL '28 days' THEN r.kscore END) as prior_kscore,
-                       COUNT(DISTINCT CASE WHEN r.ranked_at >= NOW() - INTERVAL '7 days' THEN s.id END) as n_recent
+                       AVG(CASE WHEN r.as_of >= NOW() - INTERVAL '14 days' THEN r.score END) as recent_kscore,
+                       AVG(CASE WHEN r.as_of >= NOW() - INTERVAL '42 days' AND r.as_of < NOW() - INTERVAL '28 days' THEN r.score END) as prior_kscore,
+                       COUNT(DISTINCT CASE WHEN r.as_of >= NOW() - INTERVAL '14 days' THEN s.id END) as n_recent
                 FROM rankings r
                 JOIN stocks s ON s.id = r.stock_id
                 WHERE s.sector IS NOT NULL AND s.market = 'US'
                 GROUP BY s.sector
-                HAVING COUNT(DISTINCT CASE WHEN r.ranked_at >= NOW() - INTERVAL '7 days' THEN s.id END) >= 3
+                HAVING COUNT(DISTINCT CASE WHEN r.as_of >= NOW() - INTERVAL '14 days' THEN s.id END) >= 3
             """)).fetchall()
 
         rotation = {}
