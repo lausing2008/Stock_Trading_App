@@ -21,13 +21,13 @@ the symbol is simply skipped and logged at DEBUG level.
 from __future__ import annotations
 
 import json
-import logging
 import time
 from datetime import date, timedelta
 
 import httpx
+from common.logging import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger("hk_connect")
 
 _HKEX_BASE = "https://www.hkex.com.hk"
 _HEADERS = {
