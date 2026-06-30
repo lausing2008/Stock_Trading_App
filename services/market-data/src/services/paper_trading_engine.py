@@ -237,6 +237,14 @@ _STYLE_OVERRIDES: dict[str, dict] = {
     },
 }
 
+# HK market needs looser circuit breakers — HSI stays risk_off longer than US indices
+# during normal consolidation; HK stocks are more volatile (higher false-signal rate).
+# Applied in _scan_for_entries when market == "HK" IF not already in portfolio.config.
+_HK_MARKET_OVERRIDES: dict = {
+    "regime_suspension_days":  7,   # 3d is too tight; HSI can be risk_off for weeks during consolidation
+    "max_consecutive_losses":  5,   # US default is 3; HK needs higher tolerance for losing streaks
+}
+
 
 # ── ATR helper ────────────────────────────────────────────────────────────────
 
@@ -1826,6 +1834,11 @@ def _call_decision_engine(
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
+    # Apply HK-specific circuit breaker overrides when not explicitly set in the portfolio config.
+    if cfg.get("market") == "HK":
+        for _k, _v in _HK_MARKET_OVERRIDES.items():
+            if _k not in (portfolio.config or {}):
+                cfg[_k] = _v
     style   = cfg["trading_style"]
     now     = datetime.now(timezone.utc)
     # CB-3 FIX + CB-W1 FIX: signals use dedup-on-change persistence — a persistent BUY never

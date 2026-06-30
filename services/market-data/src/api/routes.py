@@ -1034,6 +1034,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                 number_of_analysts=data.number_of_analysts,
                 peg_ratio=data.peg_ratio,
                 debt_to_equity=data.debt_to_equity,
+                dividend_yield=data.dividend_yield,
             ).on_conflict_do_update(
                 constraint="uq_fundamentals_stock_date",
                 set_=dict(
@@ -1054,6 +1055,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                     number_of_analysts=data.number_of_analysts,
                     peg_ratio=data.peg_ratio,
                     debt_to_equity=data.debt_to_equity,
+                    dividend_yield=data.dividend_yield,
                     fetched_at=func.now(),
                 ),
             )

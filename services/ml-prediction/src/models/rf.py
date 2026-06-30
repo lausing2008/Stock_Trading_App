@@ -14,6 +14,8 @@ class RandomForestModel(BaseModel):
             n_estimators=kwargs.get("n_estimators", 400),
             max_depth=kwargs.get("max_depth", 8),
             min_samples_leaf=kwargs.get("min_samples_leaf", 20),
+            max_features=kwargs.get("max_features", "sqrt"),
+            class_weight="balanced",  # guards against class imbalance when sample_weight is absent
             n_jobs=-1,
             random_state=42,
         )

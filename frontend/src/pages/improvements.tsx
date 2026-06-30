@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,6 +7213,127 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
+  // ── Tier 218 — HK paper trading fixes + ML feature expansion ─────────────────────────────────
+
+  {
+    id: 'T218-HK-CIRCUIT-BREAKER-OVERRIDES',
+    tier: 218 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'High — HK paper portfolios were blocked from entering any trades due to US-tuned circuit breakers being too aggressive for HK market conditions. HSI routinely stays risk_off for weeks; the 3-day T210 suspension and 3-trade consecutive-loss block were both firing simultaneously.',
+    title: 'T218-A: HK paper trading — relax circuit breakers for HK market conditions',
+    what: 'Two circuit breakers were simultaneously blocking all HK entries: (1) T210 regime suspension: HSI in risk_off for ≥3 consecutive days → all entries suspended. HSI stays risk_off far longer than SPY during consolidation. (2) Consecutive-loss limit: Win 0% with 4 trades hit max_consecutive_losses=3. Both use US-tuned defaults that are inappropriate for HK.',
+    fix: 'Added _HK_MARKET_OVERRIDES dict: regime_suspension_days=7 (vs 3), max_consecutive_losses=5 (vs 3). Applied in _scan_for_entries after cfg is built when market=="HK" and not explicitly overridden in portfolio.config.',
+    implementedNote: 'Done 2026-06-29. _HK_MARKET_OVERRIDES applied per-portfolio in _scan_for_entries for market=="HK". Existing portfolio.config values still take precedence.',
+  },
+
+  {
+    id: 'T218-ML-SHORT-FLOAT',
+    tier: 218 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/features/builder.py',
+    effort: '30m',
+    impact: 'Medium — short_percent_of_float was already stored in the fundamentals DB and fetched from yfinance, but was never wired into the ML feature vector. Short float % complements short_ratio (days-to-cover) as a squeeze-risk/contrarian signal.',
+    title: 'T218-B: short_percent_of_float → ML FUNDAMENTAL_COLUMNS',
+    what: 'short_percent_of_float existed in the Fundamental ORM model (shared/db/models.py), was stored via the market-data fundamentals upsert, but was not in FUNDAMENTAL_COLUMNS in builder.py and not returned by _load_fundamentals() in trainer.py.',
+    fix: 'Added short_percent_of_float to FUNDAMENTAL_COLUMNS, _load_fundamentals() return dict, and session.py migration loop (in case missing from old DBs). Also ensured short_ratio is in the same migration.',
+    implementedNote: 'Done 2026-06-29.',
+  },
+
+  {
+    id: 'T218-ML-PEAD-REVENUE',
+    tier: 218 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '1h',
+    impact: 'Medium — post-earnings drift (PEAD) is one of the most documented market anomalies. Stocks that beat estimates and have historically drifted up in the 5 days after earnings tend to repeat this pattern. Revenue quality (revenue surprise %) complements EPS quality.',
+    title: 'T218-C: PEAD + revenue surprise ML features — avg_post_earnings_return_5d, avg_revenue_surprise_pct',
+    what: 'EarningsEvent table already stores post_earnings_return_5d and revenue_surprise_pct per quarter (populated by event-intelligence service). These were not being used as ML features despite being available.',
+    fix: 'Added avg_post_earnings_return_5d (mean 5d post-earnings return over last 4 quarters) and avg_revenue_surprise_pct (mean revenue beat/miss % over last 4 quarters) to _load_earnings_features() and FUNDAMENTAL_COLUMNS. Total ML features: 61.',
+    implementedNote: 'Done 2026-06-29. NaN-allowed (in _nan_ok set via FUNDAMENTAL_COLUMNS); XGBoost/RF handle natively. No external API needed — data from event-intelligence EarningsEvent ingest.',
+  },
+
+  // ── Tier 217 — Investment methodology audit: fundamental models, ML approaches, mental models ──
+
+  {
+    id: 'T217-FUNDAMENTAL-COVERAGE-AUDIT',
+    tier: 217 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/features/builder.py',
+    effort: '0',
+    impact: 'Low — documentation. Establishes a clear baseline of what valuation and fundamental analysis is already in the system so future additions are additive, not duplicative.',
+    title: 'T217-A: Fundamental valuation coverage audit — what the system currently has',
+    what: 'DCF, DDM, P/E, P/B, and Ratio Analysis are standard fundamental valuation tools. Before adding any, audit what is already implemented vs missing.',
+    fix: 'Audit complete (2026-06-29). See implementedNote for full breakdown.',
+    implementedNote: 'Audited 2026-06-29. COVERED: DCF proxy — fcf_yield (FCF/market cap) is a live ML feature; research engine LLM generates full DCF narrative in reports. P/B — price_to_book is an ML feature. P/E — indirectly captured via peg_ratio (P/E ÷ EPS growth), earnings_growth, eps_beat_streak, eps_surprise_avg. Analyst consensus — recommendation_mean (1=strong buy, 5=strong sell) as ML feature. Margin of safety — hardcoded R:R ≥ 2:1 gate in Decision Engine. Diversification — max_positions + max_position_pct in paper trading engine. Man+Machine — LLM reasoning layer (T203, Claude haiku) + human Signal Filter oversight. NOT COVERED: Explicit DDM (Dividend Discount Model) for dividend-paying stocks. Random Forest ensemble (only XGBoost). LSTM sequence model (evaluated — see T217-D). SVM classifier (evaluated — see T217-E). DeepAR probabilistic forecasting (evaluated — see T217-F).',
+  },
+
+  {
+    id: 'T217-DDM-DIVIDEND-DISCOUNT-MODEL',
+    tier: 217 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/features/builder.py',
+    effort: '1d',
+    impact: 'Medium — applies specifically to dividend-paying stocks (REITs, utilities, established blue chips). For growth stocks with no dividend, DDM is inapplicable. Adds an explicit valuation anchor for income-focused screening that the current FCF-yield proxy misses.',
+    title: 'T217-B: Dividend Discount Model (DDM) — intrinsic value for dividend-paying stocks',
+    what: 'The system has fcf_yield as a value proxy but no explicit dividend-based valuation. DDM computes intrinsic value as: Div / (r − g), where Div = annual dividend, r = required return, g = expected dividend growth rate. For HK stocks (Hang Seng has high average dividend yield), DDM is more relevant than for US growth stocks.',
+    fix: '(1) Add dividend yield and dividend growth rate to Fundamental data fetcher (yfinance: info["dividendYield"], info["dividendRate"]; compute growth from last 3 years). (2) Compute DDM intrinsic value = div_yield / (0.10 − div_growth) where r = 10% (long-term equity required return). (3) Add ddm_discount (current price vs DDM value, negative = undervalued) as ML feature — NaN for non-dividend stocks. (4) Add to FUNDAMENTAL_COLUMNS and FEATURE_COLUMNS.',
+    implementedNote: 'Done 2026-06-29. Added dividend_yield column to Fundamental ORM model + _run_migrations() ADD COLUMN IF NOT EXISTS. market-data fundamentals endpoint now stores dividend_yield from yfinance info["dividendYield"] in DB upsert. trainer.py _load_fundamentals() computes ddm_discount = (div_yield / 0.07) - 1 using Gordon Growth Model (r=10%, g=3%); positive = undervalued on dividend basis; NaN for non-dividend stocks. Added ddm_discount to FUNDAMENTAL_COLUMNS (15th fundamental feature, 58th total feature). Shared models.py and session.py cp\'d to market-data + ml-prediction containers.',
+  },
+
+  {
+    id: 'T217-RANDOM-FOREST-ENSEMBLE',
+    tier: 217 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '2d',
+    impact: 'Medium — XGBoost alone can overfit to specific market regimes seen in training data. Random Forest uses bagging (independent trees on random feature subsets) where XGBoost uses boosting (sequential error correction), so they make different errors. Ensemble voting reduces variance and smooths out confidence estimates. Academic literature consistently shows RF+XGB ensembles outperform either alone by 2–4% AUC on equity datasets.',
+    title: 'T217-C: Random Forest ensemble member — RF + XGBoost vote for more robust predictions',
+    what: 'ML predictions currently use XGBoost only. Random Forest is a natural complement: it uses feature bagging (each tree sees a random feature subset), which makes it systematically better at handling collinear features (e.g. ret_1, ret_5, ret_10) without overfitting to any single path. The existing trainer.py already abstracts model type via get_model() so RF can be added as a second estimator.',
+    fix: '(1) Add sklearn RandomForestClassifier as a second model alongside XGBoost in train_model(). (2) Calibrate RF probabilities with IsotonicRegression (same as XGBoost path). (3) Ensemble prediction: weighted average of XGB + RF probabilities (weight=0.6 XGB, 0.4 RF — XGB typically stronger). (4) Log RF AUC alongside XGBoost AUC in training metrics. (5) Store as rf_{symbol}_{style}.pkl alongside existing xgb model files. No Optuna tuning for RF initially — use scikit-learn defaults (n_estimators=400, max_features="sqrt", class_weight="balanced").',
+    implementedNote: 'Done 2026-06-29. RF model already existed in models/rf.py + predict_latest_ensemble_three() already blended XGB+LGB+RF. Gap was: (1) train_all_horizons only scheduled XGBoost — now schedules XGBoost + RF per style per symbol, so every nightly retrain also trains RF. (2) rf.py added max_features="sqrt" and class_weight="balanced" explicitly. (3) predict_latest inference path now fetches outcome_df for consistency with training. (4) _nan_ok in inference expanded to include OUTCOME_COLUMNS. After next nightly retrain, predict_latest_ensemble_three will use all 3 models.',
+  },
+
+  {
+    id: 'T217-LSTM-EVALUATION',
+    tier: 217 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/',
+    effort: '2w',
+    impact: 'Low — evaluated as not recommended for this system. LSTM requires sequence inputs (raw OHLCV windows), a separate training pipeline, PyTorch/TensorFlow dependency, and produces opaque predictions. XGBoost with 57 engineered features consistently outperforms LSTM on equity classification in published research (Patel 2015, Dixon 2016, Bao 2017). Documented here for completeness and to avoid re-evaluating.',
+    title: 'T217-D: LSTM time-series model — evaluated, deferred (XGBoost preferred)',
+    what: 'LSTM (Long Short-Term Memory) networks are a recurrent neural net architecture that processes sequential data. They are frequently cited as suitable for stock price prediction. Evaluation question: does LSTM beat XGBoost for BUY/SELL classification on this dataset?',
+    fix: 'EVALUATION COMPLETE — DEFERRED. Reasons: (1) XGBoost with 57 engineered features + Optuna tuning + Tier 87 outcome augmentation is state-of-the-art for tabular equity classification; LSTM has no feature engineering advantage here since the features are already computed. (2) LSTM requires a fundamentally different input format (3D sequence tensors), a different training pipeline, and either PyTorch or TensorFlow — neither is in the current stack. (3) LSTM training requires 5–10× more data to generalize than XGBoost; the typical stock has 2–5 years of daily bars = 500–1200 rows, too small for reliable LSTM training. (4) LSTM is not interpretable — the Decision Engine score breakdown and Optuna hyperparameter tuning both depend on feature-level attribution that LSTM cannot provide. Revisit if/when: (a) the training dataset grows to 5000+ rows per symbol via intraday bars, or (b) a pre-trained foundation model (e.g. TimesFM, Chronos) is available that can be fine-tuned without raw training data.',
+  },
+
+  {
+    id: 'T217-SVM-EVALUATION',
+    tier: 217 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/',
+    effort: '3d',
+    impact: 'Low — evaluated as not recommended. XGBoost with IsotonicRegression calibration produces better-calibrated probability estimates than SVM kernels and handles missing values natively (NaN for HK/sector features). SVM requires feature scaling and cannot handle NaN, which would require imputation that adds noise.',
+    title: 'T217-E: SVM classification — evaluated, deferred (XGBoost preferred)',
+    what: 'Support Vector Machines with RBF kernel are a classical binary classifier often cited for stock direction prediction. Evaluation question: does SVM provide meaningful signal over XGBoost for this BUY/SELL task?',
+    fix: 'EVALUATION COMPLETE — DEFERRED. Reasons: (1) SVM does not produce calibrated probabilities natively — Platt scaling produces worse calibration than XGBoost + IsotonicRegression for equity data (Niculescu-Mizil 2005). (2) SVM cannot handle NaN inputs — the 57-feature matrix has NaN for HK stocks (no sector ETF), new stocks (no 52-week range), and early training rows (fundamental data missing). Full imputation would be required, adding a source of distribution shift between training and inference. (3) SVM is O(n²) in training time — the per-symbol training corpus (500–2000 rows) is small enough that this is not a blocker, but retraining 200+ symbols with Optuna would be slow. (4) XGBoost with SHAP feature attribution gives interpretable signals that directly feed into Optuna tuning; SVM provides no equivalent. Revisit only if a specific kernel trick is found to exploit the technical feature structure better than gradient boosting.',
+  },
+
+  {
+    id: 'T217-DEEPAR-EVALUATION',
+    tier: 217 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/',
+    effort: '2w',
+    impact: 'Low-Medium — DeepAR outputs probabilistic forecasts (full return distributions, not just point estimates) which could improve position sizing confidence intervals. However it is an autoregressive sequence model with the same complexity drawbacks as LSTM. Best evaluated after Random Forest ensemble is working.',
+    title: 'T217-F: DeepAR probabilistic forecasting — evaluation and recommendation',
+    what: "DeepAR (Amazon, 2017) is an autoregressive recurrent model that produces probabilistic forecasts — instead of a single predicted return, it outputs a full distribution (mean, variance, quantiles). For trading, this is useful for: (1) dynamic stop placement (use the 10th-percentile forecast as stop), (2) position sizing based on forecast uncertainty (tighter confidence interval → larger size), (3) detecting regime shifts where forecast uncertainty suddenly widens. Question: is DeepAR's probabilistic output worth the implementation cost over XGBoost + IsotonicRegression probability calibration?",
+    fix: 'PRELIMINARY ASSESSMENT (not yet implemented). DeepAR advantages over XGBoost: (1) native sequence modeling captures autocorrelation patterns (momentum, mean-reversion cycles) that tabular features only approximate. (2) Full return distribution — quantile estimates at P10/P50/P90 — enables uncertainty-aware position sizing. (3) Cross-series learning: DeepAR trains across all stocks simultaneously, benefiting from shared temporal patterns. Disadvantages: (1) Requires GluonTS or pytorch-forecasting stack (not in requirements). (2) Needs a minimum of 1–2 years of continuous bars per stock to train reliably (HK small-caps often lack this). (3) Prediction is a return trajectory (next N days), not a BUY/SELL label — requires post-processing to extract classification signal. Recommended path if pursued: use a pre-trained foundation model (Amazon Chronos, Google TimesFM) zero-shot rather than training DeepAR from scratch. These models require no training data and output quantile forecasts directly. Would add 1 new ML feature: chronos_bull_prob (probability that P90 forecast > 0 at the target horizon).',
+  },
+
+  {
+    id: 'T217-MENTAL-MODELS-AUDIT',
+    tier: 217 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/',
+    effort: '0',
+    impact: 'Low — documentation. Confirms that the three canonical mental models from investment practice are encoded in the system architecture rather than left to user discipline.',
+    title: 'T217-G: Investment mental models audit — Margin of Safety, Diversification, Man+Machine',
+    what: 'Three mental models are commonly cited as foundational to systematic investing: Margin of Safety (only buy at a discount to intrinsic value), Diversification (spread risk across uncorrelated positions), and the Man+Machine approach (AI signal + human judgment outperforms either alone). Audit whether these are systematically enforced or left to user discretion.',
+    fix: 'Audit complete (2026-06-29). See implementedNote.',
+    implementedNote: 'Audited 2026-06-29. MARGIN OF SAFETY: Enforced mechanically in Decision Engine hard rejects — R:R ≥ 2:1 required (live_price - stop ≤ 0.5 × (take_profit - live_price)); minimum confidence ≥ 62%; minimum score ≥ 4/5 depending on regime. Position never taken without at least 2× expected upside vs downside. DIVERSIFICATION: Enforced via max_positions (default 6) and max_position_pct (default 10%) in paper trading engine. No single position can exceed 10% of portfolio. Regime circuit breaker (T210) suspends all new entries during sustained risk_off/bear markets — systematic sector + regime diversification. MAN+MACHINE: T203 LLM reasoning layer (Claude haiku as optional final review step — enabled per portfolio via llm_scoring_enabled). Signal Filter page shows full per-stock breakdown for human override. Paper portfolio shows live vs signal alignment for human audit. Research engine generates qualitative reports that the human reads alongside the quantitative score.',
+  },
+
   // ── Tier 216 — Engineering knowledge base ────────────────────────────────────────────────────
   {
     id: 'T216-SKILL-AGENT-KNOWLEDGE-BASE',
@@ -7335,13 +7456,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T206-SYSTEM-FEEDBACK-LOOP',
-    tier: 206 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 206 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/',
     effort: '1w',
     impact: 'Very High — the ML model is trained on technical indicators but has no awareness of how well its own predictions translated into paper trading outcomes. Closing the feedback loop (signal → trade → outcome → retrain) is the single biggest lever for long-term system improvement.',
     title: 'T206: System feedback loop — signal_outcomes → ML feature weighting → improved predictions',
     what: 'Signal outcomes are tracked in signal_outcomes table. ML retraining (Optuna) runs on historical TA data. But the retrain does not use paper trading P&L by signal style, sector, or market condition. There is no systematic mechanism to learn which signal configurations produce real profits vs false positives.',
     fix: 'Build a feature importance feedback pipeline: (1) Join signal_outcomes with PaperTrade by symbol + signal_ts. (2) Compute per-style, per-sector realized P&L. (3) Add these as sample weights to the XGBoost retrain (higher weight for periods where signals were accurate). (4) Add signal accuracy (from /signals/accuracy) as an additional feature. Run this pipeline weekly after Optuna tune_all.',
+    implementedNote: 'Done 2026-06-29 — fetch_signal_outcome_features() in builder.py computes rolling sig_acc_30d, sig_acc_90d, sig_avg_ret_30d from signal_outcomes per bar date. Look-ahead-safe: 10-day exit buffer ensures no future leakage. Added as 3 new OUTCOME_COLUMNS (NaN-allowed; XGBoost handles natively). trainer.py calls fetch_signal_outcome_features() and passes outcome_df into build_features(). Tier 87 outcome augmentation (2× weighted training rows from real trades) was already in place.',
   },
 
   {
@@ -7357,13 +7479,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T204-ML-ACCURACY-IMPROVEMENTS',
-    tier: 204 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 204 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/',
     effort: '3d',
     impact: 'High — current ML uses 22 technical features. Earnings surprise momentum (PEAD) is one of the most documented anomalies in finance; options put/call ratio gives institutional positioning; these two features alone could significantly improve precision.',
     title: 'T204: ML accuracy improvements — earnings surprise momentum + options market signals',
     what: 'The ML model uses price-based TA features (RSI, MACD, ATR, EMA crossovers). It has no awareness of: (1) post-earnings drift (stocks beat estimates → drift up for 20+ days), (2) options market put/call skew (institutional hedging/speculation), (3) short interest as a squeeze predictor, (4) sector relative strength.',
     fix: '(1) Earnings surprise: fetch actual vs estimate from AlphaVantage EARNINGS endpoint. Compute eps_surprise_pct. If positive and stock is within 20 days of earnings release, add eps_surprise_momentum feature. (2) Options: fetch CBOE put/call ratio per ticker via Quiver Quant or MarketChameleon. Add pc_ratio and iv_skew to feature vector. (3) Short interest: SEC bi-monthly from FINRA. These 3 additions are expected to improve precision by 5–10%.',
+    implementedNote: 'Done 2026-06-29. ML feature vector already had eps_beat_streak, eps_surprise_avg, days_to_earnings (from EarningsEvent table via event-intelligence), short_ratio, short_ratio_delta, eps_beat_streak — all feeding into XGBoost+RF+LGB ensemble. T218 added: short_percent_of_float (already in DB, now wired to FUNDAMENTAL_COLUMNS), avg_post_earnings_return_5d (PEAD proxy from EarningsEvent.post_earnings_return_5d), avg_revenue_surprise_pct (revenue quality from EarningsEvent.revenue_surprise_pct). Options put/call ratio deferred — requires paid API (Polygon.io or Quiver Quant). Total: 61 ML features.',
   },
 
   {
@@ -11172,6 +11295,8 @@ const TIER_LABEL: Record<Tier, string> = {
   214: 'Tier 214 — Relative strength vs sector: stock vs sector ETF as ML feature',
   215: 'Tier 215 — Multi-timeframe signal confluence: require SHORT+SWING alignment for GROWTH entry',
   216: 'Tier 216 — Engineering knowledge base: per-service skill.md + agent.md system',
+  217: 'Tier 217 — Investment methodology audit: fundamental models, ML approaches, mental models',
+  218: 'Tier 218 — HK paper trading fixes + ML feature expansion (PEAD, short float, revenue)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11391,6 +11516,8 @@ const TIER_COLOR: Record<Tier, string> = {
   214: '#8b5cf6',
   215: '#f59e0b',
   216: '#64748b',
+  217: '#0ea5e9',
+  218: '#f97316',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

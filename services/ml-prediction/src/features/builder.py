@@ -1,4 +1,4 @@
-"""Feature engineering — 54 features (29 stock-specific + 8 macro + 3 sector + 14 fundamental).
+"""Feature engineering — 58 features (29 stock-specific + 8 macro + 3 sector + 15 fundamental + 3 signal outcome).
 
 29 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
@@ -23,7 +23,7 @@
   sector_rs_5d          — sector ETF 5d return minus SPY 5d return (short-term momentum)
   sector_in_favor       — 1 if sector_rs_20d > 0
 
-14 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
+17 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
   revenue_growth        — YoY revenue growth rate
   earnings_growth       — YoY EPS growth rate
   gross_margin          — gross profit margin
@@ -31,6 +31,7 @@
   fcf_yield             — free cash flow / market cap (value quality signal)
   short_ratio           — days-to-cover (short interest / avg daily volume)
   short_ratio_delta     — change in short_ratio vs prior snapshot (covering=bullish)
+  short_percent_of_float — % of float sold short (T204: squeeze risk / contrarian)
   recommendation_mean   — analyst consensus (1=strong buy … 5=strong sell)
   price_to_book         — P/B ratio (value factor)
   peg_ratio             — PE / forward EPS growth (growth at a reasonable price)
@@ -38,6 +39,13 @@
   eps_beat_streak       — consecutive quarters beating EPS estimate (0–4 clipped)
   eps_surprise_avg      — rolling 4-quarter average EPS surprise % (positive=beat)
   days_to_earnings      — days to next expected earnings (0–90, 90=unknown/far)
+  avg_post_earnings_return_5d — mean 5d return after past 4 earnings (PEAD signal)
+  avg_revenue_surprise_pct    — mean revenue beat/miss % over last 4 quarters
+
+3 signal outcome (T206 — look-ahead-safe: only uses outcomes with exit_date ≤ bar_date − 10d):
+  sig_acc_30d   — fraction of BUY signals correct in the prior 30-day exit window
+  sig_acc_90d   — fraction of BUY signals correct in the prior 90-day exit window
+  sig_avg_ret_30d — mean realized pct_return of BUY signals in the prior 30-day exit window
 
 Label: binary BUY / SELL only — rows where |fwd_ret| < label_threshold are
 excluded from training (dead zone). This removes noise-level moves that are
@@ -160,10 +168,102 @@ def fetch_sector_features(symbol: str, start_date: date, end_date: date) -> "pd.
         return pd.DataFrame()
 
 
+def fetch_signal_outcome_features(symbol: str, start_date: date, end_date: date) -> "pd.DataFrame":
+    """Compute rolling BUY signal accuracy from signal_outcomes (T206).
+
+    Returns a DataFrame indexed by "YYYY-MM-DD" strings with columns:
+      sig_acc_30d    — fraction of BUY outcomes correct in 30-day exit window
+      sig_acc_90d    — fraction of BUY outcomes correct in 90-day exit window
+      sig_avg_ret_30d — mean realized pct_return in 30-day exit window
+
+    Look-ahead-safe: each bar date D uses only outcomes with exit_date <= D - 10 days,
+    so there is no leakage of future results into training. Requires min 5 outcomes per
+    window — otherwise NaN. Falls back to empty DataFrame on any error.
+    """
+    try:
+        from sqlalchemy import select as _select
+        from db import SignalOutcome, Stock, SessionLocal
+
+        # Fetch outcomes going back far enough to compute 90-day windows for start_date
+        fetch_from = start_date - timedelta(days=110)
+
+        with SessionLocal() as session:
+            stock = session.execute(
+                _select(Stock).where(Stock.symbol == symbol.upper())
+            ).scalar_one_or_none()
+            if stock is None:
+                return pd.DataFrame()
+
+            rows = session.execute(
+                _select(
+                    SignalOutcome.exit_date,
+                    SignalOutcome.is_correct,
+                    SignalOutcome.pct_return,
+                ).where(
+                    SignalOutcome.stock_id == stock.id,
+                    SignalOutcome.signal_direction == "BUY",
+                    SignalOutcome.is_correct.is_not(None),
+                    SignalOutcome.exit_date.is_not(None),
+                    SignalOutcome.exit_date >= fetch_from,
+                    SignalOutcome.exit_date <= end_date,
+                )
+            ).all()
+
+        if not rows:
+            return pd.DataFrame()
+
+        # Build a DataFrame keyed by exit_date
+        out_df = pd.DataFrame(
+            [(r.exit_date, int(r.is_correct), float(r.pct_return or 0)) for r in rows],
+            columns=["exit_date", "is_correct", "pct_return"],
+        )
+        out_df["exit_date"] = pd.to_datetime(out_df["exit_date"])
+
+        # One outcome per exit_date (average if multiple close same day)
+        daily_correct = out_df.groupby("exit_date")["is_correct"].mean()
+        daily_ret = out_df.groupby("exit_date")["pct_return"].mean()
+        daily_count = out_df.groupby("exit_date")["is_correct"].count()
+
+        full_range = pd.date_range(start=fetch_from, end=end_date, freq="D")
+        daily_correct = daily_correct.reindex(full_range)
+        daily_ret = daily_ret.reindex(full_range)
+        daily_count = daily_count.reindex(full_range, fill_value=0)
+
+        # Rolling windows (min_periods=5 enforces minimum sample requirement)
+        acc_30 = daily_correct.rolling("30D", min_periods=5).mean()
+        acc_90 = daily_correct.rolling("90D", min_periods=5).mean()
+        cnt_30 = daily_count.rolling("30D", min_periods=1).sum()
+        cnt_90 = daily_count.rolling("90D", min_periods=1).sum()
+        ret_30 = daily_ret.rolling("30D", min_periods=5).mean()
+
+        # Shift 10 days: bar_date D gets the value rolled up to D-10 (look-ahead buffer)
+        bar_range = pd.date_range(start=start_date, end=end_date, freq="D")
+        df_out = pd.DataFrame(index=bar_range)
+        df_out["sig_acc_30d"] = acc_30.shift(10).reindex(bar_range)
+        df_out["sig_acc_90d"] = acc_90.shift(10).reindex(bar_range)
+        df_out["sig_avg_ret_30d"] = ret_30.shift(10).reindex(bar_range)
+
+        # Enforce min count — NaN where fewer than 5 outcomes in window
+        df_out.loc[cnt_30.shift(10).reindex(bar_range).fillna(0) < 5, ["sig_acc_30d", "sig_avg_ret_30d"]] = np.nan
+        df_out.loc[cnt_90.shift(10).reindex(bar_range).fillna(0) < 5, "sig_acc_90d"] = np.nan
+
+        df_out.index = df_out.index.strftime("%Y-%m-%d")
+        return df_out.dropna(how="all")
+
+    except Exception:
+        return pd.DataFrame()
+
+
 MACRO_COLUMNS = [
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Regime boolean flags (SA-3)
     "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
+]
+
+OUTCOME_COLUMNS = [
+    "sig_acc_30d",      # rolling 30-day BUY signal accuracy (look-ahead-safe)
+    "sig_acc_90d",      # rolling 90-day BUY signal accuracy
+    "sig_avg_ret_30d",  # rolling 30-day mean realized return on BUY signals
 ]
 
 FUNDAMENTAL_COLUMNS = [
@@ -178,10 +278,16 @@ FUNDAMENTAL_COLUMNS = [
     "price_to_book",        # P/B ratio
     "peg_ratio",            # PE / forward EPS growth (Phase 1)
     "debt_to_equity",       # total debt / total equity (Phase 1)
+    "short_percent_of_float",  # % of float sold short (T204: squeeze risk / contrarian signal)
     # Tier 78 — earnings quality features (from EarningsEvent table)
     "eps_beat_streak",      # consecutive quarters beating EPS estimate (0=no streak, 4=4+ beats)
     "eps_surprise_avg",     # 4-quarter rolling average EPS surprise % (positive=consistent beats)
     "days_to_earnings",     # days to next expected earnings event (0–90; 90=unknown/far)
+    # T218: PEAD signals — post-earnings drift and revenue quality
+    "avg_post_earnings_return_5d",   # mean 5d return after past 4 earnings — positive = PEAD stocks
+    "avg_revenue_surprise_pct",      # mean revenue surprise % over last 4 quarters
+    # T217-B: DDM Dividend Discount Model — NaN for non-dividend stocks
+    "ddm_discount",         # (div_yield / 0.07) - 1; positive = undervalued on dividend basis
 ]
 
 # SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with
@@ -217,6 +323,8 @@ FEATURE_COLUMNS = [
     "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
     # Sector relative strength (TIER90) — NaN for HK/unmapped stocks; XGBoost handles natively
     *SECTOR_COLUMNS,
+    # Signal outcome accuracy (T206) — NaN-allowed; only populated after signal_outcomes accumulate
+    *OUTCOME_COLUMNS,
     # Fundamentals — static per stock, broadcast to all price rows
     *FUNDAMENTAL_COLUMNS,
 ]
@@ -356,6 +464,7 @@ def build_features(
     inference_mode: bool = False,
     fund_data: dict | None = None,
     sector_df: "pd.DataFrame | None" = None,
+    outcome_df: "pd.DataFrame | None" = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (X, y_direction, y_return).
 
@@ -504,6 +613,19 @@ def build_features(
     for col in SECTOR_COLUMNS:
         out[col] = out[col].ffill()
 
+    # --- Signal outcome accuracy features (T206) ---
+    # Look-ahead-safe: fetch_signal_outcome_features() already shifts values by 10 days.
+    # NaN-allowed; XGBoost handles missing values natively.
+    if outcome_df is not None and not outcome_df.empty:
+        for col in OUTCOME_COLUMNS:
+            if col in outcome_df.columns:
+                out[col] = dates.map(outcome_df[col])
+            else:
+                out[col] = np.nan
+    else:
+        for col in OUTCOME_COLUMNS:
+            out[col] = np.nan
+
     # Forward-fill macro gaps (weekends, holidays, early-day partial data)
     for col in MACRO_COLUMNS:
         out[col] = out[col].ffill()
@@ -531,10 +653,10 @@ def build_features(
 
     X = out[FEATURE_COLUMNS].replace([np.inf, -np.inf], np.nan)
 
-    # Fundamental, weekly, and sector columns are NaN-allowed — XGBoost handles NaN natively.
-    # Sector columns are NaN for HK stocks and unmapped sectors.
+    # Fundamental, weekly, sector, and signal outcome columns are NaN-allowed — XGBoost handles natively.
+    # Outcome columns are NaN until enough signal history accumulates (min 5 per window).
     # Require only the core daily features to be non-null so rows aren't discarded.
-    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS) | set(SECTOR_COLUMNS)
+    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS) | set(SECTOR_COLUMNS) | set(OUTCOME_COLUMNS)
     _required = [c for c in FEATURE_COLUMNS if c not in _nan_ok]
 
     if inference_mode:

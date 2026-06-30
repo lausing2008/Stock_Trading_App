@@ -277,12 +277,11 @@ def train_all_ensemble(tasks: BackgroundTasks, style: str = "SWING", _: str = De
 
 @router.post("/train_all_horizons")
 def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(get_current_username)):
-    """Train XGBoost for all 4 horizon-specific styles for every active/delisted stock.
+    """Train XGBoost + RandomForest for all 4 horizon-specific styles for every active stock.
 
-    Creates per-style artifacts: {symbol}_short.joblib, {symbol}_swing.joblib,
-    {symbol}_long.joblib, {symbol}_growth.joblib inside each model type directory.
-    Signal engine uses the matching artifact per style; falls back to SWING if absent.
-    Run nightly after market close; takes ~4× longer than train_all.
+    T217-C: RF trained alongside XGBoost so predict_latest_ensemble_three() has
+    all three models (XGB + LGB + RF) available. Signal engine auto-routes by style.
+    Run nightly after market close.
     """
     from sqlalchemy import select
     from db import Stock, SessionLocal
@@ -296,14 +295,15 @@ def train_all_horizons(tasks: BackgroundTasks, _: str = Depends(get_current_user
     for style, horizon in _HORIZON_BY_STYLE.items():
         for sym in symbols:
             tasks.add_task(train_model, sym, "xgboost", horizon, style=style)
+            tasks.add_task(train_model, sym, "random_forest", horizon, style=style)
         scheduled.append({"style": style, "horizon": horizon})
 
     return {
         "status": "scheduled",
         "symbol_count": len(symbols),
         "styles": scheduled,
-        "total_tasks": len(symbols) * len(_HORIZON_BY_STYLE),
-        "note": "One XGBoost model per style per symbol. Signal engine auto-routes by style.",
+        "total_tasks": len(symbols) * len(_HORIZON_BY_STYLE) * 2,
+        "note": "XGBoost + RandomForest per style per symbol. Ensemble uses both.",
     }
 
 

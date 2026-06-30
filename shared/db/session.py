@@ -298,6 +298,12 @@ def _run_migrations() -> None:  # noqa: C901
                     END IF;
                 END $$;
             """))
+        # Phase-1, T217-B, and T204: fundamentals columns added to ORM model without DB migration
+        for _fund_col in ["peg_ratio", "debt_to_equity", "dividend_yield",
+                          "short_percent_of_float", "short_ratio"]:
+            conn.execute(text(
+                f"ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS {_fund_col} FLOAT"
+            ))
         # INT-8 forward-return tracking columns added to signal_outcomes after initial table creation
         for _col, _type in [
             ("price_5d",       "FLOAT"),

@@ -25,7 +25,7 @@ from common.logging import get_logger
 from db import EarningsEvent, Fundamental, Price, SessionLocal, Signal, SignalOutcome, Stock, TimeFrame
 from sqlalchemy import desc as sa_desc
 
-from ..features import build_features, compute_label_threshold, fetch_macro_features, fetch_sector_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS, SECTOR_COLUMNS, WEEKLY_COLUMNS
+from ..features import build_features, compute_label_threshold, fetch_macro_features, fetch_sector_features, fetch_signal_outcome_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS, SECTOR_COLUMNS, WEEKLY_COLUMNS, OUTCOME_COLUMNS
 from ..models import BaseModel, get_model
 
 log = get_logger("trainer")
@@ -112,27 +112,42 @@ def _load_fundamentals(symbol: str) -> dict | None:
     short_ratio_delta: float | None = None
     if len(rows) >= 2 and row.short_ratio is not None and rows[1].short_ratio is not None:
         short_ratio_delta = row.short_ratio - rows[1].short_ratio
+    # T217-B: DDM discount — how much the current dividend yield deviates from the DDM fair value.
+    # Using Gordon Growth Model: fair_yield = r - g (r=10% required return, g=3% perpetual growth).
+    # ddm_discount > 0  → stock yields MORE than DDM requires → undervalued on dividend basis.
+    # ddm_discount ≤ 0  → stock yields LESS → overvalued or non-dividend payer (NaN).
+    div_yield = getattr(row, "dividend_yield", None)
+    ddm_discount: float | None = None
+    _DDM_REQUIRED_RETURN = 0.10
+    _DDM_GROWTH = 0.03
+    _DDM_FAIR_YIELD = _DDM_REQUIRED_RETURN - _DDM_GROWTH  # = 0.07
+    if div_yield is not None and div_yield > 0.001:
+        ddm_discount = round((div_yield / _DDM_FAIR_YIELD) - 1.0, 4)
     return {
-        "revenue_growth":      row.revenue_growth,
-        "earnings_growth":     row.earnings_growth,
-        "gross_margin":        row.gross_margin,
-        "return_on_equity":    row.return_on_equity,
-        "fcf_yield":           fcf_yield,
-        "short_ratio":         row.short_ratio,
-        "short_ratio_delta":   short_ratio_delta,
-        "recommendation_mean": row.recommendation_mean,
-        "price_to_book":       row.price_to_book,
-        "peg_ratio":           getattr(row, "peg_ratio", None),
-        "debt_to_equity":      getattr(row, "debt_to_equity", None),
+        "revenue_growth":         row.revenue_growth,
+        "earnings_growth":        row.earnings_growth,
+        "gross_margin":           row.gross_margin,
+        "return_on_equity":       row.return_on_equity,
+        "fcf_yield":              fcf_yield,
+        "short_ratio":            row.short_ratio,
+        "short_ratio_delta":      short_ratio_delta,
+        "short_percent_of_float": getattr(row, "short_percent_of_float", None),
+        "recommendation_mean":    row.recommendation_mean,
+        "price_to_book":          row.price_to_book,
+        "peg_ratio":              getattr(row, "peg_ratio", None),
+        "debt_to_equity":         getattr(row, "debt_to_equity", None),
+        "ddm_discount":           ddm_discount,
     }
 
 
 def _load_earnings_features(symbol: str) -> dict:
-    """Fetch EPS beat streak, surprise average, and days-to-next-earnings.
+    """Fetch EPS beat streak, surprise average, days-to-next-earnings, and T218 PEAD signals.
 
-    eps_beat_streak  — consecutive quarters beating consensus estimate (0=no streak; capped at 4)
-    eps_surprise_avg — rolling 4-quarter average surprise_pct (positive = consistent beats)
-    days_to_earnings — calendar days to next expected report (0–90; 90 when unknown or far)
+    eps_beat_streak          — consecutive quarters beating consensus estimate (0=no streak; capped at 4)
+    eps_surprise_avg         — rolling 4-quarter average surprise_pct (positive = consistent beats)
+    days_to_earnings         — calendar days to next expected report (0–90; 90 when unknown or far)
+    avg_post_earnings_return_5d — mean 5-day price return after each of the last 4 earnings (PEAD signal)
+    avg_revenue_surprise_pct    — mean revenue beat/miss % over last 4 quarters (revenue quality)
 
     All values are NaN-tolerant — missing data returns NaN keys (XGBoost handles natively).
     """
@@ -186,6 +201,15 @@ def _load_earnings_features(symbol: str) -> dict:
     # Rolling 4-quarter surprise average
     surprises = [ev.surprise_pct for ev in past[:4] if ev.surprise_pct is not None]
     result["eps_surprise_avg"] = float(np.mean(surprises)) if surprises else None
+
+    # T218: Post-earnings 5d drift (PEAD proxy) — mean return after each of the last 4 earnings.
+    # Positive = stock consistently drifts up after earnings beats. NaN when data unavailable.
+    post_5d = [ev.post_earnings_return_5d for ev in past[:4] if ev.post_earnings_return_5d is not None]
+    result["avg_post_earnings_return_5d"] = float(np.mean(post_5d)) if post_5d else None
+
+    # T218: Revenue surprise average — complement to EPS surprise; beats on revenue = stronger quality.
+    rev_surprises = [ev.revenue_surprise_pct for ev in past[:4] if ev.revenue_surprise_pct is not None]
+    result["avg_revenue_surprise_pct"] = float(np.mean(rev_surprises)) if rev_surprises else None
 
     # Days to next earnings — clamp to [0, 90]; use 90 when no upcoming date known
     if next_date is not None:
@@ -432,6 +456,10 @@ def train_model(
     # TIER90: sector relative strength vs SPY from DB prices
     sector_df = fetch_sector_features(symbol, start_date, end_date)
 
+    # T206: rolling signal accuracy features (look-ahead-safe: only uses outcomes
+    # with exit_date <= bar_date - 10 days; NaN until signal history accumulates)
+    outcome_df = fetch_signal_outcome_features(symbol, start_date, end_date)
+
     # Per-symbol volatility-adjusted dead zone — computed on training rows only
     # to prevent future volatility from leaking into the label dead-zone boundary.
     _train_rows = int(len(df) * 0.70)
@@ -449,7 +477,7 @@ def train_model(
 
     X, y_dir, y_ret = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
-        fund_data=fund_data, sector_df=sector_df,
+        fund_data=fund_data, sector_df=sector_df, outcome_df=outcome_df,
     )
     if len(X) < 200:
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
@@ -784,7 +812,11 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
         pass
 
     # TIER90: sector RS for inference
-    sector_df = fetch_sector_features(symbol, infer_start or (date.today() - timedelta(days=400)), date.today() + timedelta(days=1))
+    _infer_start = infer_start or (date.today() - timedelta(days=400))
+    sector_df = fetch_sector_features(symbol, _infer_start, date.today() + timedelta(days=1))
+
+    # T206: signal outcome accuracy features for inference (look-ahead-safe)
+    outcome_df = fetch_signal_outcome_features(symbol, _infer_start, date.today() + timedelta(days=1))
 
     infer_fund_data: dict = {}
     try:
@@ -800,7 +832,7 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
     X, _, _ = build_features(
         df, horizon=horizon, macro_df=macro_df,
         label_threshold=0.0, inference_mode=True,
-        fund_data=infer_fund_data, sector_df=sector_df,
+        fund_data=infer_fund_data, sector_df=sector_df, outcome_df=outcome_df,
     )
     if X.empty:
         return {"symbol": symbol, "bullish_probability": 0.5, "confidence": 0}
@@ -817,9 +849,9 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
             "oos_suppressed": True,
         }
 
-    # Preserve NaN for fundamental/weekly columns — XGBoost routes NaN natively;
+    # Preserve NaN for fundamental/weekly/outcome columns — XGBoost/RF route NaN natively;
     # filling with 0.0 breaks the learned split directions for sparse fundamentals.
-    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS)
+    _nan_ok = set(FUNDAMENTAL_COLUMNS) | set(WEEKLY_COLUMNS) | set(OUTCOME_COLUMNS)
     X_aligned = X.reindex(columns=saved_cols, fill_value=np.nan)
     _fill_cols = [c for c in X_aligned.columns if c not in _nan_ok]
     X_aligned[_fill_cols] = X_aligned[_fill_cols].fillna(0.0)

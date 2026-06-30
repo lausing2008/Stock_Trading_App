@@ -689,6 +689,8 @@ class Fundamental(Base):
     # Phase 1 additions — valuation
     peg_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     debt_to_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # T217-B: DDM — trailing annual dividend yield (dividend_rate / price), 0–1 scale
+    dividend_yield: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
