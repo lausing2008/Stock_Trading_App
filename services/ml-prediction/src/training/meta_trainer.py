@@ -274,6 +274,7 @@ def train_meta_model(db=None) -> dict:
         "non_const": non_const,
         "feature_columns": list(FEATURE_COLUMNS),
         "n_meta_features": 6,  # sector_code, market_cap_bin, horizon_code, confidence, fused_prob, ta_score
+        "auc": round(auc, 4),
     }
 
     # Atomic write — same pattern as trainer.py (RACE-001)
@@ -317,6 +318,10 @@ def predict_meta(
         from sqlalchemy import select as _select
 
         bundle = joblib.load(META_MODEL_PATH)
+        auc = bundle.get("auc", 0.0)
+        if auc < 0.55:
+            log.debug("meta_trainer.predict_skipped_low_auc symbol=%s auc=%.4f", symbol, auc)
+            return None
         model = bundle["model"]
         scaler = bundle["scaler"]
         non_const = bundle["non_const"]

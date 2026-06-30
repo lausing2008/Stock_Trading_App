@@ -349,6 +349,15 @@ def _bulk_persist(symbols: list[str]) -> None:
                         )
                         _ai.reasons["catalyst_prob_adj"] = round(_cat_adj, 3)
 
+                    # T220-A/H: Boolean flags for UI chips (threshold-based from scores above)
+                    if _insider_s is not None and _insider_s >= 60:
+                        _ai.reasons["insider_cluster"] = True
+                        _ai.reasons["insider_buy_usd"] = _catalyst.get("insider_buy_usd")  # may be None
+                    if _congress_s is not None and _congress_s > 50:
+                        _ai.reasons["congress_buy"] = True
+                    if _catalyst.get("institutional_score") is not None:
+                        _ai.reasons["institutional_score"] = round(float(_catalyst["institutional_score"]), 1)
+
             with SessionLocal() as s:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
                 if not stock:
@@ -368,6 +377,26 @@ def _bulk_persist(symbols: list[str]) -> None:
                         if row[0] not in seen:
                             prior_conf[row[0]] = float(row[1]) if row[1] is not None else None
                             seen.add(row[0])
+                except Exception:
+                    pass
+
+                # T220-G: Sector rotation — add sector_momentum to reasons (Redis cache, no auth required)
+                try:
+                    import httpx as _httpx_rot
+                    _rot_r = _httpx_rot.get(
+                        f"{_settings.market_data_url}/stocks/sector-rotation",
+                        timeout=2.0,
+                    )
+                    if _rot_r.status_code == 200:
+                        _rotation = _rot_r.json()
+                        _sector = stock.sector
+                        if _sector and _sector in _rotation:
+                            _sector_momentum = _rotation[_sector].get("momentum", 0)
+                            if _sector_momentum != 0:
+                                for _ai in all_sig.values():
+                                    if _ai.reasons is None:
+                                        _ai.reasons = {}
+                                    _ai.reasons["sector_momentum"] = _sector_momentum
                 except Exception:
                     pass
 

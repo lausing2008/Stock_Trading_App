@@ -948,3 +948,27 @@ class HkConnectFlow(Base):
     __table_args__ = (
         UniqueConstraint("symbol", "trade_date", name="uq_hk_connect_flow"),
     )
+
+
+# ── T220-F: Fundamentals Snapshot for Earnings Revision Momentum ──────────────
+
+class FundamentalsSnapshot(Base):
+    """Weekly snapshot of per-symbol fundamentals for revision momentum tracking.
+
+    Populated every Sunday by the fundamentals_snapshot_weekly scheduler job.
+    Used by the ML feature builder to compute eps_revision_direction — the
+    direction of analyst recommendation changes over the prior 8 snapshots.
+    """
+    __tablename__ = "fundamentals_snapshot"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    recommendation_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eps_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_on_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("symbol", "snapshot_date", name="uq_fundamentals_snapshot_sym_date"),)

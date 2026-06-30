@@ -637,13 +637,29 @@ export type Price = {
   volume: number;
 };
 
+/** Typed subset of signal reasons returned by signal-engine _bulk_persist. */
+export type SignalReasons = Record<string, unknown> & {
+  // event / catalyst flags
+  eight_k_flag?: boolean;
+  eight_k_date?: string | null;
+  // T220 institutional intelligence suite
+  insider_cluster?: boolean;
+  insider_buy_usd?: number | null;
+  congress_buy?: boolean;
+  sector_momentum?: number | null;   // +1 rising, 0 neutral, -1 falling
+  squeeze_score?: number | null;     // 0–100 composite
+  piotroski_score?: number | null;   // 0–9
+  macro_blackout?: string | null;    // event name if within 2h window
+  eps_revision_direction?: number | null; // +1 rising, 0 flat, -1 falling
+};
+
 export type Signal = {
   symbol: string;
   signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT';
   horizon: string;
   confidence: number;
   bullish_probability: number;
-  reasons: Record<string, unknown>;
+  reasons: SignalReasons;
 };
 
 export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 'WAIT'; horizon: string; confidence: number; bullish_probability: number | null; ts: string | null; stability_days?: number | null };

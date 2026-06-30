@@ -371,6 +371,28 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_hk_connect_date ON hk_connect_flows (trade_date)"
         ))
+        # T220-F: fundamentals_snapshot for earnings revision momentum tracking
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS fundamentals_snapshot (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                snapshot_date DATE NOT NULL,
+                recommendation_mean FLOAT,
+                eps_estimate FLOAT,
+                revenue_growth FLOAT,
+                earnings_growth FLOAT,
+                return_on_equity FLOAT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_fundamentals_snapshot_sym_date
+            ON fundamentals_snapshot (symbol, snapshot_date)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_fundamentals_snapshot_sym
+            ON fundamentals_snapshot (symbol)
+        """))
 
 
 def _seed_admin() -> None:

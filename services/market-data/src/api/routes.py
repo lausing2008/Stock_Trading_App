@@ -1598,6 +1598,27 @@ def short_interest(
     ]
 
 
+# ── T220-G: Sector K-Score Rotation ──────────────────────────────────────────
+
+@router.get("/stocks/sector-rotation")
+def get_sector_rotation():
+    """Return current sector K-Score momentum (computed Sunday, cached in Redis).
+
+    Returns {sector_name: {momentum: +1/0/-1, recent_kscore, prior_kscore, delta}}
+    where momentum=+1 means sector K-Score rose >3 pts vs 4 weeks ago (institutional
+    tailwind), -1 means fell >3 pts (headwind), 0 means flat.
+    """
+    import json as _json
+    r = _get_redis()
+    raw = r.get("stockai:sector_rotation")
+    if not raw:
+        return {}
+    try:
+        return _json.loads(raw)
+    except Exception:
+        return {}
+
+
 # ── Short Squeeze Scanner ─────────────────────────────────────────────────────
 
 @router.get("/short_squeeze")
@@ -2122,6 +2143,59 @@ def hk_connect_flow(
     """
     from ..services.hk_connect import get_flow_summary
     return get_flow_summary(session, symbol.upper(), days=days)
+
+
+@router.get("/{symbol}/rvol")
+def get_rvol(symbol: str, session: Session = Depends(get_session)):
+    """Relative volume: today's cumulative volume vs 20-day average for same time-of-day.
+
+    Returns {"symbol": str, "rvol": float | None, "today_volume": int, "avg_volume": float}.
+    RVOL > 2.0 = unusual institutional accumulation.
+    """
+    from sqlalchemy import text
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    today_str = now.date().isoformat()
+    current_minute = now.hour * 60 + now.minute
+
+    # Today's cumulative volume up to current minute
+    today_vol_row = session.execute(text("""
+        SELECT COALESCE(SUM(volume), 0) as vol
+        FROM prices_5m
+        WHERE symbol = :sym
+          AND DATE(ts AT TIME ZONE 'UTC') = :today
+          AND (EXTRACT(hour FROM ts AT TIME ZONE 'UTC') * 60 + EXTRACT(minute FROM ts AT TIME ZONE 'UTC')) <= :cur_min
+    """), {"sym": symbol.upper(), "today": today_str, "cur_min": current_minute}).fetchone()
+    today_vol = int(today_vol_row.vol) if today_vol_row else 0
+
+    if today_vol == 0:
+        return {"symbol": symbol.upper(), "rvol": None, "today_volume": 0, "avg_volume": 0.0}
+
+    # Average cumulative volume for same time-of-day over last 20 trading days (exclude today)
+    avg_row = session.execute(text("""
+        SELECT AVG(daily_vol) as avg_vol
+        FROM (
+            SELECT DATE(ts AT TIME ZONE 'UTC') as dt, SUM(volume) as daily_vol
+            FROM prices_5m
+            WHERE symbol = :sym
+              AND DATE(ts AT TIME ZONE 'UTC') < :today
+              AND DATE(ts AT TIME ZONE 'UTC') >= :cutoff
+              AND (EXTRACT(hour FROM ts AT TIME ZONE 'UTC') * 60 + EXTRACT(minute FROM ts AT TIME ZONE 'UTC')) <= :cur_min
+            GROUP BY DATE(ts AT TIME ZONE 'UTC')
+            ORDER BY dt DESC
+            LIMIT 20
+        ) sub
+    """), {
+        "sym": symbol.upper(),
+        "today": today_str,
+        "cutoff": (now - timedelta(days=30)).date().isoformat(),
+        "cur_min": current_minute,
+    }).fetchone()
+
+    avg_vol = float(avg_row.avg_vol) if avg_row and avg_row.avg_vol else 0.0
+    rvol = round(today_vol / avg_vol, 2) if avg_vol > 0 else None
+
+    return {"symbol": symbol.upper(), "rvol": rvol, "today_volume": today_vol, "avg_volume": round(avg_vol, 0)}
 
 
 @router.get("/{symbol}", response_model=StockOut)

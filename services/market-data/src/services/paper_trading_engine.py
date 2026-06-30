@@ -892,6 +892,31 @@ def _should_enter(
                 f"exceeds limit {_max_gap:.0%} — entry price degraded"
             ]
 
+    # T220-D: Economic calendar blackout — reject BUY entries within 2h of major macro events.
+    # FOMC, CPI, NFP, PCE cause unpredictable 1-3% moves; entries in this window have higher failure rates.
+    # Checks reasons["macro_blackout"] first (fast path — set by signal-engine), then queries DB directly.
+    _macro_evt = reasons.get("macro_blackout")
+    if _macro_evt is None:
+        try:
+            from db import SessionLocal
+            from sqlalchemy import text
+            from datetime import datetime, timezone, timedelta
+            _now = datetime.now(timezone.utc)
+            _window_end = _now + timedelta(hours=2)
+            with SessionLocal() as _evsess:
+                _ev_row = _evsess.execute(text(
+                    "SELECT title FROM economic_events "
+                    "WHERE event_date >= :now AND event_date <= :end "
+                    "AND importance IN ('high', 'critical') "
+                    "LIMIT 1"
+                ), {"now": _now.isoformat(), "end": _window_end.isoformat()}).fetchone()
+                if _ev_row:
+                    _macro_evt = _ev_row.title
+        except Exception:
+            pass  # DB query failure → allow entry (fail-open)
+    if _macro_evt:
+        return False, -99, [f"Macro blackout: {_macro_evt} within 2h — avoid binary-event risk"]
+
     # ── Price zone (where is price relative to the game plan?) ───────────────
     # CB-2 FIX: old values (+4/+3) equalled the min_entry_score threshold (3–5), making it a
     # single-factor gate. Capped at +2 max so ≥2 additional factors must align for entry.

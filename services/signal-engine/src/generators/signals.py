@@ -2019,6 +2019,22 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
         except Exception:
             pass  # flow data is best-effort; never block signal generation
 
+    # T220-C: Simple squeeze score from existing reasons data.
+    # reasons["short_pct_float"] is already in percentage form (e.g. 15.0 = 15% of float shorted).
+    # reasons["short_ratio"] is days-to-cover.
+    _sp_float = reasons.get("short_pct_float")
+    _s_ratio = reasons.get("short_ratio")
+    if _sp_float is not None:
+        try:
+            _sp = float(_sp_float)
+            _sr = float(_s_ratio) if _s_ratio is not None else 5.0
+            # Simple composite: 60% SI% + 40% days-to-cover (normalized to 15-day max)
+            _squeeze = min(100, (_sp * 0.6) + (min(_sr, 15) / 15 * 100 * 0.4))
+            if _squeeze >= 40:
+                reasons["squeeze_score"] = round(_squeeze, 1)
+        except Exception:
+            pass
+
     # SA-13: GROWTH style uses an adjusted TA score that de-penalises momentum RSI and
     # substitutes SMA20>SMA50 for the SMA50>SMA200 structural requirement.
     ta_prob_growth = float(np.clip(ta_prob + _growth_ta_adjustment(df, reasons), 0.0, 1.0))

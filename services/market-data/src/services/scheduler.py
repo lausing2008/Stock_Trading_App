@@ -1926,6 +1926,87 @@ def _ingest_hk_connect_flows() -> None:
         log.error("hk_connect.ingest_failed", error=str(exc), exc_info=True)
 
 
+def _snapshot_fundamentals() -> None:
+    """T220-F: Weekly fundamentals snapshot for earnings revision momentum tracking.
+
+    Captures recommendation_mean, revenue_growth, earnings_growth, return_on_equity
+    from the fundamentals table. Used to compute 8-week revision momentum.
+    """
+    from datetime import datetime, timezone, date
+    from db import SessionLocal
+    from sqlalchemy import text
+    _t0 = time.monotonic()
+    try:
+        with SessionLocal() as sess:
+            today = date.today().isoformat()
+            # Copy latest fundamentals row per symbol into snapshot (idempotent via ON CONFLICT DO NOTHING)
+            result = sess.execute(text("""
+                INSERT INTO fundamentals_snapshot
+                    (symbol, snapshot_date, recommendation_mean, eps_estimate,
+                     revenue_growth, earnings_growth, return_on_equity)
+                SELECT s.symbol, :today, f.recommendation_mean, NULL,
+                       f.revenue_growth, f.earnings_growth, f.return_on_equity
+                FROM fundamentals f
+                JOIN stocks s ON s.id = f.stock_id
+                WHERE f.recommendation_mean IS NOT NULL
+                  AND s.delisted = false
+                ON CONFLICT (symbol, snapshot_date) DO NOTHING
+            """), {"today": today})
+            sess.commit()
+            n = result.rowcount
+        elapsed = time.monotonic() - _t0
+        _record_job_status("fundamentals_snapshot", "ok", elapsed)
+        log.info("scheduler.fundamentals_snapshot_complete", snapshots=n)
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        _record_job_status("fundamentals_snapshot", "error", elapsed, str(exc))
+        log.error("scheduler.fundamentals_snapshot_failed", error=str(exc))
+
+
+def _compute_sector_rotation() -> None:
+    """T220-G: Compute sector K-Score momentum (this week vs 4 weeks ago) and cache in Redis."""
+    import json as _json
+    from db import SessionLocal
+    from sqlalchemy import text as _text_sr
+    _t0 = time.monotonic()
+    try:
+        with SessionLocal() as sess:
+            rows = sess.execute(_text_sr("""
+                SELECT s.sector,
+                       AVG(CASE WHEN r.ranked_at >= NOW() - INTERVAL '7 days' THEN r.kscore END) as recent_kscore,
+                       AVG(CASE WHEN r.ranked_at >= NOW() - INTERVAL '35 days' AND r.ranked_at < NOW() - INTERVAL '28 days' THEN r.kscore END) as prior_kscore,
+                       COUNT(DISTINCT CASE WHEN r.ranked_at >= NOW() - INTERVAL '7 days' THEN s.id END) as n_recent
+                FROM rankings r
+                JOIN stocks s ON s.id = r.stock_id
+                WHERE s.sector IS NOT NULL AND s.market = 'US'
+                GROUP BY s.sector
+                HAVING COUNT(DISTINCT CASE WHEN r.ranked_at >= NOW() - INTERVAL '7 days' THEN s.id END) >= 3
+            """)).fetchall()
+
+        rotation = {}
+        for row in rows:
+            if row.recent_kscore is None or row.prior_kscore is None:
+                rotation[row.sector] = {"momentum": 0, "recent": None, "prior": None}
+                continue
+            delta = float(row.recent_kscore) - float(row.prior_kscore)
+            momentum = 1 if delta > 3 else (-1 if delta < -3 else 0)
+            rotation[row.sector] = {
+                "momentum": momentum,
+                "recent_kscore": round(float(row.recent_kscore), 1),
+                "prior_kscore": round(float(row.prior_kscore), 1),
+                "delta": round(delta, 1),
+            }
+
+        _get_redis().setex("stockai:sector_rotation", 86400 * 3, _json.dumps(rotation))
+        elapsed = time.monotonic() - _t0
+        _record_job_status("sector_rotation", "ok", elapsed)
+        log.info("scheduler.sector_rotation_complete", sectors=len(rotation))
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        _record_job_status("sector_rotation", "error", elapsed, str(exc))
+        log.error("scheduler.sector_rotation_failed", error=str(exc))
+
+
 def _purge_old_data() -> None:
     """Delete rows older than 90 days from intraday price bars and signal outcomes.
 
@@ -2722,6 +2803,24 @@ def start_scheduler() -> None:
         id="hk_connect_flows_daily", replace_existing=True, **_JOB_DEFAULTS,
     )
 
+    # ── T220-G: Sector rotation K-Score momentum — Sunday 16:00 ET ──────────
+    # Aggregates K-Score by sector (this week vs 4 weeks ago) → Redis 3-day TTL.
+    # Signal engine reads stockai:sector_rotation to add sector_momentum to reasons.
+    _scheduler.add_job(
+        _compute_sector_rotation,
+        CronTrigger(day_of_week="sun", hour=16, minute=0, timezone="America/New_York"),
+        id="sector_rotation_weekly", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── T220-F: Fundamentals snapshot — Sunday 16:30 ET (after sector_rotation) ─
+    # Takes a weekly snapshot of recommendation_mean + growth metrics from the
+    # fundamentals table. Used to compute 8-week earnings revision momentum in ML.
+    _scheduler.add_job(
+        _snapshot_fundamentals,
+        CronTrigger(day_of_week="sun", hour=16, minute=30, timezone="America/New_York"),
+        id="fundamentals_snapshot_weekly", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # ── One-shot startup run to restore conviction/Redis data after restarts ─
     # check_signal_alerts() is normally called by _run_market_refresh() (5×/day).
     # Running it once at startup (60s delay) repopulates Redis without adding a
@@ -2743,4 +2842,4 @@ def start_scheduler() -> None:
         log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=18)
+    log.info("scheduler.started", jobs=20)

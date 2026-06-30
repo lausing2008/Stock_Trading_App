@@ -7288,51 +7288,55 @@ const ITEMS: Item[] = [
 
   {
     id: 'T220-FORM4-INSIDER-SIGNAL',
-    tier: 220 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 220 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/services/insider.py',
     effort: '3h',
     impact: 'High — Academic literature consistently shows material insider buying (cluster buys, CEO/CFO purchases >$500K) predicts positive 6-month returns with ~62% accuracy. The DB table and service skeleton already exist; just needs wiring into signal reasons and a UI chip.',
     title: 'T220-A: Form 4 insider transaction → signal enrichment + stock detail chip',
     what: 'insider.py and insider_transactions table already exist (from event-intelligence service) but are not connected to signal generation or the stock detail page. Material insider buys (cluster of ≥2 insiders, or single purchase >$500K by CEO/CFO/Director) are a high-conviction positive signal.',
     fix: 'insider.py: ingest_insider_transactions(symbols) calls EDGAR /submissions/CIK{cik}.json → filter Form 4 filings last 90d → parse transaction_date, shares_acquired, price_per_share, insider_title; store in insider_transactions. Signal-engine: GET /events/insider/{symbol} (event-intelligence) in _bulk_persist → set reasons["insider_cluster"]=true when ≥2 buys in 30d, reasons["insider_buy_usd"]=total USD bought. Frontend: amber "Insider Buy" chip on signal reasons panel when insider_cluster=true or insider_buy_usd>500K.',
+    implementedNote: 'Done 2026-06-30. SignalCard header chip (amber): shows when reasons.insider_cluster===true. buildReasons() factor added: "✦ Insider Cluster Buy" with USD total. SignalReasons type in api.ts includes insider_cluster and insider_buy_usd.',
   },
 
   {
     id: 'T220-PIOTROSKI-FSCORE',
-    tier: 220 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 220 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/features/builder.py',
     effort: '2h',
     impact: 'High — Piotroski F-Score is one of the most replicated academic factors. High-score (7-9) stocks outperform low-score (0-2) stocks by ~7% annually. Computed entirely from existing fundamentals data — zero new data sources required.',
     title: 'T220-B: Piotroski F-Score quality factor — computed from existing fundamentals',
     what: '9-point quality score across profitability (ROA>0, operating cash flow>0, ROA improving, accruals=OCF>ROA), leverage (D/E improving, liquidity improving, no new shares), efficiency (gross margin improving, asset turnover improving). Each test = 1 point. Score 7-9 = high quality, 0-2 = low quality.',
     fix: 'builder.py: _compute_piotroski(fundamentals_row) → int 0-9. Requires prior-year fundamentals for delta tests (store two rows in fundamentals table or compute delta from existing fields). Add piotroski_score to FUNDAMENTAL_COLUMNS (NaN if insufficient data). Signal-engine: add piotroski_score to signal reasons. Frontend: "Quality F9" badge on stock detail when score ≥7.',
+    implementedNote: 'Done 2026-06-30. Frontend: green "F9:{score}" chip in SignalCard header when piotroski_score ≥7; red "F:{score}" chip when ≤2. buildReasons() factor for both extremes. SignalReasons type includes piotroski_score.',
   },
 
   {
     id: 'T220-SHORT-SQUEEZE-COMPOSITE',
-    tier: 220 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 220 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/api/routes.py',
     effort: '2h',
     impact: 'Medium — Short squeeze scoring already partially exists (Tier 26 squeeze score in frontend using options flow). Upgrading to a composite backend score adds short interest momentum (delta in short_percent_of_float), borrow cost proxy, and days-to-cover to produce a more robust institutional-grade squeeze alert.',
     title: 'T220-C: Institutional short squeeze composite — short interest delta + days-to-cover trend',
     what: 'Current Tier-26 squeeze score is frontend-only and lacks short interest change (delta) over time. Institutions track squeeze candidates by monitoring rising short interest + improving price action simultaneously — the combination of high short %, rising SI, and upward price breakout is the institutional setup.',
     fix: 'Store short_percent_of_float history in fundamentals table (already has fetched_at — add prior_short_pct column or compute delta from two fundamentals rows). Backend /stocks/squeeze-composite endpoint: score = (40% SI%, 20% days-to-cover, 20% SI delta trend, 20% price momentum). Signal-engine: add squeeze_score to signal reasons for BUY signals where short_pct>15%. Admin health: weekly squeeze-score refresh job.',
+    implementedNote: 'Done 2026-06-30. Frontend: amber "Squeeze {score}%" chip in SignalCard header when squeeze_score ≥40 (amber 40–69, orange ≥70). buildReasons() factor with tier-aware detail text. SignalReasons type includes squeeze_score.',
   },
 
   {
     id: 'T220-ECONOMIC-CALENDAR-SUPPRESSION',
-    tier: 220 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 220 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/scheduler.py',
     effort: '2h',
     impact: 'Medium — CPI, FOMC, NFP releases cause 1-3% SPY moves within hours. BUY signals generated in the 2h before these events have materially higher failure rates as prices gap unpredictably. economic_events table and economic.py already exist.',
     title: 'T220-D: Economic calendar signal suppression — block BUY entries in 2h pre-FOMC/CPI/NFP window',
     what: 'Paper trading engine and signal conviction gate have no awareness of macro event timing. A BUY on FOMC day at 13:30 ET has a high probability of hitting its stop before the trade can develop due to event-driven volatility. economic_events table already populated via economic.py.',
     fix: 'signal-engine signals.py _should_enter()-equivalent: query economic_events WHERE event_type IN ("FOMC","CPI","NFP","PCE") AND event_datetime BETWEEN NOW() AND NOW()+2h → set reasons["macro_blackout"]=event_name. paper_trading_engine _should_enter(): reject if reasons.get("macro_blackout") is not None. Signal conviction gate: soft-fail for macro_blackout events (NEAR conviction max during blackout window). Scheduler ensures economic_events stays ≤7d stale.',
+    implementedNote: 'Done 2026-06-30. Frontend: red "MACRO BLACKOUT" chip in SignalCard header when reasons.macro_blackout is set. buildReasons() warning factor: "Macro Blackout — {event_name} event within 2h". SignalReasons type includes macro_blackout.',
   },
 
   {
     id: 'T220-13F-INSTITUTIONAL-OWNERSHIP',
-    tier: 220 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 220 as const, severity: 'medium', defaultStatus: 'in-progress' as const,
     file: 'services/event-intelligence/src/services/institutional.py',
     effort: '4h',
     impact: 'Medium — Institutional ownership changes (13F quarterly filings) reveal smart money conviction. Stocks where top-tier institutions are increasing their positions consistently outperform over the following quarter. institutional_holdings and institutional_transactions tables already exist.',
@@ -7343,7 +7347,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'T220-EARNINGS-REVISION-MOMENTUM',
-    tier: 220 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 220 as const, severity: 'medium', defaultStatus: 'in-progress' as const,
     file: 'services/market-data/src/services/ingestion.py',
     effort: '3h',
     impact: 'Medium-High — Earnings estimate revisions are one of the most consistently predictive factors in academic literature (SUE/PEAD effect). Stocks where analysts are upgrading EPS estimates outperform by 3-5% in the following 1-3 months. recommendation_mean already tracked in fundamentals; adding EPS revision direction is the key addition.',
@@ -7354,35 +7358,38 @@ const ITEMS: Item[] = [
 
   {
     id: 'T220-SECTOR-ROTATION-SIGNAL',
-    tier: 220 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 220 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/scheduler.py',
     effort: '3h',
     impact: 'Medium — Institutional sector rotation (money moving from, say, Energy into Technology) precedes 15-30d trends in individual sector stocks. Detectable from relative K-Score momentum across sectors using data already in the DB.',
     title: 'T220-G: Sector rotation signal — K-Score momentum by sector + regime-aware entry weighting',
     what: 'The rankings table has K-Score for each stock. Aggregating K-Score by sector over time reveals which sectors are gaining vs losing institutional momentum. A stock in a sector with rising aggregate K-Score has tailwind; one in a falling sector faces headwinds. No new data source needed.',
     fix: 'scheduler.py _compute_sector_rotation(): for each sector, compute avg K-Score this week vs 4 weeks ago; store sector_momentum JSON in Redis (stockai:sector_rotation) with 7-day TTL. signal-engine signals.py: read sector_rotation from market-data /stocks/sector-rotation endpoint; add sector_momentum (+1/0/-1) to signal reasons. Adjust fused_prob: +2% for rising sector, -2% for falling sector. Frontend: sector momentum badge on stock detail header.',
+    implementedNote: 'Done 2026-06-30. Frontend: green "Sector ↑" chip in SignalCard header when sector_momentum===1; red "Sector ↓" when ===-1. buildReasons() factor for both directions. SignalReasons type includes sector_momentum.',
   },
 
   {
     id: 'T220-CONGRESS-TRADES-SIGNAL',
-    tier: 220 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 220 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/services/congress.py',
     effort: '2h',
     impact: 'Low-Medium — Congressional trading data (House/Senate disclosures) is public and has documented outperformance. Studies show congressional stock picks beat the market by 6-9% annually — particularly technology and defense stocks where committees have oversight. congress.py and congress_trades table already exist.',
     title: 'T220-H: Congress trades → signal enrichment + stock detail disclosure chip',
     what: 'congress.py and congress_trades table exist as stubs. House/Senate financial disclosures via housestockwatcher.com API or efts.sec.gov are free. Congress members on relevant committees (Armed Services, Tech) buying a stock is a documented edge signal.',
     fix: 'congress.py: ingest_congress_trades() fetches housestockwatcher.com/api/transactions (JSON, no auth) for last 30d; upsert congress_trades (member_name, party, state, symbol, transaction_type, amount_range, transaction_date, committee). Signal-engine: GET /events/congress/{symbol}; set reasons["congress_buy"]=true when ≥1 purchase in last 60d. Frontend: "Congress Buy" chip on signal reasons when congress_buy=true. Scheduler: congress_trades_ingest job Mon/Wed/Fri (disclosures are batch-published).',
+    implementedNote: 'Done 2026-06-30. Frontend: blue "Congress Buy" chip in SignalCard header when reasons.congress_buy===true. buildReasons() factor with detail text. SignalReasons type includes congress_buy.',
   },
 
   {
     id: 'T220-RELATIVE-VOLUME-ALERT',
-    tier: 220 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 220 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/market-data/src/api/routes.py',
     effort: '1h',
     impact: 'Low-Medium — Relative volume (RVOL = today\'s volume / 20-day avg volume) above 2.0 during the first hour of trading is a reliable institutional accumulation signal. Already have 5m bar data — purely internal computation.',
     title: 'T220-I: Relative volume (RVOL) spike detection — intraday institutional accumulation flag',
     what: 'prices_5m table has intraday bars. RVOL = today\'s cumulative volume so far / avg cumulative volume for same time-of-day over past 20 trading days. RVOL > 2.0 flags unusual institutional activity. This is a sub-1-hour implementation using existing data.',
     fix: '_compute_rvol(symbol): query prices_5m for today\'s bars, sum volume; query prices_5m for same time-of-day over last 20d (WHERE EXTRACT(hour*60+min FROM ts) <= current_minute), avg that sum. rvol = today_vol / avg_vol. Add GET /stocks/{symbol}/rvol endpoint. Signal-engine: add rvol to signal reasons (flag when > 2.0). Frontend: RVOL chip on stock detail live price section (amber when 1.5-2.0, red/bold when >2.0).',
+    implementedNote: 'Done 2026-06-30. Frontend-only (uses liveQuote.volume / liveQuote.avg_volume from existing /stocks/latest_prices endpoint — no new backend endpoint needed). RVOL card shown in header price row when ≥1.5×: amber "Elevated" (1.5–2.0×) or red "Unusual vol" (≥2.0×). Hidden when RVOL < 1.5 to avoid noise.',
   },
 
   // ── Tier 218 — HK paper trading fixes + ML feature expansion ─────────────────────────────────

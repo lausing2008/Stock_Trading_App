@@ -1,4 +1,4 @@
-"""Feature engineering — 58 features (29 stock-specific + 8 macro + 3 sector + 15 fundamental + 3 signal outcome).
+"""Feature engineering — 59 features (29 stock-specific + 8 macro + 3 sector + 16 fundamental + 3 signal outcome).
 
 29 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
@@ -23,7 +23,7 @@
   sector_rs_5d          — sector ETF 5d return minus SPY 5d return (short-term momentum)
   sector_in_favor       — 1 if sector_rs_20d > 0
 
-17 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
+18 fundamental (quarterly company metrics — static per stock, broadcast to all bars):
   revenue_growth        — YoY revenue growth rate
   earnings_growth       — YoY EPS growth rate
   gross_margin          — gross profit margin
@@ -41,6 +41,7 @@
   days_to_earnings      — days to next expected earnings (0–90, 90=unknown/far)
   avg_post_earnings_return_5d — mean 5d return after past 4 earnings (PEAD signal)
   avg_revenue_surprise_pct    — mean revenue beat/miss % over last 4 quarters
+  eps_revision_direction      — direction of analyst recommendation changes over 8 weekly snapshots (+1=upgrading, 0=flat, -1=downgrading)
 
 3 signal outcome (T206 — look-ahead-safe: only uses outcomes with exit_date ≤ bar_date − 10d):
   sig_acc_30d   — fraction of BUY signals correct in the prior 30-day exit window
@@ -291,6 +292,10 @@ FUNDAMENTAL_COLUMNS = [
     # T219-F: HKEX Stock Connect southbound flow (HK stocks only; NaN for US — XGBoost handles natively)
     "flow_5d_net_hkd",      # 5-day net mainland→HK buy in HKD millions (positive = net buying)
     "flow_strength",        # (5d_avg_flow / 20d_avg_flow) — >1 = accelerating mainland buying
+    # T89-B: Piotroski F-Score — 0-9 composite quality metric from existing fundamentals
+    "piotroski_score",      # 0=distressed, 9=high quality; NaN when insufficient fundamentals
+    # T220-F: Earnings revision momentum — direction of analyst recommendation changes over 8 weekly snapshots
+    "eps_revision_direction",  # +1 = upgrading, 0 = flat, -1 = downgrading
 ]
 
 # SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with
@@ -457,6 +462,34 @@ def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
     l = (-d.clip(upper=0)).ewm(alpha=1 / w, adjust=False).mean()
     rs = g / l.replace(0, np.nan)
     return 100 - 100 / (1 + rs)
+
+
+def _compute_piotroski(fund_data: dict) -> float:
+    """Piotroski F-Score (0-9). Uses existing fundamentals fields.
+    Returns NaN when insufficient data (XGBoost handles natively)."""
+    score = 0
+    roe = fund_data.get("return_on_equity")
+    fcf = fund_data.get("fcf_yield")
+    gross_margin = fund_data.get("gross_margin")
+    debt_equity = fund_data.get("debt_equity") or fund_data.get("debt_to_equity")
+    rev_growth = fund_data.get("revenue_growth")
+    earn_growth = fund_data.get("earnings_growth")
+    # We only have current-period data (no YoY delta without history).
+    # Use available proxies for the 9 tests:
+    # Profitability (4 tests)
+    if roe is not None and roe > 0: score += 1                           # ROA proxy > 0
+    if fcf is not None and fcf > 0: score += 1                          # operating cash flow > 0
+    if earn_growth is not None and earn_growth > 0: score += 1          # improving ROA proxy
+    if roe is not None and fcf is not None and fcf > roe * 0.5: score += 1  # accruals: OCF supports earnings
+    # Leverage/liquidity (3 tests)
+    if debt_equity is not None and debt_equity < 1.0: score += 1        # low leverage
+    if rev_growth is not None and rev_growth >= 0: score += 1           # stable/growing revenue
+    if (earn_growth is not None and rev_growth is not None and earn_growth > rev_growth) or \
+       (rev_growth is None and earn_growth is not None and earn_growth > 0): score += 1  # margin expanding
+    # Efficiency (2 tests)
+    if gross_margin is not None and gross_margin > 0.2: score += 1      # adequate gross margin
+    if rev_growth is not None and earn_growth is not None and earn_growth >= rev_growth: score += 1  # improving asset efficiency proxy
+    return float(score) if any(v is not None for v in [roe, fcf, gross_margin]) else float("nan")
 
 
 def build_features(
@@ -655,6 +688,38 @@ def build_features(
     for col in FUNDAMENTAL_COLUMNS:
         val = (fund_data or {}).get(col)
         out[col] = float(val) if val is not None else np.nan
+    # Piotroski F-Score: computed from existing fundamentals, not a raw DB field
+    out["piotroski_score"] = _compute_piotroski(fund_data or {})
+
+    # T220-F: Earnings revision momentum — direction of analyst recommendation changes
+    # Reads the last 8 weekly fundamentals_snapshot rows to detect upgrade/downgrade trends.
+    # recommendation_mean: lower = more bullish (1=strong buy, 5=strong sell).
+    # If mean decreasing → analysts upgrading → +1; increasing → downgrading → -1.
+    # symbol is sourced from fund_data["_symbol"] — callers that know the symbol store it there.
+    _eps_rev_sym = (fund_data or {}).get("_symbol") if fund_data else None
+    if _eps_rev_sym and "eps_revision_direction" not in (fund_data or {}):
+        try:
+            from db import SessionLocal
+            from sqlalchemy import text as _stext
+            with SessionLocal() as _fs:
+                _snaps = _fs.execute(_stext("""
+                    SELECT recommendation_mean
+                    FROM fundamentals_snapshot
+                    WHERE symbol = :sym
+                    ORDER BY snapshot_date DESC
+                    LIMIT 8
+                """), {"sym": _eps_rev_sym.upper()}).fetchall()
+            if len(_snaps) >= 2:
+                _recent_rec = float(_snaps[0].recommendation_mean)
+                _old_rec = float(_snaps[-1].recommendation_mean)
+                # recommendation_mean: lower = more bullish (1=strong buy, 5=sell)
+                # If mean decreasing → analysts upgrading → +1
+                _rec_delta = _old_rec - _recent_rec  # positive = analysts upgrading
+                _rev_dir = 1 if _rec_delta > 0.15 else (-1 if _rec_delta < -0.15 else 0)
+                fund_data = fund_data or {}
+                fund_data["eps_revision_direction"] = float(_rev_dir)
+        except Exception:
+            pass
 
     # --- Target ---
     fwd_ret = c.shift(-horizon) / c - 1

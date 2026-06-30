@@ -505,6 +505,8 @@ def train_model(
         fund_data = _load_fundamentals(symbol) or {}
     except Exception:
         pass
+    # T220-F: store symbol so build_features can look up earnings revision direction
+    fund_data["_symbol"] = symbol
     try:
         fund_data.update(_load_earnings_features(symbol))
     except Exception:
@@ -862,6 +864,8 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
         infer_fund_data = _load_fundamentals(symbol) or {}
     except Exception:
         pass
+    # T220-F: store symbol so build_features can look up earnings revision direction
+    infer_fund_data["_symbol"] = symbol
     try:
         infer_fund_data.update(_load_earnings_features(symbol))
     except Exception:
@@ -1178,6 +1182,8 @@ def validate_walkforward(
         fund_data.update(_load_hk_flow_features(symbol))
     except Exception:
         pass
+    # T220-F: store symbol so build_features can look up earnings revision direction
+    fund_data["_symbol"] = symbol
 
     windows: list[dict] = []
     n = len(df_all)

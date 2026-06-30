@@ -124,6 +124,15 @@ type Reasons = {
   short_interest_flag?: string | null;
   analyst_momentum?: string | null;
   analyst_momentum_adj?: number | null;
+  // T220: institutional intelligence suite
+  insider_cluster?: boolean;
+  insider_buy_usd?: number | null;
+  congress_buy?: boolean;
+  sector_momentum?: number | null;
+  squeeze_score?: number | null;
+  piotroski_score?: number | null;
+  macro_blackout?: string | null;
+  eps_revision_direction?: number | null;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
@@ -480,6 +489,97 @@ function buildReasons(r: Reasons): Factor[] {
     factors.push({ label: 'Pullback: No Recovery', bullish: false, detail: 'In pullback with no recovery confirmation yet — wait for bounce' });
   }
 
+  // ── T220: Institutional intelligence suite ────────────────────────────────
+
+  // Macro blackout (T220-D)
+  if (r.macro_blackout) {
+    factors.push({
+      label: 'Macro Blackout',
+      bullish: false,
+      warning: true,
+      detail: `${r.macro_blackout} event within 2h — signal suppressed, avoid new entries`,
+    });
+  }
+
+  // Insider cluster buy (T220-A)
+  if (r.insider_cluster === true) {
+    const usd = r.insider_buy_usd != null && r.insider_buy_usd >= 1e6
+      ? ` ($${(r.insider_buy_usd / 1e6).toFixed(1)}M total)`
+      : r.insider_buy_usd != null ? ` ($${(r.insider_buy_usd / 1e3).toFixed(0)}K total)` : '';
+    factors.push({
+      label: '✦ Insider Cluster Buy',
+      bullish: true,
+      detail: `≥2 insiders bought in last 30d${usd} — institutional conviction signal`,
+    });
+  }
+
+  // Congress buy (T220-H)
+  if (r.congress_buy === true) {
+    factors.push({
+      label: 'Congress Buy',
+      bullish: true,
+      detail: 'Congressional purchase disclosed in last 60d — public official interest signal',
+    });
+  }
+
+  // Sector momentum (T220-G)
+  if (r.sector_momentum === 1) {
+    factors.push({
+      label: 'Sector ↑ Rising',
+      bullish: true,
+      detail: 'Sector K-Score momentum rising — institutional rotation into this sector',
+    });
+  } else if (r.sector_momentum === -1) {
+    factors.push({
+      label: 'Sector ↓ Falling',
+      bullish: false,
+      detail: 'Sector K-Score momentum declining — institutional rotation out of this sector',
+    });
+  }
+
+  // Squeeze score (T220-C)
+  if (r.squeeze_score != null && r.squeeze_score >= 40) {
+    factors.push({
+      label: `Squeeze ${r.squeeze_score.toFixed(0)}%`,
+      bullish: true,
+      detail: r.squeeze_score >= 70
+        ? `High squeeze score ${r.squeeze_score.toFixed(0)}% — elevated short interest + upward price action creates squeeze risk for shorts`
+        : `Elevated squeeze score ${r.squeeze_score.toFixed(0)}% — notable short interest with improving price momentum`,
+    });
+  }
+
+  // Piotroski F-Score (T220-B)
+  if (r.piotroski_score != null) {
+    if (r.piotroski_score >= 7) {
+      factors.push({
+        label: `F9: ${r.piotroski_score}/9 Quality`,
+        bullish: true,
+        detail: `Piotroski F-Score ${r.piotroski_score}/9 — high-quality balance sheet across profitability, leverage, and efficiency`,
+      });
+    } else if (r.piotroski_score <= 2) {
+      factors.push({
+        label: `F: ${r.piotroski_score}/9 Weak`,
+        bullish: false,
+        detail: `Piotroski F-Score ${r.piotroski_score}/9 — deteriorating fundamentals across multiple dimensions`,
+      });
+    }
+  }
+
+  // EPS revision direction (T220-F)
+  if (r.eps_revision_direction === 1) {
+    factors.push({
+      label: 'EPS Estimates ↑',
+      bullish: true,
+      detail: 'Analyst EPS estimates trending upward — positive revision momentum (PEAD effect)',
+    });
+  } else if (r.eps_revision_direction === -1) {
+    factors.push({
+      label: 'EPS Estimates ↓',
+      bullish: false,
+      detail: 'Analyst EPS estimates trending downward — negative revision momentum headwind',
+    });
+  }
+
   return factors;
 }
 
@@ -513,6 +613,56 @@ export default function SignalCard({ signal }: { signal: Signal }) {
           {reasons?.stability_days != null && reasons.stability_days > 0 && (
             <span title={`Signal unchanged for ${reasons.stability_days} consecutive day${reasons.stability_days === 1 ? '' : 's'}`} style={{ fontSize: '9px', fontWeight: 700, color: '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.2)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
               {reasons.stability_days}d stable
+            </span>
+          )}
+          {/* T220: Institutional intelligence chips */}
+          {reasons?.macro_blackout && (
+            <span title={`Macro event within 2h: ${reasons.macro_blackout}`} style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              MACRO BLACKOUT
+            </span>
+          )}
+          {reasons?.insider_cluster === true && (
+            <span title="≥2 insiders bought in last 30 days (Form 4 EDGAR)" style={{ fontSize: '9px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Insider Buy
+            </span>
+          )}
+          {reasons?.congress_buy === true && (
+            <span title="Congressional purchase disclosed in last 60 days" style={{ fontSize: '9px', fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.1)', border: '1px solid rgba(96,165,250,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Congress Buy
+            </span>
+          )}
+          {reasons?.sector_momentum === 1 && (
+            <span title="Sector K-Score momentum rising — institutional rotation into sector" style={{ fontSize: '9px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Sector ↑
+            </span>
+          )}
+          {reasons?.sector_momentum === -1 && (
+            <span title="Sector K-Score momentum declining — institutional rotation out of sector" style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Sector ↓
+            </span>
+          )}
+          {reasons?.squeeze_score != null && reasons.squeeze_score >= 40 && (
+            <span
+              title={`Squeeze score ${reasons.squeeze_score.toFixed(0)}% — short interest + price momentum composite`}
+              style={{
+                fontSize: '9px', fontWeight: 700,
+                color: reasons.squeeze_score >= 70 ? '#fb923c' : '#fbbf24',
+                background: reasons.squeeze_score >= 70 ? 'rgba(251,146,60,0.1)' : 'rgba(251,191,36,0.1)',
+                border: `1px solid ${reasons.squeeze_score >= 70 ? 'rgba(251,146,60,0.3)' : 'rgba(251,191,36,0.3)'}`,
+                padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap',
+              }}
+            >
+              Squeeze {reasons.squeeze_score.toFixed(0)}%
+            </span>
+          )}
+          {reasons?.piotroski_score != null && reasons.piotroski_score >= 7 && (
+            <span title={`Piotroski F-Score ${reasons.piotroski_score}/9 — high-quality fundamentals`} style={{ fontSize: '9px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              F9:{reasons.piotroski_score}
+            </span>
+          )}
+          {reasons?.piotroski_score != null && reasons.piotroski_score <= 2 && (
+            <span title={`Piotroski F-Score ${reasons.piotroski_score}/9 — weak fundamentals`} style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              F:{reasons.piotroski_score}
             </span>
           )}
           <span className={`rounded px-2.5 py-0.5 text-sm font-bold text-white ${SIGNAL_COLOR[signal.signal]}`}>

@@ -858,6 +858,29 @@ Return ONLY valid JSON — no markdown, no prose:
             )}
           </div>
 
+          {/* RVOL chip (T220-I) — derived from liveQuote volume vs avg_volume */}
+          {liveQuote?.volume != null && liveQuote?.avg_volume != null && liveQuote.avg_volume > 0 && (() => {
+            const rvol = liveQuote.volume! / liveQuote.avg_volume!;
+            if (rvol < 1.5) return null;
+            const isHigh = rvol >= 2.0;
+            return (
+              <div
+                title={`Relative volume ${rvol.toFixed(2)}× 20-day avg — ${isHigh ? 'unusual institutional activity detected' : 'above-average volume'}`}
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  padding: '6px 12px', borderRadius: 8,
+                  border: `1px solid ${isHigh ? 'rgba(239,68,68,0.4)' : 'rgba(251,191,36,0.35)'}`,
+                  background: isHigh ? 'rgba(239,68,68,0.08)' : 'rgba(251,191,36,0.08)',
+                  minWidth: 72,
+                }}
+              >
+                <span style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>RVOL</span>
+                <span style={{ fontSize: 18, fontWeight: 800, color: isHigh ? '#f87171' : '#fbbf24', lineHeight: 1.1 }}>{rvol.toFixed(1)}×</span>
+                <span style={{ fontSize: 9, color: isHigh ? '#f87171' : '#fbbf24', marginTop: 1 }}>{isHigh ? 'Unusual vol' : 'Elevated'}</span>
+              </div>
+            );
+          })()}
+
           {ranking?.fair_price != null && (
             <div className="rounded-md border border-indigo-800 bg-indigo-950/40 px-4 py-2 text-center" style={{ minWidth: 120 }}>
               <div className="text-xs text-indigo-400 font-medium mb-0.5">Fair Value</div>
