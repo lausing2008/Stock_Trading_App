@@ -1,220 +1,229 @@
 # StockAI — Domain Knowledge, Analysis Style & Coding Standards
 
-This file teaches Claude the trading domain, system architecture mental models, and project-specific
-coding standards for the StockAI platform. Read this to understand how to think about the codebase,
-not just what the code does.
+Teaches Claude the trading domain, system architecture, analysis mental models, and coding standards
+for the StockAI platform. Read this before working on any part of the codebase. Each service also
+has its own `skill.md` with deeper service-specific knowledge.
 
 ---
 
-## Trading Domain Knowledge
+## Trading Domain
 
 ### Signal Styles and Horizons
 
-Signals are computed per-stock, per-style, per-horizon. A signal has a direction (BUY/HOLD/SELL)
-and a confidence score (0–100).
+Signals are computed per-stock, per-style, per-horizon. Direction: BUY / HOLD / SELL. Confidence: 0–100.
 
-**Styles** — define the trading timeframe and threshold profile:
 | Style | Hold window | Personality |
 |---|---|---|
-| SHORT | 1–5 days | Sensitive to intraday momentum; fires BUY more selectively; best for fast-moving HK stocks |
-| SWING | 5–15 days | Balanced; the reference style for most portfolio configs |
-| GROWTH | 15–60 days | Relaxed thresholds; fires BUY more often than SWING by design; high-volatility momentum |
-| LONG | 60+ days | Slow-moving; requires sustained trend confirmation |
+| SHORT | 1–5 days | Intraday-momentum sensitive; selective; best for fast-moving HK stocks |
+| SWING | 5–15 days | Balanced; reference style for most portfolios |
+| GROWTH | 15–60 days | Relaxed thresholds; fires BUY more often than SWING by design |
+| LONG | 60+ days | Requires sustained trend confirmation |
 
-**Horizons** — within a style, signals are computed for multiple time windows:
-- `1d`, `5d`, `20d`, `60d` — the 4-horizon tab UI on the stock detail page
+**Horizons** — signals are computed for `1d`, `5d`, `20d`, `60d` windows. The 4-horizon tabs on
+the stock detail page show these directly.
 
-**Key distinction — DB signal vs live signal:**
-- **DB signal**: stored in `signals` table; written by `POST /signals/refresh`; refreshed 5×/day on market days. Source of truth for Signal Filter page, alert emails, and paper trading entry gates.
-- **Live signal**: recomputed fresh from current intraday price data on every request. Used by the AI badge on the stock detail page (`GET /signals/{symbol}?persist=true`).
-- When these disagree, DB is stale. Fix: trigger manual refresh. Never "fix" the disagreement by making the DB path live — it would recompute on every page load.
+**DB signal vs live signal — the most important distinction in the system:**
+- **DB signal**: stored in `signals` table; written by `POST /signals/refresh`; refreshed 5×/day.
+  Source of truth for Signal Filter page, alert emails, and paper trading entry gates.
+- **Live signal**: recomputed fresh from current intraday price on every request.
+  Used only by the AI badge on the stock detail page (`GET /signals/{symbol}?persist=true`).
+- When badge ≠ tab: DB is stale. Fix: trigger refresh. Never switch the trading loop to live signals.
 
 ### Signal Quality Metrics
-- **confidence** (0–100): how strongly the model believes in the signal direction
-- **confidence_delta**: change in confidence since the previous signal computation — negative = losing conviction
-- **volume_z**: z-score of today's volume vs 20-day average, stored in `sig.reasons` — negative = thin market
-- **score**: Decision Engine score out of 12 (9 dimensions); -99 = hard rejected before scoring
-- **signal age**: hours since signal was last computed; >96h = stale for entry purposes
 
-### Regime Detection
-The system classifies the market into four regimes based on VIX + SPY momentum:
-- **bull**: VIX low, SPY trending up — full position sizing
-- **neutral**: normal conditions — normal sizing
-- **choppy**: VIX elevated or SPY range-bound — reduced sizing
-- **bear** / **risk_off**: VIX spike or sustained SPY decline — optional hard block on new entries
+| Metric | Meaning | Used in |
+|---|---|---|
+| `confidence` (0–100) | Model conviction in the signal direction | DE scoring, alert threshold |
+| `confidence_delta` | Change since previous refresh; negative = losing conviction | T202 gate |
+| `volume_z` | z-score vs 20-day avg volume; stored in `sig.reasons` | T200 gate, DE scoring |
+| `score` (0–12) | DE score across 9 dimensions; -99 = hard rejected before scoring | decide.tsx display |
+| signal age (hours) | Hours since last refresh; >96h = stale for entry | T195 gate |
 
-Regime affects paper trading through `regime_risk_off_gate` (hard block) and `position_size_pct` scaling.
-The regime is read from a Redis key updated by the market-data scheduler.
+### Market Regime
 
-### Decision Engine (DE) Pipeline
-Hard rejects → numerical scoring → decision. Order matters: hard rejects are cheap and run first.
+Four regimes: **bull → neutral → choppy → bear/risk_off**. Computed from VIX + SPY momentum.
+Stored in Redis. Affects paper trading via:
+- `regime_risk_off_gate: true` → hard block all new entries
+- `position_size_pct` scaling down in choppy/bear
+
+### Decision Engine Pipeline
 
 ```
 Signal candidate
     ↓
-Hard rejects (hard_rejects.py) — any BLOCKED → short-circuit, score = -99
+Hard rejects (hard_rejects.py)  ← cheap, run first; any BLOCK → score = -99
     ↓
-9-dimension numerical scoring (DE service)
+9-dimension numerical scoring
     ↓
-Final score / 12 → ENTER or SKIP
+Score / 12 → ENTER or SKIP
 ```
 
-**Hard reject gates (as of T202):**
-1. Open exposure cap — total open notional > 40% of initial capital
-2. Signal staleness — signal age > 96h
-3. Price drift — stock moved > 3% from signal date close
-4. Volume gate — volume_z < -1.5 (abnormally thin market)
-5. Confidence decline — confidence_delta < -8pts since last refresh
-6. Equity floor — equity < 80% of initial capital (circuit breaker)
-7. Regime gate — risk_off and regime_risk_off_gate=True
-8. Recent stop cooldown — same stock stopped out in last 24h (2h for break-even stops)
+Hard reject gates (as of T202): open exposure cap, signal staleness, price drift, volume z-score,
+confidence decline, equity floor, regime gate, stop cooldown.
 
 ### Paper Trading Exit Taxonomy
-Exits are not generic "stop hit" — the reason matters for cooldown logic:
+
 | Exit reason | Meaning | Re-entry cooldown |
 |---|---|---|
-| `stop_hit` | Real loss — stop triggered below entry | 24h |
-| `breakeven_stop` | Stock ran then came back to entry (±0.5%) | 2h |
-| `target_reached` | Take profit hit | No cooldown |
-| `signal_exit` | Underlying signal flipped | No cooldown |
-| `time_stop` | Max hold days exceeded | No cooldown |
-| `hold_stall` | Position not moving — capital redeployment | No cooldown |
-| `trailing_stop` | Trailing stop triggered after 3% gain | No cooldown |
+| `stop_hit` | Real loss stop | 24h |
+| `breakeven_stop` | Stop at ≈entry price (±0.5%) | 2h |
+| `target_reached` | Take profit hit | none |
+| `signal_exit` | Signal flipped SELL/HOLD | none |
+| `time_stop` | Max hold days exceeded | none |
+| `hold_stall` | Position not moving | none |
+| `trailing_stop` | Trailing stop after 3% gain | none |
 
-### HK vs US Market Differences
-- **Timezone**: HK trades in HKT (UTC+8). Daily bars must be stored with correct UTC offset. A bar labeled `2026-06-17 00:00:00+08:00` is a HK trading day bar, not a UTC midnight bar.
-- **HK stock symbols**: format is `NNNN.HK` (e.g., `0981.HK`, `0700.HK`)
-- **Page visit refresh bias**: US stocks get auto-persisted on every stock detail page visit (unauthenticated GET). HK stocks with fewer page views go stale faster — so stale signals skew HK.
-- **Stock Connect**: Southbound (mainland → HK) and Northbound (HK → mainland) daily flows are documented alpha signals for HK stocks (planned T209).
+### HK vs US Differences
+
+- **Timezone**: HK bars use HKT (UTC+8). `2026-06-17 00:00:00+08:00` = HK trading day.
+- **Symbol format**: `NNNN.HK` (e.g., `0981.HK`, `0700.HK`)
+- **Staleness asymmetry**: US stocks auto-persist on every detail page visit (unauthenticated GET).
+  HK stocks with fewer page views go stale faster — stale signal bias skews HK.
+- **Stock Connect**: Southbound (mainland→HK) flows are documented alpha signals (planned T209).
 
 ---
 
-## System Architecture Mental Models
+## System Architecture
 
 ### Service Topology
+
 ```
 Frontend (Next.js :3000)
-    → API Gateway (:8000) — all external traffic, JWT validation
-        → Market Data (:8001) — prices, watchlists, alerts, paper trading, scheduler
-        → Signal Engine (:8005) — signal computation and storage
+    → API Gateway (:8000)  — single entry, JWT validation, transparent proxy
+        → Market Data (:8001)     — prices, scheduler, paper trading, auth, email
+        → Signal Engine (:8005)   — signal computation + persistence
         → Decision Engine (:8006) — hard rejects + scoring
-        → ML Prediction (:8003) — XGBoost models, Optuna tuning
-        → Research Engine (:8008) — AI research reports
-        → Ranking Engine (:8007) — stock rankings
-        → Technical Analysis (:8009) — TA indicators
-        → Strategy Engine (:8010) — strategy evaluation
-        → Portfolio Optimizer (:8011) — portfolio-level optimization
-        → Event Intelligence (:8012) — earnings, macro events
+        → ML Prediction (:8003)   — XGBoost/LightGBM/LSTM training + Optuna tuning
+        → Research Engine (:8008) — Claude AI research reports
+        → Ranking Engine (:8007)  — K-score rankings + leaderboards
+        → Technical Analysis (:8009) — RSI/MACD/BB/patterns/trendlines/S&R
+        → Strategy Engine (:8010) — DSL strategy rules + backtesting
+        → Portfolio Optimizer (:8011) — mean-variance, risk parity, HRP
+        → Event Intelligence (:8012) — earnings, insider, congress, macro, catalyst
 ```
-
-### Scheduler as Orchestrator
-The market-data scheduler (`services/market-data/src/services/scheduler.py`) is the system's heartbeat:
-- Every 1 min: `check_signal_alerts()` — reads DB signals (live=False), checks thresholds
-- 5× per market day: price ingest, signal refresh (POST to signal-engine), rankings update
-- At market close: ML retrain trigger
-- The scheduler authenticates to other services using a long-lived `_service_token()` JWT
-
-**Critical invariant:** `check_signal_alerts()` MUST read DB signals (`live=False`). Using live=True causes
-BUY↔HOLD oscillation every minute for stocks sitting at the threshold boundary.
-
-### Auth Flow
-- JWTs signed with HS256, shared secret across all services
-- `shared/common/jwt_auth.py` is the canonical verifier — uses `python-jose`
-- If `jose` is missing from a container, `from jose import JWTError, jwt` fails at call time,
-  the generic `except Exception` raises HTTP 401, and ALL authenticated endpoints silently break
-- Service-to-service calls use `_service_token()` — a long-lived JWT with `sub="scheduler"` or service name
-- **jose is the #1 recurring silent failure** — check it first when any endpoint returns unexpected 401s
 
 ### Data Flow for a Trade
+
 ```
-1. Signal engine computes signal → writes to signals table (upsert by stock+style+horizon)
-2. Scheduler runs paper_trading_step → calls _scan_for_entries
-3. _scan_for_entries reads signals from DB (not live) → runs hard rejects → calls DE /decide
+1. Signal engine computes signal → upserts to signals table (stock+style+horizon)
+2. Scheduler (market-data) runs paper_trading_step 5×/day
+3. _scan_for_entries reads DB signals → runs hard rejects → calls DE /decide
 4. DE returns score → if ENTER: _open_position writes PaperTrade row
-5. _monitor_positions checks open trades each cycle → applies stop/target/trailing logic
+5. _monitor_positions checks each cycle → applies stop/target/trailing
 6. On exit: writes exit_reason, pnl, closed_at to PaperTrade
-7. signal_outcomes table tracks signal→outcome for future ML training feedback
+7. signal_outcomes tracks signal→outcome for ML feedback loop (planned T206)
 ```
+
+### Scheduler as System Heartbeat
+
+The market-data scheduler (`scheduler.py`) is the system's timing backbone:
+- Every 1 min: `check_signal_alerts()` — reads DB signals (`live=False`)
+- 5× per market day: price ingest → signal refresh → rankings update
+- At market close: ML retrain trigger
+- Uses long-lived `_service_token()` JWTs for service-to-service auth calls
+
+**Invariant:** `check_signal_alerts()` MUST read DB signals (`live=False`). `live=True` causes
+BUY↔HOLD email oscillation every minute for stocks at the threshold boundary.
+
+### Auth Architecture
+
+- JWTs signed with HS256, shared `jwt_secret` across all services
+- `shared/common/jwt_auth.py` is the canonical verifier — uses `python-jose`
+- **jose is the #1 silent failure**: if missing from a container, `from jose import JWTError, jwt`
+  fails at call time, the generic `except Exception` raises HTTP 401, and ALL authenticated
+  endpoints silently break. Check jose first on any unexpected 401.
+- Service-to-service calls: `_service_token()` pattern — long-lived JWT with `sub="service-name"`
+
+### Shared Module Layout
+
+```
+shared/
+├── db/
+│   ├── models.py     — SQLAlchemy ORM (Stock, Price, Signal, PaperTrade, Strategy, ...)
+│   ├── session.py    — DB session management
+│   └── __init__.py   — SessionLocal export
+└── common/
+    ├── config.py     — Settings from env
+    ├── service.py    — FastAPI app factory (create_app)
+    ├── jwt_auth.py   — JWT verify + get_current_username dependency
+    ├── redis_client.py — Redis helpers
+    └── logging.py    — Structured logger setup
+```
+
+**Shared module deploy path:** `shared/db/` and `shared/common/` → `/app/shared/` in containers,
+NOT `/app/src/`. This is a common copy-paste error that silently deploys to the wrong location.
 
 ---
 
-## Analysis Style
+## Analysis Style — How to Diagnose Issues
 
-### Diagnosing Production Issues — Mental Order
+### Signal Staleness (check in order)
+1. Is `jose` installed? → `docker exec stockai-signal-engine-1 python3 -c 'from jose import jwt'`
+2. 401s in signal-engine logs? → `docker logs ... | grep '401\|refresh'`
+3. SQLAlchemy CAST syntax error swallowed by except? → `grep -i 'syntax\|invalid'`
+4. DISTINCT ON ORDER BY wrong? → first ORDER BY key must match the DISTINCT ON expression
+5. Scheduler missed runs? → check market-data logs for scheduler heartbeat
 
-**Signal staleness:**
-1. Is jose installed in signal-engine? (`docker exec ... python3 -c 'from jose import jwt'`)
-2. Are there 401s in signal-engine logs? (`docker logs ... | grep '401\|refresh'`)
-3. Is there a SQLAlchemy CAST syntax error swallowed by except? (`grep -i 'syntax\|invalid'`)
-4. Is the DISTINCT ON ORDER BY correct? (stock_id first, then ts.desc())
-5. Then check scheduler logs for missed runs
+### Login Redirect Loop (check in order)
+1. Is the JWT locally expired? (decode base64 middle segment, check `exp` vs now)
+2. Is `api.ts` clearing a valid JWT on any 401? (should only clear on locally-expired tokens)
+3. Is `_app.tsx` calling `doCheck()` before localStorage is initialized? (lazy init fix)
+4. Is `dataFreshness()` polling before user is logged in? (must gate on `username` being set)
 
-**Login redirect loop:**
-1. Is the JWT locally expired or still valid? (decode base64 middle segment, check `exp`)
-2. Is api.ts clearing a valid JWT on any 401? (it should only clear on locally-expired tokens)
-3. Is `_app.tsx` firing doCheck() before localStorage is initialized? (lazy init fix)
-4. Is dataFreshness() polling before user is logged in? (must gate on `username` being set)
-
-**Paper trading not entering:**
+### Paper Trading Not Entering (check in order)
 1. Is the portfolio `is_active`?
-2. Is the equity floor triggered?
-3. Is the regime gate blocking?
-4. Is the signal stale?
-5. Check paper_trading_engine logs for `paper.skip_*` structured log entries
+2. Is the equity floor triggered? (`equity / initial_capital < equity_floor_pct`)
+3. Is the regime gate blocking? (`regime_risk_off_gate` + current regime)
+4. Is the signal stale? (`signal_age_hours > max_signal_age_hours`)
+5. Check logs for `paper.skip_*` structured entries
 
-### When the AI Badge Disagrees with the Signal Tabs
-- Badge = live computation (always fresh, from current price)
-- Tabs = DB signal (from last refresh, up to 96h old)
-- This is expected behavior when DB signals are stale
-- Fix: trigger refresh, not code change
-
-### Gate Design Philosophy
-- **Fail open on missing data**: if volume_z is None, allow entry — don't block on uncertainty
-- **Config-driven thresholds**: every gate threshold is a `portfolio.config` key with a sensible default
-- **Log on every skip**: `log.info("paper.skip_<reason>", symbol=..., threshold=..., actual=...)`
-- **No magic numbers**: thresholds come from config, not hardcoded constants in the loop
+### When AI Badge ≠ Signal Filter Tab
+Expected behavior when DB signals are stale. Fix: trigger manual signal refresh.
+Never fix the disagreement by wiring the trading loop to live signals.
 
 ---
 
 ## Coding Standards
 
-### Python — Signal & Trading Engine
+### Python — SQLAlchemy text() SQL
 
-**SQL with SQLAlchemy text():**
 ```python
 # CORRECT — use CAST() syntax
-INSERT INTO signals VALUES (:sid, CAST(:sig AS signaltype), CAST(:hor AS signalhorizon))
+sql = text("INSERT INTO signals VALUES (:sid, CAST(:sig AS signaltype), CAST(:hor AS signalhorizon))")
 
-# BROKEN — SQLAlchemy cannot bind :param::type (the :: is ambiguous)
-INSERT INTO signals VALUES (:sid, :sig::signaltype, :hor::signalhorizon)
+# BROKEN — SQLAlchemy cannot bind :param::type (BUG-6, causes silent data loss)
+sql = text("INSERT INTO signals VALUES (:sid, :sig::signaltype, :hor::signalhorizon)")
 ```
-**Rule:** Never use PostgreSQL `::` cast shorthand immediately after a named parameter in SQLAlchemy `text()` queries.
+**Rule:** Never use PostgreSQL `::type` cast immediately after a named parameter in `text()` queries.
 
-**DISTINCT ON with ORDER BY:**
+### Python — DISTINCT ON with ORDER BY
+
 ```python
-# CORRECT — DISTINCT ON key must be first in ORDER BY
+# CORRECT — DISTINCT ON key must be first ORDER BY expression
 .order_by(Stock.id, Signal.ts.desc()).distinct(Stock.id)
 
-# BROKEN — psycopg2 error: SELECT DISTINCT ON expressions must match initial ORDER BY
+# BROKEN — psycopg2: "SELECT DISTINCT ON expressions must match initial ORDER BY expressions"
 .order_by(Signal.ts.desc()).distinct(Stock.id)
 ```
 
-**Gate implementation pattern:**
+### Python — Gate Implementation Pattern
+
 ```python
-# Read from config with default
+# 1. Read threshold from config (with sensible default)
 _threshold = float(cfg.get("config_key_name", default_value))
 
-# Compute the value (fail-open: use safe default if data missing)
+# 2. Compute value — fail-open if data missing
 _value = float((sig.reasons or {}).get("volume_z", 0)) if sig.reasons else 0.0
 
-# Check threshold
+# 3. Check and skip with structured log
 if _value < _threshold:
     log.info("paper.skip_descriptive_name",
              symbol=stock.symbol, actual=round(_value, 2), threshold=_threshold)
     continue  # or return, depending on scope
 ```
 
-**Service token pattern (service-to-service auth):**
+### Python — Service-to-Service Auth Token
+
 ```python
 _service_token_cache: str = ""
 def _service_token() -> str:
@@ -223,53 +232,82 @@ def _service_token() -> str:
         return _service_token_cache
     import time
     from jose import jwt as _jwt
-    payload = {"sub": "service-name", "exp": int(time.time()) + 365 * 86400, "jti": "service-name-service"}
+    payload = {"sub": "service-name", "exp": int(time.time()) + 365 * 86400, "jti": "service-name-svc"}
     _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
     return _service_token_cache
 ```
 
-**Structured logging style:**
+### Python — Structured Logging
+
 ```python
-# Good — structured, grep-friendly
+# Good — structured, grep-friendly, machine-parseable
 log.info("paper.skip_stale_signal", symbol=stock.symbol, age_hours=round(age_h, 1), max_age=max_age)
 
-# Bad — unstructured
+# Bad — interpolated string, not grep-friendly
 log.info(f"Skipping {stock.symbol}: signal too old ({age_h:.1f}h)")
 ```
 
-### TypeScript — Frontend
+### TypeScript — Improvements Tracker Type Safety
 
-**Improvements tracker type safety:**
-Every new tier number must appear in ALL FOUR places or TypeScript errors with `Type 'N' is not assignable to type 'Tier'`:
+All four must include every Tier member, or TypeScript errors:
 1. `type Tier = 1 | 2 | ... | N` union
-2. `TIER_LABEL: Record<Tier, string>` entry
-3. `TIER_COLOR: Record<Tier, string>` entry
+2. `TIER_LABEL: Record<Tier, string>` — add `N: 'label'`
+3. `TIER_COLOR: Record<Tier, string>` — add `N: '#hexcolor'`
 4. Item objects with `tier: N as const`
 
-**API client pattern:**
-```typescript
-// All API calls go through api.ts request() — never fetch() directly
-const result = await api.someEndpoint(params)
+Render loop is automatic (driven by TIER_LABEL keys) — no hardcoded tier array to update.
 
-// New endpoint definition in api.ts:
-newEndpoint: (param: string) =>
-  request<ResponseType>(`/endpoint/${param}`, { method: 'POST', body: JSON.stringify(data) })
+### TypeScript — Auth Safety (login redirect loop prevention)
+
+- Never delete the JWT on any 401 — only delete when token is locally expired (`exp < Date.now()/1000`)
+- Never add a handler that preserves the token AND redirects to /login — causes infinite loop
+- `dataFreshness()` poll must be gated on `username` being set — never poll unauthenticated
+
+### Deployment — Backend
+
+```bash
+git add <file> && git commit -m "..." && git push origin prod
+ssh -i ~/Documents/Stock_AI/lausing.pem ec2-user@18.205.121.71 \
+  "cd /home/ec2-user/Stock_Trading_App && git pull origin prod && \
+   docker cp /home/ec2-user/Stock_Trading_App/<host-path> <container>:<container-path> && \
+   docker restart <container>"
 ```
 
-**Auth safety rules (from login redirect loop fix):**
-- Never delete JWT on ANY 401 — only delete when the token is locally expired (check `exp` claim)
-- Never add a handler that preserves the token AND redirects to /login — causes infinite loop
-- dataFreshness() poll must be gated on `username` being set — never poll when unauthenticated
+### Deployment — Frontend (critical rules)
+
+```bash
+# ALWAYS use DOCKER_BUILDKIT=0 — BuildKit silently serves cached layers even with --no-cache
+DOCKER_BUILDKIT=0 docker build --no-cache -f frontend/Dockerfile -t stockai-frontend:latest .
+docker compose -f docker/docker-compose.yml up -d --force-recreate frontend
+
+# NEVER use this — BuildKit = stale image guaranteed
+docker compose build --no-cache frontend
+```
+
+- Run synchronously — no `run_in_background: true` (SSH timeout = unknown container state)
+- `frontend/.env.production` must exist on EC2 before building (gitignored, never commit)
 
 ### Comments Policy
-Default: no comments. Add a comment ONLY when the WHY is non-obvious:
-- A hidden constraint, a workaround for a specific bug, a subtle invariant
-- Recurring bug pattern references (e.g., `# BUG-6: ::type cast syntax fails with SQLAlchemy text()`)
-- Never: what the code does, who calls it, which ticket it came from
 
-### Deployment Discipline
-- Backend: `docker cp <file> <container>:<path> && docker restart <container>` — always on EC2, after git pull
-- Frontend: `DOCKER_BUILDKIT=0 docker build --no-cache -f frontend/Dockerfile -t stockai-frontend:latest .` — NEVER `docker compose build`
-- Shared modules: `shared/db/` and `shared/common/` → `/app/shared/` in container, NOT `/app/src/`
-- Never commit `.env.production` — it is gitignored and must be created manually on EC2
-- Run frontend builds synchronously — never background them (SSH timeout = unknown state)
+No comments by default. Add only when the WHY is non-obvious: a hidden constraint, a workaround
+for a specific bug, a subtle invariant. Never: what the code does, who calls it, which ticket.
+
+---
+
+## Container Reference
+
+| Service | Container | Internal port |
+|---|---|---|
+| market-data | `stockai-market-data-1` | 8001 |
+| signal-engine | `stockai-signal-engine-1` | 8005 |
+| decision-engine | `stockai-decision-engine-1` | 8006 |
+| ml-prediction | `stockai-ml-prediction-1` | 8003 |
+| research-engine | `stockai-research-engine-1` | 8008 |
+| api-gateway | `stockai-api-gateway-1` | 8000 |
+| ranking-engine | `stockai-ranking-engine-1` | 8007 |
+| technical-analysis | `stockai-technical-analysis-1` | 8009 |
+| strategy-engine | `stockai-strategy-engine-1` | 8010 |
+| portfolio-optimizer | `stockai-portfolio-optimizer-1` | 8011 |
+| event-intelligence | `stockai-event-intelligence-1` | 8012 |
+
+File paths inside containers: service-specific → `/app/src/`, shared modules → `/app/shared/`
