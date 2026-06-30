@@ -187,7 +187,7 @@ def train_meta(tasks: BackgroundTasks, _: str = Depends(get_current_username)):
     Used as cold-start prior and 4th ensemble member (15% weight) in predict_ensemble_three.
     Runs in background — check container logs for progress.
     """
-    from training.meta_trainer import train_meta_model as _train_meta
+    from ..training.meta_trainer import train_meta_model as _train_meta
     tasks.add_task(_train_meta)
     return {
         "status": "scheduled",
