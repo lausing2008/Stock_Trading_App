@@ -7241,13 +7241,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T214-RELATIVE-STRENGTH-VS-SECTOR',
-    tier: 214 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 214 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/api/signals.py',
     effort: '3h',
     impact: 'High — a stock outperforming its sector ETF is one of the most documented and reliable momentum signals. Adding sector-relative strength as a feature gives the ML model an edge over raw RSI/price-based signals.',
     title: 'T214: Relative strength vs sector ETF as ML feature',
     what: 'Current ML features use absolute indicators (RSI, MACD, ATR). None compare the stock\'s performance relative to its sector ETF (XLK, XLF, etc.). A stock rallying when its sector is flat is a much stronger signal than one rallying with the whole sector.',
     fix: 'Add sector ETF mapping (GICS → XL* ETFs). Fetch sector ETF daily return. Compute rs_vs_sector = stock_5d_return - sector_5d_return. Add to signal reasons and ML feature vector. Requires sector field on Stock model (already exists) and daily ETF price ingestion.',
+    implementedNote: 'Already implemented. ml-prediction/src/features/builder.py defines SECTOR_ETF_MAP (GICS → XLK/XLF/XLV etc.) and SECTOR_COLUMNS: sector_rs_20d, sector_rs_5d, sector_in_favor. fetch_sector_features() downloads sector ETF vs SPY daily return and adds all 3 columns to the 54-feature ML vector. Signal engine also tracks rs_flag / rs_lagging in signal reasons. No code change needed.',
   },
 
   {
@@ -7264,24 +7265,26 @@ const ITEMS: Item[] = [
 
   {
     id: 'T212-PLOTLY-CANDLESTICK',
-    tier: 212 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 212 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'frontend/src/pages/stock/[symbol].tsx',
     effort: '4h',
     impact: 'Medium — the current price chart shows a simple line. A Plotly candlestick with OHLC, EMA overlay, Bollinger Bands, and volume histogram gives traders the context they need to validate signals visually without leaving the platform.',
     title: 'T212: Interactive Plotly candlestick chart on stock detail page',
     what: 'The stock detail page uses a basic SVG line chart (PriceChart.tsx). There is no OHLC candlestick view, no volume histogram, and no TA overlays. Plotly.js provides all of these with built-in zoom/pan interactivity.',
     fix: 'Install plotly.js (or react-plotly.js). Create CandlestickChart.tsx that fetches /prices/{symbol}?timeframe=1d&days=90 and renders OHLC bars. Overlay: 20-day EMA, Bollinger Bands. Below: volume histogram. Add toggle between Line and Candlestick view on the stock detail page.',
+    implementedNote: 'Already implemented via PriceChart.tsx (lightweight-charts v4). Full OHLC candlestick with: 5m intraday + 7 daily ranges, volume histogram + 20d MA, SMA 20/50/200, EMA 20/50/200, Bollinger Bands, VWAP, RSI sub-panel, MACD sub-panel, 52-week high/low reference lines, S/R level overlays, BUY/SELL signal markers, detected pattern strip. Plotly.js and react-plotly.js also installed in package.json.',
   },
 
   {
     id: 'T211-HMM-REGIME-CLASSIFIER',
-    tier: 211 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 211 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/',
     effort: '3d',
     impact: 'High — the current regime classifier uses hard thresholds (VIX > 25 → choppy). HMM models regime TRANSITIONS probabilistically — it knows when the market is moving FROM bull TO choppy and can warn earlier than threshold-based detection.',
     title: 'T211: Hidden Markov Model (HMM) regime classifier — probabilistic state detection',
     what: 'The current regime engine (market-data/services/regime.py or similar) uses hard VIX/SPY thresholds. This produces abrupt regime changes and misses the transition signals that precede a flip. HMM learns from (VIX, SPY momentum, breadth) sequences and models the latent state as a probability distribution.',
     fix: 'Install hmmlearn + matplotlib in ml-prediction service. Train a GaussianHMM with 4 states (bull/neutral/choppy/bear) on historical (VIX, SPY_5d_return, IWM_vs_200EMA) data. Run weekly re-fit. Expose GET /ml/regime-state endpoint. Wire output into live_regime dict as hmm_state and hmm_prob. Use as a second opinion alongside existing rule-based classifier.',
+    implementedNote: 'Done 2026-06-29. GaussianHMM (4 states) in services/ml-prediction/src/api/hmm_regime.py. Feature vector: VIX_level, SPY_5d_return, IWM_vs_EMA200. States ranked by mean VIX: bull/neutral/choppy/bear. Model persisted to /tmp/hmm_regime.pkl, auto-refits every 7 days. GET /ml/regime-state (public) returns hmm_state + hmm_prob + market metrics. POST /ml/regime-refit (auth) forces refit. paper_trading_engine._fetch_market_regime() fetches HMM state from ml-prediction and adds hmm_state/hmm_prob/hmm_agrees to live_regime dict (fail-open). hmmlearn>=0.3.0 added to requirements.txt.',
   },
 
   {

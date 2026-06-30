@@ -435,3 +435,29 @@ def walkforward_oos(
     if "error" in result:
         raise HTTPException(400, result["error"])
     return result
+
+
+# ── T211: HMM regime classifier ───────────────────────────────────────────────
+
+@router.get("/regime-state")
+def get_regime_state():
+    """Return current 4-state HMM regime classification.
+
+    Uses a GaussianHMM trained on (VIX_level, SPY_5d_return, IWM_vs_EMA200).
+    States: bull | neutral | choppy | bear, labeled by mean VIX level.
+    Model auto-refreshes when older than 7 days.
+    Returns {"error": ...} if hmmlearn is not installed or data fetch fails.
+    No auth required — public endpoint, advisory data only.
+    """
+    from .hmm_regime import predict_current
+    return predict_current()
+
+
+@router.post("/regime-refit")
+def refit_regime_model(_: str = Depends(get_current_username)):
+    """Force-refit the HMM regime model. Requires auth."""
+    from .hmm_regime import refit
+    result = refit()
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result

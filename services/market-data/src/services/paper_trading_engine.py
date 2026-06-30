@@ -667,6 +667,19 @@ def _fetch_market_regime(cfg: dict) -> dict:
                 f"MDY/200EMA={result.get('mdy_vs_ema200', 0):.3f} — narrow market"
             )
 
+    # T211: HMM second-opinion regime — advisory only, fail-open
+    try:
+        import httpx as _httpx_t211
+        _hmm = _httpx_t211.get("http://ml-prediction:8003/ml/regime-state", timeout=3.0)
+        if _hmm.status_code == 200:
+            _hmm_d = _hmm.json()
+            if "hmm_state" in _hmm_d:
+                result["hmm_state"]  = _hmm_d["hmm_state"]
+                result["hmm_prob"]   = _hmm_d.get("hmm_prob", {})
+                result["hmm_agrees"] = (_hmm_d["hmm_state"] == result["state"])
+    except Exception:
+        pass  # fail-open; HMM is advisory
+
     log.info("paper.regime_classified",
              state=result["state"],
              spy=result["spy_price"],
