@@ -83,7 +83,7 @@ def train_meta_model(db=None) -> dict:
 
     Returns {"trained": bool, "n_samples": int, "auc": float}
     """
-    from features.builder import FEATURE_COLUMNS, build_features, fetch_macro_features, compute_label_threshold
+    from ..features.builder import FEATURE_COLUMNS, build_features, fetch_macro_features, compute_label_threshold
     from sklearn.preprocessing import StandardScaler
     from sklearn.metrics import roc_auc_score
     from sqlalchemy import text, select
@@ -312,7 +312,7 @@ def predict_meta(
         import joblib
         import pandas as pd
         from datetime import date, timedelta
-        from features.builder import FEATURE_COLUMNS, build_features, fetch_macro_features, compute_label_threshold
+        from ..features.builder import FEATURE_COLUMNS, build_features, fetch_macro_features, compute_label_threshold
         from db import Price, SessionLocal, Stock, TimeFrame
         from sqlalchemy import select as _select
 
