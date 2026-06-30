@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7215,6 +7215,222 @@ const ITEMS: Item[] = [
 
   // ── Tier 193 — Decision Engine: market-closed guard ──────────────────────────────────────────
   {
+    id: 'T215-MULTI-TIMEFRAME-CONFLUENCE',
+    tier: 215 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '2h',
+    impact: 'High — a GROWTH BUY signal that contradicts the SHORT signal (which is more sensitive to intraday momentum) is more likely to fail. Requiring both to agree before entering dramatically filters out false BUYs in trending-against environments.',
+    title: 'T215: Multi-timeframe confluence gate — require SHORT + SWING signal alignment for GROWTH entries',
+    what: 'GROWTH style signals are computed on a longer horizon. A stock can have a GROWTH BUY but a SHORT SELL simultaneously — meaning the near-term momentum is against the trade. No gate currently checks cross-style signal alignment before entry.',
+    fix: 'In _scan_for_entries for GROWTH/LONG portfolios: batch-query the SHORT and SWING signals for all candidates. If SHORT is SELL or HOLD for a GROWTH BUY candidate, skip it. Config: confluence_check_enabled=True, confluence_styles=["SHORT"] per portfolio.',
+  },
+
+  {
+    id: 'T214-RELATIVE-STRENGTH-VS-SECTOR',
+    tier: 214 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/api/signals.py',
+    effort: '3h',
+    impact: 'High — a stock outperforming its sector ETF is one of the most documented and reliable momentum signals. Adding sector-relative strength as a feature gives the ML model an edge over raw RSI/price-based signals.',
+    title: 'T214: Relative strength vs sector ETF as ML feature',
+    what: 'Current ML features use absolute indicators (RSI, MACD, ATR). None compare the stock\'s performance relative to its sector ETF (XLK, XLF, etc.). A stock rallying when its sector is flat is a much stronger signal than one rallying with the whole sector.',
+    fix: 'Add sector ETF mapping (GICS → XL* ETFs). Fetch sector ETF daily return. Compute rs_vs_sector = stock_5d_return - sector_5d_return. Add to signal reasons and ML feature vector. Requires sector field on Stock model (already exists) and daily ETF price ingestion.',
+  },
+
+  {
+    id: 'T213-SIGNAL-STATE-DEDUP',
+    tier: 213 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/scheduler.py',
+    effort: '1.5h',
+    impact: 'Medium — alert emails firing on every BUY refresh (even if it was BUY last time too) create noise. Only transitions (HOLD→BUY, SELL→BUY) are actionable. Deduplication reduces alert fatigue and makes emails more meaningful.',
+    title: 'T213: Signal state-change deduplication — only fire alerts on BUY↔HOLD transitions',
+    what: 'check_signal_alerts() already has a 2h same-direction cooldown. But a signal that stays BUY across 5 refreshes still fires up to once per 2h per symbol. The actual information content of a "still BUY" refresh is low; what matters is the transition.',
+    fix: 'Store previous signal state in signal_alerts table or Redis. Only send email when state CHANGES (HOLD→BUY, BUY→SELL). "Confirmed BUY" (stayed BUY for 2+ refreshes) could optionally fire once as a reinforcement signal with lower priority.',
+  },
+
+  {
+    id: 'T212-PLOTLY-CANDLESTICK',
+    tier: 212 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'frontend/src/pages/stock/[symbol].tsx',
+    effort: '4h',
+    impact: 'Medium — the current price chart shows a simple line. A Plotly candlestick with OHLC, EMA overlay, Bollinger Bands, and volume histogram gives traders the context they need to validate signals visually without leaving the platform.',
+    title: 'T212: Interactive Plotly candlestick chart on stock detail page',
+    what: 'The stock detail page uses a basic SVG line chart (PriceChart.tsx). There is no OHLC candlestick view, no volume histogram, and no TA overlays. Plotly.js provides all of these with built-in zoom/pan interactivity.',
+    fix: 'Install plotly.js (or react-plotly.js). Create CandlestickChart.tsx that fetches /prices/{symbol}?timeframe=1d&days=90 and renders OHLC bars. Overlay: 20-day EMA, Bollinger Bands. Below: volume histogram. Add toggle between Line and Candlestick view on the stock detail page.',
+  },
+
+  {
+    id: 'T211-HMM-REGIME-CLASSIFIER',
+    tier: 211 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/',
+    effort: '3d',
+    impact: 'High — the current regime classifier uses hard thresholds (VIX > 25 → choppy). HMM models regime TRANSITIONS probabilistically — it knows when the market is moving FROM bull TO choppy and can warn earlier than threshold-based detection.',
+    title: 'T211: Hidden Markov Model (HMM) regime classifier — probabilistic state detection',
+    what: 'The current regime engine (market-data/services/regime.py or similar) uses hard VIX/SPY thresholds. This produces abrupt regime changes and misses the transition signals that precede a flip. HMM learns from (VIX, SPY momentum, breadth) sequences and models the latent state as a probability distribution.',
+    fix: 'Install hmmlearn + matplotlib in ml-prediction service. Train a GaussianHMM with 4 states (bull/neutral/choppy/bear) on historical (VIX, SPY_5d_return, IWM_vs_200EMA) data. Run weekly re-fit. Expose GET /ml/regime-state endpoint. Wire output into live_regime dict as hmm_state and hmm_prob. Use as a second opinion alongside existing rule-based classifier.',
+  },
+
+  {
+    id: 'T210-REGIME-SUSPENSION-BREAKER',
+    tier: 210 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '2h',
+    impact: 'Medium — the current regime filter reduces position size in risk_off but does not stop entries entirely unless regime_risk_off_gate=True. A sustained multi-day risk_off environment (e.g. 3+ consecutive days) warrants a temporary full pause, not just smaller sizes.',
+    title: 'T210: Regime suspension circuit breaker — global entry pause when risk_off for 3+ consecutive days',
+    what: 'A single day of risk_off triggers size reduction. But if the regime stays risk_off for 3+ consecutive trading days, the market is in a sustained stress period. No circuit breaker currently escalates the response from "size down" to "full pause" after N bad days.',
+    fix: 'Store daily regime snapshots in Redis (LPUSH regime_history {state, date} → trim to 10). In _scan_for_entries: if the last 3 snapshots are all risk_off or bear, return early with paper.regime_suspension. Config: regime_suspension_days=3. Reset automatically when regime improves to neutral or bull.',
+  },
+
+  {
+    id: 'T209-HK-STOCK-CONNECT-FLOW',
+    tier: 209 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/',
+    effort: '2d',
+    impact: 'High for HK stocks — Southbound Stock Connect data (mainland money flowing into HK) is one of the strongest documented alpha signals for HK-listed stocks. Stocks with rising mainland net-buy consistently outperform over 5–20 day windows.',
+    title: 'T209: Southbound/Northbound HK Stock Connect flow data as signal feature',
+    what: 'HK-listed stocks have no mainland institutional flow signal in the current feature set. The HKEX publishes daily Southbound (mainland → HK) and Northbound (HK → mainland) net-buy figures. This is freely available and has a well-documented predictive edge.',
+    fix: 'HKEX publishes at https://www.hkex.com.hk/Mutual-Market/Stock-Connect daily. Quiver Quant also provides a China flows API. Schedule daily ingest after HK close. Store net_buy_hkd, cumulative_quota_used in a new hk_connect_flows table. Add flow_5d_net and flow_strength to HK signal reasons. Use in HK ML feature vector.',
+  },
+
+  {
+    id: 'T208-NEWS-SENTIMENT-INGESTION',
+    tier: 208 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/research-engine/src/',
+    effort: '3d',
+    impact: 'High — earnings call transcripts, SEC 8-K filings, and social sentiment are the three most reliable unstructured alpha sources. The research engine already exists but processes limited data. Adding structured sentiment scores to the DE would substantially reduce false-positive BUYs before negative catalysts.',
+    title: 'T208: News and sentiment ingestion — earnings transcripts, Reddit, SEC 8-K, Stocktwits',
+    what: 'The research engine currently aggregates analyst reports and news headlines. It does not process: (a) earnings call transcript sentiment, (b) SEC 8-K material event filings, (c) Reddit/WSB social sentiment, (d) Stocktwits ticker-specific chatter. These are major unstructured alpha sources.',
+    fix: 'Add to research-engine: (1) AlphaVantage EARNINGS_CALL_TRANSCRIPT endpoint — parse with Claude and extract bullish/bearish tone score. (2) EDGAR RSS feed for 8-K filings — flag material events within 3 days of a BUY signal. (3) Pushshift or Stocktwits API for social sentiment score. Store in research_signals table. Expose via /research/{symbol}/sentiment endpoint.',
+  },
+
+  {
+    id: 'T207-MOMENTUM-EXHAUSTION-EXIT',
+    tier: 207 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '2h',
+    impact: 'High — the current exit system uses fixed stop + target + trailing stop. In strong trending stocks, the trailing stop often exits too early. In weakening stocks, it exits too late. A momentum-exhaustion exit (RSI reversal + OBV declining) would improve average hold time and exit quality.',
+    title: 'T207: Momentum exhaustion exit — RSI reversal + volume fade triggers early position exit',
+    what: 'Open positions are currently exited only via stop_hit, target_reached, signal_exit, time_stop, or hold_stall. There is no exit trigger based on momentum degradation while still above the stop: RSI rolling over from overbought + OBV declining = distribution before the stop gets hit.',
+    fix: 'In _monitor_positions: add momentum_fade exit. Conditions: (1) RSI_14 has fallen from above 70 to below 60 within 2 bars AND (2) OBV has declined for 3 consecutive bars AND (3) trade is profitable (pnl > 0). Set exit_reason = "momentum_fade". Config: momentum_exit_enabled=True. Gives up some upside but dramatically improves win/loss quality.',
+  },
+
+  {
+    id: 'T206-SYSTEM-FEEDBACK-LOOP',
+    tier: 206 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/',
+    effort: '1w',
+    impact: 'Very High — the ML model is trained on technical indicators but has no awareness of how well its own predictions translated into paper trading outcomes. Closing the feedback loop (signal → trade → outcome → retrain) is the single biggest lever for long-term system improvement.',
+    title: 'T206: System feedback loop — signal_outcomes → ML feature weighting → improved predictions',
+    what: 'Signal outcomes are tracked in signal_outcomes table. ML retraining (Optuna) runs on historical TA data. But the retrain does not use paper trading P&L by signal style, sector, or market condition. There is no systematic mechanism to learn which signal configurations produce real profits vs false positives.',
+    fix: 'Build a feature importance feedback pipeline: (1) Join signal_outcomes with PaperTrade by symbol + signal_ts. (2) Compute per-style, per-sector realized P&L. (3) Add these as sample weights to the XGBoost retrain (higher weight for periods where signals were accurate). (4) Add signal accuracy (from /signals/accuracy) as an additional feature. Run this pipeline weekly after Optuna tune_all.',
+  },
+
+  {
+    id: 'T205-ETRADE-SANDBOX',
+    tier: 205 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/',
+    effort: '1w',
+    impact: 'Very High — moves from paper trading to real execution. E*Trade has a full sandbox API that mirrors production. Building the broker integration in sandbox first means the live integration will be battle-tested before real money is involved.',
+    title: 'T205: E*Trade sandbox integration — live broker order placement from paper trading engine',
+    what: 'Paper trading currently updates the DB directly. No connection to a real broker exists. The broker_connections table and broker assignment UI were built for this purpose but no actual API calls to a live broker are made.',
+    fix: 'Create services/broker/ service with: (1) E*Trade OAuth 2.0 flow. (2) POST /broker/order endpoint: takes symbol, shares, order_type (MARKET/LIMIT). (3) GET /broker/positions: syncs real positions back to paper portfolio. (4) Webhook for fills. paper_trading_engine._open_position() calls broker service instead of DB-only path when a broker_connection is assigned. Start with sandbox (apisb.etrade.com).',
+  },
+
+  {
+    id: 'T204-ML-ACCURACY-IMPROVEMENTS',
+    tier: 204 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/',
+    effort: '3d',
+    impact: 'High — current ML uses 22 technical features. Earnings surprise momentum (PEAD) is one of the most documented anomalies in finance; options put/call ratio gives institutional positioning; these two features alone could significantly improve precision.',
+    title: 'T204: ML accuracy improvements — earnings surprise momentum + options market signals',
+    what: 'The ML model uses price-based TA features (RSI, MACD, ATR, EMA crossovers). It has no awareness of: (1) post-earnings drift (stocks beat estimates → drift up for 20+ days), (2) options market put/call skew (institutional hedging/speculation), (3) short interest as a squeeze predictor, (4) sector relative strength.',
+    fix: '(1) Earnings surprise: fetch actual vs estimate from AlphaVantage EARNINGS endpoint. Compute eps_surprise_pct. If positive and stock is within 20 days of earnings release, add eps_surprise_momentum feature. (2) Options: fetch CBOE put/call ratio per ticker via Quiver Quant or MarketChameleon. Add pc_ratio and iv_skew to feature vector. (3) Short interest: SEC bi-monthly from FINRA. These 3 additions are expected to improve precision by 5–10%.',
+  },
+
+  {
+    id: 'T203-LLM-REASONING-LAYER',
+    tier: 203 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/decision-engine/src/api/routes.py',
+    effort: '1w',
+    impact: 'Very High — the DE currently uses rule-based hard rejects + numerical scoring. An LLM layer that reasons over the full signal context (regime, research, sector, recent market behavior) can surface non-obvious patterns and explain decisions in natural language. This is the step from mechanical to intelligent.',
+    title: 'T203: LLM reasoning layer — Claude as additional DE scoring component',
+    what: 'The current DE scores 9 numerical dimensions. It has no ability to reason about context: "this stock usually rallies into earnings," "the sector just had a major negative catalyst," "the signal fired at the same time as a Fed announcement." These are patterns a human trader would recognize but a rule engine cannot.',
+    fix: 'Add an optional llm_scoring stage to the DE pipeline (after hard rejects, alongside numerical scorer). Call claude-sonnet-4-6 with a structured prompt: signal data, game plan, regime, research summary, recent sector performance, last 3 trades in this portfolio. Ask for verdict (BUY/HOLD/SKIP) + confidence + reasoning. Return as additional score layer (weight configurable). Cache responses in Redis by {symbol}:{style}:{sig_ts} to avoid re-calling on the same signal. Cost: ~$0.01/call × 20 calls/day = $0.20/day.',
+  },
+
+  {
+    id: 'T202-DECLINING-CONFIDENCE-GATE',
+    tier: 202 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '20m',
+    impact: 'Medium — a signal that drops 8+ confidence points between refreshes is losing conviction. Entering at the point of maximum uncertainty is the wrong time. This gate costs very few valid entries (strong setups maintain confidence) while filtering degrading ones.',
+    title: 'T202: Declining confidence gate — skip entry if signal confidence dropped >8pts since last refresh',
+    what: 'confidence_delta was already computed (SA-26 trajectory scoring) and included in signal_data. But it was only used for DE scoring, not as a hard gate. A -8pt decline in one refresh cycle means the model is rapidly losing confidence in the setup.',
+    fix: 'paper_trading_engine.py: after confidence_delta computation, check if confidence_delta < max_confidence_decline (default -8.0). If so, skip the candidate with paper.skip_declining_confidence log. Config: max_confidence_decline per portfolio. Fail-safe: if confidence_delta is None (no prior signal), allow entry.',
+    implementedNote: 'Done 2026-06-29. Deployed to market-data container.',
+  },
+
+  {
+    id: 'T201-EQUITY-FLOOR-BREAKER',
+    tier: 201 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '20m',
+    impact: 'Medium — a portfolio that has dropped below 80% of initial capital is in severe drawdown. Continuing to add new entries while deeply underwater compounds the damage. This creates a hard floor that forces the portfolio to recover through existing positions before risking more capital.',
+    title: 'T201: Equity floor circuit breaker — suspend entries if equity < 80% of initial capital',
+    what: 'The max_drawdown circuit breaker checks drawdown from the equity CURVE peak. But if initial capital was $100k, dropped to $79k (worst day), recovered to $82k, and then dropped again, the drawdown-from-peak guard resets. The equity_floor_pct check uses initial_capital as the absolute reference.',
+    fix: 'paper_trading_engine.py: after equity computation in _scan_for_entries, check equity / portfolio.initial_capital. If below equity_floor_pct (default 0.80), return early with paper.equity_floor_triggered log. Config: equity_floor_pct per portfolio. Complements max_drawdown_pct which measures from equity curve peak.',
+    implementedNote: 'Done 2026-06-29. Deployed to market-data container.',
+  },
+
+  {
+    id: 'T200-VOLUME-CONFIRMATION-GATE',
+    tier: 200 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '20m',
+    impact: 'Medium — low-volume entries have higher slippage and are more likely to be false breakouts. The signal engine already computes volume_z (z-score vs 20-day average) and stores it in signal reasons. Using it as a gate requires minimal code.',
+    title: 'T200: Volume confirmation gate — skip entries when volume_z < -1.5 (abnormally thin market)',
+    what: 'volume_z was already computed by the signal engine and included in signal reasons (used for scoring bonuses/penalties in _should_enter). But it was not a hard gate in the candidate loop — a stock with volume_z=-2.5 (trading at 8% of normal volume) could still be entered.',
+    fix: 'paper_trading_engine.py: in candidate loop after live_price check, read volume_z from sig.reasons. If volume_z < min_volume_z (default -1.5), skip with paper.skip_low_volume log. Fail-open: if volume_z is missing (None or 0), allow entry. Config: min_volume_z per portfolio.',
+    implementedNote: 'Done 2026-06-29. Deployed to market-data container.',
+  },
+
+  {
+    id: 'T199-DE-SCORE-DISPLAY-FIX',
+    tier: 199 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/decide.tsx',
+    effort: '15m',
+    impact: 'Low — cosmetic fix. The -99/12 display was confusing to users who didn\'t know -99 was a sentinel value for "hard rejected before scoring." The new message is self-explanatory.',
+    title: 'T199: DE /decide page — show "Hard rejected" instead of -99/12 for blocked entries',
+    what: 'When a DE decision is BLOCKED before scoring (hard reject), the API returns score=-99. The ScoreBar component displayed this as "-99 / 12" — a confusing red bar that looked like an error rather than a meaningful state.',
+    fix: 'decide.tsx ScoreBar: added guard for score < 0 that renders a styled "Hard rejected — no score computed" banner instead of the numeric bar. Score >= 0 continues to show the normal bar.',
+    implementedNote: 'Done 2026-06-29. Deployed via frontend rebuild.',
+  },
+
+  {
+    id: 'T198-PORTFOLIO-ON-OFF-TOGGLE',
+    tier: 198 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'frontend/src/pages/paper-portfolio.tsx',
+    effort: '1h',
+    impact: 'Medium — allows pausing a specific portfolio (e.g., while tuning its config) without deleting it or affecting other portfolios. The paper_trading_step already filtered by is_active; this adds the UI control to toggle it.',
+    title: 'T198: Portfolio on/off toggle — enable/disable paper trading per portfolio from the UI',
+    what: 'PaperPortfolio.is_active already existed in the model and paper_trading_step already filtered by it. But there was no API endpoint or UI control to toggle it. All portfolios were always active once created.',
+    fix: 'Added PATCH /paper-portfolio/{id}/active endpoint (admin only). GET /list now returns all portfolios (active + inactive) with is_active field. PortfolioCard shows ON/OFF toggle button; disabled portfolios appear at 55% opacity with "Disabled" state. api.ts: paperToggleActive() method.',
+    implementedNote: 'Done 2026-06-29. Deployed to market-data container and frontend.',
+  },
+
+  {
+    id: 'T197-BREAKEVEN-STOP-COOLDOWN',
+    tier: 197 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '45m',
+    impact: 'Medium — break-even exits (stock ran then came back to entry) are less severe than real-loss stops. The previous 24h cooldown after any stop_hit was too harsh for break-even exits — valid setups that reset to entry deserve a second chance sooner.',
+    title: 'T197: Break-even stop exit — distinct exit reason + 2h cooldown vs 24h for real losses',
+    what: 'All stop_hit exits used the same 24h re-entry cooldown regardless of whether the stop was at entry (break-even) or deep below. A stock that ran to +3%, then reversed to entry, is a different situation than one that dropped straight to the stop immediately after entry.',
+    fix: 'paper_trading_engine.py: when stop is breached, check if |stop - entry| < 0.5% of entry. If so, set exit_reason = "breakeven_stop" instead of "stop_hit". Separate cooldown query: breakeven_stop exits use breakeven_cooldown_hours (default 2h) rather than stop_cooldown_hours (24h). Both are merged into _recently_stopped set before the candidate loop.',
+    implementedNote: 'Done 2026-06-29. Deployed to market-data container.',
+  },
+
+  // ── Tier 196 — Paper trading: price drift gate ────────────────────────────────────────────
+  {
     id: 'T196-PRICE-DRIFT-GATE',
     tier: 196 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
@@ -10915,6 +11131,25 @@ const TIER_LABEL: Record<Tier, string> = {
   194: 'Tier 194 — Open exposure cap: block new entries if deployed capital > 40% of equity',
   195: 'Tier 195 — Signal staleness gate: configurable max signal age (default 96h / 4 days)',
   196: 'Tier 196 — Price drift gate: block entry if stock rallied >3% since signal was generated',
+  197: 'Tier 197 — Break-even stop: distinct exit reason + 2h cooldown vs 24h for real losses',
+  198: 'Tier 198 — Portfolio on/off toggle: enable/disable paper trading per portfolio from UI',
+  199: 'Tier 199 — DE score display: show "Hard rejected" instead of -99/12 for blocked entries',
+  200: 'Tier 200 — Volume confirmation gate: skip entries when volume_z < -1.5 (thin market)',
+  201: 'Tier 201 — Equity floor circuit breaker: suspend entries if equity < 80% of initial capital',
+  202: 'Tier 202 — Declining confidence gate: skip if signal confidence dropped > 8pts since last',
+  203: 'Tier 203 — LLM reasoning layer: Claude as additional DE scoring layer on top of hard rejects',
+  204: 'Tier 204 — ML accuracy: earnings surprise momentum + options put/call ratio as features',
+  205: 'Tier 205 — E*Trade sandbox integration: live broker order placement from paper trading',
+  206: 'Tier 206 — System feedback loop: signal outcomes → ML retraining → better signals',
+  207: 'Tier 207 — Momentum exhaustion exit: RSI reversal + volume fade triggers early exit',
+  208: 'Tier 208 — News & sentiment ingestion: earnings transcripts, Reddit, SEC 8-K filings',
+  209: 'Tier 209 — Southbound/Northbound HK flow: Stock Connect mainland buying as alpha signal',
+  210: 'Tier 210 — Regime suspension circuit breaker: global pause when risk_off for 3+ days',
+  211: 'Tier 211 — HMM regime classifier: Hidden Markov Model for probabilistic state detection',
+  212: 'Tier 212 — Plotly interactive candlestick: OHLC chart with EMA, Bollinger, volume bars',
+  213: 'Tier 213 — Signal state-change deduplication: only fire alerts on BUY↔HOLD transitions',
+  214: 'Tier 214 — Relative strength vs sector: stock vs sector ETF as ML feature',
+  215: 'Tier 215 — Multi-timeframe signal confluence: require SHORT+SWING alignment for GROWTH entry',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11114,6 +11349,25 @@ const TIER_COLOR: Record<Tier, string> = {
   194: '#f59e0b',
   195: '#f59e0b',
   196: '#f59e0b',
+  197: '#f59e0b',
+  198: '#f59e0b',
+  199: '#64748b',
+  200: '#f59e0b',
+  201: '#f59e0b',
+  202: '#f59e0b',
+  203: '#8b5cf6',
+  204: '#8b5cf6',
+  205: '#22d3ee',
+  206: '#8b5cf6',
+  207: '#f59e0b',
+  208: '#8b5cf6',
+  209: '#fb923c',
+  210: '#f59e0b',
+  211: '#8b5cf6',
+  212: '#38bdf8',
+  213: '#f59e0b',
+  214: '#8b5cf6',
+  215: '#f59e0b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

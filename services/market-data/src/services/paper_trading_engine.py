@@ -1808,6 +1808,21 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
     equity = _compute_equity(session, portfolio, live_prices)
 
+    # T201: Equity floor circuit breaker — suspend all entries if account has dropped too far
+    # below initial capital. A human stops trading a badly damaged account and steps back.
+    _equity_floor_pct = float(cfg.get("equity_floor_pct", 0.80))
+    if _equity_floor_pct > 0 and portfolio.initial_capital > 0:
+        _floor_ratio = equity / portfolio.initial_capital
+        if _floor_ratio < _equity_floor_pct:
+            log.warning("paper.equity_floor_triggered",
+                        portfolio=portfolio.name,
+                        equity=round(equity, 0),
+                        initial_capital=portfolio.initial_capital,
+                        equity_pct=round(_floor_ratio * 100, 1),
+                        floor_pct=round(_equity_floor_pct * 100, 1),
+                        note="account equity below floor — all new entries suspended")
+            return
+
     # Symbols already in open positions
     open_symbols: set[str] = set(
         r[0] for r in session.execute(
@@ -2285,6 +2300,19 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                          note="price rallied too far from signal reference — chasing blocked")
                 continue
 
+        # T200: Volume confirmation gate — skip entries when intraday volume is abnormally low.
+        # volume_z is stored in signal reasons by the signal engine (z-score vs 20-day avg).
+        # Very low volume = thin market, harder to exit, higher slippage risk.
+        _vol_z = float((sig.reasons or {}).get("volume_z", 0)) if sig.reasons else 0.0
+        _min_vol_z = float(cfg.get("min_volume_z", -1.5))
+        if _vol_z < _min_vol_z:
+            log.info("paper.skip_low_volume",
+                     symbol=stock.symbol,
+                     volume_z=round(_vol_z, 2),
+                     min_vol_z=_min_vol_z,
+                     note="below-average volume — entry postponed, higher slippage risk")
+            continue
+
         # Build game plan using cached ATR
         atr = atr_cache.get(stock.symbol)
 
@@ -2305,6 +2333,17 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 confidence_delta = round(float(sig.confidence) - float(prior_conf), 1)
         except Exception:
             pass  # trajectory optional; don't block entry on query failure
+
+        # T202: Declining confidence gate — don't enter when signal conviction is falling.
+        # A setup losing confidence over multiple refreshes is degrading, not improving.
+        _conf_decline_threshold = float(cfg.get("max_confidence_decline", -8.0))
+        if confidence_delta is not None and confidence_delta < _conf_decline_threshold:
+            log.info("paper.skip_declining_confidence",
+                     symbol=stock.symbol,
+                     confidence_delta=round(confidence_delta, 1),
+                     threshold=_conf_decline_threshold,
+                     note="signal losing confidence — setup degrading, wait for stabilisation")
+            continue
 
         signal_data = {
             "signal": sig.signal.value,
