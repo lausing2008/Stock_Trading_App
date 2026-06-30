@@ -1561,6 +1561,43 @@ def analyst_ratings(days: int = Query(30, ge=1, le=180), session: Session = Depe
     return results
 
 
+# ── Short Interest Dashboard ──────────────────────────────────────────────────
+
+@router.get("/short-interest")
+def short_interest(
+    _user=Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Return stocks sorted by short percent of float (from fundamentals table)."""
+    from sqlalchemy import text as _text
+    rows = session.execute(_text("""
+        SELECT st.symbol, st.name, st.market,
+               f.short_percent_of_float, f.short_ratio, f.market_cap
+        FROM stocks st
+        JOIN (
+            SELECT DISTINCT ON (stock_id) stock_id,
+                   short_percent_of_float, short_ratio, market_cap
+            FROM fundamentals
+            WHERE short_percent_of_float IS NOT NULL
+            ORDER BY stock_id, as_of DESC
+        ) f ON f.stock_id = st.id
+        WHERE st.active = TRUE
+        ORDER BY f.short_percent_of_float DESC
+        LIMIT 200
+    """)).fetchall()
+    return [
+        {
+            "symbol": r.symbol,
+            "name": r.name,
+            "market": r.market if isinstance(r.market, str) else r.market.value,
+            "short_percent_of_float": float(r.short_percent_of_float) * 100 if r.short_percent_of_float is not None else None,
+            "short_ratio": float(r.short_ratio) if r.short_ratio is not None else None,
+            "market_cap": int(r.market_cap) if r.market_cap is not None else None,
+        }
+        for r in rows
+    ]
+
+
 # ── Short Squeeze Scanner ─────────────────────────────────────────────────────
 
 @router.get("/short_squeeze")
@@ -2065,6 +2102,26 @@ def stock_atr(
         "stop_loss_2atr": round(close_now - 2 * atr, 4),
         "period": period,
     }
+
+
+@router.get("/hk-connect-flow/{symbol}")
+def hk_connect_flow(
+    symbol: str,
+    days: int = Query(20, ge=1, le=90),
+    session: Session = Depends(get_session),
+):
+    """T209: Return HKEX Stock Connect southbound flow summary for a HK stock.
+
+    Intentionally public (no auth) — signal-engine calls this without a JWT.
+    Returns {} when no flow data is available (e.g. non-HK symbol, not yet ingested).
+
+    Keys:
+      flow_5d_net_hkd  — rolling 5-day net buy sum in HKD millions (positive = net buying)
+      flow_20d_net_hkd — rolling 20-day net buy sum in HKD millions
+      flow_strength    — 5-day avg vs 20-day avg; >1.0 = southbound flow accelerating
+    """
+    from ..services.hk_connect import get_flow_summary
+    return get_flow_summary(session, symbol.upper(), days=days)
 
 
 @router.get("/{symbol}", response_model=StockOut)

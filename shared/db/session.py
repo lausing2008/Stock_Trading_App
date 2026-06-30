@@ -321,6 +321,56 @@ def _run_migrations() -> None:  # noqa: C901
             conn.execute(text(
                 f"ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS {_col} {_type}"
             ))
+        # T208: SEC 8-K filings table for material event detection
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS sec_filings (
+                id          BIGSERIAL PRIMARY KEY,
+                symbol      VARCHAR(32) NOT NULL,
+                cik         VARCHAR(16) NOT NULL,
+                accession   VARCHAR(32) NOT NULL UNIQUE,
+                form        VARCHAR(16) NOT NULL DEFAULT '8-K',
+                filed_date  DATE NOT NULL,
+                report_date DATE,
+                items       VARCHAR(512),
+                description VARCHAR(512),
+                is_material BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at  TIMESTAMP NOT NULL DEFAULT now()
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_sec_filings_symbol ON sec_filings (symbol)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_sec_filings_filed_date ON sec_filings (filed_date)"
+        ))
+        # T208: CIK column on stocks table for fast EDGAR lookup
+        conn.execute(text(
+            "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS cik VARCHAR(16)"
+        ))
+        # T11: index membership column on stocks
+        conn.execute(text(
+            "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS index_membership VARCHAR(256)"
+        ))
+        # T209: HKEX Stock Connect southbound flow table
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS hk_connect_flows (
+                id              BIGSERIAL PRIMARY KEY,
+                symbol          VARCHAR(32) NOT NULL,
+                trade_date      DATE NOT NULL,
+                net_buy_hkd     FLOAT,
+                buy_hkd         FLOAT,
+                sell_hkd        FLOAT,
+                quota_used_pct  FLOAT,
+                created_at      TIMESTAMP NOT NULL DEFAULT now(),
+                UNIQUE(symbol, trade_date)
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hk_connect_symbol ON hk_connect_flows (symbol)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hk_connect_date ON hk_connect_flows (trade_date)"
+        ))
 
 
 def _seed_admin() -> None:

@@ -130,6 +130,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "max_portfolio_drawdown_pct":0.20,  # pause entries if equity drops 20% from peak
     "max_daily_loss_pct":        0.04,  # pause entries if realized losses today > 4% of equity
     "max_entries_per_day":       3,     # cap new positions opened in one trading day (quality > quantity)
+    "max_entry_gap_pct":         0.04,  # T171: reject if live_price is >4% above signal's last_price (gap-up filter)
     "require_kscore":            True,  # reject stocks with no ranking row (unknown quality)
     "max_open_risk_pct":         0.12,  # max aggregate open risk across all positions (12%)
     "max_loss_per_trade_pct":    0.02,  # cap dollar loss on any single trade at 2% of equity
@@ -220,6 +221,7 @@ _STYLE_OVERRIDES: dict[str, dict] = {
         # Scale out later for GROWTH (35% target) — don't cut winners short.
         "partial_tp_pct": 0.12, "partial_tp2_pct": 0.22,
         "wait_exit_days": 5, "min_confidence": 45.0, "min_kscore": 48.0,
+        "max_entry_gap_pct": 0.04,  # T171: GROWTH stocks are volatile; allow 4% gap before rejecting
     },
     "SWING": {
         "max_hold_days": 20, "trail_atr_mult": 1.5,
@@ -228,12 +230,14 @@ _STYLE_OVERRIDES: dict[str, dict] = {
         # SWING target is +12%: scale at +7% and +10%.
         "partial_tp_pct": 0.07, "partial_tp2_pct": 0.10,
         "wait_exit_days": 3, "min_confidence": 50.0, "min_kscore": 52.0,
+        "max_entry_gap_pct": 0.03,  # T171: SWING can't tolerate as much gap chasing
     },
     "LONG": {
         "max_hold_days": 90, "trail_atr_mult": 2.0,
         "trail_trigger_pct": 0.06, "breakeven_trigger_pct": 0.04,
         "partial_tp_pct": 0.15, "partial_tp2_pct": 0.20,
         "wait_exit_days": 7, "min_confidence": 40.0, "min_kscore": 50.0,
+        "max_entry_gap_pct": 0.05,  # T171: LONG can tolerate slightly more gap (wider stops, larger targets)
     },
 }
 
@@ -874,6 +878,19 @@ def _should_enter(
     dte = reasons.get("days_to_earnings")
     if dte is not None and int(dte) <= 5:
         return False, -99, [f"Earnings in {dte} days — binary event risk; skip"]
+
+    # T171: Premarket gap filter — reject if stock has already gapped up significantly
+    # from its signal price. Signal reasons["last_price"] is the close at signal-compute time.
+    # If live price is already >max_entry_gap_pct above that close, we're chasing the move.
+    _signal_close = reasons.get("last_price")
+    if _signal_close and float(_signal_close) > 0:
+        _gap = live_price / float(_signal_close) - 1
+        _max_gap = cfg.get("max_entry_gap_pct", 0.04)
+        if _gap > _max_gap:
+            return False, -99, [
+                f"Gap-up {_gap:.1%} above signal close ${_signal_close:.2f} "
+                f"exceeds limit {_max_gap:.0%} — entry price degraded"
+            ]
 
     # ── Price zone (where is price relative to the game plan?) ───────────────
     # CB-2 FIX: old values (+4/+3) equalled the min_entry_score threshold (3–5), making it a

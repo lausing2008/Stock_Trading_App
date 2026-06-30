@@ -632,6 +632,7 @@ def leaderboard(
             "name_zh":           stock.name_zh,
             "market":            stock.market.value,
             "sector":            stock.sector,
+            "index_membership":  stock.index_membership,
             "score":             _clean(ranking.score),
             "technical":         _clean(ranking.technical),
             "momentum":          _clean(ranking.momentum),

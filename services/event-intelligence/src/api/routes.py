@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from common.jwt_auth import get_current_username
 from db import get_session, SessionLocal, Stock
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from ..services import economic, earnings, insider, congress, institutional, political, catalyst
+from ..services import economic, earnings, insider, congress, institutional, political, catalyst, edgar_8k
 
 router = APIRouter()
 
@@ -174,6 +175,43 @@ def get_catalyst(symbol: str, technical_score: float = Query(50.0, ge=0.0, le=10
         score = catalyst.compute_and_store(stock_id, technical_score=technical_score)
     score["symbol"] = symbol.upper()
     return score
+
+
+# ── SEC EDGAR 8-K Filings (T208) ──────────────────────────────────────────────
+
+@router.post("/events/sync/8k")
+async def sync_8k(_: str = Depends(get_current_username)):
+    """Trigger SEC EDGAR 8-K filing ingest for all active US stocks.
+
+    Fetches filings from the last 7 days for each US stock tracked in the DB.
+    HK stocks are skipped (no EDGAR coverage). Idempotent — existing accessions
+    are skipped via ON CONFLICT DO NOTHING.
+    The ingest manages its own DB sessions internally.
+    """
+    with SessionLocal() as s:
+        symbols = list(
+            s.execute(
+                select(Stock.symbol).where(Stock.active.is_(True), Stock.market == "US")
+            ).scalars()
+        )
+    result = edgar_8k.ingest_8k_filings(symbols, days_back=7)
+    return result
+
+
+@router.get("/events/8k/{symbol}")
+def get_8k_filings(
+    symbol: str,
+    days: int = Query(30, ge=1, le=180),
+    _: str = Depends(get_current_username),
+    db: Session = Depends(get_session),
+):
+    """Return recent SEC 8-K filings for a symbol from the local DB.
+
+    Returns stored filings only (no live EDGAR fetch). Populated daily by the
+    market-data scheduler after US close via the EDGAR ingest job (T208).
+    HK stocks will always return an empty list (no EDGAR coverage).
+    """
+    return edgar_8k.get_recent_filings_for_symbol(db, symbol, days=days)
 
 
 # ── Overview (used by frontend intelligence page) ─────────────────────────────

@@ -35,6 +35,7 @@ const ALL_SIGNALS = ['BUY', 'HOLD', 'WAIT', 'SELL'] as const;
 const DEFAULT_FILTERS = {
   market: 'All' as 'All' | 'US' | 'HK',
   signals: new Set<string>(),        // empty = show all
+  indices: new Set<string>(),        // empty = show all; options: SP500, NASDAQ_100, DOW_30
   minScore: '',
   minTechnical: '',
   minMomentum: '',
@@ -277,6 +278,10 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     return rows.filter(r => {
       if (filters.market !== 'All' && r.market !== filters.market) return false;
       if (filters.signals.size > 0 && (!r.signal || !filters.signals.has(r.signal))) return false;
+      if (filters.indices.size > 0) {
+        const membership = new Set((r.index_membership ?? '').split(',').filter(Boolean));
+        if (![...filters.indices].some(idx => membership.has(idx))) return false;
+      }
       if ((!isAdmin || filters.watchlistOnly) && !r.inWatchlist) return false;
       if (search && !r.symbol.toLowerCase().includes(search) && !r.name.toLowerCase().includes(search)) return false;
       if (filters.sector && r.sector !== filters.sector) return false;
@@ -349,11 +354,12 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
   }
 
   function resetFilters() {
-    setFilters({ ...DEFAULT_FILTERS, signals: new Set() });
+    setFilters({ ...DEFAULT_FILTERS, signals: new Set(), indices: new Set() });
   }
 
   const isDefaultFilters = (
-    filters.market === 'All' && filters.signals.size === 0 && !filters.minScore && !filters.minTechnical &&
+    filters.market === 'All' && filters.signals.size === 0 && filters.indices.size === 0 &&
+    !filters.minScore && !filters.minTechnical &&
     !filters.minMomentum && !filters.minValue && !filters.minGrowth && !filters.minBullish &&
     !filters.minChange && !filters.maxChange && !filters.minPrice && !filters.maxPrice &&
     !filters.sector && !filters.minFairDiscount && !filters.minRS && !filters.minConfidence &&
@@ -553,6 +559,28 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
             >
               {sectors.map(s => <option key={s} value={s}>{s || 'All Sectors'}</option>)}
             </select>
+          </div>
+
+          {/* Index membership */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Index</span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {([['SP500', 'S&P 500'], ['NASDAQ_100', 'NDX 100'], ['DOW_30', 'Dow 30']] as [string, string][]).map(([key, label]) => {
+                const active = filters.indices.has(key);
+                return (
+                  <button key={key} onClick={() => setFilters(f => {
+                    const next = new Set(f.indices);
+                    active ? next.delete(key) : next.add(key);
+                    return { ...f, indices: next };
+                  })} style={{
+                    padding: '3px 8px', borderRadius: '5px', fontSize: '11px', fontWeight: 600, cursor: 'pointer',
+                    border: `1px solid ${active ? '#38bdf8' : '#1e293b'}`,
+                    background: active ? 'rgba(56,189,248,0.12)' : 'transparent',
+                    color: active ? '#38bdf8' : '#64748b',
+                  }}>{label}</button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Fair-value discount */}

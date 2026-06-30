@@ -1005,6 +1005,31 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
     total_w = sum(w for _, w in available)
     prob = sum(m["bullish_probability"] * w / total_w for m, w in available)
 
+    # T89: meta model as 4th ensemble member (15% weight, blended after 3-model renormalization)
+    # predict_meta() returns None when the meta model hasn't been trained yet — falls back silently.
+    _meta_prob: float | None = None
+    try:
+        from training.meta_trainer import predict_meta as _predict_meta
+        # Derive confidence + signal scores from the XGBoost result (best available proxy)
+        _confidence = float(xgb.get("confidence", 0.0)) / 100.0  # convert to [0,1] range
+        _fused_prob = float(xgb.get("bullish_probability", 0.5))
+        _ta_score = 0.0  # ta_score not available at this level; meta model trained on 0.0 fallback too
+        _meta_prob = _predict_meta(
+            symbol=symbol,
+            horizon=style,
+            confidence=_confidence,
+            fused_prob=_fused_prob,
+            ta_score=_ta_score,
+            sector=None,    # fetched internally by predict_meta from DB
+            market_cap=None,
+        )
+    except Exception:
+        _meta_prob = None
+
+    if _meta_prob is not None:
+        # Blend: reduce 3-model ensemble by 15%, add meta at 15%
+        prob = prob * 0.85 + _meta_prob * 0.15
+
     # Agreement: bullish if prob > 0.5 per model
     probs = [m["bullish_probability"] for m, _ in available]
     directions = [p > 0.5 for p in probs]
@@ -1029,8 +1054,10 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
         model_probs["lightgbm"] = round(lgb_res["bullish_probability"], 4)
     if rf_res is not None:
         model_probs["random_forest"] = round(rf_res["bullish_probability"], 4)
+    if _meta_prob is not None:
+        model_probs["meta"] = round(_meta_prob, 4)
 
-    model_name = f"ensemble_xgb{'_lgb' if lgb_res else ''}{'_rf' if rf_res else ''}"
+    model_name = f"ensemble_xgb{'_lgb' if lgb_res else ''}{'_rf' if rf_res else ''}{'_meta' if _meta_prob is not None else ''}"
 
     # Weight-average thresholds by the same portfolio weights used for blending
     buy_threshold = sum(

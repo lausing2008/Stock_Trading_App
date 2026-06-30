@@ -1840,6 +1840,70 @@ def _weekly_full_refresh() -> None:
         log.error("scheduler.rl_agent_train_failed", error=str(_exc))
 
 
+def _ingest_edgar_8k() -> None:
+    """T208: Trigger SEC EDGAR 8-K filing ingest via event-intelligence service.
+
+    Runs once daily at 17:30 ET (1.5h after US close) so all 8-K filings
+    from the trading day are available before end-of-day signal review.
+    The event-intelligence service handles stock universe lookup, CIK resolution,
+    and rate-limiting (0.15s/CIK to stay under SEC's 10 req/s fair-use policy).
+    HK stocks are skipped automatically inside the ingest function.
+    """
+    _t0 = time.monotonic()
+    try:
+        log.info("edgar.ingest_trigger")
+        _post(f"{_settings.event_intelligence_url}/events/sync/8k")
+        elapsed = time.monotonic() - _t0
+        log.info("edgar.ingest_triggered", elapsed_s=round(elapsed, 1))
+        _record_job_status("edgar_8k_ingest", "ok", elapsed)
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        log.error("edgar.ingest_failed", error=str(exc), exc_info=True)
+        _record_job_status("edgar_8k_ingest", "error", elapsed, str(exc))
+
+
+def _ingest_hk_connect_flows() -> None:
+    """T209: Fetch HKEX Stock Connect southbound flows for all active HK stocks.
+
+    Runs once daily at 17:00 HKT — approximately 1 hour after HK market close
+    so HKEX has time to publish the day's trading data.  Runs only on weekdays
+    (HKEX does not publish flow data on weekends or holidays).
+    Fail-safe: any single-stock failure is logged and skipped; other stocks
+    continue.  The job records its status to Redis for the admin health monitor.
+    """
+    if _is_hk_holiday():
+        log.info("hk_connect.skip", reason="hk_public_holiday")
+        return
+
+    _t0 = time.monotonic()
+    try:
+        from .hk_connect import ingest_southbound_flows
+        hk_symbols = _symbols_for("HK")
+        if not hk_symbols:
+            log.info("hk_connect.skip", reason="no_hk_symbols")
+            _record_job_status("hk_connect_flows", "skipped: no HK symbols", 0.0)
+            return
+
+        log.info("hk_connect.ingest_start", symbol_count=len(hk_symbols))
+        with SessionLocal() as session:
+            result = ingest_southbound_flows(session, hk_symbols)
+
+        elapsed = time.monotonic() - _t0
+        status = "ok" if result["failed"] == 0 else "partial"
+        _record_job_status("hk_connect_flows", status, elapsed)
+        log.info(
+            "hk_connect.ingest_done",
+            processed=result["processed"],
+            stored=result["stored"],
+            failed=result["failed"],
+            elapsed_s=round(elapsed, 1),
+        )
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        _record_job_status("hk_connect_flows", "error", elapsed, str(exc))
+        log.error("hk_connect.ingest_failed", error=str(exc), exc_info=True)
+
+
 def _purge_old_data() -> None:
     """Delete rows older than 90 days from intraday price bars and signal outcomes.
 
@@ -2420,7 +2484,8 @@ def start_scheduler() -> None:
     ready for the week ahead; subsequent daily retrains pick them up automatically.
 
     Job count: 4 US + 4 HK + 2 5m intraday + 1 weekly full refresh + tune_all
-               + 2 morning digests (US + HK) + 1 price alert checker + 1 db purge = 15.
+               + 2 morning digests (US + HK) + 1 price alert checker + 1 db purge
+               + 1 EDGAR 8-K ingest (T208) = 16.
     """
     global _scheduler
     if _scheduler is not None:
@@ -2604,6 +2669,27 @@ def start_scheduler() -> None:
         id="db_purge_weekly", replace_existing=True, **_JOB_DEFAULTS,
     )
 
+    # ── T208: EDGAR 8-K filing ingest — daily 17:30 ET (1.5h after US close) ─
+    # Fetches recent 8-K filings for all active US stocks from SEC EDGAR.
+    # HK stocks are skipped inside _ingest_edgar_8k (no EDGAR coverage).
+    # Results stored in sec_filings table; exposed via /events/8k/{symbol}.
+    _scheduler.add_job(
+        _ingest_edgar_8k,
+        CronTrigger(hour=17, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
+        id="edgar_8k_ingest_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── T209: HKEX Stock Connect southbound flow ingest — daily 17:00 HKT ───
+    # Fetches mainland→HK net buy/sell turnover per HK stock from HKEX public API.
+    # Runs 1h after HK close so HKEX has published the day's data.
+    # Stored in hk_connect_flows table; exposed via /stocks/hk-connect-flow/{symbol}.
+    # Flow summary enriches HK BUY signal reasons with flow_strength and flow_5d_net_hkd.
+    _scheduler.add_job(
+        _ingest_hk_connect_flows,
+        CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="hk_connect_flows_daily", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
     # ── One-shot startup run to restore conviction/Redis data after restarts ─
     # check_signal_alerts() is normally called by _run_market_refresh() (5×/day).
     # Running it once at startup (60s delay) repopulates Redis without adding a
@@ -2625,4 +2711,4 @@ def start_scheduler() -> None:
         log.error("scheduler.ensure_portfolio_failed", error=str(_ppe), exc_info=True)
 
     _scheduler.start()
-    log.info("scheduler.started", jobs=15)
+    log.info("scheduler.started", jobs=17)

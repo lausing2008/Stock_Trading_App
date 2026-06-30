@@ -465,6 +465,7 @@ def build_features(
     fund_data: dict | None = None,
     sector_df: "pd.DataFrame | None" = None,
     outcome_df: "pd.DataFrame | None" = None,
+    up_to_date: str | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (X, y_direction, y_return).
 
@@ -479,7 +480,14 @@ def build_features(
     Values are broadcast to every row in X (fundamentals change quarterly;
     using the most-recent snapshot as a static signal is standard practice).
     Missing keys default to NaN — XGBoost handles NaN natively.
+
+    up_to_date: optional "YYYY-MM-DD" string. When provided, only price rows
+    up to and including that date are used. Useful for historical feature
+    reconstruction without look-ahead leakage (e.g. meta-model training).
     """
+    if up_to_date is not None:
+        cutoff = pd.Timestamp(up_to_date)
+        df = df[pd.to_datetime(df["ts"]) <= cutoff].copy()
     out = pd.DataFrame(index=df.index)
     c = _adj_close(df)
     h = df["high"].astype(float)

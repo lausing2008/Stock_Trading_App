@@ -317,3 +317,35 @@ def scheduler_status(_: User = Depends(get_admin_user)):
                 pass
     return {"jobs": jobs}
 
+
+@router.post("/backfill-index-membership")
+def backfill_index_membership(
+    session: Session = Depends(get_session),
+    _: User = Depends(get_admin_user),
+):
+    """Backfill stocks.index_membership for US stocks in DOW_30, NASDAQ_100, SP500."""
+    from .index_members import DOW_30, NASDAQ_100, SP500
+
+    index_map: dict[str, list[str]] = {}
+    for sym in DOW_30:
+        index_map.setdefault(sym, []).append("DOW_30")
+    for sym in NASDAQ_100:
+        index_map.setdefault(sym, []).append("NASDAQ_100")
+    for sym in SP500:
+        index_map.setdefault(sym, []).append("SP500")
+
+    stocks = session.execute(
+        select(Stock).where(Stock.active.is_(True), Stock.market == "US")
+    ).scalars().all()
+
+    updated = 0
+    for stock in stocks:
+        indices = index_map.get(stock.symbol, [])
+        new_val = ",".join(sorted(set(indices))) if indices else None
+        if stock.index_membership != new_val:
+            stock.index_membership = new_val
+            updated += 1
+
+    session.commit()
+    return {"status": "ok", "updated": updated}
+

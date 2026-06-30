@@ -179,6 +179,22 @@ def tune_all(tasks: BackgroundTasks, n_trials: int = 60, style: str = "SWING", _
     }
 
 
+@router.post("/train_meta")
+def train_meta(tasks: BackgroundTasks, _: str = Depends(get_current_username)):
+    """Train or retrain the cross-symbol meta-learning model (T89).
+
+    Trains a single XGBoost model on ALL signal_outcomes across ALL symbols.
+    Used as cold-start prior and 4th ensemble member (15% weight) in predict_ensemble_three.
+    Runs in background — check container logs for progress.
+    """
+    from training.meta_trainer import train_meta_model as _train_meta
+    tasks.add_task(_train_meta)
+    return {
+        "status": "scheduled",
+        "note": "Meta model training running in background. Check logs for 'meta_trainer.trained'.",
+    }
+
+
 @router.post("/predict")
 def predict(req: PredictRequest, _: str = Depends(get_current_username)):
     try:

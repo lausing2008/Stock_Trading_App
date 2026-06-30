@@ -1930,6 +1930,55 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     # Use `is not None` not truthiness — _atr_14 == 0.0 is falsy but is a valid zero-ATR measurement.
     reasons["atr_14_pct"] = round(_atr_14 / _last_price, 4) if (_atr_14 is not None and _last_price > 0) else None
 
+    # T208: 8-K filing flag — check for recent material SEC filings via direct DB query.
+    # Querying the shared PostgreSQL sec_filings table directly avoids an HTTP hop to
+    # event-intelligence and adds zero latency to signal generation.
+    # Fail-open: any exception leaves eight_k_flag=None so signal generation is never blocked.
+    try:
+        from db import SessionLocal
+        from sqlalchemy import text as _text_8k
+        with SessionLocal() as _db_8k:
+            # Fetch the most recent material filing within the last 7 days
+            _row_material = _db_8k.execute(
+                _text_8k("""
+                    SELECT filed_date, form FROM sec_filings
+                    WHERE symbol = :sym
+                      AND filed_date >= now() - interval '7 days'
+                      AND is_material = true
+                    ORDER BY filed_date DESC
+                    LIMIT 1
+                """),
+                {"sym": symbol},
+            ).fetchone()
+            if _row_material:
+                reasons["eight_k_flag"] = True
+                reasons["eight_k_date"] = str(_row_material[0])
+                reasons["eight_k_form"] = _row_material[1] or "8-K"
+            else:
+                # Check for any 8-K (even non-material) in the past 7 days
+                _row_any = _db_8k.execute(
+                    _text_8k("""
+                        SELECT filed_date, form FROM sec_filings
+                        WHERE symbol = :sym
+                          AND filed_date >= now() - interval '7 days'
+                        ORDER BY filed_date DESC
+                        LIMIT 1
+                    """),
+                    {"sym": symbol},
+                ).fetchone()
+                if _row_any:
+                    reasons["eight_k_flag"] = True
+                    reasons["eight_k_date"] = str(_row_any[0])
+                    reasons["eight_k_form"] = _row_any[1] or "8-K"
+                else:
+                    reasons["eight_k_flag"] = False
+                    reasons["eight_k_date"] = None
+                    reasons["eight_k_form"] = None
+    except Exception:
+        reasons["eight_k_flag"] = None
+        reasons["eight_k_date"] = None
+        reasons["eight_k_form"] = None
+
     reasons["days_to_earnings"]   = days_to_earnings
     reasons["news_sentiment"]     = news_sentiment
     reasons["rs_score"]                = rs_score
@@ -1948,6 +1997,27 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["sr_nearest_support"]   = sr_data["sr_nearest_support"]
     reasons["sr_52w_high"]          = sr_data["sr_52w_high"]
     reasons["sr_52w_low"]           = sr_data["sr_52w_low"]
+
+    # T209: HKEX Stock Connect southbound flow enrichment for HK stocks.
+    # market-data exposes a public endpoint (/stocks/hk-connect-flow/{symbol})
+    # that returns a rolling flow summary from the hk_connect_flows table.
+    # Hard timeout of 2s; any failure is silently swallowed so signal generation
+    # is never blocked by a missing or slow flow endpoint.
+    if symbol.upper().endswith(".HK"):
+        try:
+            import httpx as _httpx
+            _rflow = _httpx.get(
+                f"{_settings.market_data_url}/stocks/hk-connect-flow/{symbol.upper()}",
+                timeout=2.0,
+            )
+            if _rflow.status_code == 200:
+                _flow = _rflow.json()
+                if _flow.get("flow_strength") is not None:
+                    reasons["flow_5d_net_hkd"]  = _flow.get("flow_5d_net_hkd")
+                    reasons["flow_20d_net_hkd"] = _flow.get("flow_20d_net_hkd")
+                    reasons["flow_strength"]     = _flow.get("flow_strength")
+        except Exception:
+            pass  # flow data is best-effort; never block signal generation
 
     # SA-13: GROWTH style uses an adjusted TA score that de-penalises momentum RSI and
     # substitutes SMA20>SMA50 for the SMA50>SMA200 structural requirement.

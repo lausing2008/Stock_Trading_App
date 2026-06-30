@@ -375,6 +375,9 @@ export const api = {
   // Short squeeze scanner
   shortSqueeze: (minShortFloat = 10) => request<SqueezeCandidate[]>(`/stocks/short_squeeze?min_short_float=${minShortFloat}`),
 
+  // Short interest dashboard
+  shortInterest: () => request<ShortInterestRow[]>('/stocks/short-interest'),
+
   // Relative performance (multi-symbol normalized)
   relativePerformance: (symbols: string[], days = 90) =>
     request<Record<string, RelPerfPoint[]>>(`/stocks/relative_performance?symbols=${symbols.join(',')}&days=${days}`),
@@ -647,7 +650,8 @@ export type SignalSummary = { symbol: string; signal: 'BUY' | 'SELL' | 'HOLD' | 
 export type SignalHistoryPoint = { ts: string | null; signal: string; confidence: number; bullish_probability: number | null };
 export type SignalChange = { symbol: string; name: string; horizon: string; from_signal: string; to_signal: string; ts: string; confidence: number; bullish_probability: number | null; prev_ts: string };
 export type PatternSignal = { name: string; label: string; description: string; bullish: boolean };
-export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null; relative_strength?: number | null; vol_ratio?: number | null; trailing_pe?: number | null; forward_pe?: number | null; peg_ratio?: number | null; revenue_growth?: number | null; earnings_growth?: number | null; debt_to_equity?: number | null; price_to_book?: number | null; held_percent_institutions?: number | null; held_percent_insiders?: number | null; market_cap?: number | null; patterns?: string[] };
+export type RankingRow = { symbol: string; name: string; name_zh?: string | null; score: number | null; market: string; fair_price?: number | null; sector?: string | null; index_membership?: string | null; technical?: number | null; momentum?: number | null; value?: number | null; growth?: number | null; volatility?: number | null; relative_strength?: number | null; vol_ratio?: number | null; trailing_pe?: number | null; forward_pe?: number | null; peg_ratio?: number | null; revenue_growth?: number | null; earnings_growth?: number | null; debt_to_equity?: number | null; price_to_book?: number | null; held_percent_institutions?: number | null; held_percent_insiders?: number | null; market_cap?: number | null; patterns?: string[] };
+export type ShortInterestRow = { symbol: string; name: string; market: string; short_percent_of_float: number | null; short_ratio: number | null; market_cap: number | null };
 export type SectorRsStock = { symbol: string; name: string; rs_score: number | null; kscore: number | null; past_rs: number | null };
 export type SectorRotationEntry = { sector: string; etf: string; avg_rs: number; rs_change: number | null; stock_count: number; leading: number; lagging: number; leading_pct: number; top_stocks: SectorRsStock[]; bottom_stocks: SectorRsStock[] };
 export type SectorRotationReport = { as_of: string; sectors: SectorRotationEntry[] };

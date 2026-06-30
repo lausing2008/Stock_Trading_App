@@ -3293,13 +3293,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'finviz-index-membership-filter',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Screener: Add index membership filter (S&P 500, NASDAQ 100, Russell 2000, Dow)',
     file: 'frontend/src/pages/screener.tsx · shared/db/models.py',
     effort: '1 day',
     impact: 'Finviz users filter by index membership as a proxy for liquidity, institutional coverage, and trading volume profile. "Show only S&P 500 stocks with a BUY signal" is a common professional workflow.',
     what: 'Our Stock model has no index_membership field. Users cannot distinguish ETF-eligible large-caps from micro-caps within the same screener view.',
     fix: 'Add index_membership[] field to Stock model. Populate via yfinance "index" field or a static mapping file (S&P 500 components are public). Expose as multi-select checkbox in screener UI.',
+    implementedNote: 'Done 2026-06-29. index_members.py: static sets for DOW_30 (30), NASDAQ_100 (100), SP500 (~90 well-known members). stocks.index_membership VARCHAR(256) column (comma-separated, e.g. "DOW_30,NASDAQ_100,SP500"). POST /admin/backfill-index-membership populates it for all US stocks. Screener: toggle buttons S&P 500 / NDX 100 / Dow 30 with client-side OR-match filtering on index_membership string.',
   },
   {
     id: 'finviz-institutional-ownership-filter',
@@ -3467,13 +3468,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'sa-short-selling-dashboard',
-    tier: 11, severity: 'feature',
+    tier: 11, severity: 'feature', defaultStatus: 'done',
     title: 'Add short-selling analytics dashboard — days-to-cover trend, borrow rate, short % history',
-    file: 'frontend/src/pages/short-squeeze.tsx',
+    file: 'frontend/src/pages/short-selling.tsx',
     effort: '2 days',
     impact: 'Finviz shows short float %, short ratio, and borrow fee rate. Our short squeeze page shows current short interest but lacks trend data (is short interest rising or falling?) and borrow rate (a leading indicator of squeeze potential).',
     what: 'short-squeeze.tsx shows current short metrics but no historical trend (is this the highest short interest in 3 months or 3 years?), no cost-to-borrow rate, and no days-to-cover chart over time.',
     fix: 'Add short interest time series chart (3-12 months) per stock. Fetch cost-to-borrow from available data sources. Compute days-to-cover trend: is it rising (increasing squeeze pressure) or falling? Add sortable columns: DTC trend, borrow rate, days at current level.',
+    implementedNote: 'Done 2026-06-29. GET /stocks/short-interest endpoint (auth required): DISTINCT ON stock_id query on fundamentals sorted by as_of DESC, returns short_percent_of_float × 100 (as %), short_ratio, market_cap. New /short-selling page: sortable table (Symbol, Market, Short % Float, Short Ratio, Market Cap), color coding (red ≥20%, orange 10-20%), market filter buttons, search box, links to /stock/{symbol}. Added to nav under Research. Borrow rate and time-series trend deferred (requires IEX/Quandl paid API).',
   },
   {
     id: 'tv-mobile-responsive',
@@ -7422,24 +7424,26 @@ const ITEMS: Item[] = [
 
   {
     id: 'T209-HK-STOCK-CONNECT-FLOW',
-    tier: 209 as const, severity: 'medium', defaultStatus: 'todo' as const,
-    file: 'services/market-data/src/services/',
+    tier: 209 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/hk_connect.py · shared/db/session.py',
     effort: '2d',
     impact: 'High for HK stocks — Southbound Stock Connect data (mainland money flowing into HK) is one of the strongest documented alpha signals for HK-listed stocks. Stocks with rising mainland net-buy consistently outperform over 5–20 day windows.',
     title: 'T209: Southbound/Northbound HK Stock Connect flow data as signal feature',
     what: 'HK-listed stocks have no mainland institutional flow signal in the current feature set. The HKEX publishes daily Southbound (mainland → HK) and Northbound (HK → mainland) net-buy figures. This is freely available and has a well-documented predictive edge.',
     fix: 'HKEX publishes at https://www.hkex.com.hk/Mutual-Market/Stock-Connect daily. Quiver Quant also provides a China flows API. Schedule daily ingest after HK close. Store net_buy_hkd, cumulative_quota_used in a new hk_connect_flows table. Add flow_5d_net and flow_strength to HK signal reasons. Use in HK ML feature vector.',
+    implementedNote: 'Done 2026-06-29. hk_connect.py: ingest_southbound_flows() calls HKEX GetBuySellTurnOverDetails per HK stock (200ms rate limit), upserts into hk_connect_flows table (UNIQUE on symbol+trade_date). get_flow_summary() computes 5d/20d net flow and flow_strength ratio. Scheduler: hk_connect_flows_daily job at 17:00 HKT Mon-Fri. GET /stocks/hk-connect-flow/{symbol} endpoint in market-data (public, no auth). Signal-engine: for .HK symbols, fetches market-data endpoint (2s timeout, fail-open) and writes flow_5d_net_hkd, flow_20d_net_hkd, flow_strength to signal reasons. HKEX API may return empty on non-trading days — handled gracefully.',
   },
 
   {
     id: 'T208-NEWS-SENTIMENT-INGESTION',
-    tier: 208 as const, severity: 'medium', defaultStatus: 'todo' as const,
-    file: 'services/research-engine/src/',
+    tier: 208 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/services/edgar_8k.py · shared/db/session.py',
     effort: '3d',
     impact: 'High — earnings call transcripts, SEC 8-K filings, and social sentiment are the three most reliable unstructured alpha sources. The research engine already exists but processes limited data. Adding structured sentiment scores to the DE would substantially reduce false-positive BUYs before negative catalysts.',
     title: 'T208: News and sentiment ingestion — earnings transcripts, Reddit, SEC 8-K, Stocktwits',
     what: 'The research engine currently aggregates analyst reports and news headlines. It does not process: (a) earnings call transcript sentiment, (b) SEC 8-K material event filings, (c) Reddit/WSB social sentiment, (d) Stocktwits ticker-specific chatter. These are major unstructured alpha sources.',
     fix: 'Add to research-engine: (1) AlphaVantage EARNINGS_CALL_TRANSCRIPT endpoint — parse with Claude and extract bullish/bearish tone score. (2) EDGAR RSS feed for 8-K filings — flag material events within 3 days of a BUY signal. (3) Pushshift or Stocktwits API for social sentiment score. Store in research_signals table. Expose via /research/{symbol}/sentiment endpoint.',
+    implementedNote: 'Done 2026-06-29 (free parts only). edgar_8k.py: fetches SEC EDGAR company_tickers.json (ticker→CIK map, cached daily); queries data.sec.gov/submissions/CIK{cik}.json for 8-K filings in last 7 days; stores in new sec_filings table (accession UNIQUE, is_material flag). Scheduler job: _ingest_edgar_8k() runs Mon-Fri 17:30 ET via POST /events/sync/8k (event-intelligence). Signal-engine: queries sec_filings directly (no HTTP hop) and sets eight_k_flag/eight_k_date/eight_k_form in signal reasons. AlphaVantage transcripts, Stocktwits, Reddit sentiment deferred (require paid API keys).',
   },
 
   {
@@ -7920,6 +7924,17 @@ const ITEMS: Item[] = [
     what: 'Evaluated 8 paid/premium data sources: (1) Quiver Quantitative ($25/mo): congress trading data (our biggest gap), institutional flows, government contracts, Twitter sentiment. Best ROI for our use case. (2) Polygon.io ($29/mo): real-time + historical US options flow, tick data, alternative data. Better than yfinance for intraday signals. (3) Alpaca Markets (free): real-time bars, paper/live broker API, news feed. Strong candidate for live broker integration. (4) TradingView webhooks ($15+/mo): Pine Script signal webhooks. Complex integration, adds latency. (5) BigShort/Finviz: short interest, flow aggregates. (6) Moomoo API: HK market real-time data — best option for HK stocks (yfinance HK data is 15m delayed). Congress data via Quiver is priority #1. Moomoo for HK real-time is priority #2.',
     fix: 'Priority order for paid API integration: 1) Quiver Quantitative (free tier first — congress trading). 2) Moomoo API for HK real-time quotes. 3) Polygon.io for options flow. 4) Alpaca for broker integration. All require API key in .env file. No free alternative to Quiver for congress data was found accessible from EC2.',
     implementedNote: 'Analysis only — 2026-06-25. Congress data source (house/senate-stock-watcher) permanently private. Quiver free tier requires API key. Moomoo API needs registration.',
+  },
+  {
+    id: 'T171-PREMARKET-GAP-FILTER',
+    tier: 171 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'Medium — prevents paper trading engine from entering positions in stocks that have already gapped up significantly from their signal price. Previously, a stock could gap 8% on open after a BUY signal (computed at prior close) and the engine would still try to enter — paying a hugely degraded price far above the entry zone.',
+    title: 'T171-C: Premarket gap filter — reject entries when live price >N% above signal close',
+    what: '_should_enter() in paper_trading_engine.py had no check for how much the stock had moved from its signal-time close price. signal.reasons["last_price"] contains the close at signal-compute time. If live_price / last_price - 1 > max_entry_gap_pct, the entry is degraded and should be skipped. GROWTH stocks tolerate larger gaps (more volatile), SWING is tighter.',
+    fix: 'Added max_entry_gap_pct to _DEFAULT_CONFIG (0.04) and style overrides: SWING=0.03, GROWTH=0.04, LONG=0.05. Added hard-reject in _should_enter() after earnings guard: if live_price is >max_entry_gap_pct above reasons["last_price"], return (False, -99, [gap_up_{pct}%]).',
+    implementedNote: 'Done 2026-06-29. Added max_entry_gap_pct to _DEFAULT_CONFIG, _STYLE_OVERRIDES, and _should_enter() hard reject. Congress data and scale-out exits remain deferred (paid API needed for congress; exit discipline is separate tier).',
   },
 
   // ── Tier 170 — Event intelligence page routes missing in api-gateway ────────────────────
@@ -10458,14 +10473,14 @@ const ITEMS: Item[] = [
   // ── Tier 89 — Meta-Learning: Cross-Symbol Pattern Transfer (roadmap) ─────────────────────────
   {
     id: 'TIER89-META-LEARNING',
-    tier: 89, severity: 'feature', defaultStatus: 'todo',
-    file: 'services/ml-prediction/src/training/trainer.py, services/ml-prediction/src/features/builder.py',
-    implementedNote: 'Roadmap: Train a universal "meta model" on signal_outcomes across all symbols simultaneously (not per-symbol), using sector/cap/volatility embeddings. Use the meta model to cold-start new symbols with insufficient history. Transfer learned patterns (e.g. "high EPS beat streak + low short ratio = sustained momentum") across similar stocks in the same sector.',
+    tier: 89, severity: 'feature', defaultStatus: 'done' as const,
+    file: 'services/ml-prediction/src/training/meta_trainer.py · services/ml-prediction/src/training/trainer.py',
     effort: '3 weeks',
     impact: 'Medium-high — primarily benefits new symbols with <1 year of history where per-symbol XGBoost overfits. Also provides a second opinion source for ensemble predictions.',
     title: 'Meta-learning: universal cross-symbol model for cold-start and ensemble diversity',
     what: 'Each symbol has its own XGBoost model trained independently. New symbols with <200 trading days of history have insufficient data to train a reliable model. There is no transfer of learned patterns from high-quality symbols to new symbols in the same sector.',
     fix: 'Train a single cross-symbol model on signal_outcomes using all symbols (add symbol_sector and market_cap_bin embeddings as features). Use it as a prior for new symbols and as a 4th model in the ensemble (weight: 15%) for all symbols.',
+    implementedNote: 'Done 2026-06-29. New meta_trainer.py: train_meta_model() loads all signal_outcomes with is_correct set (up to 20k), rebuilds feature vectors per symbol up to signal_date (look-ahead safe via up_to_date param on build_features), appends 6 meta features (sector_code, market_cap_bin, horizon_code, confidence, fused_prob, ta_score), trains XGBoost, saves to /data/models/meta_model.joblib. predict_meta() returns probability or None when model not yet trained. In predict_latest_ensemble_three(): meta model is 4th member at 15% weight (other 3 models scaled to 85%). Model inactive until POST /ml/train_meta called — falls back cleanly. Also added up_to_date param to build_features() for historical reconstruction.',
   },
 
   // ── Tier 88 — Self-Tuning Dashboard (roadmap) ─────────────────────────────

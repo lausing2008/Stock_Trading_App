@@ -109,6 +109,8 @@ class Stock(Base):
     currency: Mapped[str] = mapped_column(String(8), default="USD")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     delisted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    cik: Mapped[str | None] = mapped_column(String(16), nullable=True)  # T208: SEC EDGAR CIK
+    index_membership: Mapped[str | None] = mapped_column(String(256), nullable=True)  # T11: comma-separated index names
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     prices: Mapped[list["Price"]] = relationship(back_populates="stock")
@@ -890,4 +892,59 @@ class CatalystScore(Base):
 
     __table_args__ = (
         UniqueConstraint("stock_id", name="uq_catalyst_stock"),
+    )
+
+
+# ── T208: SEC EDGAR 8-K Filings ───────────────────────────────────────────────
+
+class SecFiling(Base):
+    """SEC EDGAR 8-K filing record — one row per unique accession number.
+
+    Ingested daily (post-US-close) for tracked US stocks. HK stocks have no
+    EDGAR filings and are skipped automatically in the ingest function.
+    is_material=True when the filing touches items 1.01, 2.01, 2.06, 5.02, or
+    8.01 — the items most likely to move stock prices materially.
+    """
+    __tablename__ = "sec_filings"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    cik: Mapped[str] = mapped_column(String(16), nullable=False)
+    accession: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    form: Mapped[str] = mapped_column(String(16), nullable=False, default="8-K")
+    filed_date: Mapped[date] = mapped_column(Date, nullable=False)
+    report_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    items: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    description: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_material: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_sec_filings_symbol_date", "symbol", "filed_date"),
+    )
+
+
+# ── T209: HKEX Stock Connect Southbound Flows ─────────────────────────────────
+
+class HkConnectFlow(Base):
+    """Daily HKEX Stock Connect southbound flow per HK stock (symbol-keyed).
+
+    Populated by hk_connect.ingest_southbound_flows() — called once daily after
+    HK market close. Unlike StockConnectFlow (which uses a stock_id FK), this
+    table uses the symbol string directly so the ingest function does not require
+    a stocks table lookup for each symbol.
+    """
+    __tablename__ = "hk_connect_flows"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    net_buy_hkd: Mapped[float | None] = mapped_column(Float, nullable=True)    # net buy in HKD
+    buy_hkd: Mapped[float | None] = mapped_column(Float, nullable=True)        # gross buy in HKD
+    sell_hkd: Mapped[float | None] = mapped_column(Float, nullable=True)       # gross sell in HKD
+    quota_used_pct: Mapped[float | None] = mapped_column(Float, nullable=True) # daily quota utilisation %
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_hk_connect_flow"),
     )
