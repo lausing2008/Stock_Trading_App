@@ -1329,6 +1329,33 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                          hold_days=days_held, pnl_pct=round(pnl_pct * 100, 1),
                          stall_days=stall_days, stall_max_gain_pct=stall_max_gain * 100)
 
+        # ── T207: Momentum exhaustion exit ───────────────────────────────────────
+        # OBV distribution (price holding but volume declining) + RSI rolled from overbought
+        # signals the rally is exhausting. Exit profitable positions early rather than ride back.
+
+        elif (
+            exit_reason is None
+            and pnl_pct > 0
+            and cfg.get("momentum_exit_enabled", True)
+            and days_held >= cfg.get("momentum_exit_min_days", 3)
+            and _obv_divergence.get(trade.symbol)
+            and _rsi_overbought.get(trade.symbol)
+        ):
+            exit_reason = "momentum_fade"
+            exit_notes = {**_base_notes,
+                "message": (
+                    f"Momentum exhaustion: OBV distribution + RSI rolled from overbought "
+                    f"at ${live_price:.2f} (+{pnl_pct*100:.1f}%)"
+                ),
+                "pnl_pct": round(pnl_pct * 100, 2),
+                "obv_divergence": True,
+                "rsi_overbought_rolled": True,
+            }
+            log.info("paper.momentum_fade_exit",
+                     symbol=trade.symbol, pnl_pct=round(pnl_pct * 100, 1),
+                     hold_days=days_held,
+                     note="OBV declining + RSI rolled from overbought — protecting gains")
+
         # ── WAIT decay exit ───────────────────────────────────────────────────
 
         elif sig_type == "WAIT":
@@ -2063,6 +2090,35 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      spy=live_regime.get("spy_price"),
                      note="all new entries suspended in risk_off regime (strict gate enabled)")
             return
+
+        # T210: Regime suspension circuit breaker — if the market has been risk_off or bear
+        # for N consecutive calendar days, suspend all new entries regardless of gate setting.
+        # Stores one snapshot per day in Redis; checks the last N unique days.
+        _regime_suspend_days = int(cfg.get("regime_suspension_days", 3))
+        if _regime_suspend_days > 0:
+            try:
+                import redis as _redis_t210
+                from common.config import get_settings as _gs_t210
+                _t210_redis = _redis_t210.Redis.from_url(_gs_t210().redis_url, decode_responses=True)
+                _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                _regime_key = f"paper:regime_daily:{portfolio.id}"
+                # Store today's state (date-keyed; only writes once per day via NX)
+                _t210_redis.hset(_regime_key, _today_str, regime_state)
+                _t210_redis.expire(_regime_key, 60 * 60 * 24 * 10)  # keep 10 days of history
+                # Collect last N distinct dates, sorted descending
+                _all_days = sorted(_t210_redis.hgetall(_regime_key).items(), reverse=True)
+                _bad_states = {"risk_off", "bear"}
+                _recent_bad = [s for _, s in _all_days[:_regime_suspend_days] if s in _bad_states]
+                if len(_recent_bad) >= _regime_suspend_days:
+                    log.warning("paper.regime_suspension_triggered",
+                                portfolio=portfolio.name,
+                                days=_regime_suspend_days,
+                                recent_states=[s for _, s in _all_days[:_regime_suspend_days]],
+                                note="market in sustained stress — all entries suspended until regime improves")
+                    return
+            except Exception:
+                pass  # Redis unavailable — fail-open; normal gates still apply
+
         regime_size_mult = {
             "bull":     cfg.get("regime_bull_size_mult", 1.0),
             "neutral":  1.0,
@@ -2184,6 +2240,32 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      note="deployed capital cap reached — no new entries until positions close")
             return
 
+    # T215: Multi-timeframe confluence — for GROWTH/LONG portfolios, pre-fetch SHORT horizon
+    # signals for all candidates. A GROWTH BUY that contradicts the SHORT signal (SELL) means
+    # near-term momentum is against the trade. Batch-query once; check in candidate loop.
+    _short_signals: dict[int, str] = {}
+    if cfg.get("confluence_check_enabled", True) and style in ("GROWTH", "LONG"):
+        _candidate_stock_ids = [stock.id for _, stock, _ in buy_signals]
+        if _candidate_stock_ids:
+            try:
+                _short_ts_subq = (
+                    select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+                    .where(Signal.stock_id.in_(_candidate_stock_ids), Signal.horizon == "SHORT")
+                    .group_by(Signal.stock_id)
+                    .subquery()
+                )
+                for _s_sig, _s_stk in session.execute(
+                    select(Signal, Stock)
+                    .join(Stock, Signal.stock_id == Stock.id)
+                    .join(_short_ts_subq,
+                          (Signal.stock_id == _short_ts_subq.c.stock_id) &
+                          (Signal.ts == _short_ts_subq.c.max_ts))
+                    .where(Signal.horizon == "SHORT")
+                ).all():
+                    _short_signals[_s_stk.id] = _s_sig.signal.value
+            except Exception:
+                pass  # fail-open — confluence check skipped if query fails
+
     # PT-P2 + PA-F1: batch-fetch ATR for all candidates in ONE yfinance download
     candidate_syms = [stock.symbol for _, stock, _ in buy_signals]
     atr_cache: dict[str, float | None] = _batch_compute_atr(list(set(candidate_syms)))
@@ -2279,6 +2361,16 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             if _sig_age_h > _max_age_h:
                 log.info("paper.skip_stale_signal", symbol=stock.symbol,
                          age_h=round(_sig_age_h, 1), max_age_h=_max_age_h, ts=str(sig.ts)[:19])
+                continue
+
+        # T215: Multi-timeframe confluence — GROWTH/LONG BUY that contradicts SHORT SELL
+        # means near-term momentum is working against the entry. Skip until SHORT agrees.
+        if _short_signals and stock.id in _short_signals:
+            if _short_signals[stock.id] == "SELL":
+                log.info("paper.skip_confluence_fail",
+                         symbol=stock.symbol, style=style,
+                         short_signal="SELL",
+                         note="GROWTH/LONG BUY contradicts SHORT SELL — near-term momentum against trade")
                 continue
 
         live_price = live_prices.get(stock.symbol)

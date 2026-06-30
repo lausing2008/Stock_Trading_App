@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7213,16 +7213,30 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-24 — paper-portfolio.tsx expanded row updated.',
   },
 
-  // ── Tier 193 — Decision Engine: market-closed guard ──────────────────────────────────────────
+  // ── Tier 216 — Engineering knowledge base ────────────────────────────────────────────────────
+  {
+    id: 'T216-SKILL-AGENT-KNOWLEDGE-BASE',
+    tier: 216 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'skill.md / agent.md (root + all services)',
+    effort: '3h',
+    impact: 'Medium — Claude Code sessions lack continuity between conversations. Without domain context, each session re-derives architecture facts and re-learns coding invariants. A per-service knowledge base means fewer diagnostic mistakes, fewer repeated constraint reminders, and more reliable code generation on first attempt.',
+    title: 'T216: Engineering knowledge base — 28-file per-service skill.md + agent.md system',
+    what: 'Claude Code has no memory of service-specific conventions between sessions. Recurring failures (jose import, SQLAlchemy ::type cast, BuildKit cache, login loop, DISTINCT ON ordering) were being re-encountered rather than prevented. No single source documented the platform\'s domain model, signal taxonomy, exit logic, deployment rules, or diagnostic workflows in a machine-readable format.',
+    fix: 'Create skill.md + agent.md for every service directory. skill.md teaches domain knowledge (signal styles, service topology, coding standards, diagnostic orders). agent.md defines behavioral specification (identity, mindset, 7 recurring failures, hard rules, communication style). 28 files across 14 directories: root, frontend, shared, and 11 service directories.',
+    implementedNote: 'Done 2026-06-29. Created 28 files (skill.md + agent.md) across root, frontend, shared, and all 11 service directories. Root skill.md covers full system: signal taxonomy, exit logic, DB vs live distinction, service topology, auth architecture, shared module layout, deployment rules, and Python/TypeScript coding standards. Root agent.md defines 7 recurring failures known cold (jose missing, ::type cast, DISTINCT ON, login loop, BuildKit cache, alert oscillation, shared module path). Per-service files are domain-specific: market-data covers paper trading engine architecture; signal-engine covers BUG-6/BUG-8; api-gateway covers 401 behavior and login loop prevention.',
+  },
+
+  // ── Tier 215 — Multi-timeframe confluence ─────────────────────────────────────────────────────
   {
     id: 'T215-MULTI-TIMEFRAME-CONFLUENCE',
-    tier: 215 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 215 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '2h',
     impact: 'High — a GROWTH BUY signal that contradicts the SHORT signal (which is more sensitive to intraday momentum) is more likely to fail. Requiring both to agree before entering dramatically filters out false BUYs in trending-against environments.',
-    title: 'T215: Multi-timeframe confluence gate — require SHORT + SWING signal alignment for GROWTH entries',
+    title: 'T215: Multi-timeframe confluence gate — require SHORT signal alignment for GROWTH entries',
     what: 'GROWTH style signals are computed on a longer horizon. A stock can have a GROWTH BUY but a SHORT SELL simultaneously — meaning the near-term momentum is against the trade. No gate currently checks cross-style signal alignment before entry.',
     fix: 'In _scan_for_entries for GROWTH/LONG portfolios: batch-query the SHORT and SWING signals for all candidates. If SHORT is SELL or HOLD for a GROWTH BUY candidate, skip it. Config: confluence_check_enabled=True, confluence_styles=["SHORT"] per portfolio.',
+    implementedNote: 'Done 2026-06-29. Pre-fetches SHORT signals for all GROWTH/LONG candidates in one batch query. Skips entry if SHORT is SELL. Config: confluence_check_enabled (default True). Deployed to market-data container.',
   },
 
   {
@@ -7238,13 +7252,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T213-SIGNAL-STATE-DEDUP',
-    tier: 213 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 213 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/scheduler.py',
     effort: '1.5h',
     impact: 'Medium — alert emails firing on every BUY refresh (even if it was BUY last time too) create noise. Only transitions (HOLD→BUY, SELL→BUY) are actionable. Deduplication reduces alert fatigue and makes emails more meaningful.',
     title: 'T213: Signal state-change deduplication — only fire alerts on BUY↔HOLD transitions',
     what: 'check_signal_alerts() already has a 2h same-direction cooldown. But a signal that stays BUY across 5 refreshes still fires up to once per 2h per symbol. The actual information content of a "still BUY" refresh is low; what matters is the transition.',
     fix: 'Store previous signal state in signal_alerts table or Redis. Only send email when state CHANGES (HOLD→BUY, BUY→SELL). "Confirmed BUY" (stayed BUY for 2+ refreshes) could optionally fire once as a reinforcement signal with lower priority.',
+    implementedNote: 'Already implemented. scheduler.py check_signal_alerts() has `if prev == current: continue` at line 1126 — identical signals are skipped; only transitions (is_bullish, is_bearish) trigger the alert path. Full state machine with last_signal tracking was already in place.',
   },
 
   {
@@ -7271,13 +7286,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T210-REGIME-SUSPENSION-BREAKER',
-    tier: 210 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 210 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '2h',
     impact: 'Medium — the current regime filter reduces position size in risk_off but does not stop entries entirely unless regime_risk_off_gate=True. A sustained multi-day risk_off environment (e.g. 3+ consecutive days) warrants a temporary full pause, not just smaller sizes.',
     title: 'T210: Regime suspension circuit breaker — global entry pause when risk_off for 3+ consecutive days',
     what: 'A single day of risk_off triggers size reduction. But if the regime stays risk_off for 3+ consecutive trading days, the market is in a sustained stress period. No circuit breaker currently escalates the response from "size down" to "full pause" after N bad days.',
     fix: 'Store daily regime snapshots in Redis (LPUSH regime_history {state, date} → trim to 10). In _scan_for_entries: if the last 3 snapshots are all risk_off or bear, return early with paper.regime_suspension. Config: regime_suspension_days=3. Reset automatically when regime improves to neutral or bull.',
+    implementedNote: 'Done 2026-06-29. Uses Redis hash paper:regime_daily:{portfolio_id} keyed by date string. Records today\'s regime state on each _scan_for_entries call; checks last regime_suspension_days (default 3) unique dates. If all are risk_off or bear → return early, suspending all new entries. Fail-open on Redis unavailability. Deployed to market-data.',
   },
 
   {
@@ -7304,13 +7320,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T207-MOMENTUM-EXHAUSTION-EXIT',
-    tier: 207 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 207 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '2h',
     impact: 'High — the current exit system uses fixed stop + target + trailing stop. In strong trending stocks, the trailing stop often exits too early. In weakening stocks, it exits too late. A momentum-exhaustion exit (RSI reversal + OBV declining) would improve average hold time and exit quality.',
     title: 'T207: Momentum exhaustion exit — RSI reversal + volume fade triggers early position exit',
     what: 'Open positions are currently exited only via stop_hit, target_reached, signal_exit, time_stop, or hold_stall. There is no exit trigger based on momentum degradation while still above the stop: RSI rolling over from overbought + OBV declining = distribution before the stop gets hit.',
     fix: 'In _monitor_positions: add momentum_fade exit. Conditions: (1) RSI_14 has fallen from above 70 to below 60 within 2 bars AND (2) OBV has declined for 3 consecutive bars AND (3) trade is profitable (pnl > 0). Set exit_reason = "momentum_fade". Config: momentum_exit_enabled=True. Gives up some upside but dramatically improves win/loss quality.',
+    implementedNote: 'Done 2026-06-29. Uses pre-existing _obv_divergence (PT-H4) and _rsi_overbought (PT-H5) batch-fetched dicts — no new DB queries. Exit triggers on profitable positions (pnl_pct > 0) showing OBV distribution AND RSI rolled from overbought. Config: momentum_exit_enabled=True, momentum_exit_min_days=3 (default). exit_reason=momentum_fade. Deployed to market-data.',
   },
 
   {
@@ -11150,6 +11167,7 @@ const TIER_LABEL: Record<Tier, string> = {
   213: 'Tier 213 — Signal state-change deduplication: only fire alerts on BUY↔HOLD transitions',
   214: 'Tier 214 — Relative strength vs sector: stock vs sector ETF as ML feature',
   215: 'Tier 215 — Multi-timeframe signal confluence: require SHORT+SWING alignment for GROWTH entry',
+  216: 'Tier 216 — Engineering knowledge base: per-service skill.md + agent.md system',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11368,6 +11386,7 @@ const TIER_COLOR: Record<Tier, string> = {
   213: '#f59e0b',
   214: '#8b5cf6',
   215: '#f59e0b',
+  216: '#64748b',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
