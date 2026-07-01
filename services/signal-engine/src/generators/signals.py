@@ -344,6 +344,25 @@ def _fetch_market_breadth() -> float | None:
     return None
 
 
+def _fetch_hsi_regime() -> str:
+    """Returns 'bull', 'bear', or 'unknown' based on HSI vs its 20-day SMA.
+
+    Called only for HK stocks. Returns 'unknown' on any failure (fail-open).
+    The US SPY/VIX regime does not reflect HK market conditions — during June 2026,
+    all HK signals showed market_regime='bull' while HSI was in a sustained downtrend.
+    """
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("^HSI").history(period="35d")
+        closes = hist["Close"].dropna().tolist()
+        if len(closes) >= 20:
+            sma20 = sum(closes[-20:]) / 20
+            return "bull" if float(closes[-1]) > sma20 else "bear"
+    except Exception:
+        pass
+    return "unknown"
+
+
 def _fetch_earnings_proximity(symbol: str) -> int | None:
     """Return days_to_earnings, or None if unavailable."""
     try:
@@ -1799,6 +1818,15 @@ def _apply_style_signal(
     else:
         reasons["weekly_overbought_gate"] = False
 
+    # T224-B: HSI downtrend compression for HK stocks. Applied post-cap so it cannot be
+    # offset by prior boosts. 20% compression toward neutral when HSI < 20-day SMA.
+    if reasons.get("hsi_regime") == "bear":
+        fused = 0.5 + (fused - 0.5) * 0.80
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["hsi_bear_gate"] = True
+    else:
+        reasons["hsi_bear_gate"] = False
+
     signal, horizon, threshold_tier = _decide_style(fused, style_key, market_regime)
     reasons["threshold_tier"] = threshold_tier  # SA-12: log which regime threshold was applied
     confidence = round(abs(fused - 0.5) * 200, 2)
@@ -2018,6 +2046,12 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
                     reasons["flow_strength"]     = _flow.get("flow_strength")
         except Exception:
             pass  # flow data is best-effort; never block signal generation
+
+    # T224-B: HSI regime for HK stocks — US SPY/VIX regime is irrelevant for HK timing.
+    # Fetches ^HSI and compares to its 20-day SMA. Used in _apply_style_signal to apply
+    # a 20% compression toward neutral when HSI is in a downtrend.
+    if symbol.upper().endswith(".HK"):
+        reasons["hsi_regime"] = _fetch_hsi_regime()
 
     # T220-C: Simple squeeze score from existing reasons data.
     # reasons["short_pct_float"] is already in percentage form (e.g. 15.0 = 15% of float shorted).

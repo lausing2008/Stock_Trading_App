@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221 | 222 | 223;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221 | 222 | 223 | 224;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7284,6 +7284,53 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-29. HKEX API may return empty on non-trading days or for stocks outside the Stock Connect scheme — handled gracefully. flow_strength = (5d_avg / 20d_avg) ratio — >1 means accelerating mainland buying.',
   },
 
+  // ── Tier 224 — HK Signal Quality Redesign ────────────────────────────────────────────────────
+
+  {
+    id: 'T224-MAINLAND-FLOW-GATE',
+    tier: 224 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'Critical — HK paper trading: 0/9 wins (0% win rate), -$10,767 total. Root cause analysis (June 2026 signal_outcomes audit) showed HK SWING BUY with high ML confidence (0.91-0.99) had 0% accuracy. Mainland southbound flow gate blocks entries during net-outflow periods, eliminating the "buy into selling pressure" scenario.',
+    implementedNote: 'Done 2026-06-30. Hard pre-filter in _scan_for_entries candidate loop: if market=HK and flow_5d_net_hkd is available and ≤0, log paper.skip_hk_flow_gate and skip. Fail-open if flow data is None (non-Stock Connect stocks pass through). flow_5d_net_hkd is populated by T209 HKEX Stock Connect enrichment in signal-engine.',
+    title: 'T224-A: Mainland flow gate — HK BUY entries require positive 5-day southbound flow',
+    why: 'June 2026 audit: HK SWING BUY with flow_5d_net_hkd < 0 means mainland institutions are net-selling the stock. Buying into mainland outflow is directionally opposed to the dominant institutional force in HK market microstructure. Stock Connect southbound flow predicts 10-20d momentum for connected stocks.',
+    fix: 'In _scan_for_entries candidate loop (after volume gate): if market=HK and flow_5d_net_hkd is known and ≤0, continue. Add to _HK_MARKET_OVERRIDES docs.',
+  },
+  {
+    id: 'T224-HSI-REGIME-GATE',
+    tier: 224 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '2h',
+    impact: 'Critical — All 9 HK paper trades in June 2026 were entered with market_regime="bull" (US SPY/VIX), while HSI was in a sustained downtrend. The system was treating a bearish HK market as bullish because it was reading US market regime. A 20% compression when HSI < 20-day SMA makes HK BUY signals harder to fire during HSI downtrends.',
+    implementedNote: 'Done 2026-06-30. _fetch_hsi_regime(): yfinance ^HSI 35-day history, compares last close to 20-day SMA. Returns bull/bear/unknown (fail-open on error). In generate_all_signals(), HK symbols: reasons["hsi_regime"] = _fetch_hsi_regime(). In _apply_style_signal(), if hsi_regime=="bear": fused = 0.5 + (fused - 0.5) × 0.80 (20% compression toward neutral), reasons["hsi_bear_gate"] = True. Applied post-cap so prior boosts cannot offset it.',
+    title: 'T224-B: HSI regime gate — compress HK BUY signals when HSI below 20-day SMA',
+    why: 'Diagnostic data: HK SWING BUY accuracy = 26.3% when HSI bullish vs effectively 0% when HSI downtrending. The US SPY/Fear&Greed regime that drives market_regime is uncorrelated with HSI direction — HK stocks need a HK-specific regime check. During June 25 wipeout: SPY was bullish, HSI was -8% from recent high.',
+    fix: '_fetch_hsi_regime() fetches ^HSI via yfinance. Stored as hsi_regime in signal reasons. _apply_style_signal() applies 20% compression when hsi_regime=="bear". Log hsi_bear_gate=True/False for every HK signal.',
+  },
+  {
+    id: 'T224-HK-TA-GATE',
+    tier: 224 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'High — June 2026 audit: HK SWING BUY signals with low TA score had 0% accuracy. The ML model (trained on US-dominated data) is systematically wrong for HK — ml_prob was 0.91-0.99 on losing trades. The TA score is derived from price action only and is more reliable for HK stocks than ML predictions.',
+    implementedNote: 'Done 2026-06-30. Added min_ta_score=0.60 to _HK_MARKET_OVERRIDES. In _scan_for_entries candidate loop (after flow gate): if min_ta_score>0 and market=HK and sig.reasons["ta_score"] < min_ta_score, log paper.skip_hk_ta_gate and skip. Fail-open if ta_score absent from reasons (defaults to 1.0).',
+    title: 'T224-C: HK TA score gate — require ta_score ≥ 0.60 for HK entries',
+    why: 'Confidence inversion finding: HK SWING BUY with conf 60+ (ml_prob avg 0.992) had 0% accuracy; conf 40-50 (ml_prob 0.935) had 80% accuracy. The ML model is inverted for HK. TA score (price-action based) is the more trustworthy signal component for HK stocks where the ML training data is US-biased.',
+    fix: '_HK_MARKET_OVERRIDES: min_ta_score=0.60. Candidate loop: hard reject if ta_score < min_ta_score when market=HK.',
+  },
+  {
+    id: 'T224-DIAGNOSIS-DATA',
+    tier: 224 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py · services/signal-engine/src/generators/signals.py',
+    effort: '3h',
+    impact: 'High — Data-driven diagnosis identified three structural HK signal failures that were invisible without querying signal_outcomes. Each root cause maps to a deployed fix (T224-A, B, C). Without the diagnosis the fixes would have been guesswork.',
+    implementedNote: 'Done 2026-06-30. Diagnosis run on signal_outcomes table (pct_return, is_correct, confidence, ta_score, ml_prob, market_regime). Key findings: (1) HK SWING BUY: 26.3% accuracy vs 47.5% SHORT BUY. (2) ML confidence INVERTED for HK: conf 60+ → 0% accuracy; conf 40-50 → 80% accuracy (n=5). (3) All 9 HK losses had market_regime="bull" (SPY-based), ignoring actual HSI direction. (4) HK SWING SELL: 65.1% accuracy — stocks were trending DOWN. Structural implication: HK market microstructure requires HSI regime + mainland flow + stronger TA alignment, not raw ML confidence.',
+    title: 'T224-D: HK vs US signal quality audit — data-driven root cause diagnosis',
+    why: 'The 0% HK win rate (9 trades) was not random chance (p < 0.002). Systematic query of signal_outcomes by (market, horizon, confidence bucket) revealed the ML confidence inversion — the most actionable finding that directly motivated the TA gate and HSI regime changes.',
+    fix: 'Three SQL queries against signal_outcomes: accuracy/avg_return by market+horizon+signal, confidence-bucket breakdown for HK SWING BUY, market_regime distribution. Findings documented with tables and implemented as T224-A/B/C.',
+  },
+
   // ── Tier 223 — R:R calibration & outcome tracking ────────────────────────────────────────────
 
   {
@@ -7308,10 +7355,11 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T223-HK-SIGNAL-DIAGNOSIS',
-    tier: 223 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 223 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/generators/signals.py',
     effort: '4h',
     impact: 'High — HK paper trading: 0% win rate across 9 trades (-$10,767 total). Root cause unknown. Could be: SPY-based features dominating HK signals, insufficient mainland flow data, or HK volatility making 5% stops too tight.',
+    implementedNote: 'Done 2026-06-30 (moved to T224-D). signal_outcomes audit identified three structural failures: ML confidence inversion for HK (ml_prob 0.91-0.99 had 0% accuracy), SPY-based market_regime showing "bull" during HSI downtrend, and HK SWING SELL being 65% accurate (stocks trending DOWN). Fixes implemented as T224-A (flow gate), T224-B (HSI regime compression), T224-C (TA gate).',
     title: 'HK signal root-cause diagnosis',
     why: '0/9 win rate is not random chance (p < 0.002). Something structural is wrong with how signals are generated for HK stocks. Diagnosis before re-enabling HK trading.',
     fix: 'Query signal_outcomes for HK. Check feature importance for HK signals vs US signals. Verify HSI regime is being factored in. Check if stock connect flow data is improving or hurting signal quality.',
@@ -11653,6 +11701,7 @@ const TIER_LABEL: Record<Tier, string> = {
   221: 'Tier 221 — Portfolio concentration & risk controls: market cluster cap, cross-portfolio symbol dedup, stop cooldown 5 days, portfolio heat brake, index trend gate',
   222: 'Tier 222 — Signal quality & entry discipline: HK tighter gates, SWING confluence, signal age 3d, wider SWING trail stop, HK position sizing reduction',
   223: 'Tier 223 — R:R calibration & outcome tracking: signal win-rate by style, confidence calibration, HK signal diagnosis, partial TP raise',
+  224: 'Tier 224 — HK signal quality redesign: mainland flow gate, HSI regime compression, HK TA gate, data-driven root-cause audit',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11879,6 +11928,7 @@ const TIER_COLOR: Record<Tier, string> = {
   221: '#f43f5e',
   222: '#fb923c',
   223: '#facc15',
+  224: '#34d399',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

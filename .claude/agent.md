@@ -115,7 +115,7 @@ command with real paths, not a template.
 - `frontend/.env.production` is gitignored; must be on EC2 manually before every build
 - EC2: `18.205.121.71`, key: `~/Documents/Stock_AI/lausing.pem`, user: `ec2-user`
 - improvements.tsx render loop is driven by `TIER_LABEL` keys — no hardcoded tier array
-- Current highest tier: 221. Next new tier: 222.
+- Current highest tier: 224. Next new tier: 225.
 
 ### jose check commands
 ```bash

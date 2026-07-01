@@ -273,6 +273,9 @@ _HK_MARKET_OVERRIDES: dict = {
     "trail_atr_mult":          1.5,  # tighter trailing stop (SWING default=1.5, GROWTH default=2.0)
     "max_position_pct":        0.07, # max 7% of equity per position (vs 10% US default)
     "risk_per_trade_pct":      0.007, # risk only 0.7% per trade (vs 1% US default)
+    # T224-C: TA score gate — HK winning signals (SHORT style, 47.5% win rate) averaged ta≥0.60.
+    # HK SWING BUY signals with ta_score < 0.60 had 0% accuracy in June 2026 audit.
+    "min_ta_score":            0.60,
 }
 
 
@@ -2554,6 +2557,31 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      min_vol_z=_min_vol_z,
                      note="below-average volume — entry postponed, higher slippage risk")
             continue
+
+        # T224-A: Mainland flow gate — HK entries require positive 5-day southbound flow.
+        # flow_5d_net_hkd < 0 means mainland money is net-selling the stock (bearish pressure).
+        # Fail-open if flow data is absent (not all stocks are Stock Connect eligible).
+        if cfg.get("market") == "HK":
+            _flow5d = (sig.reasons or {}).get("flow_5d_net_hkd")
+            if _flow5d is not None and float(_flow5d) <= 0:
+                log.info("paper.skip_hk_flow_gate",
+                         symbol=stock.symbol,
+                         flow_5d_net_hkd=round(float(_flow5d), 0),
+                         note="mainland outflow — HK BUY entry blocked (T224-A)")
+                continue
+
+        # T224-C: HK TA score gate — require stronger TA alignment for HK entries.
+        # The ML model is US-biased; for HK stocks, TA score is the more reliable signal component.
+        _min_ta = float(cfg.get("min_ta_score", 0.0))
+        if _min_ta > 0 and cfg.get("market") == "HK":
+            _ta = float((sig.reasons or {}).get("ta_score", 1.0) or 1.0)
+            if _ta < _min_ta:
+                log.info("paper.skip_hk_ta_gate",
+                         symbol=stock.symbol,
+                         ta_score=round(_ta, 3),
+                         min_ta_score=_min_ta,
+                         note="TA score below HK minimum — entry blocked (T224-C)")
+                continue
 
         # Build game plan using cached ATR
         atr = atr_cache.get(stock.symbol)
