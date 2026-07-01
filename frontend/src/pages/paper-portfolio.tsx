@@ -1305,6 +1305,7 @@ export default function PaperPortfolioPage() {
             <span style={{ fontSize: 12, color: '#64748b', background: '#1e293b', border: '1px solid #334155', borderRadius: 5, padding: '4px 10px' }}>
               Live · 60s refresh
             </span>
+            <Link href="/paper-gates" style={{ fontSize: 12, color: '#64748b', textDecoration: 'none' }}>Entry Gates</Link>
             <Link href="/" style={{ fontSize: 12, color: '#64748b', textDecoration: 'none' }}>← Home</Link>
           </div>
         </div>
