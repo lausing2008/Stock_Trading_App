@@ -1920,6 +1920,28 @@ def _call_decision_engine(
         return None
 
 
+def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
+    """Record the most recent portfolio-level gate that blocked new entries.
+
+    Stored in Redis as paper:gate_block:{portfolio_id} (JSON, 4h TTL).
+    Read by the /paper-portfolio/portfolios list endpoint to surface the reason in the UI.
+    Fail-silent — gate block display is informational only.
+    """
+    import json as _json
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_gb
+        _r = _rb.Redis.from_url(_gs_gb().redis_url, decode_responses=True)
+        _r.setex(
+            f"paper:gate_block:{portfolio_id}",
+            60 * 60 * 4,  # 4 hour TTL
+            _json.dumps({"gate": gate, "reason": reason,
+                         "ts": datetime.now(timezone.utc).isoformat()}),
+        )
+    except Exception:
+        pass
+
+
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
@@ -2053,6 +2075,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                             current_dd_pct=round(current_dd * 100, 1),
                             limit_pct=round(max_dd_cfg * 100, 1),
                             note="new entries suspended until equity recovers")
+                _write_gate_block(portfolio.id, "drawdown",
+                                  f"Portfolio drawdown {current_dd*100:.1f}% exceeds {max_dd_cfg*100:.0f}% limit — no new entries until equity recovers")
                 return
 
     # ── Daily realized-loss circuit breaker (net P&L — winners offset losers) ──────
@@ -2078,6 +2102,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         daily_net_pnl_pct=round(daily_net_pnl / equity * 100, 1),
                         limit_pct=round(max_daily_loss * 100, 1),
                         note="new entries suspended for today")
+                _write_gate_block(portfolio.id, "daily_loss",
+                                  f"Daily loss {abs(daily_net_pnl)/equity*100:.1f}% exceeds {max_daily_loss*100:.0f}% limit — no more entries today")
             return
 
     # ── Weekly realized P&L checks — loss limit + gain lock ─────────────────────
@@ -2106,6 +2132,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         weekly_net_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
                         limit_pct=round(max_weekly_loss * 100, 1),
                         note="new entries suspended for remainder of week")
+                _write_gate_block(portfolio.id, "weekly_loss",
+                                  f"Weekly loss {abs(weekly_net_pnl)/equity*100:.1f}% exceeds {max_weekly_loss*100:.0f}% limit — no entries until next week")
             return
         # T191: Weekly gain lock — don't give back a good week by overtrading.
         # Once weekly realized PnL crosses the gain lock threshold, no new entries until next week.
@@ -2115,6 +2143,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      weekly_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
                      lock_pct=round(max_weekly_gain * 100, 1),
                      note="weekly gain target reached — protecting profits, no new entries")
+            _write_gate_block(portfolio.id, "weekly_gain_lock",
+                              f"Weekly gain lock — up {weekly_net_pnl/equity*100:.1f}% this week; protecting profits until Monday")
             return
 
     # ── Consecutive-loss circuit breaker ─────────────────────────────────────────
@@ -2125,6 +2155,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                     portfolio=portfolio.name,
                     consecutive_losses=_consec_losses,
                     note="new entries suspended until a trade closes positive")
+        _write_gate_block(portfolio.id, "consecutive_losses",
+                          f"{_consec_losses} consecutive losses — no new entries until a winning trade")
         return
 
     # ── Max entries per day ───────────────────────────────────────────────────────
@@ -2140,6 +2172,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         ).scalar() or 0
         if entries_today >= max_entries_day:
             log.info("paper.daily_entry_cap", entries_today=entries_today, limit=max_entries_day)
+            _write_gate_block(portfolio.id, "daily_entry_cap",
+                              f"Daily entry cap reached ({entries_today}/{max_entries_day}) — no more entries today")
             return
 
     # ── Per-symbol post-stop cooldown ─────────────────────────────────────────────
@@ -2194,6 +2228,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      spy=live_regime.get("spy_price"),
                      notes=live_regime.get("notes"),
                      note="all new entries suspended in bear regime")
+            _write_gate_block(portfolio.id, "regime_bear",
+                              f"Bear market — SPY below 200EMA + VIX {live_regime.get('vix', '?'):.1f}; all new entries suspended")
             return
         # T173/T226-A: risk_off gate — blocks all new entries when regime_risk_off_gate=True.
         # T226-A changed default to True: 9/30 closed paper trades in risk_off had 0% win rate.
@@ -2204,6 +2240,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      vix=live_regime.get("vix"),
                      spy=live_regime.get("spy_price"),
                      note="all new entries suspended in risk_off regime (strict gate enabled)")
+            _write_gate_block(portfolio.id, "regime_risk_off",
+                              f"Risk-off regime — SPY below 50EMA + VIX {live_regime.get('vix', '?'):.1f}; no new entries until regime improves")
             return
 
         # T210: Regime suspension circuit breaker — if the market has been risk_off or bear
@@ -2230,6 +2268,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                 days=_regime_suspend_days,
                                 recent_states=[s for _, s in _all_days[:_regime_suspend_days]],
                                 note="market in sustained stress — all entries suspended until regime improves")
+                    _write_gate_block(portfolio.id, "regime_suspension",
+                                      f"Market in sustained stress for {_regime_suspend_days}+ days — entries suspended until regime improves")
                     return
             except Exception:
                 pass  # Redis unavailable — fail-open; normal gates still apply
@@ -2316,6 +2356,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      regime=regime_state,
                      entries_today=_te_count,
                      note="choppy/risk_off: max 1 new entry per day")
+            _write_gate_block(portfolio.id, "entry_throttle",
+                              f"Entry throttle — {regime_state} regime limits 1 entry/day; already entered today")
             return
 
     # T221-E: Portfolio heat brake — too many stops in recent window = adverse market conditions.
@@ -2339,6 +2381,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         recent_stops=_recent_stops,
                         window_hours=_heat_h,
                         note=f"{_recent_stops} stops hit in {_heat_h}h — adverse conditions, pausing entries")
+            _write_gate_block(portfolio.id, "heat_brake",
+                              f"Heat brake — {_recent_stops} stops hit in {_heat_h}h; entries paused until market conditions improve")
             return
 
     # T221-INDEX-TREND-GATE: Skip entries when today's market index is down >threshold%.
@@ -2363,6 +2407,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                              index_return_pct=round(_idx_ret * 100, 2),
                              threshold_pct=round(_idx_threshold * 100, 1),
                              note=f"index down {abs(_idx_ret)*100:.1f}% today — blocking new entries")
+                    _write_gate_block(portfolio.id, "index_trend",
+                                      f"{_idx_sym} down {abs(_idx_ret)*100:.1f}% today — no new entries on bad index days")
                     return
         except Exception:
             pass  # fail-open — yfinance unavailable doesn't block trading
@@ -2400,6 +2446,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                  portfolio=portfolio.name, market=_mkt,
                  open=_mkt_open_count, max=_max_mkt_pos,
                  note="market position cap reached — prevent single-market cluster loss")
+        _write_gate_block(portfolio.id, "market_cluster_cap",
+                          f"{_mkt} position cap reached ({_mkt_open_count}/{_max_mkt_pos}) — no new entries until a position closes")
         return
 
     # T194: Open exposure cap — block new entries if deployed capital exceeds max % of equity.

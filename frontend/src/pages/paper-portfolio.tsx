@@ -320,6 +320,22 @@ const STYLE_COLORS: Record<string, string> = {
   SHORT:  '#f87171',
 };
 
+const GATE_LABELS: Record<string, string> = {
+  regime_bear:       'Bear Market — entries suspended',
+  regime_risk_off:   'Risk-Off Regime — entries suspended',
+  regime_suspension: 'Sustained Stress — entries suspended',
+  entry_throttle:    'Regime throttle — 1 entry/day limit',
+  heat_brake:        'Heat Brake — too many recent stops',
+  index_trend:       'Index down >1.5% today',
+  market_cluster_cap:'Market position cap reached',
+  drawdown:          'Portfolio drawdown limit hit',
+  daily_loss:        'Daily loss limit hit',
+  weekly_loss:       'Weekly loss limit hit',
+  weekly_gain_lock:  'Weekly gain lock — protecting profits',
+  consecutive_losses:'Consecutive-loss limit hit',
+  daily_entry_cap:   'Daily entry cap reached',
+};
+
 function PortfolioCard({
   portfolio, selected, isBestSharpe, onSelect, onToggleActive,
 }: {
@@ -378,6 +394,17 @@ function PortfolioCard({
         }}>{portfolio.market ?? 'US'}</span>
         <span style={{ fontSize: 10, color: stateColor, fontWeight: 600 }}>● {state}</span>
       </div>
+      {portfolio.entry_gate_block && (
+        <div title={portfolio.entry_gate_block.reason} style={{
+          marginBottom: 6, padding: '3px 7px', borderRadius: 5,
+          background: 'rgba(251,146,60,0.1)', border: '1px solid rgba(251,146,60,0.3)',
+          fontSize: 10, fontWeight: 600, color: '#fb923c',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          cursor: 'help',
+        }}>
+          ⊘ {GATE_LABELS[portfolio.entry_gate_block.gate] ?? portfolio.entry_gate_block.gate}
+        </div>
+      )}
       <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {portfolio.name}
       </div>

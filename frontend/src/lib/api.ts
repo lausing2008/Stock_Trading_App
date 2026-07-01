@@ -1224,6 +1224,7 @@ export type PaperPortfolioListItem = {
   is_running: boolean;
   is_paused: boolean;
   created_at: string | null;
+  entry_gate_block: { gate: string; reason: string; ts: string } | null;
 };
 
 export type PaperTradeParamResult = {

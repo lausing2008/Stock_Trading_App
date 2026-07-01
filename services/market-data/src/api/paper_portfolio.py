@@ -930,6 +930,23 @@ def list_portfolios(
         select(PaperPortfolio).order_by(PaperPortfolio.id)
     ).scalars().all()
 
+    # Read latest entry gate block reason for each portfolio (set by _write_gate_block in engine).
+    import json as _pf_json
+    _gate_blocks: dict[int, dict] = {}
+    try:
+        import redis as _pf_redis
+        from common.config import get_settings as _pf_gs
+        _pf_r = _pf_redis.Redis.from_url(_pf_gs().redis_url, decode_responses=True)
+        for p in portfolios:
+            raw = _pf_r.get(f"paper:gate_block:{p.id}")
+            if raw:
+                try:
+                    _gate_blocks[p.id] = _pf_json.loads(raw)
+                except Exception:
+                    pass
+    except Exception:
+        pass  # Redis unavailable — omit gate_block from response
+
     result = []
     for p in portfolios:
         open_trades = session.execute(
@@ -969,6 +986,7 @@ def list_portfolios(
             "is_running": p.is_active and p.config.get("enabled", True) and not p.config.get("paused", False),
             "is_paused": p.is_active and p.config.get("enabled", True) and bool(p.config.get("paused", False)),
             "created_at": p.created_at.isoformat() if p.created_at else None,
+            "entry_gate_block": _gate_blocks.get(p.id),  # {gate, reason, ts} or None
         })
 
     return result
