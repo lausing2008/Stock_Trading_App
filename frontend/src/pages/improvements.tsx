@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221 | 222 | 223 | 224 | 225 | 226;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221 | 222 | 223 | 224 | 225 | 226 | 227;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7378,6 +7378,64 @@ const ITEMS: Item[] = [
     fix: 'New route @router.get("/signal-outcomes/summary") in routes.py. Queries signal_outcomes JOIN stocks GROUP BY market, horizon, signal_direction. Returns list of dicts with n, win_pct, avg_return, avg_confidence, avg_ta_score, avg_ml_prob.',
   },
 
+  // ── Tier 227 — July 2026 deep audit: BUG-10/11/12 infrastructure + GROWTH exit tuning ────────────────────────────
+
+  {
+    id: 'T227-BUG10-RANKING-JOSE',
+    tier: 227 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/ranking-engine/Dockerfile',
+    effort: '1h',
+    impact: 'Critical — Rankings were 11 days stale. All 143 ranked stocks had K-scores from Jun 19. The paper trading engine uses min_kscore as an entry gate — stale K-scores meant every entry decision since Jun 19 was based on old data. The ranking-engine scheduled refresh (POST /rankings/refresh?market=US) was returning 401 on every run.',
+    implementedNote: 'Done 2026-07-01. pip install python-jose in running container. Manual US+HK refresh triggered (112 US + 41 HK stocks). ranking-engine image rebuilt with docker compose build so jose persists through future restarts.',
+    title: 'BUG-10: ranking-engine jose missing → rankings 11 days stale → stale K-scores in paper trading',
+    what: 'Same jose-missing pattern as signal-engine (Jun-17) and ml-prediction (Jun-19). The ranking-engine image was built before python-jose was added to requirements.txt. shared/common/jwt_auth.py does "from jose import JWTError, jwt" — if that fails at import, any endpoint using Depends(get_current_username) raises HTTP 401. POST /rankings/refresh requires auth. Result: scheduler ranking refresh silently failed 401 on every run for ~11 days.',
+    fix: 'docker exec stockai-ranking-engine-1 pip install "python-jose[cryptography]==3.3.0". Manual refresh triggered. Image rebuilt: docker compose build ranking-engine && docker compose up -d ranking-engine. Rankings are now current.',
+  },
+  {
+    id: 'T227-BUG11-PO-JOSE',
+    tier: 227 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/portfolio-optimizer/Dockerfile',
+    effort: '30min',
+    impact: 'High — Portfolio optimization was returning 401 for every user request. The /optimize endpoint (used for frontend portfolio rebalancing) was broken for an unknown duration.',
+    implementedNote: 'Done 2026-07-01. pip install python-jose in running container. Image rebuilt: docker compose build portfolio-optimizer && docker compose up -d portfolio-optimizer.',
+    title: 'BUG-11: portfolio-optimizer jose missing → /optimize returning 401 for all users',
+    what: 'Same root cause as BUG-10. portfolio-optimizer image built before jose was in requirements.txt. The /optimize POST endpoint requires auth (Depends(get_current_username)). Every attempt to optimize a portfolio from the frontend silently returned 401.',
+    fix: 'docker exec stockai-portfolio-optimizer-1 pip install "python-jose[cryptography]==3.3.0". Image rebuilt to persist the fix.',
+  },
+  {
+    id: 'T227-BUG12-PORT-MAP',
+    tier: 227 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: '.claude/agent.md',
+    effort: '30min',
+    impact: 'Medium — Wrong ports in agent.md caused every service-to-service audit query to fail with connection refused, masking real issues. The 2026-07-01 audit found all 5 misdocumented services initially appeared unreachable, delaying diagnosis.',
+    implementedNote: 'Done 2026-07-01. Corrected port map in agent.md, CLAUDE.md, and AUDIT_CHECKLIST.md. Verified correct ports from Dockerfiles.',
+    title: 'BUG-12: service port map wrong in agent.md for 5 of 11 services',
+    what: 'agent.md and CLAUDE.md documented incorrect internal Docker ports for: technical-analysis (was 8009, correct 8002), ranking-engine (was 8007, correct 8004), strategy-engine (was 8010, correct 8006), portfolio-optimizer (was 8011, correct 8007), decision-engine (was 8006, correct 8009). event-intelligence (8010) was the only one correct. All 11 services verified by reading their Dockerfiles CMD directives.',
+    fix: 'Updated port table in agent.md, CLAUDE.md system port map section, and AUDIT_CHECKLIST.md schema notes. Added port verification to audit checklist.',
+  },
+  {
+    id: 'T227-GROWTH-TRAIL-SEPARATION',
+    tier: 227 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30min',
+    impact: 'Medium — GROWTH trail and BE triggers were both at 0.04, meaning the trailing stop armed at the same moment breakeven fired. With a 2× ATR trailing stop, the effective stop at +4% was still near entry (BE dominated). Separating to BE=0.04 / trail=0.07 lets trade develop 7% before the trail ratchets down from the peak — matching observed open trade behavior (+8-17% unrealized).',
+    implementedNote: 'Done 2026-07-01. _STYLE_OVERRIDES["GROWTH"]["trail_trigger_pct"] changed from 0.04 to 0.07. "breakeven_trigger_pct" stays at 0.04. 30-trade audit showed GROWTH open trades avg +8.24% unrealized — they need room to develop past +4%.',
+    title: 'T227-D: GROWTH trail_trigger 0.04→0.07 — separate trail arm-point from BE trigger',
+    what: 'GROWTH _STYLE_OVERRIDES had trail_trigger_pct=0.04 and breakeven_trigger_pct=0.04. When the stock hit +4%, both fired simultaneously: BE set stop to entry AND trail armed from that same +4% peak. Since ATR for GROWTH stocks ≈ 3-4% of entry, the 2× ATR trail stop at +4% peak ≈ entry. BE and trail collapsed to the same level, giving no ratchet benefit. Raising trail to +7% means the trail only starts contributing after the trade has confirmed momentum.',
+    fix: '_STYLE_OVERRIDES["GROWTH"]["trail_trigger_pct"] = 0.07 (was 0.04). "breakeven_trigger_pct" unchanged at 0.04. At +4%: safety net fires (stop = entry). At +7%: trail arms from that peak (stop ratchets up as price rises).',
+  },
+  {
+    id: 'T227-GROWTH-PARTIAL-TP',
+    tier: 227 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '15min',
+    impact: 'Medium — GROWTH partial TP at +12% was trimming 50% of position just as open GROWTH trades were at +11-17%. ALAB (+17%), CRDO (+14%), TER (+13%), IMVT (+13%), UPST (+11%) all clustered around the old +12% cutoff. Raising to +15% preserves the full position through the +12-15% range where GROWTH momentum typically develops.',
+    implementedNote: 'Done 2026-07-01. _STYLE_OVERRIDES["GROWTH"]["partial_tp_pct"] changed from 0.12 to 0.15. partial_tp2_pct stays at 0.22. Based on July 2026 audit: 5 of 9 open GROWTH positions were between +11% and +17%.',
+    title: 'T227-E: GROWTH partial_tp_pct 0.12→0.15 — stop trimming at +12%, wait for +15%',
+    what: 'GROWTH partial TP at +12% was the standard scale-out level. July 2026 open GROWTH positions: ALAB +16.6%, CRDO +13.9%, TER +13.5%, IMVT +13.3%, UPST +11.3%. These had already partially exited or were about to at +12%. GROWTH targets +35%, so partial at +12% (one-third of target) is too early. +15% (closer to halfway between the +12% trigger and the expected trajectory toward +22%/+35%) gives winners more room before reducing exposure.',
+    fix: '_STYLE_OVERRIDES["GROWTH"]["partial_tp_pct"] = 0.15 (was 0.12). "partial_tp2_pct" unchanged at 0.22.',
+  },
+
   // ── Tier 226 — 30-trade paper portfolio audit: risk_off gate, SWING TA raise, SWING score raise ─────────────────
 
   {
@@ -11787,6 +11845,7 @@ const TIER_LABEL: Record<Tier, string> = {
   224: 'Tier 224 — HK signal quality redesign: mainland flow gate, HSI regime compression, HK TA gate, data-driven root-cause audit',
   225: 'Tier 225 — 30-day signal audit: SWING TA gate (ta<0.50 blocked), ML overconfidence gate (ml>0.90 + ta<0.75 compressed), GROWTH weight cap 0.70→0.60, win-rate API',
   226: 'Tier 226 — 30-trade paper portfolio audit: risk_off entry gate default-on, SWING TA 0.50→0.65, SWING min_score 4→5',
+  227: 'Tier 227 — July audit: BUG-10 ranking-engine jose, BUG-11 portfolio-optimizer jose, BUG-12 port map, GROWTH trail 0.04→0.07, GROWTH partial-TP 0.12→0.15',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -12016,6 +12075,7 @@ const TIER_COLOR: Record<Tier, string> = {
   224: '#34d399',
   225: '#818cf8',
   226: '#a78bfa',
+  227: '#c084fc',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {

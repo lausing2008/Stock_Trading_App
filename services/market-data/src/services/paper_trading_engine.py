@@ -232,11 +232,15 @@ def _round_step(price: float) -> float:
 _STYLE_OVERRIDES: dict[str, dict] = {
     "GROWTH": {
         "max_hold_days": 60, "trail_atr_mult": 2.0,
-        # Trail arms at +4%; breakeven at +4% (aligns with breakout_pct=1.035) to avoid
-        # stopping out on normal volatility before the stock clears the entry zone.
-        "trail_trigger_pct": 0.04, "breakeven_trigger_pct": 0.04,
-        # Scale out later for GROWTH (35% target) — don't cut winners short.
-        "partial_tp_pct": 0.12, "partial_tp2_pct": 0.22,
+        # T227-D: Separate trail trigger from BE trigger. Both were at 0.04 — when BE fired
+        # at +4%, the trailing stop was also armed from that same peak, giving no additional
+        # upside protection. Now BE fires at +4% (safety net) and trail arms at +7% (once the
+        # trade has real momentum). 30-trade audit: open GROWTH trades avg +8% — they need room.
+        "breakeven_trigger_pct": 0.04, "trail_trigger_pct": 0.07,
+        # T227-E: Raise first partial TP from +12% to +15%. Open GROWTH trades cluster at
+        # +11-17%. Partial TP at +12% was trimming positions when they had more room to run.
+        # Second TP stays at +22% (no change).
+        "partial_tp_pct": 0.15, "partial_tp2_pct": 0.22,
         "wait_exit_days": 5, "min_confidence": 45.0, "min_kscore": 48.0,
         "max_entry_gap_pct": 0.04,  # T171: GROWTH stocks are volatile; allow 4% gap before rejecting
     },
