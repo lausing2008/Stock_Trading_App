@@ -318,10 +318,6 @@ def _post(url: str, **kwargs) -> None:
                 time.sleep(delay)
 
     log.error("scheduler.http_failed", url=url, attempts=len(delays), error=str(last_exc))
-    try:
-        _get_redis().setex(_REDIS_REFRESH_FAILED_KEY, 3600 * 6, url)
-    except Exception:
-        pass
 
 
 _AUTO_RESEARCH_TOP_N = 5        # max BUY signals to trigger per refresh cycle

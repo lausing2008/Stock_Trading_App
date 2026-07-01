@@ -384,6 +384,73 @@ docker logs stockai-signal-engine-1 --since 2h | grep -i 'error\|syntax\|invalid
 
 ---
 
+## Recurring Issue: Alert Email Suppression — market:refresh_failed Flag (BUG-8)
+
+**Symptom:** All email alerts are silently suppressed for up to 6 hours. `check_signal_alerts()` logs
+`signal_alert.suppressed_refresh_failed` on every run and returns early without checking any alerts.
+
+**Root cause (found 2026-07-01):** `_post()` in `scheduler.py` sets the Redis key `market:refresh_failed`
+whenever ANY downstream POST call fails all 3 retries. This includes the EDGAR 8-K sync endpoint
+(`event-intelligence:8010/events/sync/8k`), which can legitimately time out when there's a large batch
+of 8-K filings. A single EDGAR timeout suppresses ALL signal alerts for 6 hours.
+
+The key value is the URL that failed (not a boolean). `check_signal_alerts()` checks `exists()` on the
+key — if the key exists for ANY reason, all alerts are blocked.
+
+**Fix applied (2026-07-01):** Removed the `setex` call from `_post()`. The function now logs the HTTP
+failure but does NOT set the global flag. The per-symbol price freshness check inside `check_signal_alerts()`
+(stale_cutoff = 4 days) is the correct safety net for stale data.
+
+**Immediate fix if alerts are suppressed:**
+```bash
+docker exec stockai-redis-1 redis-cli exists market:refresh_failed   # 1 = flag is set
+docker exec stockai-redis-1 redis-cli get market:refresh_failed      # shows which URL failed
+docker exec stockai-redis-1 redis-cli del market:refresh_failed      # clears it
+```
+
+**What to check:**
+1. `docker logs stockai-market-data-1 --since 6h | grep 'suppressed_refresh_failed'` — confirms suppression
+2. `docker logs stockai-market-data-1 --since 6h | grep 'http_failed'` — shows which URL triggered it
+3. If `event-intelligence:8010/events/sync/8k` keeps timing out: check event-intelligence container health
+   and whether the EDGAR API is rate-limiting or timing out
+
+**Design invariant:** The `market:refresh_failed` flag MUST NOT be set by ancillary service calls
+(EDGAR 8-K, calibration, research triggers). It should only be set by code that directly indicates
+price data is stale. Currently the flag is effectively deprecated — price freshness is checked per-symbol.
+
+---
+
+## Recurring Issue: hk_connect_flows Logging TypeError (BUG-9)
+
+**Symptom:** `hk_connect_flows` scheduler job shows `Error` status. Log entry: `Logger._log() got an
+unexpected keyword argument 'processed'`. Job runs for ~5m 45s (processing all HK stocks) then fails
+at the final log.info() call.
+
+**Root cause (found 2026-06-30):** The module-level `log` proxy in `hk_connect.py` is a structlog
+`BoundLoggerLazyProxy`. With `cache_logger_on_first_use=True`, the proxy doesn't cache until its first
+real method call. All `log.debug()` calls inside the loop are no-ops (filtered at INFO level), so the
+proxy hasn't cached before line 181. The proxy then caches at the final `log.info()` call in the
+APScheduler thread context. In some production conditions, the logger resolves to a stdlib Logger
+instead of structlog's PrintLogger, and `Logger._log()` rejects keyword args.
+
+**Fix applied (2026-07-01):**
+1. `hk_connect.py`: Added `configure_logging()` at the top of `ingest_southbound_flows()`. This ensures
+   structlog is configured with `PrintLoggerFactory` before the first real log call at line 181.
+2. `common/logging.py`: Added explicit `logger_factory=structlog.PrintLoggerFactory()` and
+   `context_class=dict` to `structlog.configure()`, making the configuration complete.
+
+**What to check if hk_connect_flows shows error:**
+```bash
+docker logs stockai-market-data-1 --since 24h | grep 'hk_connect'
+# Confirm configure_logging present in hk_connect.py:
+docker exec stockai-market-data-1 grep 'configure_logging' /app/src/services/hk_connect.py
+```
+
+**Recovery:** After a failed run, trigger manual HK data refresh. The hk_connect_flows table will
+backfill on next successful run (job runs Mon-Fri 17:00 HKT = 09:00 UTC).
+
+---
+
 ## Known Ongoing Limitations
 
 - Broker commission: `commission_per_share` defaults to 0.0 (user's broker is commission-free)
