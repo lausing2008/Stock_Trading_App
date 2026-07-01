@@ -651,6 +651,9 @@ export type SignalReasons = Record<string, unknown> & {
   piotroski_score?: number | null;   // 0–9
   macro_blackout?: string | null;    // event name if within 2h window
   eps_revision_direction?: number | null; // +1 rising, 0 flat, -1 falling
+  // T220-E: 13F institutional ownership
+  inst_change_pct?: number | null;        // QoQ % change in institutional holdings
+  inst_ownership_increased?: boolean;     // true when inst holdings up >5% QoQ
 };
 
 export type Signal = {
@@ -756,6 +759,7 @@ export type OutcomesSummary = {
   overall?: { win_rate: number; avg_return_pct: number | null; median_return_pct: number | null };
   by_confidence_band?: OutcomesBand[];
   by_horizon?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
+  by_market?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
   by_direction?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
   by_market_regime?: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }>;
   by_research_alignment?: Record<'aligned' | 'partial' | 'divergent' | 'no_research', ResearchAlignmentBand>;

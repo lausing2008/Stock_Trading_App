@@ -2025,6 +2025,42 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
         reasons["eight_k_date"] = None
         reasons["eight_k_form"] = None
 
+    # T220-E: 13F institutional ownership QoQ change — detect smart-money accumulation.
+    # Queries institutional_holdings directly (no HTTP hop). Compares the two most recent
+    # quarterly period_dates; sets inst_change_pct (+%) and inst_ownership_increased=True
+    # when institutions collectively increased their holdings by >5% QoQ.
+    try:
+        from db import SessionLocal as _SL_inst
+        from sqlalchemy import text as _text_inst
+        with _SL_inst() as _db_inst:
+            _inst_rows = _db_inst.execute(
+                _text_inst("""
+                    SELECT ih.period_date, SUM(ih.shares) AS total_shares
+                    FROM institutional_holdings ih
+                    JOIN stocks s ON s.id = ih.stock_id
+                    WHERE s.symbol = :sym
+                    GROUP BY ih.period_date
+                    ORDER BY ih.period_date DESC
+                    LIMIT 2
+                """),
+                {"sym": symbol.upper()},
+            ).fetchall()
+        if len(_inst_rows) >= 2:
+            _latest_sh, _prior_sh = float(_inst_rows[0][1] or 0), float(_inst_rows[1][1] or 0)
+            if _prior_sh > 0:
+                _inst_chg = (_latest_sh - _prior_sh) / _prior_sh * 100
+                reasons["inst_change_pct"] = round(_inst_chg, 1)
+                reasons["inst_ownership_increased"] = _inst_chg > 5.0
+            else:
+                reasons["inst_change_pct"] = None
+                reasons["inst_ownership_increased"] = False
+        else:
+            reasons["inst_change_pct"] = None
+            reasons["inst_ownership_increased"] = False
+    except Exception:
+        reasons["inst_change_pct"] = None
+        reasons["inst_ownership_increased"] = False
+
     reasons["days_to_earnings"]   = days_to_earnings
     reasons["news_sentiment"]     = news_sentiment
     reasons["rs_score"]                = rs_score

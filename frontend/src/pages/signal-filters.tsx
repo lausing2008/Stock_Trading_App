@@ -257,6 +257,87 @@ function ResearchAlignmentPanel({
   );
 }
 
+// T223-SIGNAL-WINRATE-API: show US vs HK win-rate side by side so signal quality
+// differences are visible at a glance when reviewing the signal filter list.
+function MarketWinRatePanel({
+  byMarket,
+  byHorizon,
+}: {
+  byMarket: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }> | undefined;
+  byHorizon: Record<string, { count: number; win_rate: number; avg_return_pct: number | null }> | undefined;
+}) {
+  const hasMarket = byMarket && Object.keys(byMarket).length > 0;
+  const hasHorizon = byHorizon && Object.keys(byHorizon).length > 0;
+  if (!hasMarket && !hasHorizon) return null;
+
+  const WRBadge = ({ wr, n, ret }: { wr: number; n: number; ret: number | null }) => {
+    const pct = Math.round(wr * 100);
+    const color = pct >= 55 ? '#22c55e' : pct >= 45 ? '#f59e0b' : '#ef4444';
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+        <span style={{ fontSize: 16, fontWeight: 700, color }}>{pct}%</span>
+        <span style={{ fontSize: 10, color: '#475569' }}>
+          {n} signals{ret != null ? ` · ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% avg` : ''}
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{
+      marginBottom: 16, padding: '10px 14px', background: '#0b1420',
+      borderRadius: 10, border: '1px solid #1e293b', display: 'flex', gap: 24, flexWrap: 'wrap',
+    }}>
+      {hasMarket && (
+        <div>
+          <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Win rate by market (90d)
+          </p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {(['US', 'HK'] as const).map(mkt => {
+              const d = byMarket![mkt];
+              if (!d) return null;
+              return (
+                <div key={mkt} style={{
+                  padding: '6px 14px', borderRadius: 8,
+                  background: mkt === 'US' ? '#3b82f615' : '#f59e0b15',
+                  border: `1px solid ${mkt === 'US' ? '#3b82f633' : '#f59e0b33'}`,
+                  minWidth: 90,
+                }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: mkt === 'US' ? '#3b82f6' : '#f59e0b', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>{mkt}</span>
+                  <WRBadge wr={d.win_rate} n={d.count} ret={d.avg_return_pct} />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {hasHorizon && (
+        <div>
+          <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Win rate by horizon (90d)
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {(['SHORT', 'SWING', 'LONG', 'GROWTH'] as const).map(h => {
+              const d = byHorizon![h];
+              if (!d) return null;
+              return (
+                <div key={h} style={{
+                  padding: '6px 12px', borderRadius: 8,
+                  background: '#1e293b', border: '1px solid #334155', minWidth: 80,
+                }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>{h}</span>
+                  <WRBadge wr={d.win_rate} n={d.count} ret={d.avg_return_pct} />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SignalFiltersPage() {
@@ -629,6 +710,9 @@ export default function SignalFiltersPage() {
 
       {/* Research alignment win-rates */}
       <ResearchAlignmentPanel data={outcomesSummary?.by_research_alignment} />
+
+      {/* T223: Market + horizon win-rate panel */}
+      <MarketWinRatePanel byMarket={outcomesSummary?.by_market} byHorizon={outcomesSummary?.by_horizon} />
 
       {/* Summary bar */}
       {data && <SummaryBar rows={rows} />}

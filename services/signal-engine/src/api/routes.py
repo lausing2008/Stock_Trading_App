@@ -2862,6 +2862,34 @@ def outcomes_summary(
                 "avg_return_pct": round(statistics.mean(bucket_returns) * 100, 2) if bucket_returns else None,
             }
 
+    # By market (US vs HK) — T223-SIGNAL-WINRATE-API: surfaces cross-market win rate difference
+    market_ids = list({o.stock_id for o in outcomes})
+    _market_map: dict[int, str] = {}
+    if market_ids:
+        _mkt_rows = session.execute(
+            select(Stock.id, Stock.market).where(Stock.id.in_(market_ids))
+        ).all()
+        _market_map = {r.id: r.market for r in _mkt_rows}
+
+    market_stats: dict[str, dict] = {}
+    for o in outcomes:
+        mkt = _market_map.get(o.stock_id, "US")
+        if mkt not in market_stats:
+            market_stats[mkt] = {"count": 0, "wins": 0, "returns": []}
+        market_stats[mkt]["count"] += 1
+        if o.is_correct:
+            market_stats[mkt]["wins"] += 1
+        if o.pct_return is not None:
+            market_stats[mkt]["returns"].append(o.pct_return)
+    by_market = {
+        mkt: {
+            "count": v["count"],
+            "win_rate": round(v["wins"] / v["count"], 3),
+            "avg_return_pct": round(statistics.mean(v["returns"]) * 100, 2) if v["returns"] else None,
+        }
+        for mkt, v in market_stats.items()
+    }
+
     signal_dates = [o.signal_date for o in outcomes if o.signal_date is not None]
     date_range = {
         "oldest": min(signal_dates).isoformat() if signal_dates else None,
@@ -2913,6 +2941,7 @@ def outcomes_summary(
         },
         "by_confidence_band": band_stats,
         "by_horizon": horizon_stats,
+        "by_market": by_market,
         "by_direction": direction_stats,
         "by_market_regime": regime_summary,
         "by_research_alignment": research_summary,

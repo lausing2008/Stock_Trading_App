@@ -7476,13 +7476,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T223-SIGNAL-WINRATE-API',
-    tier: 223 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 223 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/market-data/src/api/routes.py',
     effort: '2h',
     impact: 'High — The signal_outcomes table records is_correct per signal but this data is invisible to the user. Showing actual win rate per style/horizon in the Signal Filter page makes bad signal generators visible before they enter paper trades.',
     title: 'Signal win-rate visibility (outcome dashboard)',
     what: 'Confidence 45-75+ all showed ~20% win rate in June audit — the confidence metric is not calibrated. Showing actual win rates per style/market would surface this miscalibration earlier.',
     fix: 'Add GET /signals/outcomes/summary endpoint: win rate, avg return, trade count by (style, market, horizon). Show in admin page alongside Signal Filter.',
+    implementedNote: 'Done 2026-07-01. Added by_market breakdown (US vs HK win rates) to /signals/outcomes/summary response in signal-engine routes.py. Added MarketWinRatePanel component to signal-filters.tsx showing US/HK win rates and per-horizon (SHORT/SWING/LONG/GROWTH) win rates side by side. OutcomesSummary type in api.ts extended with by_market field.',
   },
   {
     id: 'T223-CONFIDENCE-CALIBRATION',
@@ -7623,13 +7624,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T221-INDEX-TREND-GATE',
-    tier: 221 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 221 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '3h',
     impact: 'Medium — Entering long positions on a day when the market index is down >1.5% means fighting macro momentum. The existing regime filter catches sustained bear markets but not single bad days.',
     title: 'Same-day index trend gate',
     what: 'HK entries on June 25 were made while HSI was down significantly. The SPY-based regime filter was fine (US market stable) but HK had its own down day.',
     fix: 'Before entry, check today\'s index return (HSI for HK, SPY for US) from live_prices. Skip if index is down >1.5% on the day. Requires HSI to be included in the price fetch for HK portfolios.',
+    implementedNote: 'Done 2026-07-01. Added index_trend_gate_enabled (default True) and index_trend_gate_pct (default -0.015) to _DEFAULT_CONFIG. Gate checks ^HSI (HK portfolios) or SPY (US) via yfinance fast_info — computes (last_price - prev_close) / prev_close. If index is down >1.5% blocks all new entries. Fail-open on yfinance errors. Placed after heat brake and before candidate loop in _scan_for_entries. log event: paper.index_trend_gate.',
   },
 
   // ── Tier 220 — Institutional intelligence suite ───────────────────────────────────────────────
@@ -7684,13 +7686,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T220-13F-INSTITUTIONAL-OWNERSHIP',
-    tier: 220 as const, severity: 'medium', defaultStatus: 'in-progress' as const,
+    tier: 220 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/event-intelligence/src/services/institutional.py',
     effort: '4h',
     impact: 'Medium — Institutional ownership changes (13F quarterly filings) reveal smart money conviction. Stocks where top-tier institutions are increasing their positions consistently outperform over the following quarter. institutional_holdings and institutional_transactions tables already exist.',
     title: 'T220-E: 13F institutional ownership tracking — quarterly ingest + signal enrichment',
     what: 'institutional.py and institutional_holdings/institutional_transactions tables exist as stubs. 13F filings via SEC EDGAR /submissions/CIK are free but quarterly. Key signal: net institutional accumulation (total shares held increasing QoQ) and high institutional concentration (top-10 holders >50% of float).',
     fix: 'institutional.py: for top 20 tracked institutions (Berkshire, Vanguard, BlackRock, etc.), fetch 13F-HR from EDGAR submissions API, parse <NAME>/<VALUE>/<SHRS_OR_PRN_AMT> fields, upsert institutional_holdings (institution, symbol, shares, market_value, quarter_end). Compute: inst_ownership_pct = total_inst_shares/shares_outstanding; inst_change_pct = QoQ delta. Signal-engine: add inst_ownership_pct + inst_change_pct to signal reasons. Frontend: "Inst ↑" chip when change_pct>5% QoQ.',
+    implementedNote: 'Done 2026-07-01. Signal-engine signals.py: DB query on institutional_holdings (JOIN stocks) fetches last 2 quarterly period_dates, computes inst_change_pct = QoQ % change in total institutional shares held, sets inst_ownership_increased = True when >5% QoQ increase. SignalCard: teal "Inst ↑N%" chip when inst_ownership_increased=true. buildReasons() factor: "Inst Holdings +N% QoQ". SignalReasons type in api.ts and SignalCard Reasons type both extended.',
   },
 
   {

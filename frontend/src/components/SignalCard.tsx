@@ -133,6 +133,9 @@ type Reasons = {
   piotroski_score?: number | null;
   macro_blackout?: string | null;
   eps_revision_direction?: number | null;
+  // T220-E: 13F institutional ownership
+  inst_change_pct?: number | null;
+  inst_ownership_increased?: boolean;
 };
 
 type Factor = { label: string; bullish: boolean; detail: string; warning?: boolean };
@@ -580,6 +583,14 @@ function buildReasons(r: Reasons): Factor[] {
     });
   }
 
+  if (r.inst_ownership_increased === true && r.inst_change_pct != null) {
+    factors.push({
+      label: `Inst Holdings +${r.inst_change_pct.toFixed(1)}% QoQ`,
+      bullish: true,
+      detail: `Institutional 13F filings show ${r.inst_change_pct.toFixed(1)}% increase in shares held quarter-over-quarter — smart money accumulating`,
+    });
+  }
+
   return factors;
 }
 
@@ -663,6 +674,11 @@ export default function SignalCard({ signal }: { signal: Signal }) {
           {reasons?.piotroski_score != null && reasons.piotroski_score <= 2 && (
             <span title={`Piotroski F-Score ${reasons.piotroski_score}/9 — weak fundamentals`} style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
               F:{reasons.piotroski_score}
+            </span>
+          )}
+          {reasons?.inst_ownership_increased === true && reasons?.inst_change_pct != null && (
+            <span title={`Institutional 13F: +${(reasons.inst_change_pct as number).toFixed(1)}% QoQ — institutional accumulation`} style={{ fontSize: '9px', fontWeight: 700, color: '#34d399', background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.3)', padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              Inst ↑{(reasons.inst_change_pct as number).toFixed(0)}%
             </span>
           )}
           <span className={`rounded px-2.5 py-0.5 text-sm font-bold text-white ${SIGNAL_COLOR[signal.signal]}`}>

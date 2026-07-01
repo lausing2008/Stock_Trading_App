@@ -153,6 +153,11 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # T221-A: Cross-portfolio symbol cap — max total open positions per symbol across ALL portfolios.
     # Prevents SWING + GROWTH both going long the same stock, tripling concentration risk.
     "max_positions_per_symbol_global": 1,
+    # T221-INDEX-TREND-GATE: Skip new entries when today's market index is down >threshold%.
+    # SPY for US portfolios, ^HSI for HK. Single bad days (FOMC, CPI, HSI circuit break) cause
+    # cascade stops. Regime filter catches multi-day bears; this catches single-day shocks.
+    "index_trend_gate_enabled":  True,
+    "index_trend_gate_pct":      -0.015,  # -1.5%: index down >1.5% today → no new entries
     # Regime engine
     "enable_regime_filter":      True,   # master on/off
     "regime_vix_high":           25.0,   # VIX above this → risk_off
@@ -2336,6 +2341,32 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         note=f"{_recent_stops} stops hit in {_heat_h}h — adverse conditions, pausing entries")
             return
 
+    # T221-INDEX-TREND-GATE: Skip entries when today's market index is down >threshold%.
+    # Regime filter handles sustained bear/risk_off conditions; this catches single-day macro
+    # shocks (FOMC surprise, CPI print, HSI circuit-breaker open) where any long entry will
+    # immediately fight the tide. Uses yfinance fast_info; fail-open on network errors.
+    _mkt = cfg.get("market", "US")  # defined here — reused in market cluster cap below
+    if cfg.get("index_trend_gate_enabled", True):
+        _idx_sym = "^HSI" if _mkt == "HK" else "SPY"
+        _idx_threshold = float(cfg.get("index_trend_gate_pct", -0.015))
+        try:
+            import yfinance as yf
+            _idx_fi = yf.Ticker(_idx_sym).fast_info
+            _idx_prev = getattr(_idx_fi, "previous_close", None)
+            _idx_last = getattr(_idx_fi, "last_price", None)
+            if _idx_prev and _idx_last and float(_idx_prev) > 0:
+                _idx_ret = (float(_idx_last) - float(_idx_prev)) / float(_idx_prev)
+                if _idx_ret < _idx_threshold:
+                    log.info("paper.index_trend_gate",
+                             portfolio=portfolio.name, market=_mkt,
+                             index=_idx_sym,
+                             index_return_pct=round(_idx_ret * 100, 2),
+                             threshold_pct=round(_idx_threshold * 100, 1),
+                             note=f"index down {abs(_idx_ret)*100:.1f}% today — blocking new entries")
+                    return
+        except Exception:
+            pass  # fail-open — yfinance unavailable doesn't block trading
+
     # PT-D6: Re-sort candidates by composite priority — confidence + K-Score + breakout context
     def _composite_priority(row):
         sig_r, _, rank_r = row
@@ -2362,7 +2393,6 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
     # T221-B: Market cluster cap — block new entries when at the per-market position limit.
     # HK stocks are highly correlated: a market-wide down day stops out all positions simultaneously.
-    _mkt = cfg.get("market", "US")
     _max_mkt_pos = cfg.get("max_market_positions", 4)
     _mkt_open_count = sum(1 for _, st in _prefetched_open if st.market == _mkt)
     if _mkt_open_count >= _max_mkt_pos:
