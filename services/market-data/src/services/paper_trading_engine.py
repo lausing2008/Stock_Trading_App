@@ -2102,8 +2102,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         daily_net_pnl_pct=round(daily_net_pnl / equity * 100, 1),
                         limit_pct=round(max_daily_loss * 100, 1),
                         note="new entries suspended for today")
-                _write_gate_block(portfolio.id, "daily_loss",
-                                  f"Daily loss {abs(daily_net_pnl)/equity*100:.1f}% exceeds {max_daily_loss*100:.0f}% limit — no more entries today")
+            _write_gate_block(portfolio.id, "daily_loss",
+                              f"Daily loss {abs(daily_net_pnl)/equity*100:.1f}% exceeds {max_daily_loss*100:.0f}% limit — no more entries today")
             return
 
     # ── Weekly realized P&L checks — loss limit + gain lock ─────────────────────
@@ -2132,8 +2132,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         weekly_net_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
                         limit_pct=round(max_weekly_loss * 100, 1),
                         note="new entries suspended for remainder of week")
-                _write_gate_block(portfolio.id, "weekly_loss",
-                                  f"Weekly loss {abs(weekly_net_pnl)/equity*100:.1f}% exceeds {max_weekly_loss*100:.0f}% limit — no entries until next week")
+            _write_gate_block(portfolio.id, "weekly_loss",
+                              f"Weekly loss {abs(weekly_net_pnl)/equity*100:.1f}% exceeds {max_weekly_loss*100:.0f}% limit — no entries until next week")
             return
         # T191: Weekly gain lock — don't give back a good week by overtrading.
         # Once weekly realized PnL crosses the gain lock threshold, no new entries until next week.
