@@ -1252,23 +1252,43 @@ export type PaperCompareData = {
 
 export type PaperPortfolioConfig = {
   trading_style: string;
+  enabled: boolean;
+  paused?: boolean;
+  // Position limits
   max_positions: number;
-  max_sector_pct: number;
-  risk_per_trade_pct: number;
-  max_position_pct: number;
+  max_market_positions?: number;
+  max_sector_positions?: number;
+  max_entries_per_day?: number;
+  max_open_exposure_pct?: number;
+  max_positions_per_symbol_global?: number;
+  equity_floor_pct?: number;
+  // Entry quality
   min_confidence: number;
   min_kscore: number;
   min_rr_ratio: number;
   min_entry_score: number;
+  min_ta_score?: number;
+  min_volume_z?: number;
+  max_entry_gap_pct?: number;
+  // Risk / sizing
+  risk_per_trade_pct: number;
+  max_position_pct: number;
+  max_sector_pct: number;
+  // Exit management
   max_hold_days: number;
+  hold_stall_days?: number;
+  wait_exit_days: number;
   trail_atr_mult: number;
   trail_trigger_pct: number;
   breakeven_trigger_pct: number;
   partial_tp_pct: number;
-  wait_exit_days: number;
+  partial_tp2_pct?: number;
   stop_cooldown_hours?: number;
-  enabled: boolean;
-  paused?: boolean;
+  // Circuit breakers
+  max_daily_loss_pct?: number;
+  max_weekly_loss_pct?: number;
+  max_portfolio_drawdown_pct?: number;
+  max_consecutive_losses?: number;
 };
 
 export type PaperPortfolioSummary = {

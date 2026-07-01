@@ -926,16 +926,18 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
 
-  function field(key: keyof PaperPortfolioConfig, label: string, step = 0.01) {
+  function field(key: keyof PaperPortfolioConfig, label: string, step = 0.01, placeholder?: string) {
     const cur = draft[key] ?? config[key];
+    const isDefined = cur !== undefined && cur !== null;
     return (
       <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
         <span style={{ fontSize: 11, color: '#94a3b8' }}>{label}</span>
         <input
           type="number" step={step}
-          value={String(cur)}
+          value={isDefined ? String(cur) : ''}
+          placeholder={placeholder ?? '—'}
           onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) setDraft(d => ({ ...d, [key]: v })); }}
-          style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 5, color: '#f1f5f9', padding: '5px 8px', fontSize: 13, width: 120 }}
+          style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 5, color: isDefined ? '#f1f5f9' : '#64748b', padding: '5px 8px', fontSize: 13, width: 120 }}
         />
       </label>
     );
@@ -961,23 +963,56 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
     } catch { setMsg('Reset failed'); }
   }
 
+  function section(label: string) {
+    return (
+      <div style={{ width: '100%', borderTop: '1px solid #334155', paddingTop: 12, marginTop: 4 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>{label}</span>
+      </div>
+    );
+  }
+
   return (
     <div style={{ background: '#1e293b', borderRadius: 10, padding: 20, border: '1px solid #334155' }}>
       <div style={{ fontWeight: 600, marginBottom: 16, color: '#f1f5f9' }}>Portfolio Config (admin)</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+        {section('Position Limits')}
         {field('max_positions', 'Max Positions', 1)}
-        {field('risk_per_trade_pct', 'Risk/Trade %')}
-        {field('max_position_pct', 'Max Position %')}
+        {field('max_market_positions', 'Max Market Pos', 1, 'default 4')}
+        {field('max_sector_positions', 'Max Sector Pos', 1, 'default 3')}
+        {field('max_entries_per_day', 'Max Entries/Day', 1, 'default 3')}
+        {field('max_open_exposure_pct', 'Max Open Exposure %', 0.01, 'default 0.40')}
+        {field('equity_floor_pct', 'Equity Floor %', 0.01, 'default 0.80')}
+
+        {section('Entry Quality')}
         {field('min_confidence', 'Min Confidence', 1)}
         {field('min_kscore', 'Min K-Score', 1)}
         {field('min_rr_ratio', 'Min R:R', 0.1)}
         {field('min_entry_score', 'Min Entry Score', 1)}
+        {field('min_ta_score', 'Min TA Score', 0.1, 'default 0')}
+        {field('min_volume_z', 'Min Volume Z', 0.1, 'default -1.5')}
+        {field('max_entry_gap_pct', 'Max Entry Gap %', 0.01, 'default 0.04')}
+
+        {section('Risk / Sizing')}
+        {field('risk_per_trade_pct', 'Risk/Trade %')}
+        {field('max_position_pct', 'Max Position %')}
+        {field('max_sector_pct', 'Max Sector %')}
+
+        {section('Exit Management')}
         {field('max_hold_days', 'Max Hold Days', 1)}
+        {field('hold_stall_days', 'Stall Timeout Days', 1, 'default 30')}
+        {field('wait_exit_days', 'Wait Exit Days', 1)}
         {field('trail_atr_mult', 'Trail ATR ×')}
-        {field('partial_tp_pct', 'Partial TP %')}
         {field('trail_trigger_pct', 'Trail Trigger %')}
         {field('breakeven_trigger_pct', 'Breakeven %')}
+        {field('partial_tp_pct', 'Partial TP1 %')}
+        {field('partial_tp2_pct', 'Partial TP2 %', 0.01, 'default 0.12')}
         {field('stop_cooldown_hours', 'Stop Cooldown (hrs)', 1)}
+
+        {section('Circuit Breakers')}
+        {field('max_daily_loss_pct', 'Max Daily Loss %', 0.01, 'default 0.04')}
+        {field('max_weekly_loss_pct', 'Max Weekly Loss %', 0.01, 'default 0.08')}
+        {field('max_portfolio_drawdown_pct', 'Max Drawdown %', 0.01, 'default 0.20')}
+        {field('max_consecutive_losses', 'Max Consec. Losses', 1, 'default 3')}
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 16, alignItems: 'center' }}>
         <button
