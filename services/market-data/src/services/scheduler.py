@@ -1944,8 +1944,7 @@ def _snapshot_fundamentals() -> None:
                        f.revenue_growth, f.earnings_growth, f.return_on_equity
                 FROM fundamentals f
                 JOIN stocks s ON s.id = f.stock_id
-                WHERE f.recommendation_mean IS NOT NULL
-                  AND s.delisted = false
+                WHERE s.delisted = false
                 ON CONFLICT (symbol, snapshot_date) DO NOTHING
             """), {"today": today})
             sess.commit()

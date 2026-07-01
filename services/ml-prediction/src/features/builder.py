@@ -398,14 +398,13 @@ def fetch_macro_features(start_date: date, end_date: date, symbol: str = "") -> 
             start=buffer_start.isoformat(),
             end=end_date.isoformat(),
             progress=False,
-            auto_adjust=False,
         )
         vix = yf.download(
             "^VIX",
             start=buffer_start.isoformat(),
             end=end_date.isoformat(),
             progress=False,
-            auto_adjust=False,
+            auto_adjust=False,  # VIX is an index, not a stock — no dividends/splits to adjust
         )
     except Exception:
         return _redis_load_macro()
@@ -610,7 +609,8 @@ def build_features(
         (h - c.shift(1)).abs(),
         (lo - c.shift(1)).abs(),
     ], axis=1).max(axis=1)
-    atr14 = tr.rolling(14).mean()
+    # Wilder's EWM-ATR: matches paper trading and signal ATR (alpha=1/14 = Wilder smoothing)
+    atr14 = tr.ewm(alpha=1 / 14, adjust=False).mean()
     out["atr_14_pct"] = atr14 / c.replace(0, np.nan)
     out["atr_ratio"] = atr14 / atr14.rolling(20).mean().replace(0, np.nan)
 
