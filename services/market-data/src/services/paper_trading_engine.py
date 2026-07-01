@@ -139,6 +139,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "hold_stall_days":           30,    # exit if position gains < hold_stall_max_gain for this many days
     "hold_stall_max_gain":       0.05,  # max unrealized gain threshold for stall detection (5%)
     "enforce_market_hours":      True,  # skip new entries outside 9:30–16:00 ET Mon–Fri
+    # T222-C: Signal freshness gate — reject BUY signals older than this many hours.
+    # 72h = 3 calendar days. Signals are computed 5×/day; a 3-day-old signal is 15+ refreshes stale.
+    "max_signal_age_hours":      72,   # was 96h (4 days) — 3 days is sufficient with 5×/day refresh
     # T221-D: Post-stop cooldown — 5 days prevents re-entering a stock that's in a downtrend.
     "stop_cooldown_hours":       120,   # hours after stop_hit before re-entering same symbol (was 24h)
     # T221-B: Market cluster cap — prevent entering more positions when already at limit for one market.
@@ -235,11 +238,15 @@ _STYLE_OVERRIDES: dict[str, dict] = {
         "max_entry_gap_pct": 0.04,  # T171: GROWTH stocks are volatile; allow 4% gap before rejecting
     },
     "SWING": {
-        "max_hold_days": 20, "trail_atr_mult": 1.5,
+        "max_hold_days": 20,
+        # T222-E: Wider trailing stop — winners were hitting +12-14% targets in 2-8 days.
+        # 1.5× ATR was shaking out valid trades. 2.0× ATR gives winners room to breathe.
+        "trail_atr_mult": 2.0,
         # Trail arms at +3%; breakeven at +1.5% for tighter SWING stops.
         "trail_trigger_pct": 0.03, "breakeven_trigger_pct": 0.015,
-        # SWING target is +12%: scale at +7% and +10%.
-        "partial_tp_pct": 0.07, "partial_tp2_pct": 0.10,
+        # T222-E: Scale at +10% and +18% (was +7%/+10%) — winners averaged +13%, so old
+        # partial TP at +7% was selling too soon and reducing average winner size.
+        "partial_tp_pct": 0.10, "partial_tp2_pct": 0.18,
         "wait_exit_days": 3, "min_confidence": 50.0, "min_kscore": 52.0,
         "max_entry_gap_pct": 0.03,  # T171: SWING can't tolerate as much gap chasing
     },
@@ -258,6 +265,14 @@ _STYLE_OVERRIDES: dict[str, dict] = {
 _HK_MARKET_OVERRIDES: dict = {
     "regime_suspension_days":  7,   # 3d is too tight; HSI can be risk_off for weeks during consolidation
     "max_consecutive_losses":  5,   # US default is 3; HK needs higher tolerance for losing streaks
+    # T222-A: Tighter entry gates for HK — 0% win rate on 9 trades (June 2026 audit).
+    # HK signals fire on momentum that doesn't sustain; require stronger conviction.
+    "min_entry_score":         6,   # default is 4; HK requires 6 (stronger multi-factor conviction)
+    "min_confidence":          65.0, # default is 45; HK BUY signals need higher ML confidence
+    # T222-F: Reduce HK position sizing — HK ATR is large, a 2× ATR stop equals a huge % move.
+    "trail_atr_mult":          1.5,  # tighter trailing stop (SWING default=1.5, GROWTH default=2.0)
+    "max_position_pct":        0.07, # max 7% of equity per position (vs 10% US default)
+    "risk_per_trade_pct":      0.007, # risk only 0.7% per trade (vs 1% US default)
 }
 
 
@@ -2358,7 +2373,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # signals for all candidates. A GROWTH BUY that contradicts the SHORT signal (SELL) means
     # near-term momentum is against the trade. Batch-query once; check in candidate loop.
     _short_signals: dict[int, str] = {}
-    if cfg.get("confluence_check_enabled", True) and style in ("GROWTH", "LONG"):
+    # T222-B: Extended to SWING — US SWING data shows 35.7% win rate; filtering contra-SHORT
+    # entries should remove the subset where SHORT is already signalling a reversal.
+    if cfg.get("confluence_check_enabled", True) and style in ("GROWTH", "LONG", "SWING"):
         _candidate_stock_ids = [stock.id for _, stock, _ in buy_signals]
         if _candidate_stock_ids:
             try:
@@ -2503,7 +2520,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 log.info("paper.skip_confluence_fail",
                          symbol=stock.symbol, style=style,
                          short_signal="SELL",
-                         note="GROWTH/LONG BUY contradicts SHORT SELL — near-term momentum against trade")
+                         note="BUY contradicts SHORT SELL — near-term momentum against trade")
                 continue
 
         live_price = live_prices.get(stock.symbol)

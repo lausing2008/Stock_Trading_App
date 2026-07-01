@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221 | 222 | 223;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7284,6 +7284,108 @@ const ITEMS: Item[] = [
     implementedNote: 'Done 2026-06-29. HKEX API may return empty on non-trading days or for stocks outside the Stock Connect scheme — handled gracefully. flow_strength = (5d_avg / 20d_avg) ratio — >1 means accelerating mainland buying.',
   },
 
+  // ── Tier 223 — R:R calibration & outcome tracking ────────────────────────────────────────────
+
+  {
+    id: 'T223-SIGNAL-WINRATE-API',
+    tier: 223 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/api/routes.py',
+    effort: '2h',
+    impact: 'High — The signal_outcomes table records is_correct per signal but this data is invisible to the user. Showing actual win rate per style/horizon in the Signal Filter page makes bad signal generators visible before they enter paper trades.',
+    title: 'Signal win-rate visibility (outcome dashboard)',
+    why: 'Confidence 45-75+ all showed ~20% win rate in June audit — the confidence metric is not calibrated. Showing actual win rates per style/market would surface this miscalibration earlier.',
+    fix: 'Add GET /signals/outcomes/summary endpoint: win rate, avg return, trade count by (style, market, horizon). Show in admin page alongside Signal Filter.',
+  },
+  {
+    id: 'T223-CONFIDENCE-CALIBRATION',
+    tier: 223 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/training/trainer.py',
+    effort: '3h',
+    impact: 'High — Platt scaling or isotonic regression on top of XGBoost raw probabilities would make confidence actually predictive of win rate. Currently 75+ confidence wins at same rate as 45-55 confidence.',
+    title: 'Confidence score calibration (Platt scaling)',
+    why: 'Raw XGBoost probabilities are not well-calibrated (overconfident on borderline cases). A calibration layer trained on signal_outcomes would make confidence meaningful as an entry filter.',
+    fix: 'After model training, fit a calibration curve (sklearn CalibratedClassifierCV) on validation outcomes. Store calibrated probabilities; use as signal confidence.',
+  },
+  {
+    id: 'T223-HK-SIGNAL-DIAGNOSIS',
+    tier: 223 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '4h',
+    impact: 'High — HK paper trading: 0% win rate across 9 trades (-$10,767 total). Root cause unknown. Could be: SPY-based features dominating HK signals, insufficient mainland flow data, or HK volatility making 5% stops too tight.',
+    title: 'HK signal root-cause diagnosis',
+    why: '0/9 win rate is not random chance (p < 0.002). Something structural is wrong with how signals are generated for HK stocks. Diagnosis before re-enabling HK trading.',
+    fix: 'Query signal_outcomes for HK. Check feature importance for HK signals vs US signals. Verify HSI regime is being factored in. Check if stock connect flow data is improving or hurting signal quality.',
+  },
+  {
+    id: 'T223-PARTIAL-TP-RAISE',
+    tier: 223 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'Medium — SWING winners averaged +13% return (ABBV +13.4%, CRDO +14%, ASX +12.1%). Old partial TP at +7% was selling 50% of position when only halfway to the average winner\'s gain, cutting average winner size significantly.',
+    implementedNote: 'T222-E also addressed this: partial_tp_pct raised from 0.07 → 0.10, partial_tp2_pct from 0.10 → 0.18 for SWING. Winners averaged +13% so scale-out now happens at +10% and +18% instead of +7% and +10%.',
+    title: 'SWING partial TP levels raised to +10%/+18%',
+    why: 'The first scale-out at +7% was occurring before the average winner reached its full target. Selling 50% at +7% means the average winner only captures ~9% on the full position (7% × 50% + 14% × 50%) instead of 13%.',
+    fix: 'partial_tp_pct: 0.07 → 0.10, partial_tp2_pct: 0.10 → 0.18 in SWING style overrides.',
+  },
+
+  // ── Tier 222 — Signal quality & entry discipline ──────────────────────────────────────────────
+
+  {
+    id: 'T222-HK-TIGHTER-GATES',
+    tier: 222 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'Critical — HK paper trading had 0% win rate across 9 trades (GROWTH HK: 0/5, SWING HK: 0/4) accounting for $10,767 in losses = 85% of all paper trading losses. Tighter gates prevent low-quality HK entries.',
+    implementedNote: 'T222-A: Added to _HK_MARKET_OVERRIDES: min_entry_score=6 (was 4), min_confidence=65.0 (was 45). T222-F: trail_atr_mult=1.5 (matches HK\'s higher ATR), max_position_pct=0.07 (7% vs 10%), risk_per_trade_pct=0.007 (0.7% vs 1.0%). Applied when market=HK if not overridden in portfolio config.',
+    title: 'HK entry gates: min_score 4→6, min_conf 45→65, position sizing reduced',
+    why: 'June 2026 audit: 0% HK win rate. High ATR HK stocks with loose gates = large losses per stop. Possible causes: SPY-biased ML features, insufficient HK-specific signals, or HSI regime not gating entries.',
+    fix: 'min_entry_score ≥ 6, min_confidence ≥ 65, risk_per_trade 0.7%, max_position 7% for all HK portfolios.',
+  },
+  {
+    id: 'T222-SWING-CONFLUENCE',
+    tier: 222 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'High — T215 confluence check (GROWTH/LONG BUY rejected if SHORT=SELL) was not applied to SWING. A SWING BUY where SHORT is SELL means the near-term momentum is already reversing before we even enter.',
+    implementedNote: 'T222-B: Extended confluence check from style in ("GROWTH", "LONG") to also include "SWING". Pre-fetches SHORT horizon signals for all SWING candidates in one batch query; rejects if SHORT=SELL. Structured log: paper.skip_confluence_fail.',
+    title: 'SWING short-horizon confluence gate',
+    why: 'US SWING had 35.7% win rate. Filtering entries where SHORT signal disagrees should remove the subset entering against near-term momentum, increasing effective win rate.',
+    fix: 'Check SHORT signal for every SWING candidate; skip if SHORT=SELL. One batch query, no N+1.',
+  },
+  {
+    id: 'T222-SIGNAL-AGE-3DAY',
+    tier: 222 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'High — A BUY signal generated 4 days ago may reflect conditions that no longer hold. With 5 refreshes/day, a 4-day-old signal is 20 refreshes stale. Reducing to 3 days keeps only signals from the last 15 refreshes.',
+    implementedNote: 'T222-C: Added max_signal_age_hours=72 (3 days) to _DEFAULT_CONFIG explicitly (was 96h inline default). This is tighter but sufficient — weekend signals generated Friday are ≤72h old on Sunday if the scheduler runs 5×/day on market days.',
+    title: 'Signal freshness gate: 4 days → 3 days',
+    why: 'Signals more than 3 days old reflect conditions from a previous market session. Buying a 4-day-old BUY signal means entering momentum that may have already exhausted.',
+    fix: 'max_signal_age_hours: 96 → 72 in _DEFAULT_CONFIG.',
+  },
+  {
+    id: 'T222-SWING-TRAIL-WIDER',
+    tier: 222 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'Medium — SWING trail_atr_mult was 1.5 (tightest of all styles). Winning SWING trades moved +11-14%, but a 1.5× ATR trail would stop them out on normal pullbacks before reaching the target. Winners need room to breathe.',
+    implementedNote: 'T222-E: Changed SWING trail_atr_mult from 1.5 → 2.0 in _STYLE_OVERRIDES["SWING"]. Also raised partial TP levels: 0.07→0.10 (first scale) and 0.10→0.18 (second scale). Winners averaged +13% return; old 1.5×ATR trail was too tight for that magnitude of move.',
+    title: 'SWING trailing stop widened: 1.5× ATR → 2.0× ATR',
+    why: 'SWING was using the tightest trail of any style. With winners moving 12-14%, a 1.5×ATR trail (≈1×ATR tighter than GROWTH) was getting shaken out on normal volatility spikes before the target.',
+    fix: 'trail_atr_mult: 1.5 → 2.0 for SWING. GROWTH and LONG already use 2.0.',
+  },
+  {
+    id: 'T222-HK-POSITION-SIZING',
+    tier: 222 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30m',
+    impact: 'High — HK GROWTH average loss was -$831 per trade. A 12% stop (GROWTH stop_pct) on a 10% position (max_position_pct=0.10) on a $30K portfolio = $360 max loss, but actual losses were higher due to position sizes near the limit.',
+    implementedNote: 'T222-F: Added to _HK_MARKET_OVERRIDES: max_position_pct=0.07 (7% of equity max), risk_per_trade_pct=0.007 (0.7%), trail_atr_mult=1.5. Reduces exposure per HK position by ~30% while tighter gates filter most entries anyway.',
+    title: 'HK position size reduction: 10% → 7% max per position',
+    why: 'HK stocks have larger ATR than US equivalents. A 2× ATR trailing stop on a large HK position = large dollar loss when stopped. Smaller base position + tighter ATR trail = controlled loss even when stopped out.',
+    fix: 'max_position_pct: 0.07, risk_per_trade_pct: 0.007 for all HK portfolios.',
+  },
+
   // ── Tier 221 — Portfolio concentration & risk controls ───────────────────────────────────────
 
   {
@@ -11549,6 +11651,8 @@ const TIER_LABEL: Record<Tier, string> = {
   219: 'Tier 219 — Index filter, meta-learning model, gap filter, EDGAR 8-K, HKEX Stock Connect',
   220: 'Tier 220 — Institutional intelligence: Form 4 insider signals, Piotroski quality score, short squeeze composite, economic calendar suppression, 13F ownership, earnings revision momentum, sector rotation, congress trades',
   221: 'Tier 221 — Portfolio concentration & risk controls: market cluster cap, cross-portfolio symbol dedup, stop cooldown 5 days, portfolio heat brake, index trend gate',
+  222: 'Tier 222 — Signal quality & entry discipline: HK tighter gates, SWING confluence, signal age 3d, wider SWING trail stop, HK position sizing reduction',
+  223: 'Tier 223 — R:R calibration & outcome tracking: signal win-rate by style, confidence calibration, HK signal diagnosis, partial TP raise',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11773,6 +11877,8 @@ const TIER_COLOR: Record<Tier, string> = {
   219: '#22d3ee',
   220: '#a78bfa',
   221: '#f43f5e',
+  222: '#fb923c',
+  223: '#facc15',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
