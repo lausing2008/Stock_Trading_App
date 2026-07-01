@@ -7294,7 +7294,7 @@ const ITEMS: Item[] = [
     impact: 'Critical — HK paper trading: 0/9 wins (0% win rate), -$10,767 total. Root cause analysis (June 2026 signal_outcomes audit) showed HK SWING BUY with high ML confidence (0.91-0.99) had 0% accuracy. Mainland southbound flow gate blocks entries during net-outflow periods, eliminating the "buy into selling pressure" scenario.',
     implementedNote: 'Done 2026-06-30. Hard pre-filter in _scan_for_entries candidate loop: if market=HK and flow_5d_net_hkd is available and ≤0, log paper.skip_hk_flow_gate and skip. Fail-open if flow data is None (non-Stock Connect stocks pass through). flow_5d_net_hkd is populated by T209 HKEX Stock Connect enrichment in signal-engine.',
     title: 'T224-A: Mainland flow gate — HK BUY entries require positive 5-day southbound flow',
-    why: 'June 2026 audit: HK SWING BUY with flow_5d_net_hkd < 0 means mainland institutions are net-selling the stock. Buying into mainland outflow is directionally opposed to the dominant institutional force in HK market microstructure. Stock Connect southbound flow predicts 10-20d momentum for connected stocks.',
+    what: 'June 2026 audit: HK SWING BUY with flow_5d_net_hkd < 0 means mainland institutions are net-selling the stock. Buying into mainland outflow is directionally opposed to the dominant institutional force in HK market microstructure. Stock Connect southbound flow predicts 10-20d momentum for connected stocks.',
     fix: 'In _scan_for_entries candidate loop (after volume gate): if market=HK and flow_5d_net_hkd is known and ≤0, continue. Add to _HK_MARKET_OVERRIDES docs.',
   },
   {
@@ -7305,7 +7305,7 @@ const ITEMS: Item[] = [
     impact: 'Critical — All 9 HK paper trades in June 2026 were entered with market_regime="bull" (US SPY/VIX), while HSI was in a sustained downtrend. The system was treating a bearish HK market as bullish because it was reading US market regime. A 20% compression when HSI < 20-day SMA makes HK BUY signals harder to fire during HSI downtrends.',
     implementedNote: 'Done 2026-06-30. _fetch_hsi_regime(): yfinance ^HSI 35-day history, compares last close to 20-day SMA. Returns bull/bear/unknown (fail-open on error). In generate_all_signals(), HK symbols: reasons["hsi_regime"] = _fetch_hsi_regime(). In _apply_style_signal(), if hsi_regime=="bear": fused = 0.5 + (fused - 0.5) × 0.80 (20% compression toward neutral), reasons["hsi_bear_gate"] = True. Applied post-cap so prior boosts cannot offset it.',
     title: 'T224-B: HSI regime gate — compress HK BUY signals when HSI below 20-day SMA',
-    why: 'Diagnostic data: HK SWING BUY accuracy = 26.3% when HSI bullish vs effectively 0% when HSI downtrending. The US SPY/Fear&Greed regime that drives market_regime is uncorrelated with HSI direction — HK stocks need a HK-specific regime check. During June 25 wipeout: SPY was bullish, HSI was -8% from recent high.',
+    what: 'Diagnostic data: HK SWING BUY accuracy = 26.3% when HSI bullish vs effectively 0% when HSI downtrending. The US SPY/Fear&Greed regime that drives market_regime is uncorrelated with HSI direction — HK stocks need a HK-specific regime check. During June 25 wipeout: SPY was bullish, HSI was -8% from recent high.',
     fix: '_fetch_hsi_regime() fetches ^HSI via yfinance. Stored as hsi_regime in signal reasons. _apply_style_signal() applies 20% compression when hsi_regime=="bear". Log hsi_bear_gate=True/False for every HK signal.',
   },
   {
@@ -7316,7 +7316,7 @@ const ITEMS: Item[] = [
     impact: 'High — June 2026 audit: HK SWING BUY signals with low TA score had 0% accuracy. The ML model (trained on US-dominated data) is systematically wrong for HK — ml_prob was 0.91-0.99 on losing trades. The TA score is derived from price action only and is more reliable for HK stocks than ML predictions.',
     implementedNote: 'Done 2026-06-30. Added min_ta_score=0.60 to _HK_MARKET_OVERRIDES. In _scan_for_entries candidate loop (after flow gate): if min_ta_score>0 and market=HK and sig.reasons["ta_score"] < min_ta_score, log paper.skip_hk_ta_gate and skip. Fail-open if ta_score absent from reasons (defaults to 1.0).',
     title: 'T224-C: HK TA score gate — require ta_score ≥ 0.60 for HK entries',
-    why: 'Confidence inversion finding: HK SWING BUY with conf 60+ (ml_prob avg 0.992) had 0% accuracy; conf 40-50 (ml_prob 0.935) had 80% accuracy. The ML model is inverted for HK. TA score (price-action based) is the more trustworthy signal component for HK stocks where the ML training data is US-biased.',
+    what: 'Confidence inversion finding: HK SWING BUY with conf 60+ (ml_prob avg 0.992) had 0% accuracy; conf 40-50 (ml_prob 0.935) had 80% accuracy. The ML model is inverted for HK. TA score (price-action based) is the more trustworthy signal component for HK stocks where the ML training data is US-biased.',
     fix: '_HK_MARKET_OVERRIDES: min_ta_score=0.60. Candidate loop: hard reject if ta_score < min_ta_score when market=HK.',
   },
   {
@@ -7327,7 +7327,7 @@ const ITEMS: Item[] = [
     impact: 'High — Data-driven diagnosis identified three structural HK signal failures that were invisible without querying signal_outcomes. Each root cause maps to a deployed fix (T224-A, B, C). Without the diagnosis the fixes would have been guesswork.',
     implementedNote: 'Done 2026-06-30. Diagnosis run on signal_outcomes table (pct_return, is_correct, confidence, ta_score, ml_prob, market_regime). Key findings: (1) HK SWING BUY: 26.3% accuracy vs 47.5% SHORT BUY. (2) ML confidence INVERTED for HK: conf 60+ → 0% accuracy; conf 40-50 → 80% accuracy (n=5). (3) All 9 HK losses had market_regime="bull" (SPY-based), ignoring actual HSI direction. (4) HK SWING SELL: 65.1% accuracy — stocks were trending DOWN. Structural implication: HK market microstructure requires HSI regime + mainland flow + stronger TA alignment, not raw ML confidence.',
     title: 'T224-D: HK vs US signal quality audit — data-driven root cause diagnosis',
-    why: 'The 0% HK win rate (9 trades) was not random chance (p < 0.002). Systematic query of signal_outcomes by (market, horizon, confidence bucket) revealed the ML confidence inversion — the most actionable finding that directly motivated the TA gate and HSI regime changes.',
+    what: 'The 0% HK win rate (9 trades) was not random chance (p < 0.002). Systematic query of signal_outcomes by (market, horizon, confidence bucket) revealed the ML confidence inversion — the most actionable finding that directly motivated the TA gate and HSI regime changes.',
     fix: 'Three SQL queries against signal_outcomes: accuracy/avg_return by market+horizon+signal, confidence-bucket breakdown for HK SWING BUY, market_regime distribution. Findings documented with tables and implemented as T224-A/B/C.',
   },
 
