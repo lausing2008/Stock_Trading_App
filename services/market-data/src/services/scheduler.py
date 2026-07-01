@@ -920,6 +920,12 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
         pass  # Redis unavailable — allow through; double-execution is unlikely without it
     try:
         paper_trading_step()
+        # Poll pending broker orders for actual fills (no-op if no broker-linked portfolios)
+        try:
+            from services.paper_trading_engine import poll_broker_order_fills
+            poll_broker_order_fills()
+        except Exception as _bpe:
+            log.warning("broker.poll_step_failed", error=str(_bpe))
     finally:
         if acquired:
             try:

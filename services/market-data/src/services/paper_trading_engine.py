@@ -75,6 +75,169 @@ def _svc_token() -> str:
     return _svc_token_cache
 
 
+# ── Broker order routing (E*Trade sandbox / live) ─────────────────────────────
+
+def _etrade_symbol(symbol: str) -> str:
+    """Strip market suffix for E*Trade API: 'AAPL.US' → 'AAPL'."""
+    return symbol.split(".")[0]
+
+
+def _get_portfolio_broker(session, portfolio: "PaperPortfolio"):
+    """Return a broker adapter for the portfolio, or None if not configured/authorized."""
+    if not portfolio.broker_connection_id:
+        return None
+    try:
+        from db.models import BrokerConnection
+        from api.broker import _decrypt_config
+        from services.broker import get_broker
+        conn = session.get(BrokerConnection, portfolio.broker_connection_id)
+        if not conn or not conn.is_authorized:
+            return None
+        return get_broker(conn.broker_type, _decrypt_config(conn.config))
+    except Exception as exc:
+        log.warning("broker.load_failed", portfolio_id=portfolio.id, error=str(exc))
+        return None
+
+
+def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
+    """Submit a market BUY to the linked broker (US only — HK skipped).
+
+    On success: stores broker_order_id. If filled immediately (sandbox), updates
+    entry_price with the actual fill and adjusts portfolio cash for the delta.
+    Falls back silently to the simulated entry on any error.
+    """
+    if trade.symbol.upper().endswith(".HK"):
+        return
+    broker = _get_portfolio_broker(session, portfolio)
+    if broker is None:
+        return
+    try:
+        from services.broker.interface import OrderSide, OrderType
+        order = broker.place_order(
+            symbol=_etrade_symbol(trade.symbol),
+            qty=int(trade.shares),
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+        )
+        trade.broker_order_id = order.order_id
+        log.info("broker.entry_order_placed",
+                 symbol=trade.symbol, order_id=order.order_id, shares=int(trade.shares))
+        # Immediate fill check — sandbox fills market orders instantly
+        try:
+            filled = broker.get_order(order.order_id)
+            if filled.status == "filled" and filled.filled_avg_price:
+                fill_p = round(float(filled.filled_avg_price), 4)
+                delta = round((trade.entry_price - fill_p) * trade.shares, 2)
+                portfolio.current_cash = round(portfolio.current_cash + delta, 2)
+                trade.entry_price   = fill_p
+                trade.current_price = fill_p
+                trade.highest_price = fill_p
+                log.info("broker.entry_filled", symbol=trade.symbol, fill_price=fill_p, delta=delta)
+        except Exception:
+            pass  # polling job will update fill later
+    except Exception as exc:
+        log.warning("broker.entry_order_failed", symbol=trade.symbol, error=str(exc))
+
+
+def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
+    """Submit a market SELL to the linked broker for a position that was broker-entered.
+
+    If the sandbox fills immediately, updates trade.exit_price with actual fill and
+    adjusts portfolio cash for the delta vs the simulated exit. Falls back silently.
+    """
+    if trade.symbol.upper().endswith(".HK"):
+        return
+    if not trade.broker_order_id:
+        return  # only broker-exit positions that were broker-entered
+    broker = _get_portfolio_broker(session, portfolio)
+    if broker is None:
+        return
+    try:
+        from services.broker.interface import OrderSide, OrderType
+        order = broker.place_order(
+            symbol=_etrade_symbol(trade.symbol),
+            qty=int(trade.shares),
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+        )
+        log.info("broker.exit_order_placed",
+                 symbol=trade.symbol, order_id=order.order_id, shares=int(trade.shares))
+        try:
+            filled = broker.get_order(order.order_id)
+            if filled.status == "filled" and filled.filled_avg_price:
+                fill_p    = round(float(filled.filled_avg_price), 4)
+                old_exit  = trade.exit_price or fill_p
+                delta     = round((fill_p - old_exit) * trade.shares, 2)
+                pnl_pct   = (fill_p - trade.entry_price) / trade.entry_price
+                portfolio.current_cash = round(portfolio.current_cash + delta, 2)
+                trade.exit_price  = fill_p
+                trade.pnl         = round((fill_p - trade.entry_price) * trade.shares, 2)
+                trade.pct_return  = round(pnl_pct * 100, 4)
+                log.info("broker.exit_filled", symbol=trade.symbol, fill_price=fill_p,
+                         pnl=trade.pnl)
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("broker.exit_order_failed", symbol=trade.symbol, error=str(exc))
+
+
+def poll_broker_order_fills(session=None) -> None:
+    """Check open trades with pending broker entry orders and update fill prices.
+
+    Called each intraday scheduler cycle. Handles the case where E*Trade didn't
+    fill immediately (e.g., order placed just before market close).
+    """
+    own_session = session is None
+    if own_session:
+        session = SessionLocal()
+    try:
+        pending = session.execute(
+            select(PaperTrade).where(
+                PaperTrade.stage == "open",
+                PaperTrade.broker_order_id.isnot(None),
+            )
+        ).scalars().all()
+        if not pending:
+            return
+        portfolio_ids = list({t.portfolio_id for t in pending})
+        portfolios = {
+            p.id: p for p in session.execute(
+                select(PaperPortfolio).where(PaperPortfolio.id.in_(portfolio_ids))
+            ).scalars().all()
+        }
+        updated = 0
+        for trade in pending:
+            port = portfolios.get(trade.portfolio_id)
+            if not port:
+                continue
+            broker = _get_portfolio_broker(session, port)
+            if broker is None:
+                continue
+            try:
+                filled = broker.get_order(trade.broker_order_id)
+                if filled.status == "filled" and filled.filled_avg_price:
+                    fill_p = round(float(filled.filled_avg_price), 4)
+                    if abs(fill_p - trade.entry_price) > 0.001:
+                        delta = round((trade.entry_price - fill_p) * trade.shares, 2)
+                        port.current_cash   = round(port.current_cash + delta, 2)
+                        trade.entry_price   = fill_p
+                        trade.current_price = fill_p
+                        updated += 1
+                        log.info("broker.poll_fill_updated",
+                                 symbol=trade.symbol, fill_price=fill_p)
+            except Exception as exc:
+                log.debug("broker.poll_check_failed",
+                          order_id=trade.broker_order_id, error=str(exc))
+        if updated:
+            session.commit()
+            log.info("broker.poll_fills_updated", count=updated)
+    except Exception as exc:
+        log.warning("broker.poll_error", error=str(exc))
+    finally:
+        if own_session:
+            session.close()
+
+
 # ── PT-3: Entry score calibration — learned weights from closed paper trades ──
 
 _ENTRY_WEIGHTS_FILE = Path("/data/models/entry_weights.json")
@@ -1528,6 +1691,9 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             trade.signal_at_exit_id   = current_sig.id   if current_sig else None
             trade.signal_at_exit_type = current_sig.signal.value if current_sig and current_sig.signal else None
             portfolio.current_cash = max(0.0, round(portfolio.current_cash + exit_value - exit_commission, 2))
+            # Broker exit routing: submit real SELL for broker-entered positions
+            if portfolio.broker_connection_id and trade.broker_order_id:
+                _place_broker_exit(session, trade, portfolio)
             # PT-J1: write actual trade result back to signal_outcomes for signal accuracy calibration
             if trade.signal_id is not None:
                 try:
@@ -3011,6 +3177,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             hold_days             = 0,
         )
         session.add(trade)
+        # Broker routing: submit real BUY order to linked broker (US only; falls back on error)
+        if portfolio.broker_connection_id:
+            _place_broker_entry(session, trade, portfolio)
         open_symbols.add(stock.symbol)
         entries_made += 1
         # Recalculate equity after each entry so successive entries in this cycle

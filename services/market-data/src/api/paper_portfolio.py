@@ -1075,6 +1075,18 @@ def create_portfolio(
     if market not in ("US", "HK"):
         raise HTTPException(status_code=400, detail="market must be US or HK")
 
+    # Optional broker connection to link at creation time
+    broker_connection_id: int | None = None
+    raw_broker_id = body.get("broker_connection_id")
+    if raw_broker_id:
+        try:
+            from db.models import BrokerConnection
+            conn = session.get(BrokerConnection, int(raw_broker_id))
+            if conn and conn.is_authorized:
+                broker_connection_id = conn.id
+        except Exception:
+            pass
+
     # PT-H1: Seed full config from engine defaults so new portfolios are always correct
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {}), "trading_style": style, "market": market}
     p = PaperPortfolio(
@@ -1083,13 +1095,16 @@ def create_portfolio(
         current_cash=initial_capital,
         config=cfg,
         is_active=True,
+        broker_connection_id=broker_connection_id,
     )
     session.add(p)
     session.commit()
     session.refresh(p)
 
-    log.info("paper.portfolio_created", portfolio_id=p.id, name=name, style=style, capital=initial_capital)
-    return {"ok": True, "portfolio_id": p.id, "name": p.name}
+    log.info("paper.portfolio_created", portfolio_id=p.id, name=name, style=style,
+             capital=initial_capital, broker_connection_id=broker_connection_id)
+    return {"ok": True, "portfolio_id": p.id, "name": p.name,
+            "broker_connection_id": broker_connection_id}
 
 
 # ── Multi-portfolio: compare equity curves ────────────────────────────────────

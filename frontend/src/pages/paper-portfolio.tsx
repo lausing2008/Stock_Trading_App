@@ -652,8 +652,17 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
   const [style, setStyle] = useState('SWING');
   const [market, setMarket] = useState('US');
   const [capital, setCapital] = useState('100000');
+  const [brokerId, setBrokerId] = useState<string>('');
+  const [brokers, setBrokers] = useState<import('@/lib/api').BrokerConnection[]>([]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+
+  // Load authorized US broker connections for linking
+  useEffect(() => {
+    api.brokerList()
+      .then(list => setBrokers(list.filter(b => b.is_authorized && b.broker_type !== 'fidelity_manual')))
+      .catch(() => {});
+  }, []);
 
   async function create() {
     const cap = parseFloat(capital);
@@ -661,7 +670,11 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
     if (isNaN(cap) || cap <= 0) { setErr('Capital must be > 0'); return; }
     setSaving(true); setErr('');
     try {
-      await api.paperCreate({ name: name.trim(), trading_style: style, market, initial_capital: cap });
+      const body: Parameters<typeof api.paperCreate>[0] = {
+        name: name.trim(), trading_style: style, market, initial_capital: cap,
+      };
+      if (brokerId) (body as any).broker_connection_id = parseInt(brokerId);
+      await api.paperCreate(body);
       onCreated();
       onClose();
     } catch (e: any) {
@@ -676,13 +689,15 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
     color: '#f1f5f9', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box',
   };
 
+  const usBrokers = brokers.filter(b => !b.broker_type.includes('hk'));
+
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }} onClick={onClose}>
       <div style={{
-        background: '#1e293b', borderRadius: 12, padding: 28, width: 360,
+        background: '#1e293b', borderRadius: 12, padding: 28, width: 380,
         border: '1px solid #334155', boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
       }} onClick={e => e.stopPropagation()}>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 20 }}>New Paper Portfolio</div>
@@ -703,7 +718,7 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
           </div>
           <div>
             <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 5 }}>Market</div>
-            <select value={market} onChange={e => setMarket(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+            <select value={market} onChange={e => { setMarket(e.target.value); if (e.target.value === 'HK') setBrokerId(''); }} style={{ ...inputStyle, cursor: 'pointer' }}>
               <option value="US">US — NYSE / NASDAQ</option>
               <option value="HK">HK — Hong Kong Exchange</option>
             </select>
@@ -713,6 +728,35 @@ function CreatePortfolioModal({ onClose, onCreated }: { onClose: () => void; onC
             <input value={capital} onChange={e => setCapital(e.target.value)} type="number" min="1"
               style={inputStyle} />
           </div>
+
+          {/* Broker link — only shown for US (HK stocks not supported on US brokers) */}
+          {market === 'US' && (
+            <div>
+              <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 5 }}>
+                Broker Account <span style={{ color: '#475569' }}>(optional — routes real orders)</span>
+              </div>
+              {usBrokers.length > 0 ? (
+                <select value={brokerId} onChange={e => setBrokerId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+                  <option value="">No broker — simulation only</option>
+                  {usBrokers.map(b => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} ({b.broker_type === 'etrade_sandbox' ? 'E*Trade Sandbox' : 'E*Trade Live'})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div style={{ fontSize: 12, color: '#475569', padding: '8px 10px', background: '#0f172a', borderRadius: 6, border: '1px solid #1e293b' }}>
+                  No authorized broker —{' '}
+                  <a href="/settings" style={{ color: '#38bdf8', textDecoration: 'none' }}>add one in Settings</a>
+                </div>
+              )}
+              {brokerId && (
+                <div style={{ fontSize: 11, color: '#22c55e', marginTop: 5 }}>
+                  Real orders will be submitted to E*Trade on each engine cycle.
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {err && <div style={{ color: '#f87171', fontSize: 12, marginTop: 10 }}>{err}</div>}

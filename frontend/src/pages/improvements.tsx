@@ -7440,6 +7440,7 @@ const ITEMS: Item[] = [
 
   {
     id: 'T228-CONFIDENCE-OVERFLOW',
+    title: 'Confidence stored as thousands — all min_confidence gates bypassed',
     tier: 228 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/api/routes.py',
     effort: '1h',
@@ -7450,6 +7451,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-SWING-THRESHOLD',
+    title: 'SWING buy_threshold 0.67 too loose: 38.1% win rate, negative Kelly',
     tier: 228 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '1h',
@@ -7460,6 +7462,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-HK-SUSPEND',
+    title: 'HK paper portfolios suspended: 0% win rate, wrong macro features',
     tier: 228 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '30min',
@@ -7470,6 +7473,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-CROSS-PORTFOLIO-DEDUP',
+    title: 'Same symbol open in multiple portfolios simultaneously',
     tier: 228 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '30min',
@@ -7480,6 +7484,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-MAX-ENTRIES-DEFAULT',
+    title: 'max_entries_per_day fallback too high: 5→3',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '5min',
@@ -7490,6 +7495,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-SECTOR-ETF-DIRECTION',
+    title: 'Sector ETF compression applied to SELL signals (should be BUY only)',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '30min',
@@ -7500,6 +7506,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-VOLUME-PILLAR-AND',
+    title: 'Volume pillar OR logic: single indicator gives full pillar credit',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '30min',
@@ -7510,6 +7517,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-WEEKLY-GAIN-LOCK',
+    title: 'Weekly gain lock 1.5% blocks portfolios after single good trade',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '15min',
@@ -7520,6 +7528,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-HK-CONSEC-LOSSES',
+    title: 'HK consecutive loss limit too high: 5 to 3',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '5min',
@@ -7530,6 +7539,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-SHORT-MAX-HOLD',
+    title: 'SHORT style inherits 60-day hold limit (should be 10)',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: '15min',
@@ -7540,6 +7550,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-OUTCOME-T1-FILL',
+    title: 'Signal outcomes use T+0 fill price (look-ahead bias)',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '30min',
@@ -7550,6 +7561,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-SELL-OUTCOME-TRACKING',
+    title: 'SELL signal outcomes not tracked (BUY-only filter)',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '30min',
@@ -7560,6 +7572,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-BULK-PERSIST-LOGGING',
+    title: 'Bulk signal persist errors swallowed silently',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/api/routes.py',
     effort: '30min',
@@ -7570,6 +7583,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-PRUNE-CALIBRATION-GAP',
+    title: 'Signal outcome prune overlaps calibration lookback window',
     tier: 228 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '10min',
@@ -7580,6 +7594,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-ML-TUNER-FEATURE-MISMATCH',
+    title: 'ML tuner used 56 features; trainer uses 59 (wrong hyperparams)',
     tier: 228 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/training/trainer.py',
     effort: '2h',
@@ -7590,6 +7605,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-HSI-MACRO-FEATURES',
+    title: 'HK ML trained with SPY/VIX macro instead of HSI',
     tier: 228 as const, severity: 'critical', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/features/builder.py',
     effort: '3h',
@@ -7600,6 +7616,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-ENSEMBLE-NUDGE-AUC',
+    title: 'Ensemble nudge applied when models are near-random (AUC 0.52)',
     tier: 228 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/ml-prediction/src/training/trainer.py',
     effort: '30min',
@@ -7610,6 +7627,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-TA-SCORE-META',
+    title: 'Meta-model inference uses ta_score=0.0 (hardcoded zero)',
     tier: 228 as const, severity: 'high', defaultStatus: 'todo' as const,
     file: 'services/ml-prediction/src/training/trainer.py',
     effort: '2h',
@@ -7619,6 +7637,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-HK-MODEL-SEPARATE',
+    title: 'HK and US trained identically despite different market dynamics',
     tier: 228 as const, severity: 'high', defaultStatus: 'todo' as const,
     file: 'services/ml-prediction/src/training/trainer.py',
     effort: '1 day',
@@ -7628,6 +7647,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-POINT-IN-TIME-FUNDAMENTALS',
+    title: 'Training uses current fundamentals for all historical rows (lookahead bias)',
     tier: 228 as const, severity: 'critical', defaultStatus: 'todo' as const,
     file: 'services/ml-prediction/src/features/builder.py',
     effort: '3 days',
@@ -7637,6 +7657,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-CALIBRATION-REDIS',
+    title: 'Calibration weights wiped on every Docker rebuild',
     tier: 228 as const, severity: 'high', defaultStatus: 'todo' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '2h',
@@ -7646,6 +7667,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-SELL-CALIBRATION',
+    title: 'SELL threshold has no auto-calibration feedback loop',
     tier: 228 as const, severity: 'medium', defaultStatus: 'todo' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '2h',
@@ -7655,6 +7677,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-HK-CONNECT-SIGNAL',
+    title: 'HK Connect southbound flows not used in signal generation',
     tier: 228 as const, severity: 'medium', defaultStatus: 'todo' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '2h',
@@ -7664,6 +7687,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-HK-LIQUIDITY-FILTER',
+    title: 'No HK liquidity floor: enters wide-spread small-cap stocks',
     tier: 228 as const, severity: 'medium', defaultStatus: 'todo' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '1h',
@@ -7673,6 +7697,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-HK-SHORT-SELL-DISABLE',
+    title: 'HK SHORT SELL has no edge: 29.2% win rate',
     tier: 228 as const, severity: 'medium', defaultStatus: 'todo' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '30min',
@@ -7682,6 +7707,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-ML-WEIGHT-FLOOR',
+    title: 'ML weight floor gives 5x uplift to near-random models',
     tier: 228 as const, severity: 'medium', defaultStatus: 'todo' as const,
     file: 'services/signal-engine/src/core/signals.py',
     effort: '1h',
@@ -7691,6 +7717,7 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T228-ENSEMBLE-WEIGHTS',
+    title: 'Ensemble weights suboptimal: XGBoost over-weighted vs LightGBM',
     tier: 228 as const, severity: 'low', defaultStatus: 'todo' as const,
     file: 'services/ml-prediction/src/training/trainer.py',
     effort: '30min',
