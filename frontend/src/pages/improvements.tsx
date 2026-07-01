@@ -7340,7 +7340,7 @@ const ITEMS: Item[] = [
     effort: '2h',
     impact: 'High — The signal_outcomes table records is_correct per signal but this data is invisible to the user. Showing actual win rate per style/horizon in the Signal Filter page makes bad signal generators visible before they enter paper trades.',
     title: 'Signal win-rate visibility (outcome dashboard)',
-    why: 'Confidence 45-75+ all showed ~20% win rate in June audit — the confidence metric is not calibrated. Showing actual win rates per style/market would surface this miscalibration earlier.',
+    what: 'Confidence 45-75+ all showed ~20% win rate in June audit — the confidence metric is not calibrated. Showing actual win rates per style/market would surface this miscalibration earlier.',
     fix: 'Add GET /signals/outcomes/summary endpoint: win rate, avg return, trade count by (style, market, horizon). Show in admin page alongside Signal Filter.',
   },
   {
@@ -7350,7 +7350,7 @@ const ITEMS: Item[] = [
     effort: '3h',
     impact: 'High — Platt scaling or isotonic regression on top of XGBoost raw probabilities would make confidence actually predictive of win rate. Currently 75+ confidence wins at same rate as 45-55 confidence.',
     title: 'Confidence score calibration (Platt scaling)',
-    why: 'Raw XGBoost probabilities are not well-calibrated (overconfident on borderline cases). A calibration layer trained on signal_outcomes would make confidence meaningful as an entry filter.',
+    what: 'Raw XGBoost probabilities are not well-calibrated (overconfident on borderline cases). A calibration layer trained on signal_outcomes would make confidence meaningful as an entry filter.',
     fix: 'After model training, fit a calibration curve (sklearn CalibratedClassifierCV) on validation outcomes. Store calibrated probabilities; use as signal confidence.',
   },
   {
@@ -7361,7 +7361,7 @@ const ITEMS: Item[] = [
     impact: 'High — HK paper trading: 0% win rate across 9 trades (-$10,767 total). Root cause unknown. Could be: SPY-based features dominating HK signals, insufficient mainland flow data, or HK volatility making 5% stops too tight.',
     implementedNote: 'Done 2026-06-30 (moved to T224-D). signal_outcomes audit identified three structural failures: ML confidence inversion for HK (ml_prob 0.91-0.99 had 0% accuracy), SPY-based market_regime showing "bull" during HSI downtrend, and HK SWING SELL being 65% accurate (stocks trending DOWN). Fixes implemented as T224-A (flow gate), T224-B (HSI regime compression), T224-C (TA gate).',
     title: 'HK signal root-cause diagnosis',
-    why: '0/9 win rate is not random chance (p < 0.002). Something structural is wrong with how signals are generated for HK stocks. Diagnosis before re-enabling HK trading.',
+    what: '0/9 win rate is not random chance (p < 0.002). Something structural is wrong with how signals are generated for HK stocks. Diagnosis before re-enabling HK trading.',
     fix: 'Query signal_outcomes for HK. Check feature importance for HK signals vs US signals. Verify HSI regime is being factored in. Check if stock connect flow data is improving or hurting signal quality.',
   },
   {
@@ -7372,7 +7372,7 @@ const ITEMS: Item[] = [
     impact: 'Medium — SWING winners averaged +13% return (ABBV +13.4%, CRDO +14%, ASX +12.1%). Old partial TP at +7% was selling 50% of position when only halfway to the average winner\'s gain, cutting average winner size significantly.',
     implementedNote: 'T222-E also addressed this: partial_tp_pct raised from 0.07 → 0.10, partial_tp2_pct from 0.10 → 0.18 for SWING. Winners averaged +13% so scale-out now happens at +10% and +18% instead of +7% and +10%.',
     title: 'SWING partial TP levels raised to +10%/+18%',
-    why: 'The first scale-out at +7% was occurring before the average winner reached its full target. Selling 50% at +7% means the average winner only captures ~9% on the full position (7% × 50% + 14% × 50%) instead of 13%.',
+    what: 'The first scale-out at +7% was occurring before the average winner reached its full target. Selling 50% at +7% means the average winner only captures ~9% on the full position (7% × 50% + 14% × 50%) instead of 13%.',
     fix: 'partial_tp_pct: 0.07 → 0.10, partial_tp2_pct: 0.10 → 0.18 in SWING style overrides.',
   },
 
@@ -7386,7 +7386,7 @@ const ITEMS: Item[] = [
     impact: 'Critical — HK paper trading had 0% win rate across 9 trades (GROWTH HK: 0/5, SWING HK: 0/4) accounting for $10,767 in losses = 85% of all paper trading losses. Tighter gates prevent low-quality HK entries.',
     implementedNote: 'T222-A: Added to _HK_MARKET_OVERRIDES: min_entry_score=6 (was 4), min_confidence=65.0 (was 45). T222-F: trail_atr_mult=1.5 (matches HK\'s higher ATR), max_position_pct=0.07 (7% vs 10%), risk_per_trade_pct=0.007 (0.7% vs 1.0%). Applied when market=HK if not overridden in portfolio config.',
     title: 'HK entry gates: min_score 4→6, min_conf 45→65, position sizing reduced',
-    why: 'June 2026 audit: 0% HK win rate. High ATR HK stocks with loose gates = large losses per stop. Possible causes: SPY-biased ML features, insufficient HK-specific signals, or HSI regime not gating entries.',
+    what: 'June 2026 audit: 0% HK win rate. High ATR HK stocks with loose gates = large losses per stop. Possible causes: SPY-biased ML features, insufficient HK-specific signals, or HSI regime not gating entries.',
     fix: 'min_entry_score ≥ 6, min_confidence ≥ 65, risk_per_trade 0.7%, max_position 7% for all HK portfolios.',
   },
   {
@@ -7397,7 +7397,7 @@ const ITEMS: Item[] = [
     impact: 'High — T215 confluence check (GROWTH/LONG BUY rejected if SHORT=SELL) was not applied to SWING. A SWING BUY where SHORT is SELL means the near-term momentum is already reversing before we even enter.',
     implementedNote: 'T222-B: Extended confluence check from style in ("GROWTH", "LONG") to also include "SWING". Pre-fetches SHORT horizon signals for all SWING candidates in one batch query; rejects if SHORT=SELL. Structured log: paper.skip_confluence_fail.',
     title: 'SWING short-horizon confluence gate',
-    why: 'US SWING had 35.7% win rate. Filtering entries where SHORT signal disagrees should remove the subset entering against near-term momentum, increasing effective win rate.',
+    what: 'US SWING had 35.7% win rate. Filtering entries where SHORT signal disagrees should remove the subset entering against near-term momentum, increasing effective win rate.',
     fix: 'Check SHORT signal for every SWING candidate; skip if SHORT=SELL. One batch query, no N+1.',
   },
   {
@@ -7408,7 +7408,7 @@ const ITEMS: Item[] = [
     impact: 'High — A BUY signal generated 4 days ago may reflect conditions that no longer hold. With 5 refreshes/day, a 4-day-old signal is 20 refreshes stale. Reducing to 3 days keeps only signals from the last 15 refreshes.',
     implementedNote: 'T222-C: Added max_signal_age_hours=72 (3 days) to _DEFAULT_CONFIG explicitly (was 96h inline default). This is tighter but sufficient — weekend signals generated Friday are ≤72h old on Sunday if the scheduler runs 5×/day on market days.',
     title: 'Signal freshness gate: 4 days → 3 days',
-    why: 'Signals more than 3 days old reflect conditions from a previous market session. Buying a 4-day-old BUY signal means entering momentum that may have already exhausted.',
+    what: 'Signals more than 3 days old reflect conditions from a previous market session. Buying a 4-day-old BUY signal means entering momentum that may have already exhausted.',
     fix: 'max_signal_age_hours: 96 → 72 in _DEFAULT_CONFIG.',
   },
   {
@@ -7419,7 +7419,7 @@ const ITEMS: Item[] = [
     impact: 'Medium — SWING trail_atr_mult was 1.5 (tightest of all styles). Winning SWING trades moved +11-14%, but a 1.5× ATR trail would stop them out on normal pullbacks before reaching the target. Winners need room to breathe.',
     implementedNote: 'T222-E: Changed SWING trail_atr_mult from 1.5 → 2.0 in _STYLE_OVERRIDES["SWING"]. Also raised partial TP levels: 0.07→0.10 (first scale) and 0.10→0.18 (second scale). Winners averaged +13% return; old 1.5×ATR trail was too tight for that magnitude of move.',
     title: 'SWING trailing stop widened: 1.5× ATR → 2.0× ATR',
-    why: 'SWING was using the tightest trail of any style. With winners moving 12-14%, a 1.5×ATR trail (≈1×ATR tighter than GROWTH) was getting shaken out on normal volatility spikes before the target.',
+    what: 'SWING was using the tightest trail of any style. With winners moving 12-14%, a 1.5×ATR trail (≈1×ATR tighter than GROWTH) was getting shaken out on normal volatility spikes before the target.',
     fix: 'trail_atr_mult: 1.5 → 2.0 for SWING. GROWTH and LONG already use 2.0.',
   },
   {
@@ -7430,7 +7430,7 @@ const ITEMS: Item[] = [
     impact: 'High — HK GROWTH average loss was -$831 per trade. A 12% stop (GROWTH stop_pct) on a 10% position (max_position_pct=0.10) on a $30K portfolio = $360 max loss, but actual losses were higher due to position sizes near the limit.',
     implementedNote: 'T222-F: Added to _HK_MARKET_OVERRIDES: max_position_pct=0.07 (7% of equity max), risk_per_trade_pct=0.007 (0.7%), trail_atr_mult=1.5. Reduces exposure per HK position by ~30% while tighter gates filter most entries anyway.',
     title: 'HK position size reduction: 10% → 7% max per position',
-    why: 'HK stocks have larger ATR than US equivalents. A 2× ATR trailing stop on a large HK position = large dollar loss when stopped. Smaller base position + tighter ATR trail = controlled loss even when stopped out.',
+    what: 'HK stocks have larger ATR than US equivalents. A 2× ATR trailing stop on a large HK position = large dollar loss when stopped. Smaller base position + tighter ATR trail = controlled loss even when stopped out.',
     fix: 'max_position_pct: 0.07, risk_per_trade_pct: 0.007 for all HK portfolios.',
   },
 
@@ -7444,7 +7444,7 @@ const ITEMS: Item[] = [
     impact: 'Critical — June 25 data: 5 HK positions all stopped out the same day on a single market move (-$9K total). Without a per-market cap, one index move wipes the entire portfolio. Max 4 positions per market (HK or US) prevents cluster correlation wipeout.',
     implementedNote: 'T221-B: Added market cluster cap gate before candidate loop. Reads max_market_positions (default 4) from config. Counts open positions by stock.market; returns early if at cap. Structured log: paper.market_cluster_cap.',
     title: 'Market cluster cap',
-    why: 'HK stocks have 0.85+ correlation to each other — a single market-wide down day stops all positions simultaneously. The June 25 wipeout had 5 HK positions open at once with -$9K total losses.',
+    what: 'HK stocks have 0.85+ correlation to each other — a single market-wide down day stops all positions simultaneously. The June 25 wipeout had 5 HK positions open at once with -$9K total losses.',
     fix: 'Hard cap: max 4 open positions per market (HK or US). Configured via max_market_positions in portfolio config.',
   },
   {
@@ -7455,7 +7455,7 @@ const ITEMS: Item[] = [
     impact: 'High — 2382.HK appeared 3 times in open positions (GROWTH + SWING + SWING), tripling single-stock concentration risk. Each portfolio\'s open_symbols check only guards within that portfolio, not cross-portfolio.',
     implementedNote: 'T221-A: Batch-fetch global open counts for all candidates before the loop. If a symbol already has 1+ open position in any portfolio (max_positions_per_symbol_global=1), skip entry. Structured log: paper.skip_global_symbol_cap.',
     title: 'Cross-portfolio symbol dedup',
-    why: 'SWING and GROWTH portfolios both entered 2382.HK on the same day. Each portfolio\'s duplicate check only looks within its own positions — cross-portfolio concentration was invisible.',
+    what: 'SWING and GROWTH portfolios both entered 2382.HK on the same day. Each portfolio\'s duplicate check only looks within its own positions — cross-portfolio concentration was invisible.',
     fix: 'Pre-batch global open count per symbol (one query for all candidates). Skip if symbol already open in any portfolio.',
   },
   {
@@ -7466,7 +7466,7 @@ const ITEMS: Item[] = [
     impact: 'High — 24h cooldown after a stop-hit is too short. Stocks that stop out are in downtrends that typically last 3-7 days. Re-entering the next day means catching a falling knife.',
     implementedNote: 'T221-D: Changed stop_cooldown_hours default from 24h to 120h (5 trading days). Also added to _DEFAULT_CONFIG explicitly so it shows in portfolio config tuning.',
     title: 'Stop cooldown: 24h → 5 days',
-    why: 'A stop-hit means price moved against us by 5-12%. Stocks in that situation are in downtrends. 24h was too short to let the momentum exhaust before re-entry.',
+    what: 'A stop-hit means price moved against us by 5-12%. Stocks in that situation are in downtrends. 24h was too short to let the momentum exhaust before re-entry.',
     fix: 'Default stop_cooldown_hours: 120 (5 days). Configurable per-portfolio — can reduce for mean-reversion strategies.',
   },
   {
@@ -7477,7 +7477,7 @@ const ITEMS: Item[] = [
     impact: 'High — On June 25, stops were being hit one by one, yet the system kept entering new positions. A circuit breaker that detects adverse conditions from recent stop frequency would have prevented the cascade.',
     implementedNote: 'T221-E: After regime throttle, count stop_hit exits in last heat_brake_window_hours (default 48h). If ≥ heat_brake_max_stops (default 3), suspend all new entries. Structured log: paper.heat_brake_triggered.',
     title: 'Portfolio heat brake (cascade stop circuit breaker)',
-    why: '3+ stops in 48h is a signal the market is moving against the strategy. Continuing to enter new positions into a losing market compounds losses.',
+    what: '3+ stops in 48h is a signal the market is moving against the strategy. Continuing to enter new positions into a losing market compounds losses.',
     fix: 'Gate: if 3+ stops hit in last 48h → pause all entries. Configurable via heat_brake_max_stops and heat_brake_window_hours.',
   },
   {
@@ -7487,7 +7487,7 @@ const ITEMS: Item[] = [
     effort: '3h',
     impact: 'Medium — Entering long positions on a day when the market index is down >1.5% means fighting macro momentum. The existing regime filter catches sustained bear markets but not single bad days.',
     title: 'Same-day index trend gate',
-    why: 'HK entries on June 25 were made while HSI was down significantly. The SPY-based regime filter was fine (US market stable) but HK had its own down day.',
+    what: 'HK entries on June 25 were made while HSI was down significantly. The SPY-based regime filter was fine (US market stable) but HK had its own down day.',
     fix: 'Before entry, check today\'s index return (HSI for HK, SPY for US) from live_prices. Skip if index is down >1.5% on the day. Requires HSI to be included in the price fetch for HK portfolios.',
   },
 
