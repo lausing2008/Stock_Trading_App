@@ -188,7 +188,8 @@ def _compute_hk() -> dict:
     }
     try:
         raw = yf.download("^HSI", period="300d", auto_adjust=True, progress=False)
-        closes = raw["Close"].dropna() if "Close" in raw.columns else raw.dropna()
+        col = raw["Close"] if "Close" in raw.columns else raw.iloc[:, 0]
+        closes = col.squeeze().dropna()  # squeeze: single-column DataFrame → Series
         if len(closes) >= 50:
             hsi  = float(closes.iloc[-1])
             e50  = float(closes.tail(50).mean())
