@@ -746,9 +746,10 @@ def train_model(
     feature_importance: dict[str, float] = {}
     if hasattr(model.clf, "feature_importances_"):
         scores = model.clf.feature_importances_
+        # C-1 fix: use actual fitted columns (may be narrowed by shared_cols intersection)
         feature_importance = {
             col: round(float(scores[i]), 4)
-            for i, col in enumerate(FEATURE_COLUMNS)
+            for i, col in enumerate(X_train.columns)
         }
         top5 = sorted(feature_importance, key=feature_importance.get, reverse=True)[:5]
         log.info("train.top_features", symbol=symbol, top5=top5)

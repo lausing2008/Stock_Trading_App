@@ -1510,10 +1510,12 @@ def _apply_style_signal(
             reasons["ml_ta_conflict"] = False
         fused = ml_w * ml_prob_c + (1.0 - ml_w) * ta_prob
         reasons["ml_weight"] = round(ml_w, 2)
+        reasons["ml_probability"] = round(float(ml_prob_c), 4)  # H-3: per-style, not shared SWING value
     else:
         fused = ta_prob
         reasons["ml_ta_conflict"] = False
         reasons["ml_weight"] = 0.0
+        reasons["ml_probability"] = None
 
     fused = float(np.clip(fused, 0.0, 1.0))
 
@@ -2062,7 +2064,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["fear_greed_score"]   = fg_score
     reasons["breadth_pct"]        = breadth_pct
     reasons["ta_score"]           = ta_prob
-    reasons["ml_probability"]     = ml_prob
+    # ml_probability is per-style — written inside _apply_style_signal() for each horizon
     reasons["ml_test_auc"]        = ml_test_auc
     reasons["ml_model"]           = ml_meta.get("ml_model")
     reasons["ml_agreement"]       = ml_meta.get("ml_agreement")

@@ -369,7 +369,7 @@ def _bulk_persist(symbols: list[str]) -> None:
                 try:
                     from sqlalchemy import text as _text2
                     rows = s.execute(_text2("""
-                        SELECT horizon::text, confidence FROM signals
+                        SELECT CAST(horizon AS text), confidence FROM signals
                         WHERE stock_id = :sid
                         ORDER BY ts DESC
                     """), {"sid": stock.id}).fetchall()
@@ -381,11 +381,12 @@ def _bulk_persist(symbols: list[str]) -> None:
                 except Exception:
                     pass
 
-                # T220-G: Sector rotation — add sector_momentum to reasons (Redis cache, no auth required)
+                # T220-G: Sector rotation — add sector_momentum to reasons
                 try:
                     import httpx as _httpx_rot
                     _rot_r = _httpx_rot.get(
                         f"{_settings.market_data_url}/stocks/sector-rotation",
+                        headers={"Authorization": f"Bearer {_service_token()}"},
                         timeout=2.0,
                     )
                     if _rot_r.status_code == 200:

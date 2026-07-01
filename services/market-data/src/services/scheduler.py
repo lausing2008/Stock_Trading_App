@@ -216,8 +216,8 @@ _HK_HOLIDAYS: frozenset[tuple[int, int, int]] = frozenset([
     (2026, 2, 18),  # Lunar New Year Day 2
     (2026, 2, 19),  # Lunar New Year Day 3
     (2026, 2, 20),  # Lunar New Year Day 4 (make-up)
-    (2026, 4, 3),   # Ching Ming Festival
-    (2026, 4, 6),   # Easter Monday (Good Friday + Easter Mon TBD—placeholder)
+    (2026, 4, 3),   # Ching Ming Festival + Good Friday (both fall on Apr 3, 2026)
+    (2026, 4, 6),   # Easter Monday
     (2026, 5, 1),   # Labour Day
     (2026, 5, 25),  # Buddha's Birthday
     (2026, 6, 19),  # Tuen Ng Festival
@@ -291,8 +291,8 @@ def _post(url: str, **kwargs) -> None:
     """Fire-and-forget POST to an internal service.
 
     DP-4: Retries up to 3 times with exponential backoff (5s / 15s / 45s).
-    After all retries fail, logs at ERROR and sets the market:refresh_failed
-    Redis flag so that check_signal_alerts() can suppress stale-data alerts.
+    After all retries fail, logs at ERROR.
+    (BUG-8: no longer sets market:refresh_failed — stale data is handled per-symbol via price freshness check.)
     """
     delays = [3, 8, 20]  # kept short — scheduler thread pool has limited slots
     # Inject service-to-service auth token so endpoints protected by get_current_username work.
@@ -970,15 +970,6 @@ def check_signal_alerts() -> None:
                 _alert_fail_counts.pop(k, None)
 
             symbols = list({a.symbol for a in alerts})
-
-            # DP-3: Suppress all alerts if a recent HTTP failure flagged stale data.
-            try:
-                if _get_redis().exists(_REDIS_REFRESH_FAILED_KEY):
-                    log.warning("signal_alert.suppressed_refresh_failed",
-                                note="market refresh HTTP failure flag set — skipping alerts until next successful refresh")
-                    return
-            except Exception:
-                pass
 
             # DP-3: Build per-symbol price freshness map; skip symbols with stale bars.
             # Use 4-day window to accommodate weekends (Fri close → Mon alert run = 3 calendar days).
@@ -1764,8 +1755,11 @@ def _weekly_full_refresh() -> None:
             return
         log.info("scheduler.weekly_refresh_start", count=len(all_symbols))
         ingest_universe(all_symbols, "1d", force=True)
-        _post(f"{_settings.ranking_engine_url}/rankings/refresh")
-        _post(f"{_settings.signal_engine_url}/signals/refresh")
+        _post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": "US"})
+        _post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": "HK"})
+        # M-8: split by market to isolate failures and avoid OOM on single bulk refresh
+        _post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": "US"})
+        _post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": "HK"})
         _record_job_status("weekly_refresh", "ok", time.monotonic() - _t0)
         log.info("scheduler.weekly_refresh_done", count=len(all_symbols))
     except Exception as exc:
@@ -2060,7 +2054,7 @@ def _check_short_intraday_triggers(market: str) -> None:
             return
     elif market == "HK":
         now_hk = _dt.now(ZoneInfo("Asia/Hong_Kong"))
-        if not (now_hk.hour >= 9 and now_hk.hour < 16):
+        if not ((now_hk.hour > 9 or (now_hk.hour == 9 and now_hk.minute >= 30)) and now_hk.hour < 16):
             return
 
     try:

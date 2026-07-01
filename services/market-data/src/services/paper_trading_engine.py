@@ -668,6 +668,13 @@ def _is_market_hours(market: str = "US") -> bool:
         now_hkt = datetime.now(ZoneInfo("Asia/Hong_Kong"))
         if now_hkt.weekday() >= 5:
             return False
+        # H-1: HKEX public holiday check (lazy import avoids circular dependency)
+        try:
+            from services.scheduler import _HK_HOLIDAYS as _hkh
+            if (now_hkt.year, now_hkt.month, now_hkt.day) in _hkh:
+                return False
+        except ImportError:
+            pass
         morning_open  = now_hkt.replace(hour=9,  minute=30, second=0, microsecond=0)
         morning_close = now_hkt.replace(hour=12, minute=0,  second=0, microsecond=0)
         aftnoon_open  = now_hkt.replace(hour=13, minute=0,  second=0, microsecond=0)
