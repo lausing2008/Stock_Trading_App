@@ -13,7 +13,7 @@ Regime states (affect sizing, min_entry_score, trail multiplier):
   bull     — SPY > EMA-20 AND EMA-50, VIX < 18                  100% size, score +1
   neutral  — default                                              100% size
   choppy   — SPY < EMA-20 OR VIX > 20                            75% size, min_score = 4
-  risk_off — SPY < EMA-50 OR VIX > 25                            50% size, min_score = 5, trail ×0.85
+  risk_off — SPY < EMA-50 OR VIX > 25                            NEW ENTRIES BLOCKED (T226-A default)
   bear     — SPY < EMA-50 AND VIX > 30  (OR SPY < EMA-200 + 20d return < -8%)
                                                                   NEW ENTRIES BLOCKED, trail ×0.70
 
@@ -162,6 +162,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "regime_choppy_size_mult":   0.75,   # 75 % size in choppy
     "regime_bull_size_mult":     1.0,    # full size (can boost to 1.1 for bull)
     "regime_risk_off_min_score": 5,      # stricter entry gate in risk_off
+    # T226-A: Block all new entries in risk_off by default. 9/30 closed paper trades entered
+    # in risk_off — 0% win rate, avg -5.0% return. Set False per-portfolio to revert to 50% size.
+    "regime_risk_off_gate":      True,
     "regime_choppy_min_score":   4,      # slightly stricter in choppy
     "enabled":                   True,
     # Decision Engine mode — authoritative since Tier 73.
@@ -249,9 +252,12 @@ _STYLE_OVERRIDES: dict[str, dict] = {
         "partial_tp_pct": 0.10, "partial_tp2_pct": 0.18,
         "wait_exit_days": 3, "min_confidence": 50.0, "min_kscore": 52.0,
         "max_entry_gap_pct": 0.03,  # T171: SWING can't tolerate as much gap chasing
-        # T225-A: TA floor gate — ta_lo50 SWING BUY had only 31.4% win rate (35/139 samples).
-        # Low TA + high ML = ML-dominant signal that consistently underperforms.
-        "min_ta_score": 0.50,
+        # T225-A/T226-B: TA floor gate. T225 added at 0.50 (ta_lo50 31.4% win rate).
+        # T226: raised to 0.65 — US SWING BUY avg_ta=0.622 (38% win), HK SWING BUY avg_ta=0.620 (26% win).
+        "min_ta_score": 0.65,
+        # T226-C: SWING requires score=5 in all regimes (was 4 default; already 5 in risk_off).
+        # SWING entries with score=4 had 0% win rate in the 30-trade audit.
+        "min_entry_score": 5,
     },
     "LONG": {
         "max_hold_days": 90, "trail_atr_mult": 2.0,
@@ -276,9 +282,9 @@ _HK_MARKET_OVERRIDES: dict = {
     "trail_atr_mult":          1.5,  # tighter trailing stop (SWING default=1.5, GROWTH default=2.0)
     "max_position_pct":        0.07, # max 7% of equity per position (vs 10% US default)
     "risk_per_trade_pct":      0.007, # risk only 0.7% per trade (vs 1% US default)
-    # T224-C: TA score gate — HK winning signals (SHORT style, 47.5% win rate) averaged ta≥0.60.
-    # HK SWING BUY signals with ta_score < 0.60 had 0% accuracy in June 2026 audit.
-    "min_ta_score":            0.60,
+    # T224-C/T226-B: TA score gate. T224 set 0.60; T226 raised to 0.65 to match SWING gate.
+    # HK SWING BUY at 26% win rate with avg_ta=0.620 in June 2026 audit.
+    "min_ta_score":            0.65,
 }
 
 
@@ -2180,10 +2186,10 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      notes=live_regime.get("notes"),
                      note="all new entries suspended in bear regime")
             return
-        # T173: strict risk_off gate — block all new entries when regime_risk_off_gate=True.
-        # Default False (preserve existing behaviour: 50% size + tighter score).
-        # Set True per-portfolio to fully suspend entries when SPY is below 50EMA or VIX > 25.
-        if regime_state == "risk_off" and cfg.get("regime_risk_off_gate", False):
+        # T173/T226-A: risk_off gate — blocks all new entries when regime_risk_off_gate=True.
+        # T226-A changed default to True: 9/30 closed paper trades in risk_off had 0% win rate.
+        # Set False per-portfolio to revert to 50%-size + score-5 behaviour instead.
+        if regime_state == "risk_off" and cfg.get("regime_risk_off_gate", True):
             log.info("paper.regime_gate_risk_off",
                      portfolio=portfolio.name,
                      vix=live_regime.get("vix"),

@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221 | 222 | 223 | 224 | 225;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221 | 222 | 223 | 224 | 225 | 226;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7378,6 +7378,42 @@ const ITEMS: Item[] = [
     fix: 'New route @router.get("/signal-outcomes/summary") in routes.py. Queries signal_outcomes JOIN stocks GROUP BY market, horizon, signal_direction. Returns list of dicts with n, win_pct, avg_return, avg_confidence, avg_ta_score, avg_ml_prob.',
   },
 
+  // ── Tier 226 — 30-trade paper portfolio audit: risk_off gate, SWING TA raise, SWING score raise ─────────────────
+
+  {
+    id: 'T226-RISK-OFF-GATE',
+    tier: 226 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30min',
+    impact: 'High — 9 of 30 closed paper trades entered in risk_off regime with 0% win rate and -5.0% average return. Blocking all new entries in risk_off eliminates the worst-performing cohort. Bull regime trades returned avg +0.97% (28.6% win). Risk_off trades returned avg -5.0% (0% win).',
+    implementedNote: 'Done 2026-06-30. Changed regime_risk_off_gate default from False to True in _DEFAULT_CONFIG. The T173 gate (introduced as opt-in) is now on by default — all portfolios block new entries when regime=risk_off. Individual portfolios can set regime_risk_off_gate: false in their config to revert to the old 50%-size + score-5 behavior.',
+    title: 'T226-A: risk_off entry gate — default True (was opt-in False)',
+    what: '30-trade paper portfolio audit (June 2026): 9/30 closed trades entered during risk_off regime (SPY < EMA-50 or VIX > 25). All 9 had 0% win rate and avg return -5.0%. The bull-regime cohort (21 trades) had avg +0.97%. Stop_hit dominated exits (24/30 trades) — most stops were triggered within 1-3 days of entry. Risk_off entries accounted for a disproportionate share of the stop-hit drain.',
+    fix: 'Changed _DEFAULT_CONFIG["regime_risk_off_gate"] from False to True. Updated cfg.get("regime_risk_off_gate", False) → cfg.get("regime_risk_off_gate", True) in _scan_for_entries. Module docstring updated to reflect risk_off = NEW ENTRIES BLOCKED.',
+  },
+  {
+    id: 'T226-SWING-TA-RAISE',
+    tier: 226 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '30min',
+    impact: 'High — US SWING BUY had 38.1% win rate with avg_ta=0.622. HK SWING BUY had 26.3% win rate with avg_ta=0.620. Many entries just cleared the 0.50 floor from T225-A. Raising to 0.65 cuts the bottom of the TA distribution where outcomes are worst. HK override also raised from 0.60 to 0.65 for consistency.',
+    implementedNote: 'Done 2026-06-30. _STYLE_OVERRIDES["SWING"]["min_ta_score"] raised from 0.50 to 0.65. _HK_MARKET_OVERRIDES["min_ta_score"] raised from 0.60 to 0.65. Both markets now require the same TA floor for SWING entries.',
+    title: 'T226-B: SWING min_ta_score 0.50→0.65 (HK override 0.60→0.65)',
+    what: 'T225-A added min_ta_score=0.50 for SWING. Signal_outcomes audit shows US SWING BUY (39 trades, 38% win, avg_ta=0.622) and HK SWING BUY (38 trades, 26% win, avg_ta=0.620) both cluster around 0.62 — well above 0.50. The 0.50 floor blocked the worst entries but the 0.50–0.65 band still contains weak performers. Raising to 0.65 removes this band.',
+    fix: '_STYLE_OVERRIDES["SWING"]["min_ta_score"] = 0.65 (was 0.50). _HK_MARKET_OVERRIDES["min_ta_score"] = 0.65 (was 0.60). Gate is applied in _scan_for_entries via the existing min_ta_score check.',
+  },
+  {
+    id: 'T226-SWING-SCORE-RAISE',
+    tier: 226 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '15min',
+    impact: 'Medium — SWING already requires score=5 in risk_off regime (regime_risk_off_min_score=5). Making score=5 the SWING baseline (all regimes) raises the minimum conviction bar to match what risk_off already demands. Prevents lower-conviction SWING entries from slipping through in bull/neutral regimes.',
+    implementedNote: 'Done 2026-06-30. Added "min_entry_score": 5 to _STYLE_OVERRIDES["SWING"]. US SWING now requires score≥5. HK SWING retains its score≥6 (from _HK_MARKET_OVERRIDES) since HK override applies after style override.',
+    title: 'T226-C: SWING min_entry_score 4→5 (all regimes)',
+    what: 'SWING entries only need score=4 in bull/neutral regimes, but score=5 in risk_off. The audit showed no meaningful win-rate difference in the available sample between score thresholds, but the 4-vs-5 gap is the same conviction difference regime already mandates in stress. Raising the baseline makes SWING consistently require stronger multi-factor conviction.',
+    fix: 'Added "min_entry_score": 5 to _STYLE_OVERRIDES["SWING"]. HK SWING unaffected (HK override min_entry_score=6 dominates). DEFAULT_CONFIG baseline remains 4 for GROWTH/LONG styles.',
+  },
+
   // ── Tier 223 — R:R calibration & outcome tracking ────────────────────────────────────────────
 
   {
@@ -11750,6 +11786,7 @@ const TIER_LABEL: Record<Tier, string> = {
   223: 'Tier 223 — R:R calibration & outcome tracking: signal win-rate by style, confidence calibration, HK signal diagnosis, partial TP raise',
   224: 'Tier 224 — HK signal quality redesign: mainland flow gate, HSI regime compression, HK TA gate, data-driven root-cause audit',
   225: 'Tier 225 — 30-day signal audit: SWING TA gate (ta<0.50 blocked), ML overconfidence gate (ml>0.90 + ta<0.75 compressed), GROWTH weight cap 0.70→0.60, win-rate API',
+  226: 'Tier 226 — 30-trade paper portfolio audit: risk_off entry gate default-on, SWING TA 0.50→0.65, SWING min_score 4→5',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11978,6 +12015,7 @@ const TIER_COLOR: Record<Tier, string> = {
   223: '#facc15',
   224: '#34d399',
   225: '#818cf8',
+  226: '#a78bfa',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
