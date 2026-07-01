@@ -451,6 +451,76 @@ backfill on next successful run (job runs Mon-Fri 17:00 HKT = 09:00 UTC).
 
 ---
 
+## Recurring Issue: Stale Rankings — jose Missing from ranking-engine (BUG-10)
+
+**Symptom:** Rankings are 7+ days old even though scheduler appears to be running. `POST /rankings/refresh?market=US` returns 401. Paper trading engine uses stale K-scores for `min_kscore` gate.
+
+**Root cause (found 2026-07-01):** ranking-engine image was built before `python-jose` was added to `requirements.txt`. The same jose-missing-from-container pattern as signal-engine (Jun-17) and ml-prediction (Jun-19). `shared/common/jwt_auth.py` does `from jose import JWTError, jwt` — if that fails, all auth-protected endpoints return 401.
+
+**Fix:**
+```bash
+docker exec stockai-ranking-engine-1 pip install 'python-jose[cryptography]==3.3.0'
+# Verify:
+docker exec stockai-ranking-engine-1 python3 -c 'from jose import jwt; print("jose OK")'
+# Rebuild image so it persists:
+docker compose -f docker/docker-compose.yml build ranking-engine && docker compose -f docker/docker-compose.yml up -d ranking-engine
+# Trigger manual refresh:
+docker exec stockai-market-data-1 python3 /tmp/rank_refresh.py  # or use inline token script
+```
+
+**Trigger manual ranking refresh:**
+```bash
+docker exec stockai-market-data-1 python3 -c "
+import sys, uuid, time
+sys.path.insert(0, '/app'); sys.path.insert(0, '/app/src')
+from common.config import get_settings; from jose import jwt as _jwt; import httpx
+s = get_settings()
+tok = _jwt.encode({'sub':'scheduler','jti':str(uuid.uuid4()),'exp':int(time.time())+86400}, s.jwt_secret, algorithm='HS256')
+for mkt in ['US','HK']:
+    r = httpx.post(f'http://ranking-engine:8004/rankings/refresh?market={mkt}', headers={'Authorization':f'Bearer {tok}'}, timeout=10)
+    print(mkt, r.status_code, r.text[:80])
+"
+```
+
+**Also found (same audit):** portfolio-optimizer missing jose → `/optimize` returning 401 for all users. Same fix: `pip install jose` + rebuild portfolio-optimizer image.
+
+**What to check if rankings go stale:**
+```bash
+docker logs stockai-market-data-1 --since 2h | grep 'rankings.*401\|401.*rankings'
+docker exec stockai-ranking-engine-1 python3 -c 'from jose import jwt; print("OK")'
+# Check last ranking update:
+docker exec stockai-market-data-1 python3 -c "
+import sys; sys.path.insert(0,'/app'); sys.path.insert(0,'/app/src')
+from db import SessionLocal; from sqlalchemy import text
+s = SessionLocal()
+r = s.execute(text('SELECT COUNT(*), MAX(as_of)::date FROM rankings')).fetchone()
+print('rankings:', r); s.close()"
+```
+
+---
+
+## System Port Map (Verified 2026-07-01 from Dockerfiles)
+
+Previous documentation had wrong ports. Correct internal Docker network ports:
+
+| Service | Port |
+|---|---|
+| api-gateway | 8000 |
+| market-data | 8001 |
+| technical-analysis | 8002 |
+| ml-prediction | 8003 |
+| ranking-engine | 8004 |
+| signal-engine | 8005 |
+| strategy-engine | 8006 |
+| portfolio-optimizer | 8007 |
+| research-engine | 8008 |
+| decision-engine | 8009 |
+| event-intelligence | 8010 |
+
+**Note:** Only api-gateway (8000) is exposed externally. All others are Docker-internal only. Nginx proxies `lausing.com` → `localhost:8000`.
+
+---
+
 ## Known Ongoing Limitations
 
 - Broker commission: `commission_per_share` defaults to 0.0 (user's broker is commission-free)

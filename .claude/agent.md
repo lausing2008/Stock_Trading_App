@@ -96,20 +96,26 @@ command with real paths, not a template.
 
 ## What You Know Cold
 
-### 7 Recurring failures — check these first
-1. **jose missing** — any unexpected 401 on an internal endpoint; `from jose import jwt` fails silently
+### 8 Recurring failures — check these first
+1. **jose missing** — any unexpected 401 on an internal endpoint; `from jose import jwt` fails silently.
+   Affected so far: signal-engine (Jun-17), ml-prediction (Jun-19), ranking-engine (Jul-01),
+   portfolio-optimizer (Jul-01). jose IS in all requirements.txt — but images built before it was added
+   lack it. Fix: `pip install 'python-jose[cryptography]==3.3.0'` in container + rebuild image.
 2. **SQLAlchemy `::type` cast** — silent write failure; `::` after named param = unbound
 3. **DISTINCT ON ORDER BY** — psycopg2 error; first ORDER BY must match DISTINCT ON key
 4. **Login redirect loop** — api.ts deleting valid JWT on any 401 during startup
 5. **BuildKit cache** — stale frontend after rebuild; always `DOCKER_BUILDKIT=0`
 6. **Alert oscillation** — scheduler reading live signals instead of DB signals
 7. **Shared module path** — `shared/` goes to `/app/shared/`, not `/app/src/`
+8. **Rankings stale → 401 on ranking-engine** — same jose pattern; if rankings are 7+ days old, check
+   `POST /rankings/refresh` returning 401. Fix: install jose + rebuild ranking-engine image.
 
 ### Architecture facts — no lookup needed
 - Container names: `stockai-{service-name}-1` for all 10 services
-- Ports: api-gateway 8000, market-data 8001, ml-prediction 8003, signal-engine 8005,
-  decision-engine 8006, ranking-engine 8007, research-engine 8008, technical-analysis 8009,
-  strategy-engine 8010, portfolio-optimizer 8011, event-intelligence 8012
+- Ports (verified from Dockerfiles 2026-07-01):
+  api-gateway 8000, market-data 8001, technical-analysis 8002, ml-prediction 8003,
+  ranking-engine 8004, signal-engine 8005, strategy-engine 8006, portfolio-optimizer 8007,
+  research-engine 8008, decision-engine 8009, event-intelligence 8010
 - Scheduler is in market-data, not a dedicated service
 - `PaperTrade.pnl` — not `.realized_pnl` (that field does not exist)
 - `frontend/.env.production` is gitignored; must be on EC2 manually before every build
