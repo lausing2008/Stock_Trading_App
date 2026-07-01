@@ -355,7 +355,7 @@ async def explain(
     return {"symbol": symbol, "style": style, "explanation": "\n".join(lines), "result": result}
 
 
-@router.get("/regime")
+@router.get("/decide/regime")
 def regime_status(market: str = "US", _: str = Depends(get_current_username)):
     """Return current market regime for US or HK."""
     return get_regime(market.upper())
