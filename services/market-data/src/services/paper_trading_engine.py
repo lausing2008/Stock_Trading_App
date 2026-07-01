@@ -88,8 +88,8 @@ def _get_portfolio_broker(session, portfolio: "PaperPortfolio"):
         return None
     try:
         from db.models import BrokerConnection
-        from api.broker import _decrypt_config
-        from services.broker import get_broker
+        from src.api.broker import _decrypt_config
+        from src.services.broker import get_broker
         conn = session.get(BrokerConnection, portfolio.broker_connection_id)
         if not conn or not conn.is_authorized:
             return None
@@ -112,7 +112,7 @@ def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio
     if broker is None:
         return
     try:
-        from services.broker.interface import OrderSide, OrderType
+        from src.services.broker.interface import OrderSide, OrderType
         order = broker.place_order(
             symbol=_etrade_symbol(trade.symbol),
             qty=int(trade.shares),
@@ -153,7 +153,7 @@ def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio"
     if broker is None:
         return
     try:
-        from services.broker.interface import OrderSide, OrderType
+        from src.services.broker.interface import OrderSide, OrderType
         order = broker.place_order(
             symbol=_etrade_symbol(trade.symbol),
             qty=int(trade.shares),

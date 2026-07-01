@@ -211,7 +211,7 @@ def oauth_start(
     if conn.broker_type not in ("etrade", "etrade_sandbox"):
         raise HTTPException(400, "OAuth is only available for E*Trade connections")
 
-    from services.broker import EtradeBroker
+    from src.services.broker import EtradeBroker
     broker = EtradeBroker(_decrypt_config(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
     try:
         authorize_url = broker.start_oauth()
@@ -241,7 +241,7 @@ def oauth_complete(
     if conn.broker_type not in ("etrade", "etrade_sandbox"):
         raise HTTPException(400, "OAuth is only available for E*Trade connections")
 
-    from services.broker import EtradeBroker
+    from src.services.broker import EtradeBroker
     broker = EtradeBroker(_decrypt_config(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
     try:
         broker.complete_oauth(body.verifier.strip())
@@ -278,7 +278,7 @@ def reconnect(
     if not conn.is_authorized:
         raise HTTPException(400, "Not yet authorized — run OAuth flow first")
 
-    from services.broker import EtradeBroker
+    from src.services.broker import EtradeBroker
     broker = EtradeBroker(_decrypt_config(conn.config), sandbox=(conn.broker_type == "etrade_sandbox"))
     try:
         broker.renew_access_token()
@@ -300,7 +300,7 @@ def get_account_info(
     if not conn.is_authorized:
         raise HTTPException(400, "Broker not yet authorized")
 
-    from services.broker import get_broker
+    from src.services.broker import get_broker
     broker = get_broker(conn.broker_type, _decrypt_config(conn.config))
     try:
         acct = broker.get_account(conn.account_id or None)
