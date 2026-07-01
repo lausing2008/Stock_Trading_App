@@ -568,39 +568,32 @@ def train_model(
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
         return {"symbol": symbol, "skipped": True, "reason": f"only {len(X)} clean samples"}
 
-    # Tier 87 — Outcome-informed augmentation: append closed signal_outcomes as
-    # additional training rows. These rows carry real live-trading labels (is_correct)
-    # tied to actual strategy decisions — higher-quality ground truth than synthetic
-    # forward-return labels. Falls back silently if <20 outcomes.
-    # Outcome rows are 2× weighted in the final model fit but NOT in CV (to avoid
-    # contaminating the OOS CV measurement with live-trading data).
+    # Tier 87 / T229-C2 — Outcome-informed augmentation: append closed signal_outcomes as
+    # additional rows in the FINAL MODEL FIT only (not in CV folds).
+    # These rows carry real live-trading labels (is_correct) — higher-quality ground truth
+    # than synthetic forward-return labels. 2× weighted in final fit.
+    #
+    # T229-C2 fix: outcome rows are kept separate from X and only merged into X_train
+    # at final fit time. The previous approach appended them to the tail of X before
+    # splitting — for well-trained symbols (N ≈ 300, k ≈ 20) all outcome rows landed
+    # past the 70% split boundary (test set) and the 2× weight never fired.
     n_outcome_rows = 0
-    outcome_dates_set: set = set()  # tracks which X rows came from outcomes
+    _X_out_for_fit: "pd.DataFrame | None" = None   # kept separate — merged at fit time
+    _y_out_for_fit: "pd.Series | None"   = None
     try:
         X_out, y_out = _load_outcome_features(symbol, style=style)
         if not X_out.empty and len(X_out) >= 20:
             shared_cols = [c for c in FEATURE_COLUMNS if c in X_out.columns and c in X.columns]
             if shared_cols:
+                X = X[shared_cols]  # narrow main X to shared feature set
                 X_out = X_out[shared_cols]
                 # Drop outcome rows that exactly overlap main training set dates
                 overlap_idx = X.index.intersection(X_out.index)
                 X_out = X_out.drop(index=overlap_idx, errors="ignore")
                 y_out = y_out.drop(index=overlap_idx, errors="ignore")
                 if len(X_out) >= 5:
-                    # Track outcome row positions by integer index (after ignore_index=True reset).
-                    # Append at the TAIL so they land past the 70% CV split boundary —
-                    # keeping CV folds uncontaminated. 2× weighting fires when the dataset
-                    # is small enough that outcome rows fall within the 70% train window.
-                    _n_before_concat = len(X[shared_cols])
-                    outcome_dates_set = set(range(_n_before_concat, _n_before_concat + len(X_out)))
-                    X = pd.concat([X[shared_cols], X_out], ignore_index=True)
-                    y_dir = pd.concat([y_dir, y_out], ignore_index=True)
-                    # Extend y_ret to match new X length; outcome rows get NaN forward
-                    # returns (unknown) — they are excluded from IC computation below
-                    # because NaN rows produce NaN IC which is filtered out.
-                    y_ret = pd.concat(
-                        [y_ret, pd.Series([np.nan] * len(X_out))], ignore_index=True
-                    )
+                    _X_out_for_fit = X_out
+                    _y_out_for_fit = y_out
                     n_outcome_rows = len(X_out)
                     log.info("train.outcome_augment", symbol=symbol, n_outcomes=n_outcome_rows)
     except Exception as _oe:
@@ -685,11 +678,23 @@ def train_model(
     # ML-FIX-2: recency + balanced class weights blended for final training
     _recency_w = _recency_weights(len(X_train), newest_to_oldest_ratio=5.0)
     train_weights = _blend_weights(y_train.values, _recency_w)
-    # Tier 87: apply 2× multiplier to outcome rows (real live-trading labels).
-    # outcome_dates_set holds integer positions; X_train.index is a RangeIndex after ignore_index=True.
-    if outcome_dates_set:
-        _outcome_mask = np.array([i in outcome_dates_set for i in X_train.index])
-        train_weights[_outcome_mask] *= 2.0
+
+    # T229-C2: Augment X_train with outcome rows at fit time so the 2× weight always fires.
+    # The previous tail-concat approach put outcome rows past the 70% split boundary (in the
+    # test set) for any symbol with N > 2.33×k bars, so the weight never applied.
+    # Here we merge outcome rows directly into X_train after the split is complete.
+    _fit_X = X_train_s
+    _fit_y = y_train.values
+    _fit_w = train_weights
+    if _X_out_for_fit is not None and _y_out_for_fit is not None:
+        try:
+            _out_s = scaler.transform(_X_out_for_fit.reindex(columns=X_train.columns, fill_value=0).values)
+            _out_w = np.full(len(_out_s), train_weights.mean() * 2.0)
+            _fit_X = np.vstack([X_train_s, _out_s])
+            _fit_y = np.concatenate([y_train.values, _y_out_for_fit.values])
+            _fit_w = np.concatenate([train_weights, _out_w])
+        except Exception as _aug_err:
+            log.warning("train.outcome_fit_augment_failed", symbol=symbol, error=str(_aug_err))
 
     # Early stopping on the dedicated early-stop set (X_es_s); LightGBM handles via its own
     # callbacks (AUD-M10). AUD-C2: X_cal_s is intentionally NOT passed here — keeping it clean
@@ -697,20 +702,20 @@ def train_model(
     model = get_model(model_name, early_stopping_rounds=50, **(hyperparams or {}))
     if model_name == "xgboost":
         model.fit(
-            X_train_s, y_train.values,
-            sample_weight=train_weights,
+            _fit_X, _fit_y,
+            sample_weight=_fit_w,
             eval_set=[(X_es_s, y_es.values)],
             verbose=False,
         )
     elif model_name == "lightgbm":
         # AUD-M10: LGBMClassifier.fit() accepts eval_set; early_stopping callback injected in lgb.py
         model.fit(
-            X_train_s, y_train.values,
-            sample_weight=train_weights,
+            _fit_X, _fit_y,
+            sample_weight=_fit_w,
             eval_set=[(X_es_s, y_es.values)],
         )
     else:
-        model.fit(X_train_s, y_train.values, sample_weight=train_weights)
+        model.fit(_fit_X, _fit_y, sample_weight=_fit_w)
 
     # --- Probability calibration (on calibration set) ---
     # Use positive-class probabilities only (shape (n,)) — both calibrators expect 1D input.
