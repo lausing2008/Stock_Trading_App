@@ -2198,6 +2198,35 @@ def get_rvol(symbol: str, session: Session = Depends(get_session)):
     return {"symbol": symbol.upper(), "rvol": rvol, "today_volume": today_vol, "avg_volume": round(avg_vol, 0)}
 
 
+@router.get("/signal-outcomes/summary")
+def get_signal_outcomes_summary(days: int = 30, session: Session = Depends(get_session)):
+    """T225-D: Win rate + avg return by (market, style, direction) for the last N days.
+
+    Gives permanent operational visibility into signal quality without SQL access.
+    Returns list of {market, horizon, signal_direction, n, win_pct, avg_return,
+    avg_confidence, avg_ta_score, avg_ml_prob}.
+    """
+    from sqlalchemy import text as _text
+    rows = session.execute(_text("""
+        SELECT
+            st.market,
+            so.horizon,
+            so.signal_direction,
+            COUNT(*) AS n,
+            ROUND(AVG(CASE WHEN so.is_correct THEN 1.0 ELSE 0 END) * 100, 1) AS win_pct,
+            ROUND(AVG(so.pct_return)::numeric, 3) AS avg_return,
+            ROUND(AVG(so.confidence)::numeric, 1) AS avg_confidence,
+            ROUND(AVG(so.ta_score)::numeric, 3) AS avg_ta_score,
+            ROUND(AVG(so.ml_prob)::numeric, 3) AS avg_ml_prob
+        FROM signal_outcomes so
+        JOIN stocks st ON so.stock_id = st.id
+        WHERE so.ts_evaluated >= NOW() - CAST(:days || ' days' AS INTERVAL)
+        GROUP BY st.market, so.horizon, so.signal_direction
+        ORDER BY st.market, so.horizon, so.signal_direction
+    """), {"days": days}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
 @router.get("/{symbol}", response_model=StockOut)
 def get_stock(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()

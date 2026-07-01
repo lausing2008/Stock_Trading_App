@@ -1208,7 +1208,10 @@ _STYLE_PROFILES: dict[str, dict] = {
     #   - No RS compression: growth stocks often lag their sector before explosive moves
     #   - No weekly BUY gate: weekly RSI can be high without being a sell signal for growth names
     "GROWTH": {
-        "ml_weight_cap": 0.70,
+        # T225-C: Reduced 0.70→0.60 — Jun 2026 signal_outcomes audit: ml_prob>0.85 GROWTH BUY
+        # had only 33% win rate (9 samples) vs 100% for ml_prob 0.75-0.85 (4 samples).
+        # Same ML overconfidence pattern found in SWING (fixed SA-31) and HK (fixed T224).
+        "ml_weight_cap": 0.60,
         "ml_weight_floor": 0.20,
         # SA-28: GROWTH bull threshold raised 0.57→0.60 — aligns with SHORT/LONG in bull markets.
         "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.60},
@@ -1439,6 +1442,21 @@ def _apply_style_signal(
         reasons["ml_weight"] = 0.0
 
     fused = float(np.clip(fused, 0.0, 1.0))
+
+    # T225-B: SWING ML over-confidence gate — when ML is very confident but TA is only moderate,
+    # the signal is ML-dominant and has historically underperformed. Jun 2026 data:
+    # SWING BUY conf 60-75 bucket (avg_ml=0.951, avg_ta=0.759): only 26.3% win rate.
+    # SWING BUY conf 75+ bucket (avg_ml=0.669, avg_ta=0.982): 55.6% — both agree.
+    # 15% compression pushes ML-dominant SWING signals below the buy threshold.
+    reasons["ml_overconfidence_gate"] = False
+    if (style_key == "SWING"
+            and ml_prob is not None
+            and float(ml_prob) > 0.90
+            and ta_prob < 0.75):
+        fused = 0.5 + (fused - 0.5) * 0.85
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["ml_overconfidence_gate"] = True
+
     fused_before_filters = fused  # snapshot before weekly blend + compression — used for cap enforcement
 
     # SA-18 (additive 15% weekly blend) was removed: the weekly alignment filter

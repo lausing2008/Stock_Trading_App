@@ -249,6 +249,9 @@ _STYLE_OVERRIDES: dict[str, dict] = {
         "partial_tp_pct": 0.10, "partial_tp2_pct": 0.18,
         "wait_exit_days": 3, "min_confidence": 50.0, "min_kscore": 52.0,
         "max_entry_gap_pct": 0.03,  # T171: SWING can't tolerate as much gap chasing
+        # T225-A: TA floor gate — ta_lo50 SWING BUY had only 31.4% win rate (35/139 samples).
+        # Low TA + high ML = ML-dominant signal that consistently underperforms.
+        "min_ta_score": 0.50,
     },
     "LONG": {
         "max_hold_days": 90, "trail_atr_mult": 2.0,
@@ -2570,17 +2573,20 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                          note="mainland outflow — HK BUY entry blocked (T224-A)")
                 continue
 
-        # T224-C: HK TA score gate — require stronger TA alignment for HK entries.
-        # The ML model is US-biased; for HK stocks, TA score is the more reliable signal component.
+        # T224-C / T225-A: TA score gate — applies to any market/style with min_ta_score set.
+        # HK: 0.60 (from _HK_MARKET_OVERRIDES) — ML is US-biased, TA is more reliable for HK.
+        # SWING: 0.50 (from _STYLE_OVERRIDES) — ta_lo50 bucket had 31.4% win rate (Jun 2026 audit).
+        # Fail-open if ta_score absent from reasons (defaults to 1.0).
         _min_ta = float(cfg.get("min_ta_score", 0.0))
-        if _min_ta > 0 and cfg.get("market") == "HK":
+        if _min_ta > 0:
             _ta = float((sig.reasons or {}).get("ta_score", 1.0) or 1.0)
             if _ta < _min_ta:
-                log.info("paper.skip_hk_ta_gate",
+                log.info("paper.skip_ta_gate",
                          symbol=stock.symbol,
+                         market=cfg.get("market"),
                          ta_score=round(_ta, 3),
                          min_ta_score=_min_ta,
-                         note="TA score below HK minimum — entry blocked (T224-C)")
+                         note="TA score below minimum — entry blocked")
                 continue
 
         # Build game plan using cached ATR

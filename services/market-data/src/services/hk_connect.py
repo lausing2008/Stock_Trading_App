@@ -131,6 +131,8 @@ def ingest_southbound_flows(db, hk_symbols: list[str]) -> dict:
 
     Returns {"processed": int, "stored": int, "failed": int}
     """
+    from common.logging import configure_logging
+    configure_logging()
     from sqlalchemy import text
 
     today = date.today()

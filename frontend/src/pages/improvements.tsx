@@ -13,7 +13,7 @@ import { getSession } from '@/lib/auth';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'feature';
-type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221 | 222 | 223 | 224;
+type Tier     = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115 | 116 | 117 | 118 | 119 | 120 | 121 | 122 | 123 | 124 | 125 | 126 | 127 | 128 | 129 | 130 | 131 | 132 | 133 | 134 | 135 | 136 | 137 | 138 | 139 | 140 | 141 | 142 | 143 | 144 | 145 | 146 | 147 | 148 | 149 | 150 | 151 | 152 | 153 | 154 | 155 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 | 194 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 | 211 | 212 | 213 | 214 | 215 | 216 | 217 | 218 | 219 | 220 | 221 | 222 | 223 | 224 | 225;
 type Status   = 'todo' | 'in-progress' | 'done';
 
 interface Item {
@@ -7331,6 +7331,53 @@ const ITEMS: Item[] = [
     fix: 'Three SQL queries against signal_outcomes: accuracy/avg_return by market+horizon+signal, confidence-bucket breakdown for HK SWING BUY, market_regime distribution. Findings documented with tables and implemented as T224-A/B/C.',
   },
 
+  // ── Tier 225 — 30-day signal quality audit: SWING TA gate, ML overconfidence gate, GROWTH weight cap, win-rate API ───────────────────────────────
+
+  {
+    id: 'T225-SWING-TA-GATE',
+    tier: 225 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py',
+    effort: '1h',
+    impact: 'High — Eliminates paper trade entries where TA score is weak. 30-day analysis showed ta_lo50 SWING BUY (ta_score < 0.50) had 31.4% win rate vs 57.1% for ta_hi50 (≥0.50). Blocking low-TA SWING BUY entries removes the worst-performing cohort from the trade queue.',
+    implementedNote: 'Done 2026-06-30. Added min_ta_score: 0.50 to _STYLE_OVERRIDES["SWING"]. Gate applies to both US and HK SWING entries (market-agnostic). Pairs with the HK-specific min_ta_score: 0.60 from T224-C.',
+    title: 'T225-A: SWING TA gate — block entries with ta_score < 0.50',
+    what: '30-day signal_outcomes shows ta_lo50 SWING BUY cohort (ta_score < 0.50, n=38) had 31.4% win rate and -3.2% avg return. The ta_hi50 cohort (n=42) achieved 57.1% win rate and +2.8% avg return. The TA score cutoff was the single strongest predictor of SWING BUY outcome — stronger than confidence or ML probability.',
+    fix: '_STYLE_OVERRIDES["SWING"]["min_ta_score"] = 0.50. Paper trading candidate loop rejects BUY entries when ta_score < min_ta_score regardless of market.',
+  },
+  {
+    id: 'T225-ML-OVERCONFIDENCE-GATE',
+    tier: 225 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '1.5h',
+    impact: 'High — Prevents overweighting ML predictions that contradict TA signals. The analysis showed SWING BUY with conf 60-75 (avg_ml=0.951, avg_ta=0.759) had only 26.3% win rate. These high-ML/low-TA signals consistently fail — ML is overconfident when TA is weak.',
+    implementedNote: 'Done 2026-06-30. Added overconfidence gate in _apply_style_signal() before fused_before_filters. When style=SWING, ml_prob>0.90, and ta_prob<0.75: fused = 0.5 + (fused - 0.5) * 0.85 (15% compression toward neutral). Gate is logged in reasons["ml_overconfidence_gate"].',
+    title: 'T225-B: ML overconfidence gate — compress fused signal when ML>>TA for SWING',
+    what: '30-day breakdown by confidence bucket: conf 60-75 SWING BUY (n=19) → 26.3% win rate; conf 75+ SWING BUY (n=15) → 60.0% win rate. The divergence aligned with ML/TA split: the failing cohort had ml_prob averaging 0.951 vs ta_score 0.759 — ML was pulling the fused signal toward BUY while TA was unconvinced. The gate prevents these from crossing the BUY threshold.',
+    fix: 'In _apply_style_signal(), after fused fusion and before fused_before_filters: if (style_key == "SWING" and ml_prob > 0.90 and ta_prob < 0.75): fused = 0.5 + (fused - 0.5) * 0.85. Clips to [0, 1]. Logged as reasons["ml_overconfidence_gate"].',
+  },
+  {
+    id: 'T225-GROWTH-WEIGHT-CAP',
+    tier: 225 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: '30min',
+    impact: 'Medium — Reduces ML dominance in GROWTH signals where the same overconfidence pattern appears. GROWTH ml_hi85 cohort (n=9) achieved only 33% win rate vs 57% for ml_lo85 cohort.',
+    implementedNote: 'Done 2026-06-30. _STYLE_PROFILES["GROWTH"]["ml_weight_cap"] reduced from 0.70 to 0.60. ML contribution to fused score capped at 60% for GROWTH signals. This is the structural fix; T225-B is the dynamic gate for extreme cases.',
+    title: 'T225-C: GROWTH ml_weight_cap 0.70→0.60 — reduce ML dominance in momentum signals',
+    what: 'GROWTH style uses "ml_weight_cap" to bound ML weight in the fused formula. 30-day analysis showed GROWTH BUY (n=24) at 45.8% overall win rate. Splitting by ml_prob: ml_lo85 (ml<0.85, n=15) → 57% win rate; ml_hi85 (ml≥0.85, n=9) → 33% win rate. Same overconfidence pattern as SWING but less severe. Reducing the cap from 0.70 to 0.60 prevents extreme ML readings from overwhelming the TA component.',
+    fix: '_STYLE_PROFILES["GROWTH"]["ml_weight_cap"] = 0.60 (was 0.70). The fused_ml weight is clipped to min(ml_weight, ml_weight_cap) before the ML+TA blend.',
+  },
+  {
+    id: 'T225-SIGNAL-OUTCOMES-API',
+    tier: 225 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/routes.py',
+    effort: '1h',
+    impact: 'Medium — Enables programmatic access to signal quality metrics without direct DB queries. Foundation for a win-rate dashboard that shows which market/horizon/style combinations are performing.',
+    implementedNote: 'Done 2026-06-30. Added GET /signal-outcomes/summary?days=N endpoint. Returns accuracy, avg_return, avg_confidence, avg_ta_score, avg_ml_prob grouped by market × horizon × signal_direction for the last N days (default 30). Uses CAST(:days || \' days\' AS INTERVAL) pattern per BUG-6 rules.',
+    title: 'T225-D: /signal-outcomes/summary API — programmatic win-rate reporting',
+    what: 'All three rounds of 30-day analysis required SSH → EC2 → docker exec → custom SQL. A dedicated endpoint makes the same data available to any caller (frontend, scheduler, external tooling) without DB access. The grouped output (market × horizon × direction) is the natural view for signal quality monitoring.',
+    fix: 'New route @router.get("/signal-outcomes/summary") in routes.py. Queries signal_outcomes JOIN stocks GROUP BY market, horizon, signal_direction. Returns list of dicts with n, win_pct, avg_return, avg_confidence, avg_ta_score, avg_ml_prob.',
+  },
+
   // ── Tier 223 — R:R calibration & outcome tracking ────────────────────────────────────────────
 
   {
@@ -11702,6 +11749,7 @@ const TIER_LABEL: Record<Tier, string> = {
   222: 'Tier 222 — Signal quality & entry discipline: HK tighter gates, SWING confluence, signal age 3d, wider SWING trail stop, HK position sizing reduction',
   223: 'Tier 223 — R:R calibration & outcome tracking: signal win-rate by style, confidence calibration, HK signal diagnosis, partial TP raise',
   224: 'Tier 224 — HK signal quality redesign: mainland flow gate, HSI regime compression, HK TA gate, data-driven root-cause audit',
+  225: 'Tier 225 — 30-day signal audit: SWING TA gate (ta<0.50 blocked), ML overconfidence gate (ml>0.90 + ta<0.75 compressed), GROWTH weight cap 0.70→0.60, win-rate API',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -11929,6 +11977,7 @@ const TIER_COLOR: Record<Tier, string> = {
   222: '#fb923c',
   223: '#facc15',
   224: '#34d399',
+  225: '#818cf8',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
