@@ -480,11 +480,11 @@ def train_model(
         log.warning("train.skipped", symbol=symbol, reason="all bars are today (post-open ingest)")
         return {"symbol": symbol, "skipped": True, "reason": "no closed bars available"}
 
-    # --- Macro features (SPY + VIX) give market-wide context to every symbol ---
+    # --- Macro features (SPY + VIX, and HSI for HK symbols) ---
     try:
         start_date = pd.to_datetime(df["ts"]).min().date()
         end_date = date.today() + timedelta(days=1)
-        macro_df = fetch_macro_features(start_date, end_date)
+        macro_df = fetch_macro_features(start_date, end_date, symbol=symbol)
     except Exception:
         macro_df = None
 
@@ -497,8 +497,9 @@ def train_model(
 
     # Per-symbol volatility-adjusted dead zone — computed on training rows only
     # to prevent future volatility from leaking into the label dead-zone boundary.
+    # HK stocks use a wider ceiling (5%) to accommodate their higher volatility.
     _train_rows = int(len(df) * 0.70)
-    label_threshold = compute_label_threshold(df.iloc[:max(_train_rows, 60)], horizon)
+    label_threshold = compute_label_threshold(df.iloc[:max(_train_rows, 60)], horizon, symbol=symbol)
 
     fund_data: dict = {}
     try:
@@ -843,12 +844,12 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
 
     df = _load_prices(symbol, lookback_days=400)
 
-    # Fetch macro features aligned to the stock's price dates
+    # Fetch macro features aligned to the stock's price dates (HSI included for HK symbols)
     macro_df = None
     infer_start = None
     try:
         infer_start = pd.to_datetime(df["ts"]).min().date()
-        macro_df = fetch_macro_features(infer_start, date.today() + timedelta(days=1))
+        macro_df = fetch_macro_features(infer_start, date.today() + timedelta(days=1), symbol=symbol)
     except Exception:
         pass
 
@@ -1083,12 +1084,24 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
     n_bull = sum(directions)
     n_models = len(probs)
 
+    # Collect per-model AUCs for nudge gate (use test AUC when available, fallback to cv_auc_mean)
+    _auc_vals_for_gate = []
+    for _m, _ in available:
+        _m_metrics = _m.get("metrics") or {}
+        _m_auc = float(_m_metrics.get("auc") or _m_metrics.get("cv_auc_mean") or 0.0)
+        _auc_vals_for_gate.append(_m_auc)
+    _min_auc = min(_auc_vals_for_gate) if _auc_vals_for_gate else 0.0
+
     if n_bull == n_models:
         agreement = "unanimous_bull"
-        prob = min(0.95, prob + 0.05)
+        # Only apply nudge when all models are reliable (min AUC > 0.57)
+        if _min_auc > 0.57:
+            prob = min(0.95, prob + 0.05)
     elif n_bull == 0:
         agreement = "unanimous_bear"
-        prob = max(0.05, prob - 0.05)
+        # Only apply nudge when all models are reliable (min AUC > 0.57)
+        if _min_auc > 0.57:
+            prob = max(0.05, prob - 0.05)
     else:
         agreement = "majority_bull" if n_bull > n_models / 2 else "majority_bear"
         # Slight compression toward 0.5 for disagreement
@@ -1169,7 +1182,7 @@ def validate_walkforward(
     # Build macro + earnings + sector features once (same data used across all windows)
     start_d = pd.to_datetime(df_all["ts"]).min().date()
     try:
-        macro_df = fetch_macro_features(start_d, today)
+        macro_df = fetch_macro_features(start_d, today, symbol=symbol)
     except Exception:
         macro_df = None
 

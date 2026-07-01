@@ -1055,11 +1055,19 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
         rsi_score   *= 0.0   # extreme overbought RSI is a warning, not a bullish signal
     p_momentum = rsi_score * 0.35 + macd_score * 0.40 + stoch_score * 0.25
 
-    # VOLUME pillar — demand confirmation
-    p_volume = max(
-        1.0 if obv_trend_bullish else 0.0,
-        0.7 if _vz > 0.5 else 0.0,
-    )
+    # VOLUME pillar — demand confirmation (SA-32: weighted AND logic)
+    # Both OBV trend and volume-z positive → full conviction (1.0).
+    # Only one positive → partial conviction (0.6); neither → 0.0.
+    # Previous OR logic (max) allowed a strong OBV trend with flat recent volume
+    # (or vice versa) to score 1.0, overstating demand confirmation.
+    obv_signal = obv_trend_bullish
+    vol_z_signal = _vz > 0.5
+    if obv_signal and vol_z_signal:
+        p_volume = 1.0
+    elif obv_signal or vol_z_signal:
+        p_volume = 0.6
+    else:
+        p_volume = 0.0
 
     # STRUCTURE pillar — price position (VWAP + Bollinger Band)
     bb_score = 0.8 if (0.2 < bb_pct_b < 0.8) else 0.0
@@ -1119,11 +1127,16 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
             base = base * 0.85 + _calibrated * 0.15
             reasons["calibrated_ta_score"] = round(_calibrated, 3)
 
-    # SA-14: pullback + recovery boost applied after pillar mean
+    # SA-14 / SA-32: pullback + recovery delta stored in reasons for deferred application.
+    # The boost is applied AFTER the pillar gate check in _apply_style_signal so it only
+    # rewards high-conviction setups that already pass the independent-pillars requirement.
+    # Applying it here (before fusion) was incorrect: a 2-pillar borderline setup could
+    # clear the pillar gate threshold only because the pullback boost inflated ta_prob.
     pr_delta, pr_reasons = _pullback_recovery(df)
     reasons.update(pr_reasons)
+    reasons["pullback_recovery_delta"] = pr_delta  # deferred; applied post-pillar-gate
 
-    return float(np.clip(base + pr_delta, 0.0, 1.0)), reasons
+    return float(np.clip(base, 0.0, 1.0)), reasons
 
 
 # ── Trading Style Profiles ────────────────────────────────────────────────────
@@ -1169,7 +1182,13 @@ _STYLE_PROFILES: dict[str, dict] = {
         # SA-12: only tighten bear/high_vol — keep those unchanged.
         # SA-31: bull+unknown raised 0.65→0.67; after cap reduction, borderline ML-pushed
         # signals that cleared 0.65 only due to high ML weight are now filtered out.
-        "buy_threshold":  {"bull": 0.67, "high_vol": 0.72, "bear": 0.72, "unknown": 0.67},
+        # SA-32: bull raised 0.67→0.72; bear raised 0.72→0.76; high_vol raised 0.72→0.74.
+        # Outcomes audit: SWING BUY at fused 0.67-0.72 had lowest win rate cohort; tighter
+        # thresholds eliminate marginal entries in all regime states.
+        # HK SWING thresholds: bull=0.74, bear=0.78 — applied via market parameter check
+        # in _apply_style_signal when symbol ends in .HK (HSI-regime overrides handle
+        # the per-symbol adjustment; these hardcoded values apply to US universe only).
+        "buy_threshold":  {"bull": 0.72, "high_vol": 0.74, "bear": 0.76, "unknown": 0.72},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
         "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
@@ -1494,6 +1513,18 @@ def _apply_style_signal(
         reasons["pillar_gate"] = f"{_pillars}_pillars"
     fused = float(np.clip(fused, 0.0, 1.0))
 
+    # ── SA-14 / SA-32: Pullback-recovery boost (deferred from _ta_score) ─────
+    # Applied AFTER the pillar gate so the boost only rewards setups that already
+    # have sufficient independent TA confirmation (>= min_pillars). A pullback
+    # recovery on a 2-pillar setup (compressed above) should not bypass that gate.
+    # Only apply when pillars met the style minimum (no compress was applied).
+    _pr_delta = base_reasons.get("pullback_recovery_delta", 0.0) or 0.0
+    if _pr_delta > 0 and _pillars >= _min_pillars:
+        fused = float(np.clip(fused + _pr_delta, 0.0, 1.0))
+        reasons["pullback_recovery_applied"] = True
+    else:
+        reasons["pullback_recovery_applied"] = False
+
     # ── Weekly multi-timeframe alignment ──────────────────────────────────────
     weekly_score = weekly_tech.get("weekly_score", 0.5)
     weekly_rsi   = weekly_tech.get("weekly_rsi")
@@ -1640,10 +1671,14 @@ def _apply_style_signal(
     # ── SA-16: Sector ETF trend filter (SWING/LONG only) ──────────────────────
     # When the stock's sector ETF is below its 50-day SMA the whole sector is
     # in a structural downtrend. A stock bucking that trend alone faces higher
-    # mean-reversion risk, so we compress the signal 15% toward neutral.
+    # mean-reversion risk, so we compress the BUY signal 15% toward neutral.
+    # Direction-aware (SA-32): only compress when fused > 0.5 (BUY direction).
+    # When fused < 0.5 (SELL direction), sector weakness CONFIRMS the signal —
+    # do not compress. Compressing a SELL in a sector downtrend was incorrectly
+    # pushing weak signals back toward neutral/HOLD, reducing SELL accuracy.
     # GROWTH and SHORT are exempt: growth names lead their sector, and SHORT is
     # purely momentum-driven and unaffected by sector-level trend.
-    if style_key in ("SWING", "LONG") and sector_etf_above_sma50 is False:
+    if style_key in ("SWING", "LONG") and sector_etf_above_sma50 is False and fused > 0.5:
         fused = 0.5 + (fused - 0.5) * 0.85
         reasons["sector_headwind"] = True
     else:

@@ -235,6 +235,10 @@ def _round_step(price: float) -> float:
 
 # Style-specific overrides applied on top of defaults
 _STYLE_OVERRIDES: dict[str, dict] = {
+    "SHORT": {
+        "max_hold_days": 10,   # SHORT signals are 3-5 day momentum plays; exit by day 10
+        "hold_stall_days": 7,  # exit earlier than default if position stalls (shorter time horizon)
+    },
     "GROWTH": {
         "max_hold_days": 60, "trail_atr_mult": 2.0,
         # T227-D: Separate trail trigger from BE trigger. Both were at 0.04 — when BE fired
@@ -282,7 +286,7 @@ _STYLE_OVERRIDES: dict[str, dict] = {
 # Applied in _scan_for_entries when market == "HK" IF not already in portfolio.config.
 _HK_MARKET_OVERRIDES: dict = {
     "regime_suspension_days":  7,   # 3d is too tight; HSI can be risk_off for weeks during consolidation
-    "max_consecutive_losses":  5,   # US default is 3; HK needs higher tolerance for losing streaks
+    "max_consecutive_losses":  3,   # Tightened from 5 — stop trading HK after 3 consecutive losses (same as US default)
     # T222-A: Tighter entry gates for HK — 0% win rate on 9 trades (June 2026 audit).
     # HK signals fire on momentum that doesn't sustain; require stronger conviction.
     "min_entry_score":         6,   # default is 4; HK requires 6 (stronger multi-factor conviction)
@@ -1987,12 +1991,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         note="account equity below floor — all new entries suspended")
             return
 
-    # Symbols already in open positions
+    # Symbols already in open positions — checked across ALL portfolios to prevent cross-portfolio
+    # race condition (e.g. 2382.HK entered 3× when SWING + GROWTH both scanned simultaneously).
     open_symbols: set[str] = set(
         r[0] for r in session.execute(
             select(Stock.symbol)
             .join(PaperTrade, PaperTrade.symbol == Stock.symbol)
-            .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
+            .where(PaperTrade.stage == "open")
         ).all()
     )
 
@@ -2109,7 +2114,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # ── Weekly realized P&L checks — loss limit + gain lock ─────────────────────
     # Compute weekly pnl once; used for both the loss circuit breaker and T191 gain lock.
     max_weekly_loss = cfg.get("max_weekly_loss_pct", 0.08)
-    max_weekly_gain = cfg.get("max_weekly_gain_pct", 0.015)  # T191: 1.5% weekly gain → lock
+    max_weekly_gain = cfg.get("max_weekly_gain_pct", 0.06)  # T191: 6% weekly gain → lock (was 1.5% — too tight, locked out profitable weeks)
     _needs_weekly = (
         (max_weekly_loss and max_weekly_loss > 0) or
         (max_weekly_gain and max_weekly_gain > 0)
@@ -2160,7 +2165,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         return
 
     # ── Max entries per day ───────────────────────────────────────────────────────
-    max_entries_day = cfg.get("max_entries_per_day", 5)
+    max_entries_day = cfg.get("max_entries_per_day", 3)
     if max_entries_day and max_entries_day > 0:
         today_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
         entries_today = session.execute(

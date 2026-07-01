@@ -281,6 +281,7 @@ def reset_signals(tasks: BackgroundTasks, session: Session = Depends(get_session
 def _bulk_persist(symbols: list[str]) -> None:
     from db import SessionLocal
     from sqlalchemy import desc
+    _failures: list[tuple[str, str]] = []  # (symbol, error_message)
     for symbol in symbols:
         try:
             all_sig = generate_all_signals(symbol)
@@ -481,7 +482,26 @@ def _bulk_persist(symbols: list[str]) -> None:
                 s.commit()
 
         except Exception as exc:
+            _failures.append((symbol, str(exc)))
             log.warning("signals.refresh.skip", symbol=symbol, error=str(exc))
+
+    if _failures:
+        fail_rate = len(_failures) / len(symbols) if symbols else 0.0
+        if fail_rate > 0.05:
+            log.error(
+                "signals.refresh.high_failure_rate",
+                total=len(symbols),
+                failed=len(_failures),
+                fail_rate_pct=round(fail_rate * 100, 1),
+                sample_failures=_failures[:5],
+            )
+        else:
+            log.warning(
+                "signals.refresh.failures",
+                total=len(symbols),
+                failed=len(_failures),
+                fail_rate_pct=round(fail_rate * 100, 1),
+            )
 
 
 @router.get("/accuracy")
@@ -4112,8 +4132,11 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
             return None
         return bucket[idx]
 
-    def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int):
-        """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None)."""
+    def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int, signal_direction: str = "BUY"):
+        """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None).
+
+        is_correct: BUY wins when ret > 0; SELL wins when ret < 0.
+        """
         target = entry_date + timedelta(days=days)
         if target > today:
             return None, None, None
@@ -4122,7 +4145,8 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
             return None, None, None
         _, price = result
         ret = (price - entry_price) / entry_price
-        return float(price), ret, ret > 0
+        is_correct = ret > 0 if signal_direction == "BUY" else ret < 0
+        return float(price), ret, is_correct
 
     # Research recommendation cache — one network fetch per symbol per run
     _research_cache: dict[str, tuple] = {}
@@ -4164,7 +4188,10 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         if sighd_key in evaluated_sighd:
             continue
 
-        entry_result = _lookup_outcome_price(sig.stock_id, signal_date)
+        # T+1 entry: use the first close STRICTLY AFTER signal_date so we avoid
+        # same-day look-ahead bias (signal was generated after close; realistic
+        # fill is the next trading day's open/close).
+        entry_result = _lookup_outcome_price(sig.stock_id, signal_date + timedelta(days=1))
         if entry_result is None:
             skipped_no_price += 1
             continue
@@ -4190,10 +4217,11 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         hold_days_actual = (exit_date - entry_date).days
         is_correct = pct_return > 0 if sig.signal == SignalType.BUY else pct_return < 0
 
-        # INT-8: multi-window forward returns
-        p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5)
-        p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10)
-        p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20)
+        # INT-8: multi-window forward returns (pass signal direction so SELL wins on negative returns)
+        _sig_dir = sig.signal.value  # "BUY" or "SELL"
+        p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5,  _sig_dir)
+        p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10, _sig_dir)
+        p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20, _sig_dir)
         res_rec, res_score = _fetch_research(symbol)
 
         reasons = sig.reasons or {}
@@ -4238,7 +4266,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         .where(
             SignalOutcome.entry_date.is_not(None),
             SignalOutcome.entry_price.is_not(None),
-            SignalOutcome.signal_direction == "BUY",
+            # Include both BUY and SELL outcomes — SELL wins when return < 0
             or_(
                 SignalOutcome.price_5d.is_(None),
                 SignalOutcome.price_10d.is_(None),
@@ -4268,18 +4296,19 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         for out in needs_update:
             changed = False
             ep, ed = out.entry_price, out.entry_date
+            _out_dir = out.signal_direction or "BUY"  # SELL wins on negative return
             if out.price_5d is None:
-                p5, r5, c5 = _window_return(out.stock_id, ed, ep, 5)
+                p5, r5, c5 = _window_return(out.stock_id, ed, ep, 5, _out_dir)
                 if p5 is not None:
                     out.price_5d, out.return_5d, out.is_correct_5d = p5, r5, c5
                     changed = True
             if out.price_10d is None:
-                p10, r10, c10 = _window_return(out.stock_id, ed, ep, 10)
+                p10, r10, c10 = _window_return(out.stock_id, ed, ep, 10, _out_dir)
                 if p10 is not None:
                     out.price_10d, out.return_10d, out.is_correct_10d = p10, r10, c10
                     changed = True
             if out.price_20d is None:
-                p20, r20, c20 = _window_return(out.stock_id, ed, ep, 20)
+                p20, r20, c20 = _window_return(out.stock_id, ed, ep, 20, _out_dir)
                 if p20 is not None:
                     out.price_20d, out.return_20d, out.is_correct_20d = p20, r20, c20
                     changed = True

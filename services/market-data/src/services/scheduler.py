@@ -2019,7 +2019,7 @@ def _purge_old_data() -> None:
                 _text("DELETE FROM prices WHERE timeframe='M5' AND ts < NOW() - INTERVAL '90 days'")
             )
             resout = session.execute(
-                _text("DELETE FROM signal_outcomes WHERE ts_evaluated < NOW() - INTERVAL '365 days'")
+                _text("DELETE FROM signal_outcomes WHERE ts_evaluated < NOW() - INTERVAL '400 days'")
             )
             session.commit()
             log.info(

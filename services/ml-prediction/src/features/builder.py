@@ -1,4 +1,4 @@
-"""Feature engineering — 59 features (29 stock-specific + 8 macro + 3 sector + 16 fundamental + 3 signal outcome).
+"""Feature engineering — 62 features (29 stock-specific + 11 macro + 3 sector + 16 fundamental + 3 signal outcome).
 
 29 stock-specific:
   Momentum  : ret_1/5/10/20/60, momentum_12_1
@@ -9,14 +9,17 @@
   Range     : high_20_pct, dist_52w_high, dist_52w_low
   Weekly    : weekly_rsi, weekly_trend  (SA-29 — longer-term regime context)
 
-8 macro (market-wide context):
+11 macro (market-wide context):
   spy_ret_1, spy_ret_5  — S&P 500 short-term direction
   vix_level             — VIX absolute level (fear gauge)
   spy_vol_20            — S&P 500 realized volatility (regime proxy)
-  is_bear_market        — 1 if SPY < 200d SMA (binary regime flag)
+  is_bear_market        — 1 if SPY < 200d SMA for US; 1 if HSI < 200d SMA for HK
   vix_spiking           — 1 if VIX > 20d MA × 1.3 (sudden fear spike)
   high_vol_regime       — 1 if spy_vol_20 > 2% annualised daily vol
   market_stress         — 1 if SPY 5d return < -3% AND VIX above its MA
+  hsi_ret_1             — HSI 1-day return (HK stocks only; NaN for US)
+  hsi_ret_5             — HSI 5-day return (HK stocks only; NaN for US)
+  hsi_200d_gap          — (HSI price / HSI 200d SMA) - 1 (HK stocks only; NaN for US)
 
 3 sector (TIER90 — NaN for HK/unmapped sectors; XGBoost handles natively):
   sector_rs_20d         — sector ETF 20d return minus SPY 20d return (positive = outperforming)
@@ -259,6 +262,8 @@ MACRO_COLUMNS = [
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Regime boolean flags (SA-3)
     "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
+    # HSI macro features (HK stocks only; NaN for US — XGBoost handles natively)
+    "hsi_ret_1", "hsi_ret_5", "hsi_200d_gap",
 ]
 
 OUTCOME_COLUMNS = [
@@ -329,6 +334,8 @@ FEATURE_COLUMNS = [
     "spy_ret_1", "spy_ret_5", "vix_level", "spy_vol_20",
     # Macro — regime boolean flags
     "is_bear_market", "vix_spiking", "high_vol_regime", "market_stress",
+    # Macro — HSI (HK stocks only; NaN for US — XGBoost handles natively)
+    "hsi_ret_1", "hsi_ret_5", "hsi_200d_gap",
     # Sector relative strength (TIER90) — NaN for HK/unmapped stocks; XGBoost handles natively
     *SECTOR_COLUMNS,
     # Signal outcome accuracy (T206) — NaN-allowed; only populated after signal_outcomes accumulate
@@ -365,8 +372,16 @@ def _redis_load_macro() -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
+def fetch_macro_features(start_date: date, end_date: date, symbol: str = "") -> pd.DataFrame:
     """Download SPY + VIX macro features, indexed by date string ("YYYY-MM-DD").
+
+    For HK symbols (symbol ending with '.HK'), also fetches ^HSI and adds:
+      hsi_ret_1    — HSI 1-day return
+      hsi_ret_5    — HSI 5-day return
+      hsi_200d_gap — (HSI price / HSI 200d SMA) - 1
+      is_bear_market is overridden to use HSI < HSI 200d SMA for HK symbols.
+
+    For US symbols, hsi_ret_1/hsi_ret_5/hsi_200d_gap are NaN (XGBoost handles natively).
 
     On yfinance failure, returns the last successful fetch from Redis rather than
     an empty DataFrame — zero-filling all macro features causes distribution shift
@@ -374,7 +389,9 @@ def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
     """
     import yfinance as yf
 
-    buffer_start = start_date - timedelta(days=60)  # extra buffer for rolling calculations
+    is_hk = symbol.upper().endswith(".HK")
+    buffer_start = start_date - timedelta(days=260)  # extended buffer for 200d SMA rolling calculations
+
     try:
         spy = yf.download(
             "SPY",
@@ -432,17 +449,61 @@ def fetch_macro_features(start_date: date, end_date: date) -> pd.DataFrame:
         ((macro["spy_ret_5"] < -0.03).values & (vix_c > vix_20d).values).astype(float),
     )
 
+    # ── HSI macro features (HK stocks only) ──────────────────────────────────
+    # For non-HK symbols set columns to NaN so the DataFrame schema is consistent.
+    if is_hk:
+        try:
+            hsi = yf.download(
+                "^HSI",
+                start=buffer_start.isoformat(),
+                end=end_date.isoformat(),
+                progress=False,
+                auto_adjust=False,
+            )
+            if not hsi.empty:
+                if isinstance(hsi.columns, pd.MultiIndex):
+                    hsi.columns = [c[0] for c in hsi.columns]
+                hsi_c = hsi["Close"]
+                # Reindex to SPY dates (trading calendar alignment); ffill gaps
+                hsi_c = hsi_c.reindex(spy_c.index).ffill()
+                hsi_200d = hsi_c.rolling(200, min_periods=100).mean()
+
+                macro["hsi_ret_1"]    = hsi_c.pct_change(1).values
+                macro["hsi_ret_5"]    = hsi_c.pct_change(5).values
+                macro["hsi_200d_gap"] = np.where(
+                    hsi_200d.isna(), np.nan,
+                    (hsi_c / hsi_200d.replace(0, np.nan) - 1).values,
+                )
+                # Override is_bear_market to use HSI rather than SPY for HK symbols
+                macro["is_bear_market"] = np.where(
+                    hsi_200d.isna(), np.nan, (hsi_c < hsi_200d).astype(float)
+                )
+            else:
+                macro["hsi_ret_1"]    = np.nan
+                macro["hsi_ret_5"]    = np.nan
+                macro["hsi_200d_gap"] = np.nan
+        except Exception:
+            macro["hsi_ret_1"]    = np.nan
+            macro["hsi_ret_5"]    = np.nan
+            macro["hsi_200d_gap"] = np.nan
+    else:
+        macro["hsi_ret_1"]    = np.nan
+        macro["hsi_ret_5"]    = np.nan
+        macro["hsi_200d_gap"] = np.nan
+
     result = macro.dropna(how="all")
     _redis_save_macro(result)
     return result
 
 
-def compute_label_threshold(df: pd.DataFrame, horizon: int = 5) -> float:
+def compute_label_threshold(df: pd.DataFrame, horizon: int = 5, symbol: str = "") -> float:
     """Volatility-adjusted dead zone: 0.5 × expected horizon-day move magnitude.
 
     Higher-volatility stocks get a wider dead zone (more noise to filter out).
     Lower-volatility stocks use a narrower one (small moves are still signal).
-    Clamped to [0.5%, 3%] to avoid degenerate cases.
+    Clamped to [0.5%, 3%] for US stocks, [0.5%, 5%] for HK stocks.
+    HK stocks are higher-volatility on average — the wider 5% ceiling prevents
+    the dead zone from being clipped before it can capture the natural noise level.
 
     Examples (daily vol → threshold):
       0.5% daily → 0.56% threshold  (stable dividend stock)
@@ -451,8 +512,9 @@ def compute_label_threshold(df: pd.DataFrame, horizon: int = 5) -> float:
     """
     daily_ret = _adj_close(df).pct_change()
     vol_series = daily_ret.rolling(20).std().dropna()
+    upper_clamp = 0.05 if symbol.upper().endswith(".HK") else 0.03
     if not vol_series.empty:
-        return float(np.clip(0.5 * float(vol_series.median()) * np.sqrt(horizon), 0.005, 0.03))
+        return float(np.clip(0.5 * float(vol_series.median()) * np.sqrt(horizon), 0.005, upper_clamp))
     return 0.01  # fallback for very short histories
 
 
