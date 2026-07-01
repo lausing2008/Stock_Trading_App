@@ -133,6 +133,8 @@ def ingest_southbound_flows(db, hk_symbols: list[str]) -> dict:
     """
     from common.logging import configure_logging
     configure_logging()
+    import structlog as _sl
+    _log = _sl.get_logger()  # fresh proxy bound after configure_logging() — immune to stale cache
     from sqlalchemy import text
 
     today = date.today()
@@ -147,7 +149,7 @@ def ingest_southbound_flows(db, hk_symbols: list[str]) -> dict:
         flow = _fetch_southbound_stock(hk_code)
         if flow is None:
             failed += 1
-            log.debug("hk_connect.no_data", symbol=symbol, hk_code=hk_code)
+            _log.debug("hk_connect.no_data", symbol=symbol, hk_code=hk_code)
             continue
 
         try:
@@ -169,9 +171,9 @@ def ingest_southbound_flows(db, hk_symbols: list[str]) -> dict:
             })
             db.commit()
             stored += 1
-            log.debug("hk_connect.stored", symbol=symbol, net_buy_hkd=flow["net_buy_hkd"])
+            _log.debug("hk_connect.stored", symbol=symbol, net_buy_hkd=flow["net_buy_hkd"])
         except Exception as exc:
-            log.warning("hk_connect.insert_failed", symbol=symbol, exc=str(exc))
+            _log.warning("hk_connect.insert_failed", symbol=symbol, exc=str(exc))
             try:
                 db.rollback()
             except Exception:
@@ -180,7 +182,7 @@ def ingest_southbound_flows(db, hk_symbols: list[str]) -> dict:
 
         time.sleep(0.2)  # polite rate-limiting — ~5 req/s max to HKEX
 
-    log.info(
+    _log.info(
         "hk_connect.ingest_complete",
         processed=processed, stored=stored, failed=failed,
     )

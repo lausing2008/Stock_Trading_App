@@ -25,7 +25,7 @@ def configure_logging(level: str = "INFO") -> None:
         ),
         logger_factory=structlog.PrintLoggerFactory(),
         context_class=dict,
-        cache_logger_on_first_use=True,
+        cache_logger_on_first_use=False,
     )
 
 
