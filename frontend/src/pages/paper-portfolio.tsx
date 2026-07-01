@@ -1212,6 +1212,11 @@ export default function PaperPortfolioPage() {
   // Broker assignment per portfolio
   const [portfolioBroker, setPortfolioBroker] = useState<{ broker_connection_id: number | null; broker: import('@/lib/api').BrokerConnection | null } | null>(null);
   const [brokerConnections, setBrokerConnections] = useState<import('@/lib/api').BrokerConnection[]>([]);
+  // ETrade re-auth flow state
+  const [reAuthUrl, setReAuthUrl] = useState<string | null>(null);
+  const [reAuthPin, setReAuthPin] = useState('');
+  const [reAuthLoading, setReAuthLoading] = useState(false);
+  const [reAuthError, setReAuthError] = useState<string | null>(null);
 
   useEffect(() => {
     const session = getSession();
@@ -1375,14 +1380,65 @@ export default function PaperPortfolioPage() {
                    portfolioBroker.broker.broker_type === 'etrade_sandbox' ? 'E*Trade Sandbox' : 'Fidelity Manual'}
                   {' — '}{portfolioBroker.broker.name}
                   {portfolioBroker.broker.is_authorized
-                    ? <span style={{ marginLeft: 6, color: '#4ade80' }}>✓</span>
-                    : <span style={{ marginLeft: 6, color: '#fbbf24' }}>⚠ not authorized</span>}
+                    ? <span style={{ marginLeft: 6, color: '#4ade80' }}>✓ authorized</span>
+                    : <span style={{ marginLeft: 6, color: '#fbbf24' }}>⚠ tokens expired</span>}
                 </span>
                 <button onClick={() => { if (selectedPortfolioId) api.brokerAssignPortfolio(selectedPortfolioId, null).then(() => api.brokerGetPortfolioBroker(selectedPortfolioId).then(setPortfolioBroker)); }}
                   style={{ fontSize: 11, color: '#94a3b8', background: 'transparent', border: '1px solid #334155', borderRadius: 4, padding: '3px 8px', cursor: 'pointer' }}>
                   Unlink
                 </button>
+                {!portfolioBroker.broker.is_authorized && (
+                  <button
+                    disabled={reAuthLoading}
+                    onClick={async () => {
+                      setReAuthLoading(true); setReAuthError(null); setReAuthUrl(null); setReAuthPin('');
+                      try {
+                        const res = await api.brokerOAuthStart(portfolioBroker.broker_connection_id!);
+                        setReAuthUrl(res.authorize_url);
+                      } catch (e: any) { setReAuthError(e.message || 'Failed to start re-auth'); }
+                      finally { setReAuthLoading(false); }
+                    }}
+                    style={{ fontSize: 11, color: '#f97316', background: 'rgba(249,115,22,0.1)', border: '1px solid rgba(249,115,22,0.3)', borderRadius: 4, padding: '3px 10px', cursor: 'pointer', fontWeight: 600 }}>
+                    {reAuthLoading ? 'Starting…' : '⟳ Re-authorize'}
+                  </button>
+                )}
               </>
+              {/* Re-auth flow panel */}
+              {reAuthUrl && (
+                <div style={{ marginTop: 10, padding: '12px 14px', background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.25)', borderRadius: 8 }}>
+                  <div style={{ fontSize: 12, color: '#fed7aa', fontWeight: 600, marginBottom: 6 }}>Step 1 — Authorize in E*Trade</div>
+                  <a href={reAuthUrl} target="_blank" rel="noreferrer"
+                    style={{ display: 'inline-block', fontSize: 12, background: '#f97316', color: '#fff', padding: '6px 14px', borderRadius: 6, textDecoration: 'none', fontWeight: 600 }}>
+                    Open E*Trade Authorization →
+                  </a>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, marginBottom: 8 }}>
+                    After authorizing you will see a PIN. Enter it below:
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      value={reAuthPin}
+                      onChange={e => setReAuthPin(e.target.value)}
+                      placeholder="Enter PIN…"
+                      style={{ fontSize: 13, background: '#0f172a', border: '1px solid #334155', borderRadius: 5, padding: '5px 10px', color: '#f1f5f9', width: 130 }}
+                    />
+                    <button
+                      disabled={!reAuthPin.trim() || reAuthLoading}
+                      onClick={async () => {
+                        setReAuthLoading(true); setReAuthError(null);
+                        try {
+                          await api.brokerOAuthComplete(portfolioBroker.broker_connection_id!, reAuthPin.trim());
+                          setReAuthUrl(null); setReAuthPin('');
+                          api.brokerGetPortfolioBroker(selectedPortfolioId!).then(setPortfolioBroker);
+                        } catch (e: any) { setReAuthError(e.message || 'Invalid PIN — try again'); }
+                        finally { setReAuthLoading(false); }
+                      }}
+                      style={{ fontSize: 12, background: '#22c55e', color: '#fff', border: 'none', borderRadius: 5, padding: '6px 14px', cursor: 'pointer', fontWeight: 600 }}>
+                      {reAuthLoading ? 'Verifying…' : 'Submit PIN'}
+                    </button>
+                  </div>
+                  {reAuthError && <div style={{ fontSize: 12, color: '#f87171', marginTop: 6 }}>{reAuthError}</div>}
+                </div>
+              )
             ) : (
               <>
                 <span style={{ fontSize: 11, color: '#475569' }}>Paper only (simulation)</span>

@@ -86,7 +86,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 
 
 from .ingestion import ingest_universe
-from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email
+from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
 from ..api.routes import refresh_live_price_cache
 
@@ -2197,6 +2197,67 @@ def _refresh_5m(market: str) -> None:
     _check_short_intraday_triggers(market)
 
 
+def _check_broker_auth() -> None:
+    """Check all active broker connections for expired OAuth tokens.
+
+    Runs at 08:30 ET each trading day — before market open. If any connection's
+    tokens are rejected (ETrade expires daily at midnight ET), marks it unauthorized
+    and emails the user a fresh authorize URL so they can re-auth before trading starts.
+    """
+    _t0 = time.monotonic()
+    try:
+        from db import SessionLocal
+        from db.models import BrokerConnection, User
+        from sqlalchemy import select
+        from ..api.broker import _decrypt_config, _encrypt_config
+        from ..services.broker import get_broker
+        checked = expired = 0
+        with SessionLocal() as s:
+            conns = s.execute(
+                select(BrokerConnection).where(BrokerConnection.is_active == True)  # noqa: E712
+            ).scalars().all()
+            for conn in conns:
+                checked += 1
+                try:
+                    cfg = _decrypt_config(conn.config)
+                    broker = get_broker(conn.broker_type, cfg)
+                    broker.get_account()  # lightweight health check
+                    # Token is valid — ensure is_authorized flag is set
+                    if not conn.is_authorized:
+                        conn.is_authorized = True
+                        s.commit()
+                except Exception as _err:
+                    err_str = str(_err).lower()
+                    if "token_rejected" in err_str or "401" in err_str or "unauthorized" in err_str:
+                        expired += 1
+                        conn.is_authorized = False
+                        s.commit()
+                        # Generate a fresh authorize URL and email the user
+                        try:
+                            cfg2 = _decrypt_config(conn.config)
+                            broker2 = get_broker(conn.broker_type, cfg2)
+                            auth_url = broker2.start_oauth()
+                            # start_oauth() stores request_token into cfg2 — persist it
+                            conn.config = _encrypt_config(cfg2)
+                            s.commit()
+                            # Find the connection owner
+                            user = s.get(User, conn.user_id)
+                            email = user.email if user else None
+                            if email:
+                                send_broker_reauth_email(email, conn.name, auth_url)
+                                log.info("broker.auth_expired_notified",
+                                         conn=conn.name, user=user.username if user else "?")
+                        except Exception as _notify_err:
+                            log.error("broker.auth_notify_failed", conn=conn.name, error=str(_notify_err))
+        elapsed = time.monotonic() - _t0
+        _record_job_status("broker_auth_check", "ok", elapsed)
+        log.info("broker.auth_check_done", checked=checked, expired=expired, elapsed=round(elapsed, 2))
+    except Exception as exc:
+        elapsed = time.monotonic() - _t0
+        _record_job_status("broker_auth_check", "error", elapsed, str(exc))
+        log.error("broker.auth_check_failed", error=str(exc), exc_info=True)
+
+
 def send_morning_digest(market: str = "US") -> None:
     """Compile and email the daily pre-market digest to all users with an email configured.
 
@@ -2687,6 +2748,15 @@ def start_scheduler() -> None:
             timezone="Asia/Hong_Kong",
         ),
         id="hk_5m_intraday", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── Broker auth check — 08:30 ET (1h before NYSE open) ──────────────────
+    # Tests all active broker connections. Emails a re-auth link if tokens expired.
+    # E*Trade OAuth tokens expire at midnight ET every day.
+    _scheduler.add_job(
+        _check_broker_auth,
+        CronTrigger(hour=8, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
+        id="broker_auth_check", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Morning digests — pre-open for each market ───────────────────────────

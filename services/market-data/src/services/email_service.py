@@ -1105,3 +1105,42 @@ def send_paper_portfolio_digest_email(
   </div>
 </body></html>"""
     return send_email(to, subject, body_html, body_text)
+
+
+def send_broker_reauth_email(to: str, broker_name: str, authorize_url: str) -> bool:
+    """Notify the user that their broker OAuth tokens have expired and provide a re-auth link."""
+    subject = f"Action Required: Re-authorize {broker_name} — tokens expired"
+    body_text = (
+        f"Your {broker_name} connection has expired and needs to be re-authorized.\n\n"
+        f"E*Trade OAuth tokens expire every day at midnight ET.\n\n"
+        f"Steps to re-authorize:\n"
+        f"1. Visit this URL in your browser:\n   {authorize_url}\n\n"
+        f"2. Log in to E*Trade and click Authorize\n\n"
+        f"3. E*Trade will show you a PIN code — enter it at:\n"
+        f"   https://lausing.com/paper-portfolio (Broker Settings → Re-authorize)\n\n"
+        f"Until re-authorized, no new trades will be sent to {broker_name}.\n"
+    )
+    body_html = f"""
+<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px">
+  <div style="max-width:520px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <h2 style="margin-top:0;color:#f97316">&#9888; Broker Re-authorization Required</h2>
+    <p style="font-size:15px">Your <strong>{broker_name}</strong> connection has expired.
+    E*Trade OAuth tokens expire every day at midnight ET and must be refreshed before trading begins.</p>
+    <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:16px;margin:20px 0">
+      <div style="font-size:13px;color:#92400e;font-weight:600">Until re-authorized, no new trades will be placed.</div>
+    </div>
+    <p style="font-weight:600;margin-bottom:8px">Step 1 — Click to authorize:</p>
+    <a href="{authorize_url}" style="display:inline-block;background:#f97316;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">
+      Authorize {broker_name} &rarr;
+    </a>
+    <p style="margin-top:20px;font-size:14px;color:#475569">
+      After clicking Authorize in E*Trade, you will see a <strong>PIN code</strong>.<br>
+      Enter that PIN at <a href="https://lausing.com/paper-portfolio" style="color:#6366f1">lausing.com/paper-portfolio</a>
+      under Broker Settings &rarr; Re-authorize.
+    </p>
+    <p style="font-size:12px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:12px">
+      StockAI sends this reminder each morning when an active broker connection needs re-authorization.
+    </p>
+  </div>
+</body></html>"""
+    return send_email(to, subject, body_html, body_text)
