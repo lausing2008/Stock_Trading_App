@@ -160,7 +160,17 @@ def _ml_service_token() -> str:
 
 
 def _load_ml_weight_override() -> float | None:
-    """Load calibrated ML weight cap from disk, or return None (use profile default)."""
+    """Load calibrated ML weight cap from Redis (primary), file (fallback)."""
+    try:
+        import redis as _redis_lib
+        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        _val = _rc.get("stockai:ml_weight_cap")
+        if _val:
+            v = float(_val)
+            if 0.0 <= v <= 1.0:
+                return v
+    except Exception:
+        pass
     try:
         if _ML_WEIGHT_OVERRIDE_PATH.exists():
             with open(_ML_WEIGHT_OVERRIDE_PATH) as f:
@@ -174,10 +184,20 @@ def _load_ml_weight_override() -> float | None:
 
 
 def set_ml_weight_global_cap(cap: float | None) -> None:
-    """Update the in-process ML weight cap override and persist to disk."""
+    """Update the in-process ML weight cap override and persist to Redis + file."""
     global _ml_weight_global_cap
     with _ml_weight_lock:
         _ml_weight_global_cap = cap
+    try:
+        import redis as _redis_lib
+        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        if cap is None:
+            _rc.delete("stockai:ml_weight_cap")
+        else:
+            _rc.setex("stockai:ml_weight_cap", 90 * 86400, str(round(cap, 4)))
+    except Exception:
+        pass
+    # Legacy file write (backward compat)
     try:
         Path(_ML_WEIGHT_OVERRIDE_PATH).parent.mkdir(parents=True, exist_ok=True)
         if cap is None:
@@ -193,16 +213,28 @@ _ml_weight_global_cap = _load_ml_weight_override()
 
 
 def _load_ta_weights() -> dict[str, float]:
-    """Load calibrated TA weights from disk, falling back to defaults."""
+    """Load calibrated TA weights from Redis (primary), file (fallback), then defaults.
+
+    T228: moved from file-only to Redis-primary so Docker rebuilds don't wipe calibration state.
+    """
+    def _apply_migration(saved: dict) -> dict:
+        if "volume_surge" in saved and "volume_z" not in saved:
+            saved["volume_z"] = saved.pop("volume_surge")
+        return {**_TA_WEIGHTS_DEFAULT, **saved}
+
+    try:
+        import redis as _redis_lib
+        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        _raw = _rc.get("stockai:ta_weights")
+        if _raw:
+            return _apply_migration(json.loads(_raw))
+    except Exception:
+        pass
     try:
         if _TA_WEIGHTS_PATH.exists():
             with open(_TA_WEIGHTS_PATH) as f:
                 saved = json.load(f)
-            # Key migration: old files used 'volume_surge'; rename to 'volume_z'
-            if "volume_surge" in saved and "volume_z" not in saved:
-                saved["volume_z"] = saved.pop("volume_surge")
-            # Merge: saved values override defaults; new keys in defaults keep their value
-            return {**_TA_WEIGHTS_DEFAULT, **saved}
+            return _apply_migration(saved)
     except Exception:
         pass
     return dict(_TA_WEIGHTS_DEFAULT)
@@ -217,11 +249,20 @@ _ta_weights_calibrated: bool = _TA_WEIGHTS_PATH.exists()
 
 
 def load_conviction_weights() -> dict[str, float]:
-    """Load calibrated conviction layer weights from disk (AL-3).
+    """Load calibrated conviction layer weights from Redis (primary), file (fallback) (AL-3).
 
     Returns a dict of {reason_flag: accuracy_vs_baseline} where values > 0 mean the
-    flag is more common in winning trades.  Returns empty dict if not yet calibrated.
+    flag is more common in winning trades. Returns empty dict if not yet calibrated.
+    T228: Redis-primary so weights survive Docker rebuilds.
     """
+    try:
+        import redis as _redis_lib
+        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        _raw = _rc.get("stockai:conviction_weights")
+        if _raw:
+            return json.loads(_raw).get("edge_pct", {})
+    except Exception:
+        pass
     try:
         if _CONVICTION_WEIGHTS_PATH.exists():
             with open(_CONVICTION_WEIGHTS_PATH) as f:
@@ -1359,6 +1400,15 @@ def _get_dynamic_buy_threshold(style_key: str, reg: str) -> float | None:
     return _redis_get_float(f"stockai:signal_thresholds:{style_key.upper()}")
 
 
+def _get_dynamic_sell_threshold(style_key: str) -> float | None:
+    """Read empirically-calibrated SELL threshold from Redis if available.
+
+    T228: written by POST /outcomes/calibrate/apply SELL sweep.
+    Returns None → falls back to hardcoded 0.35 in _decide_style.
+    """
+    return _redis_get_float(f"stockai:signal_thresholds:SELL:{style_key.upper()}")
+
+
 def _get_style_tuned_param(style_key: str, param: str, default):
     """Read a tuned style parameter from Redis if available (written by tune_style_profiles).
 
@@ -1372,21 +1422,24 @@ def _get_style_tuned_param(style_key: str, param: str, default):
 def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str, str]:
     """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds.
 
-    Reads dynamically-calibrated buy threshold from Redis if available (written by
-    POST /outcomes/calibrate/apply).  Falls back to hardcoded _STYLE_PROFILES values.
+    Reads dynamically-calibrated buy and sell thresholds from Redis if available
+    (written by POST /outcomes/calibrate/apply).  Falls back to hardcoded values.
 
     Returns (signal, style_key, threshold_tier).
     """
     p = _STYLE_PROFILES[style_key]
     reg = market_regime if market_regime in ("bull", "high_vol", "bear", "unknown") else "unknown"
-    # Dynamic override from outcomes-based calibration; falls back to hardcoded profile
+    # Dynamic buy override from outcomes-based calibration
     dynamic_buy = _get_dynamic_buy_threshold(style_key, reg)
     buy_t  = dynamic_buy if dynamic_buy is not None else p["buy_threshold"][reg]
     hold_t = p["hold_threshold"][reg]
+    # T228: dynamic SELL threshold from SELL-outcomes calibration; fallback to 0.35
+    dynamic_sell = _get_dynamic_sell_threshold(style_key)
+    sell_t = dynamic_sell if dynamic_sell is not None else 0.35
     tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")
     if fused_prob > buy_t:   return "BUY",  style_key, tier
     if fused_prob > hold_t:  return "HOLD", style_key, tier
-    if fused_prob >= 0.35:   return "WAIT", style_key, tier
+    if fused_prob >= sell_t: return "WAIT", style_key, tier
     return "SELL", style_key, tier
 
 
@@ -1440,7 +1493,9 @@ def _apply_style_signal(
         eff_cap = _per_style_cap if _per_style_cap is not None else (_ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"])
         ml_w = min(raw_w, eff_cap)
         if raw_w > 0:  # floor only applies to non-zero weights — don't resurrect a zero-weighted inverse model
-            ml_w = max(ml_w, p.get("ml_weight_floor", 0.0))
+            # T228: AUC-scaled floor — near-random (AUC≈0.50) gets floor≈0; AUC≥0.60 gets full floor
+            auc_floor = max(0.0, (ml_test_auc - 0.50) / 0.10) * p.get("ml_weight_floor", 0.0)
+            ml_w = max(ml_w, auc_floor)
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
             # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).
@@ -1880,8 +1935,36 @@ def _apply_style_signal(
     else:
         reasons["hsi_bear_gate"] = False
 
+    # T228: HK Connect southbound flow — negative 5d net = mainland selling pressure; compress BUY
+    _is_hk_stock = base_reasons.get("hsi_regime") is not None
+    if _is_hk_stock and fused > 0.5:
+        _flow_net = base_reasons.get("flow_5d_net_hkd")
+        if _flow_net is not None and float(_flow_net) < 0:
+            fused = 0.5 + (fused - 0.5) * 0.85
+            fused = float(np.clip(fused, 0.0, 1.0))
+            reasons["hk_southbound_compression"] = True
+        else:
+            reasons["hk_southbound_compression"] = False
+    else:
+        reasons["hk_southbound_compression"] = False
+
+    # T228: HK liquidity gate — suppress SWING/GROWTH BUY for thin markets (< HKD 50M/day turnover)
+    if base_reasons.get("hk_low_liquidity") and style_key in ("SWING", "GROWTH") and fused > 0.5:
+        fused = 0.5 + (fused - 0.5) * 0.30
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["hk_liquidity_gate"] = True
+    else:
+        reasons["hk_liquidity_gate"] = False
+
     signal, horizon, threshold_tier = _decide_style(fused, style_key, market_regime)
     reasons["threshold_tier"] = threshold_tier  # SA-12: log which regime threshold was applied
+
+    # T228: HK SHORT SELL has 29.2% win rate — no edge; emit HOLD instead
+    if style_key == "SHORT" and _is_hk_stock and signal == "SELL":
+        signal = "HOLD"
+        reasons["hk_short_sell_disabled"] = True
+    else:
+        reasons["hk_short_sell_disabled"] = False
     confidence = round(abs(fused - 0.5) * 200, 2)
     return AIConfidence(
         signal=signal,
@@ -1941,6 +2024,15 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df, ta_weights=_ta_weights)
     sr_data = _sr_context(df)
+
+    # T228: HK liquidity filter — flag stocks with avg 20d daily turnover < HKD 50M
+    _hk_low_liquidity = False
+    if symbol.upper().endswith(".HK") and len(df) >= 20:
+        _close_vals = _adj_close(df)
+        _vol_vals = df["volume"].astype(float)
+        _daily_turnover_20d = float((_close_vals.iloc[-20:] * _vol_vals.iloc[-20:]).mean())
+        _hk_low_liquidity = _daily_turnover_20d < 50_000_000
+    reasons["hk_low_liquidity"] = _hk_low_liquidity
     # Per-style ML fetched in parallel — 4 sequential calls with 10s timeout each would add
     # up to 120s worst-case when ML is slow; parallel fetch caps worst-case at 30s.
     _ml_styles = ("SHORT", "SWING", "LONG", "GROWTH")

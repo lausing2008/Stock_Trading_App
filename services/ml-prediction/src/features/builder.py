@@ -564,6 +564,7 @@ def build_features(
     sector_df: "pd.DataFrame | None" = None,
     outcome_df: "pd.DataFrame | None" = None,
     up_to_date: str | None = None,
+    fund_snapshots: "list[dict] | None" = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (X, y_direction, y_return).
 
@@ -752,6 +753,31 @@ def build_features(
         out[col] = float(val) if val is not None else np.nan
     # Piotroski F-Score: computed from existing fundamentals, not a raw DB field
     out["piotroski_score"] = _compute_piotroski(fund_data or {})
+
+    # T228-POINT-IN-TIME-FUNDAMENTALS: override broadcasted values with per-row snapshots.
+    # These 4 columns are time-varying — broadcasting today's values to all historical rows
+    # creates lookahead bias.  fund_snapshots is a list of dicts with "snapshot_date" + columns.
+    _PIT_COLS = ["revenue_growth", "earnings_growth", "return_on_equity", "recommendation_mean"]
+    if not inference_mode and fund_snapshots:
+        try:
+            _snap_df = pd.DataFrame(fund_snapshots)
+            _snap_df["snapshot_date"] = pd.to_datetime(_snap_df["snapshot_date"])
+            _snap_df = _snap_df.sort_values("snapshot_date").reset_index(drop=True)
+            _price_dates = pd.to_datetime(out.index).rename("date")
+            _left = pd.DataFrame({"date": _price_dates}, index=out.index)
+            _merged = pd.merge_asof(
+                _left.reset_index(),
+                _snap_df[["snapshot_date"] + [c for c in _PIT_COLS if c in _snap_df.columns]],
+                left_on="date",
+                right_on="snapshot_date",
+                direction="backward",
+            )
+            _merged = _merged.set_index("index")
+            for col in _PIT_COLS:
+                if col in _merged.columns:
+                    out[col] = _merged[col].values
+        except Exception:
+            pass  # fall through — broadcast values remain (training still usable, just biased)
 
     # T220-F: Earnings revision momentum — direction of analyst recommendation changes
     # Reads the last 8 weekly fundamentals_snapshot rows to detect upgrade/downgrade trends.

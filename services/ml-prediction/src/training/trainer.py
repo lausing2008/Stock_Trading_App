@@ -46,10 +46,15 @@ _MIN_PRECISION = 0.60  # fallback precision floor (SWING)
 # are underrepresented). Each style's precision floor is raised by 3pp to
 # compensate for the known upward bullish bias this introduces.
 _PRECISION_BY_STYLE: dict[str, float] = {
-    "SHORT":  0.73,  # was 0.70
-    "SWING":  0.63,  # was 0.60
-    "LONG":   0.53,  # was 0.50
-    "GROWTH": 0.63,  # same as SWING (similar horizon)
+    "SHORT":     0.73,
+    "SWING":     0.63,
+    "LONG":      0.53,
+    "GROWTH":    0.63,
+    # T228-HK-MODEL-SEPARATE: HK stocks have less efficient markets → tighter floors
+    "SHORT_HK":  0.78,
+    "SWING_HK":  0.70,
+    "LONG_HK":   0.60,
+    "GROWTH_HK": 0.70,
 }
 
 
@@ -254,6 +259,36 @@ def _load_hk_flow_features(symbol: str) -> dict:
         "flow_5d_net_hkd": round(flow_5d / 1e6, 2),    # convert HKD → HKD millions
         "flow_strength":   round(flow_strength, 3),
     }
+
+
+def _load_fund_snapshots(symbol: str) -> list[dict]:
+    """T228-POINT-IN-TIME-FUNDAMENTALS: load all fundamentals_snapshot rows for a symbol.
+
+    Returns a list of dicts with snapshot_date + the 4 time-varying fundamental columns.
+    Used by build_features() for point-in-time joining so historical rows don't see future values.
+    """
+    from sqlalchemy import text as _text
+    try:
+        with SessionLocal() as session:
+            rows = session.execute(_text("""
+                SELECT snapshot_date, revenue_growth, earnings_growth,
+                       return_on_equity, recommendation_mean
+                FROM fundamentals_snapshot
+                WHERE symbol = :sym
+                ORDER BY snapshot_date
+            """), {"sym": symbol.upper()}).fetchall()
+        return [
+            {
+                "snapshot_date":     str(r.snapshot_date),
+                "revenue_growth":    r.revenue_growth,
+                "earnings_growth":   r.earnings_growth,
+                "return_on_equity":  r.return_on_equity,
+                "recommendation_mean": r.recommendation_mean,
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
 
 
 def _artifact_path(symbol: str, model_name: str, style: str = "SWING") -> Path:
@@ -517,9 +552,17 @@ def train_model(
     except Exception:
         pass
 
+    # T228-POINT-IN-TIME-FUNDAMENTALS: pass historical snapshots for per-row joins
+    fund_snapshots: list[dict] = []
+    try:
+        fund_snapshots = _load_fund_snapshots(symbol)
+    except Exception:
+        pass
+
     X, y_dir, y_ret = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
         fund_data=fund_data, sector_df=sector_df, outcome_df=outcome_df,
+        fund_snapshots=fund_snapshots,
     )
     if len(X) < 200:
         log.warning("train.skipped", symbol=symbol, reason=f"only {len(X)} clean samples")
@@ -691,7 +734,10 @@ def train_model(
         preds = calibrator.predict_proba(raw_test_probs.reshape(-1, 1))[:, 1]
     else:
         preds = calibrator.predict(raw_test_probs)
-    min_prec = _PRECISION_BY_STYLE.get(style.upper(), _MIN_PRECISION)
+    # T228-HK-MODEL-SEPARATE: use tighter HK precision floor when applicable
+    _hk_suffix = "_HK" if symbol.upper().endswith(".HK") else ""
+    min_prec = _PRECISION_BY_STYLE.get(f"{style.upper()}{_hk_suffix}",
+               _PRECISION_BY_STYLE.get(style.upper(), _MIN_PRECISION))
     buy_threshold = _precision_threshold(y_test.values, preds, min_precision=min_prec, symbol=symbol)
 
     y_pred = (preds > buy_threshold).astype(int)
@@ -1037,9 +1083,10 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
             rf_res = None
 
     # Determine which models are available and blend accordingly
-    available = [(xgb, 0.40)]
+    # T228-ENSEMBLE-WEIGHTS: LightGBM handles 59-feature financial data better than XGBoost
+    available = [(xgb, 0.30)]
     if lgb_res is not None:
-        available.append((lgb_res, 0.35))
+        available.append((lgb_res, 0.45))
     if rf_res is not None:
         available.append((rf_res, 0.25))
 
@@ -1061,7 +1108,8 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
         # Derive confidence + signal scores from the XGBoost result (best available proxy)
         _confidence = float(xgb.get("confidence", 0.0)) / 100.0  # convert to [0,1] range
         _fused_prob = float(xgb.get("bullish_probability", 0.5))
-        _ta_score = 0.0  # ta_score not available at this level; meta model trained on 0.0 fallback too
+        # T228-TA-SCORE-META: use 3-model ensemble probability as ta_score proxy
+        _ta_score = float(prob)
         _meta_prob = _predict_meta(
             symbol=symbol,
             horizon=style,

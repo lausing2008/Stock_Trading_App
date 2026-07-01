@@ -77,6 +77,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { label: 'Paper Portfolio',  href: '/paper-portfolio',  color: '#22c55e' },
       { label: 'Entry Gates',      href: '/paper-gates',      color: '#22c55e' },
+      { label: 'Horizon Compare',  href: '/horizon-compare',  color: '#38bdf8', tag: 'new' },
       { label: 'Signal Accuracy',  href: '/signal-accuracy',  color: '#a78bfa' },
       { label: 'Signal Filters',   href: '/signal-filters',   color: '#f97316' },
       { label: 'Signal Quality',   href: '/signal-quality',   color: '#818cf8', tag: 'new' },

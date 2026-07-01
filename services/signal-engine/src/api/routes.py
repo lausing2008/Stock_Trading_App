@@ -2070,6 +2070,11 @@ def calibrate_ta_weights(
     _tmp = Path(_TA_WEIGHTS_PATH).with_suffix(".tmp")
     _tmp.write_text(json.dumps(new_weights, indent=2))
     _os.replace(str(_tmp), str(_TA_WEIGHTS_PATH))
+    # T228: also persist to Redis so weights survive Docker rebuilds (90-day TTL)
+    try:
+        _get_redis().setex("stockai:ta_weights", 90 * 86400, json.dumps(new_weights))
+    except Exception:
+        pass
     log.info("calibrate_ta_weights: wrote %s (accuracy=%.3f, n=%d)", _TA_WEIGHTS_PATH, accuracy, len(X_rows))
 
     return {
@@ -2200,6 +2205,11 @@ def calibrate_conviction_weights(
         Path(_CONVICTION_WEIGHTS_PATH).write_text(json.dumps(payload, indent=2))
     except Exception as exc:
         log.warning("conviction_weights.write_failed", error=str(exc))
+    # T228: also persist to Redis so weights survive Docker rebuilds (90-day TTL)
+    try:
+        _get_redis().setex("stockai:conviction_weights", 90 * 86400, json.dumps(payload))
+    except Exception:
+        pass
 
     log.info("conviction_weights.calibrated", layers=len(layer_stats), noise=payload["noise_count"])
     return payload
@@ -3260,9 +3270,78 @@ def outcomes_calibrate_apply(
             "stats": best_stats,
         })
 
+    # T228-SELL-CALIBRATION: sweep SELL threshold per horizon
+    sell_outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "SELL",
+        )
+    ).scalars().all()
+
+    sell_applied: list[dict] = []
+    sell_skipped: list[dict] = []
+    _CURRENT_SELL = 35  # hardcoded baseline (35% fused_prob boundary)
+
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        s_bucket = [o for o in sell_outcomes if o.horizon.value == h]
+
+        if len(s_bucket) < min_samples:
+            sell_skipped.append({"horizon": h, "reason": f"only {len(s_bucket)} SELL samples (need {min_samples})"})
+            continue
+
+        s_best_ev = -999.0
+        s_best_t: float | None = None
+        s_best_stats: dict | None = None
+        s_current_stats: dict | None = None
+
+        # Sweep: signals with confidence ≤ t_int are "strong SELL" territory
+        for t_int in range(20, 46):
+            sub = [o for o in s_bucket if o.confidence <= float(t_int)]
+            if len(sub) < min_samples:
+                continue
+            wins = sum(1 for o in sub if o.is_correct)
+            rets = [abs(o.pct_return) for o in sub if o.pct_return is not None]
+            acc = wins / len(sub)
+            avg_ret = _stats.mean(rets) if rets else 0.0
+            ev = acc * avg_ret * 100
+            if ev > s_best_ev:
+                s_best_ev = ev
+                s_best_t = float(t_int)
+                s_best_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
+            if t_int == _CURRENT_SELL:
+                s_current_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
+
+        if s_best_t is None:
+            sell_skipped.append({"horizon": h, "reason": "no SELL threshold met criteria"})
+            continue
+
+        s_current_ev = s_current_stats["ev_pct"] if s_current_stats else 0.0
+        s_ev_lift = round(s_best_ev - s_current_ev, 2)
+
+        if s_ev_lift < min_ev_lift and abs(s_best_t - _CURRENT_SELL) < 3:
+            sell_skipped.append({
+                "horizon": h, "direction": "SELL",
+                "reason": f"EV lift {s_ev_lift}% below min and shift <3pt",
+                "suggested": s_best_t / 100,
+            })
+            continue
+
+        redis_client.setex(f"stockai:signal_thresholds:SELL:{h}", _REDIS_TTL, str(round(s_best_t / 100, 4)))
+        sell_applied.append({
+            "horizon": h,
+            "direction": "SELL",
+            "previous_threshold": _CURRENT_SELL / 100,
+            "new_threshold": round(s_best_t / 100, 4),
+            "ev_lift_pct": s_ev_lift,
+            "stats": s_best_stats,
+        })
+
     return {
-        "applied": applied,
-        "skipped": skipped,
+        "buy_applied": applied,
+        "buy_skipped": skipped,
+        "sell_applied": sell_applied,
+        "sell_skipped": sell_skipped,
         "redis_ttl_days": 30,
     }
 
