@@ -2061,6 +2061,31 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
         reasons["inst_change_pct"] = None
         reasons["inst_ownership_increased"] = False
 
+    # T220-F: Earnings revision momentum — recommendation_mean direction from weekly snapshots.
+    # Same logic as builder.py: recommendation_mean lower = more bullish (1=strong buy, 5=sell).
+    # Delta >0.15 means analysts have upgraded on net → +1; <-0.15 = downgrade → -1.
+    try:
+        from db import SessionLocal as _SL_eps
+        from sqlalchemy import text as _text_eps
+        with _SL_eps() as _db_eps:
+            _snaps = _db_eps.execute(
+                _text_eps("""
+                    SELECT recommendation_mean
+                    FROM fundamentals_snapshot
+                    WHERE symbol = :sym
+                    ORDER BY snapshot_date DESC
+                    LIMIT 8
+                """),
+                {"sym": symbol.upper()},
+            ).fetchall()
+        if len(_snaps) >= 2 and _snaps[0][0] is not None and _snaps[-1][0] is not None:
+            _rec_delta = float(_snaps[-1][0]) - float(_snaps[0][0])  # old - recent
+            reasons["eps_revision_direction"] = 1 if _rec_delta > 0.15 else (-1 if _rec_delta < -0.15 else 0)
+        else:
+            reasons["eps_revision_direction"] = None
+    except Exception:
+        reasons["eps_revision_direction"] = None
+
     reasons["days_to_earnings"]   = days_to_earnings
     reasons["news_sentiment"]     = news_sentiment
     reasons["rs_score"]                = rs_score

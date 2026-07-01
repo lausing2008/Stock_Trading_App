@@ -7698,13 +7698,14 @@ const ITEMS: Item[] = [
 
   {
     id: 'T220-EARNINGS-REVISION-MOMENTUM',
-    tier: 220 as const, severity: 'medium', defaultStatus: 'in-progress' as const,
+    tier: 220 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/ingestion.py',
     effort: '3h',
     impact: 'Medium-High — Earnings estimate revisions are one of the most consistently predictive factors in academic literature (SUE/PEAD effect). Stocks where analysts are upgrading EPS estimates outperform by 3-5% in the following 1-3 months. recommendation_mean already tracked in fundamentals; adding EPS revision direction is the key addition.',
     title: 'T220-F: Earnings revision momentum — track analyst EPS estimate changes over time',
     what: 'fundamentals table stores recommendation_mean (current consensus) but not its change over time. EPS estimate revisions — whether analysts are raising or lowering forward EPS — are a stronger signal than absolute level. Requires storing historical recommendation_mean snapshots to compute the delta.',
     fix: 'Add fundamentals_history table (symbol, fetched_at, eps_estimate_next_year, recommendation_mean) — lightweight snapshot every Sunday. _compute_eps_revision_momentum(symbol, weeks=8): fetch last 8 snapshots, compute direction (rising/flat/falling), magnitude. Add eps_revision_direction (+1/0/-1) and eps_revision_magnitude to FUNDAMENTAL_COLUMNS. Signal-engine: boost fused_prob +3% when eps_revision_direction=+1 and magnitude>5%. Add "EPS ↑" chip on signal reasons panel.',
+    implementedNote: 'Done 2026-07-01. FundamentalsSnapshot table and fundamentals_snapshot_weekly scheduler job already existed. eps_revision_direction was already a ML feature in builder.py. Added the same computation to signals.py reasons (direct DB query on fundamentals_snapshot — same delta logic: rec_mean delta >0.15 = +1 upgrading, <-0.15 = -1 downgrading). SignalCard buildReasons() and "EPS Estimates ↑/↓" chips were already implemented. eps_revision_direction now appears in stored signal reasons.',
   },
 
   {
