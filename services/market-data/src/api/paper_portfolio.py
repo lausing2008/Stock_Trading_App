@@ -1081,7 +1081,7 @@ def create_portfolio(
     if raw_broker_id:
         try:
             from db.models import BrokerConnection
-        conn = session.get(BrokerConnection, int(raw_broker_id))
+            conn = session.get(BrokerConnection, int(raw_broker_id))
             if conn and conn.is_authorized:
                 broker_connection_id = conn.id
         except Exception:
