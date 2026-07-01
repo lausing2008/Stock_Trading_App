@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import useSWR from 'swr';
@@ -260,6 +260,9 @@ export default function PaperGatesPage() {
   const router = useRouter();
   const [authed, setAuthed] = useState(false);
   const [filterType, setFilterType] = useState<'all' | 'portfolio' | 'candidate' | 'score'>('all');
+  const [usRegime, setUsRegime] = useState<RegimeStatus | null>(null);
+  const [hkRegime, setHkRegime] = useState<RegimeStatus | null>(null);
+  const [regimeError, setRegimeError] = useState(false);
 
   useEffect(() => {
     const s = getSession();
@@ -267,20 +270,21 @@ export default function PaperGatesPage() {
     setAuthed(true);
   }, [router]);
 
+  const loadRegime = useCallback(() => {
+    setRegimeError(false);
+    let failed = 0;
+    api.regime('US').then(d => setUsRegime(d)).catch(() => { failed++; if (failed === 2) setRegimeError(true); });
+    api.regime('HK').then(d => setHkRegime(d)).catch(() => { failed++; if (failed === 2) setRegimeError(true); });
+  }, []);
+
+  useEffect(() => {
+    if (authed) loadRegime();
+  }, [authed, loadRegime]);
+
   const { data: portfolios } = useSWR<PaperPortfolioListItem[]>(
     authed ? 'paper-list' : null,
     () => api.paperList(),
     { refreshInterval: 60_000 },
-  );
-  const { data: usRegime } = useSWR<RegimeStatus>(
-    authed ? 'regime-us' : null,
-    () => api.regime('US'),
-    { refreshInterval: 120_000 },
-  );
-  const { data: hkRegime } = useSWR<RegimeStatus>(
-    authed ? 'regime-hk' : null,
-    () => api.regime('HK'),
-    { refreshInterval: 120_000 },
   );
 
   const filteredGates = GATE_PIPELINE.filter(g => filterType === 'all' || g.type === filterType);
@@ -303,7 +307,11 @@ export default function PaperGatesPage() {
 
         {/* ── Live Status ───────────────────────────────────────────────────── */}
         <div style={SECTION}>
-          <div style={H2}>Live Status</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+            <div style={H2}>Live Status</div>
+            <button onClick={loadRegime} style={{ padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: 'transparent', color: '#64748b', border: '1px solid #334155', marginBottom: 14 }}>↻ Refresh</button>
+            {regimeError && <span style={{ fontSize: 11, color: '#f87171', marginBottom: 14 }}>Regime unavailable — decision-engine may be restarting</span>}
+          </div>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
             {(['US', 'HK'] as const).map(mkt => {
               const r = mkt === 'US' ? usRegime : hkRegime;
@@ -317,8 +325,10 @@ export default function PaperGatesPage() {
                       <span style={{ fontSize: 11, fontWeight: 700, color: rc, background: rc + '20', border: `1px solid ${rc}44`, borderRadius: 5, padding: '2px 8px' }}>
                         {REGIME_LABEL[r.state] ?? r.state}
                       </span>
+                    ) : regimeError ? (
+                      <span style={{ fontSize: 11, color: '#f87171' }}>Unavailable</span>
                     ) : (
-                      <span style={{ fontSize: 11, color: '#475569' }}>Loading…</span>
+                      <span style={{ fontSize: 11, color: '#475569' }}>Fetching…</span>
                     )}
                     {r && (
                       <span style={{ fontSize: 11, fontWeight: 700, color: blocked ? '#ef4444' : '#22c55e', marginLeft: 'auto' }}>
