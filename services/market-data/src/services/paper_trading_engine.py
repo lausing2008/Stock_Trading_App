@@ -698,8 +698,18 @@ _regime_cache_ts: float = 0.0     # epoch seconds of last successful fetch
 
 
 def get_last_regime() -> dict:
-    """Return the most recently cached market regime dict, or {} if not yet populated."""
-    return dict(_regime_cache)
+    """Return the most recently cached market regime dict.
+
+    If the cache is empty (e.g. after a container restart before any paper trading step),
+    performs a fresh fetch so callers like the morning digest always get real data.
+    """
+    if _regime_cache:
+        return dict(_regime_cache)
+    # Lazy fetch on first call (container just started, no paper trading step yet)
+    try:
+        return _fetch_market_regime(_DEFAULT_CONFIG)
+    except Exception:
+        return {}
 
 
 def _fetch_market_regime(cfg: dict) -> dict:
