@@ -8122,12 +8122,13 @@ const ITEMS: Item[] = [
   {
     id: 'T231-QW8-HMM-WIRING-ROADMAP',
     title: 'HMM regime state available but not wired into any trading decision',
-    tier: 231 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 231 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/paper_trading_engine.py',
     effort: 'M',
     impact: 'Medium — HMM provides bear_prob, bull_prob, sideways_prob. If bear_prob > 0.50, reduce position sizing by 30-50%. This would add a layer of protection that the rule-based regime misses during early-phase downturns that show up in volatility clustering before price action.',
     what: 'The HMM call was removed (CRIT-1) because output was unused. The HMM itself is a valid signal — it detects regime via Gaussian emissions on returns + volatility, complementing the rule-based SMA/VIX regime. The removal is correct but leaves value on the table.',
     fix: 'Restore HMM call in _fetch_market_regime(). Use hmm_d["hmm_prob"]["bear"] > 0.5 to set result["hmm_bear_pressure"] = True. In _run_paper_trade_cycle(), if live_regime.get("hmm_bear_pressure"): multiply position_size by 0.60.',
+    implementedNote: 'Done 2026-07-02: Restored non-blocking HMM call (3s timeout, fail-open) to GET /regime-state on ml-prediction:8003. bear_prob > 0.50 sets hmm_bear_pressure=True → 0.70× position size cap, logged as paper.hmm_bear_pressure_size_reduced. Also upgraded VIX sizing from binary bands (>25→0.75×, >30→0.50×) to same gradient formula as decision-engine: max(0.5, 1−(VIX−20)/30).',
   },
   {
     id: 'T231-HIGH1-REGIME-BREADTH-US',

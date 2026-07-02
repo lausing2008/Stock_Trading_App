@@ -745,6 +745,10 @@ def _fetch_market_regime(cfg: dict) -> dict:
         "breadth_size_mult": 1.0,     # 0.80 if one below 200EMA; 0.60 if both
         "iwm_vs_ema200": None,        # IWM price / 200EMA (for logging)
         "mdy_vs_ema200": None,        # MDY price / 200EMA (for logging)
+        # QW-8: HMM regime overlay
+        "hmm_bear_pressure": False,   # True when HMM bear_prob > 0.50
+        "hmm_bear_prob": None,        # raw bear posterior probability
+        "hmm_state": None,            # "bull" | "neutral" | "choppy" | "bear"
     }
     try:
         import yfinance as yf
@@ -910,9 +914,22 @@ def _fetch_market_regime(cfg: dict) -> dict:
                 f"MDY/200EMA={result.get('mdy_vs_ema200', 0):.3f} — narrow market"
             )
 
-    # CRIT-1: HMM blocking call removed — output was fetched (1-3s latency) but written to
-    # result["hmm_state"] which was never read by any gate, score, or multiplier.
-    # Wire HMM into regime scoring before restoring.
+    # QW-8: HMM regime overlay — non-blocking (3s timeout, fail-open).
+    # bear_prob > 0.50 triggers a 30% position size reduction on top of rule-based regime sizing.
+    # Detects early-phase downturns via volatility clustering before price action confirms.
+    try:
+        import httpx as _httpx_hmm
+        _hmm_r = _httpx_hmm.get("http://ml-prediction:8003/regime-state", timeout=3.0)
+        if _hmm_r.status_code == 200:
+            _hmm_d = _hmm_r.json()
+            if not _hmm_d.get("error"):
+                _bear_p = float(_hmm_d.get("hmm_prob", {}).get("bear", 0.0))
+                result["hmm_bear_prob"] = round(_bear_p, 4)
+                result["hmm_state"] = _hmm_d.get("hmm_state")
+                if _bear_p > 0.50:
+                    result["hmm_bear_pressure"] = True
+    except Exception as _hmm_exc:
+        log.debug("paper.hmm_regime_fetch_skipped", error=str(_hmm_exc))
 
     log.info("paper.regime_classified",
              state=result["state"],
@@ -931,6 +948,9 @@ def _fetch_market_regime(cfg: dict) -> dict:
              vix_5d_trend=result["vix_5d_trend"],
              is_pre_choppy=result["is_pre_choppy"],
              is_pre_risk_off=result["is_pre_risk_off"],
+             hmm_state=result["hmm_state"],
+             hmm_bear_prob=result["hmm_bear_prob"],
+             hmm_bear_pressure=result["hmm_bear_pressure"],
              notes=notes)
     import time as _time
     _regime_cache = dict(result)
@@ -965,6 +985,7 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
         "breadth_weak": False, "breadth_size_mult": 1.0,
         "vix_term_inverted": False, "vix_5d_trend": None,
         "spy_pct_above_ema20": None, "is_pre_choppy": False, "is_pre_risk_off": False,
+        "hmm_bear_pressure": False, "hmm_bear_prob": None, "hmm_state": None,
         "notes": [],
     }
     try:
@@ -2524,24 +2545,31 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         mdy_vs_ema200=live_regime.get("mdy_vs_ema200"),
                         note="IWM/MDY breadth below 200EMA — reducing position size")
 
-    # T192: VIX-adjusted position sizing — high volatility means stops get hit more often;
-    # reduce position size when VIX is elevated so per-trade dollar risk stays consistent.
+        # QW-8: HMM bear pressure — reduces sizing 30% when HMM model sees bear_prob > 0.50.
+        # Complements rule-based regime: catches early-phase downturns via volatility clustering
+        # before SMA/VIX thresholds trigger. Fail-open: if HMM unavailable, no effect.
+        if live_regime.get("hmm_bear_pressure"):
+            prev_mult = regime_size_mult
+            regime_size_mult = min(regime_size_mult, 0.70)
+            log.warning("paper.hmm_bear_pressure_size_reduced",
+                        hmm_bear_prob=live_regime.get("hmm_bear_prob"),
+                        hmm_state=live_regime.get("hmm_state"),
+                        prev_mult=round(prev_mult, 2),
+                        new_mult=round(regime_size_mult, 2),
+                        note="HMM bear_prob > 0.50 — reducing position size to 70%")
+
+    # T192 / HIGH-4: VIX-adjusted position sizing — continuous gradient replaces binary bands.
+    # Matches decision-engine formula: max(0.5, 1 - max(0, (VIX - 20) / 30)).
+    # VIX≤20 → 1.00×, VIX=25 → 0.83×, VIX=30 → 0.67×, VIX≥35 → 0.50×.
     if live_regime and cfg.get("vix_size_adjust_enabled", True):
         _vix = live_regime.get("vix")
         if _vix is not None:
             _vix_f = float(_vix)
-            if _vix_f > 30:
-                _vix_mult = float(cfg.get("vix_high_size_mult", 0.50))
-                if _vix_mult < regime_size_mult:
-                    regime_size_mult = _vix_mult
-                    log.info("paper.vix_size_reduced", vix=round(_vix_f, 1),
-                             mult=_vix_mult, note="VIX > 30 — extreme vol, 0.5× size")
-            elif _vix_f > 25:
-                _vix_mult = float(cfg.get("vix_elevated_size_mult", 0.75))
-                if _vix_mult < regime_size_mult:
-                    regime_size_mult = _vix_mult
-                    log.info("paper.vix_size_reduced", vix=round(_vix_f, 1),
-                             mult=_vix_mult, note="VIX > 25 — elevated vol, 0.75× size")
+            _vix_mult = round(max(0.5, 1.0 - max(0.0, (_vix_f - 20.0) / 30.0)), 3)
+            if _vix_mult < regime_size_mult:
+                regime_size_mult = _vix_mult
+                log.info("paper.vix_size_reduced", vix=round(_vix_f, 1),
+                         mult=_vix_mult, note="VIX gradient sizing applied")
 
     # T189: Regime-aware entry throttle — choppy/risk_off regimes cap new entries at 1/day.
     # Human traders become more selective in difficult markets and don't force setups.
