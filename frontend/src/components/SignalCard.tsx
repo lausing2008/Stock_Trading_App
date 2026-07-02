@@ -124,6 +124,8 @@ type Reasons = {
   short_interest_flag?: string | null;
   analyst_momentum?: string | null;
   analyst_momentum_adj?: number | null;
+  // T223: outcome-based calibrated win rate from signal_outcomes
+  calibrated_win_rate?: number | null;
   // T220: institutional intelligence suite
   insider_cluster?: boolean;
   insider_buy_usd?: number | null;
@@ -710,6 +712,29 @@ export default function SignalCard({ signal }: { signal: Signal }) {
           style={{ width: `${signal.bullish_probability * 100}%` }}
         />
       </div>
+
+      {/* T223: Historical win rate from outcome calibration */}
+      {reasons?.calibrated_win_rate != null && (
+        <div className="flex items-center justify-between mb-3 px-1">
+          <span
+            className="text-xs text-slate-500"
+            title="Win rate for signals at this confidence level — from last 180 days of signal outcomes"
+          >
+            Historical win rate
+          </span>
+          <span
+            className={`text-xs font-semibold ${
+              reasons.calibrated_win_rate >= 0.55
+                ? 'text-green-400'
+                : reasons.calibrated_win_rate >= 0.48
+                ? 'text-amber-400'
+                : 'text-slate-400'
+            }`}
+          >
+            {(reasons.calibrated_win_rate * 100).toFixed(0)}%
+          </span>
+        </div>
+      )}
 
       {/* Reasoning factors */}
       {factors.length > 0 && (
