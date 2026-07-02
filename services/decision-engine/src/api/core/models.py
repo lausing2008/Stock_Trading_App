@@ -63,6 +63,7 @@ class Multipliers(BaseModel):
     consensus: float = 1.0
     earnings: float = 1.0
     breadth: float = 1.0
+    vix: float = 1.0
 
 
 # ── Main response ──────────────────────────────────────────────────────────────

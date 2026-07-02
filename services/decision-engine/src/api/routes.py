@@ -114,6 +114,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     regime = get_regime(market)
     regime_state = regime.get("state", "neutral")
     breadth_size_mult = float(regime.get("breadth_size_mult", 1.0))
+    vix_size_mult     = float(regime.get("vix_size_mult", 1.0))
     is_pre_choppy = bool(regime.get("is_pre_choppy", False))
     is_pre_risk_off = bool(regime.get("is_pre_risk_off", False))
 
@@ -207,6 +208,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         days_to_earnings=dte_int,
         cfg=cfg,
         breadth_size_mult=breadth_size_mult,
+        vix_size_mult=vix_size_mult,
     )
 
     # 10. T203: Optional LLM scoring layer (after hard rejects, before final verdict)

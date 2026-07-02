@@ -66,7 +66,7 @@ def _compute_us() -> dict:
         "spy_price": None, "spy_ema20": None, "spy_ema50": None, "spy_ema200": None,
         "spy_20d_ret": None, "qqq_price": None, "qqq_ema50": None,
         "vix_5d_trend": None, "vix_term_inverted": False,
-        "breadth_weak": False, "breadth_size_mult": 1.0,
+        "breadth_weak": False, "breadth_size_mult": 1.0, "vix_size_mult": 1.0,
         "is_pre_choppy": False, "is_pre_risk_off": False,
         "notes": [],
     }
@@ -161,11 +161,22 @@ def _compute_us() -> dict:
         result["state"] = "choppy"
         notes.append("Choppy: SPY hugging EMA20")
     elif spy and e200 and e50 and spy > e200 and spy > e50:
-        result["state"] = "bull"
-        notes.append("Bull: SPY above 200EMA and 50EMA")
+        if result["breadth_weak"]:
+            # HIGH-1: narrow rally — large caps up but IWM+MDY both below 200EMA.
+            # Downgrade to neutral to raise buy threshold and reduce position size.
+            result["state"] = "neutral"
+            notes.append("Neutral: SPY above 200/50EMA but IWM+MDY both below 200EMA — narrow rally")
+        else:
+            result["state"] = "bull"
+            notes.append("Bull: SPY above 200EMA and 50EMA")
     else:
         result["state"] = "neutral"
         notes.append("Neutral: mixed signals")
+
+    # HIGH-4: VIX-based position size gradient — smooth scaling from 1.0 at VIX≤20 to 0.5 at VIX≥35.
+    # Avoids cliff-edge bands: VIX=26 now gets 0.80x, VIX=30 gets 0.67x, VIX=35+ gets 0.50x.
+    if vix is not None:
+        result["vix_size_mult"] = round(max(0.5, 1.0 - max(0.0, (vix - 20.0) / 30.0)), 3)
 
     # Pre-regime early-warning flags (F11) — only relevant in bull/neutral
     if result["state"] in ("bull", "neutral"):

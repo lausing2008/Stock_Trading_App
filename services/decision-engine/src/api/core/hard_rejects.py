@@ -84,20 +84,6 @@ def check_hard_rejects(
     if daily_pnl_pct <= -abs(max_daily_loss):
         return f"Daily loss limit hit ({daily_pnl_pct*100:.1f}% ≤ -{max_daily_loss*100:.0f}%)"
 
-    # T186: Sector concentration — block if too many open positions already in this sector.
-    # open_sector_counts and candidate_sector are passed by paper_trading_engine per candidate.
-    _open_sector_counts = cfg.get("open_sector_counts")
-    _candidate_sector = cfg.get("candidate_sector")
-    if _open_sector_counts is not None and _candidate_sector is not None:
-        _sector_key = _candidate_sector or "unclassified"
-        _sector_existing = int(_open_sector_counts.get(_sector_key, 0))
-        _max_sector = int(cfg.get("max_sector_positions", 3))
-        if _sector_existing >= _max_sector:
-            return (
-                f"Sector concentration: {_sector_existing}/{_max_sector} open positions already "
-                f"in '{_sector_key}' — diversification gate"
-            )
-
     # T187: Consecutive loss cooldown — too many straight losses means the market is not
     # behaving as expected; entries suspended until next winning trade.
     _consec_losses = int(cfg.get("consec_losses", 0))

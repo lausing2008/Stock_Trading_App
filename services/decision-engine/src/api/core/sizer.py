@@ -38,6 +38,7 @@ def compute_position(
     days_to_earnings: int | None,
     cfg: dict,
     breadth_size_mult: float = 1.0,
+    vix_size_mult: float = 1.0,
 ) -> tuple[PositionPlan, Multipliers]:
     """Return (PositionPlan, Multipliers)."""
 
@@ -97,6 +98,7 @@ def compute_position(
         consensus=consensus_mult,
         earnings=earnings_mult,
         breadth=breadth_size_mult,
+        vix=vix_size_mult,
     )
 
     # ── Share calculation ──────────────────────────────────────────────────────
@@ -106,6 +108,7 @@ def compute_position(
         equity * risk_per_trade
         * earnings_mult * regime_mult * confidence_mult * research_mult * consensus_mult
         * breadth_size_mult
+        * vix_size_mult
     )
     shares = risk_dollar / stop_dist
 
