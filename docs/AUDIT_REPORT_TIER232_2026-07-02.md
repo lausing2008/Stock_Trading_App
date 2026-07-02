@@ -11,74 +11,96 @@ Redis was inspected to confirm CAL-1 is latent (no corrupted keys applied yet lo
 
 ---
 
-## Part 1 — What the Live Data Says (measured 2026-07-02, local DB)
+## Part 1 — What the Live Data Says (PRODUCTION EC2, measured 2026-07-02)
 
-> ⚠️ The local DB's last scored outcome is **2026-06-12** (see DATA-1). Production (EC2) was not
-> queried in this audit — re-run these queries there before acting on absolute numbers.
+> Initial queries against the local docker DB turned out to be a **stale dev copy** (data ends
+> 2026-06-12, zero paper trades). All numbers below are from **production** (18.205.121.71),
+> queried the same day. Production has 1,308 scored outcomes (2026-05-25 → 2026-06-24, evaluation
+> job current — later signal_dates are still maturing).
 
-### Win rate by direction (all scored outcomes, 180d)
+### ⚠️ CAL-1 IS ACTIVE IN PRODUCTION
+
+`stockai:signal_thresholds:SWING = 0.62` exists in production Redis (TTL ≈ 26 days remaining →
+set ~2026-06-28, the weekly Sunday calibrate/apply). That confidence-scale 62 (≡ fused 0.81) is
+being applied as **fused > 0.62** in all regimes — 0.10 below the vetted bull threshold (0.72),
+0.14 below bear (0.76). Measured impact: **150 of 373 SWING BUY signals in the last 7 days (40%)
+fired below the vetted threshold** (TSLA 0.672, MDB 0.615, SMH 0.625 among 2026-07-02's).
+Earlier Sunday applies may have corrupted thresholds for weeks. **Immediate mitigation:**
+`docker exec stockai-redis-1 redis-cli del stockai:signal_thresholds:SWING` on EC2, then trigger
+a signal refresh for both markets.
+
+### Win rate by direction (all scored outcomes)
 
 | Direction | n | Win rate | Avg return |
 |---|---|---|---|
-| BUY | 98 | **63.3%** | +6% |
-| SELL | 229 | **43.7%** | (price moved +4% against) |
+| BUY | 534 | **44.6%** | **−1.19%** |
+| SELL | 774 | 52.5% | +0.19% (i.e. price fell after SELL slightly more often than not) |
 
-**SELL fires 2.3× as often as BUY and is wrong more often than right.**
+**Production BUY signals are net losing money.** (The local dev copy showed the opposite —
+its 8-day sample was a bull window; production's 4-week sample is the real base rate.)
 
 ### BUY win rate by horizon × market
 
 | Horizon | Market | n | Win rate |
 |---|---|---|---|
-| SHORT | US | 12 | 58.3% |
-| SHORT | HK | 5 | 100% |
-| SWING | US | 28 | 57.1% |
-| SWING | HK | 9 | 100% |
-| GROWTH | US | 35 | **48.6%** ← weakest BUY cohort |
-| GROWTH | HK | 9 | 88.9% |
+| SHORT | US | 227 | 53.3% ← best BUY cohort |
+| SHORT | HK | 71 | 42.3% |
+| SWING | US | 139 | **38.1%** |
+| SWING | HK | 53 | **28.3%** ← worst BUY cohort |
+| GROWTH | US | 23 | 52.2% |
+| GROWTH | HK | 17 | 29.4% |
+| LONG | HK | 4 | 50.0% |
+
+**SWING BUY — the horizon whose threshold is corrupted by CAL-1 — is the worst-performing
+BUY cohort in both markets.** These outcomes cover signals through 2026-06-17; if earlier
+weekly applies also wrote miscalibrated keys, part of this underperformance IS the CAL-1 bug.
 
 ### SELL win rate by horizon × market
 
 | Horizon | Market | n | Win rate |
 |---|---|---|---|
-| SHORT | US | 72 | **33.3%** ← worst cohort, largest sample |
-| SHORT | HK | 31 | 45.2% |
-| SWING | US | 51 | 45.1% |
-| SWING | HK | 26 | 53.8% |
-| GROWTH | US | 36 | 44.4% |
-| GROWTH | HK | 13 | 69.2% |
+| SHORT | US | 222 | 43.7% |
+| SHORT | HK | 119 | **68.1%** |
+| SWING | US | 220 | 46.4% |
+| SWING | HK | 87 | 66.7% |
+| GROWTH | US | 82 | 47.6% |
+| GROWTH | HK | 40 | 62.5% |
+
+**HK SELLs are genuinely good (62–68%); US SELLs hover below 50%.** The direction-blind
+suppression findings (SIG-3/SIG-5) mean the healthy HK SELL cohort is being muted in exactly
+the regimes that confirm it.
 
 ### Fixed-window win rates (scored rows only)
 
 | Direction | 5d | 10d | 20d |
 |---|---|---|---|
-| BUY | 72.4% (n=98) | 78.6% (n=98) | 70.9% (n=55) |
-| SELL | 70.1% (n=184) | 64.7% (n=184) | **37.4%** (n=91) |
+| BUY | 45.1% (n=534) | 42.3% (n=381) | 47.3% (n=186) |
+| SELL | 59.8% (n=492) | 60.1% (n=404) | 48.4% (n=289) |
 
-**Interpretation:** BUY signals have durable edge. SELL signals are valid short-term
-(5–10 days) but the stocks recover — by 20 days a SELL is wrong ~2/3 of the time.
-SELL horizons should be shortened, not abandoned.
+### Paper trading P&L (production — the engine IS live there)
 
-### Confidence calibration (BUY): monotonic — the T223 calibration concept works
+| Portfolio | Closed | Open | Win rate | Closed P&L |
+|---|---|---|---|---|
+| GROWTH Paper Portfolio | 9 | 7 | 11.1% | −$574 |
+| US SWING Portfolio | 14 | 7 | 35.7% | −$452 |
+| HK SWING Portfolio | 4 | 0 | 0% | −$6,611 |
+| HK GROWTH Portfolio | 5 | 0 | 0% | −$4,153 |
+| ETrade Sandbox SWING | 0 | 1 | — | — |
 
-| Confidence decile | n | Win rate |
-|---|---|---|
-| 10–20 | 11 | 54.5% |
-| 20–30 | 56 | 60.7% |
-| 30–40 | 25 | 64.0% |
-| 40–50 | 5 | 100% |
+**All portfolios are losing; aggregate closed P&L ≈ −$11,800.** The HK portfolios lost the
+most per trade (avg −$1,300+/trade) despite HK SELL signals being the system's most accurate
+cohort — consistent with the engine buying into the cohort (HK SWING/GROWTH BUY: 28–29% win
+rate) that the signal data says is worst.
 
-### Structural data gaps
+### Structural data gaps (production)
 
-- **DATA-1 (CRITICAL):** No outcome has been scored since **2026-06-12** (~3 weeks). Either the
-  `outcomes/evaluate` scheduler call is failing, or this local DB is a stale copy of production —
-  verify on EC2 immediately: `SELECT MAX(signal_date) FROM signal_outcomes;`
-- **DATA-2 (CRITICAL):** `paper_trades` has **zero rows ever**; all three portfolios sit at
-  exactly $50,000. The paper trading engine has never executed a single trade (root cause: PT-1).
-  `paper_equity_curve` has 3 rows, also ending 2026-06-12.
-- **DATA-3 (HIGH):** LONG horizon has never been outcome-tracked (only SHORT/SWING/GROWTH exist
-  in `signal_outcomes`).
-- **DATA-4:** Outcome coverage window is only 2026-06-04 → 2026-06-12 — eight days of signals.
-  All win-rate statistics above carry wide confidence intervals.
+- **DATA-1 (revised):** Production outcome evaluation is current (ts_evaluated = 2026-07-02).
+  The local docker DB is a stale dev copy — earlier "tracking stopped" alarm applies to dev only.
+- **DATA-3 (HIGH, confirmed in prod):** LONG horizon has 8 outcome rows total, none since
+  2026-06-03 — effectively untracked.
+- **DATA-5 (NEW):** Local dev and production have materially diverged (schema-identical but
+  data 3 weeks apart, different portfolio sets). Any local analysis of win rates is misleading —
+  add a periodic prod→dev sync or always interrogate production.
 
 ---
 
@@ -144,11 +166,15 @@ to "average return", so EV rewards volatility, not correctness; (c) same unit mi
 **Fix:** sweep `fused_prob <= t` for t ∈ [0.20, 0.40]; use signed SELL profit (`−pct_return`);
 write fused-scale values.
 
-### PT-1 — Paper trading engine has never executed a trade
-**File:** `services/market-data/src/services/paper_trading_engine.py` (see Part 3, PT findings)
+### PT-1 (revised) — Paper trading disabled in local dev; production runs it — and loses
+**File:** `shared/common/config.py:71` + production P&L
 
-Three portfolios, $50,000 each, zero `paper_trades` rows ever. See PT section for the
-root-cause chain and fix.
+`enable_paper_trading` defaults False and `ENABLE_PAPER_TRADING` is absent from every tracked
+env file — the local engine has never run (three untouched $50k portfolios). Production's EC2
+`.env` **does** set it: 47 trades across 5 portfolios. But every portfolio is net negative
+(aggregate ≈ −$11,800 closed P&L, win rates 0–36%) — see Part 1. The PT-2…PT-12 findings
+(gates, sizing stack, pnl accounting) are therefore live production behavior, not theoretical.
+Add the flag to `.env.example` and a startup log line so the dev/prod divergence is visible.
 
 ---
 
@@ -239,7 +265,7 @@ root-cause chain and fix.
 
 | ID | Sev | Location | Finding |
 |---|---|---|---|
-| PT-1 | CRIT | shared/common/config.py:71, scheduler.py:450,2283 | **Zero-trades root cause: `enable_paper_trading` defaults to `False` and `ENABLE_PAPER_TRADING` is set in NO env file** (.env, .env.production, examples, docker-compose — verified by grep). Both scheduler invocation sites gate on it, so `paper_trading_step()` has never been called. `ensure_portfolio_exists` runs regardless, which is why three $50,000 portfolios exist with zero trades. ✅ VERIFIED. Fix: add `ENABLE_PAPER_TRADING=true` to the EC2 `.env`, restart market-data, verify with `docker logs … \| grep 'paper.regime_classified'`; add a startup log line stating the flag's value. |
+| PT-1 | MED (revised) | shared/common/config.py:71, scheduler.py:450,2283 | `enable_paper_trading` defaults `False`; `ENABLE_PAPER_TRADING` absent from every tracked env file — the **local dev** engine has never run (three untouched $50k portfolios; masked because `ensure_portfolio_exists` runs regardless). **Production's EC2 .env does set it** — 47 trades, 5 portfolios, all losing (Part 1). Fix: add the flag (commented) to `.env.example`/`.env.production.example` and a startup log line stating its value so dev/prod divergence is visible. |
 | PT-2 | HIGH | paper_trading_engine.py:2221-2231 | **Second 100% blocker in line:** the scan aborts unless a watchlist has `trading_style` matching the portfolio style — production watchlists are themed lists with NULL style, and `GROWTH` isn't even in the documented value set (`SHORT\|SWING\|LONG\|None`). After PT-1 is fixed, entries will still be zero until a watchlist is tagged per style (or the scan falls back to all active market stocks with a warning). |
 | PT-3 | HIGH | paper_trading_engine.py:2873 | `float(None)` TypeError: signal-engine stores `reasons["volume_z"] = None` when NaN; `.get("volume_z", 0)` returns None (key exists) → `float(None)` raises, propagates to the outer except → **one bad candidate aborts the scan for ALL portfolios**. Fix: `float(x or 0.0)` (the ta_score gate 30 lines later already does this) + wrap the per-candidate loop in try/except. |
 | PT-4 | HIGH | paper_trading_engine.py:2967-2988 | TIER66 conviction-gate cross-block: if the *alert* gate (confidence ≥60, analyst consensus, confluence ≥75) failed for a subscribed symbol, paper entry is hard-blocked — silently raising min_confidence from 45/50 to the alert standard, invisible in the gate-block UI. Make it a size multiplier or score penalty, and log via `_write_gate_block`. |
@@ -258,19 +284,23 @@ root-cause chain and fix.
 
 Ranked by expected impact per unit effort:
 
-1. **Freeze the threshold calibration loop until CAL-1/CAL-2/CAL-3 are fixed** (unit conversion,
-   per-regime keys, SELL sweep direction+sign). Check production Redis for
-   `stockai:signal_thresholds:*` keys and delete them. One bad weekly apply can move live win
-   rate by tens of points. *(Effort: S, Impact: prevents catastrophe)*
+1. **Delete the live corrupted key and freeze the calibration loop until CAL-1/CAL-2/CAL-3 are
+   fixed.** `stockai:signal_thresholds:SWING = 0.62` is ACTIVE in production — 40% of the last
+   week's SWING BUYs fired below the vetted threshold. Delete the key
+   (`redis-cli del stockai:signal_thresholds:SWING` on EC2), trigger a US+HK signal refresh,
+   and disable the weekly apply job until the unit conversion, per-regime keys, and SELL sweep
+   direction are fixed. SWING BUY (38.1% US / 28.3% HK) is already the worst BUY cohort.
+   *(Effort: S, Impact: stops active bleeding)*
 2. **Fix ML-1 (one line)** — `pd.to_datetime(df["ts"])` — resurrecting 4 dead time-varying
    fundamental features, then retrain. *(S)*
 3. **Make SELL direction-aware (SIG-3 + SIG-5 + SIG-10):** guard the pillar gate and the three
    macro compressions with `fused > 0.5`, regime-tier the sell threshold, require bearish-pillar
    evidence. SELL is 43.7% overall / 33.3% US-SHORT — the single biggest measured accuracy hole,
    and these are one-line guards. *(S–M)*
-4. **Shorten SELL horizons or re-score SELL wins at 5–10d:** SELLs are 70% correct at 5 days,
-   37% at 20 — the signal is real but decays. Score SELL outcomes on a 5–10d window and set SELL
-   alert copy accordingly. *(M)*
+4. **Exploit the SELL edge where it exists:** production SELLs win 59.8% at 5d / 60.1% at 10d,
+   decaying to 48% at 20d — and HK SELLs win 62–68% at the primary horizon. Score SELL outcomes
+   on 5–10d windows, and stop suppressing HK SELLs via the direction-blind HSI-bear gate (SIG-5)
+   — the system's most accurate cohort is the one being muted. *(M)*
 5. **Make the ML test set honest (ML-2 + ML-3 + ML-4):** threshold from the calibration slice,
    purge/embargo `horizon` bars (`TimeSeriesSplit(gap=horizon)`), fix the type-mismatched
    overlap drop. Reported precision will DROP — to the truth — making every downstream gate
@@ -285,15 +315,16 @@ Ranked by expected impact per unit effort:
    zero-trade states → deliberate, tunable ones. *(M)*
 9. **Fix KS-1 (wrong TA port — one line) and KS-2 (one-entry sector map):** restores the
    pattern column and makes detail-page K-Score agree with the leaderboard. *(S)*
-10. **Restart outcome tracking and verify on production (DATA-1):** without fresh outcomes,
-    every calibration loop in the system is flying blind. Confirm `outcomes/evaluate` is
-    running on EC2 and backfill the gap since 2026-06-12. *(S)*
+10. **Add LONG-horizon outcome tracking (DATA-3) and a prod→dev data sync (DATA-5):** LONG has
+    8 outcome rows ever; and the local dev DB being 3 weeks stale produced a completely inverted
+    picture of system health during this audit. *(S)*
 
-**Raise US GROWTH BUY quality (48.6%, n=35):** the T225-B ml_prob>0.85 compression gate that
-fixed SWING was never extended to GROWTH even though the profile's own comment documents 33%
-win rate for those signals — extend it, or raise the GROWTH bull threshold a notch. HK signals
-(88–100% BUY win rates) suggest the HK pipeline is healthy; the US GROWTH cohort is where BUY
-accuracy leaks.
+**Confront the production base rate: BUY signals lose money (44.6% win, −1.19% avg return,
+n=534).** The weakest cohorts are SWING BUY (38.1% US / 28.3% HK) — the exact horizon whose
+threshold CAL-1 corrupted — and HK BUYs generally (28–42%). Until the calibration loop, ML test
+honesty (ML-2/3/4), and SELL-suppression fixes land and a clean 4-week outcome sample exists,
+treat BUY alerts (especially SWING and HK) as unvalidated. Paper trading confirms it with real
+losses: −$11,800 aggregate, worst in the HK portfolios that buy into the 28–29% win-rate cohort.
 
 ---
 

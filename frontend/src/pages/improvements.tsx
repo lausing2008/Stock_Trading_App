@@ -8026,9 +8026,9 @@ const ITEMS: Item[] = [
     tier: 232 as const, severity: 'critical', defaultStatus: 'todo' as const,
     file: 'services/signal-engine/src/api/routes.py',
     effort: 'S',
-    impact: 'Critical — confidence = |fused−0.5|×200 (0–100 scale), but outcomes_calibrate_apply writes best_t/100 to stockai:signal_thresholds:{STYLE}, which _decide_style compares against fused probability (0–1). A swept confidence of 40 (≡ fused 0.70) applies as fused>0.40 — ~30 probability points looser than the vetted 0.72 SWING threshold. One weekly apply can flood BUY signals system-wide. Verified against source; Redis currently has no corrupted keys (latent).',
+    impact: 'Critical — ACTIVE IN PRODUCTION: stockai:signal_thresholds:SWING = 0.62 found in prod Redis (set ~2026-06-28 by the weekly Sunday apply). 150 of 373 SWING BUYs in the last 7 days (40%) fired below the vetted 0.72 threshold (TSLA 0.672, MDB 0.615, SMH 0.625 on 2026-07-02). confidence = |fused−0.5|×200, but the apply writes best_t/100 which _decide_style compares against fused probability — confidence 62 ≡ fused 0.81, applied as 0.62. SWING BUY is already the worst cohort (38.1% US / 28.3% HK).',
     what: 'The sweep at routes.py:3306-3340 operates on SignalOutcome.confidence but the reader (signals.py:1434) consumes fused-probability scale. Baseline comparison (t_int == int(current_t)) is equally cross-scale. SELL key has the same bug.',
-    fix: 'Sweep on SignalOutcome.fused_prob directly (stored in the table), or convert: BUY fused_t = 0.5 + best_t/200, SELL fused_t = 0.5 − best_t/200. Add a sanity clamp in _get_dynamic_buy_threshold rejecting values outside [0.55, 0.80]. Check production Redis for stockai:signal_thresholds:* and delete before fix ships.',
+    fix: 'IMMEDIATE: docker exec stockai-redis-1 redis-cli del stockai:signal_thresholds:SWING on EC2, then trigger US+HK signal refresh. Then: sweep on SignalOutcome.fused_prob directly, or convert BUY fused_t = 0.5 + best_t/200 / SELL 0.5 − best_t/200. Add a sanity clamp in _get_dynamic_buy_threshold rejecting values outside [0.55, 0.80]. Disable the weekly apply until fixed.',
   },
   {
     id: 'T232-CAL2-DYNAMIC-THRESHOLD-REGIME-BLIND',
@@ -8262,13 +8262,13 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T232-PT1-PAPER-TRADING-NEVER-ENABLED',
-    title: 'Paper trading has NEVER executed a trade — ENABLE_PAPER_TRADING defaults False, set nowhere',
-    tier: 232 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    title: 'ENABLE_PAPER_TRADING absent from tracked env files — local dev engine never runs (prod has it set)',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'todo' as const,
     file: 'shared/common/config.py',
     effort: '15min',
-    impact: 'Critical — config.py:71 declares enable_paper_trading: bool = False; both scheduler invocation sites (scheduler.py:450, 2283) gate on it; ENABLE_PAPER_TRADING appears in NO env file (.env, .env.production, examples, docker-compose — verified by grep). paper_trading_step() has never been called. Explains the observed state exactly: three portfolios at exactly $50,000, zero paper_trades rows ever, equity curve with 3 rows. Verified against source.',
-    what: 'ensure_portfolio_exists runs at startup regardless of the flag (so the UI works), masking the fact that the engine itself never runs.',
-    fix: 'Add ENABLE_PAPER_TRADING=true to the EC2 .env and restart stockai-market-data-1. Verify: docker logs stockai-market-data-1 | grep paper.regime_classified. Add the key (commented) to .env examples and a startup log line stating whether paper trading is enabled so this cannot silently regress.',
+    impact: 'Medium (revised after prod check) — config.py:71 defaults False and no tracked env file sets it, so the LOCAL engine has never run (three untouched $50k portfolios, zero trades — masked because ensure_portfolio_exists runs regardless). Production EC2 .env DOES set it: 47 trades across 5 portfolios — all losing (aggregate ≈ −$11,800 closed P&L, win rates 0–36%), so the PT-2…PT-12 gate/sizing/pnl findings are live production behavior.',
+    what: 'Local dev and production have silently diverged: local DB data ends 2026-06-12, prod is current. Local analysis of win rates during this audit was inverted vs production reality.',
+    fix: 'Add ENABLE_PAPER_TRADING (commented) to .env.example/.env.production.example; add a startup log line stating whether paper trading is enabled; consider a periodic prod→dev DB sync so local analysis is not misleading.',
   },
   {
     id: 'T232-PT2-WATCHLIST-STYLE-GATE',
@@ -8322,13 +8322,13 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T232-DATA1-OUTCOME-TRACKING-STOPPED',
-    title: 'No signal outcome scored since 2026-06-12 — all calibration loops flying blind',
-    tier: 232 as const, severity: 'critical', defaultStatus: 'todo' as const,
+    title: 'LONG horizon effectively untracked (8 rows ever) + production BUY base rate is 44.6% / −1.19%',
+    tier: 232 as const, severity: 'high', defaultStatus: 'todo' as const,
     file: 'services/market-data/src/services/scheduler.py',
     effort: 'S',
-    impact: 'Critical — signal_outcomes MAX(signal_date) = 2026-06-12 (~3 weeks stale) in the local DB, and paper_equity_curve also ends 2026-06-12. Either the outcomes/evaluate scheduler call is failing (jose-401 class failure?) or the local DB is a stale copy. Every calibration/threshold/win-rate mechanism depends on fresh outcomes. LONG horizon has NEVER been outcome-tracked. Total coverage is only 8 days of signals (Jun 4–12) — all win-rate stats carry wide confidence intervals.',
-    what: 'Discovered during live-DB interrogation. Also: paper_trades has zero rows ever — the paper trading engine has never executed a single trade (see T232-PT1).',
-    fix: 'Verify on EC2: SELECT MAX(signal_date) FROM signal_outcomes. Check docker logs for outcomes/evaluate 401s or errors. Backfill the gap. Add LONG to _OUTCOME_HOLD_DAYS tracking. Add a staleness alert when MAX(ts_evaluated) > 3 days old.',
+    impact: 'High (revised after prod check) — production outcome evaluation IS current (1,308 rows, ts_evaluated 2026-07-02; the "tracking stopped" alarm was the stale local dev DB). But: LONG horizon has 8 outcome rows total, none since 2026-06-03. And the production base rates are alarming: BUY wins 44.6% with −1.19% avg return (n=534); SWING BUY 38.1% US / 28.3% HK; HK BUY 28–42% across horizons. HK SELL is the strongest cohort (62–68%) yet is muted by direction-blind gates (T232-SIG5).',
+    what: 'Production interrogation 2026-07-02. Paper trading confirms with real money: all 5 portfolios negative, ~−$11,800 aggregate closed P&L.',
+    fix: 'Add LONG to outcome tracking. Add a staleness alert when MAX(ts_evaluated) > 3 days. Treat SWING/HK BUY alerts as unvalidated until the calibration + ML honesty fixes land and a clean 4-week sample exists.',
   },
 
   // ── Tier 231 — System Audit: Win Rate, Signal Quality & ML Integrity (2026-07-01) ─────────────────────────────────
@@ -13052,7 +13052,7 @@ const TIER_LABEL: Record<Tier, string> = {
   229: 'Tier 229 — Deep Codebase Audit: Critical bugs, data integrity, service connectivity',
   230: 'Tier 230 — Professional Platform Parity: TradingView, Investing.com, Bloomberg gaps',
   231: 'Tier 231 — System Audit: Win Rate, Signal Quality & ML Integrity (5 Critical · 3 High · 6 Medium)',
-  232: 'Tier 232 — Deep System Audit: Calibration Loop, ML Integrity, SELL Accuracy, Paper Trading (5 Critical · 17 High · 9 Medium)',
+  232: 'Tier 232 — Deep System Audit: Calibration Loop, ML Integrity, SELL Accuracy, Paper Trading (4 Critical · 17 High · 10 Medium) — CAL-1 ACTIVE in prod',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
