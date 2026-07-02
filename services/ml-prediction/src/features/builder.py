@@ -62,6 +62,10 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
+from common.logging import get_logger
+
+log = get_logger("ml-prediction.builder")
+
 
 def _adj_close(df: pd.DataFrame) -> pd.Series:
     """Return adj_close when available (filling gaps with close), else close."""
@@ -779,13 +783,20 @@ def build_features(
     # T228-POINT-IN-TIME-FUNDAMENTALS: override broadcasted values with per-row snapshots.
     # These 4 columns are time-varying — broadcasting today's values to all historical rows
     # creates lookahead bias.  fund_snapshots is a list of dicts with "snapshot_date" + columns.
+    #
+    # T232-ML1 fix: `out` carries `df`'s RangeIndex (0..n-1), not a DatetimeIndex. The previous
+    # `pd.to_datetime(out.index)` therefore interpreted those integers as nanoseconds since
+    # epoch, turning every "price date" into 1970-01-01 — merge_asof against real snapshot
+    # dates matched nothing and all 4 PIT columns silently became NaN for the entire training
+    # set (caught by the blanket except below, so no error surfaced). Use the actual bar dates
+    # (`dates`, already computed above from df["ts"] for the macro/sector/outcome joins).
     _PIT_COLS = ["revenue_growth", "earnings_growth", "return_on_equity", "recommendation_mean"]
     if not inference_mode and fund_snapshots:
         try:
             _snap_df = pd.DataFrame(fund_snapshots)
             _snap_df["snapshot_date"] = pd.to_datetime(_snap_df["snapshot_date"])
             _snap_df = _snap_df.sort_values("snapshot_date").reset_index(drop=True)
-            _price_dates = pd.to_datetime(out.index).rename("date")
+            _price_dates = pd.to_datetime(dates).rename("date")
             _left = pd.DataFrame({"date": _price_dates}, index=out.index)
             _merged = pd.merge_asof(
                 _left.reset_index(),
@@ -795,11 +806,15 @@ def build_features(
                 direction="backward",
             )
             _merged = _merged.set_index("index")
-            for col in _PIT_COLS:
-                if col in _merged.columns:
+            _pit_cols_present = [c for c in _PIT_COLS if c in _merged.columns]
+            if _pit_cols_present and _merged[_pit_cols_present].notna().any().any():
+                for col in _pit_cols_present:
                     out[col] = _merged[col].values
-        except Exception:
-            pass  # fall through — broadcast values remain (training still usable, just biased)
+            else:
+                log.warning("builder.pit_join_all_nan", symbol=(fund_data or {}).get("_symbol"))
+        except Exception as _pit_exc:
+            log.warning("builder.pit_join_failed", error=str(_pit_exc))
+            # fall through — broadcast values remain (training still usable, just biased)
 
     # --- Target ---
     fwd_ret = c.shift(-horizon) / c - 1

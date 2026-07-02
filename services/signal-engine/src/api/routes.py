@@ -3166,13 +3166,13 @@ def outcomes_calibrate(
     _STYLE_PROFILES so you can see whether signal tuning is needed.
     """
     import statistics as _stats
+    from ..generators.signals import _STYLE_PROFILES
 
-    # Current bull-regime thresholds from signals.py _STYLE_PROFILES (0-1 scale → 0-100)
+    # Current bull-regime thresholds, fused-probability scale (T232-CAL1: sweep/report on the
+    # same scale _decide_style actually compares against — previously this used a 0-100
+    # confidence scale here while POST /apply wrote a misinterpreted 0-100 value too).
     CURRENT: dict[str, float] = {
-        "SHORT":  63.0,
-        "SWING":  67.0,
-        "LONG":   60.0,
-        "GROWTH": 60.0,
+        h: _STYLE_PROFILES[h]["buy_threshold"]["bull"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
     }
 
     cutoff = date.today() - timedelta(days=days)
@@ -3187,10 +3187,10 @@ def outcomes_calibrate(
     calibrations = []
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
         bucket = [o for o in all_outcomes if o.horizon.value == h]
-        current_t = CURRENT.get(h, 65.0)
+        current_t = CURRENT.get(h, 0.65)
 
         def _stats_at(threshold: float, samples: list) -> dict | None:
-            sub = [o for o in samples if o.confidence >= threshold]
+            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob >= threshold]
             if len(sub) < min_samples:
                 return None
             wins = sum(1 for o in sub if o.is_correct)
@@ -3207,25 +3207,25 @@ def outcomes_calibrate(
         if len(bucket) < min_samples:
             calibrations.append({
                 "horizon": h,
-                "current_threshold": current_t / 100,
+                "current_threshold": current_t,
                 "suggested_threshold": None,
                 "n_total": len(bucket),
                 "note": f"Insufficient data (need ≥{min_samples} evaluated BUY outcomes)",
             })
             continue
 
-        # Sweep thresholds on 0-100 scale from 40 to 85
+        # Sweep fused_prob thresholds 0.55-0.85
         best_ev = -999.0
         best_t: float | None = None
         best_stats: dict | None = None
-        for t_int in range(40, 86):
-            st = _stats_at(float(t_int), bucket)
+        for t_i in range(55, 86):
+            st = _stats_at(t_i / 100.0, bucket)
             if st is None:
                 continue
             ev = st["expected_value_pct"]
             if ev > best_ev:
                 best_ev = ev
-                best_t = float(t_int)
+                best_t = t_i / 100.0
                 best_stats = st
 
         at_current = _stats_at(current_t, bucket)
@@ -3235,8 +3235,8 @@ def outcomes_calibrate(
 
         calibrations.append({
             "horizon": h,
-            "current_threshold": current_t / 100,
-            "suggested_threshold": round(best_t / 100, 2) if best_t else None,
+            "current_threshold": current_t,
+            "suggested_threshold": round(best_t, 2) if best_t else None,
             "ev_lift_pct": ev_lift,
             "n_total": len(bucket),
             "at_current_threshold": at_current,
@@ -3253,28 +3253,39 @@ def outcomes_calibrate(
 @router.post("/outcomes/calibrate/apply")
 def outcomes_calibrate_apply(
     days: int = Query(180, description="Look-back window in calendar days"),
-    min_samples: int = Query(15, description="Minimum signals required to apply a new threshold"),
+    min_samples: int = Query(50, description="Minimum signals required to apply a new threshold"),
     min_ev_lift: float = Query(0.1, description="Minimum expected-value lift (%) before applying"),
     _: str = Depends(get_current_username),
     session: Session = Depends(get_session),
 ):
-    """Apply empirically-optimal buy thresholds to Redis so signal generator picks them up live.
+    """Apply empirically-optimal buy/sell thresholds to Redis so signal generator picks them up live.
+
+    T232-CAL1/CAL3 fix: sweeps and writes directly on the fused-probability (0-1) scale that
+    _decide_style actually compares against — previously this swept SignalOutcome.confidence
+    (a 0-100 distance-from-neutral scale) and wrote best_t/100, which was silently misapplied
+    as a fused-probability threshold (confidence 62 ≡ fused 0.81, was written+read as 0.62).
 
     Reads the same calibration data as GET /outcomes/calibrate and, for each horizon
     where the suggested threshold has a positive EV lift and sufficient sample size,
-    writes `stockai:signal_thresholds:{HORIZON}` to Redis with a 30-day TTL.
+    writes `stockai:signal_thresholds:{HORIZON}` to Redis with a 30-day TTL. The value
+    written is a delta from the hardcoded bull baseline, applied per-regime by
+    _get_dynamic_buy_threshold (T232-CAL2) rather than overriding all regimes with one flat
+    number, and is bounds-checked before being written (defense in depth alongside the
+    reader-side clamp).
 
     The signal generator reads these keys at signal decision time (falls back to the
     hardcoded _STYLE_PROFILES values if absent).  Run this weekly via the scheduler.
     """
     import statistics as _stats
+    from ..generators.signals import _STYLE_PROFILES
 
+    # Bull-regime buy thresholds — source of truth is _STYLE_PROFILES (T232-SIG12: no more
+    # independently-drifting hardcoded copies).
     CURRENT: dict[str, float] = {
-        "SHORT":  63.0,
-        "SWING":  67.0,
-        "LONG":   60.0,
-        "GROWTH": 60.0,
+        h: _STYLE_PROFILES[h]["buy_threshold"]["bull"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
     }
+    _BUY_BOUNDS = (0.55, 0.85)
+    _SELL_BOUNDS = (0.15, 0.45)
 
     cutoff = date.today() - timedelta(days=days)
     all_outcomes = session.execute(
@@ -3292,7 +3303,7 @@ def outcomes_calibrate_apply(
 
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
         bucket = [o for o in all_outcomes if o.horizon.value == h]
-        current_t = CURRENT.get(h, 65.0)
+        current_t = CURRENT.get(h, 0.65)  # fused-probability scale
 
         if len(bucket) < min_samples:
             skipped.append({"horizon": h, "reason": f"only {len(bucket)} samples (need {min_samples})"})
@@ -3303,8 +3314,10 @@ def outcomes_calibrate_apply(
         best_stats: dict | None = None
         current_stats: dict | None = None
 
-        for t_int in range(40, 86):
-            sub = [o for o in bucket if o.confidence >= float(t_int)]
+        # Sweep on fused_prob directly (0.55-0.85, 1pt steps) — the scale _decide_style reads.
+        for t_i in range(55, 86):
+            t = t_i / 100.0
+            sub = [o for o in bucket if o.fused_prob is not None and o.fused_prob >= t]
             if len(sub) < min_samples:
                 continue
             wins = sum(1 for o in sub if o.is_correct)
@@ -3314,39 +3327,51 @@ def outcomes_calibrate_apply(
             ev = acc * avg_ret * 100
             if ev > best_ev:
                 best_ev = ev
-                best_t = float(t_int)
+                best_t = t
                 best_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
-            if t_int == int(current_t):
+            if abs(t - current_t) < 0.005:
                 current_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
 
         if best_t is None:
-            skipped.append({"horizon": h, "reason": "no threshold met EV criteria"})
+            skipped.append({"horizon": h, "reason": "no threshold met EV/sample criteria"})
             continue
 
-        current_ev = current_stats["ev_pct"] if current_stats else 0.0
-        ev_lift = round(best_ev - current_ev, 2)
+        if current_stats is None:
+            # T232-OC3: no honest baseline measurable at the current threshold — do not assume
+            # EV 0 (that overstates lift and applies too eagerly). Skip instead.
+            skipped.append({"horizon": h, "reason": "baseline threshold unmeasurable (insufficient samples)"})
+            continue
 
-        if ev_lift < min_ev_lift and abs(best_t - current_t) < 3:
+        ev_lift = round(best_ev - current_stats["ev_pct"], 2)
+
+        if ev_lift < min_ev_lift and abs(best_t - current_t) < 0.03:
             skipped.append({
                 "horizon": h,
                 "reason": f"EV lift {ev_lift}% below min {min_ev_lift}% and threshold shift <3pt",
-                "suggested": best_t / 100,
-                "current": current_t / 100,
+                "suggested": best_t,
+                "current": current_t,
             })
             continue
 
-        # Write to Redis — signal generator reads this at decision time
+        if not (_BUY_BOUNDS[0] <= best_t <= _BUY_BOUNDS[1]):
+            skipped.append({"horizon": h, "reason": f"suggested {best_t} outside sane bounds {_BUY_BOUNDS}"})
+            continue
+
+        # Write to Redis — signal generator reads this at decision time (fused-probability scale)
         redis_key = f"stockai:signal_thresholds:{h}"
-        redis_client.setex(redis_key, _REDIS_TTL, str(round(best_t / 100, 4)))
+        redis_client.setex(redis_key, _REDIS_TTL, str(round(best_t, 4)))
         applied.append({
             "horizon": h,
-            "previous_threshold": current_t / 100,
-            "new_threshold": round(best_t / 100, 4),
+            "previous_threshold": current_t,
+            "new_threshold": round(best_t, 4),
             "ev_lift_pct": ev_lift,
             "stats": best_stats,
         })
 
-    # T228-SELL-CALIBRATION: sweep SELL threshold per horizon
+    # T228-SELL-CALIBRATION (T232-CAL3 fix): sweep SELL threshold per horizon.
+    # For SELL, LOWER fused_prob = stronger conviction (confidence = (0.5-fused)*200), so the
+    # sweep selects fused_prob <= t — the mirror image of the BUY sweep above — and uses signed
+    # SELL profit (a SELL is profitable when price falls, i.e. -pct_return), not abs().
     sell_outcomes = session.execute(
         select(SignalOutcome).where(
             SignalOutcome.signal_date >= cutoff,
@@ -3357,7 +3382,7 @@ def outcomes_calibrate_apply(
 
     sell_applied: list[dict] = []
     sell_skipped: list[dict] = []
-    _CURRENT_SELL = 35  # hardcoded baseline (35% fused_prob boundary)
+    _CURRENT_SELL = 0.35  # fused-probability scale, matches the hardcoded fallback in signals.py
 
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
         s_bucket = [o for o in sell_outcomes if o.horizon.value == h]
@@ -3371,44 +3396,51 @@ def outcomes_calibrate_apply(
         s_best_stats: dict | None = None
         s_current_stats: dict | None = None
 
-        # Sweep: signals with confidence ≤ t_int are "strong SELL" territory
-        for t_int in range(20, 46):
-            sub = [o for o in s_bucket if o.confidence <= float(t_int)]
+        for t_i in range(15, 41):
+            t = t_i / 100.0
+            sub = [o for o in s_bucket if o.fused_prob is not None and o.fused_prob <= t]
             if len(sub) < min_samples:
                 continue
             wins = sum(1 for o in sub if o.is_correct)
-            rets = [abs(o.pct_return) for o in sub if o.pct_return is not None]
+            rets = [-o.pct_return for o in sub if o.pct_return is not None]  # signed: SELL wins on price decline
             acc = wins / len(sub)
             avg_ret = _stats.mean(rets) if rets else 0.0
             ev = acc * avg_ret * 100
             if ev > s_best_ev:
                 s_best_ev = ev
-                s_best_t = float(t_int)
+                s_best_t = t
                 s_best_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
-            if t_int == _CURRENT_SELL:
+            if abs(t - _CURRENT_SELL) < 0.005:
                 s_current_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
 
         if s_best_t is None:
             sell_skipped.append({"horizon": h, "reason": "no SELL threshold met criteria"})
             continue
 
-        s_current_ev = s_current_stats["ev_pct"] if s_current_stats else 0.0
-        s_ev_lift = round(s_best_ev - s_current_ev, 2)
+        if s_current_stats is None:
+            sell_skipped.append({"horizon": h, "reason": "SELL baseline threshold unmeasurable"})
+            continue
 
-        if s_ev_lift < min_ev_lift and abs(s_best_t - _CURRENT_SELL) < 3:
+        s_ev_lift = round(s_best_ev - s_current_stats["ev_pct"], 2)
+
+        if s_ev_lift < min_ev_lift and abs(s_best_t - _CURRENT_SELL) < 0.03:
             sell_skipped.append({
                 "horizon": h, "direction": "SELL",
                 "reason": f"EV lift {s_ev_lift}% below min and shift <3pt",
-                "suggested": s_best_t / 100,
+                "suggested": s_best_t,
             })
             continue
 
-        redis_client.setex(f"stockai:signal_thresholds:SELL:{h}", _REDIS_TTL, str(round(s_best_t / 100, 4)))
+        if not (_SELL_BOUNDS[0] <= s_best_t <= _SELL_BOUNDS[1]):
+            sell_skipped.append({"horizon": h, "reason": f"suggested {s_best_t} outside sane bounds {_SELL_BOUNDS}"})
+            continue
+
+        redis_client.setex(f"stockai:signal_thresholds:SELL:{h}", _REDIS_TTL, str(round(s_best_t, 4)))
         sell_applied.append({
             "horizon": h,
             "direction": "SELL",
-            "previous_threshold": _CURRENT_SELL / 100,
-            "new_threshold": round(s_best_t / 100, 4),
+            "previous_threshold": _CURRENT_SELL,
+            "new_threshold": round(s_best_t, 4),
             "ev_lift_pct": s_ev_lift,
             "stats": s_best_stats,
         })
@@ -3574,13 +3606,17 @@ def signal_watchdog(
 
     Schedule: daily (06:00 ET) from market-data scheduler.
     """
+    from ..generators.signals import _STYLE_PROFILES
+
     _14D = date.today() - timedelta(days=14)
     _7D  = date.today() - timedelta(days=7)
     _REDIS_TTL_7D = 7 * 86400
     _MAX_TIGHTEN = 3
 
-    # Hardcoded bull-regime thresholds as floors
-    _DEFAULT_THRESHOLDS = {"SHORT": 0.63, "SWING": 0.67, "LONG": 0.60, "GROWTH": 0.60}
+    # Bull-regime thresholds as floors — source of truth is _STYLE_PROFILES (T232-SIG12).
+    _DEFAULT_THRESHOLDS = {
+        h: _STYLE_PROFILES[h]["buy_threshold"]["bull"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
+    }
 
     redis_client = _get_redis()
     actions: list[dict] = []

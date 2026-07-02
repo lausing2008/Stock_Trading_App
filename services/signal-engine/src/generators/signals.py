@@ -1386,27 +1386,55 @@ def _redis_get_float(key: str) -> float | None:
         return None
 
 
+_DYNAMIC_BUY_THRESHOLD_BOUNDS = (0.55, 0.85)
+_DYNAMIC_SELL_THRESHOLD_BOUNDS = (0.15, 0.45)
+
+
 def _get_dynamic_buy_threshold(style_key: str, reg: str) -> float | None:
     """Read empirically-calibrated buy threshold from Redis if available.
 
-    Written by POST /outcomes/calibrate/apply (Tier 79).  Returns None if absent so
-    _decide_style falls back to the hardcoded _STYLE_PROFILES value.
+    Written by POST /outcomes/calibrate/apply (Tier 79) on the fused-probability scale
+    (T232-CAL1 fix — previously written on the 0-100 confidence scale and misapplied here).
+
+    T232-CAL2: the calibrated/watchdog value is stored as a single (regime-agnostic)
+    number fit mostly on bull-market samples. Rather than overriding all four regime
+    tiers with one flat value, we apply it as a delta from the hardcoded bull baseline
+    so bear/high_vol stay tighter than bull, preserving SA-32's regime-tiered protection.
+    A sanity clamp rejects corrupted/out-of-range values (defense in depth).
     """
+    p = _STYLE_PROFILES[style_key]
+    bull_base = p["buy_threshold"]["bull"]
+    regime_base = p["buy_threshold"].get(reg, bull_base)
+
     # Check watchdog emergency adjustment first (most recent, tightest)
-    watchdog = _redis_get_float(f"stockai:watchdog:{style_key.upper()}:threshold")
-    if watchdog is not None:
-        return watchdog
-    # Calibrated threshold from weekly outcomes sweep
-    return _redis_get_float(f"stockai:signal_thresholds:{style_key.upper()}")
+    dynamic = _redis_get_float(f"stockai:watchdog:{style_key.upper()}:threshold")
+    if dynamic is None:
+        # Calibrated threshold from weekly outcomes sweep
+        dynamic = _redis_get_float(f"stockai:signal_thresholds:{style_key.upper()}")
+    if dynamic is None:
+        return None
+
+    lo, hi = _DYNAMIC_BUY_THRESHOLD_BOUNDS
+    if not (lo <= dynamic <= hi):
+        return None  # corrupted/stale-scale value — ignore, fall back to hardcoded profile
+
+    delta = dynamic - bull_base
+    return float(np.clip(regime_base + delta, lo, hi))
 
 
 def _get_dynamic_sell_threshold(style_key: str) -> float | None:
     """Read empirically-calibrated SELL threshold from Redis if available.
 
-    T228: written by POST /outcomes/calibrate/apply SELL sweep.
-    Returns None → falls back to hardcoded 0.35 in _decide_style.
+    T228: written by POST /outcomes/calibrate/apply SELL sweep, fused-probability scale
+    (T232-CAL3 fix). Returns None → falls back to hardcoded 0.35 in _decide_style.
     """
-    return _redis_get_float(f"stockai:signal_thresholds:SELL:{style_key.upper()}")
+    dynamic = _redis_get_float(f"stockai:signal_thresholds:SELL:{style_key.upper()}")
+    if dynamic is None:
+        return None
+    lo, hi = _DYNAMIC_SELL_THRESHOLD_BOUNDS
+    if not (lo <= dynamic <= hi):
+        return None
+    return dynamic
 
 
 def _get_style_tuned_param(style_key: str, param: str, default):
