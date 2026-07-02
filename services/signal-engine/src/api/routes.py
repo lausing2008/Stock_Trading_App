@@ -349,6 +349,23 @@ def _bulk_persist(symbols: list[str]) -> None:
                             float(_np_cat.clip(_ai.bullish_probability + _cat_adj, 0.0, 1.0)), 4
                         )
                         _ai.reasons["catalyst_prob_adj"] = round(_cat_adj, 3)
+                        # CRIT-5: re-evaluate signal direction after catalyst nudge so stored
+                        # signal type stays consistent with the adjusted probability.
+                        try:
+                            from ..generators.signals import _STYLE_PROFILES as _SP_cat
+                            _hor_key = _ai.horizon
+                            if _hor_key in _SP_cat:
+                                _bt_vals = _SP_cat[_hor_key].get("buy_threshold", {})
+                                _min_bt = min(_bt_vals.values()) if _bt_vals else 0.70
+                                _sell_t = _SP_cat[_hor_key].get("sell_threshold", 0.35)
+                                if _ai.bullish_probability >= _min_bt and _ai.signal == "HOLD":
+                                    _ai.signal = "BUY"
+                                    _ai.reasons["catalyst_upgraded_signal"] = True
+                                elif _ai.bullish_probability <= _sell_t and _ai.signal in ("BUY", "HOLD"):
+                                    _ai.signal = "SELL"
+                                    _ai.reasons["catalyst_downgraded_signal"] = True
+                        except Exception:
+                            pass
 
                     # T220-A/H: Boolean flags for UI chips (threshold-based from scores above)
                     if _insider_s is not None and _insider_s >= 60:

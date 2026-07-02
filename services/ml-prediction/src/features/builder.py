@@ -286,17 +286,13 @@ FUNDAMENTAL_COLUMNS = [
     "debt_to_equity",       # total debt / total equity (Phase 1)
     "short_percent_of_float",  # % of float sold short (T204: squeeze risk / contrarian signal)
     # Tier 78 — earnings quality features (from EarningsEvent table)
-    "eps_beat_streak",      # consecutive quarters beating EPS estimate (0=no streak, 4=4+ beats)
-    "eps_surprise_avg",     # 4-quarter rolling average EPS surprise % (positive=consistent beats)
-    "days_to_earnings",     # days to next expected earnings event (0–90; 90=unknown/far)
-    # T218: PEAD signals — post-earnings drift and revenue quality
-    "avg_post_earnings_return_5d",   # mean 5d return after past 4 earnings — positive = PEAD stocks
-    "avg_revenue_surprise_pct",      # mean revenue surprise % over last 4 quarters
+    # NOTE: eps_beat_streak, eps_surprise_avg, days_to_earnings, avg_post_earnings_return_5d,
+    # avg_revenue_surprise_pct removed (CRIT-3/4): broadcasted today's value to all historical
+    # training bars, introducing lookahead bias. Requires point-in-time joins to restore safely.
+    # NOTE: flow_5d_net_hkd, flow_strength removed (CRIT-4): HK Connect flow is a daily time-
+    # series — broadcasting today's 5-day flow to all historical bars is lookahead.
     # T217-B: DDM Dividend Discount Model — NaN for non-dividend stocks
     "ddm_discount",         # (div_yield / 0.07) - 1; positive = undervalued on dividend basis
-    # T219-F: HKEX Stock Connect southbound flow (HK stocks only; NaN for US — XGBoost handles natively)
-    "flow_5d_net_hkd",      # 5-day net mainland→HK buy in HKD millions (positive = net buying)
-    "flow_strength",        # (5d_avg_flow / 20d_avg_flow) — >1 = accelerating mainland buying
     # T89-B: Piotroski F-Score — 0-9 composite quality metric from existing fundamentals
     "piotroski_score",      # 0=distressed, 9=high quality; NaN when insufficient fundamentals
     # T220-F: Earnings revision momentum — direction of analyst recommendation changes over 8 weekly snapshots
@@ -748,6 +744,32 @@ def build_features(
     # --- Fundamental features (static per stock — broadcast from most-recent snapshot) ---
     # XGBoost handles NaN natively; models trained before this data exists will
     # see NaN for all fundamental columns and learn to ignore them gracefully.
+
+    # QW-1: eps_revision_direction query must run BEFORE the broadcast loop so the
+    # computed value is present in fund_data when FUNDAMENTAL_COLUMNS are assigned.
+    _eps_rev_sym = (fund_data or {}).get("_symbol") if fund_data else None
+    if _eps_rev_sym and "eps_revision_direction" not in (fund_data or {}):
+        try:
+            from db import SessionLocal
+            from sqlalchemy import text as _stext
+            with SessionLocal() as _fs:
+                _snaps = _fs.execute(_stext("""
+                    SELECT recommendation_mean
+                    FROM fundamentals_snapshot
+                    WHERE symbol = :sym
+                    ORDER BY snapshot_date DESC
+                    LIMIT 8
+                """), {"sym": _eps_rev_sym.upper()}).fetchall()
+            if len(_snaps) >= 2:
+                _recent_rec = float(_snaps[0].recommendation_mean)
+                _old_rec = float(_snaps[-1].recommendation_mean)
+                _rec_delta = _old_rec - _recent_rec  # positive = analysts upgrading
+                _rev_dir = 1 if _rec_delta > 0.15 else (-1 if _rec_delta < -0.15 else 0)
+                fund_data = fund_data or {}
+                fund_data["eps_revision_direction"] = float(_rev_dir)
+        except Exception:
+            pass
+
     for col in FUNDAMENTAL_COLUMNS:
         val = (fund_data or {}).get(col)
         out[col] = float(val) if val is not None else np.nan
@@ -778,36 +800,6 @@ def build_features(
                     out[col] = _merged[col].values
         except Exception:
             pass  # fall through — broadcast values remain (training still usable, just biased)
-
-    # T220-F: Earnings revision momentum — direction of analyst recommendation changes
-    # Reads the last 8 weekly fundamentals_snapshot rows to detect upgrade/downgrade trends.
-    # recommendation_mean: lower = more bullish (1=strong buy, 5=strong sell).
-    # If mean decreasing → analysts upgrading → +1; increasing → downgrading → -1.
-    # symbol is sourced from fund_data["_symbol"] — callers that know the symbol store it there.
-    _eps_rev_sym = (fund_data or {}).get("_symbol") if fund_data else None
-    if _eps_rev_sym and "eps_revision_direction" not in (fund_data or {}):
-        try:
-            from db import SessionLocal
-            from sqlalchemy import text as _stext
-            with SessionLocal() as _fs:
-                _snaps = _fs.execute(_stext("""
-                    SELECT recommendation_mean
-                    FROM fundamentals_snapshot
-                    WHERE symbol = :sym
-                    ORDER BY snapshot_date DESC
-                    LIMIT 8
-                """), {"sym": _eps_rev_sym.upper()}).fetchall()
-            if len(_snaps) >= 2:
-                _recent_rec = float(_snaps[0].recommendation_mean)
-                _old_rec = float(_snaps[-1].recommendation_mean)
-                # recommendation_mean: lower = more bullish (1=strong buy, 5=sell)
-                # If mean decreasing → analysts upgrading → +1
-                _rec_delta = _old_rec - _recent_rec  # positive = analysts upgrading
-                _rev_dir = 1 if _rec_delta > 0.15 else (-1 if _rec_delta < -0.15 else 0)
-                fund_data = fund_data or {}
-                fund_data["eps_revision_direction"] = float(_rev_dir)
-        except Exception:
-            pass
 
     # --- Target ---
     fwd_ret = c.shift(-horizon) / c - 1

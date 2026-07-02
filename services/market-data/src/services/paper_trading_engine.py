@@ -910,18 +910,9 @@ def _fetch_market_regime(cfg: dict) -> dict:
                 f"MDY/200EMA={result.get('mdy_vs_ema200', 0):.3f} — narrow market"
             )
 
-    # T211: HMM second-opinion regime — advisory only, fail-open
-    try:
-        import httpx as _httpx_t211
-        _hmm = _httpx_t211.get("http://ml-prediction:8003/ml/regime-state", timeout=3.0)
-        if _hmm.status_code == 200:
-            _hmm_d = _hmm.json()
-            if "hmm_state" in _hmm_d:
-                result["hmm_state"]  = _hmm_d["hmm_state"]
-                result["hmm_prob"]   = _hmm_d.get("hmm_prob", {})
-                result["hmm_agrees"] = (_hmm_d["hmm_state"] == result["state"])
-    except Exception:
-        pass  # fail-open; HMM is advisory
+    # CRIT-1: HMM blocking call removed — output was fetched (1-3s latency) but written to
+    # result["hmm_state"] which was never read by any gate, score, or multiplier.
+    # Wire HMM into regime scoring before restoring.
 
     log.info("paper.regime_classified",
              state=result["state"],
@@ -1690,7 +1681,8 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # PT-B6: apply exit slippage (sells at a slightly lower price than quoted)
             # RISK-2: stop-hit exits fill at stop level (not gap price) — simulates stop-limit semantics
             slippage = cfg.get("entry_slippage_pct", 0.001)
-            fill_base = stop if exit_reason == "stop_hit" else live_price
+            # QW-7: use min(stop, live_price) so gap-downs fill at market price, not stop price
+            fill_base = min(stop, live_price) if exit_reason == "stop_hit" else live_price
             exit_price = round(fill_base * (1 - slippage), 4)
             exit_commission = round(cfg.get("commission_per_share", 0.0) * trade.shares, 4)
             exit_value = round(exit_price * trade.shares, 2)

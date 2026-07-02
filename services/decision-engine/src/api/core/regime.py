@@ -11,7 +11,7 @@ import structlog
 
 log = structlog.get_logger()
 
-_CACHE_TTL = 14_400  # 4 hours
+_CACHE_TTL = 900  # 15 minutes — regime can shift within a session (QW-5)
 
 _US_CACHE: dict = {}
 _US_TS: float = 0.0
@@ -206,9 +206,12 @@ def _compute_hk() -> dict:
             elif hsi < e200 * 0.92 and not above_sma50:
                 result["state"] = "risk_off"
                 result["notes"].append(f"HSI {pct*100:.1f}% below SMA200 + below SMA50 → risk_off")
-            elif hsi < e200:
+            elif hsi < e200 and above_sma50:
                 result["state"] = "choppy"
                 result["notes"].append(f"HSI {pct*100:.1f}% below SMA200 but above SMA50 → choppy (recovering)")
+            elif hsi < e200 and not above_sma50:
+                result["state"] = "risk_off"
+                result["notes"].append(f"HSI {pct*100:.1f}% below SMA200 + below SMA50 → risk_off (sustained downtrend)")
             else:
                 ret20 = (hsi / float(closes.iloc[-20]) - 1) if len(closes) >= 20 else 0.0
                 result["state"] = "bull" if ret20 > 0 else "neutral"

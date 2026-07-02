@@ -1,7 +1,24 @@
 """Hard-reject checks — fire before scoring and return BLOCKED immediately."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+
+# QW-4: NYSE holidays — market-closed guard would block weekends but not holidays.
+# Update annually or replace with a market-calendar library.
+_NYSE_HOLIDAYS: frozenset[date] = frozenset({
+    # 2025
+    date(2025, 1, 1), date(2025, 1, 20), date(2025, 2, 17), date(2025, 4, 18),
+    date(2025, 5, 26), date(2025, 6, 19), date(2025, 7, 4), date(2025, 9, 1),
+    date(2025, 11, 27), date(2025, 12, 25),
+    # 2026
+    date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
+    date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
+    date(2026, 11, 26), date(2026, 12, 25),
+    # 2027
+    date(2027, 1, 1), date(2027, 1, 18), date(2027, 2, 15), date(2027, 3, 26),
+    date(2027, 5, 31), date(2027, 6, 18), date(2027, 7, 5), date(2027, 9, 6),
+    date(2027, 11, 25), date(2027, 12, 24),
+})
 
 
 def check_hard_rejects(
@@ -34,6 +51,8 @@ def check_hard_rejects(
         _wd = _local.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
         if _wd >= 5:
             return f"Market closed: weekend ({_local.strftime('%A %H:%M')} local)"
+        if market.upper() != "HK" and _local.date() in _NYSE_HOLIDAYS:
+            return f"Market closed: NYSE holiday ({_local.strftime('%Y-%m-%d')})"
         _mins = _local.hour * 60 + _local.minute
         if market.upper() == "HK":
             # HK: morning 9:30–12:00, afternoon 13:00–16:00
