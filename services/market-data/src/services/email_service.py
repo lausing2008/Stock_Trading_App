@@ -516,14 +516,18 @@ def send_morning_digest_email(
     to: str,
     date_str: str,
     regime: dict,
-    swing_opportunities: list,
-    growth_opportunities: list,
     open_positions: list,
     pattern_alerts: list,
+    market_sections: list | None = None,
+    swing_opportunities: list | None = None,
+    growth_opportunities: list | None = None,
     market: str = "US",
     signal_performance: dict | None = None,
 ) -> bool:
-    """Send the daily pre-market digest email."""
+    """Send the combined daily pre-market digest email (all markets in one email)."""
+    # Normalise: if caller passes market_sections list, use it; otherwise wrap legacy args
+    if market_sections is None:
+        market_sections = [{"market": market, "swing": swing_opportunities or [], "growth": growth_opportunities or []}]
     state = regime.get("state", "unknown")
     spy_price = regime.get("spy_price")
     vix = regime.get("vix")
@@ -546,9 +550,9 @@ def send_morning_digest_email(
     sc = _state_color.get(state, "#94a3b8")
     sl = _state_label.get(state, state.upper())
 
-    # ── Market pulse section ──────────────────────────────────────────────────
-    _idx_label = "HSI" if market.upper() == "HK" else "SPY"
-    _price_fmt = lambda p: f"HK${p:,.0f}" if market.upper() == "HK" else f"${p:,.2f}"
+    # ── Market pulse section (SPY-centric; always shown) ─────────────────────
+    _idx_label = "SPY"
+    _price_fmt = lambda p: f"${p:,.2f}"
     spy_str = _price_fmt(spy_price) if spy_price else "—"
     vix_str = f"{vix:.1f}" if vix else "—"
     ret20 = regime.get("spy_20d_ret")
@@ -633,12 +637,24 @@ def send_morning_digest_email(
     </div>"""
         return section_html, f"\n{label}\n{rows_text}"
 
-    # ── Top SWING + GROWTH sections ──────────────────────────────────────────
-    market_label = market.upper()
-    swing_html, swing_text = _opp_table(swing_opportunities, f"Top 5 SWING — {market_label}", "#6366f1")
-    growth_html, growth_text = _opp_table(growth_opportunities, f"Top 5 GROWTH — {market_label}", "#f97316")
-    opp_section_html = swing_html + growth_html
-    opp_section_text = swing_text + growth_text
+    # ── Top SWING + GROWTH sections — one block per market ───────────────────
+    _mkt_name = {"HK": "HK Market (HKEX)", "US": "US Markets (NYSE/NASDAQ)"}
+    opp_section_html = ""
+    opp_section_text = ""
+    for _sec in market_sections:
+        _mkt = _sec.get("market", "US").upper()
+        _mlabel = _mkt_name.get(_mkt, _mkt)
+        _mkt_hdr_html = (
+            f'<div style="margin-top:28px;padding:6px 0 4px;border-top:2px solid #e2e8f0">'
+            f'<span style="font-size:13px;font-weight:800;color:#1e293b">{_mlabel}</span>'
+            f'</div>'
+        )
+        _mkt_hdr_text = f"\n{'='*40}\n{_mlabel}\n{'='*40}\n"
+        sh, st = _opp_table(_sec.get("swing") or [], f"Top 5 SWING — {_mkt}", "#6366f1")
+        gh, gt = _opp_table(_sec.get("growth") or [], f"Top 5 GROWTH — {_mkt}", "#f97316")
+        if sh or gh:
+            opp_section_html += _mkt_hdr_html + sh + gh
+            opp_section_text += _mkt_hdr_text + st + gt
 
     # ── Open positions section ────────────────────────────────────────────────
     pos_rows_html = ""
@@ -824,10 +840,10 @@ def send_morning_digest_email(
         )
         bear_banner_text = "\n⚠️  BEAR MARKET ACTIVE — higher thresholds; reduce size\n"
 
-    _market_name = {"US": "US Markets (NYSE/NASDAQ)", "HK": "HK Market (HKEX)"}.get(market.upper(), market.upper())
-    subject = f"📊 Morning Digest [{market.upper()}]: StockAI — {date_str} | Regime: {sl}"
+    _mkts_str = " + ".join(s["market"] for s in market_sections)
+    subject = f"📊 Morning Digest [{_mkts_str}]: StockAI — {date_str} | Regime: {sl}"
     body_text = (
-        f"StockAI Morning Digest [{market.upper()}] — {date_str}\n"
+        f"StockAI Morning Digest [{_mkts_str}] — {date_str}\n"
         f"Market Regime: {sl}  |  {_idx_label}: {spy_str}{f' ({ret20_str} 20d)' if ret20_str else ''}  |  VIX: {vix_str}{f' ({vix_trend})' if vix_trend else ''}\n"
         + ("\n".join(regime_notes or []))
         + bear_banner_text
@@ -838,7 +854,7 @@ def send_morning_digest_email(
     body_html = f"""<html><body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;padding:24px;margin:0">
   <div style="max-width:560px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-      <h2 style="margin:0;font-size:18px;color:#0f172a">📊 Morning Digest — {_market_name}</h2>
+      <h2 style="margin:0;font-size:18px;color:#0f172a">📊 Morning Digest — HK + US</h2>
       <span style="font-size:13px;color:#94a3b8">{date_str}</span>
     </div>
 
