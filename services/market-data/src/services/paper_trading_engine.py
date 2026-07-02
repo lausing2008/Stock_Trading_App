@@ -2331,13 +2331,24 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     # Uses precomputed _consec_losses (avoids a second DB query here).
     max_consec_losses = cfg.get("max_consecutive_losses", 3)
     if max_consec_losses and max_consec_losses > 0 and _consec_losses >= max_consec_losses:
-        log.warning("paper.consecutive_loss_limit",
-                    portfolio=portfolio.name,
-                    consecutive_losses=_consec_losses,
-                    note="new entries suspended until a trade closes positive")
-        _write_gate_block(portfolio.id, "consecutive_losses",
-                          f"{_consec_losses} consecutive losses — no new entries until a winning trade")
-        return
+        if open_count > 0:
+            # Open trades exist — wait for one to close positive before entering again.
+            log.warning("paper.consecutive_loss_limit",
+                        portfolio=portfolio.name,
+                        consecutive_losses=_consec_losses,
+                        note="new entries suspended until a trade closes positive")
+            _write_gate_block(portfolio.id, "consecutive_losses",
+                              f"{_consec_losses} consecutive losses — no new entries until a winning trade")
+            return
+        else:
+            # Deadlock: no open trades and consecutive loss limit hit — there is no trade
+            # that can close positive to reset the counter. Allow one recovery entry and
+            # zero out consec_losses for the DE call so hard_rejects doesn't also block.
+            log.warning("paper.consecutive_loss_restart",
+                        portfolio=portfolio.name,
+                        consecutive_losses=_consec_losses,
+                        note="no open trades — allowing one recovery entry to break deadlock")
+            _consec_losses = 0
 
     # ── Max entries per day ───────────────────────────────────────────────────────
     max_entries_day = cfg.get("max_entries_per_day", 3)
