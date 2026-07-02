@@ -1437,7 +1437,6 @@ export default function PaperPortfolioPage() {
                     {reAuthLoading ? 'Starting…' : '⟳ Re-authorize'}
                   </button>
                 )}
-              </>
               {/* Re-auth flow panel */}
               {reAuthUrl && (
                 <div style={{ marginTop: 10, padding: '12px 14px', background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.25)', borderRadius: 8 }}>
@@ -1473,8 +1472,8 @@ export default function PaperPortfolioPage() {
                   </div>
                   {reAuthError && <div style={{ fontSize: 12, color: '#f87171', marginTop: 6 }}>{reAuthError}</div>}
                 </div>
-              )
-            ) : (
+              )}
+            </>) : (
               <>
                 <span style={{ fontSize: 11, color: '#475569' }}>Paper only (simulation)</span>
                 {brokerConnections.length > 0 && (
