@@ -8144,7 +8144,7 @@ const ITEMS: Item[] = [
   {
     id: 'T231-HIGH2-ML-RETRAIN-STALE-FEATURES',
     title: 'ML models trained on lookahead features — require retraining after CRIT-3/4 removal',
-    tier: 231 as const, severity: 'high', defaultStatus: 'in_progress' as const,
+    tier: 231 as const, severity: 'high', defaultStatus: 'in-progress' as const,
     file: 'services/ml-prediction/src/training/trainer.py',
     effort: 'L',
     impact: 'High — Current production models were trained with 7 lookahead-contaminated features. They have implicitly learned from future data and will show inflated training AUC. After removing the features, models must be retrained to reflect true predictive power. Until retrained, models see NaN for removed features (XGBoost handles gracefully but feature importance is distorted).',
