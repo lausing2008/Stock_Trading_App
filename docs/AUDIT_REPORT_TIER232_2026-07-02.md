@@ -5,9 +5,12 @@
 `sizer.py`, `hard_rejects.py`, `regime.py`, `aggregator.py`), paper trading engine, ranking
 engine (`kscore.py`), technical-analysis core, and the outcome-tracking / calibration feedback loop.
 
-**Method:** 6 parallel deep-read audits + live database interrogation. The two most severe
-findings (CAL-1 unit mismatch, ML-1 epoch-date bug) were **verified by direct source read**;
-Redis was inspected to confirm CAL-1 is latent (no corrupted keys applied yet locally).
+**Method:** 6 parallel deep-read audits + live database interrogation (local dev, then
+production EC2 after the local DB proved stale). All 4 critical findings (CAL-1, CAL-2, CAL-3,
+ML-1) were verified by direct source read and **fixed and deployed to production on 2026-07-02**
+— see Part 2 for per-finding fix/deploy notes. The corrupted `stockai:signal_thresholds:SWING`
+Redis key found active in production was deleted and a full signal refresh verified clean before
+the code fix shipped.
 
 ---
 
@@ -113,7 +116,7 @@ rate) that the signal data says is worst.
 
 ## Part 2 — Critical Findings (fix before the next calibration cycle)
 
-### CAL-1 — Calibration loop writes confidence-scale values into fused-probability thresholds ✅ VERIFIED
+### CAL-1 — Calibration loop writes confidence-scale values into fused-probability thresholds ✅ FIXED & DEPLOYED (2026-07-02)
 **Files:** `services/signal-engine/src/api/routes.py:3340,3406` → consumed at
 `services/signal-engine/src/generators/signals.py:1434-1442`
 
@@ -129,11 +132,15 @@ keys locally, so the corruption is latent, not active. Check production Redis to
 `docker exec stockai-redis-1 redis-cli --scan --pattern 'stockai:signal_thresholds:*'` — delete
 any keys found until the fix ships.
 
-**Fix:** sweep on `SignalOutcome.fused_prob` directly (it is stored), or convert:
-BUY `fused_t = 0.5 + best_t/200`, SELL `fused_t = 0.5 − best_t/200`. Add a sanity clamp in
-`_get_dynamic_buy_threshold` (reject values outside [0.55, 0.80]) as defense in depth.
+**Fix (shipped):** `GET /outcomes/calibrate` and `POST /outcomes/calibrate/apply` now sweep
+`SignalOutcome.fused_prob` directly (0.55–0.85 for BUY, 0.15–0.40 for SELL) and write the
+fused-scale value — the same scale `_decide_style` reads. `min_samples` default raised 15→50;
+`ev_lift` no longer assumes an unmeasurable baseline is 0.0 (skips instead, closing OC-3's
+overstated-lift issue). Deployed to `stockai-signal-engine-1` via `docker cp` + restart;
+verified live: `GET /signals/outcomes/calibrate` now returns `current_threshold: 0.72` for
+SWING (previously would have shown a 0–100 value).
 
-### CAL-2 — Dynamic threshold override ignores regime; watchdog floor is stale ✅ VERIFIED
+### CAL-2 — Dynamic threshold override ignores regime; watchdog floor is stale ✅ FIXED & DEPLOYED (2026-07-02)
 **File:** `signals.py:1389-1400`
 
 `_get_dynamic_buy_threshold(style_key, reg)` never uses `reg` — one Redis value overrides all
@@ -142,12 +149,15 @@ bear-market protection whenever any calibration or watchdog key exists. The watc
 `_DEFAULT_THRESHOLDS` (routes.py:3583, SWING 0.67) is also stale vs `_STYLE_PROFILES` (0.72),
 so a watchdog "relax" pins SWING below the bull threshold in any regime.
 
-**Fix:** store per-regime keys (`stockai:signal_thresholds:{STYLE}:{REGIME}`) or apply the
-calibrated value as a delta from the bull threshold; import all baseline tables from
-`_STYLE_PROFILES` instead of hardcoded copies (three drifted copies exist: routes.py:3171,
-3272, 3583).
+**Fix (shipped):** `_get_dynamic_buy_threshold` now applies the calibrated/watchdog value as a
+delta from the bull baseline, added per-regime to that regime's hardcoded threshold —
+preserving SA-32's bear/high_vol tiering instead of overriding it flat. Added a `[0.55, 0.85]`
+sanity clamp (SELL: `[0.15, 0.45]`) that rejects corrupted/wrong-scale Redis values and falls
+back to the hardcoded profile. All three drifted hardcoded threshold tables (`GET
+/outcomes/calibrate`, `POST /outcomes/calibrate/apply`, `POST /watchdog`) now import bull
+thresholds from `_STYLE_PROFILES` directly. Deployed to `stockai-signal-engine-1`.
 
-### ML-1 — Point-in-time fundamentals join produces 1970 epoch dates → all-NaN features ✅ VERIFIED
+### ML-1 — Point-in-time fundamentals join produces 1970 epoch dates → all-NaN features ✅ FIXED & DEPLOYED (2026-07-02)
 **File:** `services/ml-prediction/src/features/builder.py:788`
 
 `out = pd.DataFrame(index=df.index)` (line 585) carries a **RangeIndex** (0..n−1).
@@ -159,10 +169,16 @@ training set; the `except Exception: pass` never fires; nothing is logged. The T
 point-in-time fix is completely inert, and 4 features that carry real values at inference are
 dead (all-NaN) at training.
 
-**Fix:** `_price_dates = pd.to_datetime(df["ts"]).dt.normalize()`. Add a post-merge assertion
-that the columns are not all-NaN when `fund_snapshots` is non-empty.
+**Fix (shipped):** uses the existing `dates` Series (already computed from `df["ts"]` for the
+macro/sector/outcome joins) instead of `out.index`. Added a post-merge check that logs
+`builder.pit_join_all_nan` if the join ever produces no real values, and
+`builder.pit_join_failed` on exception (previously silent). Verified with a standalone
+`merge_asof` reproduction: old code produced `1970-01-01` for every row; new code produces
+correct dates with PIT values transitioning exactly on each snapshot date. Deployed to
+`stockai-ml-prediction-1` via `docker cp` + restart. **Retraining is still required** to pick
+up the now-live PIT features in production models — schedule the next `tune_all`/retrain batch.
 
-### CAL-3 — SELL calibration is inverted AND rewards adverse moves
+### CAL-3 — SELL calibration is inverted AND rewards adverse moves ✅ FIXED & DEPLOYED (2026-07-02)
 **File:** `routes.py:3374-3406`
 
 Three compounding bugs: (a) `o.confidence <= t_int` selects the **weakest** SELLs (for SELL,
@@ -170,8 +186,10 @@ high confidence = strong conviction; the comment has it backwards); (b) EV uses
 `abs(o.pct_return)` — a SELL where the stock **rallied +10%** (a maximal miss) contributes +10%
 to "average return", so EV rewards volatility, not correctness; (c) same unit mismatch as CAL-1.
 
-**Fix:** sweep `fused_prob <= t` for t ∈ [0.20, 0.40]; use signed SELL profit (`−pct_return`);
-write fused-scale values.
+**Fix (shipped):** sweep now uses `fused_prob <= t` (mirroring the BUY sweep's direction,
+t ∈ [0.15, 0.40]) and signed SELL profit (`−pct_return`, so a rally after a SELL correctly
+counts against EV). Writes fused-scale values with a `[0.15, 0.45]` bounds check. Deployed
+alongside CAL-1.
 
 ### PT-1 (revised) — Paper trading disabled in local dev; production runs it — and loses
 **File:** `shared/common/config.py:71` + production P&L
@@ -191,10 +209,10 @@ Add the flag to `.env.example` and a startup log line so the dev/prod divergence
 
 | ID | Sev | Location | Finding |
 |---|---|---|---|
-| SIG-1 | CRIT | routes.py:3306-3340 | = CAL-1 above |
-| SIG-2 | CRIT | signals.py:1389-1400 | = CAL-2 above |
+| SIG-1 | CRIT | routes.py:3306-3340 | = CAL-1 above ✅ FIXED |
+| SIG-2 | CRIT | signals.py:1389-1400 | = CAL-2 above ✅ FIXED |
 | SIG-3 | HIGH | signals.py:1551-1571 | **Pillar gate is direction-blind and erases the clearest SELLs.** `independent_pillars_active` counts *bullish* evidence; a deeply bearish stock has 0–1 bullish pillars by definition, so the <2-pillar compression (×0.85/×0.70 toward 0.5) pulls a fused-0.30 SELL up to ~0.36 → flips to WAIT. Apply the gate only when `fused > 0.5` (same pattern as the line-1738 sector fix). |
-| SIG-4 | HIGH | routes.py:3374-3406 | = CAL-3 above |
+| SIG-4 | HIGH | routes.py:3374-3406 | = CAL-3 above ✅ FIXED |
 | SIG-5 | HIGH | signals.py:1613-1630, 1933-1938 | **Macro compressions mute SELLs the macro data confirms.** High-vol regime, breadth<40%, and the HSI-bear gate all compress `fused` toward 0.5 regardless of direction — so in bear/high-vol/thin-breadth conditions (exactly when SELLs are most correct) SELL signals are weakened. Add `and fused > 0.5` to those three paths (ADX chop compression is legitimately bidirectional — leave it). |
 | SIG-6 | HIGH | routes.py:2145-2153, signals.py:247-248 | **calibrate_ta_weights never takes effect until container restart.** The endpoint writes to file+Redis but module globals `_ta_weights`/`_ta_weights_calibrated` load once at import. Weekly calibration is a no-op for the running process. Refresh the module globals at the end of the endpoint, or re-read Redis with a short-TTL cache in `_ta_score`. |
 | SIG-7 | MED | signals.py:1139 | "Calibrated blend" branch always active: `ta_weights is not None` is always true (callers always pass the dict), so the STY-001 15% flag-blend runs even uncalibrated, double-counting correlated flags the pillar design de-correlated. Guard on `_ta_weights_calibrated` only. |
@@ -202,13 +220,13 @@ Add the flag to `.env.example` and a startup log line so the dev/prod divergence
 | SIG-9 | MED | routes.py:412-426 | Catalyst-nudge re-grade uses `min()` of all regime thresholds (most lenient) regardless of live regime, references a nonexistent `"sell_threshold"` profile key, and doesn't recompute confidence after mutating `bullish_probability`. Re-run `_decide_style(new_bp, horizon, regime)` instead. |
 | SIG-10 | MED | signals.py:1438 vs 1203-1277 | **Structural BUY/SELL asymmetry explains the 43.7% SELL win rate.** BUY needs fused >0.72 (0.22 from neutral, regime-tiered, pillar-gated); SELL needs <0.35 (0.15 from neutral, no regime tiers, no pillar/evidence gate) — and bullish nudges (+0.05 breakout, +0.04 options, +0.07 pullback, +0.08 kscore…) outnumber bearish ones. SELLs are cheap to trigger on weak evidence AND suppressed when evidence is strong (SIG-3/5). Regime-tier the sell threshold (bull 0.32 / bear 0.38) and require ≥2 bearish pillars. |
 | SIG-11 | LOW | signals.py:333, routes.py:3326 | Missing ML AUC defaults to 0.55 (grants full 0.20 base weight to unknown-quality models); calibrate/apply assumes EV 0.0 when baseline has <min_samples, overstating ev_lift. Default AUC 0.52; skip apply when baseline is unmeasurable. |
-| SIG-12 | LOW | routes.py:3171,3272,3583 | Three hardcoded copies of "current thresholds" have drifted from `_STYLE_PROFILES` (SWING 0.67 vs 0.72). Import from the source of truth. |
+| SIG-12 | LOW | routes.py (3 tables) | ✅ FIXED — all three hardcoded "current thresholds" copies now import bull thresholds from `_STYLE_PROFILES` directly instead of drifting independently. |
 
 ### ML Prediction (builder / trainer / tuner / meta / HMM)
 
 | ID | Sev | Location | Finding |
 |---|---|---|---|
-| ML-1 | CRIT | builder.py:788 | = ML-1 above (epoch-date PIT join) ✅ verified |
+| ML-1 | CRIT | builder.py:788 | = ML-1 above (epoch-date PIT join) ✅ FIXED |
 | ML-2 | HIGH | trainer.py:746-780 | **BUY threshold optimized on the test set, metrics reported on the same test set.** `_precision_threshold` scans the test-set PR curve (~30–60 rows) for the lowest threshold hitting the precision floor — textbook threshold overfitting. Reported precision is systematically inflated; live win rate will undershoot the floor. Select the threshold on the calibration slice; keep the test set untouched. **This is the most likely explanation for "model says 73%, live trades win less."** |
 | ML-3 | HIGH | trainer.py:591-593 | **T229-C2 overlap-drop is dead code** — `X.index` (RangeIndex ints) intersected with `X_out.index` (Timestamps) is always empty, so outcome rows from the calibration/test windows leak into the final fit at 2× weight. Convert both to dates; drop outcome rows dated at/after the train split. |
 | ML-4 | HIGH | trainer.py:619-666, tuner.py:146-160 | **No purge/embargo anywhere.** Labels are 5–20-day forward returns but `TimeSeriesSplit` and the 70/80/90 splits have zero gap — the last H training bars share label information with validation/test. CV AUC is inflated, and it drives the `oos_suppressed` gate, ensemble weights, and the entire Optuna objective. Use `TimeSeriesSplit(gap=horizon)` and purge `horizon` bars at each split boundary. |
@@ -257,8 +275,8 @@ Add the flag to `.env.example` and a startup log line so the dev/prod divergence
 
 | ID | Sev | Location | Finding |
 |---|---|---|---|
-| OC-1 | CRIT | routes.py:3306-3340 | = CAL-1 ✅ verified |
-| OC-2 | HIGH | routes.py:3374-3406 | = CAL-3 |
+| OC-1 | CRIT | routes.py:3306-3340 | = CAL-1 ✅ FIXED |
+| OC-2 | HIGH | routes.py:3374-3406 | = CAL-3 ✅ FIXED |
 | OC-3 | HIGH | routes.py:3306-3347 | **Threshold sweep is an overfit argmax over 46 nested subsets with no holdout**, applied to production on ev_lift ≥ 0.1pp (noise). At the winning subset's n=15, win-rate SE is ±13pp. The sibling `calibrate_ml_weight` does a 70/30 temporal split correctly (routes.py:1078) — reuse that pattern; min_samples ≥50; require lift > bootstrap SE multiple. |
 | OC-4 | MED | routes.py:4418, 4348 | "Win" = any positive close-to-close move (+0.01% after 14 days counts); no stop-loss modeling (a −15% drawdown that recovers to +0.2% scores correct), no costs. EV = win_rate × avg_return double-counts win probability. Require a cost hurdle (+0.5%); track max-adverse-excursion; use plain mean return as EV. |
 | OC-5 | MED | routes.py:79-106 | **T223 confidence calibration pools BUY+SELL, all horizons, both markets** into one band — a LONG US BUY's displayed "win rate" is dominated by whatever populates the band (mostly SELLs, which fire 2.3×). min-count 10 → ±30pp CI, displayed with green/amber color distinctions far inside noise. Key by (direction, horizon); raise min-count to ≥30; show n. |
@@ -291,15 +309,16 @@ Add the flag to `.env.example` and a startup log line so the dev/prod divergence
 
 Ranked by expected impact per unit effort:
 
-1. **Delete the live corrupted key and freeze the calibration loop until CAL-1/CAL-2/CAL-3 are
-   fixed.** `stockai:signal_thresholds:SWING = 0.62` is ACTIVE in production — 40% of the last
-   week's SWING BUYs fired below the vetted threshold. Delete the key
-   (`redis-cli del stockai:signal_thresholds:SWING` on EC2), trigger a US+HK signal refresh,
-   and disable the weekly apply job until the unit conversion, per-regime keys, and SELL sweep
-   direction are fixed. SWING BUY (38.1% US / 28.3% HK) is already the worst BUY cohort.
-   *(Effort: S, Impact: stops active bleeding)*
-2. **Fix ML-1 (one line)** — `pd.to_datetime(df["ts"])` — resurrecting 4 dead time-varying
-   fundamental features, then retrain. *(S)*
+1. ✅ **DONE (2026-07-02):** Deleted the live corrupted key and fixed CAL-1/CAL-2/CAL-3.
+   `stockai:signal_thresholds:SWING = 0.62` was ACTIVE in production — 40% of that week's SWING
+   BUYs fired below the vetted threshold. Deleted the key, triggered a US+HK signal refresh
+   (verified clean), and shipped the unit-conversion + per-regime-key + SELL-sweep-direction
+   fix to `stockai-signal-engine-1`. SWING BUY (38.1% US / 28.3% HK) was already the worst BUY
+   cohort — monitor whether it recovers now that the threshold is correctly enforced.
+2. ✅ **DONE (2026-07-02):** Fixed ML-1 — now uses the real bar dates instead of the RangeIndex,
+   resurrecting 4 dead time-varying fundamental features. Deployed to `stockai-ml-prediction-1`.
+   **Still needed: trigger a retrain** so production models actually pick up the now-live PIT
+   features (the fix alone doesn't retroactively fix already-trained model weights).
 3. **Make SELL direction-aware (SIG-3 + SIG-5 + SIG-10):** guard the pillar gate and the three
    macro compressions with `fused > 0.5`, regime-tier the sell threshold, require bearish-pillar
    evidence. SELL is 43.7% overall / 33.3% US-SHORT — the single biggest measured accuracy hole,
