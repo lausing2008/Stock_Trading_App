@@ -72,6 +72,64 @@ log = get_logger("signals")
 router = APIRouter(prefix="/signals", tags=["signals"])
 
 
+# ── T223: Confidence calibration — outcome-based win rate lookup ──────────────
+# Confidence band → actual win rate from signal_outcomes (Redis-cached, 1h TTL).
+# Enriches every signal response so traders know if "70 confidence" means 55% or 65% wins.
+
+_CONF_BANDS: list[tuple[float, float, str]] = [
+    (0, 40, "0-40"),
+    (40, 55, "40-55"),
+    (55, 70, "55-70"),
+    (70, 85, "70-85"),
+    (85, 101, "85+"),
+]
+_CONF_CAL_CACHE_KEY = "signal:confidence_calibration"
+_CONF_CAL_TTL = 3600  # 1 hour
+
+
+def _build_confidence_calibration(session: Session) -> dict:
+    """Query signal_outcomes and compute win rate per confidence band (last 180d).
+    Returns {band_label: {"win_rate": float, "count": int}} or {}."""
+    cutoff = date.today() - timedelta(days=180)
+    rows = session.execute(
+        select(SignalOutcome.confidence, SignalOutcome.is_correct).where(
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_date >= cutoff,
+        )
+    ).all()
+    buckets: dict[str, dict] = {}
+    for lo, hi, label in _CONF_BANDS:
+        wins = sum(1 for c, ok in rows if lo <= c < hi and ok)
+        total = sum(1 for c, _ in rows if lo <= c < hi)
+        if total >= 10:
+            buckets[label] = {"win_rate": round(wins / total, 3), "count": total}
+    return buckets
+
+
+def _get_confidence_calibration(session: Session) -> dict:
+    """Return calibration map from Redis cache; rebuild if stale."""
+    cached = _cache_get(_CONF_CAL_CACHE_KEY)
+    if cached:
+        return cached
+    try:
+        cal = _build_confidence_calibration(session)
+        if cal:
+            _cache_set(_CONF_CAL_CACHE_KEY, cal, _CONF_CAL_TTL)
+        return cal
+    except Exception as exc:
+        log.warning("confidence_calibration.build_failed", error=str(exc))
+        return {}
+
+
+def _calibrated_win_rate(confidence: float, cal_map: dict) -> float | None:
+    """Return actual win rate for this confidence level; None if insufficient data."""
+    for lo, hi, label in _CONF_BANDS:
+        if lo <= confidence < hi:
+            entry = cal_map.get(label)
+            return entry["win_rate"] if entry else None
+    return None
+
+
 def _compute_stability(session: Session, stock_id: int, horizon: SignalHorizon, current_signal: str, limit: int = 30) -> int:
     """Count consecutive past days the given signal has been persisted in the DB."""
     from sqlalchemy import desc
@@ -4030,6 +4088,15 @@ def signal_for(
             if d:
                 stored[s_key] = d
         if stored:
+            # T223: enrich with calibrated win rate from signal_outcomes
+            _cal_map = _get_confidence_calibration(session)
+            if _cal_map:
+                for s_data in stored.values():
+                    _cwr = _calibrated_win_rate(s_data.get("confidence", 0.0), _cal_map)
+                    if _cwr is not None:
+                        if s_data.get("reasons") is None:
+                            s_data["reasons"] = {}
+                        s_data["reasons"]["calibrated_win_rate"] = _cwr
             if style:
                 s_key = style.upper()
                 data = stored.get(s_key)
@@ -4122,6 +4189,16 @@ def signal_for(
                 continue
             ai.reasons["stability_days"] = _compute_stability(session, stock.id, horiz, ai.signal)
 
+    # T223: enrich live signals with calibrated win rate
+    _cal_map_live = _get_confidence_calibration(session)
+    if _cal_map_live:
+        for ai in all_sig.values():
+            _cwr = _calibrated_win_rate(ai.confidence, _cal_map_live)
+            if _cwr is not None:
+                if ai.reasons is None:
+                    ai.reasons = {}
+                ai.reasons["calibrated_win_rate"] = _cwr
+
     if style:
         style_key = style.upper()
         ai = all_sig.get(style_key) or all_sig["SWING"]
@@ -4131,6 +4208,32 @@ def signal_for(
         "symbol": symbol,
         "source": "live",
         "signals": {k: asdict(v) for k, v in all_sig.items()},
+    }
+
+
+@router.get("/confidence-calibration")
+def confidence_calibration_map(
+    refresh: bool = Query(False, description="Force rebuild from DB, bypassing Redis cache"),
+    session: Session = Depends(get_session),
+):
+    """Return actual win rate by confidence band from the last 180 days of signal_outcomes.
+
+    T223: Makes signal confidence auditable. If 70-85 confidence wins at 52% and
+    55-70 wins at 51%, confidence is effectively uncalibrated above 55.
+    Use this to compare confidence bands and tune entry filters accordingly.
+    """
+    if refresh:
+        try:
+            _get_redis().delete(_CONF_CAL_CACHE_KEY)
+        except Exception:
+            pass
+    cal = _get_confidence_calibration(session)
+    if not cal:
+        return {"message": "Insufficient signal_outcomes data (need ≥10 evaluated outcomes per band)", "bands": {}}
+    return {
+        "bands": cal,
+        "note": "win_rate = fraction of BUY signals that were correct within the hold window",
+        "lookback_days": 180,
     }
 
 

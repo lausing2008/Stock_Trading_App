@@ -8371,13 +8371,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'T223-CONFIDENCE-CALIBRATION',
-    tier: 223 as const, severity: 'high', defaultStatus: 'todo' as const,
-    file: 'services/ml-prediction/src/training/trainer.py',
+    tier: 223 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/api/routes.py',
     effort: '3h',
     impact: 'High — Platt scaling or isotonic regression on top of XGBoost raw probabilities would make confidence actually predictive of win rate. Currently 75+ confidence wins at same rate as 45-55 confidence.',
     title: 'Confidence score calibration (Platt scaling)',
     what: 'Raw XGBoost probabilities are not well-calibrated (overconfident on borderline cases). A calibration layer trained on signal_outcomes would make confidence meaningful as an entry filter.',
     fix: 'After model training, fit a calibration curve (sklearn CalibratedClassifierCV) on validation outcomes. Store calibrated probabilities; use as signal confidence.',
+    implementedNote: 'Done 2026-07-02: Added outcome-based confidence calibration in signal-engine routes.py. _build_confidence_calibration() queries signal_outcomes for last 180d, computes win rate per confidence band (0-40/40-55/55-70/70-85/85+). Redis-cached 1h. Both DB and live signal paths now enrich reasons["calibrated_win_rate"] with actual win rate for this confidence level. New GET /signals/confidence-calibration endpoint exposes the full band statistics.',
   },
   {
     id: 'T223-HK-SIGNAL-DIAGNOSIS',
