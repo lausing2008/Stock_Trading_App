@@ -25,9 +25,16 @@ set ~2026-06-28, the weekly Sunday calibrate/apply). That confidence-scale 62 (�
 being applied as **fused > 0.62** in all regimes — 0.10 below the vetted bull threshold (0.72),
 0.14 below bear (0.76). Measured impact: **150 of 373 SWING BUY signals in the last 7 days (40%)
 fired below the vetted threshold** (TSLA 0.672, MDB 0.615, SMH 0.625 among 2026-07-02's).
-Earlier Sunday applies may have corrupted thresholds for weeks. **Immediate mitigation:**
-`docker exec stockai-redis-1 redis-cli del stockai:signal_thresholds:SWING` on EC2, then trigger
-a signal refresh for both markets.
+Earlier Sunday applies may have corrupted thresholds for weeks.
+
+**✅ MITIGATION APPLIED 2026-07-02 ~13:45 UTC (user-approved):** the key was deleted from
+production Redis (no other `signal_thresholds`/`watchdog` keys existed) and a full US+HK signal
+refresh was triggered (112 + 41 symbols). Verified clean: every SWING BUY written after
+13:50 UTC has fused ≥ 0.723; symbols that had been BUY at 0.59–0.70 (BE, INTC, RTX, KGS…)
+re-graded to HOLD. **The code fix (unit conversion + per-regime keys + reader clamp) is still
+required before the next weekly Sunday apply re-writes a corrupted key** — either ship the fix
+or disable the `outcomes/calibrate/apply` scheduler job this week. BUY email alerts sent since
+~2026-06-28 for SWING signals may have been based on the loosened threshold.
 
 ### Win rate by direction (all scored outcomes)
 
