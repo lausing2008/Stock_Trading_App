@@ -2099,6 +2099,17 @@ def _call_decision_engine(
         return None
 
 
+def _clear_gate_block(portfolio_id: int) -> None:
+    """Delete the Redis gate_block key so the UI no longer shows a block reason."""
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_gb
+        _r = _rb.Redis.from_url(_gs_gb().redis_url, decode_responses=True)
+        _r.delete(f"paper:gate_block:{portfolio_id}")
+    except Exception:
+        pass
+
+
 def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
     """Record the most recent portfolio-level gate that blocked new entries.
 
@@ -2349,6 +2360,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         consecutive_losses=_consec_losses,
                         note="no open trades — allowing one recovery entry to break deadlock")
             _consec_losses = 0
+            _clear_gate_block(portfolio.id)  # remove stale Redis gate so UI clears
 
     # ── Max entries per day ───────────────────────────────────────────────────────
     max_entries_day = cfg.get("max_entries_per_day", 3)
