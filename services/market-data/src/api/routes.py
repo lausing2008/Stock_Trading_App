@@ -1069,6 +1069,60 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
     return data
 
 
+_QUARTERLY_TTL = 86_400  # 24 hours
+
+
+@router.get("/{symbol}/quarterly")
+def get_quarterly_financials(symbol: str):
+    """Last 8 quarters of income statement data from yfinance, Redis-cached for 24 h."""
+    cache_key = f"stockai:quarterly:{symbol.upper()}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    result: list[dict] = []
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.quarterly_income_stmt
+        if df is not None and not df.empty:
+            # Columns are dates (newest first), rows are line items
+            import math as _math
+            cols = list(df.columns)[:8]  # last 8 quarters, newest first
+
+            def _val(df_, col_, row_name: str):
+                try:
+                    v = df_.loc[row_name, col_] if row_name in df_.index else None
+                    if v is None:
+                        return None
+                    if isinstance(v, float) and _math.isnan(v):
+                        return None
+                    return int(v)
+                except Exception:
+                    return None
+
+            for col in cols:
+                date_str = col.strftime("%Y-%m-%d") if hasattr(col, "strftime") else str(col)[:10]
+                result.append({
+                    "date": date_str,
+                    "revenue": _val(df, col, "Total Revenue"),
+                    "gross_profit": _val(df, col, "Gross Profit"),
+                    "net_income": _val(df, col, "Net Income"),
+                    "ebitda": _val(df, col, "EBITDA"),
+                })
+    except Exception as exc:
+        log.warning("quarterly_financials.fetch_failed", symbol=symbol, error=str(exc))
+
+    try:
+        _get_redis().setex(cache_key, _QUARTERLY_TTL, json.dumps(result))
+    except Exception:
+        pass
+
+    return result
+
+
 class QuickScanRequest(BaseModel):
     symbols: list[str]
     price_min: float | None = None
@@ -2233,6 +2287,93 @@ def get_stock(symbol: str, session: Session = Depends(get_session)):
     if not stock:
         raise HTTPException(404, f"Unknown symbol: {symbol}")
     return stock
+
+
+class PriceTfOut(BaseModel):
+    ts: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+@router.get("/{symbol}/prices_tf", response_model=list[PriceTfOut])
+def get_prices_tf(
+    symbol: str,
+    tf: str = Query("1d", regex="^(15m|1h|4h|1d)$"),
+):
+    """Return OHLCV bars for the requested timeframe, computed on-demand via yfinance.
+
+    Supported timeframes:
+      15m  — last 5 days,  15-minute bars
+      1h   — last 60 days, 1-hour bars
+      4h   — last 120 days, 60-minute bars resampled to 4-hour
+      1d   — handled by frontend using existing daily prices (returns empty list here)
+
+    Results are cached in Redis for 10 minutes.
+    """
+    if tf == "1d":
+        return []
+
+    cache_key = f"stockai:prices_tf:{symbol.upper()}:{tf}"
+    try:
+        r = _get_redis()
+        cached = r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    yf_params: dict = {}
+    if tf == "15m":
+        yf_params = {"period": "5d", "interval": "15m"}
+    elif tf == "1h":
+        yf_params = {"period": "60d", "interval": "1h"}
+    elif tf == "4h":
+        yf_params = {"period": "120d", "interval": "60m"}
+
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(**yf_params, auto_adjust=True)
+        if hist.empty:
+            return []
+
+        # Normalise MultiIndex columns (yfinance sometimes returns them)
+        if isinstance(hist.columns, pd.MultiIndex):
+            hist.columns = hist.columns.get_level_values(0)
+
+        hist = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
+        hist.index = pd.to_datetime(hist.index, utc=True)
+
+        if tf == "4h":
+            hist = (
+                hist.resample("4h")
+                .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+                .dropna()
+            )
+
+        rows = []
+        for ts, row in hist.iterrows():
+            rows.append({
+                "ts": ts.strftime("%Y-%m-%dT%H:%M:%S"),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": float(row["Volume"]),
+            })
+
+        try:
+            r = _get_redis()
+            r.setex(cache_key, 600, json.dumps(rows))
+        except Exception:
+            pass
+
+        return rows
+    except Exception as exc:
+        log.warning("prices_tf.error", symbol=symbol, tf=tf, error=str(exc))
+        raise HTTPException(500, f"Failed to fetch {tf} prices for {symbol}: {exc}")
 
 
 @router.get("/{symbol}/prices", response_model=list[PriceOut])

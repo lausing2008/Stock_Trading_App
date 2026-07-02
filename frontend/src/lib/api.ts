@@ -55,6 +55,8 @@ export const api = {
   getStock: (symbol: string) => request<Stock>(`/stocks/${symbol}`),
   getPrices: (symbol: string, tf = '1d', limit = 400, start?: string) =>
     request<Price[]>(`/stocks/${symbol}/prices?timeframe=${tf}&limit=${limit}${start ? `&start=${start}` : ''}`),
+  pricesTf: (symbol: string, tf: '15m' | '1h' | '4h' | '1d') =>
+    request<Price[]>(`/stocks/${symbol}/prices_tf?tf=${tf}`),
   overview: (symbol: string) => request<Overview>(`/aggregate/overview/${symbol}`),
   refreshFundamentals: (symbol: string) => request<unknown>(`/stocks/${symbol}/fundamentals?refresh=true`),
   rankings: (market?: string) => {
@@ -137,6 +139,7 @@ export const api = {
   createAlert: (body: { symbol: string; condition: string; threshold: number; email?: string; note?: string; recurring?: boolean; webhook_url?: string }) =>
     request<PriceAlert>(`/alerts`, { method: 'POST', body: JSON.stringify(body) }),
   deleteAlert: (id: number) => request(`/alerts/${id}`, { method: 'DELETE' }),
+  alertHistory: () => request<{ signal_alerts: { id: number; symbol: string; horizon: string | null; last_signal: string | null; last_sent_at: string | null }[]; price_alerts: { id: number; symbol: string; condition: string; threshold: number; triggered_at: string | null; note: string | null }[] }>(`/alerts/history`),
 
   // Signal alerts
   listSignalAlerts: () => request<SignalAlertItem[]>(`/signal-alerts`),
@@ -558,6 +561,9 @@ export const api = {
   // ── Signal Quality / Calibration ──────────────────────────────────────────
   outcomesCalibration: (days = 180) =>
     request<CalibrationData>(`/signals/outcomes/calibration?days=${days}`),
+
+  // ── Quarterly Financials (T230) ────────────────────────────────────────────
+  quarterlyFinancials: (symbol: string) => request<QuarterlyRow[]>(`/stocks/${symbol}/quarterly`),
 };
 
 export type SuppressedSignalConditions = {
@@ -1777,4 +1783,12 @@ export type EventIntelOverview = {
   catalyst_leaders: CatalystLeaderItem[];
   risk_leaders: CatalystLeaderItem[];
   composite_leaders: CatalystLeaderItem[];
+};
+
+export type QuarterlyRow = {
+  date: string;
+  revenue: number | null;
+  gross_profit: number | null;
+  net_income: number | null;
+  ebitda: number | null;
 };

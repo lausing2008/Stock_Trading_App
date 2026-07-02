@@ -37,7 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -203,6 +203,24 @@ export default function StockDetail() {
   // Sync to watchlist style when page loads (pageStyle comes from router.query, may arrive late)
   useEffect(() => { if (pageStyle) setSelectedHorizon(pageStyle); }, [pageStyle]);
 
+  // T230-CHARTING-TIMEFRAMES: chart timeframe selector state
+  const [chartTf, setChartTf] = useState<'5m' | '15m' | '1h' | '4h' | '1d'>('1d');
+  const { data: tfPrices } = useSWR(
+    symbol && chartTf !== '1d' && chartTf !== '5m' ? `prices-tf-${symbol}-${chartTf}` : null,
+    () => api.pricesTf(symbol!, chartTf as '15m' | '1h' | '4h'),
+    { revalidateOnFocus: false },
+  );
+
+  // T230-CHARTING-COMPARE-OVERLAY: comparison overlay state
+  const [compareSymbol, setCompareSymbol] = useState<string | null>(null);
+  const [compareInputOpen, setCompareInputOpen] = useState(false);
+  const [compareCustomInput, setCompareCustomInput] = useState('');
+  const { data: comparePrices } = useSWR(
+    compareSymbol ? `compare-prices-${compareSymbol}` : null,
+    () => api.getPrices(compareSymbol!, '1d', 400),
+    { revalidateOnFocus: false },
+  );
+
   // Game plan state
   type GamePlanEntry = { label: string; price: number; rationale: string };
   type GamePlan = {
@@ -332,6 +350,12 @@ export default function StockDetail() {
   const { data: symbolOutcomes } = useSWR(
     symbol ? `symbol-outcomes-${symbol}-${activeHorizon}` : null,
     () => api.symbolOutcomes(symbol, activeHorizon),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: quarterly } = useSWR<QuarterlyRow[]>(
+    symbol ? `quarterly-${symbol}` : null,
+    () => api.quarterlyFinancials(symbol!),
     { revalidateOnFocus: false },
   );
 
@@ -1112,23 +1136,141 @@ Return ONLY valid JSON — no markdown, no prose:
         {/* Left column: chart + analysis panels */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-          {/* Chart */}
-          {data.prices && data.prices.length > 0 ? (
-            <PriceChart
-              symbol={symbol as string}
-              prices={data.prices}
-              indicators={data.indicators}
-              levels={data.levels}
-              signalMarkers={signalHistory}
-              patterns={livePatterns?.patterns}
-              gamePlanLevels={gamePlan ? {
-                entryLow: gamePlan.entries[0]?.price ?? null,
-                entryHigh: gamePlan.entries[1]?.price ?? gamePlan.entries[0]?.price ?? null,
-                stopLoss: gamePlan.stop_loss?.price ?? null,
-                target1: gamePlan.take_profit?.price ?? null,
-              } : null}
-            />
-          ) : (
+          {/* T230-CHARTING-TIMEFRAMES: Timeframe selector + Compare overlay controls */}
+          {data.prices && data.prices.length > 0 && (() => {
+            // Compute compare stat for the badge (% change over the shared visible period)
+            let compareStat: string | null = null;
+            if (compareSymbol && comparePrices && comparePrices.length > 1 && data.prices && data.prices.length > 0) {
+              const mainStart = data.prices[0].ts.slice(0, 10);
+              const mainEnd = data.prices[data.prices.length - 1].ts.slice(0, 10);
+              const cAligned = comparePrices.filter(p => {
+                const d = p.ts.slice(0, 10);
+                return d >= mainStart && d <= mainEnd;
+              });
+              if (cAligned.length > 1) {
+                const cRet = ((+cAligned[cAligned.length - 1].close / +cAligned[0].close) - 1) * 100;
+                const sRet = ((+data.prices[data.prices.length - 1].close / +data.prices[0].close) - 1) * 100;
+                compareStat = `${symbol} ${sRet >= 0 ? '+' : ''}${sRet.toFixed(1)}%  vs  ${compareSymbol} ${cRet >= 0 ? '+' : ''}${cRet.toFixed(1)}%`;
+              }
+            }
+
+            return (
+              <div>
+                {/* Timeframe + Compare toolbar */}
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '11px', color: '#475569', fontWeight: 600, marginRight: '2px' }}>TF</span>
+                  {(['5m', '15m', '1h', '4h', '1d'] as const).map(tf => (
+                    <button
+                      key={tf}
+                      onClick={() => setChartTf(tf)}
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        border: chartTf === tf ? 'none' : '1px solid #1e293b',
+                        background: chartTf === tf ? '#4f46e5' : 'rgba(255,255,255,0.03)',
+                        color: chartTf === tf ? '#fff' : '#64748b',
+                        cursor: 'pointer',
+                        transition: 'all 0.12s',
+                      }}
+                    >
+                      {tf}
+                    </button>
+                  ))}
+                  <span style={{ margin: '0 4px', width: '1px', height: '14px', background: '#1e293b', display: 'inline-block' }} />
+                  {/* Compare button */}
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      onClick={() => {
+                        if (compareSymbol) { setCompareSymbol(null); setCompareCustomInput(''); setCompareInputOpen(false); }
+                        else setCompareInputOpen(v => !v);
+                      }}
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        border: compareSymbol ? 'none' : '1px solid #1e293b',
+                        background: compareSymbol ? '#78350f' : 'rgba(255,255,255,0.03)',
+                        color: compareSymbol ? '#fbbf24' : '#64748b',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {compareSymbol ? `vs ${compareSymbol} x` : 'Compare'}
+                    </button>
+                    {compareInputOpen && !compareSymbol && (
+                      <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 50, marginTop: '4px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px', padding: '10px', minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                          {['SPY', 'QQQ', '^HSI'].map(preset => (
+                            <button
+                              key={preset}
+                              onClick={() => { setCompareSymbol(preset); setCompareInputOpen(false); }}
+                              style={{ padding: '3px 10px', borderRadius: '8px', fontSize: '11px', fontWeight: 600, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer' }}
+                            >
+                              {preset === '^HSI' ? 'HSI' : preset}
+                            </button>
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <input
+                            value={compareCustomInput}
+                            onChange={e => setCompareCustomInput(e.target.value.toUpperCase())}
+                            onKeyDown={e => { if (e.key === 'Enter' && compareCustomInput.trim()) { setCompareSymbol(compareCustomInput.trim()); setCompareInputOpen(false); } }}
+                            placeholder="e.g. NVDA"
+                            style={{ flex: 1, padding: '4px 8px', borderRadius: '6px', border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '11px', outline: 'none' }}
+                          />
+                          <button
+                            onClick={() => { if (compareCustomInput.trim()) { setCompareSymbol(compareCustomInput.trim()); setCompareInputOpen(false); } }}
+                            style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', background: '#4f46e5', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                          >
+                            Go
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* Compare stat badge */}
+                  {compareStat && (
+                    <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: '4px', fontFamily: 'monospace' }}>
+                      {compareStat}
+                    </span>
+                  )}
+                  {/* Loading indicator for tf prices */}
+                  {chartTf !== '1d' && chartTf !== '5m' && !tfPrices && (
+                    <span style={{ fontSize: '11px', color: '#475569' }}>loading…</span>
+                  )}
+                </div>
+
+                {/* Chart */}
+                <PriceChart
+                  symbol={symbol as string}
+                  prices={data.prices}
+                  indicators={chartTf === '1d' ? data.indicators : undefined}
+                  levels={chartTf === '1d' ? data.levels : undefined}
+                  signalMarkers={chartTf === '1d' ? signalHistory : undefined}
+                  patterns={livePatterns?.patterns}
+                  gamePlanLevels={gamePlan && chartTf === '1d' ? {
+                    entryLow: gamePlan.entries[0]?.price ?? null,
+                    entryHigh: gamePlan.entries[1]?.price ?? gamePlan.entries[0]?.price ?? null,
+                    stopLoss: gamePlan.stop_loss?.price ?? null,
+                    target1: gamePlan.take_profit?.price ?? null,
+                  } : null}
+                  intradayOverride={
+                    chartTf !== '1d' && chartTf !== '5m'
+                      ? (tfPrices ?? null)
+                      : null
+                  }
+                  compareData={
+                    compareSymbol && comparePrices && comparePrices.length > 1
+                      ? { symbol: compareSymbol, prices: comparePrices }
+                      : null
+                  }
+                />
+              </div>
+            );
+          })()}
+          {data.prices && data.prices.length === 0 && (
             <div className="rounded-md border border-slate-800 bg-slate-900 p-4 text-slate-400">
               No price data available for {symbol}. Try clicking Full Refresh above to ingest history.
             </div>
@@ -2690,7 +2832,64 @@ Return ONLY valid JSON — no markdown, no prose:
                 );
               })()}
 
-              {/* Row 6 — EPS Surprise History */}
+              {/* Row 6 — Quarterly Revenue & Earnings Trend (T230) */}
+              {quarterly && quarterly.length > 0 && (() => {
+                function fmtQ(n: number | null): string {
+                  if (n == null) return '—';
+                  const abs = Math.abs(n);
+                  const sign = n < 0 ? '-' : '';
+                  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(1)}T`;
+                  if (abs >= 1e9)  return `${sign}$${(abs / 1e9).toFixed(1)}B`;
+                  if (abs >= 1e6)  return `${sign}$${(abs / 1e6).toFixed(0)}M`;
+                  if (abs >= 1e3)  return `${sign}$${(abs / 1e3).toFixed(0)}K`;
+                  return `${sign}$${abs.toFixed(0)}`;
+                }
+                const qRows: { label: string; key: keyof QuarterlyRow; color?: (v: number | null) => string }[] = [
+                  { label: 'Revenue',      key: 'revenue' },
+                  { label: 'Gross Profit', key: 'gross_profit' },
+                  { label: 'Net Income',   key: 'net_income',   color: (v) => v == null ? '#94a3b8' : v >= 0 ? '#4ade80' : '#f87171' },
+                  { label: 'EBITDA',       key: 'ebitda' },
+                ];
+                return (
+                  <div>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#0891b2', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                      Quarterly Trend (last {quarterly.length}Q)
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'left', color: '#475569', fontWeight: 600, padding: '4px 8px 4px 0', whiteSpace: 'nowrap', width: '90px' }}></th>
+                            {quarterly.map(q => (
+                              <th key={q.date} style={{ textAlign: 'right', color: '#475569', fontWeight: 600, padding: '4px 6px', whiteSpace: 'nowrap', fontSize: '10px' }}>
+                                {q.date.slice(0, 7)}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {qRows.map(row => (
+                            <tr key={row.label} style={{ borderTop: '1px solid #1e293b' }}>
+                              <td style={{ color: '#94a3b8', padding: '5px 8px 5px 0', whiteSpace: 'nowrap', fontWeight: 600 }}>{row.label}</td>
+                              {quarterly.map(q => {
+                                const v = q[row.key] as number | null;
+                                const cellColor = row.color ? row.color(v) : '#e2e8f0';
+                                return (
+                                  <td key={q.date} style={{ textAlign: 'right', padding: '5px 6px', fontWeight: 600, color: cellColor, whiteSpace: 'nowrap' }}>
+                                    {fmtQ(v)}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Row 7 — EPS Surprise History */}
               {f.eps_history && f.eps_history.length > 0 && (
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>

@@ -1144,3 +1144,15 @@ def send_broker_reauth_email(to: str, broker_name: str, authorize_url: str) -> b
   </div>
 </body></html>"""
     return send_email(to, subject, body_html, body_text)
+
+
+def send_webhook_notification(webhook_url: str, title: str, message: str, color: int = 0x3b82f6) -> bool:
+    """Send a Discord/Slack-compatible webhook notification (embed format)."""
+    try:
+        import httpx as _httpx
+        payload = {"embeds": [{"title": title, "description": message, "color": color}]}
+        r = _httpx.post(webhook_url, json=payload, timeout=10)
+        return r.status_code < 300
+    except Exception as exc:
+        log.warning("webhook.send_failed", url=webhook_url[:40], error=str(exc))
+        return False

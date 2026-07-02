@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from common.logging import get_logger
-from db import PriceAlert, AlertCondition, get_session
+from db import PriceAlert, AlertCondition, SignalAlert, get_session
 from .auth import get_current_user
 
 log = get_logger("alerts")
@@ -141,3 +141,73 @@ def delete_alert(
         raise HTTPException(404, "Alert not found")
     session.delete(alert)
     session.commit()
+
+
+# ── Alert History ─────────────────────────────────────────────────────────────
+
+class SignalAlertHistoryOut(BaseModel):
+    id: int
+    symbol: str
+    horizon: str | None
+    last_signal: str | None
+    last_sent_at: datetime | None
+
+    class Config:
+        from_attributes = True
+
+
+class PriceAlertHistoryOut(BaseModel):
+    id: int
+    symbol: str
+    condition: str
+    threshold: float
+    triggered_at: datetime | None
+    note: str | None
+
+    class Config:
+        from_attributes = True
+
+
+class AlertHistoryOut(BaseModel):
+    signal_alerts: list[SignalAlertHistoryOut]
+    price_alerts: list[PriceAlertHistoryOut]
+
+
+@router.get("/history", response_model=AlertHistoryOut)
+def alert_history(
+    session: Session = Depends(get_session),
+    user=Depends(get_current_user),
+):
+    """Return last 30 sent signal alerts and last 30 triggered price alerts for the user."""
+    signal_rows = session.execute(
+        select(SignalAlert)
+        .where(SignalAlert.user_id == user.id, SignalAlert.last_sent_at.isnot(None))
+        .order_by(SignalAlert.last_sent_at.desc())
+        .limit(30)
+    ).scalars().all()
+
+    price_rows = session.execute(
+        select(PriceAlert)
+        .where(PriceAlert.user_id == user.id, PriceAlert.triggered.is_(True))
+        .order_by(PriceAlert.triggered_at.desc())
+        .limit(30)
+    ).scalars().all()
+
+    return AlertHistoryOut(
+        signal_alerts=[
+            SignalAlertHistoryOut(
+                id=a.id, symbol=a.symbol,
+                horizon=getattr(a, "alert_mode", None),
+                last_signal=a.last_signal, last_sent_at=a.last_sent_at,
+            )
+            for a in signal_rows
+        ],
+        price_alerts=[
+            PriceAlertHistoryOut(
+                id=a.id, symbol=a.symbol,
+                condition=a.condition.value, threshold=a.threshold,
+                triggered_at=a.triggered_at, note=a.note,
+            )
+            for a in price_rows
+        ],
+    )

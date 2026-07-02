@@ -86,7 +86,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 
 
 from .ingestion import ingest_universe
-from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email
+from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
 from ..api.routes import refresh_live_price_cache
 
@@ -1290,6 +1290,15 @@ def check_signal_alerts() -> None:
                     log.info("signal_alert.fired", symbol=alert.symbol, prev=prev, current=current, style=style)
                     _store_conviction(alert.symbol, style, True, conviction_passed or [], [], current,
                                       sent_at=now_utc.isoformat(), conviction_tier=conviction_tier or "full")
+                    # T230-ALERTING-SLACK-DISCORD: also deliver via webhook if user has one configured
+                    webhook = getattr(alert.user, "notification_webhook", None)
+                    if webhook:
+                        send_webhook_notification(
+                            webhook,
+                            title=f"{alert.symbol} signal: {prev} → {current}",
+                            message=analyst_ratings.get(alert.symbol, ""),
+                            color=0x22c55e if current == "BUY" else 0xef4444,
+                        )
                 else:
                     # DP-1: cap retries to prevent infinite loop on broken email config
                     _alert_fail_counts[alert.id] = _alert_fail_counts.get(alert.id, 0) + 1
@@ -1305,6 +1314,46 @@ def check_signal_alerts() -> None:
             session.commit()
             if fired:
                 log.info("signal_alert.check_done", fired=fired)
+
+            # T230-ALERTING-EARNINGS-PROXIMITY: send earnings reminder for watchlist stocks
+            try:
+                user_symbols: dict[int, set[str]] = {}
+                for a in alerts:
+                    user_symbols.setdefault(a.user_id, set()).add(a.symbol)
+                _rc = _get_redis()
+                for uid, syms in user_symbols.items():
+                    u_obj = next((a.user for a in alerts if a.user_id == uid), None)
+                    if not u_obj or not u_obj.email:
+                        continue
+                    for sym in syms:
+                        fund = fundamentals_cache.get(sym) or {}
+                        dte = fund.get("days_to_earnings")
+                        if dte is None:
+                            continue
+                        try:
+                            dte_int = int(dte)
+                        except (TypeError, ValueError):
+                            continue
+                        if dte_int not in (1, 2, 3, 5):
+                            continue
+                        redis_key = f"stockai:earnings_remind:{uid}:{sym}:{dte_int}"
+                        try:
+                            if _rc and _rc.exists(redis_key):
+                                continue
+                        except Exception:
+                            pass
+                        subject = f"⏰ Earnings in {dte_int}d: {sym}"
+                        body_text = f"{sym} reports earnings in {dte_int} day(s). Review your position and manage risk before the print."
+                        from .email_service import send_email
+                        if send_email(u_obj.email, subject, f"<p>{body_text}</p>", body_text):
+                            try:
+                                _rc and _rc.setex(redis_key, 72000, "1")  # 20-hour TTL
+                            except Exception:
+                                pass
+                            log.info("signal_alert.earnings_reminder_sent",
+                                     symbol=sym, days=dte_int, user=u_obj.username)
+            except Exception as exc:
+                log.warning("signal_alert.earnings_reminder_error", error=str(exc))
     except Exception as exc:
         log.error("signal_alert.check_error", error=str(exc))
     finally:
@@ -1399,6 +1448,53 @@ def check_price_alerts() -> None:
                     log.warning("alert.email_failed", symbol=kwargs["symbol"], email=kwargs["to"])
             for url, payload in pending_webhooks:
                 _fire_webhook(url, payload)
+
+            # T230-ALERTING-PORTFOLIO-ALERTS: notify users when a paper position is down ≥ 5%.
+            try:
+                import yfinance as _yf2
+                open_trades = session.execute(
+                    select(PaperTrade).where(PaperTrade.exit_price.is_(None))
+                ).scalars().all()
+                if open_trades:
+                    trade_syms = list({t.symbol for t in open_trades})
+                    tickers = _yf2.Tickers(" ".join(trade_syms))
+                    _rc = _get_redis()
+                    for trade in open_trades:
+                        try:
+                            cur_px = tickers.tickers[trade.symbol].fast_info.last_price
+                        except Exception:
+                            continue
+                        if not cur_px or not trade.entry_price or trade.entry_price <= 0:
+                            continue
+                        pct = cur_px / trade.entry_price - 1
+                        if pct > -0.05:
+                            continue
+                        redis_key = f"stockai:pos_alert:{trade.portfolio_id}:{trade.symbol}"
+                        try:
+                            if _rc and _rc.exists(redis_key):
+                                continue
+                        except Exception:
+                            pass
+                        portfolio = session.get(PaperPortfolio, trade.portfolio_id)
+                        owner_email = (portfolio.config or {}).get("owner_email") if portfolio else None
+                        if not owner_email:
+                            continue
+                        send_price_alert_email(
+                            to=owner_email,
+                            symbol=trade.symbol,
+                            condition="below",
+                            threshold=trade.entry_price * 0.95,
+                            price=cur_px,
+                            note=f"Position down {abs(pct)*100:.1f}% from entry {trade.entry_price:.2f}",
+                        )
+                        try:
+                            _rc and _rc.setex(redis_key, 86400, "1")  # 24-hour TTL
+                        except Exception:
+                            pass
+                        log.info("alert.position_drawdown_sent",
+                                 symbol=trade.symbol, pct=round(pct * 100, 1), email=owner_email)
+            except Exception as _pe:
+                log.warning("alert.position_drawdown_error", error=str(_pe))
     except Exception as exc:
         log.error("alert.check_error", error=str(exc))
     finally:
