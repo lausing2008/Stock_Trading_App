@@ -87,7 +87,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 
 from .ingestion import ingest_universe
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification
-from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists
+from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills
 from ..api.routes import refresh_live_price_cache
 
 log = get_logger("scheduler")
@@ -920,9 +920,10 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
         pass  # Redis unavailable — allow through; double-execution is unlikely without it
     try:
         paper_trading_step()
-        # Poll pending broker orders for actual fills (no-op if no broker-linked portfolios)
+        # Poll pending broker orders for actual fills (no-op if no broker-linked portfolios).
+        # Was importing via the wrong absolute path (services.paper_trading_engine, which
+        # doesn't exist as a top-level module) — silently no-op'd on every cycle for weeks.
         try:
-            from services.paper_trading_engine import poll_broker_order_fills
             poll_broker_order_fills()
         except Exception as _bpe:
             log.warning("broker.poll_step_failed", error=str(_bpe))

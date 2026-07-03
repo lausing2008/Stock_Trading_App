@@ -668,9 +668,12 @@ def _is_market_hours(market: str = "US") -> bool:
         now_hkt = datetime.now(ZoneInfo("Asia/Hong_Kong"))
         if now_hkt.weekday() >= 5:
             return False
-        # H-1: HKEX public holiday check (lazy import avoids circular dependency)
+        # H-1: HKEX public holiday check (lazy import avoids circular dependency).
+        # Was importing via the wrong absolute path (services.scheduler doesn't exist as a
+        # top-level module here) — ImportError every call, so HK holidays were never
+        # actually excluded from market hours (silently swallowed, no visible symptom).
         try:
-            from services.scheduler import _HK_HOLIDAYS as _hkh
+            from .scheduler import _HK_HOLIDAYS as _hkh
             if (now_hkt.year, now_hkt.month, now_hkt.day) in _hkh:
                 return False
         except ImportError:
@@ -2445,6 +2448,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     regime_state = (live_regime or {}).get("state", "neutral")
     regime_size_mult = 1.0
     if cfg.get("enable_regime_filter", True) and live_regime:
+        # HK regime has no VIX (US-only index) — live_regime["vix"] is present but None,
+        # so `.get("vix", "?")` returns None (the key exists) rather than the fallback,
+        # and f"{None:.1f}" raises TypeError, crashing paper_trading_step() for every
+        # portfolio scanned after this one in the same cycle. Format defensively.
+        _vix_val = live_regime.get("vix")
+        _vix_str = f"{_vix_val:.1f}" if _vix_val is not None else "N/A"
         if regime_state == "bear":
             log.info("paper.regime_gate_bear",
                      portfolio=portfolio.name,
@@ -2453,7 +2462,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      notes=live_regime.get("notes"),
                      note="all new entries suspended in bear regime")
             _write_gate_block(portfolio.id, "regime_bear",
-                              f"Bear market — SPY below 200EMA + VIX {live_regime.get('vix', '?'):.1f}; all new entries suspended")
+                              f"Bear market — SPY below 200EMA + VIX {_vix_str}; all new entries suspended")
             return
         # T173/T226-A: risk_off gate — blocks all new entries when regime_risk_off_gate=True.
         # T226-A changed default to True: 9/30 closed paper trades in risk_off had 0% win rate.
@@ -2465,7 +2474,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      spy=live_regime.get("spy_price"),
                      note="all new entries suspended in risk_off regime (strict gate enabled)")
             _write_gate_block(portfolio.id, "regime_risk_off",
-                              f"Risk-off regime — SPY below 50EMA + VIX {live_regime.get('vix', '?'):.1f}; no new entries until regime improves")
+                              f"Risk-off regime — SPY below 50EMA + VIX {_vix_str}; no new entries until regime improves")
             return
 
         # T210: Regime suspension circuit breaker — if the market has been risk_off or bear
