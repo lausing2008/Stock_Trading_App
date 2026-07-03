@@ -722,6 +722,19 @@ def _is_market_hours(market: str = "US") -> bool:
 _regime_cache: dict = {}          # last successful result
 _regime_cache_ts: float = 0.0     # epoch seconds of last successful fetch
 
+# T232-DE7: hysteresis state for regime classification. _fetch_market_regime() is called
+# fresh (new yfinance download + reclassification, no debounce) on every _refresh_5m tick —
+# every 5 minutes during market hours. A candidate sitting right at an EMA boundary can
+# genuinely flip choppy<->bull on consecutive ticks with no real change in market conditions,
+# swinging score/size_mult/min_rr on the same signal within minutes. A pending new state must
+# now be observed on _REGIME_HYSTERESIS_TICKS consecutive classifications before it actually
+# takes effect — a single-tick flip is treated as noise and the previously CONFIRMED state is
+# returned instead.
+_REGIME_HYSTERESIS_TICKS = 2
+_regime_confirmed_state: str | None = None   # last state that passed hysteresis and was returned
+_regime_pending_state: str | None = None     # raw state seen on the most recent call(s)
+_regime_pending_count: int = 0               # consecutive ticks _regime_pending_state has held
+
 
 def get_last_regime() -> dict:
     """Return the most recently cached market regime dict.
@@ -903,6 +916,39 @@ def _fetch_market_regime(cfg: dict) -> dict:
         spy_str = f"${spy:.0f}" if spy else "unknown"
         notes.append(f"SPY {spy_str} — mixed signals")
         result["state"] = "neutral"
+
+    # T232-DE7: hysteresis — require a NEW state to be observed on 2 consecutive ticks before
+    # it actually takes effect, so a single boundary-noise flip doesn't change what every
+    # gate/sizing/min_rr check sees. Escalation into the two most severe states (bear,
+    # risk_off) is NOT delayed — hysteresis exists to filter noise between benign states, not
+    # to slow down the system's reaction to a genuine deterioration signal. De-escalating OUT
+    # of bear/risk_off still requires confirmation, same as any other transition.
+    global _regime_confirmed_state, _regime_pending_state, _regime_pending_count
+    _raw_state = result["state"]
+    if _regime_confirmed_state is None:
+        # First classification since startup — nothing to compare against, accept immediately.
+        _regime_confirmed_state = _raw_state
+        _regime_pending_state, _regime_pending_count = _raw_state, _REGIME_HYSTERESIS_TICKS
+    elif _raw_state == _regime_confirmed_state:
+        _regime_pending_state, _regime_pending_count = _raw_state, 0
+    elif _raw_state in ("bear", "risk_off"):
+        notes.append(f"regime hysteresis bypassed for escalation to {_raw_state}")
+        _regime_confirmed_state = _raw_state
+        _regime_pending_state, _regime_pending_count = _raw_state, 0
+    else:
+        if _regime_pending_state == _raw_state:
+            _regime_pending_count += 1
+        else:
+            _regime_pending_state, _regime_pending_count = _raw_state, 1
+        if _regime_pending_count >= _REGIME_HYSTERESIS_TICKS:
+            _regime_confirmed_state = _raw_state
+        else:
+            notes.append(
+                f"regime hysteresis: raw={_raw_state} pending {_regime_pending_count}/"
+                f"{_REGIME_HYSTERESIS_TICKS} ticks — still reporting confirmed={_regime_confirmed_state}"
+            )
+    result["raw_state"] = _raw_state
+    result["state"] = _regime_confirmed_state
 
     # RE-9: Compute early warning flags AFTER state classification
     if spy and e20:
