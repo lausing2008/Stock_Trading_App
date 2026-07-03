@@ -3190,9 +3190,15 @@ def outcomes_calibrate(
         )
     ).scalars().all()
 
+    # T232-OC3: walk-forward split — mirrors the fix in POST /outcomes/calibrate/apply so this
+    # preview endpoint reports the SAME methodology that actually gets applied, instead of a
+    # more optimistic in-sample number that would disagree with what apply's response shows.
     calibrations = []
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
-        bucket = [o for o in all_outcomes if o.horizon.value == h]
+        bucket = sorted(
+            [o for o in all_outcomes if o.horizon.value == h],
+            key=lambda o: o.signal_date,
+        )
         current_t = CURRENT.get(h, 0.65)
 
         def _stats_at(threshold: float, samples: list) -> dict | None:
@@ -3210,31 +3216,32 @@ def outcomes_calibrate(
                 "expected_value_pct": round(acc * avg_ret * 100, 2),
             }
 
-        if len(bucket) < min_samples:
+        if len(bucket) < min_samples * 2:
             calibrations.append({
                 "horizon": h,
                 "current_threshold": current_t,
                 "suggested_threshold": None,
                 "n_total": len(bucket),
-                "note": f"Insufficient data (need ≥{min_samples} evaluated BUY outcomes)",
+                "note": f"Insufficient data (need ≥{min_samples * 2} evaluated BUY outcomes for a valid train/validation split)",
             })
             continue
 
-        # Sweep fused_prob thresholds 0.55-0.85
+        split = max(1, int(len(bucket) * 0.7))
+        train_bucket = bucket[:split]
+        val_bucket = bucket[split:]
+
+        # Search on the train slice only.
         best_ev = -999.0
         best_t: float | None = None
-        best_stats: dict | None = None
         for t_i in range(55, 86):
-            st = _stats_at(t_i / 100.0, bucket)
-            if st is None:
-                continue
-            ev = st["expected_value_pct"]
-            if ev > best_ev:
-                best_ev = ev
+            st = _stats_at(t_i / 100.0, train_bucket)
+            if st is not None and st["expected_value_pct"] > best_ev:
+                best_ev = st["expected_value_pct"]
                 best_t = t_i / 100.0
-                best_stats = st
 
-        at_current = _stats_at(current_t, bucket)
+        # Report stats on the validation slice — data the search never saw.
+        best_stats = _stats_at(best_t, val_bucket) if best_t is not None else None
+        at_current = _stats_at(current_t, val_bucket)
         ev_lift = None
         if best_stats and at_current:
             ev_lift = round(best_stats["expected_value_pct"] - at_current["expected_value_pct"], 2)
@@ -3245,6 +3252,8 @@ def outcomes_calibrate(
             "suggested_threshold": round(best_t, 2) if best_t else None,
             "ev_lift_pct": ev_lift,
             "n_total": len(bucket),
+            "train_n": len(train_bucket),
+            "validation_n": len(val_bucket),
             "at_current_threshold": at_current,
             "at_suggested_threshold": best_stats,
         })
@@ -3307,53 +3316,92 @@ def outcomes_calibrate_apply(
     redis_client = _get_redis()
     _REDIS_TTL = 30 * 86400  # 30 days
 
+    # T232-OC3 / T233-SELFIMPROVE-PHASE1: the threshold search used to sweep 31 overlapping
+    # cumulative subsets of ONE sample and take the argmax — an in-sample search evaluated on
+    # the exact data it was fit to. At min_samples=50 the win-rate standard error is still ~7pp,
+    # so an unvalidated argmax over 31 correlated subsets is prone to surfacing an upward-biased
+    # fluke as "optimal" (the same failure mode that produced the CAL-1 incident documented
+    # elsewhere in this report). Fixed with a genuine walk-forward split: search for the best
+    # threshold on the OLDER 70% of the window (train), then only apply it if the EV lift ALSO
+    # holds up on the NEWER, never-searched 30% (validation) — mirrors the chronological
+    # train/validation split calibrate_ml_weight() already uses correctly for the sibling
+    # ML-weight calibration.
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
-        bucket = [o for o in all_outcomes if o.horizon.value == h]
+        bucket = sorted(
+            [o for o in all_outcomes if o.horizon.value == h],
+            key=lambda o: o.signal_date,
+        )
         current_t = CURRENT.get(h, 0.65)  # fused-probability scale
 
-        if len(bucket) < min_samples:
-            skipped.append({"horizon": h, "reason": f"only {len(bucket)} samples (need {min_samples})"})
+        if len(bucket) < min_samples * 2:
+            # Need enough for BOTH a train slice and a validation slice to each independently
+            # clear min_samples — otherwise the split itself produces two under-powered halves.
+            skipped.append({"horizon": h, "reason": f"only {len(bucket)} samples (need {min_samples * 2} for a valid train/validation split)"})
             continue
 
-        best_ev = -999.0
-        best_t: float | None = None
-        best_stats: dict | None = None
-        current_stats: dict | None = None
+        split = max(1, int(len(bucket) * 0.7))
+        train_bucket = bucket[:split]
+        val_bucket = bucket[split:]
 
-        # Sweep on fused_prob directly (0.55-0.85, 1pt steps) — the scale _decide_style reads.
-        for t_i in range(55, 86):
-            t = t_i / 100.0
-            sub = [o for o in bucket if o.fused_prob is not None and o.fused_prob >= t]
+        def _stats_at(threshold: float, samples: list) -> dict | None:
+            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob >= threshold]
             if len(sub) < min_samples:
-                continue
+                return None
             wins = sum(1 for o in sub if o.is_correct)
             rets = [o.pct_return for o in sub if o.pct_return is not None]
             acc = wins / len(sub)
             avg_ret = _stats.mean(rets) if rets else 0.0
             ev = acc * avg_ret * 100
-            if ev > best_ev:
-                best_ev = ev
+            return {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
+
+        # Search for the best threshold on the TRAIN slice only.
+        best_ev = -999.0
+        best_t: float | None = None
+        for t_i in range(55, 86):
+            t = t_i / 100.0
+            st = _stats_at(t, train_bucket)
+            if st is not None and st["ev_pct"] > best_ev:
+                best_ev = st["ev_pct"]
                 best_t = t
-                best_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
-            if abs(t - current_t) < 0.005:
-                current_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
 
         if best_t is None:
-            skipped.append({"horizon": h, "reason": "no threshold met EV/sample criteria"})
+            skipped.append({"horizon": h, "reason": "no threshold met EV/sample criteria on the train slice"})
+            continue
+
+        # Validate: both the suggested threshold and the current baseline must be independently
+        # measurable on the VALIDATION slice — a candidate that never sees this data.
+        best_stats = _stats_at(best_t, val_bucket)
+        current_stats = _stats_at(current_t, val_bucket)
+
+        if best_stats is None:
+            skipped.append({"horizon": h, "reason": "suggested threshold unmeasurable on the validation slice (insufficient samples)"})
             continue
 
         if current_stats is None:
             # T232-OC3: no honest baseline measurable at the current threshold — do not assume
             # EV 0 (that overstates lift and applies too eagerly). Skip instead.
-            skipped.append({"horizon": h, "reason": "baseline threshold unmeasurable (insufficient samples)"})
+            skipped.append({"horizon": h, "reason": "baseline threshold unmeasurable on the validation slice (insufficient samples)"})
             continue
 
-        ev_lift = round(best_ev - current_stats["ev_pct"], 2)
+        ev_lift = round(best_stats["ev_pct"] - current_stats["ev_pct"], 2)
+
+        # T232-OC3-FOLLOWUP: never apply a threshold with negative validated EV lift, regardless
+        # of how large the threshold shift is — see the SELL-side comment above for the live
+        # incident (a large shift previously bypassed the lift check entirely via the old
+        # `ev_lift < min AND shift < 3pt` AND-logic).
+        if ev_lift < 0:
+            skipped.append({
+                "horizon": h,
+                "reason": f"validation-slice EV lift {ev_lift}% is negative — never apply a worse threshold",
+                "suggested": best_t,
+                "current": current_t,
+            })
+            continue
 
         if ev_lift < min_ev_lift and abs(best_t - current_t) < 0.03:
             skipped.append({
                 "horizon": h,
-                "reason": f"EV lift {ev_lift}% below min {min_ev_lift}% and threshold shift <3pt",
+                "reason": f"validation-slice EV lift {ev_lift}% below min {min_ev_lift}% and threshold shift <3pt",
                 "suggested": best_t,
                 "current": current_t,
             })
@@ -3371,7 +3419,8 @@ def outcomes_calibrate_apply(
             "previous_threshold": current_t,
             "new_threshold": round(best_t, 4),
             "ev_lift_pct": ev_lift,
-            "stats": best_stats,
+            "train_n": len(train_bucket),
+            "validation_stats": best_stats,
         })
 
     # T228-SELL-CALIBRATION (T232-CAL3 fix): sweep SELL threshold per horizon.
@@ -3390,49 +3439,76 @@ def outcomes_calibrate_apply(
     sell_skipped: list[dict] = []
     _CURRENT_SELL = 0.35  # fused-probability scale, matches the hardcoded fallback in signals.py
 
+    # T232-OC3: same walk-forward fix as the BUY sweep above — train on the older 70%,
+    # validate the chosen threshold's EV lift on the newer, never-searched 30%.
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
-        s_bucket = [o for o in sell_outcomes if o.horizon.value == h]
+        s_bucket = sorted(
+            [o for o in sell_outcomes if o.horizon.value == h],
+            key=lambda o: o.signal_date,
+        )
 
-        if len(s_bucket) < min_samples:
-            sell_skipped.append({"horizon": h, "reason": f"only {len(s_bucket)} SELL samples (need {min_samples})"})
+        if len(s_bucket) < min_samples * 2:
+            sell_skipped.append({"horizon": h, "reason": f"only {len(s_bucket)} SELL samples (need {min_samples * 2} for a valid train/validation split)"})
             continue
 
-        s_best_ev = -999.0
-        s_best_t: float | None = None
-        s_best_stats: dict | None = None
-        s_current_stats: dict | None = None
+        s_split = max(1, int(len(s_bucket) * 0.7))
+        s_train_bucket = s_bucket[:s_split]
+        s_val_bucket = s_bucket[s_split:]
 
-        for t_i in range(15, 41):
-            t = t_i / 100.0
-            sub = [o for o in s_bucket if o.fused_prob is not None and o.fused_prob <= t]
+        def _sell_stats_at(threshold: float, samples: list) -> dict | None:
+            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob <= threshold]
             if len(sub) < min_samples:
-                continue
+                return None
             wins = sum(1 for o in sub if o.is_correct)
             rets = [-o.pct_return for o in sub if o.pct_return is not None]  # signed: SELL wins on price decline
             acc = wins / len(sub)
             avg_ret = _stats.mean(rets) if rets else 0.0
             ev = acc * avg_ret * 100
-            if ev > s_best_ev:
-                s_best_ev = ev
+            return {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
+
+        s_best_ev = -999.0
+        s_best_t: float | None = None
+        for t_i in range(15, 41):
+            t = t_i / 100.0
+            st = _sell_stats_at(t, s_train_bucket)
+            if st is not None and st["ev_pct"] > s_best_ev:
+                s_best_ev = st["ev_pct"]
                 s_best_t = t
-                s_best_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
-            if abs(t - _CURRENT_SELL) < 0.005:
-                s_current_stats = {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
 
         if s_best_t is None:
-            sell_skipped.append({"horizon": h, "reason": "no SELL threshold met criteria"})
+            sell_skipped.append({"horizon": h, "reason": "no SELL threshold met criteria on the train slice"})
+            continue
+
+        s_best_stats = _sell_stats_at(s_best_t, s_val_bucket)
+        s_current_stats = _sell_stats_at(_CURRENT_SELL, s_val_bucket)
+
+        if s_best_stats is None:
+            sell_skipped.append({"horizon": h, "reason": "suggested SELL threshold unmeasurable on the validation slice"})
             continue
 
         if s_current_stats is None:
-            sell_skipped.append({"horizon": h, "reason": "SELL baseline threshold unmeasurable"})
+            sell_skipped.append({"horizon": h, "reason": "SELL baseline threshold unmeasurable on the validation slice"})
             continue
 
-        s_ev_lift = round(s_best_ev - s_current_stats["ev_pct"], 2)
+        s_ev_lift = round(s_best_stats["ev_pct"] - s_current_stats["ev_pct"], 2)
 
+        # T232-OC3-FOLLOWUP: this used to be `ev_lift < min_ev_lift AND shift < 3pt` — an AND
+        # meant a large threshold shift could bypass the EV check entirely even with NEGATIVE
+        # validated lift (caught live: a run applied SELL:GROWTH 0.35->0.30 with a validated
+        # ev_lift of -0.01%, because the 5pt shift satisfied "not small" while the lift check
+        # was skipped). Never apply a threshold with negative validated EV lift regardless of
+        # shift size; the small-shift-plus-small-lift skip is now a separate, narrower check.
+        if s_ev_lift < 0:
+            sell_skipped.append({
+                "horizon": h, "direction": "SELL",
+                "reason": f"validation-slice EV lift {s_ev_lift}% is negative — never apply a worse threshold",
+                "suggested": s_best_t,
+            })
+            continue
         if s_ev_lift < min_ev_lift and abs(s_best_t - _CURRENT_SELL) < 0.03:
             sell_skipped.append({
                 "horizon": h, "direction": "SELL",
-                "reason": f"EV lift {s_ev_lift}% below min and shift <3pt",
+                "reason": f"validation-slice EV lift {s_ev_lift}% below min and shift <3pt",
                 "suggested": s_best_t,
             })
             continue
@@ -3448,7 +3524,8 @@ def outcomes_calibrate_apply(
             "previous_threshold": _CURRENT_SELL,
             "new_threshold": round(s_best_t, 4),
             "ev_lift_pct": s_ev_lift,
-            "stats": s_best_stats,
+            "train_n": len(s_train_bucket),
+            "validation_stats": s_best_stats,
         })
 
     return {

@@ -1370,7 +1370,7 @@ exactly when a trader would want either a normal-conservative position or no pos
 a position too small to be worth the slippage. Also frees up `max_positions` capacity during
 volatile periods for candidates that clear a reasonable size floor.
 
-### 11.4 — T232-OC3: signal threshold calibration has no holdout, applied straight to production
+### 11.4 — T232-OC3: signal threshold calibration has no holdout, applied straight to production — FIXED 2026-07-04
 
 **Problem.** `POST /outcomes/calibrate/apply`'s threshold search sweeps 46 overlapping cumulative
 subsets of the same sample and takes the argmax expected value — with `min_samples=15` and a
@@ -1397,6 +1397,38 @@ design's Phase 1 target the same underlying endpoint and the same underlying def
 should reduce the frequency of corrupted-threshold incidents like CAL-1 (Part 1), where a Sunday
 calibration run silently loosened a production threshold for weeks before being caught by manual
 inspection rather than any automated check.
+
+**Fix applied 2026-07-04 (this IS Phase 1 of the self-improvement loop design):** added a
+genuine walk-forward split — sort each horizon's outcomes chronologically, sweep for the best
+threshold on the older 70% (train), then only report/apply it if the EV lift *also* holds up on
+the newer, never-searched 30% (validation). Applied to all three sweeps: the read-only preview
+endpoint (`GET /outcomes/calibrate`) and both the BUY and SELL sweeps inside
+`POST /outcomes/calibrate/apply`. Both slices must independently clear `min_samples` (so the
+effective minimum sample size to attempt calibration doubled), and every skip path now reports
+a specific, self-documenting reason (`train_n`/`validation_n` included in the response) instead
+of a bare null.
+
+**Verified live against real production data**, not just synthetic tests: triggered
+`POST /outcomes/calibrate/apply` against production twice. The first run confirmed the walk-forward
+gate working — **zero BUY thresholds were applied**, all four horizons correctly skipped for
+insufficient validation-slice sample size or measurability, a dramatic change from the old
+in-sample-argmax behavior that would have applied whatever threshold looked best on the full
+sample regardless of whether it held up on unseen data.
+
+**A second, real bug was caught live during this verification** (not found by inspection —
+found because the walk-forward fix surfaced it): the apply-gate's skip condition was
+`ev_lift < min_ev_lift AND abs(shift) < 0.03` — an AND, meaning a sufficiently large threshold
+shift could bypass the EV-lift check entirely, even when the validated lift was **negative**. The
+first verification run applied `SELL:GROWTH` `0.35 → 0.30` with a validated `ev_lift_pct` of
+`-0.01%` (a strictly worse threshold, by the endpoint's own honest measurement) because the 5-point
+shift satisfied "not small" while the lift check never fired. This is a second, independent
+instance of exactly the kind of silent threshold corruption CAL-1 (Part 1) already documented —
+found this time by testing the fix rather than by a user report weeks later. Fixed by adding an
+unconditional `if ev_lift < 0: skip` check ahead of the existing shift-based gate, for both BUY
+and SELL. The bad Redis key the verification run had written
+(`stockai:signal_thresholds:SELL:GROWTH`) was deleted immediately, and a follow-up run confirmed
+the corrected endpoint now rejects the same scenario with an explicit
+`"EV lift is negative — never apply a worse threshold"` reason.
 
 ### 11.5 — T232-PT4: CORRECTED 2026-07-04 — original premise was factually wrong, closed as working-as-designed
 
