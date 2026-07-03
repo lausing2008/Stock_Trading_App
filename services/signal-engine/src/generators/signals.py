@@ -246,6 +246,22 @@ def _load_ta_weights() -> dict[str, float]:
 # loaded for all cases so the dict is always populated.
 _ta_weights: dict[str, float] = _load_ta_weights()
 _ta_weights_calibrated: bool = _TA_WEIGHTS_PATH.exists()
+_ta_weights_lock = threading.Lock()
+
+
+def set_ta_weights(new_weights: dict[str, float]) -> None:
+    """Update the in-process TA weights immediately after calibration writes them.
+
+    T232-SIG6: calibrate_ta_weights() used to write to ta_weights.json + Redis and report
+    success, but _ta_weights/_ta_weights_calibrated (the module globals _ta_score() actually
+    reads on every call) were only ever set once at import time — a running process could be
+    operating on weeks-stale weights while an admin believed the latest calibration was live.
+    Mirrors set_ml_weight_global_cap()'s existing reassign-under-lock pattern.
+    """
+    global _ta_weights, _ta_weights_calibrated
+    with _ta_weights_lock:
+        _ta_weights = dict(new_weights)
+        _ta_weights_calibrated = True
 
 
 def load_conviction_weights() -> dict[str, float]:

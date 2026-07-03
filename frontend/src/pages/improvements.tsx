@@ -8093,12 +8093,12 @@ const ITEMS: Item[] = [
   {
     id: 'T232-SIG6-TA-WEIGHTS-NEVER-RELOAD',
     title: 'calibrate_ta_weights writes to file+Redis but module globals never refresh until restart',
-    tier: 232 as const, severity: 'high', defaultStatus: 'todo' as const,
-    file: 'services/signal-engine/src/api/routes.py',
+    tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/generators/signals.py, services/signal-engine/src/api/routes.py',
     effort: 'S',
     impact: 'High — _ta_weights/_ta_weights_calibrated load once at import (signals.py:247-248). Weekly TA-weight calibration is a no-op for the running process; weights can be weeks stale relative to what the admin believes was applied.',
-    what: 'routes.py:2145-2153 endpoint updates persistence layers only, not the in-process state actually used by _ta_score.',
-    fix: 'At the end of calibrate_ta_weights, refresh the module globals under a lock, or re-read Redis in _ta_score with a short-TTL in-process cache.',
+    what: 'routes.py:2145-2153 endpoint updates persistence layers only, not the in-process state actually used by _ta_score (re-verified live 2026-07-04).',
+    fix: 'Done 2026-07-04: added set_ta_weights() to signals.py, mirroring the existing set_ml_weight_global_cap() reassign-under-lock pattern already used for the analogous ML-weight-cap calibration. calibrate_ta_weights() now calls set_ta_weights(new_weights) immediately after persisting to file+Redis, updating the in-process _ta_weights/_ta_weights_calibrated globals the SAME running server process reads on every _ta_score() call — no restart required. Verified live end-to-end: triggered a real calibration run (3,457 signals, 1,276 usable, 53.96% in-sample accuracy) against the running production signal-engine container, confirmed the returned weights differed materially from the pre-calibration in-process values (above_sma50: 0.0 → 0.1808, sma50_above_sma200: 0.3137 → 0.0), and confirmed via container logs that the calibration request (with a real request_id, i.e. the actual HTTP-serving process, not a standalone script) executed the new set_ta_weights() call path successfully.',
   },
   {
     id: 'T232-ML2-THRESHOLD-FIT-ON-TEST-SET',

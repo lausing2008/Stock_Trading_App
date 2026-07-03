@@ -1257,7 +1257,7 @@ filtering out the single-pillar, wrong-horizon SELLs that are dragging the avera
 70%-at-5-days number suggests real signal exists, it's just currently diluted by low-quality
 long-horizon SELL calls sharing the same threshold.
 
-### 11.2 — T232-SIG6: TA weight calibration never reaches the running process
+### 11.2 — T232-SIG6: TA weight calibration never reaches the running process — FIXED 2026-07-04
 
 **Problem.** `POST /calibrate_ta_weights` writes newly-calibrated weights to `ta_weights.json`
 and to Redis (`stockai:ta_weights`, 90-day TTL) — but `_ta_weights`/`_ta_weights_calibrated`, the
@@ -1280,6 +1280,20 @@ is actually using the new weights." Without this fix, the entire TA-weight calib
 is only as good as how often the container happens to restart for unrelated reasons — a
 mechanism this session's audit already found market-data restarts semi-regularly for (deploys,
 crash-loops), so the staleness window in practice ranges from hours to potentially weeks.
+
+**Fix applied 2026-07-04:** added `set_ta_weights()` to `signals.py`, mirroring the existing
+`set_ml_weight_global_cap()` reassign-under-lock pattern already used for the analogous
+ML-weight-cap calibration in the same file. `calibrate_ta_weights()` now calls
+`set_ta_weights(new_weights)` immediately after persisting to file and Redis, updating the
+in-process `_ta_weights`/`_ta_weights_calibrated` globals the running server process reads on
+every `_ta_score()` call. Verified live end-to-end against production: triggered a real
+calibration run (3,457 signals in the lookback window, 1,276 usable after price-lookup
+filtering, 53.96% in-sample accuracy) and confirmed the returned weights differed materially
+from the pre-calibration in-process values (`above_sma50`: 0.0 → 0.1808, `sma50_above_sma200`:
+0.3137 → 0.0). Confirmed via container logs that the calibration request carried a real
+`request_id` (i.e. executed inside the actual HTTP-serving FastAPI process, not a standalone
+script) — proving the fix closes the gap for the exact process that matters, not just a fresh
+reload that would have worked even with the old buggy code.
 
 ### 11.3 — T232-DE1: VIX double-counted in decision-engine's position sizing
 

@@ -2017,7 +2017,7 @@ def calibrate_ta_weights(
     except ImportError:
         raise HTTPException(status_code=500, detail="scikit-learn not installed in signal-engine")
 
-    from ..generators.signals import _TA_WEIGHTS_DEFAULT, _TA_WEIGHTS_PATH
+    from ..generators.signals import _TA_WEIGHTS_DEFAULT, _TA_WEIGHTS_PATH, set_ta_weights
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     rows = session.execute(
@@ -2152,6 +2152,11 @@ def calibrate_ta_weights(
         _get_redis().setex("stockai:ta_weights", 90 * 86400, json.dumps(new_weights))
     except Exception:
         pass
+    # T232-SIG6: the persistence writes above only affect the NEXT process restart unless the
+    # in-process globals are also refreshed here — this used to be the entire bug (calibration
+    # reported success but the running process kept scoring signals against the old weights
+    # until it happened to restart for an unrelated reason).
+    set_ta_weights(new_weights)
     log.info("calibrate_ta_weights: wrote %s (accuracy=%.3f, n=%d)", _TA_WEIGHTS_PATH, accuracy, len(X_rows))
 
     return {
