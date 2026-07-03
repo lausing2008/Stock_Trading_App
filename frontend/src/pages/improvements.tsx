@@ -8243,12 +8243,12 @@ const ITEMS: Item[] = [
   {
     id: 'T232-OC5-T223-CALIBRATION-POOLS-EVERYTHING',
     title: 'T223 confidence calibration pools BUY+SELL, all horizons, both markets into one band',
-    tier: 232 as const, severity: 'medium', defaultStatus: 'todo' as const,
-    file: 'services/signal-engine/src/api/routes.py',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/api/routes.py, frontend/src/components/SignalCard.tsx',
     effort: 'S',
     impact: 'Medium — confidence is direction-agnostic, so the "70-85" band mixes strong BUYs with strong SELLs, SHORT with LONG, HK with US — populations with documented divergent base rates (SELL 43.7% vs BUY 63.3%). A LONG US BUY\'s displayed win rate is dominated by SELLs (which fire 2.3×). min-count 10 gives ±30pp CI — the green/amber UI coloring distinguishes far inside noise.',
     what: 'routes.py:90-106 _build_confidence_calibration filters only is_correct + 180d.',
-    fix: 'Key the calibration map by (direction, horizon) minimum, ideally market; raise min-count to ≥30; display sample count next to the percentage in SignalCard.',
+    fix: 'Fixed 2026-07-03. _build_confidence_calibration now groups signal_outcomes by (horizon, direction, market, confidence band) — flat dict keyed "HORIZON|DIRECTION|MARKET|BAND" — falling back to "HORIZON|DIRECTION|BAND" (pooled across markets) when the market-specific bucket does not reach the new min-count of 30 (was 10). _calibrated_win_rate now takes horizon/direction/market and returns (win_rate, count); both signal_for call sites (DB-stored and live-generated paths) pass their signal\'s actual horizon/direction/market and skip calibration entirely for non-directional HOLD/WAIT signals (calibration is meaningless there). SignalCard now shows the sample size next to the percentage ("Historical win rate (n=34) 47%"). Found and fixed two bugs while verifying this live: (1) GET /signals/confidence-calibration and GET /signals/gate_backtest were BOTH completely unreachable — /{symbol} was registered before them in the router and FastAPI matches routes in registration order, so both were being swallowed as symbol="confidence-calibration"/"gate_backtest" and 500ing; moved /{symbol} to the end of the file (after every static route) with a comment warning against reintroducing this; (2) Stock.market is a `+"`"+`str, enum.Enum`+"`"+` whose f-string/str() stringifies as "Market.US" not "US" — both the bucket-key-building and lookup code were using raw f-string interpolation, which happened to still match consistently but produced ugly, fragile API output; fixed to use `+"`"+`.value`+"`"+` explicitly everywhere. Verified end-to-end: GET /signals/confidence-calibration returns real per-(horizon,direction,market) buckets with plain "US"/"HK" strings; GET /signals/gate_backtest returns 200 (was completely broken); GET /signals/AAPL?live=false correctly shows calibrated_win_rate=0.471/count=34 for its GROWTH BUY signal, matching the GROWTH|BUY|US|0-40 bucket exactly, while HOLD signals correctly get no calibration at all.',
   },
   {
     id: 'T232-OC6-SURVIVORSHIP-IN-OUTCOMES',

@@ -126,6 +126,8 @@ type Reasons = {
   analyst_momentum_adj?: number | null;
   // T223: outcome-based calibrated win rate from signal_outcomes
   calibrated_win_rate?: number | null;
+  // T232-OC5: sample size backing calibrated_win_rate (now keyed by horizon+direction[+market])
+  calibrated_win_rate_count?: number | null;
   // T220: institutional intelligence suite
   insider_cluster?: boolean;
   insider_buy_usd?: number | null;
@@ -713,14 +715,17 @@ export default function SignalCard({ signal }: { signal: Signal }) {
         />
       </div>
 
-      {/* T223: Historical win rate from outcome calibration */}
+      {/* T223/T232-OC5: Historical win rate from outcome calibration, keyed by horizon+direction+market */}
       {reasons?.calibrated_win_rate != null && (
         <div className="flex items-center justify-between mb-3 px-1">
           <span
             className="text-xs text-slate-500"
-            title="Win rate for signals at this confidence level — from last 180 days of signal outcomes"
+            title="Win rate for this horizon, direction, and confidence level — from last 180 days of signal outcomes"
           >
             Historical win rate
+            {reasons.calibrated_win_rate_count != null && (
+              <span className="text-slate-600"> (n={reasons.calibrated_win_rate_count})</span>
+            )}
           </span>
           <span
             className={`text-xs font-semibold ${

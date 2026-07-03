@@ -85,24 +85,65 @@ _CONF_BANDS: list[tuple[float, float, str]] = [
 ]
 _CONF_CAL_CACHE_KEY = "signal:confidence_calibration"
 _CONF_CAL_TTL = 3600  # 1 hour
+# T232-OC5: confidence is direction-agnostic, so pooling BUY+SELL, all horizons, and both
+# markets into one band mixed populations with documented divergent base rates (SELL 43.7%
+# vs BUY 63.3% in production; HK vs US also diverge materially). Calibration is now keyed by
+# (horizon, direction, market) first; if that specific bucket doesn't reach the min-count, it
+# falls back to (horizon, direction) pooled across markets, which is still far more precise
+# than the old fully-pooled map. min-count raised 10 -> 30 (10 gives a ±30pp confidence
+# interval — not tight enough for the green/amber UI coloring to mean anything).
+_CONF_CAL_MIN_COUNT = 30
+
+
+def _cal_bucket_key(horizon: str, direction: str, market: str | None, band: str) -> str:
+    if market:
+        return f"{horizon}|{direction}|{market}|{band}"
+    return f"{horizon}|{direction}|{band}"
 
 
 def _build_confidence_calibration(session: Session) -> dict:
-    """Query signal_outcomes and compute win rate per confidence band (last 180d).
-    Returns {band_label: {"win_rate": float, "count": int}} or {}."""
+    """Query signal_outcomes and compute win rate per (horizon, direction, market, band).
+
+    Returns a flat dict keyed by "HORIZON|DIRECTION|MARKET|BAND" (market-specific) plus
+    "HORIZON|DIRECTION|BAND" fallback entries (pooled across markets, used when the
+    market-specific bucket is too thin), each {"win_rate": float, "count": int}, or {}.
+    """
     cutoff = date.today() - timedelta(days=180)
     rows = session.execute(
-        select(SignalOutcome.confidence, SignalOutcome.is_correct).where(
+        select(
+            SignalOutcome.confidence, SignalOutcome.is_correct,
+            SignalOutcome.horizon, SignalOutcome.signal_direction, Stock.market,
+        )
+        .join(Stock, Stock.id == SignalOutcome.stock_id)
+        .where(
             SignalOutcome.is_correct.is_not(None),
             SignalOutcome.signal_date >= cutoff,
         )
     ).all()
+
     buckets: dict[str, dict] = {}
-    for lo, hi, label in _CONF_BANDS:
-        wins = sum(1 for c, ok in rows if lo <= c < hi and ok)
-        total = sum(1 for c, _ in rows if lo <= c < hi)
-        if total >= 10:
-            buckets[label] = {"win_rate": round(wins / total, 3), "count": total}
+    for lo, hi, band in _CONF_BANDS:
+        band_rows = [r for r in rows if lo <= r.confidence < hi]
+        if not band_rows:
+            continue
+        # Market-specific buckets
+        by_market: dict[tuple, list] = {}
+        by_pooled: dict[tuple, list] = {}
+        for r in band_rows:
+            horiz = r.horizon.value if hasattr(r.horizon, "value") else r.horizon
+            # str, enum.Enum members stringify as "Market.US" via f-string/str(), not "US" —
+            # use .value explicitly so the bucket key and API response are the plain string.
+            mkt = r.market.value if hasattr(r.market, "value") else r.market
+            by_market.setdefault((horiz, r.signal_direction, mkt), []).append(r.is_correct)
+            by_pooled.setdefault((horiz, r.signal_direction), []).append(r.is_correct)
+        for (horiz, direction, market), outcomes in by_market.items():
+            if len(outcomes) >= _CONF_CAL_MIN_COUNT:
+                key = _cal_bucket_key(horiz, direction, market, band)
+                buckets[key] = {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
+        for (horiz, direction), outcomes in by_pooled.items():
+            if len(outcomes) >= _CONF_CAL_MIN_COUNT:
+                key = _cal_bucket_key(horiz, direction, None, band)
+                buckets[key] = {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
     return buckets
 
 
@@ -121,12 +162,30 @@ def _get_confidence_calibration(session: Session) -> dict:
         return {}
 
 
-def _calibrated_win_rate(confidence: float, cal_map: dict) -> float | None:
-    """Return actual win rate for this confidence level; None if insufficient data."""
-    for lo, hi, label in _CONF_BANDS:
-        if lo <= confidence < hi:
-            entry = cal_map.get(label)
-            return entry["win_rate"] if entry else None
+def _calibrated_win_rate(
+    confidence: float, cal_map: dict, horizon: str | None = None,
+    direction: str | None = None, market: str | None = None,
+) -> tuple[float, int] | None:
+    """Return (win_rate, sample_count) for this confidence/horizon/direction/market;
+    None if insufficient data. Falls back from market-specific to horizon+direction-pooled
+    when horizon/direction are known but the market-specific bucket doesn't meet min-count.
+    Falls back further to confidence-band-only (old pooled behavior) when horizon/direction
+    are not supplied by the caller, so existing callers keep working during rollout.
+    """
+    for lo, hi, band in _CONF_BANDS:
+        if not (lo <= confidence < hi):
+            continue
+        if horizon and direction:
+            if market:
+                entry = cal_map.get(_cal_bucket_key(horizon, direction, market, band))
+                if entry:
+                    return entry["win_rate"], entry["count"]
+            entry = cal_map.get(_cal_bucket_key(horizon, direction, None, band))
+            if entry:
+                return entry["win_rate"], entry["count"]
+            return None
+        # Legacy fallback: no horizon/direction supplied — cannot key precisely.
+        return None
     return None
 
 
@@ -4199,165 +4258,28 @@ def _stored_signal_for_style(session: Session, stock_id: int, style_key: str) ->
     }
 
 
-@router.get("/{symbol}")
-def signal_for(
-    symbol: str,
-    persist: bool = False,
-    live: bool = Query(True, description="False = return latest persisted DB signal (matches signal filter). True = compute fresh (may differ from DB)."),
-    style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG, GROWTH. Returns all if omitted."),
-    session: Session = Depends(get_session),
-):
-    """Return signal(s) for a symbol.
-
-    live=False (default on detail page): reads latest stored DB signal — consistent with signal filter.
-    live=True + persist=True: recomputes fresh and overwrites DB — used by the Refresh button.
-    """
-    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
-
-    if not live and not persist:
-        # DB-first path: return stored signals — matches Signal Filter exactly.
-        if not stock:
-            raise HTTPException(404, f"Stock {symbol} not found")
-        all_styles = ["SHORT", "SWING", "LONG", "GROWTH"]
-        stored: dict[str, dict] = {}
-        for s_key in all_styles:
-            d = _stored_signal_for_style(session, stock.id, s_key)
-            if d:
-                stored[s_key] = d
-        if stored:
-            # T223: enrich with calibrated win rate from signal_outcomes
-            _cal_map = _get_confidence_calibration(session)
-            if _cal_map:
-                for s_data in stored.values():
-                    _cwr = _calibrated_win_rate(s_data.get("confidence", 0.0), _cal_map)
-                    if _cwr is not None:
-                        if s_data.get("reasons") is None:
-                            s_data["reasons"] = {}
-                        s_data["reasons"]["calibrated_win_rate"] = _cwr
-            if style:
-                s_key = style.upper()
-                data = stored.get(s_key)
-                if data:
-                    return {"symbol": symbol, "source": "db", **data}
-            else:
-                return {"symbol": symbol, "source": "db", "signals": stored}
-        # No stored signals for this stock yet — fall through to live generation
-        # and auto-persist so the Signal Filter picks it up on the next query.
-        persist = True
-
-    # Live computation (fresh ML/TA — used on Refresh or first-time stock)
-    try:
-        all_sig = generate_all_signals(symbol)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-    if persist and stock:
-        # Apply catalyst adjustment (same logic as _bulk_persist) so manual Refresh doesn't
-        # overwrite a catalyst-adjusted bullish_probability with the raw generator value.
-        try:
-            import httpx as _httpx_sf
-            _ta_score_sf = 50.0
-            if all_sig:
-                _ta_score_sf = float((next(iter(all_sig.values())).reasons or {}).get("ta_score", 50.0))
-            _cr_sf = _httpx_sf.get(
-                f"{_settings.event_intelligence_url}/catalyst/{symbol}",
-                params={"technical_score": _ta_score_sf},
-                headers={"Authorization": f"Bearer {_service_token()}"},
-                timeout=2.0,
-            )
-            if _cr_sf.status_code == 200:
-                _cat_sf = _cr_sf.json()
-                _ins_sf = _cat_sf.get("insider_score")
-                _cong_sf = _cat_sf.get("congress_score")
-                for _ai_sf in all_sig.values():
-                    if _ai_sf.reasons is None:
-                        _ai_sf.reasons = {}
-                    if _cat_sf.get("catalyst_score") is not None:
-                        _ai_sf.reasons["catalyst_score"] = round(_cat_sf["catalyst_score"], 1)
-                    if _ins_sf is not None:
-                        _ai_sf.reasons["insider_score"] = round(_ins_sf, 1)
-                    if _cong_sf is not None:
-                        _ai_sf.reasons["congress_score"] = round(_cong_sf, 1)
-                    _adj_sf = 0.0
-                    if _ins_sf is not None:
-                        if _ins_sf > 60:    _adj_sf += 0.03
-                        elif _ins_sf > 30:  _adj_sf += 0.015
-                        elif _ins_sf < -30: _adj_sf -= 0.03
-                        elif _ins_sf < -10: _adj_sf -= 0.015
-                    if _cong_sf is not None:
-                        if _cong_sf > 50:   _adj_sf += 0.02
-                        elif _cong_sf > 25: _adj_sf += 0.01
-                    if _adj_sf != 0.0 and _ai_sf.bullish_probability is not None:
-                        _ai_sf.bullish_probability = round(
-                            float(max(0.0, min(1.0, _ai_sf.bullish_probability + _adj_sf))), 4
-                        )
-                        _ai_sf.reasons["catalyst_prob_adj"] = round(_adj_sf, 3)
-        except Exception:
-            pass  # catalyst enrichment is best-effort; don't block the Refresh
-
-        today = date.today()
-        for ai in all_sig.values():
-            horizon_enum = SignalHorizon(ai.horizon)
-            # Guard against same-day duplicate: skip if an identical signal was already stored today.
-            existing = session.execute(
-                select(Signal.signal, Signal.ts)
-                .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
-                .order_by(Signal.ts.desc())
-                .limit(1)
-            ).one_or_none()
-            if existing is not None and existing[0] == SignalType(ai.signal) and existing[1].date() == today:
-                continue
-            session.add(Signal(
-                stock_id=stock.id,
-                signal=SignalType(ai.signal),
-                horizon=horizon_enum,
-                confidence=ai.confidence,
-                bullish_probability=ai.bullish_probability,
-                reasons=ai.reasons,
-            ))
-        session.commit()
-
-    # Inject stability_days into each signal's reasons dict
-    if stock:
-        for ai in all_sig.values():
-            try:
-                horiz = SignalHorizon(ai.horizon)
-            except ValueError:
-                continue
-            ai.reasons["stability_days"] = _compute_stability(session, stock.id, horiz, ai.signal)
-
-    # T223: enrich live signals with calibrated win rate
-    _cal_map_live = _get_confidence_calibration(session)
-    if _cal_map_live:
-        for ai in all_sig.values():
-            _cwr = _calibrated_win_rate(ai.confidence, _cal_map_live)
-            if _cwr is not None:
-                if ai.reasons is None:
-                    ai.reasons = {}
-                ai.reasons["calibrated_win_rate"] = _cwr
-
-    if style:
-        style_key = style.upper()
-        ai = all_sig.get(style_key) or all_sig["SWING"]
-        return {"symbol": symbol, "source": "live", **asdict(ai)}
-
-    return {
-        "symbol": symbol,
-        "source": "live",
-        "signals": {k: asdict(v) for k, v in all_sig.items()},
-    }
-
-
 @router.get("/confidence-calibration")
 def confidence_calibration_map(
     refresh: bool = Query(False, description="Force rebuild from DB, bypassing Redis cache"),
     session: Session = Depends(get_session),
 ):
-    """Return actual win rate by confidence band from the last 180 days of signal_outcomes.
+    """Return actual win rate by (horizon, direction, market, confidence band) from the
+    last 180 days of signal_outcomes.
 
-    T223: Makes signal confidence auditable. If 70-85 confidence wins at 52% and
-    55-70 wins at 51%, confidence is effectively uncalibrated above 55.
-    Use this to compare confidence bands and tune entry filters accordingly.
+    T223/T232-OC5: Makes signal confidence auditable, keyed narrowly enough that the
+    comparison is meaningful. Confidence is direction-agnostic, and BUY/SELL, different
+    horizons, and US/HK have documented divergent base rates — pooling them into a single
+    band-only win rate mixed populations that shouldn't be compared. Keys are
+    "HORIZON|DIRECTION|MARKET|BAND" (market-specific, preferred) or "HORIZON|DIRECTION|BAND"
+    (pooled across markets, used when the market-specific bucket doesn't reach the
+    min-count of 30). Use this to compare confidence bands within the same
+    horizon+direction(+market) and tune entry filters accordingly — comparing across
+    different horizons/directions/markets is exactly the mistake this keying prevents.
+
+    T232-OC5: this route MUST be registered before /{symbol} below — FastAPI matches
+    routes in registration order, and /{symbol} would otherwise swallow this path,
+    treating "confidence-calibration" as a stock symbol (this bug existed from when the
+    route was first added and made the endpoint completely unreachable).
     """
     if refresh:
         try:
@@ -4366,10 +4288,11 @@ def confidence_calibration_map(
             pass
     cal = _get_confidence_calibration(session)
     if not cal:
-        return {"message": "Insufficient signal_outcomes data (need ≥10 evaluated outcomes per band)", "bands": {}}
+        return {"message": f"Insufficient signal_outcomes data (need >={_CONF_CAL_MIN_COUNT} evaluated outcomes per bucket)", "buckets": {}}
     return {
-        "bands": cal,
-        "note": "win_rate = fraction of BUY signals that were correct within the hold window",
+        "buckets": cal,
+        "note": "win_rate = fraction of signals in this (horizon, direction[, market]) confidence band that were correct within the hold window",
+        "min_count": _CONF_CAL_MIN_COUNT,
         "lookback_days": 180,
     }
 
@@ -4963,3 +4886,175 @@ def gate_backtest(
     }
     _cache_set(cache_key, result, ttl=3600)
     return result
+
+
+# T232-OC5: /{symbol} MUST be registered after every other static-path route in this router.
+# FastAPI matches routes in registration order, and a bare /{symbol} catch-all placed earlier
+# swallows any later static route with the same prefix depth (e.g. /signals/gate_backtest was
+# being treated as symbol="gate_backtest" and 500ing on an invalid stock lookup — completely
+# unreachable since it was added). Moved here, after every other GET, so this can never recur
+# by accident; if you add a new static GET route to this router, add it ABOVE this line.
+@router.get("/{symbol}")
+def signal_for(
+    symbol: str,
+    persist: bool = False,
+    live: bool = Query(True, description="False = return latest persisted DB signal (matches signal filter). True = compute fresh (may differ from DB)."),
+    style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG, GROWTH. Returns all if omitted."),
+    session: Session = Depends(get_session),
+):
+    """Return signal(s) for a symbol.
+
+    live=False (default on detail page): reads latest stored DB signal — consistent with signal filter.
+    live=True + persist=True: recomputes fresh and overwrites DB — used by the Refresh button.
+    """
+    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+
+    if not live and not persist:
+        # DB-first path: return stored signals — matches Signal Filter exactly.
+        if not stock:
+            raise HTTPException(404, f"Stock {symbol} not found")
+        all_styles = ["SHORT", "SWING", "LONG", "GROWTH"]
+        stored: dict[str, dict] = {}
+        for s_key in all_styles:
+            d = _stored_signal_for_style(session, stock.id, s_key)
+            if d:
+                stored[s_key] = d
+        if stored:
+            # T223/T232-OC5: enrich with calibrated win rate, keyed by (horizon, direction, market)
+            _cal_map = _get_confidence_calibration(session)
+            if _cal_map:
+                for s_key_h, s_data in stored.items():
+                    _sig_dir = s_data.get("signal")
+                    if _sig_dir not in ("BUY", "SELL"):
+                        continue  # calibration only meaningful for directional signals
+                    _cwr = _calibrated_win_rate(
+                        s_data.get("confidence", 0.0), _cal_map,
+                        horizon=s_key_h, direction=_sig_dir,
+                        market=stock.market.value if hasattr(stock.market, "value") else stock.market,
+                    )
+                    if _cwr is not None:
+                        if s_data.get("reasons") is None:
+                            s_data["reasons"] = {}
+                        s_data["reasons"]["calibrated_win_rate"] = _cwr[0]
+                        s_data["reasons"]["calibrated_win_rate_count"] = _cwr[1]
+            if style:
+                s_key = style.upper()
+                data = stored.get(s_key)
+                if data:
+                    return {"symbol": symbol, "source": "db", **data}
+            else:
+                return {"symbol": symbol, "source": "db", "signals": stored}
+        # No stored signals for this stock yet — fall through to live generation
+        # and auto-persist so the Signal Filter picks it up on the next query.
+        persist = True
+
+    # Live computation (fresh ML/TA — used on Refresh or first-time stock)
+    try:
+        all_sig = generate_all_signals(symbol)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    if persist and stock:
+        # Apply catalyst adjustment (same logic as _bulk_persist) so manual Refresh doesn't
+        # overwrite a catalyst-adjusted bullish_probability with the raw generator value.
+        try:
+            import httpx as _httpx_sf
+            _ta_score_sf = 50.0
+            if all_sig:
+                _ta_score_sf = float((next(iter(all_sig.values())).reasons or {}).get("ta_score", 50.0))
+            _cr_sf = _httpx_sf.get(
+                f"{_settings.event_intelligence_url}/catalyst/{symbol}",
+                params={"technical_score": _ta_score_sf},
+                headers={"Authorization": f"Bearer {_service_token()}"},
+                timeout=2.0,
+            )
+            if _cr_sf.status_code == 200:
+                _cat_sf = _cr_sf.json()
+                _ins_sf = _cat_sf.get("insider_score")
+                _cong_sf = _cat_sf.get("congress_score")
+                for _ai_sf in all_sig.values():
+                    if _ai_sf.reasons is None:
+                        _ai_sf.reasons = {}
+                    if _cat_sf.get("catalyst_score") is not None:
+                        _ai_sf.reasons["catalyst_score"] = round(_cat_sf["catalyst_score"], 1)
+                    if _ins_sf is not None:
+                        _ai_sf.reasons["insider_score"] = round(_ins_sf, 1)
+                    if _cong_sf is not None:
+                        _ai_sf.reasons["congress_score"] = round(_cong_sf, 1)
+                    _adj_sf = 0.0
+                    if _ins_sf is not None:
+                        if _ins_sf > 60:    _adj_sf += 0.03
+                        elif _ins_sf > 30:  _adj_sf += 0.015
+                        elif _ins_sf < -30: _adj_sf -= 0.03
+                        elif _ins_sf < -10: _adj_sf -= 0.015
+                    if _cong_sf is not None:
+                        if _cong_sf > 50:   _adj_sf += 0.02
+                        elif _cong_sf > 25: _adj_sf += 0.01
+                    if _adj_sf != 0.0 and _ai_sf.bullish_probability is not None:
+                        _ai_sf.bullish_probability = round(
+                            float(max(0.0, min(1.0, _ai_sf.bullish_probability + _adj_sf))), 4
+                        )
+                        _ai_sf.reasons["catalyst_prob_adj"] = round(_adj_sf, 3)
+        except Exception:
+            pass  # catalyst enrichment is best-effort; don't block the Refresh
+
+        today = date.today()
+        for ai in all_sig.values():
+            horizon_enum = SignalHorizon(ai.horizon)
+            # Guard against same-day duplicate: skip if an identical signal was already stored today.
+            existing = session.execute(
+                select(Signal.signal, Signal.ts)
+                .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
+                .order_by(Signal.ts.desc())
+                .limit(1)
+            ).one_or_none()
+            if existing is not None and existing[0] == SignalType(ai.signal) and existing[1].date() == today:
+                continue
+            session.add(Signal(
+                stock_id=stock.id,
+                signal=SignalType(ai.signal),
+                horizon=horizon_enum,
+                confidence=ai.confidence,
+                bullish_probability=ai.bullish_probability,
+                reasons=ai.reasons,
+            ))
+        session.commit()
+
+    # Inject stability_days into each signal's reasons dict
+    if stock:
+        for ai in all_sig.values():
+            try:
+                horiz = SignalHorizon(ai.horizon)
+            except ValueError:
+                continue
+            ai.reasons["stability_days"] = _compute_stability(session, stock.id, horiz, ai.signal)
+
+    # T223/T232-OC5: enrich live signals with calibrated win rate, keyed by (horizon, direction, market)
+    _cal_map_live = _get_confidence_calibration(session)
+    if _cal_map_live:
+        for ai in all_sig.values():
+            if ai.signal not in ("BUY", "SELL"):
+                continue  # calibration only meaningful for directional signals
+            _stock_mkt = None
+            if stock is not None:
+                _stock_mkt = stock.market.value if hasattr(stock.market, "value") else stock.market
+            _cwr = _calibrated_win_rate(
+                ai.confidence, _cal_map_live,
+                horizon=ai.horizon, direction=ai.signal, market=_stock_mkt,
+            )
+            if _cwr is not None:
+                if ai.reasons is None:
+                    ai.reasons = {}
+                ai.reasons["calibrated_win_rate"] = _cwr[0]
+                ai.reasons["calibrated_win_rate_count"] = _cwr[1]
+
+    if style:
+        style_key = style.upper()
+        ai = all_sig.get(style_key) or all_sig["SWING"]
+        return {"symbol": symbol, "source": "live", **asdict(ai)}
+
+    return {
+        "symbol": symbol,
+        "source": "live",
+        "signals": {k: asdict(v) for k, v in all_sig.items()},
+    }
