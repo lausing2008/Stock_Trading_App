@@ -527,3 +527,30 @@ Previous documentation had wrong ports. Correct internal Docker network ports:
 - Survivorship bias in ML training data (delisted stocks not included) — requires external data source
 - Walk-forward backtest deferred (2+ weeks of work)
 - Forward return tracking (INT-8) not yet implemented
+
+---
+
+## Recurring Issue: EC2 Disk Fills Up from Dangling Docker Images
+
+**Symptom:** `docker build` fails mid-copy with `no space left on device`, even though the
+image being built is a normal size. `df -h /` shows the root volume nearly 100% full.
+
+**Root cause (found 2026-07-03):** Every `DOCKER_BUILDKIT=0 docker build --no-cache` for the
+frontend (the required pattern per this file's Deployment Pattern section) leaves the
+previous image's layers behind as dangling `<none>:<none>` images once the tag moves to the
+new build. These accumulate silently across repeated deploys — one session's worth of
+frontend rebuilds alone consumed 77GB of reclaimable, unused image layers.
+
+**Fix:** `docker image prune -f` — safe, only removes dangling/untagged images, never touches
+anything currently running or tagged. Freed 460MB → 76GB available in the 2026-07-03 incident
+with zero container disruption (all services stayed healthy throughout).
+
+**What to check before any frontend rebuild:**
+```bash
+df -h /                    # if root volume is >90% full, prune first
+docker system df           # shows reclaimable space by type
+docker image prune -f      # safe cleanup — dangling images only
+```
+
+**Consider:** a periodic (weekly) `docker image prune -f` cron job on EC2 so this doesn't
+require noticing a failed build first.
