@@ -8253,12 +8253,12 @@ const ITEMS: Item[] = [
   {
     id: 'T232-OC6-SURVIVORSHIP-IN-OUTCOMES',
     title: 'Outcomes silently dropped when later prices missing — survivorship bias in win rates',
-    tier: 232 as const, severity: 'medium', defaultStatus: 'todo' as const,
-    file: 'services/signal-engine/src/api/routes.py',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/api/routes.py, shared/db/models.py, scripts/migrations/010_add_skip_reason_to_signal_outcomes.sql',
     effort: 'S',
     impact: 'Medium — delisted/halted stocks (disproportionately the worst BUY outcomes) produce no outcome row at all. Win rates and the threshold sweep are computed on survivors only — calibration is biased optimistic exactly in the tail that matters.',
     what: 'routes.py:4394-4409 skipped_no_price/skipped_open rows never written.',
-    fix: 'After N days past exit_target with no price, write the row with is_correct=NULL + skip_reason; report the censored count in outcomes/summary; score confirmed delistings as full losses.',
+    fix: 'Fixed 2026-07-03. Added nullable SignalOutcome.skip_reason column (migration 010, applied to local DB and wired into run_migrations.sh for EC2). evaluate_signal_outcomes() now distinguishes two cases when exit_target has passed with no exit price found: within a 10-day grace period (_OUTCOME_CENSOR_GRACE_DAYS, covers normal ingestion lag/weekends) it still counts as skipped_open like before; past the grace period, it writes a censored SignalOutcome row with entry_date/entry_price/confidence/etc filled but exit_date/exit_price/pct_return/is_correct left NULL and skip_reason="no_exit_price". Every existing win-rate query in the file already filters is_correct.is_not(None), so censored rows are automatically excluded from win-rate numerators/denominators with no other code changes needed. /signals/outcomes/summary and /signals/outcomes/evaluate both now report a `+"`"+`censored`+"`"+` count. Live-verified: triggered a real evaluate run (80 evaluated, 4 skipped_no_price, 0 censored — no signal has crossed the grace period yet, which is expected on healthy data), confirmed summary endpoint reports censored:0 correctly, and confirmed the grace-period boundary math directly (10-day-old exit_target censors, 9-day-old does not). Did not implement "score confirmed delistings as full losses" from the original fix text — that requires a separate signal to positively confirm delisting (vs. merely absent price data, which is also caused by benign ingestion gaps) and risks miscoding a temporary data hole as a permanent loss; censoring (excluding from win-rate math while keeping the row for the record) is the safer interim fix. Revisit once there is a reliable delisting-confirmation signal.',
   },
   {
     id: 'T232-TA1-RSI-WARMUP-100',
@@ -8323,12 +8323,12 @@ const ITEMS: Item[] = [
   {
     id: 'T232-PT5-REDIS-LOCK-RACE',
     title: 'Paper trading Redis lock: 90s TTL vs multi-minute step + unconditional delete of foreign locks',
-    tier: 232 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/scheduler.py',
     effort: 'S',
     impact: 'Medium — the step performs regime downloads, batch ATR fetches, and per-candidate HTTP across 3 portfolios and can exceed the 90s lock TTL; an overlapping _refresh_5m run then starts concurrently and both can double-credit cash on exits. Worse, the finally block deletes the lock without a token compare — a slow first run deletes the second run\'s lock, cascading unlocks.',
     what: 'scheduler.py:901-934 (_PAPER_TRADING_LOCK_TTL = 90, unconditional delete).',
-    fix: 'Set the lock to a UUID and delete via compare-and-delete (Lua or GET+check); raise TTL to 300s or add heartbeat extension.',
+    fix: 'Fixed 2026-07-03. _PAPER_TRADING_LOCK_TTL raised 90s -> 300s. Lock value changed from the bare `label` string to a per-call uuid4 token. Release now goes through a Lua script (_LOCK_RELEASE_LUA) that atomically GETs the key, compares to the caller\'s token, and only DELs on match — a plain GET-then-DEL from Python would still race between the check and the delete. If the token mismatches on release (this run\'s TTL expired and someone else already grabbed the lock), it logs paper.lock_release_stale instead of silently no-op\'ing, so recurring TTL blowouts are visible in logs rather than invisible. Live-verified directly against Redis: SET token-A nx ex 300, then eval-DEL with token-B returns 0 and leaves token-A in place; eval-DEL with token-A returns 1 and clears the key.',
   },
   {
     id: 'T232-UI1-SIGNAL-FILTER-MARKET-REGRESSION',
@@ -8860,13 +8860,13 @@ const ITEMS: Item[] = [
 
   {
     id: 'T233-ARCH-CONGRESS-DEDUP',
-    title: 'STRONG: delete market-data\'s duplicate congress.py — event-intelligence\'s version is already canonical, and the two can show different data for the same stock RIGHT NOW',
+    title: 'REVISED (was "STRONG"/effort S): congress.py dedup is a real finding but NOT a simple repoint — event-intelligence\'s own sync is broken in production right now',
     tier: 233 as const, severity: 'high', defaultStatus: 'todo' as const,
     file: 'services/market-data/src/api/congress.py, services/event-intelligence/src/services/congress.py, frontend/src/pages/congress.tsx, frontend/src/pages/insider.tsx, frontend/src/pages/intelligence.tsx',
-    effort: 'S',
-    impact: 'High — this is the highest-confidence, lowest-risk, most user-visible finding in the entire architecture audit. market-data/api/congress.py (229 lines) and event-intelligence/services/congress.py (270 lines) both independently scrape House/Senate Stock Watcher with near-identical amount-range parsing tables — verified as live, both wired into their respective main.py, not a hypothetical. event-intelligence\'s own skill.md already calls itself the canonical source, but the market-data duplicate was never removed. Two frontend pages (congress.tsx/insider.tsx vs intelligence.tsx) can show DIVERGENT congressional trading data for the same stock today, depending on which page a user is looking at.',
-    what: 'Found during the 2026-07-04 multi-agent service architecture audit (11 parallel per-service audits + cross-service synthesis + adversarial verification, requested by the user to identify refactor/regrouping candidates given the number of services). Verified independently by both the synthesis and verification passes.',
-    fix: 'Not implemented — proposed first steps: diff the two endpoints\' response JSON shapes; confirm every frontend api.ts call site currently hitting market-data\'s congress endpoint; check whether market-data\'s scheduler runs its own independent congress-scrape cron job that would also need removing to stop double-scraping the same external source. Then delete market-data\'s copy and repoint the frontend at event-intelligence\'s endpoint via the existing api-gateway proxy.',
+    effort: 'M',
+    impact: 'High, but re-scoped 2026-07-03 after a full re-investigation (was mis-sized as effort S). Confirmed live: market-data\'s GET /congress/trades (PascalCase, binary Purchase/Sale, no DB — live-scrapes housestockwatcher.com/senatestockwatcher.com on every request) and event-intelligence\'s GET /events/congress/* (snake_case, 4-state transaction_type, congress_score, reads from the shared congress_trades table) are NOT wire-compatible response shapes — frontend api.ts already models them as distinct types. congress.tsx and insider.tsx call market-data\'s version; intelligence.tsx calls event-intelligence\'s. Confirmed live in docker logs (2026-07-03): event-intelligence\'s own sync_congress_trades() job is currently BROKEN — House and Senate S3 dump URLs both return HTTP 301 (redirected, not just failing), so rows_upserted=0 on every scheduled run. Naively deleting market-data\'s copy and repointing the frontend at event-intelligence today would replace live (if narrower) data with an empty/stale table.',
+    what: 'Original finding from the 2026-07-04 multi-agent architecture audit was correct that the duplication exists and is user-visible, but its proposed fix ("repoint callers, delete the market-data copy") undersold the actual work: a frontend response-shape adapter is needed either way, and event-intelligence\'s S3 source needs to be fixed (or swapped to the same housestockwatcher.com/senatestockwatcher.com API market-data already uses successfully) BEFORE it can safely become the sole source of truth.',
+    fix: 'Not implemented — corrected plan: (1) fix event-intelligence\'s sync_congress_trades() to hit the same working housestockwatcher.com/senatestockwatcher.com API endpoints market-data already uses (the S3 dumps are dead — 301s), or add a Quiver Quantitative fallback like market-data has; (2) verify rows_upserted > 0 on a real run; (3) only then add a frontend adapter to normalize event-intelligence\'s response shape into what congress.tsx/insider.tsx expect (or update those pages to consume the new shape directly), including the politician= free-text filter market-data supports but event-intelligence currently does not; (4) delete services/market-data/src/api/congress.py + its main.py registration + the set_quiver_key import in admin.py + the api-gateway congress proxy route.',
   },
   {
     id: 'T233-ARCH-AIPROXY-EXTRACT',
@@ -8941,12 +8941,12 @@ const ITEMS: Item[] = [
   {
     id: 'T233-ARCH-HEALTHCHECK-GAP',
     title: 'SMALL: api-gateway\'s health check list omits event-intelligence — admin dashboard blind spot',
-    tier: 233 as const, severity: 'low', defaultStatus: 'todo' as const,
+    tier: 233 as const, severity: 'low', defaultStatus: 'done' as const,
     file: 'services/api-gateway/src/api/health.py',
     effort: '5min',
     impact: 'Low but real — health.py\'s _SERVICES list has 9 entries (market-data, technical-analysis, ml-prediction, ranking-engine, signal-engine, strategy-engine, portfolio-optimizer, research-engine, decision-engine) but event-intelligence:8010 is missing, even though proxy.py routes /events and /catalyst to it. GET /health/deep can report all-green while event-intelligence is fully down.',
     what: 'Found during the 2026-07-04 architecture audit.',
-    fix: 'Not implemented — add event-intelligence:8010 to the _SERVICES list in health.py alongside the other 9. Trivial fix, bundle with any other api-gateway touch (e.g. the ai_proxy.py extraction, T233-ARCH-AIPROXY-EXTRACT).',
+    fix: 'Fixed 2026-07-03. Added ("event-intelligence", _settings.event_intelligence_url) to _SERVICES. Verified live: GET /health/deep now reports services_total: 10 (was 9) with event-intelligence returning status ok.',
   },
   {
     id: 'T233-ARCH-NOTRECOMMENDED',

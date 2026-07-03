@@ -491,6 +491,11 @@ class SignalOutcome(Base):
     research_rec: Mapped[str | None] = mapped_column(String(16), nullable=True)
     research_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     ts_evaluated: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # T232-OC6: set when the hold window closed but no exit price was ever found (delisting,
+    # halt, or ingestion gap) — is_correct/pct_return/exit_date stay NULL. NULL means normal,
+    # fully-evaluated outcome. Written after a grace period so a brief ingestion delay isn't
+    # mistaken for a permanent loss of price data.
+    skip_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     __table_args__ = (
         Index("ix_signal_outcomes_horizon_correct", "horizon", "is_correct"),

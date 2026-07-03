@@ -2842,8 +2842,25 @@ def outcomes_summary(
 
     outcomes = session.execute(q).scalars().all()
 
+    # T232-OC6: count censored outcomes (hold window closed, price permanently missing —
+    # delisting/halt) in the same window/filters, so win rates can be reported alongside
+    # the fraction of outcomes that were excluded rather than silently vanishing.
+    censored_q = select(func.count()).select_from(SignalOutcome).where(
+        SignalOutcome.signal_date >= cutoff,
+        SignalOutcome.skip_reason.is_not(None),
+    )
+    if horizon:
+        censored_q = censored_q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))
+    if _needs_stock_join:
+        censored_q = censored_q.join(Stock, Stock.id == SignalOutcome.stock_id)
+        if market:
+            censored_q = censored_q.where(Stock.market == market.upper())
+        if symbol:
+            censored_q = censored_q.where(Stock.symbol == symbol.upper())
+    censored_count = session.execute(censored_q).scalar_one()
+
     if not outcomes:
-        return {"total": 0, "message": "No evaluated outcomes yet in this window"}
+        return {"total": 0, "censored": censored_count, "message": "No evaluated outcomes yet in this window"}
 
     # Overall stats
     wins = [o for o in outcomes if o.is_correct]
@@ -3044,6 +3061,7 @@ def outcomes_summary(
 
     return {
         "total": len(outcomes),
+        "censored": censored_count,
         "days_lookback": days,
         "date_range": date_range,
         "overall": {
@@ -4385,6 +4403,11 @@ _SELL_OUTCOME_HOLD_DAYS: dict[str, int] = {
     "GROWTH": 7,    # was 14, same reasoning as SWING
 }
 
+# T232-OC6: how many calendar days past exit_target to wait, with still no exit price found,
+# before concluding the price is permanently gone (delisting/halt) rather than just an
+# ingestion lag. 10 days comfortably covers weekends/holidays plus normal scheduler delay.
+_OUTCOME_CENSOR_GRACE_DAYS = 10
+
 
 @router.post("/outcomes/evaluate")
 def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = Depends(get_current_username)):
@@ -4512,7 +4535,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         _research_cache[symbol] = result
         return result
 
-    evaluated, skipped_open, skipped_no_price = 0, 0, 0
+    evaluated, skipped_open, skipped_no_price, censored = 0, 0, 0, 0
 
     for sig, symbol in pending_signals:
         if sig.id in evaluated_ids:
@@ -4550,7 +4573,34 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
 
         exit_result = _lookup_outcome_price(sig.stock_id, exit_target)
         if exit_result is None:
-            skipped_open += 1
+            # T232-OC6: exit_target has passed but no price bar exists on/after it. Give
+            # ordinary ingestion lag a grace window (weekends/holidays plus a buffer) before
+            # concluding the price is permanently gone — otherwise a stock that's merely a
+            # few days behind on ingestion gets wrongly censored as delisted.
+            if today - exit_target > timedelta(days=_OUTCOME_CENSOR_GRACE_DAYS):
+                censored += 1
+                outcome = SignalOutcome(
+                    signal_id=sig.id,
+                    stock_id=sig.stock_id,
+                    symbol=symbol,
+                    horizon=sig.horizon,
+                    signal_direction=sig.signal.value,
+                    signal_date=signal_date,
+                    confidence=sig.confidence,
+                    fused_prob=sig.bullish_probability,
+                    ta_score=(sig.reasons or {}).get("ta_score"),
+                    ml_prob=(sig.reasons or {}).get("ml_probability"),
+                    ml_auc=(sig.reasons or {}).get("ml_test_auc"),
+                    market_regime=(sig.reasons or {}).get("market_regime"),
+                    entry_date=entry_date,
+                    entry_price=entry_price,
+                    skip_reason="no_exit_price",
+                )
+                session.add(outcome)
+                evaluated_ids.add(sig.id)
+                evaluated_sighd.add(sighd_key)
+            else:
+                skipped_open += 1
             continue
 
         exit_date, exit_price = exit_result
@@ -4672,12 +4722,14 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
         evaluated=evaluated,
         skipped_open=skipped_open,
         skipped_no_price=skipped_no_price,
+        censored=censored,
         updated_windows=updated,
     )
     return {
         "evaluated": evaluated,
         "skipped_open": skipped_open,
         "skipped_no_price": skipped_no_price,
+        "censored": censored,
         "updated_windows": updated,
     }
 

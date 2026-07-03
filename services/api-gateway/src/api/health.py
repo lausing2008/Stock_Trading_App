@@ -22,6 +22,7 @@ _SERVICES: list[tuple[str, str]] = [
     ("portfolio-optimizer", _settings.portfolio_optimizer_url),
     ("research-engine",     _settings.research_engine_url),
     ("decision-engine",     _settings.decision_engine_url),
+    ("event-intelligence",  _settings.event_intelligence_url),
 ]
 
 

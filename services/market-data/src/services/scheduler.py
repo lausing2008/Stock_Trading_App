@@ -900,7 +900,31 @@ _PRICE_ALERT_LOCK_KEY = "stockai:lock:check_price_alerts"
 _PRICE_ALERT_LOCK_TTL = 55  # seconds — alert checker runs every 60s; 55s prevents overlap
 
 _PAPER_TRADING_LOCK_KEY = "stockai:lock:paper_trading_step"
-_PAPER_TRADING_LOCK_TTL = 90  # seconds — typical step runs in 20-40s; 90s prevents double-exec
+# T232-PT5: was 90s against a step documented elsewhere as "typically 20-40s" — but the actual
+# step downloads regime data, batch-fetches ATR, and makes per-candidate HTTP calls (decision-
+# engine, research-engine) across every active portfolio, and can genuinely exceed 90s under
+# load (slow yfinance, a portfolio with many candidates, network latency to decision-engine).
+# When it does, the lock expires mid-run and a concurrent _refresh_5m/_refresh_market invocation
+# acquires it and starts a SECOND concurrent execution — the exact double-credit-cash race this
+# lock exists to prevent. Raised to 300s (5 min), comfortably above any realistic single-run
+# duration, while still bounded enough that a truly wedged process doesn't lock out trading
+# indefinitely.
+_PAPER_TRADING_LOCK_TTL = 300  # seconds
+
+# T232-PT5: the release path used to be an unconditional DELETE with no ownership check. If run
+# A's lock expires (TTL) and run B acquires a new lock, then run A finally-finishes late, run A's
+# `finally` block deletes the key — which is now run B's lock, not run A's. This cascades: a
+# THIRD run can now acquire the lock while run B still believes it's running exclusively. Fixed
+# with a token-based compare-and-delete: each acquirer writes a unique token as the lock value,
+# and release only deletes the key if its current value still matches the token that acquired it
+# — an atomic Lua script avoids the race between "check" and "delete" being two round-trips.
+_LOCK_RELEASE_LUA = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+"""
 
 
 def _run_paper_trading_step(label: str = "refresh") -> None:
@@ -911,9 +935,11 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
     two concurrent executions can each observe the same open positions and double-credit
     cash on exit. The SET NX EX lock ensures only one execution runs at a time.
     """
+    import uuid
     acquired = False
+    token = str(uuid.uuid4())
     try:
-        acquired = bool(_get_redis().set(_PAPER_TRADING_LOCK_KEY, label, nx=True, ex=_PAPER_TRADING_LOCK_TTL))
+        acquired = bool(_get_redis().set(_PAPER_TRADING_LOCK_KEY, token, nx=True, ex=_PAPER_TRADING_LOCK_TTL))
         if not acquired:
             log.info("paper.step_skipped_locked", label=label, reason="another run in progress")
             return
@@ -936,7 +962,14 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
     finally:
         if acquired:
             try:
-                _get_redis().delete(_PAPER_TRADING_LOCK_KEY)
+                _released = _get_redis().eval(_LOCK_RELEASE_LUA, 1, _PAPER_TRADING_LOCK_KEY, token)
+                if not _released:
+                    # Our TTL expired before we finished and another run already holds the lock —
+                    # log it so a pattern of this (steps regularly exceeding 300s) is visible,
+                    # rather than silently doing nothing and looking identical to a normal release.
+                    log.warning("paper.lock_release_stale", label=label,
+                                note="lock token mismatch on release — this run exceeded the TTL; "
+                                     "another run already acquired the lock")
             except Exception:
                 pass
 

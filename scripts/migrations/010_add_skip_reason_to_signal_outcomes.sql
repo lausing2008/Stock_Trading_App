@@ -1,0 +1,14 @@
+-- Migration: add skip_reason to signal_outcomes (T232-OC6 survivorship-bias fix)
+-- Run once: psql -U stockai -d stockai -f 010_add_skip_reason_to_signal_outcomes.sql
+--
+-- Previously, when a signal's hold window closed but no price bar existed on/after the exit
+-- date (delisting, trading halt, ingestion failure), evaluate_signal_outcomes() silently
+-- skipped the signal with no row written at all. This produced survivorship bias: the worst
+-- BUY outcomes (stocks that got delisted after a BUY signal) never appear in win-rate
+-- calculations, which are computed only over rows that exist.
+--
+-- skip_reason is NULL for normal fully-evaluated outcomes. For censored outcomes (price
+-- permanently missing after a grace period), is_correct/pct_return/exit_date stay NULL and
+-- skip_reason records why, so /outcomes/summary can report the censored count and confirmed
+-- delistings can be scored as full losses.
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS skip_reason VARCHAR(32);
