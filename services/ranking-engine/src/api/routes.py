@@ -37,6 +37,14 @@ _TA_URL = os.environ.get("TA_URL", "http://technical-analysis:8002")
 _patterns_cache_ts: float = 0.0
 _patterns_cache_data: dict = {}
 
+# T232-DL8: stocks skipped for insufficient history (<60 daily bars) during the most recent
+# _persist_rankings run. Previously this was invisible beyond an aggregate "skipped" counter
+# in the batch log line — a stock with 55 bars silently had zero ranking row, no persisted
+# reason, indistinguishable from "something is broken" without grepping container logs for
+# the day it happened. Keyed by stock_id; overwritten wholesale on each refresh run (not
+# accumulated across runs) so it always reflects only the most recent batch.
+_skipped_insufficient_history: dict[int, dict] = {}
+
 
 def _fetch_patterns_bulk() -> dict[str, list[str]]:
     """Fetch pre-computed patterns from TA service. Module-level 6h cache."""
@@ -520,6 +528,22 @@ def screen(
     return {"total": len(results), "items": results[:limit]}
 
 
+@router.get("/skipped")
+def skipped_stocks():
+    """T232-DL8: stocks excluded from the most recent ranking refresh for insufficient
+    history (<60 daily bars), with the exact bar count seen — was previously only visible
+    as an aggregate counter in container logs. Registered ABOVE /{symbol} below: FastAPI
+    matches routes in registration order and a bare /{symbol} would otherwise swallow this
+    path (the exact bug found and fixed in signal-engine's router the same day — see
+    T232-OC5's fix notes).
+    """
+    return {
+        "count": len(_skipped_insufficient_history),
+        "min_bars_required": 60,
+        "stocks": list(_skipped_insufficient_history.values()),
+    }
+
+
 @router.get("/{symbol}")
 def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -775,6 +799,9 @@ def _persist_rankings(stock_ids: list[int]) -> None:
             rows = []
             skipped = 0
             errored = 0
+            # T232-DL8: rebuilt wholesale each run, not accumulated — a stock that had
+            # enough history last run and doesn't need re-flagging just isn't in this dict.
+            skipped_this_run: dict[int, dict] = {}
             for sid in stock_ids:
                 # T232-RANKSTALE: isolate each stock — one bad symbol (bad price data,
                 # a compute_kscore edge case, etc.) must not silently abort the entire
@@ -786,6 +813,12 @@ def _persist_rankings(stock_ids: list[int]) -> None:
                     df = _load_prices(session, sid)
                     if df.empty or len(df) < 60:
                         skipped += 1
+                        skipped_this_run[sid] = {
+                            "symbol": stock.symbol,
+                            "bars_available": int(len(df)),
+                            "bars_required": 60,
+                            "as_of": today.isoformat(),
+                        }
                         continue
                     rs_score_val, _ = _stock_rs(stock, df, session=session)
                     sc = sector_scores.get(stock.symbol, {})
@@ -813,6 +846,8 @@ def _persist_rankings(stock_ids: list[int]) -> None:
                     errored += 1
                     log.warning("ranking.persist_rankings_stock_failed",
                                 stock_id=sid, error=str(_stock_exc))
+            global _skipped_insufficient_history
+            _skipped_insufficient_history = skipped_this_run
             # T232-RANKSTALE: session.execute(stmt)/commit() were previously OUTSIDE this
             # `if rows:` block (same indentation as the `if`, not nested under it) — if
             # every stock in the batch was skipped or errored (e.g. a yfinance rate-limit
