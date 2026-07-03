@@ -8313,12 +8313,12 @@ const ITEMS: Item[] = [
   {
     id: 'T232-PT6-SCALEOUT-PNL-EXCLUDED',
     title: 'Scale-out profits excluded from trade.pnl — best-managed trades recorded as losers',
-    tier: 232 as const, severity: 'medium', defaultStatus: 'todo' as const,
-    file: 'services/market-data/src/services/paper_trading_engine.py',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py, shared/db/models.py, scripts/migrations/011_add_realized_pnl_to_paper_trades.sql',
     effort: 'S',
     impact: 'Medium — partial exits at +15%/+22% compute partial_pnl but only log it; final trade.pnl = (exit − entry) × remaining shares. A winner that scaled out then trailed to breakeven records pnl ≈ 0 or negative. Consumed by _recent_win_rate, _consec_loss_streak, heat brake, daily/weekly loss limits, outcome writeback, and RL training — every learning loop trains on wrong labels and circuit breakers fire spuriously.',
     what: 'paper_trading_engine.py:1791-1836 (partials), 1710 (final pnl), consumers 2021-2057.',
-    fix: 'Accumulate realized partial P&L on the trade (realized_pnl column or add into pnl at close); use total realized P&L in all gates and learning loops. Also treat breakeven_stop exits (|pct_return| < 0.3%) as streak-neutral (PT-10).',
+    fix: 'Fixed 2026-07-03. Added PaperTrade.realized_pnl (accumulator, default 0) and entry_shares (snapshot of original position size before scale-outs shrink `shares`) — migration 011. Both scale-out sites now add partial_pnl minus commission into trade.realized_pnl at the moment they fire. Final close computes total_pnl_dollar = realized_pnl + remaining-shares P&L, and pct_return against the TRUE original cost basis (entry_price * entry_shares) instead of just the shares left at close. Found and fixed a second instance of the same bug while patching this: _place_broker_exit() (the broker-fill-reconciliation path, fires after a real E*Trade fill comes back) independently recomputed trade.pnl/pct_return from scratch, silently overwriting the corrected value the moment a broker-linked trade\'s exit was reconciled — patched to fold in realized_pnl there too. _recent_win_rate/_consec_loss_streak/heat brake/RL training all read PaperTrade.pnl/pct_return directly from the DB, so no changes were needed there — they inherit the fix automatically. Verified the math with a synthetic scale-out scenario (33sh @ +7%, 33.5sh @ +12%, remainder closes near breakeven): old code recorded the trade as a barely-positive $16.75 "win" (functionally indistinguishable from breakeven in streak/win-rate math); new code correctly records $649.75 (6.5% return) — confirming the bug\'s real-world severity matches the tracker\'s description. Did NOT implement the "breakeven_stop exits treated as streak-neutral" part of the original fix text (PT-10) — that is a distinct behavioral change (redefining what counts toward a loss streak) rather than a correctness fix, and deserves its own tracker item/decision rather than being bundled here.',
   },
   {
     id: 'T232-PT5-REDIS-LOCK-RACE',

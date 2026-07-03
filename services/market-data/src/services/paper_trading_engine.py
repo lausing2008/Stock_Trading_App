@@ -168,11 +168,17 @@ def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio"
                 fill_p    = round(float(filled.filled_avg_price), 4)
                 old_exit  = trade.exit_price or fill_p
                 delta     = round((fill_p - old_exit) * trade.shares, 2)
-                pnl_pct   = (fill_p - trade.entry_price) / trade.entry_price
                 portfolio.current_cash = round(portfolio.current_cash + delta, 2)
                 trade.exit_price  = fill_p
-                trade.pnl         = round((fill_p - trade.entry_price) * trade.shares, 2)
-                trade.pct_return  = round(pnl_pct * 100, 4)
+                # T232-PT6: fold in realized_pnl from scale-out partials here too — this path
+                # overwrites trade.pnl/pct_return with the actual broker fill and would
+                # otherwise silently re-drop the partial P&L folded in at simulated close.
+                remaining_pnl_dollar = round((fill_p - trade.entry_price) * trade.shares, 2)
+                total_pnl_dollar = round((trade.realized_pnl or 0.0) + remaining_pnl_dollar, 2)
+                _cost_basis = trade.entry_price * (trade.entry_shares or trade.shares)
+                total_pnl_pct = (total_pnl_dollar / _cost_basis) if _cost_basis else 0.0
+                trade.pnl         = total_pnl_dollar
+                trade.pct_return  = round(total_pnl_pct * 100, 4)
                 log.info("broker.exit_filled", symbol=trade.symbol, fill_price=fill_p,
                          pnl=trade.pnl)
         except Exception:
@@ -1809,15 +1815,23 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             exit_commission = round(cfg.get("commission_per_share", 0.0) * trade.shares, 4)
             exit_value = round(exit_price * trade.shares, 2)
             pnl_dollar = round((exit_price - entry) * trade.shares, 2)
-            pnl_pct    = (exit_price - entry) / entry  # recalc with slipped exit
+            pnl_pct    = (exit_price - entry) / entry  # recalc with slipped exit; unweighted, kept in exit_notes for reference
             exit_notes["pnl_pct"] = round(pnl_pct * 100, 2)  # overwrite pre-slippage value
+            # T232-PT6: fold in realized P&L from any scale-out partials so a trade that
+            # took profit on the way up and trailed the remainder to breakeven is scored as
+            # the winner it actually was, not a ~$0/negative loser. pct_return is recomputed
+            # against the ORIGINAL cost basis (entry_shares), not just the shares remaining
+            # at close, since the partials already returned part of that capital.
+            total_pnl_dollar = round((trade.realized_pnl or 0.0) + pnl_dollar, 2)
+            _cost_basis = entry * (trade.entry_shares or trade.shares)
+            total_pnl_pct = (total_pnl_dollar / _cost_basis) if _cost_basis else pnl_pct
             trade.stage               = "closed"
             trade.exit_time           = now
             trade.exit_price          = exit_price
             trade.exit_reason         = exit_reason
             trade.exit_reasons        = exit_notes
-            trade.pnl                 = pnl_dollar
-            trade.pct_return          = round(pnl_pct * 100, 4)
+            trade.pnl                 = total_pnl_dollar
+            trade.pct_return          = round(total_pnl_pct * 100, 4)
             # PA-G3: record signal state at exit for walk-forward attribution
             trade.signal_at_exit_id   = current_sig.id   if current_sig else None
             trade.signal_at_exit_type = current_sig.signal.value if current_sig and current_sig.signal else None
@@ -1896,6 +1910,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
             partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
             trade.shares = round(trade.shares - partial_shares, 4)
+            trade.realized_pnl = round((trade.realized_pnl or 0.0) + partial_pnl - partial_commission, 2)
             portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
             if trade.current_stop < entry:
                 trade.current_stop = entry
@@ -1919,6 +1934,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
             partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
             trade.shares = round(trade.shares - partial_shares, 4)
+            trade.realized_pnl = round((trade.realized_pnl or 0.0) + partial_pnl - partial_commission, 2)
             portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
             lock_stop = round(entry * 1.05, 2)
             if trade.current_stop < lock_stop:
@@ -3437,6 +3453,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             sector                = stock.sector,    # H-SECTOR FIX: PA-D1 monitor reads trade.sector
             stock_id              = stock.id,        # PT-H2: needed for double-top mid-trade detection
             shares                = shares,
+            entry_shares          = shares,          # T232-PT6: snapshot before scale-outs shrink `shares`
             stop_loss             = stop,
             take_profit           = take_profit,
             current_stop          = stop,

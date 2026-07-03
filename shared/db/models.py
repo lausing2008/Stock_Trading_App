@@ -617,6 +617,14 @@ class PaperTrade(Base):
     stage: Mapped[str] = mapped_column(String(20), default="open", index=True)  # open|closed
     hold_days: Mapped[int] = mapped_column(Integer, default=0)
 
+    # T232-PT6: realized P&L from scale-out partial exits, accumulated as they happen.
+    # Folded into `pnl` at final close so a trade that scaled out profitably then trailed
+    # to breakeven on the remainder is scored as a win, not a loser. entry_shares is the
+    # original position size before any scale-outs shrank `shares` — needed to compute a
+    # cost-basis-correct pct_return once part of the position has already been sold.
+    realized_pnl: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False), default=0.0)
+    entry_shares: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
+
     # Exit (null until closed)
     exit_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     exit_price: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
