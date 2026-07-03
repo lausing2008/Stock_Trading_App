@@ -32,14 +32,14 @@ const GATE_PIPELINE: GateRow[] = [
     type: 'portfolio', severity: 'hard',
     trigger: 'SPY < 200-EMA AND VIX > 30 — or SPY < 200-EMA with 20-day return < −8%.',
     clears: 'SPY recovers above 200-EMA OR VIX drops below 30.',
-    hk_diff: 'HK uses HSI vs SMA200 instead of SPY.',
+    hk_diff: 'HK has no VIX equivalent — uses HSI > 15% below SMA200 AND below SMA50. Downgraded to risk_off if breadth (% of tracked HK stocks above their own 200d SMA) is NOT also weak (≥40%) — a decline concentrated in a few heavyweights doesn\'t get the full bear treatment.',
   },
   {
     gate: 'regime_risk_off', label: 'Risk-off regime',
     type: 'portfolio', severity: 'hard',
     trigger: 'SPY < 50-EMA AND VIX > 25 (both conditions required). Default: fully blocked.',
-    clears: 'SPY recovers above 50-EMA OR VIX falls below 25.',
-    hk_diff: 'HSI below SMA50 with volume/momentum weak triggers risk_off for HK.',
+    clears: 'SPY recovers above 50-EMA OR VIX falls below 25. Can be temporarily overridden per-portfolio for 4h or 1 day (Paper Portfolio → Config → Regime Gate Override) — self-expiring, reverts to 50%-size + score-5 behaviour while active.',
+    hk_diff: 'HK: HSI 8–15% below SMA200 AND below SMA50 (no VIX — HK has no equivalent index). Same breadth confirmation as bear: downgraded to choppy if breadth ≥40% (not broadly weak) — decline looks concentrated rather than systemic. Same 4h/1day override available.',
   },
   {
     gate: 'regime_suspension', label: 'Sustained stress suspension',
@@ -228,7 +228,7 @@ const REGIME_ENTRY_STATUS: Record<string, { us: string; hk: string }> = {
   bull:     { us: 'Full size (100%)', hk: 'Full size (100%)' },
   neutral:  { us: 'Full size (100%)', hk: 'Full size (100%)' },
   choppy:   { us: '75% size, max 1 entry/day, score ≥4', hk: '75% size, max 1/day, score ≥6' },
-  risk_off: { us: 'BLOCKED (regime_risk_off_gate=True)', hk: 'BLOCKED (regime_risk_off_gate=True)' },
+  risk_off: { us: 'BLOCKED (overridable — Config → Regime Gate Override)', hk: 'BLOCKED unless breadth confirms recovery (overridable — see above)' },
   bear:     { us: 'BLOCKED (all entries suspended)', hk: 'BLOCKED (all entries suspended)' },
 };
 
@@ -411,11 +411,11 @@ export default function PaperGatesPage() {
                     us: 'Open — max 1/day, score ≥4', hk: 'Open — max 1/day, score ≥6', size: '75%',
                   },
                   {
-                    regime: 'risk_off', trigger: 'SPY below 50-EMA AND VIX > 25',
-                    us: '⊘ BLOCKED', hk: '⊘ BLOCKED', size: '0 (blocked)',
+                    regime: 'risk_off', trigger: 'US: SPY below 50-EMA AND VIX > 25. HK: HSI 8–15% below SMA200 + below SMA50 (no VIX for HK), unless breadth confirms recovery.',
+                    us: '⊘ BLOCKED (overridable 4h/1day)', hk: '⊘ BLOCKED (overridable 4h/1day)', size: '0 (blocked)',
                   },
                   {
-                    regime: 'bear', trigger: 'SPY below 200-EMA AND VIX > 30',
+                    regime: 'bear', trigger: 'US: SPY below 200-EMA AND VIX > 30. HK: HSI >15% below SMA200 + below SMA50, unless breadth confirms recovery.',
                     us: '⊘ BLOCKED', hk: '⊘ BLOCKED', size: '0 (blocked)',
                   },
                 ].map(row => {
@@ -455,7 +455,9 @@ export default function PaperGatesPage() {
                 {[
                   {
                     label: 'Regime',
-                    cond: `Regime = bull or neutral (or choppy with score ≥6${mkt === 'HK' ? '' : '/4'})`,
+                    cond: mkt === 'HK'
+                      ? 'Regime = bull, neutral, or choppy (score ≥6) — risk_off/bear downgraded one tier if breadth doesn\'t confirm broad weakness (≥40% of tracked HK stocks above their 200d SMA), or bypassed via a temporary override'
+                      : 'Regime = bull or neutral (or choppy with score ≥4), or risk_off bypassed via a temporary override',
                     hk: mkt === 'HK',
                   },
                   { label: 'Index today', cond: `${mkt === 'HK' ? '^HSI' : 'SPY'} not down >1.5% on the day` },
@@ -582,6 +584,7 @@ export default function PaperGatesPage() {
           <span>Regime + live prices refreshed every 2h. Portfolio gates rechecked every scan cycle (~every 30 min during market hours).</span>
           <Link href="/regime" style={{ color: '#475569', textDecoration: 'none' }}>→ Regime details</Link>
           <Link href="/paper-portfolio" style={{ color: '#475569', textDecoration: 'none' }}>→ Paper portfolio</Link>
+          <Link href="/paper-portfolio#config" style={{ color: '#475569', textDecoration: 'none' }}>→ Risk-off gate override</Link>
           <Link href="/signal-filters" style={{ color: '#475569', textDecoration: 'none' }}>→ Signal filter</Link>
         </div>
       </div>

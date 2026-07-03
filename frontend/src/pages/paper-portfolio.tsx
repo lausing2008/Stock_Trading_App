@@ -997,7 +997,7 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
   }
 
   return (
-    <div style={{ background: '#1e293b', borderRadius: 10, padding: 20, border: '1px solid #334155' }}>
+    <div id="config" style={{ background: '#1e293b', borderRadius: 10, padding: 20, border: '1px solid #334155' }}>
       <div style={{ fontWeight: 600, marginBottom: 16, color: '#f1f5f9' }}>Portfolio Config (admin)</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
         {section('Position Limits')}
