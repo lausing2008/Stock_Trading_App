@@ -925,6 +925,31 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
   const [draft, setDraft] = useState<Partial<PaperPortfolioConfig>>({});
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
+  const [overrideMsg, setOverrideMsg] = useState('');
+  const [overrideBusy, setOverrideBusy] = useState(false);
+
+  const overrideUntil = config.regime_risk_off_override_until ? new Date(config.regime_risk_off_override_until) : null;
+  const overrideActive = !!overrideUntil && overrideUntil.getTime() > Date.now();
+
+  async function setRiskOffOverride(hours: number) {
+    setOverrideBusy(true); setOverrideMsg('');
+    try {
+      await api.paperSetRiskOffOverride(hours, portfolioId);
+      setOverrideMsg(`Override active for ${hours}h`);
+      onSave();
+    } catch { setOverrideMsg('Failed to set override'); }
+    finally { setOverrideBusy(false); }
+  }
+
+  async function clearRiskOffOverride() {
+    setOverrideBusy(true); setOverrideMsg('');
+    try {
+      await api.paperClearRiskOffOverride(portfolioId);
+      setOverrideMsg('Override cleared');
+      onSave();
+    } catch { setOverrideMsg('Failed to clear override'); }
+    finally { setOverrideBusy(false); }
+  }
 
   function field(key: keyof PaperPortfolioConfig, label: string, step = 0.01, placeholder?: string) {
     const cur = draft[key] ?? config[key];
@@ -1014,6 +1039,38 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
         {field('max_portfolio_drawdown_pct', 'Max Drawdown %', 0.01, 'default 0.20')}
         {field('max_consecutive_losses', 'Max Consec. Losses', 1, 'default 3')}
       </div>
+
+      {section('Regime Gate Override')}
+      <div style={{ marginTop: 10 }}>
+        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>
+          When the regime is risk_off, new entries are blocked entirely (0% win rate on risk_off entries historically).
+          Use this only when you have a deliberate reason to override — it self-expires, no need to remember to turn it back off.
+        </div>
+        {overrideActive ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#422006', border: '1px solid #f59e0b', borderRadius: 6, padding: '8px 12px' }}>
+            <span style={{ color: '#fbbf24', fontSize: 13, fontWeight: 600 }}>
+              ⚠ Override active until {overrideUntil!.toLocaleString()}
+            </span>
+            <button
+              onClick={clearRiskOffOverride} disabled={overrideBusy}
+              style={{ background: 'transparent', color: '#f87171', border: '1px solid #f87171', borderRadius: 5, padding: '4px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+            >Cancel Override</button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button
+              onClick={() => setRiskOffOverride(4)} disabled={overrideBusy}
+              style={{ background: '#1e293b', color: '#fbbf24', border: '1px solid #f59e0b', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}
+            >Allow trading for 4 hours</button>
+            <button
+              onClick={() => setRiskOffOverride(24)} disabled={overrideBusy}
+              style={{ background: '#1e293b', color: '#fbbf24', border: '1px solid #f59e0b', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}
+            >Allow trading for 1 day</button>
+          </div>
+        )}
+        {overrideMsg && <span style={{ color: overrideMsg.startsWith('Failed') ? '#ef4444' : '#22c55e', fontSize: 12, marginLeft: 10 }}>{overrideMsg}</span>}
+      </div>
+
       <div style={{ display: 'flex', gap: 10, marginTop: 16, alignItems: 'center' }}>
         <button
           onClick={save} disabled={saving || !Object.keys(draft).length}

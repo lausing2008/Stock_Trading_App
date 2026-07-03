@@ -687,6 +687,47 @@ def configure_portfolio(
     return {"ok": True, "config": p.config}
 
 
+# ── Admin: time-boxed regime_risk_off_gate override ────────────────────────────
+
+@router.post("/risk-off-override")
+def set_risk_off_override(
+    hours: float = Query(..., gt=0, le=24, description="Override duration in hours (max 24)"),
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Temporarily disable the risk_off entry gate for this portfolio.
+
+    T232-HKOVERRIDE: a deliberate, self-expiring override — NOT a permanent config flip.
+    While active, regime_risk_off_gate reverts to pre-T226-A behaviour (50% size + score-5
+    requirement instead of a full block). Expires automatically; no cron job needed since
+    the gate itself checks the expiry timestamp on every evaluation (see
+    _regime_risk_off_override_active in paper_trading_engine.py).
+    """
+    p = _get_portfolio(session, portfolio_id)
+    until = (datetime.utcnow() + timedelta(hours=hours)).isoformat()
+    p.config = {**p.config, "regime_risk_off_override_until": until}
+    session.commit()
+    log.warning("paper.risk_off_override_set", portfolio=p.name, hours=hours, until=until)
+    return {"ok": True, "override_until": until}
+
+
+@router.delete("/risk-off-override")
+def clear_risk_off_override(
+    portfolio_id: int | None = Query(None),
+    _: User = Depends(get_admin_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Cancel an active risk_off gate override before it expires."""
+    p = _get_portfolio(session, portfolio_id)
+    cfg = dict(p.config)
+    cfg.pop("regime_risk_off_override_until", None)
+    p.config = cfg
+    session.commit()
+    log.info("paper.risk_off_override_cleared", portfolio=p.name)
+    return {"ok": True}
+
+
 # ── Admin: reset ──────────────────────────────────────────────────────────────
 
 @router.post("/reset")

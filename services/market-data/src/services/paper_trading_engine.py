@@ -341,6 +341,23 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "decision_engine_mode":    "primary",
 }
 
+
+def _regime_risk_off_override_active(cfg: dict) -> bool:
+    """True if a time-boxed risk_off gate override (T232-HKOVERRIDE) is currently active.
+
+    Set via POST /paper-portfolio/risk-off-override?hours=N; expires on its own — no cron
+    job clears it, this check is what makes the expiry take effect.
+    """
+    until_str = cfg.get("regime_risk_off_override_until")
+    if not until_str:
+        return False
+    try:
+        until = datetime.fromisoformat(until_str)
+        return datetime.utcnow() < until
+    except (ValueError, TypeError):
+        return False
+
+
 # Mirrors scheduler._STYLE_PARAMS — inlined here to avoid circular import.
 _STYLE_PARAMS: dict[str, dict] = {
     "SHORT":  {"entry1_pct": 0.995, "entry2_pct": 0.985, "breakout_pct": 1.010,
@@ -965,8 +982,51 @@ _hk_regime_cache: dict = {}
 _hk_regime_cache_ts: float = 0.0
 
 
+def _compute_hk_breadth() -> float | None:
+    """% of tracked HK stocks trading above their own 200-day SMA.
+
+    Distinguishes a broad HSI decline from a handful of mega-caps dragging the index
+    down (e.g. a single Tencent/Alibaba selloff) — the index-only dual-SMA check can't
+    tell these apart. Uses the existing tracked HK universe (no HSI constituent list
+    needed) — only stocks with >=200 daily bars are counted, mirroring the sample the
+    US breadth_pct calculation implicitly relies on via its own universe.
+    """
+    try:
+        with SessionLocal() as session:
+            rows = session.execute(
+                select(Stock.id, Stock.symbol).where(Stock.market == "HK", Stock.active.is_(True))
+            ).all()
+            if not rows:
+                return None
+            stock_ids = [r.id for r in rows]
+            price_rows = session.execute(
+                select(Price.stock_id, Price.close)
+                .where(Price.stock_id.in_(stock_ids), Price.timeframe == TimeFrame.D1)
+                .order_by(Price.stock_id, Price.ts.desc())
+            ).all()
+            from collections import defaultdict as _dd
+            closes_by_stock: dict[int, list[float]] = _dd(list)
+            for sid, close in price_rows:
+                if len(closes_by_stock[sid]) < 200:
+                    closes_by_stock[sid].append(float(close))
+            above = total = 0
+            for sid, closes in closes_by_stock.items():
+                if len(closes) < 200:
+                    continue
+                total += 1
+                sma200 = sum(closes) / len(closes)
+                if closes[0] >= sma200:  # closes[0] is most recent (DESC order)
+                    above += 1
+            if total < 10:  # too small a sample to be meaningful
+                return None
+            return round(above / total * 100, 1)
+    except Exception as exc:
+        log.warning("paper.hk_breadth_calc_failed", error=str(exc))
+        return None
+
+
 def _fetch_hk_market_regime(cfg: dict) -> dict:
-    """HK regime detection using dual SMA (50 + 200).
+    """HK regime detection using dual SMA (50 + 200) + breadth confirmation.
 
     Returns a simplified regime dict compatible with the US version.
     No VIX equivalent — uses HSI position vs both SMA50 and SMA200:
@@ -975,6 +1035,12 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
       choppy   : HSI below SMA200 but above SMA50 (recovering), or within ±5% of SMA200
       risk_off : HSI 8–15% below SMA200 AND below SMA50 (sustained downtrend, 50% size)
       bear     : HSI > 15% below SMA200 AND below SMA50 (extreme crash, hard block)
+
+    Breadth confirmation (T232-HKBREADTH): a risk_off/bear call driven by index-level
+    weakness alone is downgraded one tier when breadth (% of tracked HK stocks above their
+    own 200d SMA) is NOT also weak (<40%) — i.e. the decline looks concentrated in a few
+    heavyweights rather than broad-based. This does not apply in the other direction: real
+    broad-based weakness (breadth <40%) does not escalate a milder index reading.
     """
     global _hk_regime_cache, _hk_regime_cache_ts
     import time as _time
@@ -985,7 +1051,7 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
         "state": "neutral", "vix": None, "spy_price": None,
         "spy_ema20": None, "spy_ema50": None, "spy_ema200": None,
         "spy_20d_ret": None, "qqq_price": None, "qqq_ema50": None,
-        "breadth_weak": False, "breadth_size_mult": 1.0,
+        "breadth_weak": False, "breadth_size_mult": 1.0, "breadth_pct": None,
         "vix_term_inverted": False, "vix_5d_trend": None,
         "spy_pct_above_ema20": None, "is_pre_choppy": False, "is_pre_risk_off": False,
         "hmm_bear_pressure": False, "hmm_bear_prob": None, "hmm_state": None,
@@ -1039,6 +1105,23 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
         else:
             result["state"] = "bull"
             result["notes"].append(f"HSI {pct_above_200*100:.1f}% above SMA200 + positive 20d return → bull")
+
+        # T232-HKBREADTH: confirm index-level bear/risk_off calls with breadth. A decline
+        # concentrated in a few heavyweights (breadth NOT weak) is downgraded one tier —
+        # broad-based weakness (breadth IS weak, <40%) leaves the call unchanged. Never
+        # escalates a milder reading — this only softens bear/risk_off, one direction.
+        breadth_pct = _compute_hk_breadth()
+        result["breadth_pct"] = breadth_pct
+        if breadth_pct is not None:
+            result["breadth_weak"] = breadth_pct < 40.0
+            if result["state"] == "bear" and breadth_pct >= 40.0:
+                result["state"] = "risk_off"
+                result["notes"].append(
+                    f"Breadth {breadth_pct:.0f}% not broadly weak — downgraded bear→risk_off (decline looks concentrated)")
+            elif result["state"] == "risk_off" and breadth_pct >= 40.0:
+                result["state"] = "choppy"
+                result["notes"].append(
+                    f"Breadth {breadth_pct:.0f}% not broadly weak — downgraded risk_off→choppy (decline looks concentrated)")
 
     except Exception as exc:
         log.warning("paper.hk_regime_fetch_failed", error=str(exc))
@@ -2472,8 +2555,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             return
         # T173/T226-A: risk_off gate — blocks all new entries when regime_risk_off_gate=True.
         # T226-A changed default to True: 9/30 closed paper trades in risk_off had 0% win rate.
-        # Set False per-portfolio to revert to 50%-size + score-5 behaviour instead.
-        if regime_state == "risk_off" and cfg.get("regime_risk_off_gate", True):
+        # T232-HKOVERRIDE: a deliberate, time-boxed override (set via POST
+        # /paper-portfolio/risk-off-override?hours=N) can temporarily disable this gate —
+        # self-expiring, checked here on every evaluation rather than needing a cron job
+        # to turn it back off.
+        if regime_state == "risk_off" and cfg.get("regime_risk_off_gate", True) and not _regime_risk_off_override_active(cfg):
             log.info("paper.regime_gate_risk_off",
                      portfolio=portfolio.name,
                      vix=live_regime.get("vix"),

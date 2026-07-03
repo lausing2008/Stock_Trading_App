@@ -465,6 +465,15 @@ export const api = {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return request<{ ok: boolean; positions_closed: number; cash_reset_to: number }>(`/paper-portfolio/reset${q}`, { method: 'POST' });
   },
+  paperSetRiskOffOverride: (hours: number, portfolioId?: number | null) => {
+    const q = new URLSearchParams({ hours: String(hours) });
+    if (portfolioId) q.set('portfolio_id', String(portfolioId));
+    return request<{ ok: boolean; override_until: string }>(`/paper-portfolio/risk-off-override?${q}`, { method: 'POST' });
+  },
+  paperClearRiskOffOverride: (portfolioId?: number | null) => {
+    const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
+    return request<{ ok: boolean }>(`/paper-portfolio/risk-off-override${q}`, { method: 'DELETE' });
+  },
   paperSetCapital: (body: { initial_capital?: number; current_cash?: number }, portfolioId?: number | null) => {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
     return request<{ ok: boolean; initial_capital: number; current_cash: number }>(`/paper-portfolio/capital${q}`, { method: 'POST', body: JSON.stringify(body) });
@@ -1296,6 +1305,9 @@ export type PaperPortfolioConfig = {
   max_weekly_loss_pct?: number;
   max_portfolio_drawdown_pct?: number;
   max_consecutive_losses?: number;
+  // Regime gate
+  regime_risk_off_gate?: boolean;
+  regime_risk_off_override_until?: string | null;
 };
 
 export type PaperPortfolioSummary = {
