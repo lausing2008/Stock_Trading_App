@@ -324,6 +324,31 @@ def scheduler_status(_: User = Depends(get_admin_user)):
     return {"jobs": jobs}
 
 
+@router.get("/dq-status")
+def data_quality_status(_: User = Depends(get_admin_user)):
+    """Return the latest result of each data-quality staleness check (from Redis).
+
+    Distinct from /scheduler-status: that reports whether a JOB ran; this reports
+    whether the DATA that job was supposed to produce is actually fresh. See
+    run_data_quality_checks() in scheduler.py for why the two can diverge (the
+    2026-07-03 rankings incident: the job "ran" and returned 200 for 10+ days while
+    silently writing zero rows).
+    """
+    r = _get_redis()
+    keys = sorted(r.keys("dq_check:*"))
+    checks = []
+    for key in keys:
+        if key in ("dq_check:last_alert_ts",):
+            continue
+        val = r.get(key)
+        if val:
+            try:
+                checks.append(json.loads(val))
+            except Exception:
+                pass
+    return {"checks": checks}
+
+
 @router.post("/backfill-index-membership")
 def backfill_index_membership(
     session: Session = Depends(get_session),

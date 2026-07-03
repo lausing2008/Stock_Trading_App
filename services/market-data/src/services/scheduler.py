@@ -74,10 +74,11 @@ import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.orm import selectinload
 
 from common.config import get_settings
@@ -86,7 +87,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 
 
 from .ingestion import ingest_universe
-from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email
+from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills
 from ..api.routes import refresh_live_price_cache
 
@@ -2894,6 +2895,134 @@ def _fetch_hk_regime_snapshot() -> dict | None:
         return None
 
 
+# ── Data Quality Checks Framework ────────────────────────────────────────────
+#
+# Motivated by the 2026-07-03 incident: rankings silently stopped updating for 10+ days
+# (a NotNullViolation in a FastAPI BackgroundTasks callback, invisible because that
+# callback had zero logging). Job-status tracking (_record_job_status / scheduler:job:*)
+# only tells you a job RAN — not that it actually produced fresh data. A "200 scheduled"
+# response and a completed background task both looked healthy while zero rows were
+# being written. This framework checks the DATA itself: is the freshest row in each
+# critical table recent enough, independent of whether the job that should have
+# refreshed it reported success.
+#
+# Each check is declarative: a name, a SQL query returning the most recent timestamp
+# for that data, and a max-age threshold. Adding a new check means adding one entry to
+# _DQ_CHECKS — no new scheduler job, no new email template.
+
+_DQ_CHECKS: list[dict] = [
+    {
+        "name": "rankings_us", "description": "US K-Score rankings (blocks GROWTH/SWING entry gates)",
+        "query": "SELECT MAX(rk.as_of) FROM rankings rk JOIN stocks st ON rk.stock_id=st.id WHERE st.market='US'",
+        "max_age_hours": 48, "is_date": True,
+    },
+    {
+        "name": "rankings_hk", "description": "HK K-Score rankings (blocks GROWTH/SWING entry gates)",
+        "query": "SELECT MAX(rk.as_of) FROM rankings rk JOIN stocks st ON rk.stock_id=st.id WHERE st.market='HK'",
+        "max_age_hours": 48, "is_date": True,
+    },
+    {
+        "name": "signals_us", "description": "US signal generation (all horizons)",
+        "query": "SELECT MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id WHERE st.market='US'",
+        "max_age_hours": 30, "is_date": False,
+    },
+    {
+        "name": "signals_hk", "description": "HK signal generation (all horizons)",
+        "query": "SELECT MAX(sig.ts) FROM signals sig JOIN stocks st ON sig.stock_id=st.id WHERE st.market='HK'",
+        "max_age_hours": 30, "is_date": False,
+    },
+    {
+        "name": "signal_outcomes", "description": "Outcome tracking — feeds T223 calibrated win rate + calibration loop",
+        "query": "SELECT MAX(ts_evaluated) FROM signal_outcomes",
+        "max_age_hours": 72, "is_date": False,
+    },
+    {
+        "name": "prices_us_d1", "description": "US daily price bars",
+        "query": "SELECT MAX(p.ts) FROM prices p JOIN stocks st ON p.stock_id=st.id WHERE st.market='US' AND p.timeframe='1d'",
+        "max_age_hours": 48, "is_date": False,
+    },
+    {
+        "name": "prices_hk_d1", "description": "HK daily price bars",
+        "query": "SELECT MAX(p.ts) FROM prices p JOIN stocks st ON p.stock_id=st.id WHERE st.market='HK' AND p.timeframe='1d'",
+        "max_age_hours": 48, "is_date": False,
+    },
+    {
+        "name": "paper_equity_curve", "description": "Paper trading equity snapshots (all portfolios)",
+        "query": "SELECT MAX(date) FROM paper_equity_curve",
+        "max_age_hours": 48, "is_date": True,
+    },
+]
+
+
+def run_data_quality_checks() -> None:
+    """Run all _DQ_CHECKS, record each result to Redis, and email on any failure.
+
+    Scheduled independently of the jobs it's checking — a check here failing is a
+    signal about DATA freshness, not about whether a particular scheduler job's own
+    status flag says "ok" (see the framework docstring above for why those can diverge).
+    """
+    _t0 = time.monotonic()
+    redis_client = _get_redis()
+    failing: list[dict] = []
+    try:
+        with SessionLocal() as session:
+            for check in _DQ_CHECKS:
+                try:
+                    result = session.execute(text(check["query"])).scalar()
+                    if result is None:
+                        age_hours = None
+                        ok = False
+                    else:
+                        if check["is_date"]:
+                            last_dt = datetime.combine(result, datetime.min.time(), tzinfo=timezone.utc)
+                        else:
+                            last_dt = result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+                        age_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                        ok = age_hours <= check["max_age_hours"]
+                    redis_client.setex(
+                        f"dq_check:{check['name']}", 86400 * 7,
+                        json.dumps({
+                            "name": check["name"], "description": check["description"],
+                            "ok": ok, "age_hours": round(age_hours, 1) if age_hours is not None else None,
+                            "max_age_hours": check["max_age_hours"],
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                        }),
+                    )
+                    if not ok:
+                        failing.append({
+                            "name": check["name"], "description": check["description"],
+                            "age_hours": age_hours, "max_age_hours": check["max_age_hours"],
+                        })
+                except Exception as _check_exc:
+                    log.warning("dq_check.query_failed", check=check["name"], error=str(_check_exc))
+
+        _record_job_status("data_quality_checks", "ok", time.monotonic() - _t0)
+        log.info("dq_check.run_done", total=len(_DQ_CHECKS), failing=len(failing))
+
+        if failing:
+            # De-dupe: only email once per 6h per failing set (avoid re-alerting every
+            # 30 min while a known issue is being fixed).
+            alert_key = "dq_check:last_alert_ts"
+            last_alert = redis_client.get(alert_key)
+            should_alert = True
+            if last_alert:
+                elapsed = time.time() - float(last_alert)
+                should_alert = elapsed > 6 * 3600
+            if should_alert:
+                with SessionLocal() as session:
+                    admins = session.execute(
+                        select(User).where(User.email.isnot(None), User.email != "")
+                    ).scalars().all()
+                    for user in admins:
+                        send_data_quality_alert_email(user.email, failing)
+                redis_client.set(alert_key, str(time.time()))
+                log.warning("dq_check.alert_sent", failing_checks=[f["name"] for f in failing])
+
+    except Exception as exc:
+        log.error("dq_check.run_failed", error=str(exc), exc_info=True)
+        _record_job_status("data_quality_checks", "error", time.monotonic() - _t0, str(exc))
+
+
 def send_paper_portfolio_digest() -> None:
     """Send after-market portfolio digest email to all users with email configured.
 
@@ -3149,6 +3278,17 @@ def start_scheduler() -> None:
         lambda: send_post_open_digest("HK", "1hr"),
         CronTrigger(hour=10, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         id="post_open_digest_hk_1hr", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── Data quality checks — every 2 hours, all days ────────────────────────
+    # Checks actual data freshness (not job-run status — see run_data_quality_checks'
+    # docstring for why those diverge). Runs continuously, not just market hours, since
+    # staleness can develop and should be caught regardless of when someone next opens
+    # the admin dashboard.
+    _scheduler.add_job(
+        run_data_quality_checks,
+        IntervalTrigger(hours=2),
+        id="data_quality_checks", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Paper portfolio after-market digest — 17:00 ET (1h after US close) ──

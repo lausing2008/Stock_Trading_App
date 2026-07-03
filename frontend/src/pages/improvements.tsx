@@ -8451,6 +8451,16 @@ const ITEMS: Item[] = [
     fix: 'Done 2026-07-03 (explicit user approval for each insert): added stock_id 12 (0005.HK) and 21 (0981.HK) to watchlist 183 "Growth / Momentum" for HK. Added 13 US symbols to the same GROWTH-tagged watchlist: RXT, DIVO, KGS, CGNX, OSCR, ARMK, FCEL, ASX, JPM, CAT, UNH, RTX, IBM. All confirmed present via query after insert. Recommend a periodic check (or automated alert) comparing top-confidence BUY signals against watchlist trading_style coverage so this doesn\'t silently recur — see the data-quality-checks framework discussion for a home for this.',
   },
   {
+    id: 'T232-DQ-FRAMEWORK',
+    title: 'New: Data Quality Checks framework — catches silent staleness like the rankings incident automatically',
+    tier: 232 as const, severity: 'feature', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/scheduler.py, services/market-data/src/services/email_service.py, services/market-data/src/api/admin.py, frontend/src/pages/admin-health.tsx',
+    effort: 'M',
+    impact: 'High — the 2026-07-03 rankings incident (T232-RANKSTALE-*) went undetected for 10+ days because the existing scheduler:job:* status tracking only records whether a JOB ran, not whether the DATA it was supposed to produce is actually fresh — a job can report "ok" while its background task silently writes zero rows. User asked for a framework to catch this class of problem quickly, with both email and dashboard alerting.',
+    what: 'No mechanism existed to check data freshness independent of job-run status. The gap: POST /rankings/refresh returned 200 "scheduled" continuously for 10+ days while the actual rankings table went stale, and nothing anywhere flagged the divergence.',
+    fix: 'Done 2026-07-03: added a declarative _DQ_CHECKS registry in scheduler.py — each entry is a name, description, a SQL query for the most recent timestamp in a critical table, and a max-age threshold. Started with 8 staleness checks (US/HK rankings, US/HK signals, signal_outcomes, US/HK daily prices, paper equity curve) per user\'s priority. run_data_quality_checks() runs every 2 hours via APScheduler IntervalTrigger, writes each result to Redis (dq_check:{name}, 7d TTL), and emails all users (send_data_quality_alert_email, plain summary table) when any check fails — de-duped to once per 6h per failing set to avoid re-alerting every cycle while a known issue is being fixed. Added GET /admin/dq-status (mirrors the existing /admin/scheduler-status pattern) and a new "DATA QUALITY CHECKS" section at the top of admin-health.tsx showing each check\'s fresh/stale status and age. Adding a new check going forward means one entry in _DQ_CHECKS — no new scheduler job or email template needed.',
+  },
+  {
     id: 'T232-CONFIGGAP-SILENT-SAVE-DROP',
     title: '12 of 27 Portfolio Config fields silently failed to save — "Max Market Pos" and 11 others',
     tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,

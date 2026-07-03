@@ -507,6 +507,7 @@ export const api = {
   }>('/paper-portfolio/entry_factors'),
   calibrateEntry: () => request<{ status: string }>('/paper-portfolio/calibrate-entry', { method: 'POST' }),
   schedulerStatus: () => request<{ jobs: SchedulerJob[] }>('/admin/scheduler-status'),
+  dqStatus: () => request<{ checks: DataQualityCheck[] }>('/admin/dq-status'),
   healthDeep: () => request<ServiceHealthReport>('/health/deep'),
   mlMetrics: (model = 'xgboost') => request<MlMetricsList>(`/ml/metrics?model=${model}`),
   mlFeatureImportance: (symbol: string, model = 'xgboost') =>
@@ -1463,6 +1464,15 @@ export type SchedulerJob = {
   last_run: string;
   duration_s: number;
   error: string | null;
+};
+
+export type DataQualityCheck = {
+  name: string;
+  description: string;
+  ok: boolean;
+  age_hours: number | null;
+  max_age_hours: number;
+  checked_at: string;
 };
 
 export type ServiceHealthResult = {

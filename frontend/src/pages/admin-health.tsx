@@ -142,6 +142,12 @@ export default function AdminHealthPage() {
     { revalidateOnFocus: false, refreshInterval: 30_000 },
   );
 
+  const { data: dqData } = useSWR(
+    authed ? 'dq-status' : null,
+    () => api.dqStatus(),
+    { revalidateOnFocus: false, refreshInterval: 30_000 },
+  );
+
   const { data: mlData } = useSWR(
     authed ? 'ml-metrics-all' : null,
     () => api.mlMetrics('xgboost'),
@@ -210,6 +216,48 @@ export default function AdminHealthPage() {
           </button>
         </div>
       </div>
+
+      {/* Data Quality Checks — checks actual data freshness, independent of job-run status.
+          See run_data_quality_checks() docstring: a job can report "ok" while writing zero
+          rows (the 2026-07-03 rankings incident) — this section catches that class of bug. */}
+      {dqData && dqData.checks.length > 0 && (
+        <div style={{ marginBottom: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>DATA QUALITY CHECKS</div>
+            {dqData.checks.every(c => c.ok) ? (
+              <span style={{ fontSize: '10px', fontWeight: 700, color: '#4ade80' }}>✓ all fresh</span>
+            ) : (
+              <span style={{ fontSize: '10px', fontWeight: 700, color: '#f87171' }}>
+                {dqData.checks.filter(c => !c.ok).length} failing
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px' }}>
+            {dqData.checks.map(c => (
+              <div key={c.name} style={{
+                padding: '14px 16px', borderRadius: '10px', background: '#0d1424',
+                border: `1px solid ${c.ok ? '#1e293b' : 'rgba(239,68,68,0.35)'}`,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{c.name}</div>
+                    <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px' }}>{c.description}</div>
+                  </div>
+                  <span style={{ fontSize: '10px', fontWeight: 700, color: c.ok ? '#4ade80' : '#f87171', flexShrink: 0, marginLeft: '10px' }}>
+                    {c.ok ? '✓ fresh' : '⚠ stale'}
+                  </span>
+                </div>
+                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '8px' }}>
+                  Last updated: <strong style={{ color: c.ok ? '#e2e8f0' : '#f87171' }}>
+                    {c.age_hours != null ? `${c.age_hours.toFixed(1)}h ago` : 'never'}
+                  </strong>
+                  <span style={{ color: '#475569' }}> (max {c.max_age_hours}h)</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {isLoading && (
         <div style={{ textAlign: 'center', padding: '40px', color: '#475569', fontSize: '13px' }}>Loading…</div>

@@ -1387,6 +1387,59 @@ def send_broker_reauth_email(to: str, broker_name: str, authorize_url: str) -> b
     return send_email(to, subject, body_html, body_text)
 
 
+def send_data_quality_alert_email(to: str, failing_checks: list) -> bool:
+    """Alert email for data-quality staleness checks that have failed.
+
+    failing_checks: [{"name": str, "description": str, "last_updated": str|None,
+                       "age_hours": float|None, "max_age_hours": float}]
+    """
+    from datetime import date as _date
+    date_str = _date.today().strftime("%b %d, %Y")
+
+    rows_html = ""
+    rows_text = ""
+    for c in failing_checks:
+        age_str = f"{c['age_hours']:.1f}h ago" if c.get("age_hours") is not None else "never"
+        rows_html += (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:8px 10px;font-weight:700;font-size:13px">{c["name"]}</td>'
+            f'<td style="padding:8px 10px;font-size:12px;color:#64748b">{c["description"]}</td>'
+            f'<td style="padding:8px 10px;font-size:13px;font-weight:700;color:#ef4444">{age_str}</td>'
+            f'<td style="padding:8px 10px;font-size:12px;color:#94a3b8">max {c["max_age_hours"]:.0f}h</td>'
+            f'</tr>'
+        )
+        rows_text += f"  {c['name']:30}  last updated: {age_str}  (max allowed: {c['max_age_hours']:.0f}h)\n"
+
+    subject = f"⚠ Data Quality Alert: {len(failing_checks)} check(s) failing — {date_str}"
+    body_text = (
+        f"Data Quality Alert — {date_str}\n"
+        f"{len(failing_checks)} check(s) exceeded their staleness threshold:\n\n"
+        f"{rows_text}\n"
+        f"View details: https://lausing.com/admin-health"
+    )
+    body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:600px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <div style="margin-bottom:20px">
+      <div style="font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Data Quality Alert · {date_str}</div>
+      <div style="font-size:20px;font-weight:700;color:#ef4444">{len(failing_checks)} check(s) failing</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
+      <tr style="background:#f1f5f9">
+        <th style="padding:6px 10px;font-size:11px;color:#475569;text-align:left">Check</th>
+        <th style="padding:6px 10px;font-size:11px;color:#475569;text-align:left">Description</th>
+        <th style="padding:6px 10px;font-size:11px;color:#475569;text-align:left">Last Updated</th>
+        <th style="padding:6px 10px;font-size:11px;color:#475569;text-align:left">Threshold</th>
+      </tr>
+      {rows_html}
+    </table>
+    <p style="font-size:12px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:12px">
+      <a href="https://lausing.com/admin-health" style="color:#6366f1">View System Health →</a>
+    </p>
+  </div>
+</body></html>"""
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_webhook_notification(webhook_url: str, title: str, message: str, color: int = 0x3b82f6) -> bool:
     """Send a Discord/Slack-compatible webhook notification (embed format)."""
     try:
