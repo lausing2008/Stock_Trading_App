@@ -8441,6 +8441,16 @@ const ITEMS: Item[] = [
     fix: 'Done 2026-07-03: made rankings.value and rankings.growth nullable in models.py, added Alembic migration 004, and applied the ALTER TABLE directly to production (additive/reversible, no data impact — approved by user after the fact since it was run urgently to unblock live trading gates). Deployed shared/db/models.py to both ranking-engine and market-data containers. Verified: fresh rankings now write successfully for both markets with 0 NotNullViolation errors.',
   },
   {
+    id: 'T232-WATCHLIST-GAPS',
+    title: 'Fixed watchlist-tagging gaps hiding strong BUY signals from GROWTH portfolios — 2 HK + 13 US symbols',
+    tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'production DB — watchlist_items table',
+    effort: 'S',
+    impact: 'High — while investigating why HK GROWTH had zero trades, found that entry candidates require BOTH a qualifying signal AND membership on a watchlist tagged with the portfolio\'s own trading_style (paper_trading_engine.py\'s Watchlist.trading_style == style filter). Two structurally-invisible classes of gap existed: a stock with zero watchlist membership at all (0005.HK/HSBC, DIVO, RXT), or a stock only tagged to a DIFFERENT style\'s watchlist (0981.HK/SMIC — HK\'s strongest GROWTH-horizon BUY signal at 89.5% bullish — was SWING-only). No amount of signal quality, K-Score, or gate-passing can make a candidate reachable if it fails this watchlist check first; it never even enters the SQL query.',
+    what: 'Checked the top 20 US GROWTH-horizon BUY signals by confidence against GROWTH-tagged watchlist membership: only 2 of 20 (AMAT, IMVT) were tagged. 16 were invisible, including the two highest-confidence signals (FCEL 88.9%, OSCR 86.7%); 2 of those 16 (DIVO, RXT) had zero watchlist membership at all. Same class of gap on HK: 0005.HK zero membership, 0981.HK SWING-only.',
+    fix: 'Done 2026-07-03 (explicit user approval for each insert): added stock_id 12 (0005.HK) and 21 (0981.HK) to watchlist 183 "Growth / Momentum" for HK. Added 13 US symbols to the same GROWTH-tagged watchlist: RXT, DIVO, KGS, CGNX, OSCR, ARMK, FCEL, ASX, JPM, CAT, UNH, RTX, IBM. All confirmed present via query after insert. Recommend a periodic check (or automated alert) comparing top-confidence BUY signals against watchlist trading_style coverage so this doesn\'t silently recur — see the data-quality-checks framework discussion for a home for this.',
+  },
+  {
     id: 'T232-CONFIGGAP-SILENT-SAVE-DROP',
     title: '12 of 27 Portfolio Config fields silently failed to save — "Max Market Pos" and 11 others',
     tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,
