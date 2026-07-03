@@ -640,6 +640,10 @@ def configure_portfolio(
     The endpoint validates ranges and returns 400 if a value is out of bounds.
     """
     p = _get_portfolio(session, portfolio_id)
+    # T232-CONFIGGAP: 12 fields the frontend ConfigPanel exposes were missing from this set,
+    # so saving them silently no-op'd (updated dict below filters on membership with no error
+    # returned to the user) — e.g. "Max Market Pos" appeared to save but the value never
+    # persisted. All are real, actively-read _DEFAULT_CONFIG keys in paper_trading_engine.py.
     allowed_keys = {
         "max_positions", "max_sector_pct", "risk_per_trade_pct", "max_position_pct",
         "min_confidence", "min_kscore", "min_rr_ratio", "min_entry_score",
@@ -647,6 +651,11 @@ def configure_portfolio(
         "wait_exit_days", "enabled", "paused",
         "max_loss_per_trade_pct", "max_portfolio_drawdown_pct", "max_daily_loss_pct",
         "max_open_risk_pct", "hold_stall_max_gain", "stop_cooldown_hours",
+        # T232-CONFIGGAP additions:
+        "max_market_positions", "max_sector_positions", "max_entries_per_day",
+        "max_entry_gap_pct", "hold_stall_days", "max_consecutive_losses",
+        "max_weekly_loss_pct", "max_open_exposure_pct", "equity_floor_pct",
+        "min_ta_score", "min_volume_z", "partial_tp_pct",
     }
     # PT-H1: Validate decimal fraction params — reject values that look like % integers
     # (e.g. risk_per_trade_pct=1 meaning "1%" but engine expects 0.01).
@@ -661,6 +670,11 @@ def configure_portfolio(
         "breakeven_trigger_pct":(0.005, 0.20,  "Enter as decimal fraction (e.g. 0.03 for 3%)."),
         "max_open_risk_pct":    (0.02,  0.50,  "Enter as decimal fraction (e.g. 0.12 for 12%)."),
         "hold_stall_max_gain":  (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.05 for 5%)."),
+        "max_entry_gap_pct":    (0.01,  0.20,  "Enter as decimal fraction (e.g. 0.04 for 4%)."),
+        "max_weekly_loss_pct":  (0.01,  0.30,  "Enter as decimal fraction (e.g. 0.08 for 8%)."),
+        "max_open_exposure_pct":(0.05,  1.00,  "Enter as decimal fraction (e.g. 0.40 for 40%)."),
+        "equity_floor_pct":     (0.10,  1.00,  "Enter as decimal fraction (e.g. 0.80 for 80%)."),
+        "partial_tp_pct":       (0.01,  0.50,  "Enter as decimal fraction (e.g. 0.10 for 10%)."),
     }
     errors: list[str] = []
     for key, val in body.items():
@@ -677,6 +691,10 @@ def configure_portfolio(
         raise HTTPException(status_code=400, detail={"errors": errors})
 
     updated = {k: v for k, v in body.items() if k in allowed_keys and v is not None}
+    # T232-CONFIGGAP: surface any key the caller sent that isn't recognized, instead of
+    # silently dropping it — this is exactly how "Max Market Pos save does nothing" went
+    # unnoticed until a user reported it.
+    unknown = sorted(k for k in body if k not in allowed_keys and body[k] is not None)
     old_vals = {k: p.config.get(k) for k in updated}
     p.config = {**p.config, **updated}
     session.commit()
@@ -684,7 +702,9 @@ def configure_portfolio(
     if updated:
         log.info("paper.config_updated",
                  changed={k: {"from": old_vals[k], "to": updated[k]} for k in updated})
-    return {"ok": True, "config": p.config}
+    if unknown:
+        log.warning("paper.config_update_unknown_keys", keys=unknown)
+    return {"ok": True, "config": p.config, "ignored_keys": unknown}
 
 
 # ── Admin: time-boxed regime_risk_off_gate override ────────────────────────────

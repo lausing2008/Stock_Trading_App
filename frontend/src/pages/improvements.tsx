@@ -8421,6 +8421,16 @@ const ITEMS: Item[] = [
     fix: 'Done 2026-07-02: added POST /paper-portfolio/risk-off-override?hours=N (max 24h) which stores regime_risk_off_override_until in the portfolio config; DELETE to cancel early. The gate itself checks _regime_risk_off_override_active(cfg) on every evaluation — expiry is self-enforcing, no cron job needed to turn it back off. Added a "Regime Gate Override" section to the paper-portfolio Config Panel with "Allow trading for 4 hours" / "Allow trading for 1 day" buttons and a live countdown + cancel button while active — deliberately not a single always-visible bypass button.',
   },
   {
+    id: 'T232-CONFIGGAP-SILENT-SAVE-DROP',
+    title: '12 of 27 Portfolio Config fields silently failed to save — "Max Market Pos" and 11 others',
+    tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/paper_portfolio.py, frontend/src/lib/api.ts, frontend/src/pages/paper-portfolio.tsx',
+    effort: 'S',
+    impact: 'High — user reported changing Max Market Pos to 5 and clicking Save, but the value never persisted (reverted to the old value on reload). POST /paper-portfolio/configure filters incoming keys against a hardcoded allowed_keys set; 12 of the 27 fields the ConfigPanel UI actually exposes were missing from it: max_market_positions, max_sector_positions, max_entries_per_day, max_entry_gap_pct, hold_stall_days, max_consecutive_losses, max_weekly_loss_pct, max_open_exposure_pct, equity_floor_pct, min_ta_score, min_volume_z, partial_tp_pct. The endpoint returned {"ok": true} regardless — no error, no partial-save indication — so the UI showed "Saved" while silently doing nothing for those fields. All 12 are real, actively-read _DEFAULT_CONFIG keys in paper_trading_engine.py (verified each one is read via cfg.get(...) before adding it back).',
+    what: 'allowed_keys in configure_portfolio() had drifted behind the frontend ConfigPanel — new fields were added to the UI over time without a matching backend allowlist update, and the endpoint never surfaced which keys it dropped.',
+    fix: 'Done 2026-07-03: added all 12 missing keys to allowed_keys, plus range checks for the 5 that are decimal-fraction percentages (max_entry_gap_pct, max_weekly_loss_pct, max_open_exposure_pct, equity_floor_pct, partial_tp_pct) matching the existing _RANGE_CHECKS pattern. The endpoint now also returns ignored_keys (any key sent but not recognized) instead of silently swallowing it, and the frontend Save button surfaces that list in its status message if it\'s ever non-empty — so this class of bug can\'t go unnoticed again.',
+  },
+  {
     id: 'T232-GATEPAGE-DOCS-UPDATE',
     title: 'Updated /paper-gates reference page for HK breadth confirmation + risk-off override',
     tier: 232 as const, severity: 'low', defaultStatus: 'done' as const,

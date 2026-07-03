@@ -971,8 +971,10 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
   async function save() {
     setSaving(true); setMsg('');
     try {
-      await api.paperConfigure(draft, portfolioId);
-      setMsg('Saved');
+      const r = await api.paperConfigure(draft, portfolioId);
+      // T232-CONFIGGAP: the backend used to silently drop unrecognized keys with no
+      // indication to the user that nothing happened — surface it if it ever recurs.
+      setMsg(r.ignored_keys?.length ? `Saved (ignored unknown: ${r.ignored_keys.join(', ')})` : 'Saved');
       onSave();
       setDraft({});
     } catch { setMsg('Error saving'); }

@@ -459,7 +459,7 @@ export const api = {
   },
   paperConfigure: (body: Partial<PaperPortfolioConfig>, portfolioId?: number | null) => {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
-    return request<{ ok: boolean; config: PaperPortfolioConfig }>(`/paper-portfolio/configure${q}`, { method: 'POST', body: JSON.stringify(body) });
+    return request<{ ok: boolean; config: PaperPortfolioConfig; ignored_keys?: string[] }>(`/paper-portfolio/configure${q}`, { method: 'POST', body: JSON.stringify(body) });
   },
   paperReset: (portfolioId?: number | null) => {
     const q = portfolioId ? `?portfolio_id=${portfolioId}` : '';
