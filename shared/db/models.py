@@ -187,8 +187,13 @@ class Ranking(Base):
     score: Mapped[float] = mapped_column(Float)  # K-Score 0-100
     technical: Mapped[float] = mapped_column(Float)
     momentum: Mapped[float] = mapped_column(Float)
-    value: Mapped[float] = mapped_column(Float)
-    growth: Mapped[float] = mapped_column(Float)
+    # T232-RANKSTALE: value/growth were NOT NULL, but compute_kscore legitimately returns
+    # None for stocks lacking sufficient fundamentals data (KS-4) — every bulk ranking
+    # refresh batch containing even one such stock failed the whole INSERT with
+    # NotNullViolation, silently (no logging existed at the time) stalling rankings for
+    # both markets for 10+ days. Made nullable to match what the scoring layer produces.
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    growth: Mapped[float | None] = mapped_column(Float, nullable=True)
     volatility: Mapped[float] = mapped_column(Float)
     fair_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     rs_score: Mapped[float | None] = mapped_column(Float, nullable=True)
