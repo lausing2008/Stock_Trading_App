@@ -120,6 +120,23 @@ def check_hard_rejects(
     if days_to_earnings is not None and days_to_earnings <= 5:
         return f"Earnings in {days_to_earnings} days — binary event risk"
 
+    # T232-DL-DUALSCORER: the caller (paper_trading_engine._call_decision_engine) sends
+    # open_sector_counts/candidate_sector inside config_overrides, but this function never read
+    # them — DE had zero sector-concentration protection despite the caller believing it was
+    # providing that data. Only the COUNT-based cap can be reconciled here (the real engine's
+    # dollar-exposure cap, max_sector_pct, needs live per-position prices this endpoint never
+    # receives) — mirrors paper_trading_engine's max_sector_positions check exactly.
+    candidate_sector = cfg.get("candidate_sector")
+    open_sector_counts = cfg.get("open_sector_counts")
+    if candidate_sector and isinstance(open_sector_counts, dict):
+        max_sector_positions = int(cfg.get("max_sector_positions", 3))
+        sector_count = int(open_sector_counts.get(candidate_sector, 0))
+        if sector_count >= max_sector_positions:
+            return (
+                f"Sector position-count cap reached: {candidate_sector} has "
+                f"{sector_count}/{max_sector_positions} open positions"
+            )
+
     # T185: Time-of-day gate — human traders avoid the first 30 min (price discovery, wide spreads)
     # and last 15 min (closing auction games) of the market session.
     try:

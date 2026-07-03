@@ -993,3 +993,224 @@ join for paper trading). The **threshold** genuinely differs by design: paper tr
 Not a bug — two different systems intentionally applying two different bars to the same
 consistent underlying number. Worth remembering as a standing "why do these two K-Score
 thresholds disagree" answer if it comes up again.
+
+---
+
+## Part 10 — Dual-Scorer Tech Debt: `_should_enter()` vs Decision-Engine (2026-07-04)
+
+**This section is the deliverable for a future full architecture/design pass, not a list of
+things fixed today.** Two safe, non-verdict-changing bugs were fixed and shipped (10.6); the
+substantial remainder is deliberately left as documented debt because closing it means changing
+which real (paper) trades open or don't — a decision that needs either explicit product
+sign-off per item or live outcome data to validate against, neither of which exists yet. Forcing
+a resolution today would trade one unvalidated behavior for another, which does not build
+trust in the system — it just moves the risk around blind. This section exists so that trust can
+be built deliberately, later, with eyes open.
+
+### 10.0 — Why this pair exists and why it drifted
+
+`_should_enter()` (`paper_trading_engine.py:1174-1424`) is the original entry-scoring function.
+Decision-engine's `scorer.py`/`hard_rejects.py`/`sizer.py` were built afterward, explicitly
+described in their own docstrings as extracted "faithfully from" / "mirrors ... exactly" the
+original. Decision-engine is now **primary** by default (`decision_engine_mode: "primary"` in
+`_DEFAULT_CONFIG`) — `_should_enter()` only runs as a fallback when decision-engine is
+unreachable, or in `"legacy"` shadow mode. In practice this means: **the system's default,
+everyday entry decisions are made by the newer, "mirror" implementation, while the original is
+now the rarely-exercised fallback path** — the opposite of what "mirror" implies once drift sets
+in, since a change to the original after the mirror was written never propagates.
+
+### 10.1 — Hard-reject conditions that exist ONLY in `_should_enter()`'s pipeline (absent from decision-engine)
+
+These represent real risk exposure gaps when decision-engine is primary — decision-engine can
+approve an entry that the fallback pipeline would have blocked, for the following reasons:
+
+1. **Premarket/signal gap-up filter** (`max_entry_gap_pct`, 4%) — rejects if live price already
+   gapped >4% above the signal's reference price. Decision-engine only has an *extended-move*
+   guard measured from `breakout` (a different reference point, 6% threshold) — not equivalent.
+2. **Macro/economic-calendar blackout** (FOMC/CPI/NFP/PCE within 2h) — zero equivalent in
+   decision-engine.
+3. **Stop-cooldown** (120h after a stop-out on the same symbol) — enforced upstream in
+   `_scan_for_entries`, never forwarded to decision-engine's `config_overrides`.
+4. **K-Score / Ranking gate** (`require_kscore`, `min_kscore`) — decision-engine never receives
+   or checks `Ranking.score` as a gate at all.
+5. **Signal staleness hard gate** (`max_signal_age_hours`=72h) — decision-engine's scorer only
+   *scores* freshness (±1 pt), never hard-rejects on it; the pipeline hard-rejects before even
+   calling `_should_enter()`, but decision-engine's standalone endpoint has no such pre-filter.
+6. **Multi-timeframe confluence fail** (GROWTH/LONG BUY contradicted by SHORT SELL) — absent.
+7. **Price drift from signal price** (`max_price_drift_pct`=3%) — distinct from the gap filter
+   and the extended-move guard; absent from decision-engine.
+8. **Low-volume hard skip** — decision-engine's scorer only scores `volume_z`, never hard-skips.
+9. **HK Stock Connect flow gate** — zero Stock-Connect awareness in decision-engine.
+10. **TA-score gate** — no TA-score check anywhere in decision-engine.
+11. **Declining-confidence hard skip** — decision-engine only scores `confidence_delta`.
+12. **Conviction-gate cross-check** (Redis `conv_gate:{symbol}:{style}` — must agree with the
+    alert system's independent 5-layer conviction gate) — runs entirely upstream of both
+    scorers; decision-engine never sees it.
+13. **Regime risk_off hard gate + multi-day regime-suspension circuit breaker** — decision-engine
+    hard-rejects `bear` but has no `risk_off` hard block (only a stiffened score floor) and no
+    regime-suspension streak tracking at all.
+14. **Equity-floor circuit breaker** (halt all entries below 80% of initial capital) — absent.
+15. **Index trend-gate** (SPY/HSI down >1.5% intraday → block all entries) — absent.
+16. **Heat-brake** (N stops within 48h → pause all entries) — absent.
+17. **Cross-portfolio symbol cap + market-cluster cap** — absent.
+18. **Sector concentration ($ exposure, `max_sector_pct`)** — partially fixed 2026-07-04 (see
+    10.6); the count-based cap now works, the dollar-exposure cap still cannot be reconciled
+    without decision-engine receiving live per-position prices it doesn't currently get.
+
+### 10.2 — Hard-reject conditions that exist ONLY in decision-engine (absent from `_should_enter()`)
+
+These make decision-engine, when used as primary, *more* conservative than the fallback would
+be — asymmetric risk (fails toward fewer trades, not more):
+
+19. **Market-closed / trading-session guard** (weekends, NYSE holidays, HK lunch) — `_should_enter()`
+    itself has zero market-hours awareness (enforced elsewhere in the pipeline via a separate
+    flag, but not inside the scoring function itself).
+20. **Time-of-day gate** (blocks first 30 min / last 15 min of session) — absent from `_should_enter()`.
+21. **Extended-move/chasing hard reject** (>6% above breakout) — `_should_enter()` only
+    *penalizes* this (−3 score), never hard-blocks; a sufficiently bonus-heavy candidate could
+    still pass `_should_enter()`'s score gate at 15%+ above breakout while decision-engine would
+    unconditionally block it at 6%.
+22. **Regime-based R:R stiffening as a hard reject** (3.0:1 minimum in choppy/risk_off) —
+    `_should_enter()` only raises the *score threshold* for these regimes, never the R:R
+    hard-reject floor itself (which stays flat at `min_rr_ratio`, default 2.0, regardless of
+    regime).
+
+### 10.3 — Scoring-layer / verdict-affecting differences (same input, different treatment)
+
+These are the highest-risk items — both sides compute something related to the same signal, but
+via different mechanisms, meaning the same candidate can score differently and cross the
+ENTER/SKIP threshold differently depending on which system evaluates it:
+
+23. **Calibrated logistic-regression decision boundary** — once ≥100 closed trades exist,
+    `_should_enter()` abandons the additive `score >= min_entry_score` comparison entirely in
+    favor of a sigmoid win-probability model (`_load_entry_weights`). Decision-engine has no
+    equivalent and never adopts this regardless of how much trade history accumulates — meaning
+    the "primary" system is permanently frozen on the original, cruder threshold logic even
+    after the fallback has statistically progressed past it.
+24. **Regime double-counting in decision-engine** — decision-engine both (a) raises the min-score
+    floor for choppy/risk_off/low-win-rate (`min_score_for_regime`) AND (b) penalizes the
+    additive score directly via a regime scoring layer (bull=+1 … risk_off=−2, bear=−99).
+    `_should_enter()`/its pipeline only does (a) — raises the bar, never penalizes the score
+    itself for regime. This means decision-engine's effective regime penalty in choppy/risk_off
+    is compounded (stricter bar + lower score) versus `_should_enter()`'s single-lever approach.
+    Can flip verdicts for candidates near the threshold.
+25. **Research recommendation: scoring layer in decision-engine, sizing-only in `_should_enter()`**
+    — decision-engine scores research recommendation directly (±2 pts, verdict-affecting).
+    `_should_enter()` never scores it at all — research only affects position size and a
+    separate, redundant hard AVOID/SELL gate that lives in the *caller*, not inside
+    `_should_enter()` itself. Same signal, different mechanism, different verdict sensitivity.
+26. **Cross-horizon consensus: verdict-affecting in `_should_enter()`, sizing-only in decision-engine**
+    — the reverse of #25. `_should_enter()` scores `cross_style_buys` directly (±1, verdict-affecting);
+    decision-engine's `compute_score()` never references it at all — only `sizer.py`'s
+    `consensus_mult` (position size) uses it. A candidate with 0 cross-horizon BUYs in a choppy
+    regime gets a verdict-affecting penalty under `_should_enter()` but none under decision-engine.
+27. **Insider/congress catalyst scoring ceiling** — `_should_enter()` scores insider and congress
+    signals as two independent fields, allowing up to **+2** if both fire simultaneously.
+    Decision-engine collapses them into one `catalyst_score` field, capping the contribution at
+    **+1 or −1**. Same underlying data, different point ceiling.
+28. **Entry-zone drift scoring layer unique to decision-engine** — `scorer.py` has a distinct
+    continuous drift-from-`entry2` scoring layer (−2 to +1) that `_should_enter()` never
+    computes at all (its own price-zone scoring uses different, coarser cutoffs).
+29. **Pre-regime early warning: score-threshold bump only vs. direct scoring layer** —
+    `_should_enter()`'s caller raises `min_entry_score` when `is_pre_choppy`/`is_pre_risk_off`;
+    decision-engine scores it as a direct −1 layer. Directionally similar, numerically different
+    mechanism — not guaranteed to produce the same net effect at the margin.
+30. **Recent win-rate floor bump** — decision-engine's `min_score_for_regime` adds +1 to the
+    score floor when `recent_win_rate < 0.30`; no equivalent exists anywhere in `_should_enter()`
+    or its caller.
+31. **HMM bear-pressure sizing dampening** — exists only in `_scan_for_entries` (0.70× cap when
+    `hmm_bear_pressure` is true); `sizer.py`'s `_REGIME_MULT` table has no HMM awareness at all.
+32. **LLM (Claude) scoring layer** — decision-engine optionally applies an LLM-based score
+    adjustment (`llm_scoring_enabled`) that `_should_enter()` has no equivalent for, meaning
+    decision-engine's verdict can be swayed by an input the fallback path can never replicate
+    even when it takes over.
+
+### 10.4 — Numeric threshold mismatches (same concept, different default)
+
+33. **`min_confidence` standalone defaults**: decision-engine's own default is 62.0
+    (`routes.py`); `_should_enter()`'s is 45.0 (`_DEFAULT_CONFIG`). In practice the real caller
+    (`_call_decision_engine`) always forwards the correct per-portfolio value, so this default
+    mismatch is masked for the primary call path — but it means any OTHER caller of
+    `/decide/{symbol}` (manual API test, a future consumer, `/decide/{symbol}/explain` which
+    passes zero overrides) gets a materially stricter confidence floor (≈55.8 vs ≈40.5) than the
+    real trading engine would apply.
+34. **Confidence-sizing multiplier scale**: `_scan_for_entries`' inline sizing uses 50/30
+    breakpoints; `sizer.py` uses 80/62 — a deliberate, acknowledged rescale (see the T232-DE2
+    comment in `sizer.py`), not accidental drift, but it means the two "identical" position
+    sizes are computed on entirely different confidence scales.
+35. **Earnings multiplier does not compound into decision-engine's max-position-pct cap** —
+    `_scan_for_entries` scales the position cap itself by the earnings de-risking multiplier;
+    `sizer.py`'s cap is flat regardless of earnings proximity, making decision-engine's cap
+    looser near earnings than the real engine's.
+
+### 10.5 — Structural/architectural gap
+
+36. **Nine of the pipeline-level hard gates in 10.1 (#3-12) run only inside `_scan_for_entries`,
+    upstream of BOTH scorers, and are architecturally invisible to decision-engine's standalone
+    `/decide/{symbol}` endpoint.** They currently "work" only because the one production caller
+    (`_call_decision_engine`) happens to run them first and only calls decision-engine for
+    candidates that already passed. Any *other* caller of `/decide/{symbol}` — manual testing,
+    a future integration, the frontend's `decide.tsx` analysis tool — bypasses all nine
+    protections entirely, since decision-engine has no way to know about stop-cooldowns, K-Score
+    floors, staleness, confluence, price drift, volume, HK-flow, TA-score, or declining
+    confidence unless they're explicitly threaded through `config_overrides` (currently, none
+    are, except the sector-count fix from 10.6). This is the deepest issue in this section: it's
+    not a value mismatch, it's a *pipeline topology* mismatch, and fixing it properly likely
+    means either (a) moving these nine checks into `hard_rejects.py` so decision-engine is
+    self-sufficient, or (b) formally documenting `/decide/{symbol}` as "only safe to call after
+    the market-data pipeline's pre-filters," which is the de facto but undocumented contract today.
+
+### 10.6 — Fixes actually applied 2026-07-04 (the safe subset only)
+
+Two fixes were made, chosen specifically because they are **strictly safe** — they cannot cause
+decision-engine to approve something it previously rejected, or vice versa, in a way that trades
+one unvalidated risk for another:
+
+- **Dead sector-cap input wired up** (`hard_rejects.py`): `paper_trading_engine._call_decision_engine`
+  has always sent `open_sector_counts`/`candidate_sector` inside `config_overrides`, but
+  `check_hard_rejects()` never read them — decision-engine had silently zero
+  sector-concentration protection despite the caller believing it was providing that data. Added
+  a count-based hard reject (`sector_count >= max_sector_positions`) using exactly the data
+  already being sent, mirroring `paper_trading_engine.py`'s own count-based sector cap. The
+  dollar-exposure cap (`max_sector_pct`) could NOT be reconciled the same way — it requires live
+  per-position prices decision-engine's request payload doesn't carry — so that half of the gap
+  (10.1 #18) remains open. Verified live: a candidate at 3/3 sector positions is now correctly
+  blocked; one at 1/3 passes through.
+- **`sizer.py`'s docstring corrected**: it claimed to mirror `_scan_for_entries()`'s sizing
+  formula "exactly" — provably false per 10.3/10.4 above, and the file's own inline comments
+  already acknowledged at least one deliberate divergence (the confidence-scale rescale). Fixed
+  the docstring to describe it as a related-but-independent model with a pointer to this section,
+  so a future reader doesn't trust a false "exact mirror" claim the way this session's earlier
+  audit trusted (and then had to correct) several other stale claims in service `skill.md` files.
+
+**Neither fix changes any ENTER/SKIP verdict for any currently-passing candidate** — the sector
+fix can only newly *block* a candidate that was previously (incorrectly) approved despite being
+over the sector cap; the docstring fix changes no runtime behavior at all. This is why they were
+judged safe to ship without a design review, while everything in 10.1-10.5 was not.
+
+### 10.7 — Recommended shape of a future design pass
+
+Not prescribing the answer here — that's the point of leaving this as debt — but the audit
+surfaced enough structure to scope the eventual work:
+
+1. **Decide which system is the long-term source of truth.** Right now decision-engine is
+   "primary" by config default but was originally the derivative/mirror implementation. Pick
+   one direction: either decision-engine absorbs the missing nine pipeline gates (10.1 #3-12)
+   and the macro/gap-filter protections (10.1 #1-2) so it's truly self-sufficient and
+   `_should_enter()` can be retired to pure-fallback status, or `_should_enter()` is
+   re-established as primary and decision-engine becomes the analysis/explain-only tool it's
+   already used for in the frontend (`decide.tsx`).
+2. **Resolve the verdict-affecting scoring differences (10.3) with outcome data, not judgment
+   calls.** Items #23-32 each represent a real hypothesis about what should score higher or
+   lower — the calibrated logistic model in particular is specifically designed to be validated
+   empirically. Before porting any of these in either direction, gather a controlled comparison
+   (e.g. run both scorers in shadow mode for a period, log both verdicts, compare against actual
+   trade outcomes) rather than picking a side by inspection.
+3. **Close the R:R/extended-move asymmetry (10.2 #21-22) as a standalone, low-risk follow-up.**
+   These are both cases where decision-engine is MORE conservative — porting them to
+   `_should_enter()` (fail-safe direction, same asymmetric-risk logic as 10.6) is a reasonable
+   next increment once the sector-cap pattern from 10.6 is validated in production for a while.
+4. **Fix the pipeline-topology gap (10.5 #36) regardless of which system wins in #1.** Whatever
+   system ends up primary needs to be safe to call standalone — the current implicit contract
+   ("only call `/decide/{symbol}` after market-data's pre-filters already ran") is fragile and
+   undocumented anywhere except this report.

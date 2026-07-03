@@ -8754,6 +8754,44 @@ const ITEMS: Item[] = [
     fix: 'Done 2026-07-04: reset the affected portfolio\'s max_entries_per_day back to the default (3). Added a _MIN_COUNT_CHECKS validation table to POST /configure rejecting any of the 8 count-based keys below 1, with an error message explaining WHY 0 is wrong (disables rather than blocks) and what to use instead (the paused flag or an override endpoint) to actually stop trading. Added a matching `min={1}` HTML attribute to the frontend\'s number inputs for the same 8 fields so the mistake is harder to make in the first place. Verified live: POST /configure with max_entries_per_day=0 now returns 400 with a clear explanation instead of silently succeeding.',
   },
 
+  // ── Tier 232 — Dual-Scorer Tech Debt: _should_enter() vs Decision-Engine (2026-07-04) ────────
+  // See docs/AUDIT_REPORT_TIER232_2026-07-02.md Part 10 for the full itemized diff (36 numbered
+  // items). Only the 2 strictly-safe, non-verdict-changing fixes below were shipped; everything
+  // else is deliberately left as documented debt for a future full design pass — closing it
+  // means changing which real trades open, which needs outcome data or explicit product
+  // sign-off per item, not a same-day blind port in either direction.
+
+  {
+    id: 'T232-DL-DUALSCORER-SECTORCAP',
+    title: 'Fixed: decision-engine received sector-count data but never used it — zero sector-concentration protection when primary',
+    tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/hard_rejects.py',
+    effort: 'S',
+    impact: 'High — paper_trading_engine._call_decision_engine has always sent open_sector_counts/candidate_sector inside config_overrides (T186), but check_hard_rejects() never read either key. Since decision_engine_mode defaults to "primary", every real portfolio using decision-engine had ZERO sector-concentration protection despite the caller believing it was providing that data — a candidate could be approved with 10 open Technology positions with no gate ever firing.',
+    what: 'Found during the 2026-07-04 dual-scorer audit (item 10.1-#18/10.6 in the Tier 232 audit report) — a genuinely dead input, not a threshold mismatch or judgment call, making it safe to fix without changing any currently-passing verdict (it can only newly BLOCK an over-concentrated candidate that was previously silently approved).',
+    fix: 'Done 2026-07-04: added a count-based hard reject to check_hard_rejects() — `sector_count >= max_sector_positions` — using exactly the data already being sent, mirroring paper_trading_engine.py\'s own count-based sector cap. Verified live via direct unit test: a candidate at 3/3 sector positions is now blocked with a clear reason; one at 1/3 passes through unaffected. NOTE: the dollar-exposure cap (max_sector_pct) could NOT be reconciled the same way — it requires live per-position prices decision-engine\'s request payload doesn\'t carry — so that half of the original gap remains open, tracked in T232-DL-DUALSCORER-DEBT below.',
+  },
+  {
+    id: 'T232-DL-DUALSCORER-DOCFIX',
+    title: 'Fixed: sizer.py falsely claimed to mirror the real trading engine\'s sizing formula "exactly"',
+    tier: 232 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/src/api/core/sizer.py',
+    effort: '5min',
+    impact: 'Low (documentation integrity, same class as the skill.md audit earlier this session) — sizer.py\'s docstring said it "Mirrors the sizing formula in paper_trading_engine._scan_for_entries() exactly so paper trading and future live execution produce identical position sizes." Provably false: confidence-multiplier breakpoints are on a different scale (deliberately rescaled per the file\'s own T232-DE2 comment), HMM bear-pressure dampening exists only in paper_trading_engine.py, and the earnings multiplier doesn\'t compound into the max-position-pct cap the same way. A future reader trusting "exact mirror" could assume changing one file automatically applies to the other.',
+    what: 'Found during the 2026-07-04 dual-scorer audit — the file\'s own inline comments already contradicted its own module docstring.',
+    fix: 'Done 2026-07-04: corrected the docstring to describe sizer.py as a related-but-independent sizing model, with a pointer to the audit report\'s full diff (Part 10) instead of a false mirroring claim. No runtime behavior changed.',
+  },
+  {
+    id: 'T232-DL-DUALSCORER-DEBT',
+    title: 'ARCHITECTURAL DEBT: 34 remaining verdict-affecting or protection differences between _should_enter() and decision-engine — full design pass needed',
+    tier: 232 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/services/paper_trading_engine.py, services/decision-engine/src/api/core/scorer.py, services/decision-engine/src/api/core/hard_rejects.py, services/decision-engine/src/api/core/sizer.py, services/decision-engine/src/api/routes.py',
+    effort: 'L',
+    impact: 'High — decision-engine (the "primary" entry-scoring system by default config) and _should_enter() (originally primary, now the fallback) have diverged across ~34 remaining dimensions beyond the 2 safe fixes already shipped (T232-DL-DUALSCORER-SECTORCAP/DOCFIX). Grouped by risk: (a) 18 hard-reject conditions exist ONLY in _should_enter()\'s pipeline (macro-calendar blackout, premarket gap filter, stop-cooldown, K-Score floor, signal staleness, multi-timeframe confluence, price drift, low-volume, HK Stock-Connect flow, TA-score, declining-confidence, conviction-gate cross-check, regime risk_off hard block + suspension streak, equity-floor breaker, index-trend gate, heat-brake, cross-portfolio/market-cluster caps, sector $ cap) — decision-engine can approve entries the fallback would have blocked for any of these reasons. (b) 4 hard-reject conditions exist ONLY in decision-engine (market-hours/holiday guard, time-of-day gate, extended-move 6% hard block, regime-based R:R stiffening as a hard reject) — the opposite, fail-safe direction (decision-engine is MORE conservative here). (c) 10 scoring-layer mechanism differences where the SAME input is treated differently (calibrated logistic-regression boundary is _should_enter()-only and never adopted by decision-engine even after 100+ trades; decision-engine double-counts regime via both a stiffened score floor AND a direct scoring penalty while _should_enter() only stiffens the floor; research recommendation is verdict-affecting in decision-engine but sizing-only in _should_enter(); cross-horizon consensus is the reverse; insider+congress catalyst scoring has a different point ceiling; entry-zone drift and win-rate floor bumps and HMM dampening and LLM scoring each exist on only one side). (d) 3 numeric default/scale mismatches (min_confidence 62.0 vs 45.0 standalone defaults; confidence-sizing on a 50/30 vs 80/62 scale; earnings multiplier compounding into the position cap on one side only). (e) A structural gap: 9 of the 18 items in (a) run only inside _scan_for_entries, upstream of BOTH scorers, meaning decision-engine\'s /decide/{symbol} endpoint is architecturally blind to them for any caller other than the one production path that happens to pre-filter first — the frontend\'s decide.tsx analysis tool, or any future integration, bypasses all 9.',
+    what: 'Found during the 2026-07-04 dual-scorer audit, requested by the user specifically to "fix it reliably so that I can trust the system." Explicitly NOT blind-ported: the verdict-affecting items in this list each represent a real hypothesis about which system\'s treatment is correct, and porting either direction without outcome data trades one unvalidated behavior for another — the opposite of building trust. Per user\'s follow-up instruction, documented here as tech debt for a full design pass rather than resolved piecemeal today.',
+    fix: 'Not fixed — full itemized diff (36 numbered items, all file:line cited) lives in docs/AUDIT_REPORT_TIER232_2026-07-02.md Part 10. Recommended shape of the eventual design pass (Part 10.7): (1) decide which system is the long-term source of truth — either decision-engine absorbs the missing pipeline gates and becomes self-sufficient (retiring _should_enter() to pure fallback), or _should_enter() is re-established as primary and decision-engine stays the analysis/explain-only tool it\'s already used for in decide.tsx; (2) resolve the 10 verdict-affecting scoring differences with a controlled outcome-data comparison (shadow-mode both scorers, log both verdicts, compare against actual trade outcomes) rather than picking a side by inspection; (3) port the 4 decision-engine-only hard rejects (fail-safe direction, same asymmetric-risk logic already used for the sector-cap fix) as a standalone low-risk follow-up once that pattern is validated in production; (4) fix the pipeline-topology gap regardless of which system wins #1 — whichever ends up primary needs to be safe to call standalone, since the current implicit contract ("only call /decide/{symbol} after market-data\'s pre-filters already ran") is fragile and undocumented anywhere except the audit report.',
+  },
+
   // ── Tier 231 — System Audit: Win Rate, Signal Quality & ML Integrity (2026-07-01) ─────────────────────────────────
 
   {
@@ -13475,7 +13513,7 @@ const TIER_LABEL: Record<Tier, string> = {
   229: 'Tier 229 — Deep Codebase Audit: Critical bugs, data integrity, service connectivity',
   230: 'Tier 230 — Professional Platform Parity: TradingView, Investing.com, Bloomberg gaps',
   231: 'Tier 231 — System Audit: Win Rate, Signal Quality & ML Integrity (5 Critical · 3 High · 6 Medium)',
-  232: 'Tier 232 — Deep System Audit: Calibration Loop, ML Integrity, SELL Accuracy, Paper Trading, Deep Logic Review, Dev Docs Audit (4 Critical fixed · 8 High fixed · several Medium fixed; Deep Logic Review added 13 findings, 8 quick-fixes shipped; skill.md documentation audit found + fixed 9 more across all 14 dev-practice files, all shipped 2026-07-04)',
+  232: 'Tier 232 — Deep System Audit: Calibration Loop, ML Integrity, SELL Accuracy, Paper Trading, Deep Logic Review, Dev Docs Audit, Architecture Consolidation (regime 5→4, style-params, dual-scorer sector-cap fixed; 34-item dual-scorer diff + other architectural items documented as tech debt for a future full design pass — see AUDIT_REPORT_TIER232 Parts 7-10)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {

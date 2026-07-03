@@ -1,7 +1,15 @@
-"""Position sizing — Kelly base × four independent multipliers.
+"""Position sizing — Kelly base × multipliers.
 
-Mirrors the sizing formula in paper_trading_engine._scan_for_entries() exactly so
-paper trading and future live execution produce identical position sizes.
+T232-DL-DUALSCORER (corrected 2026-07-04): this docstring previously claimed to mirror
+paper_trading_engine._scan_for_entries()'s sizing formula "exactly" — that has never been
+true and isn't the current design intent either. Concretely: the confidence-multiplier
+breakpoints here are deliberately rescaled (see the T232-DE2 comment below) to sit above
+this service's own higher confidence floor, which is a different scale than
+_scan_for_entries()'s bands; HMM bear-pressure dampening exists only in
+paper_trading_engine.py, never here; and the earnings multiplier doesn't compound into the
+max-position-pct cap the way it does in paper_trading_engine.py. Treat this as a related but
+INDEPENDENT sizing model, not a mirror — see docs/AUDIT_REPORT_TIER232_2026-07-02.md Part 10
+for the full itemized diff before assuming a value here matches the real trading engine.
 """
 from __future__ import annotations
 
