@@ -2355,15 +2355,17 @@ def _check_broker_auth() -> None:
 
 
 def send_morning_digest(markets: list | None = None) -> None:
-    """Compile and email the combined daily digest for all markets — one email per day.
+    """Compile and email the per-market daily digest — one email per market, sent 30-40 min
+    before that market opens.
 
     Sections:
       1. Market regime (SPY / VIX classification from last paper trading step)
-      2. Top 5 SWING + Top 5 GROWTH opportunities for each market (HK then US)
-      3. Open paper positions (all portfolios, all markets, with yesterday's close P&L)
+      2. Top 5 SWING + Top 5 GROWTH opportunities for the requested market(s)
+      3. Open paper positions for the requested market(s), with yesterday's close P&L
       4. Pattern alerts triggered since yesterday
 
-    Called once per day at 08:50 HKT (before HKEX open, evening the prior day for ET).
+    Called twice per day: 08:50 ET for US (markets=["US"]), 08:50 HKT for HK (markets=["HK"]).
+    Pass an explicit single-element list — this function does NOT default to combining markets.
     """
     if markets is None:
         markets = ["HK", "US"]
@@ -2509,10 +2511,14 @@ def send_morning_digest(markets: list | None = None) -> None:
                     "growth": _top5_for_horizon("GROWTH", _mkt),
                 })
 
-            # ── Open paper positions — all markets combined ────────────────────
-            open_trades = (
+            # ── Open paper positions — scoped to the requested market(s) ────────
+            # Symbol suffix is the reliable market discriminator (stock_id is nullable).
+            _all_open = (
                 session.execute(select(PaperTrade).where(PaperTrade.stage == "open")).scalars().all()
             )
+            def _trade_market(sym: str) -> str:
+                return "HK" if sym.upper().endswith(".HK") else "US"
+            open_trades = [t for t in _all_open if _trade_market(t.symbol) in markets]
 
             # Last daily close per symbol
             open_symbols = list({t.symbol for t in open_trades})
@@ -2585,16 +2591,20 @@ def send_morning_digest(markets: list | None = None) -> None:
                 {"symbol": sym, "condition": str(cond.value if hasattr(cond, "value") else cond)}
                 for sym, cond in pa_rows
                 if str(cond.value if hasattr(cond, "value") else cond) in _PATTERN_CONDITIONS
+                and _trade_market(sym) in markets
             ]
 
-        # ── Signal outcomes summary (30d win rate) ───────────────────────────
+        # ── Signal outcomes summary (30d win rate) — scoped to the digest's market(s) ────
         signal_performance: dict = {}
         try:
             tok = _service_token()
             _hdrs = {"Authorization": f"Bearer {tok}"} if tok else {}
+            _params = {"days": 30}
+            if len(markets) == 1:
+                _params["market"] = markets[0]
             _r = httpx.get(
-                f"{_settings.signal_engine_url}/signals/outcomes/summary?days=30",
-                headers=_hdrs, timeout=8,
+                f"{_settings.signal_engine_url}/signals/outcomes/summary",
+                params=_params, headers=_hdrs, timeout=8,
             )
             if _r.status_code == 200:
                 _sp = _r.json()
@@ -2625,13 +2635,15 @@ def send_morning_digest(markets: list | None = None) -> None:
                 sent += 1
 
         total_opps = sum(len(s["swing"]) + len(s["growth"]) for s in market_sections)
-        _record_job_status("morning_digest_combined", "ok", time.monotonic() - _t0)
+        _job_name = "morning_digest_" + "_".join(m.lower() for m in markets)
+        _record_job_status(_job_name, "ok", time.monotonic() - _t0)
         log.info("morning_digest.done", markets=markets, sent=sent, recipients=len(users),
                  opportunities=total_opps, positions=len(open_positions_all))
 
     except Exception as exc:
         log.error("morning_digest.failed", markets=markets, error=str(exc), exc_info=True)
-        _record_job_status("morning_digest_combined", "error", time.monotonic() - _t0, str(exc))
+        _job_name = "morning_digest_" + "_".join(m.lower() for m in (markets or ["combined"]))
+        _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
 
 
 def send_paper_portfolio_digest() -> None:
@@ -2852,12 +2864,18 @@ def start_scheduler() -> None:
         id="broker_auth_check", replace_existing=True, **_JOB_DEFAULTS,
     )
 
-    # ── Morning digest — combined HK + US, one email per user ────────────────
-    # 08:50 HKT = before HKEX open. HK data is fresh; US data is prior-day close.
+    # ── Morning digests — one email per market, 40 min before that market opens ─────
+    # US 08:50 ET (open 09:30 ET); HK 08:50 HKT (open 09:30 HKT). Each covers only its
+    # own market's opportunities/positions — see send_morning_digest's market scoping.
     _scheduler.add_job(
-        send_morning_digest,
+        lambda: send_morning_digest(["US"]),
+        CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone="America/New_York"),
+        id="morning_digest_us", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    _scheduler.add_job(
+        lambda: send_morning_digest(["HK"]),
         CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
-        id="morning_digest_combined", replace_existing=True, **_JOB_DEFAULTS,
+        id="morning_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Paper portfolio after-market digest — 17:00 ET (1h after US close) ──

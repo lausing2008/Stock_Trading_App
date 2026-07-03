@@ -10,10 +10,10 @@ const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string
   us_post_close:             { label: 'US Post-Close',               maxAgeDays: 3,  desc: 'Final daily bar + ML retrain for all US stocks (Mon–Fri 16:30 ET)' },
   hk_post_close:             { label: 'HK Post-Close',               maxAgeDays: 3,  desc: 'Final daily bar + ML retrain for all HK stocks (Mon–Fri 16:30 HKT)' },
   paper_trading:             { label: 'Paper Trading Engine',        maxAgeDays: 2,  desc: 'Autonomous GROWTH-style paper trade step (runs after each US refresh)' },
-  // Morning digest — T232-UI2: the two per-market jobs (morning_digest_us/hk) were merged into
-  // one combined job; this page still looked for the old keys, which stopped being written and
-  // went permanently stale ("1 day ago" and climbing) while the real job's status was invisible.
-  morning_digest_combined:   { label: 'Morning Digest (HK + US)',    maxAgeDays: 2,  desc: 'Combined email digest of top signals + open positions, both markets (Mon–Fri 08:50 HKT)' },
+  // Morning digests — one email per market, sent 40 min before that market opens (T232-UI4:
+  // reverted from a brief combined-job experiment back to separate per-market digests).
+  morning_digest_us:         { label: 'US Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + open positions for US (Mon–Fri 08:50 ET)' },
+  morning_digest_hk:         { label: 'HK Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + open positions for HK (Mon–Fri 08:50 HKT)' },
   // Intraday refresh (full pipeline)
   us_refresh:                { label: 'US Intraday Refresh',         maxAgeDays: 2,  desc: 'Prices + K-Score rankings + signals every 5 min (US market hours)' },
   hk_refresh:                { label: 'HK Intraday Refresh',         maxAgeDays: 2,  desc: 'Prices + K-Score rankings + signals every 5 min (HK market hours)' },
@@ -233,11 +233,10 @@ export default function AdminHealthPage() {
             })}
           </div>
 
-          {/* Morning digest */}
-          <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>MORNING DIGEST</div>
+          {/* Morning digests */}
+          <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>MORNING DIGESTS</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px', marginBottom: '24px' }}>
-            {(() => {
-              const key = 'morning_digest_combined';
+            {['morning_digest_us', 'morning_digest_hk'].map(key => {
               const job = jobs.find(j => j.job === key);
               if (!job) return (
                 <div key={key} style={{ padding: '14px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b' }}>
@@ -247,13 +246,13 @@ export default function AdminHealthPage() {
                 </div>
               );
               return <JobCard key={key} job={job} />;
-            })()}
+            })}
           </div>
 
           {/* Intraday + background jobs */}
           <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>INTRADAY &amp; BACKGROUND</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px' }}>
-            {jobs.filter(j => !['weekly_refresh', 'us_post_close', 'hk_post_close', 'paper_trading', 'morning_digest_combined'].includes(j.job)).map(j => (
+            {jobs.filter(j => !['weekly_refresh', 'us_post_close', 'hk_post_close', 'paper_trading', 'morning_digest_us', 'morning_digest_hk'].includes(j.job)).map(j => (
               <JobCard key={j.job} job={j} />
             ))}
           </div>

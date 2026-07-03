@@ -8348,7 +8348,17 @@ const ITEMS: Item[] = [
     effort: 'S',
     impact: 'High — the morning digest scheduler was refactored from two per-market jobs (morning_digest_us at 09:00 ET, morning_digest_hk at 08:55 HKT) into one combined job (morning_digest_combined at 08:50 HKT, sends one email covering both markets) — but admin-health.tsx was never updated. The page hardcoded lookups for the old morning_digest_us/morning_digest_hk Redis keys, which the current scheduler code never writes. Those keys were last written by an older container image and then went permanently stale — surfacing as "1 day ago" (and climbing forever) in System Health, while the real combined job\'s actual status (which WAS running successfully) was completely invisible on the page.',
     what: 'JOB_META and the "MORNING DIGESTS" card grid (2 cards) referenced morning_digest_us/morning_digest_hk; scheduler.py only calls _record_job_status("morning_digest_combined", ...).',
-    fix: 'Done 2026-07-02: replaced the two hardcoded per-market JOB_META entries and the 2-card grid with a single morning_digest_combined entry/card ("Morning Digest (HK + US)", Mon-Fri 08:50 HKT), matching the scheduler\'s actual job id. The exclusion list in the "INTRADAY & BACKGROUND" section below was updated to match.',
+    fix: 'Done 2026-07-02: replaced the two hardcoded per-market JOB_META entries and the 2-card grid with a single morning_digest_combined entry/card ("Morning Digest (HK + US)", Mon-Fri 08:50 HKT), matching the scheduler\'s actual job id. The exclusion list in the "INTRADAY & BACKGROUND" section below was updated to match. SUPERSEDED same day by T232-UI4 — user wants separate per-market digests, not combined, so this card was reverted back to two per-market cards. The underlying lesson (frontend must track the scheduler\'s actual job id) still applies.',
+  },
+  {
+    id: 'T232-UI4-DIGEST-RESPLIT-PER-MARKET',
+    title: 'Reverted combined morning digest back to two per-market digests, 40 min before each market opens',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/scheduler.py, frontend/src/pages/admin-health.tsx',
+    effort: 'S',
+    impact: 'Medium — user explicitly requested separate digests, not the combined one from T232-UI2/CAL-era refactor: each market should get its own email 30-40 minutes before that market\'s open (US 08:50 ET / open 09:30 ET; HK 08:50 HKT / open 09:30 HKT), scoped to only that market\'s opportunities and open positions.',
+    what: 'send_morning_digest(markets) previously scoped opportunity sections per-market but left open_trades, pattern_alerts, and the signal-performance summary unscoped (all markets combined regardless of the markets argument) — a combined-only design baked in below the market_sections loop.',
+    fix: 'Done 2026-07-02: split the single 08:50 HKT cron job back into two — send_morning_digest(["US"]) at 08:50 America/New_York and send_morning_digest(["HK"]) at 08:50 Asia/Hong_Kong. Scoped open_trades and pattern_alerts to the requested market(s) via symbol .HK-suffix detection (stock_id is nullable so a join would drop rows). Scoped the signal_performance summary via the outcomes/summary endpoint\'s existing market query param when a single market is requested. Job status now records to morning_digest_us / morning_digest_hk (derived from the markets list) instead of a single morning_digest_combined key. admin-health.tsx reverted to its original two-card per-market display.',
   },
   {
     id: 'T232-UI3-ADMIN-DIGEST-TRIGGER-STRING-BUG',
