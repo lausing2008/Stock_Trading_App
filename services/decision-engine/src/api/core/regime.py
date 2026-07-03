@@ -21,7 +21,11 @@ from common.config import get_settings
 log = structlog.get_logger()
 _settings = get_settings()
 
-_CACHE_TTL = 900  # 15 minutes — regime can shift within a session (QW-5)
+_CACHE_TTL = 300  # 5 minutes — matches market-data's _refresh_5m cadence (T232-DE7). Was 900s;
+# after T232-DE7 added 2-tick hysteresis to market-data's own classification, a genuine
+# confirmed regime change could still take up to ~10 extra minutes to reach this cache on top
+# of that. 5 minutes keeps this display in step with the underlying refresh rate without
+# hammering market-data with a fetch on every Entry Gate page load.
 
 _US_CACHE: dict = {}
 _US_TS: float = 0.0
