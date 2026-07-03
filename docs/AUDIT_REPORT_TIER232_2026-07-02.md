@@ -1342,35 +1342,34 @@ should reduce the frequency of corrupted-threshold incidents like CAL-1 (Part 1)
 calibration run silently loosened a production threshold for weeks before being caught by manual
 inspection rather than any automated check.
 
-### 11.5 — T232-PT4: alert conviction gate invisibly hard-blocks paper trading entries
+### 11.5 — T232-PT4: CORRECTED 2026-07-04 — original premise was factually wrong, closed as working-as-designed
 
-**Problem.** The alert system's conviction gate (`_is_conviction_buy` in `scheduler.py`) writes
-its pass/fail verdict to Redis (`conv_gate:{symbol}:{style}`) as part of deciding whether to send
-a BUY email. Separately, `paper_trading_engine.py`'s entry-candidate loop reads this same Redis
-key and, if it shows the alert gate failed, hard-skips the paper-trading entry — even though the
-alert gate's own confidence floor (`≥60`) is stricter than several portfolios' actual configured
-`min_confidence` (45 for GROWTH, 50 for SWING). A candidate with confidence 45-59 that would
-legitimately clear its own portfolio's threshold is silently blocked because a *different*
-system's *stricter* standard, designed for a *different* purpose (deciding whether to email a
-human), happens to share a Redis key with the paper-trading gate. This block currently produces
-no visible trace — unlike the other 17 per-candidate skip reasons (all tallied via
-`_write_no_entry_summary`/`_skip_tally` from the T232-WHYNOTRADE feature earlier this session),
-this specific block path was not among the two additions made when that visibility gap was
-partially closed — meaning it is likely still invisible in the WHYNOTRADE UI display today.
+**Original claim (Part 11.5 as first written):** the alert system's conviction gate cross-check
+hard-blocks paper entries using a confidence floor (`≥60`) stricter than portfolios' own
+`min_confidence` (45 GROWTH / 50 SWING), invisibly suppressing candidates in the 45-59 band.
 
-**Proposed fix:** either (a) change this from a hard block to a scoring penalty or size
-multiplier so a candidate can still enter (at reduced size/confidence) rather than being fully
-excluded, or (b) only honor the alert gate's failure when the specific layer that failed also
-overlaps the paper-trading engine's own criteria (e.g. don't let "analyst consensus data
-missing" — an alert-specific nicety — block a paper trade that has nothing to do with analyst
-consensus in its own gating), and (c) regardless of which of (a)/(b) is chosen, log the block via
-`_write_gate_block`/`_skip_tally` so it's visible in the same WHYNOTRADE surface as every other
-skip reason.
+**Re-investigation (2026-07-04):** before implementing the proposed fix, read `_is_conviction_buy()`
+in full and cross-checked live production Redis data. Both directly contradict the original
+claim: `_is_conviction_buy()`'s BUY-path logic checks K-Score≥55, uptrend structure, RSI range,
+MACD momentum, OBV volume confirmation, and ADX trend strength — **there is no confidence
+threshold anywhere in this function's logic**. A separate confidence check (regime-tiered,
+58-68) does exist in `scheduler.py`, but it lives in an entirely different code path — the
+non-BUY "bullish improvement" alert case (e.g. WAIT→HOLD transitions) — and is never consulted
+by the BUY-path gate that writes to `conv_gate:{symbol}:{style}`. Live data confirms this: a
+sampled real Redis entry for a failed BUY candidate (PLTR, 2026-07-03) shows failed layers of
+K-Score/uptrend/OBV/ADX/Stoch-RSI-overbought — no confidence-related failure appears anywhere.
+The original audit conflated two unrelated code paths' thresholds into one incorrect claim.
 
-**Expected improvement:** removes a source of invisible, over-strict entry suppression that
-doesn't match any individual portfolio's own configured risk tolerance — candidates in the 45-59
-confidence band for GROWTH/SWING portfolios currently have zero chance of entering regardless of
-how well they'd otherwise score, for a reason that isn't visible anywhere in the UI. Fixing the
-visibility half alone (even before resolving the threshold mismatch) would immediately make this
-consistent with every other gate in the system, which is valuable independent of whether the
-gate's stringency itself is later adjusted.
+**Also stale:** the "invisibly (no `_write_gate_block`)" half of the original complaint. This
+exact block is already tallied as `_skip_tally["conviction_gate"]`, added earlier in this same
+session as part of closing the T232-WHYNOTRADE visibility gap (see Part 9.2) — it surfaces in
+the "Not trading: {reason}" UI display like every other per-candidate skip reason today.
+
+**Disposition:** closed, no code change. What remains is a legitimate cross-check that a BUY
+candidate's underlying technical quality (trend, momentum, volume, K-Score, trend strength) is
+sound before paper trading commits capital to it — not an arbitrary, mismatched confidence bar
+being silently imposed by an unrelated system. Downgraded from high to low severity in the
+tracker. This entry is kept in the audit report specifically as a documented example of why
+every finding in a large audit needs re-verification against current code and live data before
+acting on it — exactly the discipline already applied elsewhere in this report (e.g. the
+`rl_agent.py` correction in the service-architecture design doc's Part 2).

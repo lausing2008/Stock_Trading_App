@@ -249,6 +249,33 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     else:
         verdict = "SKIP"
 
+    # T232-DE1: a candidate that clears the score bar but whose combined sizing multiplier is
+    # too small (e.g. stacked regime/breadth/VIX/confidence dampening during a volatile period)
+    # produces an economically-meaningless micro-position that still occupies a max_positions
+    # slot and pays slippage/commission that can exceed its own expected value. Skip outright
+    # rather than opening dust — better candidates with a normal-sized position should get the
+    # slot instead.
+    _MIN_COMBINED_MULT = 0.30
+    _micro_position_reason: str | None = None
+    if verdict == "BUY":
+        _combined_mult = (
+            multipliers.regime * multipliers.research * multipliers.confidence
+            * multipliers.consensus * multipliers.earnings
+            * multipliers.breadth * multipliers.vix
+        )
+        if _combined_mult < _MIN_COMBINED_MULT:
+            verdict = "SKIP"
+            _micro_position_reason = (
+                f"Combined sizing multiplier {_combined_mult:.3f} below floor {_MIN_COMBINED_MULT} "
+                f"— would open a dust position, skipping instead"
+            )
+            log.info(
+                "decision.skipped_micro_position",
+                symbol=symbol, combined_mult=round(_combined_mult, 3),
+                floor=_MIN_COMBINED_MULT,
+                note="sizing multipliers stacked below floor — skipping rather than opening a dust position",
+            )
+
     latency = int((_time.monotonic() - t0) * 1000)
 
     log.info(
@@ -265,7 +292,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         position=position if verdict == "BUY" else None,
         factors=factors, multipliers=multipliers,
         score_breakdown=breakdown,
-        blocked_reason=None,
+        blocked_reason=_micro_position_reason,
         latency_ms=latency,
         timestamp=datetime.now(timezone.utc).isoformat(),
         llm_verdict=llm_verdict_str,

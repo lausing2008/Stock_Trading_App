@@ -116,12 +116,22 @@ def compute_position(
 
     # ── Share calculation ──────────────────────────────────────────────────────
 
+    # T232-DE1: regime_mult, breadth_size_mult, and vix_size_mult are NOT independent —
+    # all three ultimately describe "how dangerous is the broad market right now" (regime_mult
+    # is itself partly derived from VIX: VIX>=25 -> risk_off -> regime_mult=0.50, VIX>=30 ->
+    # bear -> regime_mult=0.00), so multiplying all three together double- (and sometimes
+    # triple-) counts the same underlying signal. At VIX=30: 0.50 (regime) x 0.667 (vix
+    # gradient) = 0.335 combined, when the intent is a single "how bad is it" dampening of
+    # 0.50. Composed via min() instead — take the single most conservative market-wide signal,
+    # matching how paper_trading_engine.py already composes these (min(), not multiplication).
+    # Idiosyncratic per-trade signals (research/confidence/consensus/earnings) are genuinely
+    # independent judgments about THIS trade and remain multiplied together.
+    market_mult = min(regime_mult, breadth_size_mult, vix_size_mult)
     risk_per_trade = cfg.get("risk_per_trade_pct", 0.01)
     risk_dollar = (
         equity * risk_per_trade
-        * earnings_mult * regime_mult * confidence_mult * research_mult * consensus_mult
-        * breadth_size_mult
-        * vix_size_mult
+        * market_mult
+        * earnings_mult * confidence_mult * research_mult * consensus_mult
     )
     shares = risk_dollar / stop_dist
 
