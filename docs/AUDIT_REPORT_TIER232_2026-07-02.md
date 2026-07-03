@@ -1214,3 +1214,163 @@ surfaced enough structure to scope the eventual work:
    system ends up primary needs to be safe to call standalone — the current implicit contract
    ("only call `/decide/{symbol}` after market-data's pre-filters already ran") is fragile and
    undocumented anywhere except this report.
+
+---
+
+## Part 11 — Remaining Open High-Severity Bugs (2026-07-04): problem, fix, and expected improvement
+
+Three of eight open high-severity items from the earlier verification pass were fixed and shipped
+(`T232-ML2`/`ML3`/`ML4`, see Part 9 continuation / the `47c24e5` commit). The five below are
+confirmed still live as of 2026-07-04 but not yet fixed — documented here with the specific
+mechanism, the proposed fix, and what measurably improves once each ships, so a future session (or
+a reviewer deciding what to prioritize) doesn't have to re-derive this from the tracker's terser
+one-line summaries.
+
+### 11.1 — T232-SIG10: SELL threshold asymmetry (SELL wins only 43.7% live)
+
+**Problem.** BUY and SELL signals are scored on fundamentally unequal footing.
+`_STYLE_PROFILES[style]["buy_threshold"]` is a 4-way dict keyed by regime (`bull`/`high_vol`/
+`bear`/`unknown`), tuned separately for each — e.g. SWING requires `fused > 0.72` in bull, `0.76`
+in bear. The SELL side has no equivalent structure: `sell_t` falls back to a flat `0.35`
+regardless of regime (`signals.py` ~line 1466). There is also no bearish-pillar gate symmetric to
+`min_pillars_for_buy` (which requires ≥2 confirming bullish signals before a BUY fires) — a SELL
+can fire off a single weak bearish nudge. Compounding this, the bullish-side nudges in the fusion
+formula (breakout +0.05, options +0.04, pullback +0.07, K-Score +0.08) outnumber and outweigh the
+bearish-side nudges, further tilting the system toward firing BUY less cautiously than SELL.
+
+**Measured live impact:** SELL fires 2.3× as often as BUY and wins only 43.7% overall (US SHORT
+SELL specifically: 33.3%, n=72) — worse than a coin flip for the highest-volume SELL cohort. SELL
+accuracy also decays sharply with horizon: 70% correct at 5 days, down to 37% at 20 days, meaning
+the signal has real short-term edge that the current scoring/horizon design throws away by
+treating all SELL horizons the same way BUY horizons are treated.
+
+**Proposed fix:** (1) regime-tier `sell_t` the same way `buy_threshold` is tiered — e.g. SWING
+bull `0.32` (easier to SELL when the broader trend is against a long) / bear `0.38` (harder to
+pile onto an already-bearish tape); (2) add a `min_pillars_for_sell` gate mirroring
+`min_pillars_for_buy`; (3) shorten the SELL scoring/evaluation horizon to 5-10 days, where the
+live-data accuracy decay curve shows the signal actually retains edge, instead of scoring it at
+the same horizons as BUY.
+
+**Expected improvement:** closing the asymmetry should reduce SELL fire rate toward BUY's rate
+(fewer, higher-conviction SELL signals) and should lift win rate above the current 43.7% by
+filtering out the single-pillar, wrong-horizon SELLs that are dragging the average down — the
+70%-at-5-days number suggests real signal exists, it's just currently diluted by low-quality
+long-horizon SELL calls sharing the same threshold.
+
+### 11.2 — T232-SIG6: TA weight calibration never reaches the running process
+
+**Problem.** `POST /calibrate_ta_weights` writes newly-calibrated weights to `ta_weights.json`
+and to Redis (`stockai:ta_weights`, 90-day TTL) — but `_ta_weights`/`_ta_weights_calibrated`, the
+actual module-level globals `_ta_score()` reads on every call, are only set once at import time
+(`signals.py:247-248`). The endpoint updates two persistence layers and reports success, but the
+values a live signal computation actually uses never change until the container is manually
+restarted. An admin who runs weekly TA-weight calibration can be operating for days or weeks on
+the belief that new weights are live when the process is silently still running the old ones.
+
+**Proposed fix:** either (a) have `calibrate_ta_weights` reassign the module globals directly
+under a lock immediately after writing to Redis/file, so the change is live for the current
+process the moment calibration completes, or (b) change `_ta_score()` to read from a short-TTL
+in-process cache backed by Redis (matching the pattern used elsewhere in this codebase for
+similar "calibrated value read hot-path" problems) so a restart is never required for a
+calibration to take effect.
+
+**Expected improvement:** this doesn't change what the *correct* weights should be — it closes
+the gap between "calibration ran and reported success" and "the running signal-generation process
+is actually using the new weights." Without this fix, the entire TA-weight calibration mechanism
+is only as good as how often the container happens to restart for unrelated reasons — a
+mechanism this session's audit already found market-data restarts semi-regularly for (deploys,
+crash-loops), so the staleness window in practice ranges from hours to potentially weeks.
+
+### 11.3 — T232-DE1: VIX double-counted in decision-engine's position sizing
+
+**Problem.** `sizer.py`'s `compute_position()` composes 7 independent multipliers by straight
+multiplication: `earnings_mult * regime_mult * confidence_mult * research_mult * consensus_mult *
+breadth_size_mult * vix_size_mult`. Two of these — `regime_mult` and `vix_size_mult` — are not
+independent: `regime_mult` is partly *derived from* VIX (VIX≥25 triggers `risk_off`, giving
+`regime_mult=0.50`; VIX≥30 triggers `bear`, giving `regime_mult=0.00`), while `vix_size_mult` is a
+separate continuous VIX gradient (`max(0.5, 1-(vix-20)/30)`) computed independently and multiplied
+in again. At VIX=30 this produces `0.50 × 0.667 ≈ 0.335` combined — the same underlying market
+signal (elevated volatility) is punishing the position size twice. Compare to
+`paper_trading_engine.py`, which composes market-wide signals via `min()` (take the single most
+conservative signal, don't compound them) rather than multiplying every one together. Worst
+realistic stack across all 7 multipliers: `0.50 × 0.60 × 0.50 × 0.60 × 0.50 × 1.25 ≈ 0.056` — a
+position sized at 5.6% of what the base formula intends, small enough to be pure noise (slippage
+and commission could exceed the position's own expected value) while still consuming one of the
+portfolio's limited `max_positions` slots.
+
+**Proposed fix:** separate the 7 multipliers into two groups — market-wide/systemic signals
+(`regime_mult`, `breadth_size_mult`, `vix_size_mult`, all three ultimately describing "how
+dangerous is the broad market right now") composed via `market_mult = min(regime_mult,
+breadth_size_mult, vix_size_mult)` instead of multiplication, and idiosyncratic/per-trade signals
+(`research_mult`, `confidence_mult`, `consensus_mult`, `earnings_mult`) that remain multiplied
+together since they genuinely are independent judgments about this specific trade. Also add an
+explicit floor: skip the entry entirely (not just size it small) when the combined multiplier
+drops below some threshold (e.g. 0.30) — a position too small to matter shouldn't occupy a
+position-count slot other, better-sized candidates could use.
+
+**Expected improvement:** eliminates a compounding-risk-signal bug that currently produces
+economically-meaningless micro-positions specifically during the highest-volatility periods —
+exactly when a trader would want either a normal-conservative position or no position at all, not
+a position too small to be worth the slippage. Also frees up `max_positions` capacity during
+volatile periods for candidates that clear a reasonable size floor.
+
+### 11.4 — T232-OC3: signal threshold calibration has no holdout, applied straight to production
+
+**Problem.** `POST /outcomes/calibrate/apply`'s threshold search sweeps 46 overlapping cumulative
+subsets of the same sample and takes the argmax expected value — with `min_samples=15` and a
+minimum EV-lift gate of just 0.1 percentage points (within typical sampling noise for n=15). At
+n=15, the standard error on a win-rate estimate is roughly ±13 percentage points — an argmax
+search over 46 correlated, overlapping subsets at that noise level is close to guaranteed to
+surface an upward-biased fluke as the "optimal" threshold, and that threshold is then applied
+directly to production with no independent validation. This is the textbook "overfit calibration"
+scenario already documented elsewhere in this report as CAL-1's root cause pattern (Part 1) — this
+finding shows the same failure mode still exists in a sibling endpoint. Notably, `calibrate_ml_weight`
+(the ML-weight calibration endpoint, a close sibling in the same file) already does this correctly
+— a genuine chronological 70/30 calibration/validation split — so the fix pattern already exists
+in the codebase, it's just not applied consistently to every calibration endpoint.
+
+**Proposed fix:** reuse `calibrate_ml_weight`'s existing 70/30 temporal split pattern for the
+outcome-threshold sweep; raise the effective minimum sample size at the *winning* threshold to
+≥50 (not just the `min_samples` floor for inclusion in the sweep at all); require the EV lift to
+exceed some multiple (e.g. 2×) of its own bootstrap standard error before being considered a real
+signal rather than noise, rather than a flat 0.1pp floor that doesn't scale with sample size.
+
+**Expected improvement:** this is the same class of fix as the walk-forward split proposed in
+`docs/DESIGN_SELF_IMPROVEMENT_LOOP_2026-07-04.md`'s Phase 1 — in fact, this finding and that
+design's Phase 1 target the same underlying endpoint and the same underlying defect. Fixing this
+should reduce the frequency of corrupted-threshold incidents like CAL-1 (Part 1), where a Sunday
+calibration run silently loosened a production threshold for weeks before being caught by manual
+inspection rather than any automated check.
+
+### 11.5 — T232-PT4: alert conviction gate invisibly hard-blocks paper trading entries
+
+**Problem.** The alert system's conviction gate (`_is_conviction_buy` in `scheduler.py`) writes
+its pass/fail verdict to Redis (`conv_gate:{symbol}:{style}`) as part of deciding whether to send
+a BUY email. Separately, `paper_trading_engine.py`'s entry-candidate loop reads this same Redis
+key and, if it shows the alert gate failed, hard-skips the paper-trading entry — even though the
+alert gate's own confidence floor (`≥60`) is stricter than several portfolios' actual configured
+`min_confidence` (45 for GROWTH, 50 for SWING). A candidate with confidence 45-59 that would
+legitimately clear its own portfolio's threshold is silently blocked because a *different*
+system's *stricter* standard, designed for a *different* purpose (deciding whether to email a
+human), happens to share a Redis key with the paper-trading gate. This block currently produces
+no visible trace — unlike the other 17 per-candidate skip reasons (all tallied via
+`_write_no_entry_summary`/`_skip_tally` from the T232-WHYNOTRADE feature earlier this session),
+this specific block path was not among the two additions made when that visibility gap was
+partially closed — meaning it is likely still invisible in the WHYNOTRADE UI display today.
+
+**Proposed fix:** either (a) change this from a hard block to a scoring penalty or size
+multiplier so a candidate can still enter (at reduced size/confidence) rather than being fully
+excluded, or (b) only honor the alert gate's failure when the specific layer that failed also
+overlaps the paper-trading engine's own criteria (e.g. don't let "analyst consensus data
+missing" — an alert-specific nicety — block a paper trade that has nothing to do with analyst
+consensus in its own gating), and (c) regardless of which of (a)/(b) is chosen, log the block via
+`_write_gate_block`/`_skip_tally` so it's visible in the same WHYNOTRADE surface as every other
+skip reason.
+
+**Expected improvement:** removes a source of invisible, over-strict entry suppression that
+doesn't match any individual portfolio's own configured risk tolerance — candidates in the 45-59
+confidence band for GROWTH/SWING portfolios currently have zero chance of entering regardless of
+how well they'd otherwise score, for a reason that isn't visible anywhere in the UI. Fixing the
+visibility half alone (even before resolving the threshold mismatch) would immediately make this
+consistent with every other gate in the system, which is valuable independent of whether the
+gate's stringency itself is later adjusted.
