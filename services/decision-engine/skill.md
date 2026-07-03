@@ -13,7 +13,7 @@ Scoring Layers below). The gatekeeper before capital is deployed. Note: `_should
 | Responsibility | Key file(s) |
 |---|---|
 | Hard reject gates (cheap, run first) | `api/core/hard_rejects.py` (~151 lines) |
-| Market regime detection (own independent implementation — see T232-DL-REGIME5X) | `api/core/regime.py` (~232 lines) |
+| Market regime — proxies market-data's classifier (fixed 2026-07-04, see T232-DL-REGIME5X) | `api/core/regime.py` (~72 lines, down from ~232 after removing the duplicated classifier) |
 | Multi-layer integer-point scoring (not a fixed 9-dimension structure) | `api/core/scorer.py` (~219 lines) |
 | Position sizing | `api/core/sizer.py` (~149 lines) |
 | Data aggregation (signals + context) | `api/core/aggregator.py` (~177 lines) |
@@ -143,7 +143,7 @@ The paper trading engine calls `POST /decide` with `signal_data` dict. This dict
 | `POST /decide/{symbol}` | Yes (JWT) | Main decision endpoint called by paper trading engine — symbol is a path param |
 | `POST /decide/batch` | Yes | Batch decision across multiple symbols |
 | `GET /decide/{symbol}/explain` | Yes | Human-readable breakdown of a decision (used by frontend's decide.tsx) |
-| `GET /regime` | No | Current market regime — this service's OWN independent regime computation (`api/core/regime.py`), NOT the same code as paper_trading_engine's regime — see T232-DL-REGIME5X in the improvement tracker for the full 5-way regime duplication this creates |
+| `GET /regime` | No | Current market regime — as of 2026-07-04, `api/core/regime.py` calls market-data's `GET /stocks/regime` directly (15-min local cache on top) instead of maintaining its own classifier. Guaranteed to agree with the regime that actually gates real paper trading. See T232-DL-REGIME5X for the fix and the remaining, deliberately-unmerged signal-engine classifier (4th of the original 5, kept separate because its vocabulary is load-bearing for calibrated signal thresholds). |
 
 ---
 

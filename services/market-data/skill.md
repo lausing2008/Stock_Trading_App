@@ -21,6 +21,7 @@ every session — if precision matters, `wc -l` the actual file rather than trus
 | Broker integration (E*Trade, manual) | `api/broker.py`, `services/broker/etrade_broker.py` |
 | Admin endpoints | `api/admin.py` |
 | Reinforcement learning agent | `services/rl_agent.py` |
+| Market regime (canonical source of truth, since 2026-07-04) | `GET /stocks/regime?market=US\|HK` in `api/routes.py`, wrapping `services/paper_trading_engine.py`'s `get_last_regime()`/`get_last_hk_regime()` |
 
 ---
 

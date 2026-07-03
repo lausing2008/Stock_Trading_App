@@ -578,6 +578,28 @@ decision-engine and signal-engine call `market-data`'s regime over HTTP instead 
 re-implementing it, and removing the HMM/Fear&Greed vocabularies as separate published states
 (fold them into #1/#2 as internal adjustments only, which is already how HMM is used).
 
+**Fix applied 2026-07-04 (partial — #3 only):** Added `GET /stocks/regime?market=US|HK` to
+market-data, exposing `_fetch_market_regime()`/`_fetch_hk_market_regime()` (#1/#2) directly over
+HTTP via new `get_last_regime()`/`get_last_hk_regime()` wrapper functions. Rewrote
+`decision-engine/src/api/core/regime.py` to call this endpoint instead of maintaining its own
+from-scratch `_compute_us()`/`_compute_hk()` (now deleted — ~175 lines removed). Verified live in
+production: `GET /decide/regime?market=HK` now returns `state=risk_off, breadth_pct=32.3` —
+identical to market-data's own reading, including the breadth confirmation decision-engine never
+had before this fix. Also folded the VIX position-size gradient formula (previously two
+independently-written copies of `max(0.5, 1-max(0,(vix-20)/30))`, kept in sync only by a
+cross-referencing comment) into a single computation inside the new `regime.py`, deriving it from
+the shared `vix` field rather than re-implementing the formula a second time.
+
+This reduces the regime-classifier count from 5 to 4. **#5 (signal-engine) was deliberately left
+unmerged** — its `bull`/`high_vol`/`bear`/`unknown` vocabulary is load-bearing for every style's
+outcome-calibrated buy/hold threshold tables (the SA-28/SA-31/SA-32 tuning rounds mentioned
+elsewhere in this report tuned thresholds specifically against this 4-state classification).
+Merging it into market-data's 5-state vocabulary would require re-deriving and re-validating
+every threshold against live outcome data — a real project with its own risk profile, not a
+same-day architectural cleanup. Tracked as an intentional, documented remaining divergence rather
+than unaddressed debt. #4 (the HMM overlay) was already correctly scoped as an internal
+adjustment consumed only by market-data's regime — no change needed there.
+
 ### 7.3 — Other duplicated computation with drift risk
 
 - **Style game-plan parameters (`_STYLE_PARAMS`), triplicated, one copy has drifted.**
