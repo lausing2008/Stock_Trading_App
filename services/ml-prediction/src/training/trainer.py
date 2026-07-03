@@ -587,8 +587,16 @@ def train_model(
             if shared_cols:
                 X = X[shared_cols]  # narrow main X to shared feature set
                 X_out = X_out[shared_cols]
-                # Drop outcome rows that exactly overlap main training set dates
-                overlap_idx = X.index.intersection(X_out.index)
+                # T232-ML3: X.index is a plain RangeIndex (inherited from df's reset_index in
+                # _load_prices) while X_out.index is a normalized-date DatetimeIndex (set in
+                # _load_outcome_features). RangeIndex.intersection(DatetimeIndex) is always
+                # empty, so this drop silently never fired — outcome rows dated inside the
+                # main training window were double-counted (once via their real forward-return
+                # label in X, once via their live-trade label in X_out) instead of being
+                # deduplicated. Map X's surviving row positions to their real dates via df["ts"]
+                # (same technique _load_outcome_features already uses) before intersecting.
+                X_dates = pd.DatetimeIndex(pd.to_datetime(df["ts"]).dt.normalize().iloc[X.index].values)
+                overlap_idx = X_out.index[X_out.index.isin(X_dates)]
                 X_out = X_out.drop(index=overlap_idx, errors="ignore")
                 y_out = y_out.drop(index=overlap_idx, errors="ignore")
                 if len(X_out) >= 5:
@@ -616,7 +624,12 @@ def train_model(
     # Compute split point before CV so the loop only sees the training portion —
     # splitting on the full X would leak future rows into validation folds.
     split_train = int(len(X) * 0.70)
-    tscv = TimeSeriesSplit(n_splits=5)
+    # T232-ML4: labels are H-day forward returns (H = `horizon` bars), so a training row within
+    # H bars of a validation row's start still has its label computed from prices that overlap
+    # the validation window — a purge/embargo gap of at least H bars is required between the
+    # end of each training fold and the start of its validation fold, or CV folds see label
+    # leakage across the boundary. TimeSeriesSplit's gap= drops exactly that many samples.
+    tscv = TimeSeriesSplit(n_splits=5, gap=horizon)
     for tr_idx, val_idx in tscv.split(X.iloc[:split_train]):
         X_cv_tr, X_cv_val = X.iloc[tr_idx].values, X.iloc[val_idx].values
         y_cv_tr, y_cv_val = y_dir.iloc[tr_idx].values, y_dir.iloc[val_idx].values
@@ -654,16 +667,25 @@ def train_model(
     # Solution: dedicate a separate early-stop slice (80%) that the model sees during fitting,
     # and keep the calibration slice (80–90%) fully clean — never passed to fit() or eval_set.
     # split_train already computed above (reused here for clarity).
+    #
+    # T232-ML4: labels are H-day forward returns, so rows within H bars of each boundary have
+    # labels computed from prices that straddle the split — an embargo of `horizon` bars is
+    # inserted after each boundary (dropped from the START of the next slice) so no label in
+    # es/cal/test was computed from a price window overlapping the preceding slice's tail.
+    # Skipped when a slice would otherwise become too small to be useful.
     split_es  = int(len(X) * 0.80)   # end of early-stop window (same as split_train when train=70%)
     split_cal = int(len(X) * 0.90)
+    _embargo = horizon if (split_es - split_train) > horizon * 3 else 0
+    _embargo_es  = horizon if (split_cal - split_es) > horizon * 3 else 0
+    _embargo_cal = horizon if (len(X) - split_cal) > horizon * 3 else 0
     X_train = X.iloc[:split_train]
-    X_es    = X.iloc[split_train:split_es]
-    X_cal   = X.iloc[split_es:split_cal]
-    X_test  = X.iloc[split_cal:]
+    X_es    = X.iloc[split_train + _embargo : split_es]
+    X_cal   = X.iloc[split_es + _embargo_es : split_cal]
+    X_test  = X.iloc[split_cal + _embargo_cal :]
     y_train = y_dir.iloc[:split_train]
-    y_es    = y_dir.iloc[split_train:split_es]
-    y_cal   = y_dir.iloc[split_es:split_cal]
-    y_test  = y_dir.iloc[split_cal:]
+    y_es    = y_dir.iloc[split_train + _embargo : split_es]
+    y_cal   = y_dir.iloc[split_es + _embargo_es : split_cal]
+    y_test  = y_dir.iloc[split_cal + _embargo_cal :]
 
     if len(np.unique(y_train)) < 2:
         log.warning("train.skipped", symbol=symbol, reason="degenerate labels — all same class after dead-zone filter")
@@ -731,7 +753,14 @@ def train_model(
             calibrator = IsotonicRegression(out_of_bounds="clip")
             calibrator.fit(raw_cal_probs, y_cal.values)
 
-    # --- Precision-optimised BUY threshold (on held-out test set) ---
+    # --- Precision-optimised BUY threshold + honest reported metrics ---
+    # T232-ML2: the threshold used to be selected via _precision_threshold(y_test, preds, ...)
+    # and then EVERY reported metric (accuracy/auc/precision/recall/f1) was computed against
+    # that same y_test/preds — an in-sample argmax evaluated on the exact data it was fit to,
+    # producing optimistically biased metrics. Fixed by splitting the test slice itself in half
+    # chronologically: the first half selects the threshold, the second half (never used for
+    # any fitting or threshold decision) is the only set the final reported metrics are computed
+    # against — a genuine, if small, additional holdout.
     raw_test_probs = model.predict_proba(X_test_s)[:, 1]  # shape (n,)
     if calibrator is None:
         preds = raw_test_probs
@@ -739,11 +768,25 @@ def train_model(
         preds = calibrator.predict_proba(raw_test_probs.reshape(-1, 1))[:, 1]
     else:
         preds = calibrator.predict(raw_test_probs)
+
+    _thresh_split = max(1, len(X_test) // 2)
+    y_test_thresh, y_test_report = y_test.iloc[:_thresh_split], y_test.iloc[_thresh_split:]
+    preds_thresh, preds_report = preds[:_thresh_split], preds[_thresh_split:]
+
     # T228-HK-MODEL-SEPARATE: use tighter HK precision floor when applicable
     _hk_suffix = "_HK" if symbol.upper().endswith(".HK") else ""
     min_prec = _PRECISION_BY_STYLE.get(f"{style.upper()}{_hk_suffix}",
                _PRECISION_BY_STYLE.get(style.upper(), _MIN_PRECISION))
-    buy_threshold = _precision_threshold(y_test.values, preds, min_precision=min_prec, symbol=symbol)
+    if len(y_test_report) >= 10 and len(np.unique(y_test_report)) > 1:
+        # Enough held-out rows left after the threshold split to report honest metrics.
+        buy_threshold = _precision_threshold(y_test_thresh.values, preds_thresh, min_precision=min_prec, symbol=symbol)
+        y_test, preds = y_test_report, preds_report
+    else:
+        # Too little data to split without degenerate metrics — fall back to the prior
+        # in-sample behavior (still better than skipping the model), but flag it clearly.
+        log.warning("train.threshold_holdout_too_small", symbol=symbol, n_test=len(X_test),
+                    note="reported metrics are in-sample (same set used for threshold selection)")
+        buy_threshold = _precision_threshold(y_test.values, preds, min_precision=min_prec, symbol=symbol)
 
     y_pred = (preds > buy_threshold).astype(int)
 

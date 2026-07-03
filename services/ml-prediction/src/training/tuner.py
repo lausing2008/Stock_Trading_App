@@ -143,7 +143,10 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
             random_state=42,
             tree_method="hist",
         )
-        tscv = TimeSeriesSplit(n_splits=5)
+        # T232-ML4: purge/embargo gap of `horizon` bars between train and validation folds —
+        # without it, training rows within `horizon` bars of a validation fold's start have
+        # forward-return labels computed from prices that overlap the validation window.
+        tscv = TimeSeriesSplit(n_splits=5, gap=horizon)
         aucs: list[float] = []
         for fold, (tr_idx, val_idx) in enumerate(tscv.split(X_arr)):
             X_tr, X_val = X_arr[tr_idx], X_arr[val_idx]
