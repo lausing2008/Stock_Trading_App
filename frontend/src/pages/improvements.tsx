@@ -8421,6 +8421,16 @@ const ITEMS: Item[] = [
     fix: 'Done 2026-07-02: added POST /paper-portfolio/risk-off-override?hours=N (max 24h) which stores regime_risk_off_override_until in the portfolio config; DELETE to cancel early. The gate itself checks _regime_risk_off_override_active(cfg) on every evaluation — expiry is self-enforcing, no cron job needed to turn it back off. Added a "Regime Gate Override" section to the paper-portfolio Config Panel with "Allow trading for 4 hours" / "Allow trading for 1 day" buttons and a live countdown + cancel button while active — deliberately not a single always-visible bypass button.',
   },
   {
+    id: 'T232-RANKSTALE-SILENT-BACKGROUND-FAILURE',
+    title: 'K-Score rankings silently stopped refreshing for 10+ days — zero logging in the background task + a NameError bug',
+    tier: 232 as const, severity: 'critical', defaultStatus: 'done' as const,
+    file: 'services/ranking-engine/src/api/routes.py',
+    effort: 'M',
+    impact: 'Critical — discovered while investigating why HK GROWTH had zero trades: rankings.as_of was stuck at 2026-06-19 (US) / 2026-06-23 (HK) despite POST /rankings/refresh returning 200 "scheduled" dozens of times over the following 10+ days with zero errors visible anywhere. Root cause was two compounding issues in _persist_rankings(), which runs inside a FastAPI BackgroundTasks callback (whose exceptions are never surfaced to any caller or logged by default): (1) the function had ZERO logging — no start, no completion, no error — so a hang, crash, or silent no-op was completely invisible; (2) session.execute(stmt)/session.commit() were at the same indentation as `if rows:` (i.e. OUTSIDE it, not nested), so if every stock in a batch was skipped (e.g. cascading from a Yahoo Finance 429 rate-limit confirmed live on this container) or errored, `rows` was empty, `stmt` was never assigned, and the unconditional session.execute(stmt) raised NameError — silently killing the entire background task with nothing to catch or log it.',
+    what: '_persist_rankings() had no try/except around the whole run, no per-stock exception isolation (one bad symbol could abort the batch), and the pg_insert/commit block was incorrectly un-nested from its `if rows:` guard.',
+    fix: 'Done 2026-07-03: wrapped the entire function in try/except with start/done/error logging (ranking.persist_rankings_started/done/failed) reporting requested/written/skipped/errored counts and elapsed time. Wrapped each per-stock iteration in its own try/except so one bad symbol logs a warning (ranking.persist_rankings_stock_failed) and continues instead of aborting the batch. Fixed the indentation bug so session.execute/commit only run when rows is non-empty. Verified compiles cleanly on production Python 3.11.',
+  },
+  {
     id: 'T232-CONFIGGAP-SILENT-SAVE-DROP',
     title: '12 of 27 Portfolio Config fields silently failed to save — "Max Market Pos" and 11 others',
     tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,

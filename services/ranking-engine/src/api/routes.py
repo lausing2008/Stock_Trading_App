@@ -745,59 +745,94 @@ def refresh(
 
 
 def _persist_rankings(stock_ids: list[int]) -> None:
+    # T232-RANKSTALE: this function runs inside a FastAPI BackgroundTasks callback, whose
+    # exceptions are NOT surfaced anywhere by default — no response to fail, no automatic
+    # log. It previously had zero logging, so a silent stall or an unhandled exception on
+    # any single stock (killing the whole per-stock loop below) was completely invisible:
+    # rankings.as_of sat 10+ days stale while POST /rankings/refresh kept returning 200
+    # "scheduled" (that response is sent before this function even starts). Wrapped the
+    # whole run in try/except and added explicit start/done/error logging so a stall or
+    # crash is now visible in container logs instead of just an aging as_of column.
     from db import SessionLocal, Stock as StockModel
 
     today = date.today()
-    with SessionLocal() as session:
-        _prewarm_etf_cache(session)  # load all sector ETF returns from DB once
+    log.info("ranking.persist_rankings_started", count=len(stock_ids))
+    t0 = _time.time()
+    try:
+        with SessionLocal() as session:
+            _prewarm_etf_cache(session)  # load all sector ETF returns from DB once
 
-        # Fetch fundamentals + build sector map for all stocks in this batch
-        all_stocks = {
-            s.id: s for s in session.execute(
-                select(StockModel).where(StockModel.id.in_(stock_ids))
-            ).scalars()
-        }
-        fundamentals = _fetch_fundamentals_bulk()
-        stock_sectors = {s.symbol: (s.sector or "Unknown") for s in all_stocks.values()}
-        sector_scores = _sector_relative_scores(fundamentals, stock_sectors)
+            # Fetch fundamentals + build sector map for all stocks in this batch
+            all_stocks = {
+                s.id: s for s in session.execute(
+                    select(StockModel).where(StockModel.id.in_(stock_ids))
+                ).scalars()
+            }
+            fundamentals = _fetch_fundamentals_bulk()
+            stock_sectors = {s.symbol: (s.sector or "Unknown") for s in all_stocks.values()}
+            sector_scores = _sector_relative_scores(fundamentals, stock_sectors)
 
-        rows = []
-        for sid in stock_ids:
-            stock = all_stocks.get(sid)
-            if not stock:
-                continue
-            df = _load_prices(session, sid)
-            if df.empty or len(df) < 60:
-                continue
-            rs_score_val, _ = _stock_rs(stock, df, session=session)
-            sc = sector_scores.get(stock.symbol, {})
-            c = compute_kscore(
-                df,
-                rs_score=rs_score_val,
-                value_score=sc.get("value"),
-                growth_score=sc.get("growth"),
-            )
-            rows.append(
-                {
-                    "stock_id": sid,
-                    "as_of": today,
-                    "score":     _clean(c.score),
-                    "technical": _clean(c.technical),
-                    "momentum":  _clean(c.momentum),
-                    "value":     _clean(c.value),
-                    "growth":    _clean(c.growth),
-                    "volatility":_clean(c.volatility),
-                    "fair_price":_clean(c.fair_price),
-                    "rs_score":  _clean(c.relative_strength),
-                }
-            )
-        if rows:
-            stmt = pg_insert(Ranking).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["stock_id", "as_of"],
-                set_={col: stmt.excluded[col] for col in (
-                    "score", "technical", "momentum", "value", "growth", "volatility", "fair_price", "rs_score"
-                )},
-            )
-            session.execute(stmt)
-            session.commit()
+            rows = []
+            skipped = 0
+            errored = 0
+            for sid in stock_ids:
+                # T232-RANKSTALE: isolate each stock — one bad symbol (bad price data,
+                # a compute_kscore edge case, etc.) must not silently abort the entire
+                # batch the way it could before this try/except existed.
+                try:
+                    stock = all_stocks.get(sid)
+                    if not stock:
+                        continue
+                    df = _load_prices(session, sid)
+                    if df.empty or len(df) < 60:
+                        skipped += 1
+                        continue
+                    rs_score_val, _ = _stock_rs(stock, df, session=session)
+                    sc = sector_scores.get(stock.symbol, {})
+                    c = compute_kscore(
+                        df,
+                        rs_score=rs_score_val,
+                        value_score=sc.get("value"),
+                        growth_score=sc.get("growth"),
+                    )
+                    rows.append(
+                        {
+                            "stock_id": sid,
+                            "as_of": today,
+                            "score":     _clean(c.score),
+                            "technical": _clean(c.technical),
+                            "momentum":  _clean(c.momentum),
+                            "value":     _clean(c.value),
+                            "growth":    _clean(c.growth),
+                            "volatility":_clean(c.volatility),
+                            "fair_price":_clean(c.fair_price),
+                            "rs_score":  _clean(c.relative_strength),
+                        }
+                    )
+                except Exception as _stock_exc:
+                    errored += 1
+                    log.warning("ranking.persist_rankings_stock_failed",
+                                stock_id=sid, error=str(_stock_exc))
+            # T232-RANKSTALE: session.execute(stmt)/commit() were previously OUTSIDE this
+            # `if rows:` block (same indentation as the `if`, not nested under it) — if
+            # every stock in the batch was skipped or errored (e.g. a yfinance rate-limit
+            # cascading into skip_low_volume-style skips upstream), `rows` was empty,
+            # `stmt` was never assigned, and this raised NameError, killing the whole
+            # background task with no caller to see the exception. Silent ranking
+            # staleness with zero log output was the exact symptom this produced.
+            if rows:
+                stmt = pg_insert(Ranking).values(rows)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["stock_id", "as_of"],
+                    set_={col: stmt.excluded[col] for col in (
+                        "score", "technical", "momentum", "value", "growth", "volatility", "fair_price", "rs_score"
+                    )},
+                )
+                session.execute(stmt)
+                session.commit()
+            log.info("ranking.persist_rankings_done",
+                     requested=len(stock_ids), written=len(rows),
+                     skipped_insufficient_history=skipped, errored=errored,
+                     elapsed_s=round(_time.time() - t0, 1))
+    except Exception as exc:
+        log.error("ranking.persist_rankings_failed", error=str(exc), exc_info=True)
