@@ -8792,6 +8792,173 @@ const ITEMS: Item[] = [
     fix: 'Not fixed — full itemized diff (36 numbered items, all file:line cited) lives in docs/AUDIT_REPORT_TIER232_2026-07-02.md Part 10. Recommended shape of the eventual design pass (Part 10.7): (1) decide which system is the long-term source of truth — either decision-engine absorbs the missing pipeline gates and becomes self-sufficient (retiring _should_enter() to pure fallback), or _should_enter() is re-established as primary and decision-engine stays the analysis/explain-only tool it\'s already used for in decide.tsx; (2) resolve the 10 verdict-affecting scoring differences with a controlled outcome-data comparison (shadow-mode both scorers, log both verdicts, compare against actual trade outcomes) rather than picking a side by inspection; (3) port the 4 decision-engine-only hard rejects (fail-safe direction, same asymmetric-risk logic already used for the sector-cap fix) as a standalone low-risk follow-up once that pattern is validated in production; (4) fix the pipeline-topology gap regardless of which system wins #1 — whichever ends up primary needs to be safe to call standalone, since the current implicit contract ("only call /decide/{symbol} after market-data\'s pre-filters already ran") is fragile and undocumented anywhere except the audit report.',
   },
 
+  // ── Tier 233 — Service Architecture Review + Self-Improving Signal/Model Design (2026-07-04) ──
+  // DESIGN ONLY — nothing in this tier is implemented. User requested (1) a full multi-agent
+  // audit of all 11 services for refactor/regrouping opportunities and (2) a design for a
+  // self-improving tune→backtest→tune loop for signal win-rate/returns. Both produced design
+  // documents, not code changes — see docs/DESIGN_SELF_IMPROVEMENT_LOOP_2026-07-04.md and the
+  // architecture audit synthesis (docs/AUDIT_REPORT_TIER232_2026-07-02.md or a dedicated file,
+  // whichever this session lands the synthesis in).
+
+  {
+    id: 'T233-SELFIMPROVE-DESIGN',
+    title: 'DESIGN: self-improving signal/model loop (tune → backtest → tune) to raise win rate and returns',
+    tier: 233 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'docs/DESIGN_SELF_IMPROVEMENT_LOOP_2026-07-04.md (new), proposed: shared/backtest/ (new module), market-data/src/services/scheduler.py (new job)',
+    effort: 'L',
+    impact: 'High (once implemented) — the system already has real pieces of an outcome-driven tuning loop (Optuna ML hyperparameter search, signal threshold calibration against real SignalOutcome expected-value, TA/ML weight calibration, a DSL backtest engine) but they are disconnected: ML tuning optimizes AUC (a proxy metric) not P&L; signal threshold calibration sweeps and validates on the SAME window (in-sample/look-ahead bias); nothing tunes the paper-trading gate thresholds (min_kscore, min_ta_score, etc.) or sizing multipliers at all despite these having first-order impact on realized win rate; no promotion gate exists to stop a bad calibration from reaching production (this is exactly how the CAL-1 corrupted-threshold incident earlier in Tier 232 went undetected); no unified history of what was tuned, when, and whether it actually helped.',
+    what: 'Requested by the user: "Design and architect on a framework to tune the model for AI Signal, win rate and returns and then do backtesting to test it and tune again the model and test again in order to increase the win rate and return. Self improvement." Full design written up rather than implemented directly, per explicit instruction to document design/architecture and action items first.',
+    fix: 'Not implemented — design only, see docs/DESIGN_SELF_IMPROVEMENT_LOOP_2026-07-04.md for the full proposal. Core design decisions: (1) build ONE new Backtest Harness (proposed home: shared/backtest/, not a new service) that replays the REAL paper-trading gate/sizing/exit logic against historical data with candidate parameters substituted in — explicitly NOT a new simplified simulator, to avoid repeating the exact "N independent implementations of the same logic" failure pattern found and partially fixed elsewhere in Tier 232 (regime, style-params, dual-scorer); (2) a rules-based (not ML) Promotion Gate requiring positive walk-forward expected-value lift, a minimum sample size, no drawdown regression, and agreement between SignalOutcome-based and PaperTrade-based backtests before any change reaches production; (3) a new tune_history table logging every attempted tune (promoted or not) with full before/after backtest numbers; (4) a 5-phase rollout starting with the lowest-risk fix (add a walk-forward train/validation split to the EXISTING outcomes/calibrate endpoint, which already optimizes the right metric but validates in-sample) before building anything new, and ending with scheduler automation only after phases 1-4 are manually proven. Explicitly deferred: using an LLM/meta-model to propose candidate parameters, since that adds opacity to a system meant to increase auditability.',
+  },
+  {
+    id: 'T233-SELFIMPROVE-PHASE1',
+    title: 'ACTION ITEM (Phase 1, lowest risk): add walk-forward train/validation split to outcomes/calibrate',
+    tier: 233 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/api/routes.py (outcomes_calibrate, outcomes_calibrate_apply)',
+    effort: 'M',
+    impact: 'High, low-risk — outcomes/calibrate already optimizes the CORRECT metric (win_rate × avg_return, i.e. real expected value, not a proxy) but sweeps thresholds and reports/validates results on the SAME lookback window, which is in-sample/look-ahead bias: a threshold can look great purely because it was chosen to fit that exact window\'s noise. This is the single highest-value, lowest-risk fix in the self-improvement design because it improves an EXISTING, already-correct-metric mechanism rather than building anything new.',
+    what: 'Identified while surveying existing tuning infrastructure for the self-improvement framework design (T233-SELFIMPROVE-DESIGN, Phase 1).',
+    fix: 'Not implemented — proposed approach: split the `days` lookback window chronologically (e.g. first 2/3 for threshold search, last 1/3 held out), sweep thresholds only against the training slice, then report expected value on the held-out validation slice at the chosen threshold. Only surface/apply a suggested threshold if the validation-window expected value ALSO improves over the current threshold— not just the training-window number. This directly prevents a repeat of the CAL-1 incident class (a threshold that looked good on the window it was fit to, but wasn\'t validated against anything else before being applied).',
+  },
+  {
+    id: 'T233-SELFIMPROVE-PHASE2',
+    title: 'ACTION ITEM (Phase 2): build the Backtest Harness for paper-trading gate thresholds',
+    tier: 233 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'proposed: shared/backtest/ (new module)',
+    effort: 'L',
+    impact: 'High — no mechanism today systematically searches for better gate-threshold values (min_kscore, min_ta_score, min_volume_z, min_entry_score, etc.) despite these directly determining which candidates ever reach a trade, giving them first-order impact on realized win rate. These are currently hand-set constants in _DEFAULT_CONFIG/_STYLE_OVERRIDES, several already known to have drifted or been set inconsistently across styles/markets (see the T232 deep logic review\'s HK vs US asymmetry findings).',
+    what: 'Core piece of the self-improvement design (T233-SELFIMPROVE-DESIGN, Phase 2) — the first new-build phase, scoped narrowly to gate thresholds specifically because they have the clearest, most isolated effect (a threshold either lets a candidate through or it doesn\'t, no interaction with ML retraining) before extending the same harness to riskier, more interacting parameter classes.',
+    fix: 'Not implemented — proposed approach: parameterize paper_trading_engine.py\'s gate-check functions to accept threshold overrides instead of reading _DEFAULT_CONFIG globals directly (a prerequisite refactor), then build a harness that replays historical Price/Signal/Ranking rows through the real gate logic with a candidate threshold set substituted in, producing a synthetic equity curve. Validate the harness itself first: run it against the SAME historical period as the live paper-trading engine already covered, and confirm the backtest numbers plausibly match what live trading actually produced, before trusting it to evaluate any candidate change.',
+  },
+  {
+    id: 'T233-SELFIMPROVE-PHASE3',
+    title: 'ACTION ITEM (Phase 3): Promotion Gate + tune_history table',
+    tier: 233 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'proposed: shared/db/models.py (new TuneHistory model), shared/backtest/ (gate logic)',
+    effort: 'M',
+    impact: 'Medium-High — without a promotion gate, an automated or semi-automated tuning loop can silently make trading worse with no trace, which is strictly worse than the current fully-manual status quo. Without a shared history table, every future "did this help" question requires reconstructing before/after state from container logs across multiple services (the exact expensive reconstruction this session repeatedly had to do for CAL-1, the ranking staleness incident, and the corrupted signal_thresholds Redis key).',
+    what: 'Third phase of the self-improvement design (T233-SELFIMPROVE-DESIGN) — depends on Phase 2\'s harness existing first, since the gate needs a backtest result to evaluate.',
+    fix: 'Not implemented — proposed gate rules (deliberately simple/auditable, not another tunable model): (1) positive expected-value lift on the walk-forward VALIDATION window, not just training; (2) minimum trade-count sample size per style/market; (3) no increase in max drawdown beyond a tolerance even if expected value improves; (4) agreement between SignalOutcome-based and PaperTrade-based backtests where both apply. Proposed new `tune_history` table logs every attempted tune — promoted or rejected — with the full before/after backtest numbers and which gate checks passed/failed, so a regression is traceable without log spelunking.',
+  },
+  {
+    id: 'T233-SELFIMPROVE-PHASE4-5',
+    title: 'ACTION ITEM (Phases 4-5, deferred until 1-3 are proven): extend to ML hyperparameters/sizing, then automate on a schedule',
+    tier: 233 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/training/tuner.py, proposed: services/decision-engine/src/api/core/sizer.py tuning, market-data/src/services/scheduler.py (new scheduled job)',
+    effort: 'L',
+    impact: 'Medium — ML hyperparameter tuning today optimizes AUC (a classification proxy), not realized trading expected value; a model can have excellent AUC and mediocre expected value if it\'s confident-but-wrong specifically on the highest-conviction trades. Sizing multipliers (regime/confidence/research/consensus bands) are hand-tuned constants with no systematic search, including at least one explicitly-acknowledged-as-approximate rescale (sizer.py\'s T232-DE2 comment). Both are legitimate next targets, but have more moving parts and more ways to overfit than gate thresholds (Phase 2) and should not be tackled until the harness+gate+history pattern is proven there first.',
+    what: 'Final phases of the self-improvement design (T233-SELFIMPROVE-DESIGN) — deliberately sequenced last given the higher overfitting risk of tuning against ML model internals and interacting sizing bands versus the more isolated gate-threshold case.',
+    fix: 'Not implemented — deferred by design until Phases 1-3 are running and trusted. Phase 4: add the backtest harness as a SECOND gate after Optuna\'s existing AUC-based hyperparameter search (don\'t replace AUC-based CV, which still guards against overfit — add expected-value backtesting as an additional check before a newly-tuned model is actually deployed) and apply the same harness/promotion-gate pattern to sizing multipliers. Phase 5: only after a human has manually run Phase 4 enough times to trust the numbers, wire the whole pipeline into a weekly scheduled job (matching the existing Sunday outcomes/calibrate/apply cadence) — never auto-run silently before that trust is established, matching the "never auto-promote silently" principle in a stronger form.',
+  },
+
+  // ── Tier 233 — Service Architecture Review (2026-07-04) ────────────────────────────────────
+  // DESIGN ONLY. 11 parallel agents each audited one service, a synthesis agent found cross-
+  // service patterns, and a verification agent re-checked every claim against the codebase
+  // directly — catching one factually-backwards recommendation before it reached this tracker
+  // (see T233-ARCH-NOTRECOMMENDED). See docs/DESIGN_SERVICE_ARCHITECTURE_2026-07-04.md for the
+  // full writeup (all 11 per-service verdicts, full evidence, rollout guidance).
+
+  {
+    id: 'T233-ARCH-CONGRESS-DEDUP',
+    title: 'STRONG: delete market-data\'s duplicate congress.py — event-intelligence\'s version is already canonical, and the two can show different data for the same stock RIGHT NOW',
+    tier: 233 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/api/congress.py, services/event-intelligence/src/services/congress.py, frontend/src/pages/congress.tsx, frontend/src/pages/insider.tsx, frontend/src/pages/intelligence.tsx',
+    effort: 'S',
+    impact: 'High — this is the highest-confidence, lowest-risk, most user-visible finding in the entire architecture audit. market-data/api/congress.py (229 lines) and event-intelligence/services/congress.py (270 lines) both independently scrape House/Senate Stock Watcher with near-identical amount-range parsing tables — verified as live, both wired into their respective main.py, not a hypothetical. event-intelligence\'s own skill.md already calls itself the canonical source, but the market-data duplicate was never removed. Two frontend pages (congress.tsx/insider.tsx vs intelligence.tsx) can show DIVERGENT congressional trading data for the same stock today, depending on which page a user is looking at.',
+    what: 'Found during the 2026-07-04 multi-agent service architecture audit (11 parallel per-service audits + cross-service synthesis + adversarial verification, requested by the user to identify refactor/regrouping candidates given the number of services). Verified independently by both the synthesis and verification passes.',
+    fix: 'Not implemented — proposed first steps: diff the two endpoints\' response JSON shapes; confirm every frontend api.ts call site currently hitting market-data\'s congress endpoint; check whether market-data\'s scheduler runs its own independent congress-scrape cron job that would also need removing to stop double-scraping the same external source. Then delete market-data\'s copy and repoint the frontend at event-intelligence\'s endpoint via the existing api-gateway proxy.',
+  },
+  {
+    id: 'T233-ARCH-AIPROXY-EXTRACT',
+    title: 'STRONG: extract api-gateway\'s ai_proxy.py into research-engine — third independent "call an LLM" implementation, misplaced in a pure proxy service',
+    tier: 233 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/api-gateway/src/api/ai_proxy.py, services/research-engine/src/api/routes.py',
+    effort: 'S',
+    impact: 'Medium — ai_proxy.py (166 lines, the largest single file in api-gateway) is a self-contained Claude+DeepSeek chat integration with admin-configurable API keys stored in Redis, zero shared code or state with the rest of the gateway (proxy/health/aggregate). It duplicates a capability research-engine already has (calling Claude, shaping requests/responses for report generation + report chat) — verified: three independent "call an LLM provider and normalize the response" implementations exist in the codebase (api-gateway ai_proxy.py, research-engine\'s _call_claude path, decision-engine\'s llm_scorer.py), each with its own admin-API-key-in-Redis lookup pattern and no shared abstraction. api-gateway should be a pure proxy; this is a business feature that only lives here because the gateway happens to be the one service with outbound internet access.',
+    what: 'Found during the 2026-07-04 architecture audit. Genuinely small to move (166 lines, imports nothing gateway-specific).',
+    fix: 'Not implemented — ONE risk to check before starting: ai_proxy.py reads stockai:admin:claude_api_key/deepseek_api_key directly from Redis; confirm research-engine\'s existing Claude-calling code reads the SAME keys, or the admin settings UI will silently stop reaching whichever service didn\'t get the memo. First step: grep every reader/writer of these two Redis keys across the codebase before moving anything.',
+  },
+  {
+    id: 'T233-ARCH-MARKETDATA-GODSERVICE',
+    title: 'market-data is a "God service" spanning 3 unrelated architectural roles — clearest and most severe finding across all 11 service audits',
+    tier: 233 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/ (34 files, ~18,000 lines)',
+    effort: 'L',
+    impact: 'High — market-data co-locates three distinct architectural roles in one deploy unit: (a) system orchestrator (the scheduler fans out to all 6 other services on cron), (b) shared data backend (signal-engine, research-engine, portfolio-optimizer, strategy-engine, ranking-engine, and decision-engine all read prices/fundamentals/regime from it), and (c) a standalone product surface with NO other consumers at all (auth, watchlists, journal, Kanban board, broker OAuth, congress scraping, news sentiment, HK Connect scraping, RL agent training) — role (c) shares essentially zero code with roles (a)/(b) beyond get_current_user. CLAUDE.md\'s own incident history (8+ unrelated recurring-bug classes: login loops, jose-401s, SQL cast bugs, email oscillation, alert suppression, logging TypeErrors, regime drift) is itself a symptom of this — that many distinct failure domains sharing one deploy unit means every unrelated change (an E*Trade OAuth tweak, a Kanban board fix) carries risk for the trading-critical scheduler/paper-trading path sharing the same container.',
+    what: 'Found during the 2026-07-04 architecture audit — the market-data per-service report plus corroborating evidence from all 10 other reports (everyone who depends on market-data only needs a narrow read of prices/regime/rankings, never the roles (c) product-surface code).',
+    fix: 'Not implemented — what should NOT move: the paper-trading/scheduler/broker cluster (60%+ of the line count) is internally coherent (paper_trading_engine.py and scheduler.py share tight state — _prefetched_open, service tokens, regime) and splitting it would add a network hop into the hottest, most capital-sensitive code path in the system for no complexity reduction. Recommended incremental splits, each independently actionable (see T233-ARCH-HMMREGIME, T233-ARCH-PORTFOLIO-CONSOLIDATE, T233-ARCH-CONGRESS-DEDUP for the specific pieces): rl_agent.py stays in market-data (see T233-ARCH-NOTRECOMMENDED — the initial audit pass incorrectly recommended moving it), api/portfolio.py → portfolio-optimizer, congress.py → deleted in favor of event-intelligence\'s canonical copy. The auth/watchlist/journal/board/positions cluster is lowest urgency — internally coherent as a "user account" bundle, nothing currently broken by co-location.',
+  },
+  {
+    id: 'T233-ARCH-HMMREGIME',
+    title: 'MODERATE: move ml-prediction\'s hmm_regime.py to market-data (colocate with its only caller, eliminate a real HTTP hop)',
+    tier: 233 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/ml-prediction/src/api/hmm_regime.py, services/market-data/src/services/paper_trading_engine.py',
+    effort: 'M',
+    impact: 'Medium — verified: paper_trading_engine.py calls http://ml-prediction:8003/regime-state over HTTP on every regime computation (line ~942) for a value with exactly one consumer anywhere in the codebase. Colocating would eliminate a real network hop on a path that already runs on every paper-trading cycle. Confirmed low-risk on the auth front: /regime-state is unauthenticated, so no jose/401 landmine applies here.',
+    what: 'Found during the 2026-07-04 architecture audit, verified by the adversarial review pass (confirmed the HTTP call is real, unlike the swapped rl_agent.py recommendation — see T233-ARCH-NOTRECOMMENDED).',
+    fix: 'Not implemented — before starting, inventory every import inside hmm_regime.py reaching into ml-prediction\'s shared feature-builder/model-loading code. If it shares nothing, this is a clean lift-and-shift. If it shares scaler/feature code, market-data needs either a vendored copy or a shared package — a real design decision that needs explicit scoping, not an assumption either way.',
+  },
+  {
+    id: 'T233-ARCH-PORTFOLIO-CONSOLIDATE',
+    title: 'MODERATE: consolidate market-data\'s portfolio.py into portfolio-optimizer — two independent, divergent implementations of "correlation for this universe"',
+    tier: 233 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/market-data/src/api/portfolio.py, services/portfolio-optimizer/src/optimizers/methods.py',
+    effort: 'M',
+    impact: 'Medium — verified: market-data/api/portfolio.py (169 lines) computes correlation matrix, beta, parametric VaR, and sector concentration via its own direct yf.download + df.corr(). portfolio-optimizer/optimizers/methods.py (258 lines) independently computes Ledoit-Wolf shrinkage covariance for the same kind of symbol universes via an HTTP fetch from market-data. Two services, two notions of "correlation," same underlying math, zero shared code, fetched two different ways.',
+    what: 'Found during the 2026-07-04 architecture audit.',
+    fix: 'Not implemented — before starting: grep frontend api.ts for every call site hitting market-data\'s portfolio endpoints, and confirm portfolio-optimizer\'s Ledoit-Wolf-based output is a drop-in replacement or needs a response-shape adapter. This is user-facing and would trigger a full frontend rebuild (BuildKit-bypass pattern per CLAUDE.md) once repointed.',
+  },
+  {
+    id: 'T233-ARCH-INDICATOR-DEDUP',
+    title: 'MODERATE (highest total value, largest effort): create shared/common/indicators.py — RSI/MACD/ATR/ADX/Supertrend independently reimplemented in 6 places',
+    tier: 233 as const, severity: 'high', defaultStatus: 'todo' as const,
+    file: 'shared/common/ (new indicators.py), services/technical-analysis/src/indicators/core.py (canonical, to become the source), services/signal-engine, services/ranking-engine, services/ml-prediction, services/market-data (x2), services/research-engine',
+    effort: 'L',
+    impact: 'High — this is the single most repeated finding across all 11 per-service audits, flagged independently by 4 of them before the synthesis step even connected the dots. Verified directly (not just claimed): 6 independent RSI implementations exist (ranking-engine, ml-prediction, market-data ×2, research-engine, signal-engine), plus a similar spread for ATR — with technical-analysis, the service explicitly built to be the canonical source, bypassed by nearly everyone, apparently for hot-path/latency reasons. Highest total-value fix in the whole audit (six services\' worth of drift-risk elimination at once) but also the largest coordinated effort and the one most capable of silently changing live trading signals if done carelessly.',
+    what: 'Found during the 2026-07-04 architecture audit — corroborates and generalizes a narrower finding already made earlier this session (strategy-engine\'s RSI formula provably diverges from technical-analysis\'s canonical NaN-handling, tracked separately in Tier 232\'s dual-scorer/skill.md work) into the full systemic pattern.',
+    fix: 'Not implemented — proposed approach: pilot with research-engine first (not on the trading hot path), validate output parity against the existing implementation on historical data BEFORE touching signal-engine or ranking-engine (any drift here changes live trading signals — a correctness-critical surface, not a style cleanup). Ship with an explicit multi-container deploy checklist: shared/ is deployed via docker cp to every affected container individually per CLAUDE.md\'s deployment pattern, and this fix touches 6 containers in the same logical change — exactly the kind of coordinated multi-service deploy that CLAUDE.md\'s own incident history (jose-missing-from-container recurring 3 times independently) suggests this deployment model is prone to executing incompletely. A checklist, not just the shared file, is part of the deliverable.',
+  },
+  {
+    id: 'T233-ARCH-INSERVICE-SPLITS',
+    title: 'MODERATE, zero-deployment-risk: in-service file splits for signal-engine (4,805-line routes.py) and research-engine (1,795-line routes.py)',
+    tier: 233 as const, severity: 'medium', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/api/routes.py, services/research-engine/src/api/routes.py',
+    effort: 'M',
+    impact: 'Medium — signal-engine: 24 of 32 routes are a batch self-tuning/analytics/backtesting subsystem (outcomes/*, calibrate_*, tune_*, watchdog, alpha_decay, walkforward, gate_backtest) structurally distinct from the 8 hot-path signal-serving routes — already flagged as a review hazard by this service\'s own skill.md. research-engine: one file bundles report aggregation with three independently-testable quant subsystems (technical scoring, fundamental scoring, DCF valuation) — the existing test suite already imports these scoring functions directly with zero FastAPI dependency, proving they\'re already decoupled in practice, just not in file layout. Both are pure in-service module splits — same container, same image, zero port/auth/deployment-pattern changes, about as safe as a refactor gets.',
+    what: 'Found during the 2026-07-04 architecture audit. Correctly scored MODERATE not STRONG by the verification pass — these improve maintainability/review-hazard, not runtime complexity or duplication.',
+    fix: 'Not implemented — signal-engine: enumerate the 24 self-tuning/analytics routes vs. 8 hot-path routes by grepping @router decorators, split into routes.py (hot path) + outcomes.py + calibration.py with no behavior change. research-engine: extract _score_technical/_score_fundamental/_dcf_fair_value/_build_checklist/_position_size into src/scoring.py, starting with whichever functions the test file already imports directly.',
+  },
+  {
+    id: 'T233-ARCH-EDGAR8K-REWIRE',
+    title: 'SMALL: rewire signal-engine to call event-intelligence\'s /events/8k/{symbol} endpoint instead of a direct DB query — inconsistent integration pattern for the same kind of question',
+    tier: 233 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/signal-engine/src/generators/signals.py',
+    effort: 'S',
+    impact: 'Low-Medium — signal-engine calls event-intelligence\'s catalyst score over HTTP with a proper service token (following the established _service_token() pattern from the INT-7 fix), but separately reads the sec_filings table (8-K data) via a DIRECT DB query, bypassing event-intelligence\'s own /events/8k/{symbol} endpoint entirely for a logically similar "does event data affect this signal" question. Two different integration patterns for the same kind of dependency, from the same caller, to the same conceptual owner.',
+    what: 'Found during the 2026-07-04 architecture audit. The audit initially framed this as an ownership question (should edgar_8k.py move to market-data, matching its actual usage pattern) but the verification pass argued the smaller, lower-risk fix (rewire the caller) achieves the same consistency goal without a file-ownership move.',
+    fix: 'Not implemented — replace the direct sec_filings DB query in signals.py with a service-token-authenticated HTTP call to event-intelligence\'s existing /events/8k/{symbol} endpoint, following the exact pattern already used for the catalyst-score call.',
+  },
+  {
+    id: 'T233-ARCH-HEALTHCHECK-GAP',
+    title: 'SMALL: api-gateway\'s health check list omits event-intelligence — admin dashboard blind spot',
+    tier: 233 as const, severity: 'low', defaultStatus: 'todo' as const,
+    file: 'services/api-gateway/src/api/health.py',
+    effort: '5min',
+    impact: 'Low but real — health.py\'s _SERVICES list has 9 entries (market-data, technical-analysis, ml-prediction, ranking-engine, signal-engine, strategy-engine, portfolio-optimizer, research-engine, decision-engine) but event-intelligence:8010 is missing, even though proxy.py routes /events and /catalyst to it. GET /health/deep can report all-green while event-intelligence is fully down.',
+    what: 'Found during the 2026-07-04 architecture audit.',
+    fix: 'Not implemented — add event-intelligence:8010 to the _SERVICES list in health.py alongside the other 9. Trivial fix, bundle with any other api-gateway touch (e.g. the ai_proxy.py extraction, T233-ARCH-AIPROXY-EXTRACT).',
+  },
+  {
+    id: 'T233-ARCH-NOTRECOMMENDED',
+    title: 'Considered but NOT recommended: moving rl_agent.py to ml-prediction — initial audit pass had the justification factually backwards',
+    tier: 233 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/rl_agent.py',
+    effort: '5min',
+    impact: 'N/A — documented specifically as a caution about trusting a single audit pass without verification. The first-pass synthesis recommended moving rl_agent.py to ml-prediction, justified by "it\'s called over HTTP on every signal computation... could be an in-process function call if colocated with its only caller." The adversarial verification pass checked this directly and found it FALSE: rl_agent.py is already imported IN-PROCESS within market-data (paper_trading_engine.py: "from .rl_agent import rl_recommend"; scheduler.py: "from .rl_agent import run_rl_training") — there is no HTTP hop today. This justification was almost certainly copy-pasted from the hmm_regime.py recommendation (T233-ARCH-HMMREGIME), which IS a real HTTP call, and the two got their justifications swapped during synthesis.',
+    what: 'Found during the 2026-07-04 architecture audit\'s adversarial verification step — the entire reason a workflow was structured with a dedicated verify pass rather than trusting synthesis output directly.',
+    fix: 'Not recommended as originally framed. Moving rl_agent.py to ml-prediction would CREATE a network hop into paper trading\'s hottest, most capital-sensitive decision path where none exists today, for a purely taxonomic ("same artifact type as ml-prediction\'s other models") benefit. If pursued at all in the future, it needs to be re-justified on ownership/taxonomy grounds explicitly, with the added network hop accepted as a real cost, not omitted.',
+  },
+
   // ── Tier 231 — System Audit: Win Rate, Signal Quality & ML Integrity (2026-07-01) ─────────────────────────────────
 
   {
@@ -13514,6 +13681,7 @@ const TIER_LABEL: Record<Tier, string> = {
   230: 'Tier 230 — Professional Platform Parity: TradingView, Investing.com, Bloomberg gaps',
   231: 'Tier 231 — System Audit: Win Rate, Signal Quality & ML Integrity (5 Critical · 3 High · 6 Medium)',
   232: 'Tier 232 — Deep System Audit: Calibration Loop, ML Integrity, SELL Accuracy, Paper Trading, Deep Logic Review, Dev Docs Audit, Architecture Consolidation (regime 5→4, style-params, dual-scorer sector-cap fixed; 34-item dual-scorer diff + other architectural items documented as tech debt for a future full design pass — see AUDIT_REPORT_TIER232 Parts 7-10)',
+  233: 'Tier 233 — Service Architecture Review + Self-Improving Signal/Model Design (design-only: 11-service multi-agent audit found market-data God-service + congress.py duplication + 6x indicator reimplementation + more; 5-phase tune→backtest→tune loop framework — see DESIGN_SERVICE_ARCHITECTURE_2026-07-04.md and DESIGN_SELF_IMPROVEMENT_LOOP_2026-07-04.md, no implementation yet)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
@@ -13749,6 +13917,7 @@ const TIER_COLOR: Record<Tier, string> = {
   230: '#3b82f6',
   231: '#dc2626',
   232: '#b91c1c',
+  233: '#7c3aed',
 };
 
 const SEV_COLOR: Record<Severity, { bg: string; text: string; label: string }> = {
