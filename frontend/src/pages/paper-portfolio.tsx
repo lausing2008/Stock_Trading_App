@@ -969,14 +969,14 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
     finally { setOverrideBusy(false); }
   }
 
-  function field(key: keyof PaperPortfolioConfig, label: string, step = 0.01, placeholder?: string) {
+  function field(key: keyof PaperPortfolioConfig, label: string, step = 0.01, placeholder?: string, min?: number) {
     const cur = draft[key] ?? config[key];
     const isDefined = cur !== undefined && cur !== null;
     return (
       <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
         <span style={{ fontSize: 11, color: '#94a3b8' }}>{label}</span>
         <input
-          type="number" step={step}
+          type="number" step={step} min={min}
           value={isDefined ? String(cur) : ''}
           placeholder={placeholder ?? '—'}
           onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) setDraft(d => ({ ...d, [key]: v })); }}
@@ -1021,10 +1021,10 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
       <div style={{ fontWeight: 600, marginBottom: 16, color: '#f1f5f9' }}>Portfolio Config (admin)</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
         {section('Position Limits')}
-        {field('max_positions', 'Max Positions', 1)}
-        {field('max_market_positions', 'Max Market Pos', 1, 'default 4')}
-        {field('max_sector_positions', 'Max Sector Pos', 1, 'default 3')}
-        {field('max_entries_per_day', 'Max Entries/Day', 1, 'default 3')}
+        {field('max_positions', 'Max Positions', 1, undefined, 1)}
+        {field('max_market_positions', 'Max Market Pos', 1, 'default 4', 1)}
+        {field('max_sector_positions', 'Max Sector Pos', 1, 'default 3', 1)}
+        {field('max_entries_per_day', 'Max Entries/Day', 1, 'default 3', 1)}
         {field('max_open_exposure_pct', 'Max Open Exposure %', 0.01, 'default 0.40')}
         {field('equity_floor_pct', 'Equity Floor %', 0.01, 'default 0.80')}
 
@@ -1043,9 +1043,9 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
         {field('max_sector_pct', 'Max Sector %')}
 
         {section('Exit Management')}
-        {field('max_hold_days', 'Max Hold Days', 1)}
-        {field('hold_stall_days', 'Stall Timeout Days', 1, 'default 30')}
-        {field('wait_exit_days', 'Wait Exit Days', 1)}
+        {field('max_hold_days', 'Max Hold Days', 1, undefined, 1)}
+        {field('hold_stall_days', 'Stall Timeout Days', 1, 'default 30', 1)}
+        {field('wait_exit_days', 'Wait Exit Days', 1, undefined, 1)}
         {field('trail_atr_mult', 'Trail ATR ×')}
         {field('trail_trigger_pct', 'Trail Trigger %')}
         {field('breakeven_trigger_pct', 'Breakeven %')}
@@ -1057,7 +1057,7 @@ function ConfigPanel({ config, onSave, portfolioId }: { config: PaperPortfolioCo
         {field('max_daily_loss_pct', 'Max Daily Loss %', 0.01, 'default 0.04')}
         {field('max_weekly_loss_pct', 'Max Weekly Loss %', 0.01, 'default 0.08')}
         {field('max_portfolio_drawdown_pct', 'Max Drawdown %', 0.01, 'default 0.20')}
-        {field('max_consecutive_losses', 'Max Consec. Losses', 1, 'default 3')}
+        {field('max_consecutive_losses', 'Max Consec. Losses', 1, 'default 3', 1)}
       </div>
 
       {section('Regime Gate Override')}

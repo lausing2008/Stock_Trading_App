@@ -458,6 +458,24 @@ def regime(market: str = Query("US", description="US or HK")):
         raise HTTPException(503, "Regime data unavailable")
 
 
+@router.get("/style-params")
+def style_params():
+    """Canonical per-style game-plan parameters (entry/breakout/stop/target percentages).
+
+    T232-DL-STYLEPARAMS3X: this dict was previously triplicated (scheduler.py, inlined again
+    in paper_trading_engine.py, and re-invented a third time in decision-engine's aggregator.py
+    with WRONG values for GROWTH and two dead styles — SCALP/INCOME — that don't exist in the
+    real trading engine). Only 4 real styles exist: SHORT, SWING, LONG, GROWTH.
+
+    Reads paper_trading_engine's live in-memory _STYLE_PARAMS, which _load_tuned_params()
+    overwrites with Optuna-tuned stop_pct/default_tp_pct values when available — so this
+    endpoint reflects the ACTUAL values currently in effect, not a static snapshot.
+    Unauthenticated — read-only, no sensitive data.
+    """
+    from ..services.paper_trading_engine import _STYLE_PARAMS
+    return _STYLE_PARAMS
+
+
 _MARKET_BREADTH_KEY = "stockai:market_breadth"
 _MARKET_BREADTH_TTL = 60 * 60 * 4  # 4 hours
 

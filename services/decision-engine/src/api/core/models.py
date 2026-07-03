@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field, field_validator
 # ── Request ────────────────────────────────────────────────────────────────────
 
 class DecisionRequest(BaseModel):
-    style: str = Field("SWING", description="SCALP | SWING | GROWTH | INCOME")
+    # T232-DL-STYLEPARAMS3X: corrected 2026-07-04 — SCALP/INCOME never existed in the real
+    # trading engine; SHORT/LONG are the two real styles that were previously missing here.
+    style: str = Field("SWING", description="SHORT | SWING | GROWTH | LONG")
     portfolio_id: int | None = None
     equity: float = Field(10_000.0, ge=0, description="Current portfolio equity in dollars")
     open_positions: int = Field(0, ge=0)

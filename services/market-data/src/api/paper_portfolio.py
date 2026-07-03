@@ -676,6 +676,17 @@ def configure_portfolio(
         "equity_floor_pct":     (0.10,  1.00,  "Enter as decimal fraction (e.g. 0.80 for 80%)."),
         "partial_tp_pct":       (0.01,  0.50,  "Enter as decimal fraction (e.g. 0.10 for 10%)."),
     }
+    # A count-based cap set to 0 doesn't mean "block everything" — every gate that reads these
+    # keys checks `if x and x > 0:` before enforcing, so 0 (falsy) silently DISABLES the gate
+    # instead of blocking all entries. Found 2026-07-03: HK SWING Portfolio had
+    # max_entries_per_day=0 from an unvalidated Config Panel edit, which the API accepted with
+    # no error — the gate simply never fired rather than trading being blocked, but either
+    # outcome is a config mistake, not a value anyone should be able to save unintentionally.
+    _MIN_COUNT_CHECKS: dict[str, int] = {
+        "max_positions": 1, "max_market_positions": 1, "max_sector_positions": 1,
+        "max_entries_per_day": 1, "max_consecutive_losses": 1, "max_hold_days": 1,
+        "hold_stall_days": 1, "wait_exit_days": 1,
+    }
     errors: list[str] = []
     for key, val in body.items():
         if key in _RANGE_CHECKS and val is not None:
@@ -687,6 +698,14 @@ def configure_portfolio(
                 continue
             if not (lo <= fval <= hi):
                 errors.append(f"{key}={fval}: out of valid range [{lo}, {hi}]. {hint}")
+        if key in _MIN_COUNT_CHECKS and val is not None:
+            try:
+                ival = float(val)
+            except (TypeError, ValueError):
+                errors.append(f"{key}: expected a number")
+                continue
+            if ival < _MIN_COUNT_CHECKS[key]:
+                errors.append(f"{key}={ival}: must be at least {_MIN_COUNT_CHECKS[key]} (0 silently disables this gate rather than blocking entries — use the paused flag or an override endpoint to actually stop trading)")
     if errors:
         raise HTTPException(status_code=400, detail={"errors": errors})
 

@@ -33,17 +33,52 @@ def _svc_token() -> str:
 
 
 # ── Default style game-plan parameters ────────────────────────────────────────
+#
+# T232-DL-STYLEPARAMS3X: this dict was previously an independent third copy of
+# scheduler.py/paper_trading_engine.py's _STYLE_PARAMS, with WRONG GROWTH values
+# (stop -16%/target +60% here vs the real engine's -12%/+35%) and two dead styles
+# (SCALP/INCOME) that don't exist in the real trading engine — while SHORT and LONG,
+# which DO exist and ARE requested by real portfolios (paper_trading_engine.py passes
+# cfg["trading_style"] verbatim to POST /decide/{symbol}), were MISSING entirely and
+# silently fell back to SWING's parameters. Fixed 2026-07-04: fetch the canonical
+# values from market-data instead of maintaining a separate copy.
 
-_STYLE_PARAMS = {
-    "SCALP":  {"entry2_pct": 0.990, "breakout_pct": 1.010, "stop_pct": 0.975, "target_pct": 1.040},
-    "SWING":  {"entry2_pct": 0.965, "breakout_pct": 1.020, "stop_pct": 0.945, "target_pct": 1.120},
-    "GROWTH": {"entry2_pct": 0.920, "breakout_pct": 1.050, "stop_pct": 0.840, "target_pct": 1.600},
-    "INCOME": {"entry2_pct": 0.970, "breakout_pct": 1.015, "stop_pct": 0.930, "target_pct": 1.150},
+_STYLE_PARAMS_FALLBACK = {
+    "SHORT":  {"entry2_pct": 0.985, "breakout_pct": 1.010, "stop_pct": 0.970, "default_tp_pct": 1.05},
+    "SWING":  {"entry2_pct": 0.965, "breakout_pct": 1.020, "stop_pct": 0.945, "default_tp_pct": 1.12},
+    "LONG":   {"entry2_pct": 0.950, "breakout_pct": 1.030, "stop_pct": 0.900, "default_tp_pct": 1.25},
+    "GROWTH": {"entry2_pct": 0.940, "breakout_pct": 1.035, "stop_pct": 0.880, "default_tp_pct": 1.35},
 }
+
+_STYLE_PARAMS_CACHE: dict | None = None
+_STYLE_PARAMS_TS: float = 0.0
+_STYLE_PARAMS_TTL = 900  # 15 minutes — matches regime.py's cache window
+
+
+def _get_style_params() -> dict:
+    """Fetch the canonical _STYLE_PARAMS from market-data, with a local cache + hardcoded
+    fallback if market-data is unreachable (fail-open — a stale/fallback game plan is better
+    than blocking the decide endpoint entirely)."""
+    global _STYLE_PARAMS_CACHE, _STYLE_PARAMS_TS
+    if _STYLE_PARAMS_CACHE and (_time.time() - _STYLE_PARAMS_TS) < _STYLE_PARAMS_TTL:
+        return _STYLE_PARAMS_CACHE
+    try:
+        r = httpx.get(f"{_settings.market_data_url}/stocks/style-params", timeout=5.0)
+        r.raise_for_status()
+        _STYLE_PARAMS_CACHE = r.json()
+        _STYLE_PARAMS_TS = _time.time()
+        return _STYLE_PARAMS_CACHE
+    except Exception as exc:
+        log.warning("decision.style_params_fetch_failed", error=str(exc))
+        return _STYLE_PARAMS_CACHE if _STYLE_PARAMS_CACHE else _STYLE_PARAMS_FALLBACK
 
 
 def _default_game_plan(live_price: float, style: str, atr_14: float | None = None) -> dict:
-    p = _STYLE_PARAMS.get(style.upper(), _STYLE_PARAMS["SWING"])
+    style_params = _get_style_params()
+    p_raw = style_params.get(style.upper(), style_params.get("SWING", _STYLE_PARAMS_FALLBACK["SWING"]))
+    # market-data's dict uses "default_tp_pct" (not "target_pct") — normalize the key here so
+    # the rest of this function doesn't need to know which source it came from.
+    p = {**p_raw, "target_pct": p_raw.get("target_pct", p_raw.get("default_tp_pct"))}
     fixed_stop = live_price * p["stop_pct"]
     if atr_14 and atr_14 > 0:
         # GROWTH stocks need wider stops — 2.5× ATR vs 2.0× for other styles.
