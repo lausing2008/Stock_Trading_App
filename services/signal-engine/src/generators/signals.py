@@ -1226,9 +1226,9 @@ _STYLE_PROFILES: dict[str, dict] = {
         # SA-32: bull raised 0.67→0.72; bear raised 0.72→0.76; high_vol raised 0.72→0.74.
         # Outcomes audit: SWING BUY at fused 0.67-0.72 had lowest win rate cohort; tighter
         # thresholds eliminate marginal entries in all regime states.
-        # HK SWING thresholds: bull=0.74, bear=0.78 — applied via market parameter check
-        # in _apply_style_signal when symbol ends in .HK (HSI-regime overrides handle
-        # the per-symbol adjustment; these hardcoded values apply to US universe only).
+        # T232-DL6: no separate HK SWING threshold exists — this single buy_threshold dict
+        # applies identically to US and HK SWING signals. HK-specific adjustment happens only
+        # via the HSI-regime compression gates (hsi_bear_gate etc.), not a per-market threshold.
         "buy_threshold":  {"bull": 0.72, "high_vol": 0.74, "bear": 0.76, "unknown": 0.72},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
         "adx_min": 15, "adx_compression": 0.90,

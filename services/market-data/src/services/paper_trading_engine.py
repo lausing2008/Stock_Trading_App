@@ -19,7 +19,7 @@ Regime states (affect sizing, min_entry_score, trail multiplier):
 
 Entry circuit breakers (checked in order):
   max_positions | live_prices health | portfolio drawdown (20%) |
-  daily loss (4%) | daily entries (5) | bear regime gate
+  daily loss (4%) | daily entries (3) | bear regime gate
 
 Style overrides (on top of _DEFAULT_CONFIG):
   GROWTH — RSI 38-85, stop -12%, target +35%, 60d time stop, trail ×2.0
@@ -1187,7 +1187,7 @@ def _should_enter(
     # Confidence hard floor — signals between 90%–100% of min_confidence get scored
     # but signals truly below 90% are rejected here (SQL filter lets them through at 90%)
     confidence = float(signal_data.get("confidence") or 0.0)
-    min_conf = cfg.get("min_confidence", 62.0)
+    min_conf = cfg.get("min_confidence", _DEFAULT_CONFIG["min_confidence"])
     if confidence < min_conf * 0.90:
         return False, -99, [f"Confidence {confidence:.1f}% below floor {min_conf * 0.90:.1f}%"]
 
@@ -1404,7 +1404,7 @@ def _should_enter(
         should = cal_prob >= w.get("threshold", 0.52)
         notes.append(f"Calibrated win-prob {cal_prob*100:.0f}% (threshold {w.get('threshold',0.52)*100:.0f}%)")
     else:
-        should = score >= cfg.get("min_entry_score", 3)
+        should = score >= cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"])
 
     return should, score, notes
 
@@ -2177,8 +2177,8 @@ def _call_decision_engine(
                 "market":           cfg.get("market", "US"),
                 "daily_pnl_pct":    daily_pnl_pct,
                 "config_overrides": {
-                    "min_entry_score":        cfg.get("min_entry_score", 4),
-                    "min_confidence":         cfg.get("min_confidence", 62.0),
+                    "min_entry_score":        cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
+                    "min_confidence":         cfg.get("min_confidence", _DEFAULT_CONFIG["min_confidence"]),
                     "min_rr_ratio":           cfg.get("min_rr_ratio", 2.0),
                     "risk_per_trade_pct":     cfg.get("risk_per_trade_pct", 0.01),
                     "max_position_pct":       cfg.get("max_position_pct", 0.10),
@@ -2672,11 +2672,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # Tighten entry score threshold for risk-off environments
         if regime_state == "risk_off":
             cfg["min_entry_score"] = max(
-                cfg.get("min_entry_score", 3), cfg.get("regime_risk_off_min_score", 5)
+                cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_risk_off_min_score", 5)
             )
         elif regime_state == "choppy":
             cfg["min_entry_score"] = max(
-                cfg.get("min_entry_score", 3), cfg.get("regime_choppy_min_score", 4)
+                cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_choppy_min_score", 4)
             )
         if regime_state not in ("bull", "neutral"):
             log.info("paper.regime_applied",
@@ -2685,13 +2685,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
         # RE-9: Pre-emptive early warning — apply stricter thresholds BEFORE the regime flips
         if live_regime.get("is_pre_choppy"):
-            cfg["min_entry_score"] = max(cfg.get("min_entry_score", 3), cfg.get("regime_choppy_min_score", 4))
+            cfg["min_entry_score"] = max(cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_choppy_min_score", 4))
             regime_size_mult = min(regime_size_mult, cfg.get("regime_choppy_size_mult", 0.75))
             log.warning("paper.pre_choppy_warning", vix_5d_trend=live_regime.get("vix_5d_trend"),
                         spy_pct_above_ema20=live_regime.get("spy_pct_above_ema20"),
                         note="applying choppy thresholds preemptively — regime deteriorating")
         elif live_regime.get("is_pre_risk_off"):
-            cfg["min_entry_score"] = max(cfg.get("min_entry_score", 3), cfg.get("regime_risk_off_min_score", 5))
+            cfg["min_entry_score"] = max(cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_risk_off_min_score", 5))
             regime_size_mult = min(regime_size_mult, cfg.get("regime_risk_off_size_mult", 0.50))
             log.warning("paper.pre_risk_off_warning", vix=live_regime.get("vix"),
                         note="applying risk_off sizing preemptively — VIX elevated near 50EMA")
@@ -3048,16 +3048,20 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # T200: Volume confirmation gate — skip entries when intraday volume is abnormally low.
         # volume_z is stored in signal reasons by the signal engine (z-score vs 20-day avg).
         # Very low volume = thin market, harder to exit, higher slippage risk.
-        _vol_z = float((sig.reasons or {}).get("volume_z", 0)) if sig.reasons else 0.0
-        _min_vol_z = float(cfg.get("min_volume_z", -1.5))
-        if _vol_z < _min_vol_z:
-            log.info("paper.skip_low_volume",
-                     symbol=stock.symbol,
-                     volume_z=round(_vol_z, 2),
-                     min_vol_z=_min_vol_z,
-                     note="below-average volume — entry postponed, higher slippage risk")
-            _skip_tally["low_volume"] = _skip_tally.get("low_volume", 0) + 1
-            continue
+        # T232-DL5: a missing volume_z must NOT be treated as 0 (exactly average) — that silently
+        # passes the gate for a data gap. Fail-open (skip the gate) only when data is genuinely absent.
+        _vol_z_raw = (sig.reasons or {}).get("volume_z") if sig.reasons else None
+        if _vol_z_raw is not None:
+            _vol_z = float(_vol_z_raw)
+            _min_vol_z = float(cfg.get("min_volume_z", -1.5))
+            if _vol_z < _min_vol_z:
+                log.info("paper.skip_low_volume",
+                         symbol=stock.symbol,
+                         volume_z=round(_vol_z, 2),
+                         min_vol_z=_min_vol_z,
+                         note="below-average volume — entry postponed, higher slippage risk")
+                _skip_tally["low_volume"] = _skip_tally.get("low_volume", 0) + 1
+                continue
 
         # T224-A: Mainland flow gate — HK entries require positive 5-day southbound flow.
         # flow_5d_net_hkd < 0 means mainland money is net-selling the stock (bearish pressure).
@@ -3078,7 +3082,8 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # Fail-open if ta_score absent from reasons (defaults to 1.0).
         _min_ta = float(cfg.get("min_ta_score", 0.0))
         if _min_ta > 0:
-            _ta = float((sig.reasons or {}).get("ta_score", 1.0) or 1.0)
+            _ta_raw = (sig.reasons or {}).get("ta_score")
+            _ta = float(_ta_raw) if _ta_raw is not None else 1.0
             if _ta < _min_ta:
                 log.info("paper.skip_ta_gate",
                          symbol=stock.symbol,
@@ -3213,7 +3218,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         if not should_enter:
             log.info("paper.entry_skipped",
                      symbol=stock.symbol, score=score, gate=gate_source,
-                     min_score=cfg.get("min_entry_score", 3),
+                     min_score=cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
                      regime=regime_state, reasons=notes[:3])
             continue
 

@@ -474,3 +474,276 @@ failed, since the very first regime enhancement after the mirror was written (br
 confirmation) was not applied to both copies. **Not fixed in this session** — flagged as
 real architectural debt requiring either a shared module or a market-data → decision-engine
 HTTP call, not a quick patch.
+
+---
+
+## Part 7 — Deep Logic Review (2026-07-03): Full Gate/Pipeline/Cross-Service Audit
+
+Following the fixes and features in Part 6, the user asked for a comprehensive, no-stone-unturned
+review of "all the logics" across the system — not another targeted bug hunt, but an exhaustive
+map of every gate, every silent-default, every swallowed exception, every US/HK asymmetry, and
+every duplicated computation. Three parallel deep-read agents covered: (A) the paper trading
+engine's full entry/exit gate stack, (B) the signal-generation and ranking pipeline, and
+(C) decision-engine / strategy-engine / portfolio-optimizer. Nothing in this section was fixed
+during the review — it is a read-only findings catalogue, prioritized below for follow-up.
+
+### 7.1 — Confirmed live bugs (not just architectural debt)
+
+**T232-DL1 — `ta_score` falsy-zero bug silently disables the TA gate.**
+`paper_trading_engine.py` (`_scan_for_entries`, TA score gate) reads
+`reasons.get("ta_score", 1.0) or 1.0`. A genuinely terrible TA score of exactly `0.0` is
+falsy in Python, so `0.0 or 1.0` evaluates to `1.0` — the *most permissive* possible value.
+A stock with the worst possible technical score passes the TA gate identically to a stock
+with no TA score at all. Contrast with the correct pattern used two lines away for
+`insider_score`/`congress_score`, which check `is not None`. **Fix:** change to
+`v = reasons.get("ta_score"); ta = v if v is not None else 1.0`.
+
+**T232-DL2 — `min_entry_score` stale fallback constant (3 vs actual default 4).**
+`_DEFAULT_CONFIG["min_entry_score"]` is `4`, but seven separate `.get("min_entry_score", 3)`
+call sites in `paper_trading_engine.py` (lines ~1407, 2674, 2678, 2688, 2694, 3216, 3303) hardcode
+a stale fallback of `3`. Harmless today because `cfg` is always built by merging
+`_DEFAULT_CONFIG` first — but if any future code path calls these functions with a raw/partial
+config dict (e.g. a unit test, a new caller, a decision-engine-adjacent helper), the entry bar
+silently drops to a weaker value with no error. **Fix:** import the real default once and reuse
+it in every `.get()` fallback, or require `cfg` to always be pre-merged and assert that instead
+of guessing a fallback per call site.
+
+**T232-DL3 — `min_confidence` fallback disagrees with the real default by 17 points.**
+Two call sites in `paper_trading_engine.py` — `_should_enter()` (line ~1190) and the
+decision-engine payload builder (line ~2181) — use `.get("min_confidence", 62.0)`, while
+`_DEFAULT_CONFIG["min_confidence"]` is `45.0` (with per-style overrides at 45/50/etc.). Same
+failure mode as T232-DL2: currently masked by the config merge, latent otherwise.
+
+**T232-DL4 — Documentation/code drift: `max_entries_per_day`.**
+The module docstring in `paper_trading_engine.py` says daily entries are capped at "5"; the
+actual `_DEFAULT_CONFIG["max_entries_per_day"]` is `3`. Cosmetic today, but exactly the kind
+of comment that gets trusted during a future debugging session and sends someone down the
+wrong path.
+
+**T232-DL5 — `volume_z` absent-vs-zero conflation.**
+The per-candidate low-volume gate reads `float((sig.reasons or {}).get("volume_z", 0))` — a
+missing `volume_z` field (data gap) is silently treated as `0.0` (exactly average volume),
+passing the gate, rather than being flagged as "no volume data available." A stock with a
+genuine data gap looks identical to a stock with perfectly normal volume.
+
+**T232-DL6 — Stale aspirational comment: HK-specific SWING thresholds that don't exist.**
+`signals.py` (~line 1230) has a comment claiming "HK SWING thresholds: bull=0.74, bear=0.78 —
+applied via market parameter check in `_apply_style_signal` when symbol ends in .HK" — no such
+branch exists anywhere in `_decide_style`/`_apply_style_signal`. `_STYLE_PROFILES["SWING"]`
+has only `bull/high_vol/bear/unknown` keys with no HK variant; the single hardcoded threshold
+dict is applied identically to US and HK SWING signals today. Either the feature was removed
+without removing the comment, or it was never actually implemented — either way the comment
+actively misleads.
+
+**T232-DL7 — Stale aspirational doc: portfolio-optimizer regime multiplier.**
+`improvements.tsx` documents "Portfolio-optimizer fetches regime and applies position multiplier
+(bull=1.0, choppy=0.75, bear=0.60, risk_off=0.50)" as shipped. No such code exists anywhere in
+`services/portfolio-optimizer/src/` — no reference to `regime`, `decision_engine_url`, or
+`/decide/regime`. The regime-multiplier logic that *does* exist (`_REGIME_MULT` in
+decision-engine's `sizer.py`) is not reachable from portfolio-optimizer at all. The tracker
+entry needs correcting to reflect reality, or the feature needs to actually be built.
+
+### 7.2 — Regime computation: FIVE independent implementations (not two)
+
+The existing `T232-REGIME-DUPLICATION` entry undercounts the problem — it names two engines
+(decision-engine and paper_trading_engine). The full audit found **five**:
+
+1. `paper_trading_engine._fetch_market_regime` (US) — SPY/QQQ/VIX/VIX9D/IWM/MDY, EMA20/50/200,
+   4h cache-fallback, defaults to **`choppy`** on fetch failure (deliberately conservative).
+2. `paper_trading_engine._fetch_hk_market_regime` (HK) — HSI dual-SMA(50/200) + the new breadth
+   confirmation (T232-HKBREADTH-CONFIRMATION, this session).
+3. `decision-engine/src/api/core/regime.py` — its own independent SPY/QQQ/VIX re-fetch (15-min
+   cache, hardcoded `VIX_HIGH=25.0`/`VIX_FEAR=30.0`, **not configurable**), a *different* CHOPPY
+   rule than #1, and defaults to **`neutral`** on failure — the opposite fail-safe from #1. Its
+   HK classifier (`_compute_hk`) lacks the breadth confirmation from #2 entirely (already known).
+4. `ml-prediction/src/api/hmm_regime.py` — a 4-state Gaussian HMM overlay (VIX, SPY 5d return,
+   IWM vs EMA200), consumed only by #1 (as `hmm_bear_pressure`, an extra 30% size cut). Decision-
+   engine never calls this endpoint, so the same moment can carry an HMM bear-pressure flag in
+   paper trading with no analog in decision-engine's output.
+5. `signal-engine/src/generators/signals.py._fetch_market_regime` — a *third* vocabulary
+   entirely (`bull`/`high_vol`/`bear`/`unknown`, 3-4 states), derived from market-data's
+   `/stocks/fear_greed` (SPY vs 200-day MA + Fear&Greed score), stamped into every signal's
+   `reasons["market_regime"]` and separately consumed by `scheduler._get_current_regime()`
+   for the BUY-alert conviction gate. Has its own separate HK classifier `_fetch_hsi_regime`
+   (HSI vs 20-day SMA only) — a sixth implementation by strict count.
+
+**These provably can and do disagree at the same instant** — different cache TTLs (15min vs 4h
+vs 1h), different state vocabularies, different failure defaults (neutral vs choppy vs unknown),
+different classification math for the same named state. A portfolio can be gated `risk_off` by
+the live paper-trading regime while the BUY-alert emailer's conviction gate reads a `bull`
+regime baked into the signal's `reasons` from hours earlier. **Recommendation:** this is too
+large to fix as one patch (5 call sites, 3 services, 2 markets) — the actionable next step is
+designating #1/#2 (paper_trading_engine's copies) as the single source of truth, having
+decision-engine and signal-engine call `market-data`'s regime over HTTP instead of
+re-implementing it, and removing the HMM/Fear&Greed vocabularies as separate published states
+(fold them into #1/#2 as internal adjustments only, which is already how HMM is used).
+
+### 7.3 — Other duplicated computation with drift risk
+
+- **Style game-plan parameters (`_STYLE_PARAMS`), triplicated, one copy has drifted.**
+  `scheduler.py` (source of truth per its own header comment) and `paper_trading_engine.py`
+  ("mirrors scheduler — inlined to avoid circular import") currently match. Decision-engine's
+  independent third copy (`aggregator.py`) has **diverged for GROWTH**: stop `-16%`/target
+  `+60%` vs the real engine's `-12%`/`+35%` — and invents `SCALP`/`INCOME` styles that don't
+  exist anywhere in the actual trading engine, with parameters that have never been validated
+  against real trading data.
+- **`_should_enter()` (paper trading) and decision-engine's scorer/sizer/hard-rejects have
+  diverged in both directions** since the latter was "extracted faithfully from" the former.
+  `_should_enter()` has RL policy scoring, a calibrated logistic-regression entry model, a
+  premarket gap filter, and a macro-calendar blackout that decision-engine lacks entirely.
+  Decision-engine has a time-of-day gate, an extended-move/chasing guard, and a
+  regime-dependent R:R floor (`regime_min_rr_ratio`) that `_should_enter()` lacks entirely.
+  Neither is a superset of the other. The `/paper-portfolio/de-divergences` endpoint exists
+  specifically because these two scorers disagree — a real, monitored, but unresolved drift.
+- **K-Score/ranking fetched via three different query shapes**: `_scan_for_entries`'s
+  correlated-subquery join, `_monitor_positions`'s separately-written "latest per stock"
+  subquery, and `scheduler.check_signal_alerts`'s HTTP call to ranking-engine's own API. Any
+  skew between ranking-engine's cache and the DB `Ranking` table's most recent row produces
+  inconsistent K-Score reads between the trading engine and the alerting system.
+- **NYSE holiday calendar duplicated in two files** with different types and different year
+  coverage: `paper_trading_engine._NYSE_HOLIDAYS` (frozenset of `date`, through 2027) vs
+  `scheduler._NYSE_HOLIDAYS` (frozenset of `(y,m,d)` tuples, only through 2026). A missed
+  update in one but not the other silently desyncs whether the engine thinks the market is
+  open vs whether the scheduler triggers that day's refresh.
+- **RSI/MACD/ATR/Bollinger computed independently in `strategy-engine`'s backtest DSL**
+  (`dsl/evaluator.py::compute_features`) instead of calling the dedicated `technical-analysis`
+  service. The RSI implementations provably differ: technical-analysis has an explicit
+  NaN-vs-zero disambiguation fix (T232-TA1) that the DSL's from-scratch reimplementation lacks.
+  Backtests run through strategy-engine compute slightly different indicator values than the
+  same symbol's live numbers used by signal-engine.
+- **VIX position-size multiplier formula** — identical `max(0.5, 1-max(0,(vix-20)/30))` in both
+  decision-engine's `sizer.py` and `paper_trading_engine.py`, kept in sync only by a comment
+  ("Matches decision-engine formula") — no shared function, so a future tune to one silently
+  stops matching the other.
+- **Sector-relative-strength benchmark differs by data path for the same stock.** Ranking-
+  engine's own `_stock_rs`/`_etf_20d_return` (feeds K-Score) is a separate implementation from
+  market-data's `/stocks/{symbol}/relative-strength` (feeds signal generation's `kscore_boost`
+  and RS-based compression). Signal-engine's own docstring claims market-data is "the single
+  source of truth for RS data" — that claim is false for the ranking-engine/leaderboard path.
+
+### 7.4 — Config values duplicated across services with drift risk (table)
+
+| Config key | decision-engine | paper_trading_engine / scheduler | Kept in sync by |
+|---|---|---|---|
+| `min_confidence` | 62.0 flat | 45.0 base, per-style 45–50+ | Only when explicitly forwarded in `config_overrides`; any other caller gets 62.0 |
+| `min_entry_score` | 4 default | 4 base, SWING override 5 | Same — only synced via explicit forwarding |
+| `regime_vix_high` / `regime_vix_fear` | Hardcoded 25.0/30.0, **not configurable** | Configurable via portfolio config | Not synced at all — tuning one has zero effect on the other |
+| `_STYLE_PARAMS` (per-style stop/target %) | Own copy, diverged for GROWTH | Two copies, kept matching by comment discipline | Manual — already failed once (see 7.3) |
+| `regime_min_rr_ratio`, `max_breakout_extension_pct` | Present (3.0 / 6.0) | Absent entirely | N/A — decision-engine-only floor with no real-engine equivalent |
+| `max_entry_gap_pct` (premarket gap filter) | Absent | Present, per-style overrides | N/A — paper-trading-only guard with no decision-engine equivalent |
+
+### 7.5 — Silent defaults, swallowed exceptions, and missing freshness checks (representative, not exhaustive)
+
+The full per-line inventory from all three research passes is long (60+ instances of bare
+`except: pass` / `except Exception: pass` across `paper_trading_engine.py`, `scheduler.py`,
+`signal-engine/api/routes.py`, and `decision-engine`). Rather than list all of them here, the
+**pattern worth fixing structurally** is:
+
+- **Most swallowed exceptions are deliberate fail-open design** (comments confirm this: macro
+  blackout, regime-suspension Redis check, index-trend gate, research-gating) — appropriate for
+  a trading system that should degrade to "trade normally" rather than "stop trading" on an
+  ancillary data-source outage. This is a reasonable default posture, not a bug.
+- **The actual gap is observability, not the fail-open behavior itself.** Nearly all of these
+  are `except Exception: pass` with **zero logging** (`_apply_tuned_hold_days`, `_clear_gate_block`,
+  `_write_gate_block`, `_write_no_entry_summary`, broker fill-check inner catches) — if Redis or
+  a dependency degrades in a way that trips many of these simultaneously, there would be no log
+  line anywhere to notice it happened, only silently-wrong behavior (stale gate-block messages,
+  tuned params not applying, no-entry-summary not writing).
+- **Two specific instances raise the stakes above "cosmetic":**
+  - `scheduler._run_paper_trading_step`'s Redis lock acquire (bare `except: pass`) — if Redis is
+    down, the distributed lock silently no-ops, **re-enabling the double-execution race the lock
+    exists to prevent** (double-scanning/double-entering on the same cycle).
+  - `scheduler.check_signal_alerts`'s Redis lock acquire — identical risk for duplicate alert
+    emails.
+  - Both should fail *closed* (skip the run and log an error) rather than fail open, since the
+    lock's entire purpose is preventing a specific race, not being an optional nicety.
+- **Cross-service reads with no freshness/staleness field surfaced to the caller:** signal
+  confidence-calibration cache, ranking-engine's pattern cache (6h TTL, in-process — resets on
+  every restart, not shared across replicas), and the ETF 20-day-return cache (1h TTL, same
+  in-process/non-shared issue) all return data with no `as_of`/`cached_at` field, so a caller
+  cannot distinguish "fresh" from "stale because the upstream dependency has been down for
+  hours" from "never populated since the last container restart."
+
+### 7.6 — Data-sufficiency threshold inconsistency (ranking vs signal pipeline)
+
+**T232-DL8 — Ranking-engine (60 bars) and signal-engine (50 bars) disagree on "not enough
+history," and only one of them tells you about it.** A stock with 55 daily bars gets a
+(confidence-compressed but present) signal from signal-engine, yet gets **zero ranking row at
+all** from ranking-engine (`_persist_rankings`/`_leaderboard_live` both hard-`continue` below
+60 bars) — it silently vanishes from the leaderboard/screener with no persisted reason. Compare
+to signal-engine, which persists `insufficient_history` directly into the signal's `reasons`
+JSON — queryable, visible, explained. Ranking-engine has no equivalent per-stock flag; the only
+visibility is an aggregate `skipped` counter in the batch-level log line. A trader looking at
+a recent IPO or newly-tracked stock has no way to tell "not ranked because too new" from "not
+ranked because something is broken" without grepping container logs for the day it happened.
+**Fix (moderate effort):** either lower ranking-engine's threshold to match signal-engine's 50
+(if the K-Score math tolerates it — the RS component already independently degrades gracefully
+below 21 bars), or persist a `skip_reason` alongside `stock_id` in a lightweight table/Redis key
+so the gap is queryable instead of log-only.
+
+### 7.7 — US/HK asymmetries beyond regime (catalogue)
+
+- Broker order routing is US-only — `_place_broker_entry`/`_place_broker_exit` hard-skip any
+  `.HK` symbol; HK trades are always pure simulation even on a portfolio with a linked broker.
+  (Expected/by design — no HK broker integration exists yet — but worth stating explicitly
+  since it's not documented anywhere a new contributor would see it.)
+- VIX-gradient position sizing and the HMM bear-pressure overlay are both silently no-ops for
+  HK (regime dict never populates `vix`; HMM endpoint is never called for HK) — not a bug, but
+  means two of the paper-trading engine's four size-adjustment mechanisms simply don't exist
+  for HK portfolios, which isn't surfaced anywhere in the `/paper-gates` docs updated this
+  session (those docs cover the regime *gate*, not the sizing asymmetry).
+  Breadth-based sizing exists for both markets but is computed from **structurally different
+  metrics** (US: IWM/MDY small/mid-cap ETFs; HK: % of DB-tracked stocks above their own 200-SMA)
+  under the same field names (`breadth_weak`/`breadth_size_mult`) — same name, different
+  meaning, easy to misread when comparing US and HK regime dicts side by side.
+- Options flow / short-interest / analyst-momentum enrichment calls fire unconditionally for
+  HK symbols even though `_fetch_options_flow`'s own docstring says it always returns
+  `(None, None)` for HK — every HK signal-generation cycle makes a known-wasted HTTP round
+  trip, and HK signals systematically lack a `+0.04`/`+0.02` confidence boost available to
+  every US signal, for reasons unrelated to actual market conditions.
+- The alert-emailer's conviction gate (`scheduler._is_conviction_buy`) applies identical
+  RSI/MACD/ADX/K-Score/ML thresholds to HK and US signals with zero market-specific branching —
+  the opposite asymmetry from the paper-trading engine, which tightens HK thresholds
+  extensively via `_HK_MARKET_OVERRIDES`. Neither is necessarily wrong, but the two systems
+  (alerts vs. actual trading) disagree on how much HK deserves stricter treatment.
+- HK's `regime_suspension_days` override (7, more forgiving/slower-to-trip) coexists with a
+  *stricter* `min_entry_score` override (6 vs US 4) and `min_confidence` override (65 vs 45) —
+  an inconsistent risk posture (looser circuit breaker, tighter entry gate) with no comment
+  explaining whether this combination was deliberately chosen or is itself drift.
+
+### 7.8 — Scope note
+
+This review deliberately did not re-litigate findings already fixed earlier in this session
+(ranking staleness, watchlist tagging gaps, config silent-save, VIX-crash, wrong imports) or
+already-tracked architectural debt (`T232-REGIME-DUPLICATION` as originally scoped). Everything
+above is **net-new** from the 2026-07-03 deep-logic pass. See `improvements.tsx` Tier 232 entries
+`T232-DL1` through `T232-DL8` and the corresponding duplication/asymmetry entries for tracking.
+
+### 7.9 — Follow-up fixes shipped (2026-07-04)
+
+The eight self-contained, low-risk findings from this review were fixed and deployed the
+following day (the five architectural-debt items — 5-way regime duplication, triplicated style
+params, dual scorer drift, ranking/signal history-threshold mismatch — remain open, correctly
+tracked as debt requiring a real design decision, not a quick patch):
+
+- **T232-DL1** (`ta_score` falsy-zero) — `paper_trading_engine.py` TA gate now checks
+  `is not None` instead of `x or 1.0`.
+- **T232-DL5** (`volume_z` absent-vs-zero) — same fix pattern; a missing `volume_z` now skips
+  the low-volume gate (fail-open, consistent with the adjacent HK flow gate) instead of being
+  read as exactly-average volume.
+- **T232-DL2 / T232-DL3** (stale `min_entry_score`/`min_confidence` fallback constants) — all 9
+  call sites across `paper_trading_engine.py` now reference `_DEFAULT_CONFIG[...]` instead of
+  repeating independently-drifted magic numbers.
+- **T232-DL4** (doc/code drift, "5" vs actual "3" daily entries) — docstring corrected to match
+  the real, deliberately-tuned value.
+- **T232-DL6** (stale HK SWING threshold comment) — replaced with an accurate comment; no HK-
+  specific SWING threshold branch was built, since there's no evidence the described values were
+  ever validated (HK outcome-tracking sample is thin — see `T232-DATA1`).
+- **T232-DL-OBSERVABILITY** (Redis lock fail-open) — `_run_paper_trading_step`'s lock now fails
+  **closed** (skip the cycle, log ERROR, next tick retries) since a missed lock here risks a real
+  double cash-credit on exit. `check_signal_alerts`' lock deliberately stays fail-open (worst
+  case is a duplicate email, and a DB-level dedup fallback already exists) but now logs a
+  WARNING instead of silently swallowing the exception.
+
+All changes compile-checked against production's actual Python 3.11 container (not just local
+3.12) before deploy, per the standing lesson from the earlier f-string incident this session.

@@ -917,8 +917,13 @@ def _run_paper_trading_step(label: str = "refresh") -> None:
         if not acquired:
             log.info("paper.step_skipped_locked", label=label, reason="another run in progress")
             return
-    except Exception:
-        pass  # Redis unavailable — allow through; double-execution is unlikely without it
+    except Exception as _lock_exc:
+        # T232-DL-OBSERVABILITY: fail CLOSED, not open. This lock exists specifically to prevent
+        # concurrent paper_trading_step() runs from double-crediting cash on the same exit — a
+        # real correctness bug, not just a nicety. Skipping this cycle (next tick retries) is
+        # strictly safer than risking a double-execution because Redis hiccuped.
+        log.error("paper.step_skipped_lock_unavailable", label=label, error=str(_lock_exc))
+        return
     try:
         paper_trading_step()
         # Poll pending broker orders for actual fills (no-op if no broker-linked portfolios).
@@ -955,8 +960,12 @@ def check_signal_alerts() -> None:
         if not acquired:
             log.info("signal_alert.skipped_locked", reason="another run in progress")
             return
-    except Exception:
-        pass  # Redis unavailable — allow through; deduplication falls back to DB last_signal
+    except Exception as _lock_exc:
+        # Unlike the paper-trading lock, this one intentionally fails open: worst case on a
+        # concurrent double-run is a duplicate alert email, not a financial double-credit, and
+        # there's a real DB-level fallback (last_signal dedup) below. Still log it — a silent
+        # `except: pass` here was itself a T232-DL-OBSERVABILITY finding (zero trace on Redis outage).
+        log.warning("signal_alert.lock_unavailable", error=str(_lock_exc), note="allowing through; DB dedup applies")
     try:
         with SessionLocal() as session:
             alerts = session.execute(
