@@ -86,7 +86,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 
 
 from .ingestion import ingest_universe
-from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification
+from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills
 from ..api.routes import refresh_live_price_cache
 
@@ -2647,6 +2647,219 @@ def send_morning_digest(markets: list | None = None) -> None:
         _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
 
 
+# ── Post-open digests — 30 min and 1hr after each market opens ──────────────────
+#
+# Snapshot format stored in Redis under stockai:post_open_snapshot:{market} (24h TTL):
+#   {"regime_state": str, "vix": float|None, "spy_price": float|None,
+#    "signals": {symbol: signal_str, ...},   # current SWING signal per open-position symbol
+#    "sent_windows": [str, ...]}             # which windows already emailed today, for dedup
+#
+# The 30-min run captures the full picture vs. the morning digest's last-known state.
+# The 1hr run captures only what changed since the 30-min run (delta-only, per user request).
+_POST_OPEN_SNAPSHOT_TTL = 24 * 3600
+
+
+def _post_open_snapshot_key(market: str) -> str:
+    return f"stockai:post_open_snapshot:{market.upper()}"
+
+
+def send_post_open_digest(market: str, window: str) -> None:
+    """Compile and email a post-open update for one market — 30 min or 1 hour after open.
+
+    Reports, relative to the previous snapshot (morning digest for the 30min run; the 30min
+    run's own snapshot for the 1hr run):
+      1. Regime/VIX change (only shown if it actually changed)
+      2. Open paper positions: price move since open + any signal flip
+      3. New BUY/SELL signals fired since the previous snapshot
+      4. Top 3 gainers/losers across the user's watchlists for this market
+
+    Skips sending entirely if nothing meaningful changed (T232-POSTOPEN1: avoid inbox noise
+    on quiet days) — always updates the snapshot regardless, so the 1hr run's baseline is
+    still the most recent real data even if the 30min run had nothing to report.
+    """
+    market = market.upper()
+    _t0 = time.monotonic()
+    _job_name = f"post_open_digest_{market.lower()}_{window}"
+    try:
+        redis_client = _get_redis()
+        snap_key = _post_open_snapshot_key(market)
+        prev_raw = redis_client.get(snap_key)
+        prev = json.loads(prev_raw) if prev_raw else {}
+
+        with SessionLocal() as session:
+            users = session.execute(
+                select(User).where(User.email.isnot(None), User.email != "")
+            ).scalars().all()
+            if not users:
+                _record_job_status(_job_name, "ok", time.monotonic() - _t0)
+                return
+
+            # ── 1. Regime / VIX change ──────────────────────────────────────────
+            live_regime = get_last_regime() if market == "US" else (_fetch_hk_regime_snapshot() or {})
+            cur_state = (live_regime or {}).get("state", "unknown")
+            cur_vix = (live_regime or {}).get("vix")
+            cur_spy = (live_regime or {}).get("spy_price")
+            prev_state = prev.get("regime_state")
+            regime_changed = bool(prev_state) and prev_state != cur_state
+
+            # ── 2. Open positions: price move + signal flip ─────────────────────
+            open_trades = session.execute(
+                select(PaperTrade).where(PaperTrade.stage == "open")
+            ).scalars().all()
+            open_trades = [t for t in open_trades if
+                           (t.symbol.upper().endswith(".HK")) == (market == "HK")]
+
+            latest_sig_subq = (
+                select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+                .where(Signal.horizon == "SWING")
+                .group_by(Signal.stock_id)
+                .subquery()
+            )
+            cur_signals: dict[str, str] = {}
+            position_rows: list[dict] = []
+            if open_trades:
+                symbols = [t.symbol for t in open_trades]
+                sig_rows = session.execute(
+                    select(Stock.symbol, Signal.signal)
+                    .join(latest_sig_subq, Stock.id == latest_sig_subq.c.stock_id)
+                    .join(Signal, (Signal.stock_id == latest_sig_subq.c.stock_id)
+                          & (Signal.ts == latest_sig_subq.c.max_ts) & (Signal.horizon == "SWING"))
+                    .where(Stock.symbol.in_(symbols))
+                ).all()
+                cur_signals = {sym: str(sig.value if hasattr(sig, "value") else sig) for sym, sig in sig_rows}
+
+                prev_signals: dict = prev.get("signals", {})
+                for t in open_trades:
+                    live_price = t.current_price or t.entry_price
+                    pnl_pct = ((live_price - t.entry_price) / t.entry_price * 100) if t.entry_price else None
+                    sig_now = cur_signals.get(t.symbol)
+                    sig_prev = prev_signals.get(t.symbol)
+                    position_rows.append({
+                        "symbol": t.symbol,
+                        "pnl_pct": pnl_pct,
+                        "current_price": live_price,
+                        "current_stop": float(t.current_stop) if t.current_stop else None,
+                        "signal_now": sig_now,
+                        "signal_flipped": bool(sig_prev and sig_now and sig_prev != sig_now),
+                        "signal_prev": sig_prev,
+                    })
+                position_rows.sort(key=lambda p: p.get("pnl_pct") or 0, reverse=True)
+
+            # ── 3. New BUY/SELL signals since previous snapshot ─────────────────
+            prev_signals_all: dict = prev.get("watchlist_signals", {})
+            watchlist_stock_ids = list({
+                wi.stock_id for wi in session.execute(
+                    select(WatchlistItem)
+                    .join(Watchlist, WatchlistItem.watchlist_id == Watchlist.id)
+                    .join(User, Watchlist.user_id == User.id)
+                    .where(User.email.isnot(None), User.email != "")
+                ).scalars()
+            })
+            new_signal_changes: list[dict] = []
+            cur_watchlist_signals: dict[str, str] = {}
+            if watchlist_stock_ids:
+                wl_sig_subq = (
+                    select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+                    .where(Signal.horizon == "SWING", Signal.stock_id.in_(watchlist_stock_ids))
+                    .group_by(Signal.stock_id)
+                    .subquery()
+                )
+                wl_rows = session.execute(
+                    select(Stock.symbol, Stock.market, Signal.signal)
+                    .join(wl_sig_subq, Stock.id == wl_sig_subq.c.stock_id)
+                    .join(Signal, (Signal.stock_id == wl_sig_subq.c.stock_id)
+                          & (Signal.ts == wl_sig_subq.c.max_ts) & (Signal.horizon == "SWING"))
+                    .where(Stock.market == market)
+                ).all()
+                for sym, mkt, sig in wl_rows:
+                    sig_str = str(sig.value if hasattr(sig, "value") else sig)
+                    cur_watchlist_signals[sym] = sig_str
+                    prev_sig = prev_signals_all.get(sym)
+                    if sig_str in ("BUY", "SELL") and prev_sig != sig_str:
+                        new_signal_changes.append({"symbol": sym, "signal": sig_str, "prev_signal": prev_sig})
+
+            # ── 4. Top gainers/losers across watchlists for this market ─────────
+            movers: list[dict] = []
+            if watchlist_stock_ids:
+                latest_price_subq = (
+                    select(Price.stock_id, func.max(Price.ts).label("max_ts"))
+                    .where(Price.timeframe == "D1", Price.stock_id.in_(watchlist_stock_ids))
+                    .group_by(Price.stock_id)
+                    .subquery()
+                )
+                prow = session.execute(
+                    select(Stock.symbol, Price.close, Price.open)
+                    .join(Price, Stock.id == Price.stock_id)
+                    .join(latest_price_subq, (Price.stock_id == latest_price_subq.c.stock_id)
+                          & (Price.ts == latest_price_subq.c.max_ts))
+                    .where(Stock.market == market)
+                ).all()
+                for sym, close, open_ in prow:
+                    if open_ and close:
+                        movers.append({"symbol": sym, "change_pct": (float(close) - float(open_)) / float(open_) * 100})
+                movers.sort(key=lambda m: m["change_pct"], reverse=True)
+
+            # ── Decide whether there's anything worth emailing ──────────────────
+            has_content = (
+                regime_changed
+                or any(p["signal_flipped"] for p in position_rows)
+                or bool(new_signal_changes)
+                or any(abs(p.get("pnl_pct") or 0) >= 2.0 for p in position_rows)
+            )
+
+            # Always refresh the snapshot so the next run's delta is accurate,
+            # even when this run had nothing worth emailing.
+            redis_client.setex(snap_key, _POST_OPEN_SNAPSHOT_TTL, json.dumps({
+                "regime_state": cur_state,
+                "vix": cur_vix,
+                "spy_price": cur_spy,
+                "signals": cur_signals,
+                "watchlist_signals": cur_watchlist_signals,
+            }))
+
+            if not has_content:
+                _record_job_status(_job_name, "ok", time.monotonic() - _t0)
+                log.info("post_open_digest.skipped_no_change", market=market, window=window)
+                return
+
+            sent = 0
+            for user in users:
+                ok = send_post_open_digest_email(
+                    to=user.email,
+                    market=market,
+                    window=window,
+                    regime_changed=regime_changed,
+                    prev_state=prev_state,
+                    cur_state=cur_state,
+                    cur_vix=cur_vix,
+                    positions=position_rows,
+                    new_signal_changes=new_signal_changes,
+                    top_movers=movers[:3],
+                    bottom_movers=movers[-3:][::-1] if len(movers) > 3 else [],
+                )
+                if ok:
+                    sent += 1
+
+        _record_job_status(_job_name, "ok", time.monotonic() - _t0)
+        log.info("post_open_digest.done", market=market, window=window, sent=sent,
+                  regime_changed=regime_changed, signal_changes=len(new_signal_changes))
+
+    except Exception as exc:
+        log.error("post_open_digest.failed", market=market, window=window, error=str(exc), exc_info=True)
+        _record_job_status(_job_name, "error", time.monotonic() - _t0, str(exc))
+
+
+def _fetch_hk_regime_snapshot() -> dict | None:
+    """Lightweight HK regime lookup for the post-open digest (avoids importing the full
+    paper-trading regime cache, which is US-keyed by default)."""
+    try:
+        from .paper_trading_engine import _fetch_hk_market_regime, _DEFAULT_CONFIG
+        return _fetch_hk_market_regime(_DEFAULT_CONFIG)
+    except Exception as exc:
+        log.warning("post_open_digest.hk_regime_fetch_failed", error=str(exc))
+        return None
+
+
 def send_paper_portfolio_digest() -> None:
     """Send after-market portfolio digest email to all users with email configured.
 
@@ -2877,6 +3090,31 @@ def start_scheduler() -> None:
         lambda: send_morning_digest(["HK"]),
         CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
         id="morning_digest_hk", replace_existing=True, **_JOB_DEFAULTS,
+    )
+
+    # ── Post-open digests — 30 min and 1hr after each market opens ──────────────
+    # US opens 09:30 ET → 10:00 ET / 10:30 ET. HK opens 09:30 HKT → 10:00 HKT / 10:30 HKT.
+    # Only sent when something changed (regime shift, signal flip, new BUY/SELL, big move) —
+    # see send_post_open_digest's has_content check.
+    _scheduler.add_job(
+        lambda: send_post_open_digest("US", "30min"),
+        CronTrigger(hour=10, minute=0, day_of_week="mon-fri", timezone="America/New_York"),
+        id="post_open_digest_us_30min", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    _scheduler.add_job(
+        lambda: send_post_open_digest("US", "1hr"),
+        CronTrigger(hour=10, minute=30, day_of_week="mon-fri", timezone="America/New_York"),
+        id="post_open_digest_us_1hr", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    _scheduler.add_job(
+        lambda: send_post_open_digest("HK", "30min"),
+        CronTrigger(hour=10, minute=0, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="post_open_digest_hk_30min", replace_existing=True, **_JOB_DEFAULTS,
+    )
+    _scheduler.add_job(
+        lambda: send_post_open_digest("HK", "1hr"),
+        CronTrigger(hour=10, minute=30, day_of_week="mon-fri", timezone="Asia/Hong_Kong"),
+        id="post_open_digest_hk_1hr", replace_existing=True, **_JOB_DEFAULTS,
     )
 
     # ── Paper portfolio after-market digest — 17:00 ET (1h after US close) ──

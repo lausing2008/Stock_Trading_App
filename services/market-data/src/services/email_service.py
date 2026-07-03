@@ -1123,6 +1123,195 @@ def send_paper_portfolio_digest_email(
     return send_email(to, subject, body_html, body_text)
 
 
+def send_post_open_digest_email(
+    to: str,
+    market: str,
+    window: str,  # "30min" | "1hr"
+    regime_changed: bool,
+    prev_state: str | None,
+    cur_state: str,
+    cur_vix: float | None,
+    positions: list,           # [{symbol, pnl_pct, current_price, current_stop, signal_now, signal_flipped, signal_prev}]
+    new_signal_changes: list,  # [{symbol, signal, prev_signal}]
+    top_movers: list,          # [{symbol, change_pct}]
+    bottom_movers: list,       # [{symbol, change_pct}]
+) -> bool:
+    """Post-open market update — 30 min or 1 hour after {market} opens.
+
+    Only sent when something changed (see send_post_open_digest's has_content check).
+    The 1hr email is delta-only vs. the 30min email's snapshot — it will not repeat
+    unchanged positions/signals already reported in the 30min email.
+    """
+    from datetime import date as _date
+    date_str = _date.today().strftime("%b %d, %Y")
+    window_label = "30 min after open" if window == "30min" else "1 hour after open"
+
+    _state_color = {"bull": "#22c55e", "neutral": "#facc15", "choppy": "#f97316",
+                     "risk_off": "#f97316", "bear": "#ef4444", "unknown": "#94a3b8"}
+    _state_label = {"bull": "BULL", "neutral": "NEUTRAL", "choppy": "CHOPPY",
+                     "risk_off": "RISK OFF", "bear": "BEAR", "unknown": "UNKNOWN"}
+
+    # ── Regime change banner ──────────────────────────────────────────────────
+    regime_html = ""
+    regime_text = ""
+    if regime_changed:
+        pc = _state_color.get(prev_state, "#94a3b8")
+        cc = _state_color.get(cur_state, "#94a3b8")
+        pl = _state_label.get(prev_state, (prev_state or "?").upper())
+        cl = _state_label.get(cur_state, cur_state.upper())
+        vix_str = f" · VIX {cur_vix:.1f}" if cur_vix is not None else ""
+        regime_html = f"""
+    <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:20px">
+      <div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">⚠ Regime Changed</div>
+      <div style="font-size:14px;color:#374151">
+        <span style="color:{pc};font-weight:700">{pl}</span> → <span style="color:{cc};font-weight:700">{cl}</span>{vix_str}
+      </div>
+    </div>"""
+        regime_text = f"\n⚠ REGIME CHANGED: {pl} → {cl}{vix_str}\n"
+
+    # ── Open positions ────────────────────────────────────────────────────────
+    pos_rows_html = ""
+    pos_lines_text = ""
+    for p in positions:
+        sym = p["symbol"]
+        pct = p.get("pnl_pct")
+        pct_str = f"{'+' if pct and pct >= 0 else ''}{pct:.1f}%" if pct is not None else "—"
+        pct_color = "#22c55e" if pct and pct >= 0 else "#ef4444" if pct is not None else "#94a3b8"
+        price = p.get("current_price")
+        price_str = f"${price:,.2f}" if price else "—"
+        stop = p.get("current_stop")
+        stop_dist_str = "—"
+        if price and stop:
+            stop_dist_pct = (price - stop) / price * 100
+            stop_dist_str = f"{stop_dist_pct:.1f}% to stop"
+        flip_badge = ""
+        flip_text = ""
+        if p.get("signal_flipped"):
+            sig_color = {"BUY": "#22c55e", "SELL": "#ef4444", "HOLD": "#facc15", "WAIT": "#f97316"}.get(p["signal_now"], "#94a3b8")
+            flip_badge = f' <span style="background:{sig_color}22;color:{sig_color};font-size:10px;font-weight:700;padding:1px 6px;border-radius:3px;border:1px solid {sig_color}55">⚡ {p.get("signal_prev","?")}→{p["signal_now"]}</span>'
+            flip_text = f" [SIGNAL FLIP: {p.get('signal_prev','?')}→{p['signal_now']}]"
+        pos_rows_html += (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{sym}{flip_badge}</td>'
+            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{pct_color}">{pct_str}</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#64748b">{price_str}</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{stop_dist_str}</td>'
+            f'</tr>'
+        )
+        pos_lines_text += f"  {sym:8}  {pct_str:>7}  {price_str:>10}  {stop_dist_str}{flip_text}\n"
+
+    pos_section_html = ""
+    pos_section_text = ""
+    if pos_rows_html:
+        pos_section_html = f"""
+    <div style="margin-top:20px">
+      <div style="font-size:11px;font-weight:700;color:#6366f1;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Your Open Positions</div>
+      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
+        <tr style="background:#f1f5f9">
+          <th style="padding:6px 10px;font-size:11px;color:#475569;text-align:left">Symbol</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;text-align:left">Move</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;text-align:left">Price</th>
+          <th style="padding:6px 10px;font-size:11px;color:#475569;text-align:left">Stop Distance</th>
+        </tr>
+        {pos_rows_html}
+      </table>
+    </div>"""
+        pos_section_text = f"\nYOUR OPEN POSITIONS:\n{pos_lines_text}"
+
+    # ── New BUY/SELL signal changes ───────────────────────────────────────────
+    sig_rows_html = ""
+    sig_lines_text = ""
+    for c in new_signal_changes[:10]:
+        sig_color = "#22c55e" if c["signal"] == "BUY" else "#ef4444"
+        prev_str = c.get("prev_signal") or "—"
+        sig_rows_html += (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:7px 10px;font-weight:700;font-size:13px">{c["symbol"]}</td>'
+            f'<td style="padding:7px 10px;font-size:12px;color:#94a3b8">{prev_str} →</td>'
+            f'<td style="padding:7px 10px;font-size:13px;font-weight:700;color:{sig_color}">{c["signal"]}</td>'
+            f'</tr>'
+        )
+        sig_lines_text += f"  {c['symbol']:8}  {prev_str} → {c['signal']}\n"
+
+    sig_section_html = ""
+    sig_section_text = ""
+    if sig_rows_html:
+        sig_section_html = f"""
+    <div style="margin-top:20px">
+      <div style="font-size:11px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">New Signals Since Last Check</div>
+      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
+        {sig_rows_html}
+      </table>
+    </div>"""
+        sig_section_text = f"\nNEW SIGNALS:\n{sig_lines_text}"
+
+    # ── Top/bottom watchlist movers ───────────────────────────────────────────
+    def _mover_row(m: dict) -> str:
+        c = "#22c55e" if m["change_pct"] >= 0 else "#ef4444"
+        s = "+" if m["change_pct"] >= 0 else ""
+        return (
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:6px 10px;font-weight:700;font-size:13px">{m["symbol"]}</td>'
+            f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{c}">{s}{m["change_pct"]:.1f}%</td>'
+            f'</tr>'
+        )
+
+    movers_html = ""
+    movers_text = ""
+    if top_movers or bottom_movers:
+        gainers_html = "".join(_mover_row(m) for m in top_movers)
+        losers_html = "".join(_mover_row(m) for m in bottom_movers)
+        movers_html = f"""
+    <div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <div style="font-size:11px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Top Gainers</div>
+        <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">{gainers_html}</table>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;color:#ef4444;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Top Losers</div>
+        <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">{losers_html}</table>
+      </div>
+    </div>"""
+        gainers_text = "".join(f"  {m['symbol']:8}  +{m['change_pct']:.1f}%\n" for m in top_movers)
+        losers_text = "".join(f"  {m['symbol']:8}  {m['change_pct']:.1f}%\n" for m in bottom_movers)
+        movers_text = f"\nTOP GAINERS:\n{gainers_text}\nTOP LOSERS:\n{losers_text}"
+
+    subject_bits = []
+    if regime_changed:
+        subject_bits.append(f"Regime→{_state_label.get(cur_state, cur_state.upper())}")
+    if any(p.get("signal_flipped") for p in positions):
+        subject_bits.append("Signal flip")
+    if new_signal_changes:
+        subject_bits.append(f"{len(new_signal_changes)} new signal(s)")
+    subject_detail = " · ".join(subject_bits) if subject_bits else "Update"
+    subject = f"📈 {market} {window_label}: {subject_detail} — {date_str}"
+
+    body_text = (
+        f"{market} Post-Open Update — {window_label} — {date_str}\n"
+        f"{regime_text}"
+        f"{pos_section_text}"
+        f"{sig_section_text}"
+        f"{movers_text}"
+    )
+    body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
+  <div style="max-width:560px;margin:auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+    <div style="margin-bottom:20px">
+      <div style="font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">{market} Post-Open Update · {window_label} · {date_str}</div>
+      <div style="font-size:20px;font-weight:700;color:#111827">What changed since {"open" if window == "30min" else "30 min ago"}</div>
+    </div>
+    {regime_html}
+    {pos_section_html}
+    {sig_section_html}
+    {movers_html}
+    <p style="font-size:12px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:12px">
+      <a href="https://lausing.com/signal-filters" style="color:#6366f1">View signal filters →</a> ·
+      <a href="https://lausing.com/paper-portfolio" style="color:#6366f1">View paper portfolio →</a>
+    </p>
+  </div>
+</body></html>"""
+    return send_email(to, subject, body_html, body_text)
+
+
 def send_broker_reauth_email(to: str, broker_name: str, authorize_url: str) -> bool:
     """Notify the user that their broker OAuth tokens have expired and provide a re-auth link."""
     subject = f"Action Required: Re-authorize {broker_name} — tokens expired"

@@ -14,6 +14,12 @@ const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string
   // reverted from a brief combined-job experiment back to separate per-market digests).
   morning_digest_us:         { label: 'US Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + open positions for US (Mon–Fri 08:50 ET)' },
   morning_digest_hk:         { label: 'HK Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + open positions for HK (Mon–Fri 08:50 HKT)' },
+  // Post-open digests — only emails when something changed (regime shift, signal flip, new
+  // BUY/SELL, big move); the job still records "ok" on skip, so staleness tracking works.
+  post_open_digest_us_30min: { label: 'US +30min Update',            maxAgeDays: 2,  desc: 'Regime/signal/mover changes since open — sent only if something changed (Mon–Fri 10:00 ET)' },
+  post_open_digest_us_1hr:   { label: 'US +1hr Update',              maxAgeDays: 2,  desc: 'Delta vs the +30min check — sent only if something changed (Mon–Fri 10:30 ET)' },
+  post_open_digest_hk_30min: { label: 'HK +30min Update',            maxAgeDays: 2,  desc: 'Regime/signal/mover changes since open — sent only if something changed (Mon–Fri 10:00 HKT)' },
+  post_open_digest_hk_1hr:   { label: 'HK +1hr Update',              maxAgeDays: 2,  desc: 'Delta vs the +30min check — sent only if something changed (Mon–Fri 10:30 HKT)' },
   // Intraday refresh (full pipeline)
   us_refresh:                { label: 'US Intraday Refresh',         maxAgeDays: 2,  desc: 'Prices + K-Score rankings + signals every 5 min (US market hours)' },
   hk_refresh:                { label: 'HK Intraday Refresh',         maxAgeDays: 2,  desc: 'Prices + K-Score rankings + signals every 5 min (HK market hours)' },
@@ -249,10 +255,31 @@ export default function AdminHealthPage() {
             })}
           </div>
 
+          {/* Post-open digests */}
+          <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>POST-OPEN UPDATES</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px', marginBottom: '24px' }}>
+            {['post_open_digest_us_30min', 'post_open_digest_us_1hr', 'post_open_digest_hk_30min', 'post_open_digest_hk_1hr'].map(key => {
+              const job = jobs.find(j => j.job === key);
+              if (!job) return (
+                <div key={key} style={{ padding: '14px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>{JOB_META[key]?.label ?? key}</div>
+                  {JOB_META[key]?.desc && <div style={{ fontSize: '10px', color: '#1e293b', marginTop: '2px' }}>{JOB_META[key].desc}</div>}
+                  <div style={{ fontSize: '11px', color: '#1e293b', marginTop: '4px' }}>No record yet</div>
+                </div>
+              );
+              return <JobCard key={key} job={job} />;
+            })}
+          </div>
+
           {/* Intraday + background jobs */}
           <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>INTRADAY &amp; BACKGROUND</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px' }}>
-            {jobs.filter(j => !['weekly_refresh', 'us_post_close', 'hk_post_close', 'paper_trading', 'morning_digest_us', 'morning_digest_hk'].includes(j.job)).map(j => (
+            {jobs.filter(j => ![
+              'weekly_refresh', 'us_post_close', 'hk_post_close', 'paper_trading',
+              'morning_digest_us', 'morning_digest_hk',
+              'post_open_digest_us_30min', 'post_open_digest_us_1hr',
+              'post_open_digest_hk_30min', 'post_open_digest_hk_1hr',
+            ].includes(j.job)).map(j => (
               <JobCard key={j.job} job={j} />
             ))}
           </div>

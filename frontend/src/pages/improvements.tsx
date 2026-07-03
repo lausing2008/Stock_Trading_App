@@ -8381,6 +8381,16 @@ const ITEMS: Item[] = [
     fix: 'Done 2026-07-02: moved poll_broker_order_fills into the existing top-of-file relative import from .paper_trading_engine (already imports get_last_regime/paper_trading_step/etc from there) and removed the broken local import. Fixed the HK holiday check to `from .scheduler import _HK_HOLIDAYS`.',
   },
   {
+    id: 'T232-POSTOPEN1-NEW-FEATURE',
+    title: 'New: post-open digest emails — 30min and 1hr after each market opens, per market',
+    tier: 232 as const, severity: 'feature', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/services/scheduler.py, services/market-data/src/services/email_service.py, frontend/src/pages/admin-health.tsx',
+    effort: 'M',
+    impact: 'Medium — user requested two extra emails per market (30min and 1hr after open) covering market trend changes and stock-specific info to support intraday decisions, beyond the existing pre-open digest.',
+    what: 'Only the pre-open morning digest existed. No intraday follow-up reported regime shifts, open-position signal flips, new BUY/SELL signals, or watchlist movers after the open.',
+    fix: 'Done 2026-07-02: added send_post_open_digest(market, window) with 4 sections — (1) regime/VIX change vs. the previous snapshot, shown only if it actually changed; (2) open positions: % move since open + stop distance + signal-flip badge; (3) new BUY/SELL signals fired across watchlisted stocks since the previous snapshot; (4) top 3 gainers/losers across watchlists for that market. State is snapshotted to Redis (stockai:post_open_snapshot:{market}, 24h TTL) after every run so the +1hr email reports only the DELTA since the +30min email (per user preference), not a repeat of the full picture. The whole email is skipped (job still records "ok" for staleness tracking) if nothing meaningful changed — no regime shift, no signal flip, no new BUY/SELL, and no open position moved ≥2% — to avoid inbox noise on quiet days. Scheduled 4 new cron jobs: US +30min (10:00 ET), US +1hr (10:30 ET), HK +30min (10:00 HKT), HK +1hr (10:30 HKT). Added a new "POST-OPEN UPDATES" card group to admin-health.tsx tracking all four job IDs.',
+  },
+  {
     id: 'T232-UI3-ADMIN-DIGEST-TRIGGER-STRING-BUG',
     title: 'Admin "send morning digest" manual trigger passes a bare market string, iterated as characters',
     tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
