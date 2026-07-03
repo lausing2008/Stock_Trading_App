@@ -9,10 +9,11 @@ LightGBM, Random Forest, and LSTM are available. Optuna handles hyperparameter t
 
 | Responsibility | Key file(s) |
 |---|---|
-| Model training pipeline | `training/trainer.py` (~1,179 lines) |
-| Feature engineering (22 features) | `features/builder.py` (~548 lines) |
-| Optuna hyperparameter tuning | `training/tuner.py` (~170 lines) |
-| Model serving (predict) | `api/routes.py` (~437 lines) |
+| Model training pipeline | `training/trainer.py` (~1,355 lines) |
+| Feature engineering (22+ features — verify count against current code, this doc is likely behind) | `features/builder.py` (~841 lines — nearly double an earlier ~548-line estimate; this file grows fast) |
+| Optuna hyperparameter tuning | `training/tuner.py` (~199 lines) |
+| Model serving (predict) | `api/routes.py` (~479 lines) |
+| HMM regime overlay (consumed by paper_trading_engine, NOT by decision-engine — see T232-DL-REGIME5X) | `api/hmm_regime.py` |
 | Model implementations | `models/` (xgb.py, lgb.py, lstm.py, rf.py, gbm.py) |
 
 ---

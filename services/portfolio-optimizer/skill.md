@@ -34,18 +34,26 @@ Most robust method — handles collinear assets and doesn't invert the covarianc
 Best default for multi-sector portfolios.
 
 ### AI Allocation
-Calls the research engine to get conviction scores per symbol, then uses them as tilt weights
-on top of HRP. High-conviction BUY signals get a higher weight; AVOID signals get lower.
+Corrected 2026-07-04 — this section previously said it calls the research engine; it does not.
+`_fetch_scores()` (`api/routes.py`) calls **ranking-engine**'s `GET /rankings/{symbol}` and reads
+the `"score"` field (K-score, 0–100), not a research-engine conviction/recommendation. The
+`ai_allocation()` function itself (`optimizers/methods.py`) has no HTTP calls at all — it's a
+pure numeric blender taking a plain `scores: dict[str, float]` argument (60% historical returns +
+40% score-derived views). There is no reference to research-engine anywhere in this service's
+source. If you want research-engine's AVOID/BUY conviction to influence allocation, that
+integration does not exist yet — it would need to be built, not assumed present.
 
 ---
 
 ## Input / Output Contract
 
-**Input (POST /portfolio/optimize):**
+**Input (POST /portfolio/optimize) — this is the ONLY endpoint this service exposes; the
+previously-documented `/portfolio/frontier` and `/portfolio/correlation` endpoints do not exist:**
 ```json
 {
   "symbols": ["AAPL", "MSFT", "GOOG"],
-  "method": "hrp",              // mean_variance | risk_parity | hrp | ai
+  "method": "hierarchical_risk_parity", // the actual Literal value — NOT "hrp" as previously documented
+                                          // valid values: mean_variance | risk_parity | hierarchical_risk_parity | ai
   "lookback_days": 252,         // historical window for covariance estimation
   "target_return": null,        // optional; used by mean_variance only
   "constraints": {
@@ -62,7 +70,7 @@ on top of HRP. High-conviction BUY signals get a higher weight; AVOID signals ge
   "expected_return": 0.18,
   "expected_volatility": 0.14,
   "sharpe_ratio": 1.29,
-  "method": "hrp"
+  "method": "hierarchical_risk_parity"
 }
 ```
 
@@ -80,6 +88,18 @@ timezone normalization must happen before covariance calculation.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /portfolio/optimize` | Yes | Run optimization, return weights |
-| `GET /portfolio/frontier` | Yes | Efficient frontier curve (mean-variance only) |
-| `GET /portfolio/correlation` | Yes | Correlation matrix for given symbols |
+| `POST /portfolio/optimize` | Yes | Run optimization, return weights — this is the ONLY endpoint `api/routes.py` defines |
+
+Corrected 2026-07-04: `/portfolio/frontier` and `/portfolio/correlation` were previously
+documented here but do not exist in the code. Do not build frontend features assuming they're
+available without checking `api/routes.py` first.
+
+## Known Stale Tracker Entry: Regime-Aware Sizing Was Never Built Here
+
+An earlier `improvements.tsx` entry (Tier ~130s) documents "Portfolio-optimizer fetches regime
+and applies position multiplier (bull=1.0, choppy=0.75, bear=0.60, risk_off=0.50)" as shipped.
+**No such code exists** — no reference to `regime`, `decision_engine_url`, or `/decide/regime`
+anywhere in `services/portfolio-optimizer/src/`. The regime-multiplier that DOES exist
+(`_REGIME_MULT` in decision-engine's `sizer.py`) is not reachable from this service. Tracked as
+`T232-DL7` — either correct the tracker entry or actually build this feature; do not assume it's
+live.

@@ -10,8 +10,8 @@ Changes here affect every service simultaneously.
 ```
 shared/
 ├── db/
-│   ├── models.py       — SQLAlchemy ORM models (~891 lines)
-│   ├── session.py      — DB session management (~368 lines)
+│   ├── models.py       — SQLAlchemy ORM models (~980 lines)
+│   ├── session.py      — DB session management (~446 lines)
 │   └── __init__.py     — SessionLocal + init_db exports (~94 lines)
 └── common/
     ├── config.py       — Settings (pydantic BaseSettings, reads from env) (~91 lines)
@@ -35,7 +35,8 @@ shared/
 | `PaperTrade` | `id`, `portfolio_id`, `stock_id`, `entry_price`, `shares`, `pnl`, `exit_reason` | Use `.pnl` not `.realized_pnl` |
 | `Strategy` | `id`, `user_id`, `name`, `rules` | User-scoped |
 | `SignalAlert` | `stock_id`, `style`, `horizon`, `last_sent_at`, `last_signal` | Alert dedup |
-| `signal_outcomes` | Links signals to paper trade outcomes | Planned for T206 ML feedback |
+| `signal_outcomes` | Links signals to paper trade outcomes | ML feedback loop — live, not planned |
+| `Ranking` | `stock_id`, `score`, `technical`, `momentum`, `value`, `growth`, `volatility`, `relative_strength`, `as_of` | **`value`/`growth` are nullable** (fixed 2026-07-02, T232-RANKSTALE-SCHEMA) — `compute_kscore()` legitimately returns `None` for stocks lacking full fundamentals. If you add a new NOT NULL column here, verify the writer function can NEVER produce None for it, or you will silently break every batch insert containing one such stock (this exact bug caused a 10+ day production ranking-staleness incident) |
 
 ### Auth models
 | Model | Key fields |

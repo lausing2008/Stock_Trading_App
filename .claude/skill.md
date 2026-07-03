@@ -92,14 +92,14 @@ Frontend (Next.js :3000)
     → API Gateway (:8000)  — single entry, JWT validation, transparent proxy
         → Market Data (:8001)     — prices, scheduler, paper trading, auth, email
         → Signal Engine (:8005)   — signal computation + persistence
-        → Decision Engine (:8006) — hard rejects + scoring
+        → Decision Engine (:8009) — hard rejects + scoring
         → ML Prediction (:8003)   — XGBoost/LightGBM/LSTM training + Optuna tuning
         → Research Engine (:8008) — Claude AI research reports
-        → Ranking Engine (:8007)  — K-score rankings + leaderboards
-        → Technical Analysis (:8009) — RSI/MACD/BB/patterns/trendlines/S&R
-        → Strategy Engine (:8010) — DSL strategy rules + backtesting
-        → Portfolio Optimizer (:8011) — mean-variance, risk parity, HRP
-        → Event Intelligence (:8012) — earnings, insider, congress, macro, catalyst
+        → Ranking Engine (:8004)  — K-score rankings + leaderboards
+        → Technical Analysis (:8002) — RSI/MACD/BB/patterns/trendlines/S&R
+        → Strategy Engine (:8006) — DSL strategy rules + backtesting
+        → Portfolio Optimizer (:8007) — mean-variance, risk parity, HRP
+        → Event Intelligence (:8010) — earnings, insider, congress, macro, catalyst
 ```
 
 ### Data Flow for a Trade
@@ -300,14 +300,19 @@ for a specific bug, a subtle invariant. Never: what the code does, who calls it,
 |---|---|---|
 | market-data | `stockai-market-data-1` | 8001 |
 | signal-engine | `stockai-signal-engine-1` | 8005 |
-| decision-engine | `stockai-decision-engine-1` | 8006 |
+| decision-engine | `stockai-decision-engine-1` | 8009 |
 | ml-prediction | `stockai-ml-prediction-1` | 8003 |
 | research-engine | `stockai-research-engine-1` | 8008 |
 | api-gateway | `stockai-api-gateway-1` | 8000 |
-| ranking-engine | `stockai-ranking-engine-1` | 8007 |
-| technical-analysis | `stockai-technical-analysis-1` | 8009 |
-| strategy-engine | `stockai-strategy-engine-1` | 8010 |
-| portfolio-optimizer | `stockai-portfolio-optimizer-1` | 8011 |
-| event-intelligence | `stockai-event-intelligence-1` | 8012 |
+| ranking-engine | `stockai-ranking-engine-1` | 8004 |
+| technical-analysis | `stockai-technical-analysis-1` | 8002 |
+| strategy-engine | `stockai-strategy-engine-1` | 8006 |
+| portfolio-optimizer | `stockai-portfolio-optimizer-1` | 8007 |
+| event-intelligence | `stockai-event-intelligence-1` | 8010 |
 
 File paths inside containers: service-specific → `/app/src/`, shared modules → `/app/shared/`
+
+**Port table source of truth:** ports above are read from each service's Dockerfile/`main.py`
+`uvicorn.run(..., port=N)` — verify with `grep -rh "EXPOSE\|uvicorn.run" services/<svc>/Dockerfile
+services/<svc>/src/main.py` if this table is ever suspected stale. CLAUDE.md carries the same
+table under "System Port Map" — keep both in sync if either changes.

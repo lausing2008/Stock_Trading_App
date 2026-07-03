@@ -67,7 +67,11 @@ internal network. **Do not add auth to this endpoint** — it is intentionally o
 
 ## Claude API Integration
 
-Model used: `claude-sonnet-4-6` (current session model — update if migrated).
+Model used: check `services/research-engine/src/` for the actual model string configured at
+call time — this doc previously named a specific model ID that had already drifted from what's
+live. Don't trust a hardcoded model name in documentation; grep the source for the current value
+(e.g. `grep -rn "claude-" services/research-engine/src/`) since model IDs change more often than
+this file gets updated.
 Cost estimate: ~$0.01–$0.05 per report depending on context length.
 Reports are cached aggressively to minimize API spend.
 
@@ -78,9 +82,18 @@ it does NOT block the page render.
 
 ## Research Divergence Logic
 
-Signal BUY + Research AVOID = divergence. This is logged as `signal.research_divergence`.
-It does NOT block the trade — it's informational. The paper trading engine and user can
-choose to weight research separately.
+Signal BUY + Research AVOID = divergence. This is logged as `signal.research_divergence`
+by signal-engine's `_bulk_persist()` — this service only provides the summary data on request.
 
-The divergence check happens in `signal-engine`'s `_bulk_persist()`, not here.
-This service only provides the summary data on request.
+**Correction (2026-07-04): AVOID/SELL research IS a hard reject on paper trading entries, not
+purely informational.** `paper_trading_engine.py` (`_scan_for_entries`, ~line 3289):
+```python
+# Hard gate: AVOID/SELL research blocks entry entirely — mirrors DE hard_rejects logic
+if cfg.get("research_gating_enabled", True) and _research_rec in ("AVOID", "SELL"):
+    continue  # skips this candidate entirely — not just a scoring penalty
+```
+The identical gate exists in `decision-engine/api/core/hard_rejects.py`. AVOID/SELL research
+also tightens the trailing stop on already-open positions when it deteriorates mid-trade
+(`paper_trading_engine.py` research-deterioration check) and reduces position sizing on entry.
+Do not describe research as "informational only" in any future doc — it materially blocks and
+shrinks real trading decisions when `research_gating_enabled` is true (the default).

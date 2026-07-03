@@ -1,7 +1,10 @@
 # Decision Engine — Domain Knowledge & Coding Standards
 
 Makes the final BUY/SKIP decision for paper trading by running hard rejects then numerically
-scoring candidates across 9 dimensions. The gatekeeper before capital is deployed.
+scoring candidates via a multi-layer integer-point system (not a fixed dimension count — see
+Scoring Layers below). The gatekeeper before capital is deployed. Note: `_should_enter()` in
+`paper_trading_engine.py` is a SEPARATE, independently-drifted scorer that this service was
+"extracted faithfully from" but no longer matches — see T232-DL-DUALSCORER.
 
 ---
 
@@ -10,11 +13,11 @@ scoring candidates across 9 dimensions. The gatekeeper before capital is deploye
 | Responsibility | Key file(s) |
 |---|---|
 | Hard reject gates (cheap, run first) | `api/core/hard_rejects.py` (~151 lines) |
-| Market regime detection | `api/core/regime.py` (~217 lines) |
-| 9-dimension numerical scoring | `api/core/scorer.py` (~219 lines) |
-| Position sizing | `api/core/sizer.py` (~141 lines) |
+| Market regime detection (own independent implementation — see T232-DL-REGIME5X) | `api/core/regime.py` (~232 lines) |
+| Multi-layer integer-point scoring (not a fixed 9-dimension structure) | `api/core/scorer.py` (~219 lines) |
+| Position sizing | `api/core/sizer.py` (~149 lines) |
 | Data aggregation (signals + context) | `api/core/aggregator.py` (~177 lines) |
-| Decision API endpoint | `api/routes.py` (~333 lines) |
+| Decision API endpoints (`/decide/{symbol}`, `/decide/batch`, `/decide/{symbol}/explain`) | `api/routes.py` (~369 lines) |
 | Shared data models | `api/core/models.py` (~102 lines) |
 
 ---
@@ -22,12 +25,13 @@ scoring candidates across 9 dimensions. The gatekeeper before capital is deploye
 ## Decision Pipeline
 
 ```
-POST /decide (symbol, style, signal_data)
+POST /decide/{symbol}  (symbol is a PATH param, not just body — also: POST /decide/batch,
+                         GET /decide/{symbol}/explain)
     ↓
 hard_rejects.py  — check each gate in order; first BLOCK returns immediately
     ↓             score = -99 means hard rejected (display as "Hard rejected" not "-99/12")
-scorer.py        — compute 9-dimension score (0–12 total)
-    ↓
+scorer.py        — compute_score(): a variable-length list of integer-point layers, NOT a
+    ↓             fixed 9-dimension 0–1.33-each structure (see Scoring Layers below)
 sizer.py         — compute position_size_pct based on score + regime + portfolio config
     ↓
 Return: {decision: ENTER|SKIP, score, size_pct, reasons}
@@ -65,24 +69,36 @@ Regime is also cached in Redis for consumption by other services.
 
 ---
 
-## Scoring Dimensions (`scorer.py`)
+## Scoring Layers (`scorer.py::compute_score()`)
 
-9 dimensions, each contributing 0–1.33 points (total: 12):
-1. Signal confidence
-2. Volume confirmation
-3. Price momentum
-4. ML probability alignment
-5. Regime favorability
-6. Sector relative strength
-7. Research alignment (AVOID = penalty)
-8. Confidence trajectory (rising = bonus)
-9. Technical setup quality (RSI, MACD, BB position)
+Not a fixed 9-dimension × 0–1.33-points structure — actually a variable-length list of integer
+point deltas, several of which are conditional (only fire if the relevant data is present).
+Total score is NOT bounded to [0, 12]; it can go negative or exceed 12. Actual layers (line
+numbers approximate, verify against current `scorer.py` if this drifts again):
+1. `price_zone` — ±2/±3 based on entry zone quality
+2. `rr_quality` — 0 to +2 based on risk:reward ratio
+3. `volume` — ±1, conditional on volume_z being present
+4. `earnings` — -1, conditional on upcoming earnings proximity
+5. `ml_signal` — ±1 based on ML probability alignment
+6. `conf_delta` — ±1, conditional on confidence_delta being present
+7. `freshness` — ±1, conditional on signal age
+8. `catalyst` — ±1, conditional on event-intelligence catalyst_score being present (NOT in the
+   original 9-dimension list — this layer consumes event-intelligence data directly, see
+   `services/event-intelligence/skill.md` for the source)
+9. `pre_regime` — -1 if regime is pre-choppy/pre-risk_off
+10. `entry_drift` — -2 to +1 based on price drift from signal date
+11. `research` — -2 to +2 via a `_RESEARCH_SCORE` lookup dict (research recommendation alignment)
+12. `regime` — -2 to +1 via a `_REGIME_SCORE` lookup dict
 
-Score interpretation:
+Score interpretation (approximate — these thresholds are not hard invariants since the score
+range itself is unbounded):
 - ≥ 8: Strong BUY
 - 6–8: Moderate BUY
 - 4–6: Weak / borderline
 - < 4: SKIP (even without hard reject)
+
+**"Sector relative strength" and a standalone "technical setup quality" layer do NOT exist** in
+the current scorer — do not assume they're being scored unless re-verified against the live file.
 
 ---
 
@@ -124,6 +140,28 @@ The paper trading engine calls `POST /decide` with `signal_data` dict. This dict
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /decide` | Yes (JWT) | Main decision endpoint called by paper trading engine |
-| `GET /decide/history/{portfolio_id}` | Yes | Past decision log |
-| `GET /regime` | No | Current market regime from Redis |
+| `POST /decide/{symbol}` | Yes (JWT) | Main decision endpoint called by paper trading engine — symbol is a path param |
+| `POST /decide/batch` | Yes | Batch decision across multiple symbols |
+| `GET /decide/{symbol}/explain` | Yes | Human-readable breakdown of a decision (used by frontend's decide.tsx) |
+| `GET /regime` | No | Current market regime — this service's OWN independent regime computation (`api/core/regime.py`), NOT the same code as paper_trading_engine's regime — see T232-DL-REGIME5X in the improvement tracker for the full 5-way regime duplication this creates |
+
+---
+
+## Known Drift: SCALP / INCOME Styles Don't Exist in the Real Trading Engine
+
+`api/core/models.py` and `aggregator.py` define `SCALP` and `INCOME` as valid style values
+(`style: str = Field("SWING", description="SCALP | SWING | GROWTH | INCOME")`). **These do not
+exist anywhere in the actual trading engine** (`services/market-data/src/services/
+paper_trading_engine.py`), which only implements `SHORT | SWING | LONG | GROWTH`. If you see
+`SCALP` or `INCOME` referenced in decision-engine code, treat it as speculative/dead — it has
+never been exercised against real trading data. Tracked as `T232-DL-STYLEPARAMS3X` in
+`frontend/src/pages/improvements.tsx`. Do not build new features assuming these styles are live.
+
+## Known Drift: Style Game-Plan Parameters Diverge From the Real Trading Engine
+
+`aggregator.py`'s `_STYLE_PARAMS` is a THIRD independent copy of the style stop/target parameters
+(the other two are `scheduler.py` — source of truth — and `paper_trading_engine.py`, which
+mirrors scheduler.py by comment discipline). Decision-engine's copy has already drifted from the
+real engine for GROWTH (stop -16%/target +60% here vs. the real engine's -12%/+35%). Do not trust
+this file's GROWTH/SWING/SHORT/LONG stop-target percentages without cross-checking
+`scheduler.py::_STYLE_PARAMS` first.

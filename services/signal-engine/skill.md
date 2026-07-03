@@ -9,8 +9,8 @@ The data source for everything the DE, paper trading engine, and alert checker c
 
 | Responsibility | Key file(s) |
 |---|---|
-| Signal computation (TA + ML fusion) | `generators/signals.py` (~1,989 lines) |
-| Signal storage, query, bulk refresh | `api/routes.py` (~4,481 lines) |
+| Signal computation (TA + ML fusion) | `generators/signals.py` (~2,360 lines) |
+| Signal storage, query, bulk refresh | `api/routes.py` (~4,805 lines) |
 | Research divergence logging | `api/routes.py` `_bulk_persist()` |
 
 ---
@@ -34,10 +34,24 @@ high-volatility momentum stocks. This is not a bug.
 
 ### Signal reasons dict
 Every signal stores a `reasons` JSON dict in the DB. Key fields used downstream:
-- `volume_z`: z-score of today's volume vs 20-day average (used by T200 volume gate)
+- `volume_z`: z-score of today's volume vs 20-day average (used by T200 volume gate) — **when
+  absent, downstream consumers must treat it as "unknown," not 0.0** (0.0 reads as "exactly
+  average volume" and silently passes gates it shouldn't — see T232-DL5 for a real instance of
+  this bug that shipped and was fixed 2026-07-04)
 - `confidence_delta`: change in confidence since last refresh (used by T202 confidence gate)
 - `rsi_14`, `macd_signal`, `bb_pct`: TA indicator values
 - `ml_prob`: ML model probability for this symbol+style+horizon
+- `ta_score`: 0.0-1.0 technical score — **same absent-vs-zero trap as volume_z**: a real 0.0 (the
+  worst possible score) must not collapse to the same fallback as "field missing" (fixed 2026-07-04)
+- `catalyst_score`, `insider_score`, `congress_score`: fetched live from event-intelligence's
+  `/catalyst/{symbol}` (service-token authenticated) inside `_bulk_persist()` — this is NOT a
+  "planned" integration, it's live in both the scheduled refresh and manual-refresh code paths
+- `market_regime`: this service's OWN independent 3-4 state regime classification
+  (bull/high_vol/bear/unknown, from market-data's `/stocks/fear_greed`), stamped at signal
+  generation time. This is a DIFFERENT regime vocabulary from paper_trading_engine's 5-state
+  regime and decision-engine's own regime — see T232-DL-REGIME5X for the full 5-way duplication
+  this creates. A stock's `reasons["market_regime"]` can be hours/days stale relative to the
+  live regime paper trading actually gates on right now.
 
 ---
 
@@ -74,13 +88,21 @@ It is intentionally unauthenticated — called from the stock detail page aggreg
 
 ---
 
-## Critical: jose Dependency
+## Critical: jose Dependency — but check the DQ dashboard first
 
 `shared/common/jwt_auth.py` does `from jose import JWTError, jwt` at call time.
 If `python-jose` is missing from the container, this import fails, the generic `except Exception`
 handler raises HTTP 401, and `POST /signals/refresh` silently fails — no signals are written.
 
-**This is the #1 cause of signal staleness.** Check jose before anything else:
+**As of 2026-07-03, check `GET /admin/dq-status` (or admin-health.tsx's Data Quality Checks
+section) FIRST** — it directly reports whether the `signals` table's most recent timestamp is
+within threshold for US/HK, which is faster and more conclusive than manually checking jose.
+Historically jose-missing was the #1 cause of staleness (see below), but `_bulk_persist()` has
+its own separate silent-failure risk too: it has per-symbol exception isolation but NO outer
+try/except around the whole function body (unlike ranking-engine's `_persist_rankings`, which
+was fixed 2026-07-02 after a 10+ day silent staleness incident — T232-RANKSTALE). If something
+throws before the per-symbol loop even starts, this function could fail the exact same silent
+way ranking-engine's did. Check jose second, not first:
 ```bash
 docker exec stockai-signal-engine-1 python3 -c 'from jose import jwt; print("OK")'
 # Fix: docker exec stockai-signal-engine-1 pip install 'python-jose[cryptography]==3.3.0'

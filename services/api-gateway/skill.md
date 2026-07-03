@@ -23,17 +23,22 @@ service, aggregates responses, and caches. All external HTTP traffic passes thro
 |---|---|---|
 | `/stocks` | market-data:8001 | Yes (most endpoints) |
 | `/auth` | market-data:8001 | No (login/register) |
-| `/ta` | technical-analysis:8009 | Yes |
+| `/ta` | technical-analysis:8002 | Yes |
 | `/ml` | ml-prediction:8003 | Yes |
-| `/rankings` | ranking-engine:8007 | Yes |
+| `/rankings` | ranking-engine:8004 | Mostly No — only `POST /rankings/refresh` requires a JWT; `GET /rankings`, `/rankings/{symbol}`, `/rankings/screen`, `/rankings/sector_rotation` are unauthenticated |
 | `/signals` | signal-engine:8005 | Mixed (see below) |
-| `/strategies`, `/backtest` | strategy-engine:8010 | Yes |
-| `/portfolio` | portfolio-optimizer:8011 | Yes |
+| `/strategies`, `/backtest` | strategy-engine:8006 | Yes |
+| `/portfolio` | portfolio-optimizer:8007 | Yes |
 | `/research` | research-engine:8008 | Yes |
-| `/decide` | decision-engine:8006 | Yes |
-| `/events`, `/catalyst` | event-intelligence:8012 | Yes |
+| `/decide` | decision-engine:8009 | Yes |
+| `/events`, `/catalyst` | event-intelligence:8010 | Yes |
 | `/ai` | ai_proxy (Claude API) | Yes |
 | `/health` | health.py (local) | No |
+
+Ports above are read via `_settings.<service>_url` env vars in `proxy.py`/`health.py`/`aggregate.py`
+— not hardcoded here. If this table and the actual env config ever disagree, trust
+`docker exec stockai-api-gateway-1 env | grep _URL`, not this doc. Canonical port list also in
+CLAUDE.md "System Port Map" and `.claude/skill.md` — keep all three in sync.
 
 ### Signal endpoint auth exceptions
 - `GET /signals/{symbol}` — no auth (public stock detail page, auto-persist)

@@ -1,7 +1,9 @@
 # Frontend — Domain Knowledge & Coding Standards
 
 Next.js 13+ app with TypeScript. Single API client (`lib/api.ts`) handles all service calls.
-37 pages spanning trading intelligence, portfolio management, and admin tooling.
+41 route files spanning trading intelligence, portfolio management, and admin tooling (verify
+with `find frontend/src/pages -name "*.tsx" -o -name "*.ts" | grep -v /api/` if this drifts —
+this count has grown steadily every session and this doc will likely be stale again soon).
 
 ---
 
@@ -10,9 +12,11 @@ Next.js 13+ app with TypeScript. Single API client (`lib/api.ts`) handles all se
 ```
 frontend/
 ├── src/
-│   ├── pages/          — Next.js pages (37 files; each = a route)
+│   ├── pages/          — Next.js pages (41 route files; each = a route)
+│   │   ├── research/index.tsx, research/[symbol].tsx  — nested route
+│   │   └── stock/[symbol].tsx                          — dynamic route
 │   ├── lib/
-│   │   ├── api.ts      — All API calls (~78KB; single source of truth for endpoint shapes)
+│   │   ├── api.ts      — All API calls (~82KB; single source of truth for endpoint shapes)
 │   │   ├── auth.ts     — JWT decode + session management
 │   │   ├── ai.ts       — Claude AI integration
 │   │   ├── alerts.ts   — Alert management utilities
@@ -20,6 +24,13 @@ frontend/
 │   └── components/     — Shared UI components
 └── .env.production     — GITIGNORED; must exist on EC2; contains API_GATEWAY_URL
 ```
+
+**Note on `board.tsx`/`forecast.tsx`/`screener.tsx`:** CLAUDE.md's "Connectivity Audit Invariants"
+section (2026-06-18) claims these were deleted as unreferenced dead code. As of 2026-07-04 all
+three still exist and are actively referenced/linked from other pages (`board.tsx` in particular
+has ongoing feature commits well after the claimed deletion date) — that CLAUDE.md note is stale.
+`StrategyBuilder.tsx` genuinely is gone from `components/`, so only 3 of the original 4 "deleted"
+files are actually still alive. Don't trust that note without re-verifying with `find`/`grep -rn`.
 
 ---
 
@@ -86,7 +97,8 @@ useEffect(() => {
 
 ## Improvements Tracker (`pages/improvements.tsx`)
 
-Largest page file (1.2MB). TypeScript type safety requires all four to be updated together:
+Largest page file (~1.5MB and growing every session — check `ls -la` if this matters, don't trust
+a static number here). TypeScript type safety requires all four to be updated together:
 
 ```typescript
 type Tier = 1 | 2 | ... | N  // add N here
@@ -108,7 +120,13 @@ const TIER_COLOR: Record<Tier, string> = {
 
 **The render loop is automatic** — driven by `Object.keys(TIER_LABEL)`. No hardcoded tier array.
 
-Current highest tier: 215. Next new tier: 216.
+**Do not hardcode "current highest tier" in this doc — it goes stale within days.** This file
+previously said "Current highest tier: 215. Next new tier: 216." when the actual highest tier
+had already reached 232 — following that stale instruction literally would have created a
+duplicate/colliding tier ID. Always check the live value instead:
+```bash
+grep -oE "^\s+[0-9]+:\s*'Tier" frontend/src/pages/improvements.tsx | grep -oE '[0-9]+' | sort -n | tail -1
+```
 
 ### Item severity + color palette
 | Severity | Meaning |

@@ -81,10 +81,14 @@ If prices are stale (ingest hasn't run), TA will be computed from stale data sil
 
 ## Consumer Mapping
 
+Corrected 2026-07-04 — the ranking-engine row below was wrong; it does not call this service
+for K-score inputs at all.
+
 | Consumer | What it uses |
 |---|---|
-| signal-engine | RSI, MACD, BB, EMA crossovers, volume_z (all via direct feature computation) |
+| signal-engine | RSI, MACD, BB, EMA crossovers, volume_z (all via direct feature computation, not HTTP calls to this service) |
 | ml-prediction | All 22 features (builds its own via `features/builder.py`, may call /ta directly) |
-| ranking-engine | RSI, MACD, BB position for K-score |
+| ranking-engine | **Does NOT call this service for K-score** — `compute_kscore()` computes its own RSI/ADX/technical-quality independently from raw OHLCV, entirely separate from this service's implementation (two independent RSI/momentum implementations exist in the codebase — see `services/ranking-engine/skill.md`). The ONLY call ranking-engine makes here is `_fetch_patterns_bulk()` → `/ta/patterns/bulk`, used purely for a cosmetic leaderboard `patterns` column, never fed into the K-score formula itself |
 | research-engine | Full TA context for research report prompt |
 | frontend (stock detail) | Full TA display on chart page |
+| strategy-engine | **Does NOT call this service** — `dsl/evaluator.py::compute_features()` reimplements RSI/MACD/ATR/Bollinger from scratch for backtesting instead of calling this canonical implementation. The two RSI implementations provably differ (this service has an explicit NaN-vs-zero disambiguation fix that strategy-engine's copy lacks) — backtests compute slightly different indicator values than live signals for the same symbol. If touching either implementation, keep this discrepancy in mind. |

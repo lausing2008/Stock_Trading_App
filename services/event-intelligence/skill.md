@@ -16,7 +16,7 @@ trading, institutional flows, economic indicators, political catalysts, and sect
 | Institutional flow tracking | `services/institutional.py` (~212 lines) |
 | Economic indicators (FRED) | `services/economic.py` (~230 lines) |
 | Political event tracking | `services/political.py` (~120 lines) |
-| Event API endpoints | `api/routes.py` (~223 lines) |
+| Event API endpoints | `api/routes.py` (~261 lines) |
 | Background event sync scheduler | `scheduler.py` (~100 lines) |
 
 ---
@@ -85,7 +85,24 @@ trading, institutional flows, economic indicators, political catalysts, and sect
 
 ## Integration with Other Services
 
+Corrected 2026-07-04 — the signal-engine and DE rows below were describing planned features that
+are actually already shipped:
+
 - **Research engine**: calls `GET /events/catalyst/{symbol}` and `GET /events/earnings` to
   include event context in research reports
-- **Signal engine**: currently does not consume event data directly (planned T208)
-- **DE hard rejects**: could check `catalyst_score` as a volatility gate (planned feature)
+- **Signal engine**: **already consumes event data directly, not planned.**
+  `services/signal-engine/src/api/routes.py` has two call sites (the scheduled `_bulk_persist()`
+  path and the manual-refresh path) that call `GET /catalyst/{symbol}` with a service-token
+  bearer header, read `catalyst_score`/`insider_score`/`congress_score`/`composite_score` from
+  the response, write them into the signal's `reasons`, and nudge `fused_prob` based on
+  insider/congress scores. Separately, T208 (SEC 8-K flags) was implemented via a **direct DB
+  read of the shared `sec_filings` table**, explicitly avoiding an HTTP hop to this service —
+  so T208 is also done, just not via the HTTP path this doc originally implied.
+- **DE scoring**: **already consumes `catalyst_score`, not planned.** `decision-engine/api/core/
+  scorer.py` has a live scoring layer (`catalyst`, ±1 point) keyed on this service's
+  `catalyst_score` — it's a scoring input, not a hard reject/volatility gate, but it is
+  definitely already wired up, not a future item.
+
+If you're deciding whether to build new event-intelligence integration work, check the actual
+call sites above first — several "planned" items in past docs/tracker entries for this pipeline
+turned out to already be shipped by the time anyone re-read the doc.
