@@ -1226,7 +1226,7 @@ mechanism, the proposed fix, and what measurably improves once each ships, so a 
 a reviewer deciding what to prioritize) doesn't have to re-derive this from the tracker's terser
 one-line summaries.
 
-### 11.1 — T232-SIG10: SELL threshold asymmetry (SELL wins only 43.7% live)
+### 11.1 — T232-SIG10: SELL threshold asymmetry (SELL wins only 43.7% live) — PARTIALLY FIXED 2026-07-04
 
 **Problem.** BUY and SELL signals are scored on fundamentally unequal footing.
 `_STYLE_PROFILES[style]["buy_threshold"]` is a 4-way dict keyed by regime (`bull`/`high_vol`/
@@ -1256,6 +1256,48 @@ the same horizons as BUY.
 filtering out the single-pillar, wrong-horizon SELLs that are dragging the average down — the
 70%-at-5-days number suggests real signal exists, it's just currently diluted by low-quality
 long-horizon SELL calls sharing the same threshold.
+
+**Re-investigation and partial fix (2026-07-04):** before implementing all three proposed fixes
+blind, re-checked the live outcome data to see whether it actually supports specific regime-tier
+threshold values. It does not, for two of the three items:
+
+- **Horizon shortening (item 3): supported by data, implemented.** Re-measured SELL accuracy
+  by window: 57.6% at 5 days, 58.6% at 10 days, dropping to 48.5% at 20 days (the direction
+  matches the original 70%→37% claim; the magnitude differs, likely due to more outcome data
+  having accumulated since the original measurement). Added `_SELL_OUTCOME_HOLD_DAYS`
+  (SHORT=5, SWING=7, LONG=10, GROWTH=7 calendar days) alongside the existing `_OUTCOME_HOLD_DAYS`
+  (unchanged for BUY), so SELL's primary `is_correct`/`pct_return`/`exit_date` fields — the ones
+  `outcomes/calibrate` and every accuracy-reporting endpoint actually key off — are evaluated at
+  the window where the data shows real signal, not diluted by a 14-28 day window where SELL's
+  edge has already eroded. Does not touch BUY's windows, does not rewrite any historical
+  `SignalOutcome` row (`signal_id` is `UNIQUE`, so only newly-generated SELL signals evaluate
+  under the new windows going forward — a live-observed re-measurement, not a retroactive
+  rewrite of the record). Verified live: triggered `outcomes/evaluate` against production
+  (425 signals evaluated, zero errors) and confirmed the new table loads correctly in the
+  running process.
+
+- **Regime-tiered `sell_t` (item 1): investigated, found unsupported by current data, deferred.**
+  A regime breakdown of SELL outcomes shows **96%+ of all SELL outcome rows are from `bull`-regime
+  periods only** — bear/choppy/risk_off have single-digit or zero sample counts across every
+  horizon. There is nothing to calibrate a bear-regime or risk_off-regime SELL threshold against
+  yet. Additionally, sweeping `fused_prob` buckets within the bull-regime data (the only regime
+  with real sample size) shows a noisy, non-monotonic relationship to win rate — no clean
+  threshold value emerges. Inventing regime-tier numbers anyway (e.g. by mirroring BUY's
+  bull/bear spread) would repeat the exact "overfit argmax on thin/absent data" failure mode
+  already documented as `T232-OC3` in this same report — the opposite of what re-checking before
+  acting is meant to prevent. Deferred until enough non-bull-regime SELL outcomes accumulate to
+  calibrate against.
+
+- **`min_pillars_for_sell` gate (item 2): investigated, found to require new feature engineering,
+  deferred.** Reading the pillar-gate code directly surfaced a prior, deliberate decision
+  (`T232-SIG3`, already in the codebase) that explicitly excludes SELL candidates from the
+  existing pillar gate — because `independent_pillars_active` counts **bullish** evidence only
+  (trend/momentum/volume/structure pillars scored `>= 0.5`), and applying a bullish-evidence gate
+  to bearish candidates was found to erroneously compress genuine SELL signals back toward
+  neutral. A real, symmetric `min_pillars_for_sell` needs its own bearish-evidence pillar count
+  (e.g. counting pillars `<= 0.5` as bearish-confirming) — a genuine feature addition requiring
+  its own validation against outcome data, not a parameter tweak to the existing gate. Deferred
+  as a separate, larger piece of work rather than bolted on without validation.
 
 ### 11.2 — T232-SIG6: TA weight calibration never reaches the running process — FIXED 2026-07-04
 

@@ -4289,6 +4289,25 @@ _OUTCOME_HOLD_DAYS: dict[str, int] = {
     "GROWTH": 14,   # same window as SWING; growth trades are momentum-based
 }
 
+# T232-SIG10: SELL's primary is_correct/pct_return used to be evaluated at the SAME window as
+# BUY for each style — but live SignalOutcome data shows SELL accuracy decays sharply with
+# horizon (57.6% at 5d, 58.6% at 10d, dropping to 48.5% at 20d as of 2026-07-04), while BUY's
+# per-style windows (14-28 calendar days for SWING/GROWTH/LONG) are exactly the range where
+# SELL's edge has already eroded. Using a shorter, SELL-specific window for the fields that
+# drive reporting/calibration (is_correct, pct_return, exit_date) means the system's own
+# accuracy metrics reflect where SELL genuinely has signal, instead of diluting it with a
+# window where it doesn't. Deliberately does NOT touch BUY's windows or attempt regime-tiered
+# SELL thresholds — regime-tiering was investigated and found unsupported by current data
+# (96%+ of SELL outcomes are bull-regime only; near-zero bear/choppy/risk_off samples to
+# calibrate against). Values below mirror the horizons where the calendar-day data above shows
+# real, validated signal (5-10 calendar days), not a guess.
+_SELL_OUTCOME_HOLD_DAYS: dict[str, int] = {
+    "SHORT":  5,    # SELL's strongest cohort in live data — keep close to its natural window
+    "SWING":  7,    # was 14 — shortened to where accuracy hasn't yet decayed
+    "LONG":   10,   # was 28 — LONG SELL sample is thin; 10d is a conservative middle ground
+    "GROWTH": 7,    # was 14, same reasoning as SWING
+}
+
 
 @router.post("/outcomes/evaluate")
 def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = Depends(get_current_username)):
@@ -4315,7 +4334,10 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
     from sqlalchemy import or_
 
     today = date.today()
-    min_hold = min(_OUTCOME_HOLD_DAYS.values())
+    # T232-SIG10: consider both tables — SELL's shortest window (5d SHORT) is smaller than
+    # BUY's shortest (7d SHORT), so the candidate-signal cutoff must use whichever is smaller
+    # or SELL signals eligible under their own shorter window would be filtered out too early.
+    min_hold = min(min(_OUTCOME_HOLD_DAYS.values()), min(_SELL_OUTCOME_HOLD_DAYS.values()))
     cutoff = today - timedelta(days=min_hold)
 
     # IDs already in signal_outcomes — skip re-evaluation by signal_id
@@ -4420,7 +4442,11 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
             continue
 
         horizon = sig.horizon.value
-        hold_days = _OUTCOME_HOLD_DAYS[horizon]
+        # T232-SIG10: SELL uses its own shorter hold window — see _SELL_OUTCOME_HOLD_DAYS above.
+        hold_days = (
+            _SELL_OUTCOME_HOLD_DAYS[horizon] if sig.signal == SignalType.SELL
+            else _OUTCOME_HOLD_DAYS[horizon]
+        )
         signal_date = sig.ts.date()
 
         # Skip if another signal_id for the same (stock, horizon, date) was already evaluated.
