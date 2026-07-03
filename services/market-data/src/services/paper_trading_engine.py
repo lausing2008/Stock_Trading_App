@@ -1132,6 +1132,21 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
     return result
 
 
+def get_last_hk_regime() -> dict:
+    """Return the most recently cached HK market regime dict.
+
+    Mirrors get_last_regime() for the US side. T232-DL-REGIME5X: exposed via
+    GET /stocks/regime?market=HK so decision-engine and signal-engine can call this single
+    implementation over HTTP instead of maintaining their own independent classifiers.
+    """
+    if _hk_regime_cache:
+        return dict(_hk_regime_cache)
+    try:
+        return _fetch_hk_market_regime(_DEFAULT_CONFIG)
+    except Exception:
+        return {}
+
+
 # ── Live price fetch ──────────────────────────────────────────────────────────
 
 def _fetch_live_prices(symbols: list[str]) -> dict[str, float]:

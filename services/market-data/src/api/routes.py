@@ -436,6 +436,28 @@ def fear_greed():
     return result
 
 
+@router.get("/regime")
+def regime(market: str = Query("US", description="US or HK")):
+    """Current market regime — the single canonical classifier used to gate paper trading entries.
+
+    T232-DL-REGIME5X: this is paper_trading_engine's own _fetch_market_regime()/
+    _fetch_hk_market_regime() output, exposed over HTTP so other services (decision-engine,
+    signal-engine) can call the SAME classifier instead of maintaining independent copies that
+    drift apart. Unauthenticated — read-only, no sensitive data, same pattern as /fear_greed.
+
+    Returns the cached value from the most recent paper trading cycle (fresh within one scan
+    interval); performs a lazy fetch if the cache is empty (e.g. right after a container restart).
+    """
+    from ..services.paper_trading_engine import get_last_regime, get_last_hk_regime
+    try:
+        if market.upper() == "HK":
+            return get_last_hk_regime()
+        return get_last_regime()
+    except Exception as exc:
+        log.warning("regime.fetch_failed", market=market, error=str(exc))
+        raise HTTPException(503, "Regime data unavailable")
+
+
 _MARKET_BREADTH_KEY = "stockai:market_breadth"
 _MARKET_BREADTH_TTL = 60 * 60 * 4  # 4 hours
 
