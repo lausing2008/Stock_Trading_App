@@ -20,13 +20,19 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from common.jwt_auth import get_current_username
+from common.logging import get_logger
 from db import Fundamental, Price, Ranking, Signal, SignalType, Stock, TimeFrame, get_session
 
 from ..scoring import compute_kscore
 
+log = get_logger("ranking-engine")
+
 import os
 _MARKET_DATA_URL = os.environ.get("MARKET_DATA_URL", "http://market-data:8001")
-_TA_URL = os.environ.get("TA_URL", "http://technical-analysis:8006")
+# T232-KS1: technical-analysis listens on 8002 (verified port map, CLAUDE.md); 8006 is
+# strategy-engine. This wrong default meant every bulk-patterns fetch connection-refused,
+# silently swallowed below, so the leaderboard pattern column was always empty.
+_TA_URL = os.environ.get("TA_URL", "http://technical-analysis:8002")
 
 _patterns_cache_ts: float = 0.0
 _patterns_cache_data: dict = {}
@@ -43,8 +49,10 @@ def _fetch_patterns_bulk() -> dict[str, list[str]]:
             if r.status_code == 200:
                 _patterns_cache_data = r.json().get("patterns") or {}
                 _patterns_cache_ts = _time.time()
-    except Exception:
-        pass
+            else:
+                log.warning("ranking.patterns_bulk_fetch_failed", status=r.status_code)
+    except Exception as exc:
+        log.warning("ranking.patterns_bulk_fetch_error", error=str(exc))
     return _patterns_cache_data
 
 # ── Sector → ETF mapping ──────────────────────────────────────────────────────
@@ -521,9 +529,15 @@ def rank_symbol(symbol: str, session: Session = Depends(get_session)):
     if df.empty:
         raise HTTPException(404, f"No price data for {symbol}")
     rs_score_val, rs_rank = _stock_rs(stock, df, session=session)
-    # Sector-relative scores for single-symbol live endpoint
+    # Sector-relative scores for single-symbol live endpoint.
+    # T232-KS2: must rank against the full active universe, not a one-entry map — otherwise
+    # every peer-count gate in _sector_relative_scores (len(pe_map) >= 3, etc.) always fails
+    # and this endpoint silently falls back to price proxies, diverging from the leaderboard's
+    # K-Score for the same stock on the same day.
     fundamentals = _fetch_fundamentals_bulk()
-    stock_sectors = {symbol: (stock.sector or "Unknown")}
+    universe = list(session.execute(select(Stock).where(Stock.active.is_(True))).scalars())
+    stock_sectors = {s.symbol: (s.sector or "Unknown") for s in universe}
+    stock_sectors.setdefault(symbol, stock.sector or "Unknown")
     sc = _sector_relative_scores(fundamentals, stock_sectors).get(symbol, {})
     comp = compute_kscore(
         df,

@@ -66,13 +66,18 @@ def compute_position(
     else:
         research_mult = 1.00
 
-    # Confidence sizing (PT-D2): 0–100 confidence from signal engine
-    if confidence >= 50:
+    # Confidence sizing (PT-D2): 0–100 confidence from signal engine.
+    # T232-DE2: the hard-reject floor in hard_rejects.py is min_confidence(62) * 0.90 = 55.8,
+    # so every trade that reaches this function already has confidence >= 55.8 — the old
+    # `>= 50` branch always fired (every position silently 25% oversized with zero variation
+    # by conviction) and the 30-49 / <30 tiers below the floor were unreachable dead code.
+    # Rescaled to sit entirely above the floor so the tiers are actually reachable.
+    if confidence >= 80:
         confidence_mult = 1.25
-    elif confidence >= 30:
+    elif confidence >= 62:
         confidence_mult = 1.00
     else:
-        confidence_mult = 0.75
+        confidence_mult = 0.85
 
     # Cross-horizon consensus (40-B)
     if cross_style_buys >= 2:

@@ -1584,10 +1584,15 @@ def _apply_style_signal(
     else:
         _pillars = int(_pillars_raw)
     _min_pillars = int(p.get("min_pillars_for_buy", 2))
-    if _pillars < 2:
+    # T232-SIG3: independent_pillars_active counts BULLISH evidence (trend/momentum/volume/
+    # structure >= 0.5). A deeply bearish stock has 0-1 bullish pillars *by definition*, so
+    # applying this compression to SELL candidates (fused < 0.5) pulls the clearest SELLs back
+    # toward neutral — the gate was erasing exactly the signals it should confirm. Restrict to
+    # the bullish side (fused > 0.5); leave SELL candidates unaffected by this gate.
+    if fused > 0.5 and _pillars < 2:
         fused = 0.5 + (fused - 0.5) * 0.85
         reasons["pillar_gate"] = f"compressed_{_pillars}_pillar"
-    elif _pillars < _min_pillars:
+    elif fused > 0.5 and _pillars < _min_pillars:
         # SA-30: active pillars below style requirement — strong compress
         fused = 0.5 + (fused - 0.5) * 0.70
         reasons["pillar_gate"] = f"compressed_{_pillars}_pillar_below_min{_min_pillars}"
@@ -1643,16 +1648,22 @@ def _apply_style_signal(
     reasons["adx_compression"] = (adx_min is not None and adx_val is not None and adx_val < adx_min)
 
     # ── High-volatility regime compression ───────────────────────────────────
+    # T232-SIG5: only compress the bullish side. High-vol regimes are exactly the conditions
+    # that CONFIRM a SELL — compressing SELL candidates toward neutral here suppressed the
+    # signal in the regime that validates it.
     hv_comp = _get_style_tuned_param(style_key, "high_vol_compression", p.get("high_vol_compression"))
-    if hv_comp is not None and market_regime == "high_vol":
+    hv_fired = hv_comp is not None and market_regime == "high_vol" and fused > 0.5
+    if hv_fired:
         fused = 0.5 + (fused - 0.5) * hv_comp
-    reasons["high_vol_compression"] = (hv_comp is not None and market_regime == "high_vol")
+    reasons["high_vol_compression"] = hv_fired
 
     # ── Market breadth compression ────────────────────────────────────────────
+    # T232-SIG5: same direction-blind bug — thin breadth (<40% of stocks above their MA) is
+    # itself bearish confirmation and should not mute a SELL. Bullish-only.
     breadth_pct = base_reasons.get("breadth_pct")
     bc = _get_style_tuned_param(style_key, "breadth_compression", p.get("breadth_compression"))
     breadth_fired = False
-    if bc is not None and breadth_pct is not None and breadth_pct < 40:
+    if bc is not None and breadth_pct is not None and breadth_pct < 40 and fused > 0.5:
         fused = 0.5 + (fused - 0.5) * bc
         breadth_fired = True
     reasons["breadth_compression"] = breadth_fired
@@ -1958,7 +1969,10 @@ def _apply_style_signal(
 
     # T224-B: HSI downtrend compression for HK stocks. Applied post-cap so it cannot be
     # offset by prior boosts. 20% compression toward neutral when HSI < 20-day SMA.
-    if reasons.get("hsi_regime") == "bear":
+    # T232-SIG5: bullish-only — an HSI downtrend is bearish confirmation and should not mute
+    # a SELL (the market condition that validates the SELL was suppressing it). Mirrors the
+    # southbound-flow gate below, which already guards with fused > 0.5.
+    if reasons.get("hsi_regime") == "bear" and fused > 0.5:
         fused = 0.5 + (fused - 0.5) * 0.80
         fused = float(np.clip(fused, 0.0, 1.0))
         reasons["hsi_bear_gate"] = True

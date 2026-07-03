@@ -54,6 +54,12 @@ def _merge_cfg(overrides: dict) -> dict:
 async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
     t0 = _time.monotonic()
     cfg = _merge_cfg(req.config_overrides)
+    # T232-DE4: req.max_daily_loss_pct was accepted on the request model but never merged into
+    # cfg, so a caller requesting a tighter (or looser) daily-loss gate was silently ignored —
+    # the gate always used the 0.04 default. Only apply the explicit request value when the
+    # caller didn't already set it via config_overrides (overrides take precedence).
+    if "max_daily_loss_pct" not in req.config_overrides:
+        cfg["max_daily_loss_pct"] = req.max_daily_loss_pct
     style = req.style.upper()
 
     # 1. Fan-out: fetch signal + research + yfinance price fallback in parallel

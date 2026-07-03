@@ -22,7 +22,12 @@ def rsi(close: pd.Series, window: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi_val = 100 - (100 / (1 + rs))
-    return rsi_val.fillna(100)  # avg_loss=0 → RSI=100 per Wilder's spec
+    # T232-TA1: `avg_loss.replace(0, np.nan)` makes `rs`/`rsi_val` NaN in two distinct cases —
+    # the genuine avg_loss==0 case (Wilder's spec: RSI=100) AND the warmup window before
+    # min_periods bars exist. A blanket fillna(100) mapped BOTH to 100, so a recently-listed
+    # stock with <14 bars in-window served a literal RSI=100 (max overbought) as its current
+    # value. Only fill where avg_loss is a real, computed zero — leave true warmup NaN as NaN.
+    return rsi_val.mask(avg_loss.notna() & avg_loss.eq(0), 100.0)
 
 
 def macd(
