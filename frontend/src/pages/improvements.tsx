@@ -8513,12 +8513,12 @@ const ITEMS: Item[] = [
   {
     id: 'T232-DATA1-OUTCOME-TRACKING-STOPPED',
     title: 'LONG horizon effectively untracked (8 rows ever) + production BUY base rate is 44.6% / −1.19%',
-    tier: 232 as const, severity: 'high', defaultStatus: 'todo' as const,
+    tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,
     file: 'services/market-data/src/services/scheduler.py',
     effort: 'S',
     impact: 'High (revised after prod check) — production outcome evaluation IS current (1,308 rows, ts_evaluated 2026-07-02; the "tracking stopped" alarm was the stale local dev DB). But: LONG horizon has 8 outcome rows total, none since 2026-06-03. And the production base rates are alarming: BUY wins 44.6% with −1.19% avg return (n=534); SWING BUY 38.1% US / 28.3% HK; HK BUY 28–42% across horizons. HK SELL is the strongest cohort (62–68%) yet is muted by direction-blind gates (T232-SIG5).',
     what: 'Production interrogation 2026-07-02. Paper trading confirms with real money: all 5 portfolios negative, ~−$11,800 aggregate closed P&L.',
-    fix: 'Add LONG to outcome tracking. Add a staleness alert when MAX(ts_evaluated) > 3 days. Treat SWING/HK BUY alerts as unvalidated until the calibration + ML honesty fixes land and a clean 4-week sample exists.',
+    fix: 'Re-checked 2026-07-03: the specific "LONG untracked" alarm has resolved on its own — production now has 245 LONG outcome rows (up from 8), signal_date as recent as 2026-06-22, and MAX(ts_evaluated) is today. LONG has the most BUY/SELL signals of any horizon (1,463) but fewer matured outcomes than SWING/SHORT/GROWTH simply because its 28-day hold window means fewer signals have aged into evaluation yet — not a tracking bug. No code fix was needed for that half of this item. DID implement the concrete, still-missing piece: a staleness alert. scheduler.py\'s post-close outcomes/evaluate call is now followed by a DB check of MAX(SignalOutcome.ts_evaluated) — if more than 3 days stale, logs outcomes.evaluation_stale at ERROR with days_since_last_eval and last_evaluated, so a repeat of the jose-missing-from-container pattern (which has now independently broken auth on signal-engine, ml-prediction, ranking-engine, and portfolio-optimizer) gets caught by a log grep instead of requiring someone to manually query the DB. Verified both branches: fresh data (0 days) does not fire; a simulated 5-day-stale timestamp fires the alert with correct fields. Did NOT implement "treat SWING/HK BUY alerts as unvalidated until calibration + ML honesty fixes land" — that\'s a trust/policy statement about existing alerts, not a code change, and depends on other in-flight tracker items (T232 calibration fixes) landing first; revisit once those are done.',
   },
 
   // ── Tier 232 — Deep Logic Review (2026-07-03): full gate/pipeline/cross-service audit ───────────────────────────

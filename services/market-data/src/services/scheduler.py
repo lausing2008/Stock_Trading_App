@@ -83,7 +83,7 @@ from sqlalchemy.orm import selectinload
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
+from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ranking, Signal, SignalAlert, SessionLocal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, User, Watchlist, WatchlistItem
 
 
 from .ingestion import ingest_universe
@@ -417,6 +417,24 @@ def _refresh_market(market: str, *, post_close: bool = False) -> None:
             _post(f"{_settings.ml_prediction_url}/ml/train_all_horizons")
             # Evaluate any BUY/SELL signals whose hold window has now expired.
             _post(f"{_settings.signal_engine_url}/signals/outcomes/evaluate")
+            # T232-DATA1: alert if outcome evaluation has gone stale (>3 days since the last
+            # row was written) — evaluation feeding win-rate/calibration off silently stopped
+            # once before (jose-missing pattern hit signal-engine multiple times) with no
+            # visible symptom until someone happened to check the DB by hand.
+            try:
+                with SessionLocal() as _oc_session:
+                    _last_eval = _oc_session.execute(
+                        select(func.max(SignalOutcome.ts_evaluated))
+                    ).scalar_one_or_none()
+                if _last_eval is not None:
+                    _eval_now = datetime.now(timezone.utc)
+                    _last_eval_utc = _last_eval if _last_eval.tzinfo else _last_eval.replace(tzinfo=timezone.utc)
+                    _days_since_eval = (_eval_now - _last_eval_utc).days
+                    if _days_since_eval > 3:
+                        log.error("outcomes.evaluation_stale", days_since_last_eval=_days_since_eval,
+                                  last_evaluated=_last_eval_utc.isoformat())
+            except Exception as _oc_exc:
+                log.warning("outcomes.staleness_check_failed", error=str(_oc_exc))
             # Stale model guard: if tune_all hasn't run in >21 days, trigger it now.
             # Normally runs weekly on Sunday; this catches missed weeks (container restarts, errors).
             try:
