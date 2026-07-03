@@ -1677,7 +1677,11 @@ export default function PaperPortfolioPage() {
                 summary.regime_state === 'choppy' ? '#f59e0b' :
                 summary.regime_state === 'risk_off' ? '#f97316' : '#ef4444'
               }
-              sub={summary.regime_vix != null ? `VIX ${summary.regime_vix.toFixed(1)}` : 'market regime'}
+              sub={
+                summary.regime_vix != null
+                  ? `VIX ${summary.regime_vix.toFixed(1)}`
+                  : (summary.regime_notes?.[0] ?? 'HSI-based (no VIX equivalent)')
+              }
             />
           )}
           {summary.alpha != null && (

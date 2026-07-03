@@ -2799,12 +2799,43 @@ def send_post_open_digest(market: str, window: str) -> None:
                         movers.append({"symbol": sym, "change_pct": (float(close) - float(open_)) / float(open_) * 100})
                 movers.sort(key=lambda m: m["change_pct"], reverse=True)
 
+            # ── 5. Top 5 volume-surge stocks across watchlists ───────────────────
+            # Reuses volume_z (z-score of today's volume vs. its 20-day mean/std), already
+            # computed by the ML feature builder and stored in Signal.reasons at each open-burst
+            # refresh (5 runs 09:25-09:45) — no new intraday volume aggregation needed.
+            vol_surge: list[dict] = []
+            prev_vol_surge_symbols: set = set(prev.get("vol_surge_symbols", []))
+            if watchlist_stock_ids:
+                vol_sig_subq = (
+                    select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+                    .where(Signal.horizon == "SWING", Signal.stock_id.in_(watchlist_stock_ids))
+                    .group_by(Signal.stock_id)
+                    .subquery()
+                )
+                vol_rows = session.execute(
+                    select(Stock.symbol, Signal.reasons)
+                    .join(vol_sig_subq, Stock.id == vol_sig_subq.c.stock_id)
+                    .join(Signal, (Signal.stock_id == vol_sig_subq.c.stock_id)
+                          & (Signal.ts == vol_sig_subq.c.max_ts) & (Signal.horizon == "SWING"))
+                    .where(Stock.market == market)
+                ).all()
+                for sym, reasons in vol_rows:
+                    vz = (reasons or {}).get("volume_z")
+                    if vz is not None and vz >= 1.5:  # ~93rd percentile — meaningfully elevated
+                        vol_surge.append({"symbol": sym, "volume_z": float(vz)})
+                vol_surge.sort(key=lambda v: v["volume_z"], reverse=True)
+                # 1hr run: only report surges not already shown in the 30min run
+                if window == "1hr" and prev_vol_surge_symbols:
+                    vol_surge = [v for v in vol_surge if v["symbol"] not in prev_vol_surge_symbols]
+                vol_surge = vol_surge[:5]
+
             # ── Decide whether there's anything worth emailing ──────────────────
             has_content = (
                 regime_changed
                 or any(p["signal_flipped"] for p in position_rows)
                 or bool(new_signal_changes)
                 or any(abs(p.get("pnl_pct") or 0) >= 2.0 for p in position_rows)
+                or bool(vol_surge)
             )
 
             # Always refresh the snapshot so the next run's delta is accurate,
@@ -2815,6 +2846,8 @@ def send_post_open_digest(market: str, window: str) -> None:
                 "spy_price": cur_spy,
                 "signals": cur_signals,
                 "watchlist_signals": cur_watchlist_signals,
+                "vol_surge_symbols": [v["symbol"] for v in vol_surge] if window == "30min" else
+                                     list(prev_vol_surge_symbols | {v["symbol"] for v in vol_surge}),
             }))
 
             if not has_content:
@@ -2836,6 +2869,7 @@ def send_post_open_digest(market: str, window: str) -> None:
                     new_signal_changes=new_signal_changes,
                     top_movers=movers[:3],
                     bottom_movers=movers[-3:][::-1] if len(movers) > 3 else [],
+                    vol_surge=vol_surge,
                 )
                 if ok:
                     sent += 1

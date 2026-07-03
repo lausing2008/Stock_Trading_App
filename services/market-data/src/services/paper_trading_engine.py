@@ -2448,12 +2448,17 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
     regime_state = (live_regime or {}).get("state", "neutral")
     regime_size_mult = 1.0
     if cfg.get("enable_regime_filter", True) and live_regime:
-        # HK regime has no VIX (US-only index) — live_regime["vix"] is present but None,
-        # so `.get("vix", "?")` returns None (the key exists) rather than the fallback,
-        # and f"{None:.1f}" raises TypeError, crashing paper_trading_step() for every
-        # portfolio scanned after this one in the same cycle. Format defensively.
-        _vix_val = live_regime.get("vix")
-        _vix_str = f"{_vix_val:.1f}" if _vix_val is not None else "N/A"
+        # HK has no VIX equivalent (US-only index) — live_regime["vix"] is always None for
+        # HK portfolios. Build the gate message from whichever index this market actually
+        # uses (SPY+VIX for US, HSI for HK) instead of a US-shaped template with "VIX N/A"
+        # bolted on. HK's own regime notes already state the real condition (e.g. "HSI
+        # -11.0% below SMA200 + below SMA50"), so lean on those rather than reconstructing it.
+        _is_hk = cfg.get("market") == "HK"
+        if _is_hk:
+            _idx_note = (live_regime.get("notes") or ["HSI trend deteriorating"])[0]
+        else:
+            _vix_val = live_regime.get("vix")
+            _vix_str = f"{_vix_val:.1f}" if _vix_val is not None else "N/A"
         if regime_state == "bear":
             log.info("paper.regime_gate_bear",
                      portfolio=portfolio.name,
@@ -2461,8 +2466,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      spy=live_regime.get("spy_price"),
                      notes=live_regime.get("notes"),
                      note="all new entries suspended in bear regime")
-            _write_gate_block(portfolio.id, "regime_bear",
-                              f"Bear market — SPY below 200EMA + VIX {_vix_str}; all new entries suspended")
+            _bear_msg = (f"Bear market — {_idx_note}; all new entries suspended" if _is_hk else
+                         f"Bear market — SPY below 200EMA + VIX {_vix_str}; all new entries suspended")
+            _write_gate_block(portfolio.id, "regime_bear", _bear_msg)
             return
         # T173/T226-A: risk_off gate — blocks all new entries when regime_risk_off_gate=True.
         # T226-A changed default to True: 9/30 closed paper trades in risk_off had 0% win rate.
@@ -2473,8 +2479,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      vix=live_regime.get("vix"),
                      spy=live_regime.get("spy_price"),
                      note="all new entries suspended in risk_off regime (strict gate enabled)")
-            _write_gate_block(portfolio.id, "regime_risk_off",
+            _risk_off_msg = (f"Risk-off regime — {_idx_note}; no new entries until regime improves" if _is_hk else
                               f"Risk-off regime — SPY below 50EMA + VIX {_vix_str}; no new entries until regime improves")
+            _write_gate_block(portfolio.id, "regime_risk_off", _risk_off_msg)
             return
 
         # T210: Regime suspension circuit breaker — if the market has been risk_off or bear

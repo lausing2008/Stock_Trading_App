@@ -550,8 +550,12 @@ def send_morning_digest_email(
     sc = _state_color.get(state, "#94a3b8")
     sl = _state_label.get(state, state.upper())
 
-    # ── Market pulse section (SPY-centric; always shown) ─────────────────────
-    _idx_label = "SPY"
+    # ── Market pulse section ──────────────────────────────────────────────────
+    # HK has no VIX equivalent (US-only index) — vix is always None for the HK regime.
+    # Detect by market_sections rather than a hardcoded SPY/VIX template so the HK digest
+    # doesn't show a meaningless "VIX —" line.
+    _is_hk_digest = bool(market_sections) and all(s.get("market") == "HK" for s in market_sections)
+    _idx_label = "HSI" if _is_hk_digest else "SPY"
     _price_fmt = lambda p: f"${p:,.2f}"
     spy_str = _price_fmt(spy_price) if spy_price else "—"
     vix_str = f"{vix:.1f}" if vix else "—"
@@ -844,7 +848,8 @@ def send_morning_digest_email(
     subject = f"📊 Morning Digest [{_mkts_str}]: StockAI — {date_str} | Regime: {sl}"
     body_text = (
         f"StockAI Morning Digest [{_mkts_str}] — {date_str}\n"
-        f"Market Regime: {sl}  |  {_idx_label}: {spy_str}{f' ({ret20_str} 20d)' if ret20_str else ''}  |  VIX: {vix_str}{f' ({vix_trend})' if vix_trend else ''}\n"
+        f"Market Regime: {sl}  |  {_idx_label}: {spy_str}{f' ({ret20_str} 20d)' if ret20_str else ''}"
+        + ("" if _is_hk_digest else f"  |  VIX: {vix_str}{f' ({vix_trend})' if vix_trend else ''}") + "\n"
         + ("\n".join(regime_notes or []))
         + bear_banner_text
         + opp_section_text
@@ -867,7 +872,7 @@ def send_morning_digest_email(
         </div>
         <div style="border-left:1px solid #e2e8f0;padding-left:14px">
           <div style="font-size:11px;color:#64748b">{_idx_label} <strong style="color:#1e293b">{spy_str}</strong>{f' <span style="font-size:10px;color:{ret20_color};font-weight:700">{ret20_str} 20d</span>' if ret20_str else ''}</div>
-          <div style="font-size:11px;color:#64748b;margin-top:3px">VIX <strong style="color:#1e293b">{vix_str}</strong>{f' <span style="font-size:10px;color:#f97316">↑trend</span>' if vix_trend == "rising" else ''}</div>
+          {f'<div style="font-size:11px;color:#64748b;margin-top:3px">VIX <strong style="color:#1e293b">{vix_str}</strong>{" <span style=\"font-size:10px;color:#f97316\">↑trend</span>" if vix_trend == "rising" else ""}</div>' if not _is_hk_digest else ''}
           {f'<div style="font-size:10px;color:#f59e0b;margin-top:3px">⚠ Breadth weak (small/mid-caps below 200MA)</div>' if breadth_weak else ''}
         </div>
         {f'<div style="flex:1"><ul style="margin:0;padding-left:16px">{regime_notes_html}</ul></div>' if regime_notes_html else ''}
@@ -1135,6 +1140,7 @@ def send_post_open_digest_email(
     new_signal_changes: list,  # [{symbol, signal, prev_signal}]
     top_movers: list,          # [{symbol, change_pct}]
     bottom_movers: list,       # [{symbol, change_pct}]
+    vol_surge: list | None = None,  # [{symbol, volume_z}]
 ) -> bool:
     """Post-open market update — 30 min or 1 hour after {market} opens.
 
@@ -1276,6 +1282,27 @@ def send_post_open_digest_email(
         losers_text = "".join(f"  {m['symbol']:8}  {m['change_pct']:.1f}%\n" for m in bottom_movers)
         movers_text = f"\nTOP GAINERS:\n{gainers_text}\nTOP LOSERS:\n{losers_text}"
 
+    # ── Volume surge — stocks trading meaningfully above their normal volume ────
+    vol_surge_html = ""
+    vol_surge_text = ""
+    if vol_surge:
+        def _vol_row(v: dict) -> str:
+            vz = v["volume_z"]
+            intensity = "#ef4444" if vz >= 3.0 else "#f97316" if vz >= 2.0 else "#f59e0b"
+            return (
+                f'<tr style="border-bottom:1px solid #f1f5f9">'
+                f'<td style="padding:6px 10px;font-weight:700;font-size:13px">{v["symbol"]}</td>'
+                f'<td style="padding:6px 10px;font-size:13px;font-weight:700;color:{intensity}">{vz:.1f}σ</td>'
+                f'</tr>'
+            )
+        vol_rows_html = "".join(_vol_row(v) for v in vol_surge)
+        vol_surge_html = f"""
+    <div style="margin-top:20px">
+      <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">Volume Surge (vs. 20d normal)</div>
+      <table style="width:100%;border-collapse:collapse;background:#fafafa;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">{vol_rows_html}</table>
+    </div>"""
+        vol_surge_text = "\nVOLUME SURGE:\n" + "".join(f"  {v['symbol']:8}  {v['volume_z']:.1f}σ above normal\n" for v in vol_surge)
+
     subject_bits = []
     if regime_changed:
         subject_bits.append(f"Regime→{_state_label.get(cur_state, cur_state.upper())}")
@@ -1283,6 +1310,8 @@ def send_post_open_digest_email(
         subject_bits.append("Signal flip")
     if new_signal_changes:
         subject_bits.append(f"{len(new_signal_changes)} new signal(s)")
+    if vol_surge:
+        subject_bits.append(f"{len(vol_surge)} volume surge")
     subject_detail = " · ".join(subject_bits) if subject_bits else "Update"
     subject = f"📈 {market} {window_label}: {subject_detail} — {date_str}"
 
@@ -1291,6 +1320,7 @@ def send_post_open_digest_email(
         f"{regime_text}"
         f"{pos_section_text}"
         f"{sig_section_text}"
+        f"{vol_surge_text}"
         f"{movers_text}"
     )
     body_html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#f8fafc;padding:24px;margin:0">
@@ -1302,6 +1332,7 @@ def send_post_open_digest_email(
     {regime_html}
     {pos_section_html}
     {sig_section_html}
+    {vol_surge_html}
     {movers_html}
     <p style="font-size:12px;color:#94a3b8;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:12px">
       <a href="https://lausing.com/signal-filters" style="color:#6366f1">View signal filters →</a> ·
