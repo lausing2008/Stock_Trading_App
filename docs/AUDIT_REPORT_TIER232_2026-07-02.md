@@ -370,3 +370,107 @@ losses: −$11,800 aggregate, worst in the HK portfolios that buy into the 28–
 5. **Calibration writes must be validated on a temporal holdout** and applied with sanity
    clamps at the reader (thresholds outside [0.55, 0.80] fused are rejected).
 6. **One source of truth for thresholds:** `_STYLE_PROFILES` — no hardcoded copies in routes.py.
+
+---
+
+## Part 6 — Session Log: Fixes Shipped, Features Built, New Findings (2026-07-02 → 2026-07-03)
+
+Everything below happened after the initial audit (Parts 1–5) was written, in the same working
+session. All items are cross-referenced by their `improvements.tsx` tracker ID (Tier 232).
+
+### 6.1 — Critical/high fixes deployed to production
+
+All four **critical** findings were fixed and deployed the same day they were found:
+
+- **CAL-1 / CAL-2 / CAL-3** (calibration unit mismatch, regime-blind override, inverted SELL
+  sweep) — fixed in `signal-engine`. **CAL-1 was found ACTIVE in production**:
+  `stockai:signal_thresholds:SWING = 0.62` had been silently loosening the SWING BUY threshold
+  since ~2026-06-28. The corrupted key was deleted and a full signal refresh verified clean
+  (all fresh SWING BUYs ≥ the vetted 0.72) before the code fix shipped.
+- **ML-1** (PIT fundamentals epoch-date bug) — fixed in `ml-prediction`. Retraining still
+  required to actually benefit from the resurrected features.
+
+Twelve additional **high/medium** findings were fixed and deployed: SIG-3/SIG-5 (direction-blind
+SELL suppression), KS-1 (wrong TA port), KS-2 (broken per-symbol sector map), TA-1 (RSI warmup
+bug), DE-2/DE-4 (sizing/config bugs) — see the Tier 232 tracker for the complete per-item list
+(`T232-CAL1…T232-TA1`).
+
+### 6.2 — Production incident found and fixed mid-session: ETrade Sandbox / HK crash
+
+User reported the ETrade Sandbox SWING portfolio had only 1 trade ever and none in two full
+trading days. Root cause: **`live_regime.get("vix", "?"):.1f` crashed with `TypeError` whenever
+HK was in `risk_off`/`bear` regime** (HK has no VIX; the key exists but is `None`, so the `"?"`
+fallback never applied). This crashed `paper_trading_step()` **for every portfolio scanned after
+HK in the loop** (GROWTH → HK SWING → US SWING → HK GROWTH → ETrade Sandbox by id order) —
+measured at 103 crashes in a 40-hour log window versus exactly 1 successful entry system-wide.
+Two more instances of a related bug class (wrong absolute import path, silently swallowed) were
+found and fixed in the same pass: `poll_broker_order_fills` (broker order fills never polled)
+and the HK-holiday check (`_is_market_hours`). See `T232-PT13`, `T232-PT14`.
+
+**One follow-up incident during the fix itself:** a VIX-removal edit used an f-string with
+escaped quotes, which is valid on Python 3.12 (the dev machine) but a hard `SyntaxError` on
+Python 3.11 (production) — crash-looped `market-data` for ~2–3 minutes before caught and fixed.
+Lesson recorded: compile-check with `py_compile` against the *actual* deployed Python version,
+not just `ast.parse` locally.
+
+### 6.3 — New feature: post-open digest emails (user request)
+
+Originally built as **one combined HK+US email at 08:50 HKT** (~20:50 ET the prior evening).
+User clarified they wanted **separate per-market emails, 30–40 min before each market's own
+open** — re-split into `morning_digest_us` (08:50 ET) / `morning_digest_hk` (08:50 HKT), each
+scoped to only its own market's data (open positions and pattern alerts had been silently
+combined across markets even in the original two-job design — fixed while splitting).
+
+Then added two **new** emails per market: **+30min** and **+1hr** after open
+(`post_open_digest_{market}_{window}`), covering regime changes, open-position moves/signal
+flips, new BUY/SELL signals, a **top-5 volume-surge section** (reusing the existing `volume_z`
+ML feature — no new intraday aggregation needed), and top gainers/losers. The +1hr email reports
+only the **delta** vs. the +30min snapshot (Redis-backed state, 24h TTL), and the whole email is
+skipped when nothing meaningful changed. See `T232-POSTOPEN1`.
+
+### 6.4 — Frontend regression found and fixed: Signal Filter market button
+
+User reported the Signal Filter page breaking on the US market button. Root cause: a **three-layer
+regression of a working Tier 128 (2026-06-22) feature** — the backend never selected/returned
+`Stock.market`, and the frontend had regressed to client-side filtering on `(x as any).market`
+(a field that never existed on the row type, hence the type-check-bypassing `as any`). Every
+non-"ALL" market click silently returned zero rows. Restored server-side filtering per the
+original design. See `T232-UI1`.
+
+### 6.5 — HK regime improvements (user request: "any better indicators?")
+
+User asked whether better indicators existed for the HK risk_off gate (which was correctly
+blocking HK trading — HSI was genuinely ~9-11% below its 200-day average) and whether a bypass
+button made sense.
+
+- **HSI breadth confirmation** (`T232-HKBREADTH-CONFIRMATION`): added `_compute_hk_breadth()` —
+  % of the tracked HK universe (31 stocks with ≥200 daily bars, no new external constituent
+  list needed) trading above their own 200-day SMA. An index-level bear/risk_off call is
+  downgraded one tier when breadth does NOT also confirm broad weakness (≥40%) — distinguishing
+  "a few mega-caps dragging the index down" from genuine systemic decline. Verified against live
+  production data: breadth read 32.3% on deploy day, correctly **confirming** (not spuriously
+  relaxing) the existing `risk_off` call.
+- **Time-boxed override** (`T232-RISKOFF-OVERRIDE`): rather than a permanent config flip or an
+  always-visible bypass button (both rejected as too easy to misuse in the heat of the moment),
+  added `POST /paper-portfolio/risk-off-override?hours=N` (max 24h) — self-expiring, checked on
+  every gate evaluation, with a UI control on the Paper Portfolio Config Panel ("Allow trading
+  for 4 hours" / "1 day" + live countdown + cancel).
+- **VIX fully removed from HK-facing text** (`T232-POSTOPEN2`): gate-block messages, the morning
+  digest, and the paper-portfolio Regime card all previously showed a US-shaped "VIX N/A"
+  template for HK. HK genuinely has no VIX equivalent — all three now use HK's own descriptive
+  regime note (e.g. "HSI -9.3% below SMA200") instead.
+
+### 6.6 — Documentation pass + new architectural finding
+
+While updating the `/paper-gates` reference page to describe the new breadth/override behavior
+(`T232-GATEPAGE-DOCS-UPDATE`), discovered that **decision-engine runs a second, independent
+regime classifier** (`services/decision-engine/src/api/core/regime.py`) that the entry-gate
+page's live "Live Status" section actually reads from — NOT the `paper_trading_engine.py` copy
+that gates real trading and was the one improved with breadth confirmation. See
+`T232-REGIME-DUPLICATION` for the full writeup: decision-engine is a stateless HTTP service with
+no DB access, so it independently re-fetches ^HSI via yfinance and hand-mirrors the
+classification logic — a design tradeoff (avoid a cross-service call) that has already visibly
+failed, since the very first regime enhancement after the mirror was written (breadth
+confirmation) was not applied to both copies. **Not fixed in this session** — flagged as
+real architectural debt requiring either a shared module or a market-data → decision-engine
+HTTP call, not a quick patch.
