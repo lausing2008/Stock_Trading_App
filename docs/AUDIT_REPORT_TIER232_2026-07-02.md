@@ -747,3 +747,155 @@ tracked as debt requiring a real design decision, not a quick patch):
 
 All changes compile-checked against production's actual Python 3.11 container (not just local
 3.12) before deploy, per the standing lesson from the earlier f-string incident this session.
+
+---
+
+## Part 8 — Developer Documentation Audit (2026-07-04): all 14 `skill.md` files
+
+Following the deep logic review and its fixes, the user asked for a separate pass: check every
+`skill.md` file in the repo (one per service, plus `shared/`, `frontend/`, and `.claude/` — 14
+files, ~1,700 lines total) against the actual current code, since these are the standing
+development-practice references every future Claude Code session reads before touching a
+service. Docs like these rot the same way the calibration/ranking bugs earlier in this report
+did — silently, with no error to signal the drift — so the method was the same as the rest of
+this audit: don't trust the doc, verify every checkable claim against source.
+
+### 8.1 — Method
+
+Two parallel research agents: one mechanically diffed every line-count/file-size/page-count claim
+against `wc -l`/`ls -la` on the real files; one verified six specific behavioral/architectural
+claims that looked suspicious on a manual read-through (wrong endpoint shapes, a scoring model
+that didn't match the code, cross-service call graphs that seemed backwards). Findings were
+fixed directly in all 14 files — this section documents what was wrong and why it mattered,
+not just that something was fixed.
+
+### 8.2 — Operationally dangerous findings (would misdirect a debugging session, not just read oddly)
+
+**Port table was wrong for 6 of 11 services**, in both `.claude/skill.md` and
+`services/api-gateway/skill.md`. Both files listed `technical-analysis:8009`, `ranking-
+engine:8007`, `decision-engine:8006`, `strategy-engine:8010`, `portfolio-optimizer:8011`,
+`event-intelligence:8012` — none of which match the real ports. Verified ground truth by
+grepping every service's Dockerfile/`main.py` `uvicorn.run(port=...)` directly: the correct
+values (already documented correctly in `CLAUDE.md`'s "System Port Map") are
+`technical-analysis:8002`, `ranking-engine:8004`, `decision-engine:8009`, `strategy-
+engine:8006`, `portfolio-optimizer:8007`, `event-intelligence:8010`. The actual proxy code
+(`api-gateway/src/api/proxy.py`) was never affected — it reads ports from env-var-driven
+settings objects, not hardcoded literals — so this was a pure documentation bug, but a
+believable one: a future session trusting either skill.md and running
+`docker exec stockai-ranking-engine-1 curl localhost:8007/...` would get a connection refused
+against the wrong port and could easily misdiagnose it as a service outage.
+
+**`frontend/skill.md` said "Current highest tier: 215. Next new tier: 216."** Actual highest
+tier in `improvements.tsx` is 232 — tiers 216 through 232 already exist. Following that
+instruction literally would have created a colliding/duplicate tier ID the next time someone
+added a tier, silently merging two unrelated sets of tracker items under one number. Replaced
+the hardcoded number with the one-line `grep` command to always check the live value instead of
+re-encoding a snapshot that will be stale again within days (this file previously grew from
+tier ~50 to 215 to 232 without ever being updated in between).
+
+### 8.3 — Factually wrong claims (not merely stale — described behavior that never matched, or has since reversed)
+
+- **`research-engine/skill.md`** said research divergence "does NOT block the trade — it's
+  informational." False: `paper_trading_engine.py`'s `_scan_for_entries` has a real hard-reject
+  gate (`research_gating_enabled`, default `true`) that `continue`s past any candidate with an
+  AVOID/SELL research recommendation — skipping it entirely, not just penalizing its score. The
+  identical gate exists in `decision-engine/api/core/hard_rejects.py`. This is the same class of
+  error as an earlier finding in this report (T232-DL1/DL5's falsy-zero gates) in spirit if not
+  mechanism: documentation asserting something is advisory when the code actually treats it as
+  load-bearing is exactly the kind of gap that leads someone to "safely" change gating logic
+  elsewhere while not realizing research recommendations are already blocking real entries.
+- **`ranking-engine/skill.md`**'s K-score component list (Momentum/Technical quality/Volume
+  confirmation/Signal strength/Relative performance) didn't match `compute_kscore()`'s actual
+  6-component weighted formula (`technical`, `momentum`, `value`, `growth`, `volatility`,
+  `relative_strength` — with `value`/`growth` being the fundamentals-based, sometimes-`None`
+  components at the center of this session's T232-RANKSTALE-SCHEMA fix). The doc's endpoint
+  table also claimed `GET /rankings/{symbol}` requires auth and referenced two endpoints
+  (`/rankings/top`, `/rankings/sector/{sector}`) that don't exist — the real, unauthenticated
+  endpoints are `/rankings/screen` and `/rankings/sector_rotation`. Only `POST /rankings/refresh`
+  actually requires a JWT.
+- **`portfolio-optimizer/skill.md`** said AI Allocation "Calls the research engine to get
+  conviction scores per symbol." It calls **ranking-engine**'s `/rankings/{symbol}` for K-scores
+  instead — there is no reference to research-engine anywhere in portfolio-optimizer's source.
+  Also corrected: the real `method` literal is `"hierarchical_risk_parity"`, not `"hrp"`, and
+  `/portfolio/frontier`/`/portfolio/correlation` don't exist — `POST /portfolio/optimize` is the
+  only endpoint this service defines.
+- **`technical-analysis/skill.md`**'s consumer-mapping table claimed ranking-engine calls it for
+  RSI/MACD/BB inputs to K-score. It doesn't — `compute_kscore()` computes its own RSI/ADX/
+  technical-quality independently from raw OHLCV (two separate, unrelated implementations of the
+  same indicators exist in the codebase). The only call ranking-engine makes to
+  technical-analysis is for a cosmetic `patterns` leaderboard column, never fed into the score.
+- **`event-intelligence/skill.md`** described signal-engine's and decision-engine's consumption
+  of event data as "planned" (T208 / "could check catalyst_score as a volatility gate"). Both
+  are already live: signal-engine calls `/catalyst/{symbol}` in two code paths and nudges
+  `fused_prob` from insider/congress scores; decision-engine's `scorer.py` already has a
+  `catalyst` scoring layer. T208 itself (SEC 8-K flags) is also shipped, via a direct DB read of
+  `sec_filings` rather than the HTTP path the doc implied.
+- **`decision-engine/skill.md`** described a fixed "9 dimensions, each 0–1.33 points, total 12"
+  scoring model and a bare `POST /decide` endpoint. Neither matches `scorer.py`/`routes.py`:
+  the real endpoint is `POST /decide/{symbol}` (symbol is a path param, plus separate
+  `/decide/batch` and `/decide/{symbol}/explain` routes), and scoring is a variable-length list
+  of conditional integer-point layers (`price_zone`, `rr_quality`, `volume`, `earnings`,
+  `ml_signal`, `conf_delta`, `freshness`, `catalyst`, `pre_regime`, `entry_drift`, `research`,
+  `regime`) with an unbounded total, not a fixed 0–12 range. Also flagged: `SCALP` and `INCOME`
+  are defined as valid styles in decision-engine's own schema (`models.py`, `aggregator.py`) but
+  do not exist anywhere in the real trading engine (`paper_trading_engine.py` only implements
+  SHORT/SWING/LONG/GROWTH) — dead, unvalidated speculative styles that could mislead a future
+  feature built against decision-engine's schema into assuming they're live.
+
+### 8.4 — Line-count / size staleness (20–53% off; not wrong, just old)
+
+Mechanical `wc -l`/`ls -la` diff against every claimed figure. Most services
+(`strategy-engine`, `portfolio-optimizer`, `technical-analysis`, `api-gateway`,
+`event-intelligence` except one file) were exact or within a few lines — evidently refreshed
+recently and a good model for the rest. The worst offenders, refreshed in this pass:
+
+| File | Claimed | Actual | Drift |
+|---|---|---|---|
+| `ml-prediction/src/features/builder.py` | ~548 | 841 | +53% |
+| `market-data/src/services/scheduler.py` | ~2,628 | 3,437 | +31% |
+| `market-data/src/services/paper_trading_engine.py` | ~2,957 | 3,758 | +27% |
+| `shared/db/session.py` | ~368 | 446 | +21% |
+| `signal-engine/src/generators/signals.py` | ~1,989 | 2,359 | +19% |
+| `ml-prediction/src/training/tuner.py` | ~170 | 199 | +17% |
+| `event-intelligence/src/api/routes.py` | ~223 | 261 | +17% |
+| `ml-prediction/src/training/trainer.py` | ~1,179 | 1,355 | +15% |
+| `shared/db/models.py` | ~891 | 979 | +10% |
+| `decision-engine/src/api/routes.py` | ~333 | 369 | +11% |
+| `ranking-engine/src/api/routes.py` | ~788 | 838 | +6% |
+
+`frontend/skill.md`'s page count (37 → 41 route files, missing the `research/` nested route and
+`stock/[symbol]` dynamic route entirely from its tree diagram) and file sizes (`api.ts` 78KB →
+82KB, `improvements.tsx` 1.2MB → 1.43MB) followed the same undercounting pattern — consistent
+with active, ongoing development that these reference docs simply hadn't kept pace with.
+
+### 8.5 — Fixes applied
+
+All 14 files corrected in place (no code changes — documentation only, so no deployment or
+container restart was required):
+`.claude/skill.md`, `shared/skill.md`, `frontend/skill.md`, and `services/{market-data,
+signal-engine, decision-engine, ranking-engine, research-engine, portfolio-optimizer,
+technical-analysis, event-intelligence, ml-prediction, api-gateway, strategy-engine}/skill.md`.
+
+Beyond correcting the specific claims above, each fix added a cross-reference back to the
+relevant finding in this report (e.g. `technical-analysis/skill.md` now points at
+`T232-DL-DUALSCORER`-adjacent context for the strategy-engine RSI-reimplementation divergence;
+`market-data/skill.md`'s config-key table now flags every key that exists via `.get()` fallback
+but has no entry in `_DEFAULT_CONFIG`, per T232-DL2/DL3) so a future reader lands on the current,
+verified picture rather than rediscovering the same drift from scratch. Committed as `3496cf6`,
+pushed to `prod`.
+
+### 8.6 — Process note for future sessions
+
+Two patterns emerged worth calling out explicitly, since they'll recur:
+
+1. **Doc staleness compounds over time.** `frontend/skill.md`'s tier number was 17 tiers behind;
+   line counts were off by as much as 53%. None of these files had "wrong day one" — they were
+   accurate snapshots that nobody re-verified as the code kept moving. The fix (in a few places)
+   was to replace a hardcoded fact with a one-line command to re-derive it live, rather than
+   re-encoding another snapshot that will be stale again.
+2. **A skill.md describing a "planned" feature is a trap if nobody re-checks it after the
+   feature ships.** Three separate files (`event-intelligence`, and implicitly the aspirational
+   `improvements.tsx` entries T232-DL7 already found for portfolio-optimizer) described
+   already-shipped integrations as future work. Anyone reading only the doc — not the code —
+   would conclude a real dependency doesn't exist and could duplicate work building it "for the
+   first time," or conversely worry a gate isn't applying when it already is.

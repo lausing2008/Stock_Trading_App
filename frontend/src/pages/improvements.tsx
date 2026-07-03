@@ -8647,6 +8647,103 @@ const ITEMS: Item[] = [
     fix: 'Done 2026-07-04: _run_paper_trading_step now fails CLOSED on lock-acquire error — logs "paper.step_skipped_lock_unavailable" at ERROR and returns (skips this cycle; the next scheduled tick retries) rather than risking a double-execution that could double-credit cash on an exit. check_signal_alerts\' lock deliberately stays fail-open (worst case is a duplicate email, not a financial double-credit, and there\'s a real DB-level dedup fallback) but now logs a WARNING instead of silently swallowing — so a Redis outage always leaves a trace on at least these two highest-stakes lock sites. The remaining lower-stakes silent `except: pass` blocks (_apply_tuned_hold_days, _clear_gate_block, _write_gate_block, _write_no_entry_summary) were left as-is — logging tightened only where the design intent changed (fail-open → fail-closed), not sprayed across every catch block.',
   },
 
+  // ── Tier 232 — Developer Documentation Audit (2026-07-04): all 14 skill.md files ────────────────────────────
+  // See docs/AUDIT_REPORT_TIER232_2026-07-02.md Part 8 for full detail. User asked to check every
+  // skill.md (one per service + shared/frontend/.claude) against actual current code and fix best
+  // practices. Two parallel agents: one diffed line-counts/sizes, one verified suspicious behavioral
+  // claims. All findings below were fixed directly in the docs — no code changes, no deployment needed.
+
+  {
+    id: 'T232-DOCS1',
+    title: 'Port tables in .claude/skill.md and api-gateway/skill.md were wrong for 6 of 11 services',
+    tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: '.claude/skill.md, services/api-gateway/skill.md',
+    effort: 'S',
+    impact: 'High (operationally dangerous, not cosmetic) — both files listed technical-analysis:8009, ranking-engine:8007, decision-engine:8006, strategy-engine:8010, portfolio-optimizer:8011, event-intelligence:8012 — none correct. Verified ground truth by grepping every service\'s Dockerfile/main.py uvicorn.run(port=...) directly. CLAUDE.md\'s "System Port Map" already had the correct values (technical-analysis:8002, ranking-engine:8004, decision-engine:8009, strategy-engine:8006, portfolio-optimizer:8007, event-intelligence:8010) — these two skill.md files just never got updated to match after CLAUDE.md was corrected on 2026-07-01. The actual proxy code was never affected (it reads ports from env-var settings, not hardcoded literals) — pure documentation bug, but a believable one: trusting either file and running a manual docker exec/curl against the wrong port reads exactly like a service outage.',
+    what: 'Found during the 2026-07-04 skill.md documentation audit — a mechanical cross-check against CLAUDE.md and live Dockerfile ports.',
+    fix: 'Done 2026-07-04: both port tables corrected to match the verified values, plus a note in each pointing at the other two copies (CLAUDE.md + the sibling skill.md) so a future edit to one prompts checking the others. api-gateway/skill.md also now states explicitly that ports are read from _settings.<service>_url env vars in the real code, not hardcoded, so a doc/code mismatch can\'t break the actual routing — only mislead a human debugging by hand.',
+  },
+  {
+    id: 'T232-DOCS2',
+    title: 'frontend/skill.md said "Next new tier: 216" — 17 tiers already existed beyond that',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'frontend/skill.md',
+    effort: '5min',
+    impact: 'Medium — actual highest tier in improvements.tsx is 232, not 215. Following the doc\'s literal instruction to use "216" as the next new tier would have collided with 17 already-used tier IDs (216 through 232), silently merging two unrelated sets of tracker items under one number and breaking the TIER_LABEL/TIER_COLOR Record<Tier,...> exhaustiveness the file itself documates elsewhere. Also stale: page count (37 vs actual 41 route files — the tree diagram didn\'t mention the research/ nested route or stock/[symbol] dynamic route existed at all), api.ts size (78KB vs 82KB), improvements.tsx size (1.2MB vs 1.43MB).',
+    what: 'Found during the 2026-07-04 skill.md documentation audit — a hardcoded snapshot of a fast-moving file that nobody re-verified as more tiers were added over ~3 months of sessions.',
+    fix: 'Done 2026-07-04: replaced the hardcoded tier number with the one-line grep command to derive the live value (`grep -oE "^\\s+[0-9]+:\\s*\'Tier" ... | sort -n | tail -1`) instead of re-encoding another snapshot that will be stale again. Corrected page count, added research/ and stock/[symbol] to the tree diagram, and flagged that CLAUDE.md\'s claim that board.tsx/forecast.tsx/screener.tsx were deleted as dead code (2026-06-18) is ALSO stale — all three still exist and are actively referenced (only StrategyBuilder.tsx from that cleanup note is actually gone).',
+  },
+  {
+    id: 'T232-DOCS3',
+    title: 'research-engine/skill.md said research divergence "does NOT block the trade" — it does, via a real hard-reject gate',
+    tier: 232 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/research-engine/skill.md',
+    effort: '5min',
+    impact: 'High — this is the same class of risk as the T232-DL1/DL5 falsy-zero gate bugs found earlier in this session, but in documentation form: asserting something is purely advisory when the code actually treats it as load-bearing. paper_trading_engine.py\'s _scan_for_entries has research_gating_enabled (default true) that `continue`s past — skips entirely, not just penalizes — any candidate with an AVOID/SELL research recommendation. The identical gate exists independently in decision-engine\'s hard_rejects.py. A developer trusting this doc could "safely" change research-engine\'s output format or the gating threshold elsewhere without realizing real capital allocation already depends on it.',
+    what: 'Found during the 2026-07-04 skill.md documentation audit — flagged as suspicious during a manual read-through, then confirmed via a targeted verification agent reading the actual gate code.',
+    fix: 'Done 2026-07-04: corrected to state plainly that AVOID/SELL research blocks entries (with the exact code snippet and line reference), also tightens trailing stops on open positions when research deteriorates mid-trade and reduces position sizing on entry — research is NOT purely informational anywhere in the current pipeline.',
+  },
+  {
+    id: 'T232-DOCS4',
+    title: 'ranking-engine/skill.md: wrong K-score components, wrong auth claims, two nonexistent endpoint names',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/ranking-engine/skill.md',
+    effort: 'S',
+    impact: 'Medium — the doc\'s K-score component list (Momentum/Technical quality/Volume confirmation/Signal strength/Relative performance) didn\'t match compute_kscore()\'s actual 6-component weighted formula (technical, momentum, value, growth, volatility, relative_strength) — notably omitting value/growth entirely, the exact fundamentals-based components at the center of this session\'s T232-RANKSTALE-SCHEMA nullable-columns fix. The doc also claimed GET /rankings/{symbol} requires auth (it doesn\'t) and referenced /rankings/top and /rankings/sector/{sector}, neither of which exist — the real unauthenticated endpoints are /rankings/screen and /rankings/sector_rotation. Only POST /rankings/refresh actually requires a JWT.',
+    what: 'Found during the 2026-07-04 skill.md documentation audit via a targeted verification agent reading kscore.py and routes.py directly.',
+    fix: 'Done 2026-07-04: replaced the component list with the real _WEIGHTS-driven formula (with each weight value), corrected the endpoint table to the 5 real endpoints with accurate auth requirements, and added a full writeup of the T232-RANKSTALE background-task-failure incident directly in this skill.md (it previously had zero mention of the single biggest bug this service had this session) plus a design invariant: any BackgroundTasks callback must wrap its entire body in try/except with success/failure logging.',
+  },
+  {
+    id: 'T232-DOCS5',
+    title: 'portfolio-optimizer/skill.md said AI Allocation calls research-engine — it actually calls ranking-engine for K-scores',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/portfolio-optimizer/skill.md',
+    effort: '5min',
+    impact: 'Medium — "AI Allocation... Calls the research engine to get conviction scores per symbol" is wrong on the data source: _fetch_scores() calls ranking-engine\'s GET /rankings/{symbol} and reads the K-score ("score" field), not a research-engine conviction/recommendation. There is no reference to research-engine anywhere in portfolio-optimizer\'s source. Also wrong: the doc\'s method literal "hrp" (actual: "hierarchical_risk_parity") and two endpoints (/portfolio/frontier, /portfolio/correlation) that don\'t exist — POST /portfolio/optimize is the service\'s only endpoint.',
+    what: 'Found during the 2026-07-04 skill.md documentation audit via a targeted verification agent reading methods.py and routes.py directly.',
+    fix: 'Done 2026-07-04: corrected the data source, method literal, and endpoint table. Also added a pointer to T232-DL7 (the separately-found stale improvements.tsx entry claiming a regime-aware position multiplier was shipped here — it was not; no regime/decision_engine_url/decide reference exists anywhere in this service\'s source).',
+  },
+  {
+    id: 'T232-DOCS6',
+    title: 'technical-analysis/skill.md: falsely claimed ranking-engine calls it for K-score RSI/MACD/BB inputs',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/technical-analysis/skill.md',
+    effort: '5min',
+    impact: 'Medium — the consumer-mapping table said "ranking-engine | RSI, MACD, BB position for K-score." Ranking-engine actually computes its own RSI/ADX/technical-quality independently from raw OHLCV inside kscore.py — two separate, unrelated implementations of the same indicators exist in the codebase, and ranking-engine never calls this service for K-score inputs at all. The only real call is _fetch_patterns_bulk() for a cosmetic leaderboard patterns column, never fed into the score.',
+    what: 'Found during the 2026-07-04 skill.md documentation audit via a targeted verification agent tracing the actual HTTP calls ranking-engine makes.',
+    fix: 'Done 2026-07-04: corrected the consumer-mapping table, and added a new row for strategy-engine (previously missing entirely) noting it ALSO doesn\'t call this service — dsl/evaluator.py reimplements RSI/MACD/ATR/Bollinger from scratch with a provably different NaN-handling formula than this service\'s canonical implementation, meaning backtests compute slightly different indicator values than the live signals for the same symbol/day. Cross-referenced the same finding into strategy-engine/skill.md\'s own limitations section.',
+  },
+  {
+    id: 'T232-DOCS7',
+    title: 'event-intelligence/skill.md called signal-engine/DE event-data consumption "planned" — both are already live',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/skill.md',
+    effort: '5min',
+    impact: 'Medium — "Signal engine: currently does not consume event data directly (planned T208)" and "DE hard rejects: could check catalyst_score... (planned feature)" are both false. signal-engine calls GET /catalyst/{symbol} in two code paths (scheduled + manual refresh) and nudges fused_prob from insider/congress scores; decision-engine\'s scorer.py already has a live catalyst scoring layer. T208 itself (SEC 8-K flags) is also shipped, via a direct DB read of sec_filings rather than the HTTP path the doc implied. Anyone reading only this doc would conclude a real dependency doesn\'t exist and could duplicate work building it "for the first time."',
+    what: 'Found during the 2026-07-04 skill.md documentation audit via a targeted verification agent grepping signal-engine and decision-engine source for actual event-intelligence call sites.',
+    fix: 'Done 2026-07-04: corrected both claims to state the integrations are live, with exact call-site references (file + what fields are read). Added a closing note: several "planned" items in this pipeline\'s docs turned out to already be shipped by the time anyone re-read the doc — check actual call sites before assuming a described integration doesn\'t exist.',
+  },
+  {
+    id: 'T232-DOCS8',
+    title: 'decision-engine/skill.md described a scoring model and endpoint that don\'t match the code; flagged dead SCALP/INCOME styles',
+    tier: 232 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/decision-engine/skill.md',
+    effort: 'M',
+    impact: 'Medium — doc described "9 dimensions, each contributing 0-1.33 points (total: 12)" with a specific named list; scorer.py actually implements a variable-length list of conditional integer-point layers (price_zone, rr_quality, volume, earnings, ml_signal, conf_delta, freshness, catalyst, pre_regime, entry_drift, research, regime) with an UNBOUNDED total score, not a fixed 0-12 range — none of the 9 named dimensions match the real layer names 1:1, and "catalyst" (event-intelligence-sourced) wasn\'t mentioned in the doc at all. The doc\'s endpoint was also wrong: bare POST /decide vs the actual POST /decide/{symbol} (symbol is a path param) plus undocumented /decide/batch and /decide/{symbol}/explain routes. Separately: SCALP and INCOME are defined as valid styles in decision-engine\'s own schema (models.py, aggregator.py) but do not exist anywhere in the real trading engine (paper_trading_engine.py only implements SHORT/SWING/LONG/GROWTH) — untested, speculative styles that could mislead a future feature built against this service\'s schema into assuming they\'re live and validated.',
+    what: 'Found during the 2026-07-04 skill.md documentation audit via a targeted verification agent reading scorer.py, routes.py, models.py, and aggregator.py directly.',
+    fix: 'Done 2026-07-04: replaced the 9-dimension description with the real layer list and score-range caveat, corrected the endpoint table, and added two new "Known Drift" sections — one for SCALP/INCOME (pointing at T232-DL-STYLEPARAMS3X for the broader triplicated-style-params issue) and one for the /decide/regime endpoint being decision-engine\'s own independent regime implementation (pointing at T232-DL-REGIME5X for the full 5-way duplication).',
+  },
+  {
+    id: 'T232-DOCS9',
+    title: 'Line-count staleness across 7 backend skill.md files, 20-53% off actual file sizes',
+    tier: 232 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'services/market-data/skill.md, services/signal-engine/skill.md, services/ml-prediction/skill.md, services/decision-engine/skill.md, services/ranking-engine/skill.md, services/event-intelligence/skill.md, shared/skill.md',
+    effort: 'S',
+    impact: 'Low individually, but a pattern worth noting — ml-prediction/features/builder.py was claimed ~548 lines vs actual 841 (+53%), market-data/scheduler.py ~2,628 vs 3,437 (+31%), paper_trading_engine.py ~2,957 vs 3,758 (+27%), shared/db/session.py ~368 vs 446 (+21%), signal-engine/signals.py ~1,989 vs 2,359 (+19%), plus smaller drift in tuner.py, event-intelligence/routes.py, trainer.py, shared/db/models.py, decision-engine/routes.py, and ranking-engine/routes.py (6-17% each). By contrast strategy-engine, portfolio-optimizer, technical-analysis, api-gateway, and most of event-intelligence were exact or within a few lines — evidently refreshed recently, a good model for how these docs should be kept.',
+    what: 'Found during the 2026-07-04 skill.md documentation audit via a mechanical wc -l diff against every claimed line count across all 14 files.',
+    fix: 'Done 2026-07-04: refreshed all stale counts to current actual values. Also added a general caveat at the top of market-data/skill.md and ml-prediction/skill.md noting these are approximate and grow every session — prefer `wc -l` on the real file over trusting a static number when precision matters, rather than expecting this doc to stay exactly current.',
+  },
+
   // ── Tier 231 — System Audit: Win Rate, Signal Quality & ML Integrity (2026-07-01) ─────────────────────────────────
 
   {
@@ -13368,7 +13465,7 @@ const TIER_LABEL: Record<Tier, string> = {
   229: 'Tier 229 — Deep Codebase Audit: Critical bugs, data integrity, service connectivity',
   230: 'Tier 230 — Professional Platform Parity: TradingView, Investing.com, Bloomberg gaps',
   231: 'Tier 231 — System Audit: Win Rate, Signal Quality & ML Integrity (5 Critical · 3 High · 6 Medium)',
-  232: 'Tier 232 — Deep System Audit: Calibration Loop, ML Integrity, SELL Accuracy, Paper Trading, Deep Logic Review (4 Critical fixed · 8 High fixed · several Medium fixed; Deep Logic Review pass added 13 findings, 8 quick-fixes shipped 2026-07-04, remainder tracked as architectural debt)',
+  232: 'Tier 232 — Deep System Audit: Calibration Loop, ML Integrity, SELL Accuracy, Paper Trading, Deep Logic Review, Dev Docs Audit (4 Critical fixed · 8 High fixed · several Medium fixed; Deep Logic Review added 13 findings, 8 quick-fixes shipped; skill.md documentation audit found + fixed 9 more across all 14 dev-practice files, all shipped 2026-07-04)',
 };
 
 const TIER_COLOR: Record<Tier, string> = {
