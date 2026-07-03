@@ -2239,6 +2239,69 @@ def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
         pass
 
 
+_SKIP_REASON_LABEL: dict[str, str] = {
+    "stop_cooldown": "Recently stopped out",
+    "global_symbol_cap": "Already open in another portfolio",
+    "no_ranking": "No K-Score ranking available",
+    "kscore": "K-Score below minimum",
+    "stale_signal": "Signal too old",
+    "confluence_fail": "Short-horizon signal disagrees",
+    "price_drift": "Price moved too far from signal",
+    "low_volume": "Volume below average — entry postponed",
+    "hk_flow_gate": "HK Stock Connect flow unfavorable",
+    "ta_gate": "TA score below minimum",
+    "declining_confidence": "Confidence declining since signal",
+    "research_gate": "Research recommendation unfavorable",
+    "min_position": "Position size below minimum",
+    "open_risk_cap": "Portfolio open-risk cap reached",
+    "sector_cap": "Sector exposure cap reached",
+    "sector_count_cap": "Sector position-count cap reached",
+    "insufficient_cash": "Insufficient cash",
+}
+
+
+def _write_no_entry_summary(portfolio_id: int, candidates_seen: int, skip_tally: dict[str, int]) -> None:
+    """Record why zero entries happened this cycle when no portfolio-level gate fired.
+
+    T232-WHYNOTRADE: complements _write_gate_block — that only covers portfolio-level
+    blocks (drawdown, daily loss, regime, ...). When those are all clear but every BUY
+    candidate individually fails its own per-symbol check (K-Score, volume, TA score,
+    cooldown, ...), nothing was previously surfaced anywhere except raw container logs.
+    Stored in Redis as paper:no_entry_summary:{portfolio_id} (JSON, 4h TTL).
+    """
+    import json as _json
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_ne
+        _r = _rb.Redis.from_url(_gs_ne().redis_url, decode_responses=True)
+        top_reasons = sorted(skip_tally.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        _r.setex(
+            f"paper:no_entry_summary:{portfolio_id}",
+            60 * 60 * 4,  # 4 hour TTL
+            _json.dumps({
+                "candidates_seen": candidates_seen,
+                "top_reasons": [
+                    {"reason": k, "label": _SKIP_REASON_LABEL.get(k, k), "count": v}
+                    for k, v in top_reasons
+                ],
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }),
+        )
+    except Exception:
+        pass
+
+
+def _clear_no_entry_summary(portfolio_id: int) -> None:
+    """Clear the no-entry summary once the portfolio actually enters a position."""
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_ne
+        _r = _rb.Redis.from_url(_gs_ne().redis_url, decode_responses=True)
+        _r.delete(f"paper:no_entry_summary:{portfolio_id}")
+    except Exception:
+        pass
+
+
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
@@ -2864,11 +2927,18 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             _global_sym_open[_gsym] = _gcnt
 
     entries_made = 0
+    # T232-WHYNOTRADE: tally per-candidate skip reasons so "no portfolio-level gate fired,
+    # yet zero entries happened" is visible somewhere other than raw container logs — this
+    # is exactly the situation from the 2026-07-03 HK GROWTH investigation, where every
+    # candidate failed its OWN gate (volume, K-Score, cooldown, ...) rather than a
+    # portfolio-level one, and nothing surfaced that anywhere in the UI.
+    _skip_tally: dict[str, int] = {}
     for sig, stock, ranking in buy_signals:
         if open_count + entries_made >= cfg["max_positions"]:
             break
         if stock.symbol in _recently_stopped:
             log.info("paper.skip_stop_cooldown", symbol=stock.symbol, cooldown_hours=stop_cooldown_hours)
+            _skip_tally["stop_cooldown"] = _skip_tally.get("stop_cooldown", 0) + 1
             continue
         # T221-A: Skip if this symbol already has an open position in another portfolio.
         if stock.symbol not in open_symbols and _global_sym_open.get(stock.symbol, 0) >= _max_global_per_sym:
@@ -2876,6 +2946,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      symbol=stock.symbol,
                      global_open=_global_sym_open.get(stock.symbol, 0),
                      note="symbol open in another portfolio — cross-portfolio concentration cap")
+            _skip_tally["global_symbol_cap"] = _skip_tally.get("global_symbol_cap", 0) + 1
             continue
         if stock.symbol in open_symbols:
             # Scale-in: add to profitable position on fresh high-conviction signal
@@ -2922,10 +2993,12 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             if cfg.get("require_kscore", True):
                 log.info("paper.skip_no_ranking", symbol=stock.symbol,
                          note="no ranking row; skipped (require_kscore=True)")
+                _skip_tally["no_ranking"] = _skip_tally.get("no_ranking", 0) + 1
                 continue
         elif ranking.score < cfg["min_kscore"]:
             log.info("paper.skip_kscore", symbol=stock.symbol,
                      kscore=ranking.score, min=cfg["min_kscore"])
+            _skip_tally["kscore"] = _skip_tally.get("kscore", 0) + 1
             continue
 
         # T195: Signal staleness gate — configurable max age (default 96h / 4 days).
@@ -2938,6 +3011,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             if _sig_age_h > _max_age_h:
                 log.info("paper.skip_stale_signal", symbol=stock.symbol,
                          age_h=round(_sig_age_h, 1), max_age_h=_max_age_h, ts=str(sig.ts)[:19])
+                _skip_tally["stale_signal"] = _skip_tally.get("stale_signal", 0) + 1
                 continue
 
         # T215: Multi-timeframe confluence — GROWTH/LONG BUY that contradicts SHORT SELL
@@ -2948,6 +3022,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                          symbol=stock.symbol, style=style,
                          short_signal="SELL",
                          note="BUY contradicts SHORT SELL — near-term momentum against trade")
+                _skip_tally["confluence_fail"] = _skip_tally.get("confluence_fail", 0) + 1
                 continue
 
         live_price = live_prices.get(stock.symbol)
@@ -2967,6 +3042,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                          live_price=round(live_price, 2),
                          max_drift_pct=round(_max_drift * 100, 1),
                          note="price rallied too far from signal reference — chasing blocked")
+                _skip_tally["price_drift"] = _skip_tally.get("price_drift", 0) + 1
                 continue
 
         # T200: Volume confirmation gate — skip entries when intraday volume is abnormally low.
@@ -2980,6 +3056,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      volume_z=round(_vol_z, 2),
                      min_vol_z=_min_vol_z,
                      note="below-average volume — entry postponed, higher slippage risk")
+            _skip_tally["low_volume"] = _skip_tally.get("low_volume", 0) + 1
             continue
 
         # T224-A: Mainland flow gate — HK entries require positive 5-day southbound flow.
@@ -2992,6 +3069,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                          symbol=stock.symbol,
                          flow_5d_net_hkd=round(float(_flow5d), 0),
                          note="mainland outflow — HK BUY entry blocked (T224-A)")
+                _skip_tally["hk_flow_gate"] = _skip_tally.get("hk_flow_gate", 0) + 1
                 continue
 
         # T224-C / T225-A: TA score gate — applies to any market/style with min_ta_score set.
@@ -3008,6 +3086,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                          ta_score=round(_ta, 3),
                          min_ta_score=_min_ta,
                          note="TA score below minimum — entry blocked")
+                _skip_tally["ta_gate"] = _skip_tally.get("ta_gate", 0) + 1
                 continue
 
         # Build game plan using cached ATR
@@ -3040,6 +3119,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      confidence_delta=round(confidence_delta, 1),
                      threshold=_conf_decline_threshold,
                      note="signal losing confidence — setup degrading, wait for stabilisation")
+            _skip_tally["declining_confidence"] = _skip_tally.get("declining_confidence", 0) + 1
             continue
 
         signal_data = {
@@ -3204,6 +3284,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # Hard gate: AVOID/SELL research blocks entry entirely — mirrors DE hard_rejects logic
         if cfg.get("research_gating_enabled", True) and _research_rec in ("AVOID", "SELL"):
             log.info("paper.skip_research_gate", symbol=stock.symbol, research_rec=_research_rec)
+            _skip_tally["research_gate"] = _skip_tally.get("research_gate", 0) + 1
             continue
 
         # 40-B: Cross-horizon consensus boost — when ≥2 other styles also fired BUY
@@ -3252,6 +3333,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             log.info("paper.skip_min_position", symbol=stock.symbol,
                      shares=shares, position_value=position_value, min_required=min_pos_val,
                      atr_pct=atr_pct, stop_dist=round(stop_distance, 2))
+            _skip_tally["min_position"] = _skip_tally.get("min_position", 0) + 1
             continue
 
         # Cap position at max_position_pct of equity
@@ -3273,6 +3355,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 log.info("paper.skip_open_risk_cap", symbol=stock.symbol,
                          open_risk_pct=round((open_risk + new_trade_risk) / equity * 100, 1),
                          limit_pct=round(max_open_risk * 100, 1))
+                _skip_tally["open_risk_cap"] = _skip_tally.get("open_risk_cap", 0) + 1
                 continue
 
         # Sector concentration check — AUD19-PERF2: computed in Python from pre-fetched open trades.
@@ -3286,6 +3369,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             log.info("paper.skip_sector_cap", symbol=stock.symbol,
                      sector=_sector or "unclassified",
                      sector_pct=round((sector_value + position_value) / equity * 100, 1))
+            _skip_tally["sector_cap"] = _skip_tally.get("sector_cap", 0) + 1
             continue
         max_sector_pos = int(cfg.get("max_sector_positions", 3))
         sector_count = sum(
@@ -3295,6 +3379,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         if sector_count >= max_sector_pos:
             log.info("paper.skip_sector_count_cap", symbol=stock.symbol,
                      sector=_sector or "unclassified", limit=max_sector_pos)
+            _skip_tally["sector_count_cap"] = _skip_tally.get("sector_count_cap", 0) + 1
             continue
 
         # Ensure we have the cash
@@ -3302,6 +3387,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             log.info("paper.skip_insufficient_cash",
                      symbol=stock.symbol, need=position_value,
                      have=portfolio.current_cash)
+            _skip_tally["insufficient_cash"] = _skip_tally.get("insufficient_cash", 0) + 1
             continue
 
         # PT-B6: Apply entry slippage — simulates spread / market impact
@@ -3353,6 +3439,16 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                  shares=round(shares, 2), stop=stop,
                  target=take_profit, score=score, rr=round(rr, 2),
                  cash_remaining=round(portfolio.current_cash, 2))
+
+    # T232-WHYNOTRADE: when the scan reaches this point with zero entries, no
+    # portfolio-level gate blocked it (those `return` earlier in this function) — every
+    # candidate individually failed its own per-symbol check. Surface the tally so this
+    # is visible in the UI (paper-gates.tsx / paper-portfolio.tsx) instead of requiring a
+    # container-log dig, same place _write_gate_block's portfolio-level reason shows up.
+    if entries_made == 0:
+        _write_no_entry_summary(portfolio.id, len(buy_signals), _skip_tally)
+    else:
+        _clear_no_entry_summary(portfolio.id)
 
 
 # ── Equity computation ────────────────────────────────────────────────────────

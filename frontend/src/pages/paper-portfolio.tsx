@@ -405,6 +405,24 @@ function PortfolioCard({
           ⊘ {GATE_LABELS[portfolio.entry_gate_block.gate] ?? portfolio.entry_gate_block.gate}
         </div>
       )}
+      {/* T232-WHYNOTRADE: no portfolio-level gate fired, but every candidate individually
+          failed its own check (K-Score, volume, TA score, cooldown, ...) — surfaces the
+          top reasons instead of requiring a container-log dig, per user request. */}
+      {!portfolio.entry_gate_block && portfolio.no_entry_summary && portfolio.no_entry_summary.top_reasons.length > 0 && (
+        <div
+          title={portfolio.no_entry_summary.top_reasons.map(r => `${r.label}: ${r.count}`).join(' · ')}
+          style={{
+            marginBottom: 6, padding: '3px 7px', borderRadius: 5,
+            background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.25)',
+            fontSize: 10, fontWeight: 600, color: '#94a3b8',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            cursor: 'help',
+          }}
+        >
+          ⓘ Not trading: {portfolio.no_entry_summary.top_reasons[0].label}
+          {portfolio.no_entry_summary.top_reasons.length > 1 ? ` +${portfolio.no_entry_summary.top_reasons.length - 1} more` : ''}
+        </div>
+      )}
       <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {portfolio.name}
       </div>

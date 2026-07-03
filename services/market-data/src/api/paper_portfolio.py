@@ -994,6 +994,9 @@ def list_portfolios(
     # Read latest entry gate block reason for each portfolio (set by _write_gate_block in engine).
     import json as _pf_json
     _gate_blocks: dict[int, dict] = {}
+    # T232-WHYNOTRADE: per-candidate skip tally (set by _write_no_entry_summary) — covers the
+    # case where no portfolio-level gate fired but every candidate failed its own check.
+    _no_entry_summaries: dict[int, dict] = {}
     try:
         import redis as _pf_redis
         from common.config import get_settings as _pf_gs
@@ -1003,6 +1006,12 @@ def list_portfolios(
             if raw:
                 try:
                     _gate_blocks[p.id] = _pf_json.loads(raw)
+                except Exception:
+                    pass
+            raw_ne = _pf_r.get(f"paper:no_entry_summary:{p.id}")
+            if raw_ne:
+                try:
+                    _no_entry_summaries[p.id] = _pf_json.loads(raw_ne)
                 except Exception:
                     pass
     except Exception:
@@ -1048,6 +1057,7 @@ def list_portfolios(
             "is_paused": p.is_active and p.config.get("enabled", True) and bool(p.config.get("paused", False)),
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "entry_gate_block": _gate_blocks.get(p.id),  # {gate, reason, ts} or None
+            "no_entry_summary": _no_entry_summaries.get(p.id),  # {candidates_seen, top_reasons, ts} or None
         })
 
     return result

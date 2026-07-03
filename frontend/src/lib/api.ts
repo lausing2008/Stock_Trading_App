@@ -1242,6 +1242,11 @@ export type PaperPortfolioListItem = {
   is_paused: boolean;
   created_at: string | null;
   entry_gate_block: { gate: string; reason: string; ts: string } | null;
+  no_entry_summary: {
+    candidates_seen: number;
+    top_reasons: { reason: string; label: string; count: number }[];
+    ts: string;
+  } | null;
 };
 
 export type PaperTradeParamResult = {
