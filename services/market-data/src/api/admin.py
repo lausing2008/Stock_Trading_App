@@ -296,9 +296,15 @@ def trigger_morning_digest(
     market: str = Query("US", regex="^(US|HK)$"),
     _: User = Depends(get_admin_user),
 ):
-    """Manually trigger the morning digest email for a market (admin only). Runs in background."""
+    """Manually trigger the morning digest email for a market (admin only). Runs in background.
+
+    T232-UI2: send_morning_digest(markets: list | None) iterates `for _mkt in markets` — passing
+    the bare `market` string here (a leftover from the old two-job design) iterated its
+    characters ('U', 'S') instead of treating it as one market, silently producing an empty
+    digest. Wrap it in a list.
+    """
     from ..services.scheduler import send_morning_digest
-    background_tasks.add_task(send_morning_digest, market)
+    background_tasks.add_task(send_morning_digest, [market])
     return {"status": "queued", "market": market, "message": f"Morning digest [{market}] is being sent to all users with email configured."}
 
 

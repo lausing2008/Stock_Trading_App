@@ -1632,7 +1632,7 @@ def suppressed_signals(
 
     q = (
         select(
-            Stock.symbol, Stock.name,
+            Stock.symbol, Stock.name, Stock.market,
             Signal.stock_id, Signal.signal, Signal.horizon, Signal.confidence,
             Signal.bullish_probability, Signal.ts, Signal.reasons,
         )
@@ -1699,6 +1699,7 @@ def suppressed_signals(
         results.append({
             "symbol":              row.symbol,
             "name":                row.name,
+            "market":              row.market,
             "signal":              row.signal.value,
             "horizon":             row.horizon.value,
             "confidence":          round(row.confidence, 1),

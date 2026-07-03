@@ -227,8 +227,11 @@ export default function SignalFiltersPage() {
   });
 
   const { data, isLoading, error, mutate } = useSWR(
-    authed ? ['suppressed', style] : null,
-    () => api.suppressedSignals(style),
+    // T232: market is now part of the cache key and passed through to the API — the row
+    // type never carried a `market` field, so the old client-side filter (`x.market === market`)
+    // always compared against `undefined` and silently returned zero rows for US/HK.
+    authed ? ['suppressed', style, market] : null,
+    () => api.suppressedSignals(style, market !== 'ALL' ? market : undefined),
     { revalidateOnFocus: false },
   );
 
@@ -241,7 +244,7 @@ export default function SignalFiltersPage() {
   const volRatioMap = useMemo(() => {
     const m: Record<string, number> = {};
     (rankData?.rankings ?? []).forEach(r => {
-      const vr = (r as any).vol_ratio;
+      const vr = r.vol_ratio;
       if (vr != null) m[r.symbol] = vr;
     });
     return m;
@@ -312,8 +315,8 @@ export default function SignalFiltersPage() {
   const rows = useMemo(() => {
     let r = data ?? [];
 
-    // Market filter (client-side since suppressedSignals doesn't accept market param)
-    if (market !== 'ALL') r = r.filter(x => (x as any).market === market);
+    // Market filtering now happens server-side (see useSWR fetch above) — `data` already
+    // contains only the requested market's rows.
 
     // Signal type filter
     if (sigFilter !== 'ALL') r = r.filter(x => x.signal === sigFilter);

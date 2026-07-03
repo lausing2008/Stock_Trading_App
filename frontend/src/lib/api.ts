@@ -587,6 +587,7 @@ export type SuppressedSignalConditions = {
 export type SuppressedSignalRow = {
   symbol: string;
   name: string;
+  market: string;
   signal: string;
   horizon: string;
   confidence: number;
