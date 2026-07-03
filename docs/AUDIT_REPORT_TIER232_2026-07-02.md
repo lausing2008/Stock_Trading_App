@@ -921,3 +921,75 @@ Two patterns emerged worth calling out explicitly, since they'll recur:
    already-shipped integrations as future work. Anyone reading only the doc — not the code —
    would conclude a real dependency doesn't exist and could duplicate work building it "for the
    first time," or conversely worry a gate isn't applying when it already is.
+
+---
+
+## Part 9 — Style-Params Consolidation Fix + Live HK Trading Diagnosis (2026-07-04)
+
+### 9.1 — T232-DL-STYLEPARAMS3X fixed: a live SHORT/LONG bug, not just documentation drift
+
+Following the regime consolidation (Part 7.2 follow-up), tackled the second triplicated-config
+item: `_STYLE_PARAMS` (per-style entry/breakout/stop/target percentages), duplicated across
+`scheduler.py` (source of truth), `paper_trading_engine.py` (mirror, runtime-mutated by Optuna
+tuning via `_load_tuned_params()`), and decision-engine's `aggregator.py` (independent third
+copy). Reading all three in full surfaced something worse than the drifted-GROWTH-values finding
+already logged: decision-engine's copy was **missing SHORT and LONG entirely** — the two real
+styles that exist in the trading engine — while `paper_trading_engine.py` forwards
+`cfg["trading_style"]` verbatim to `POST /decide/{symbol}` for every portfolio, including SHORT
+and LONG ones. Any such portfolio using decision-engine in `"primary"` mode (the default) was
+silently falling back to `_STYLE_PARAMS.get(style.upper(), _STYLE_PARAMS["SWING"])` — getting
+SWING's stop/target percentages for its game plan. This is a live bug affecting real (paper)
+trading decisions, found while fixing what started as a documentation-level duplication.
+
+**Fix:** added `GET /stocks/style-params` to market-data, returning the live in-memory
+`_STYLE_PARAMS` dict (reflecting any Optuna-tuned overrides currently applied — not a static
+snapshot). Rewrote `aggregator.py` to fetch this (15-min cache, hardcoded 4-style fallback for
+market-data outages) instead of maintaining a separate dict, removed the dead `SCALP`/`INCOME`
+styles, and corrected `models.py`'s docstring to the real 4 styles. Verified the endpoint returns
+correct SHORT/SWING/LONG/GROWTH values post-deploy.
+
+### 9.2 — Live diagnosis: why aren't HK portfolios trading (repeat investigation)
+
+User asked again why HK portfolios weren't trading, this time pointing at a specific observation:
+HK AI/semiconductor names (1347.HK, 3986.HK, 9903.HK, 6613.HK, 0669.HK, 0981.HK) were showing
+BUY signals with 71-89% bull confidence on the Signal Filter Monitor, but paper trading wasn't
+opening positions. Full live trace (Redis `no_entry_summary`, container logs, direct DB queries)
+found:
+
+- **HK GROWTH (portfolio 4):** every AI-name candidate genuinely failed a real per-candidate
+  gate — 3986.HK/9903.HK on K-Score (47.8/40.9, both below the 48.0 floor), 1347.HK/0669.HK on
+  low volume, 6613.HK on stop-cooldown (recently stopped out), 0981.HK on declining confidence
+  (signal degrading since generation), 2513.HK/0117.HK on TA score. Working as designed — not a
+  bug.
+- **HK SWING (portfolio 2):** at the moment of the report, only 0-3 qualifying candidates existed
+  (confirmed via direct query: 178 HK SWING BUY signals exist system-wide, but this portfolio's
+  specific gate combination — regime override active, but starting from a much smaller
+  post-filter candidate pool — left very few or zero to evaluate in a given cycle). Not a bug;
+  genuinely thin candidate availability at that moment.
+- **Real bug found in passing:** HK SWING Portfolio's config had `max_entries_per_day: 0`. This
+  does NOT block trading — every gate reading this key checks `if x and x > 0:` before
+  enforcing, so `0` (falsy) **disables** the gate rather than blocking every entry, the opposite
+  of what the value suggests. No code path writes `0` here programmatically; most likely cause
+  is an unvalidated edit in the Config Panel's plain number input (no `min` attribute, no
+  backend range check on this or 7 other count-based keys). Reset to the default (3) and added
+  validation (`_MIN_COUNT_CHECKS`, backend + frontend `min={1}`) so this can't recur silently.
+- **WHYNOTRADE visibility gap found and fixed:** two rejection points were never tallied in
+  `_skip_tally` — the alert-system's conviction-gate cross-check (`conv_gate:{symbol}:{style}`
+  Redis hard-block) and the actual entry-qualifier rejection itself (DE score below threshold,
+  or `_should_enter()`'s hard rejects). A candidate rejected only at these two points showed an
+  empty `top_reasons` list with no explanation — now tallied as `conviction_gate` and
+  `entry_score_below_threshold` respectively.
+
+### 9.3 — K-Score cross-system consistency check (user-requested)
+
+User asked to double-check whether 3986.HK's K-Score disagreed between the Signal Filter Monitor
+(showing "K-Score 48 below 55") and paper trading's gate (logging `kscore: 47.82, min: 48.0`).
+Traced both to source: the **value** is consistent (persisted `Ranking.score` for 2026-07-03 is
+`47.83`; both systems read from the same table, just via different query paths — ranking-engine's
+cached `GET /rankings` HTTP endpoint for the alert/conviction-gate system, a direct SQLAlchemy
+join for paper trading). The **threshold** genuinely differs by design: paper trading's
+`min_kscore` is 48.0 (a trade-entry floor), while the alert system's conviction gate
+(`_is_conviction_buy`, Layer 2) requires ≥55 (a stricter bar for triggering a user-facing email).
+Not a bug — two different systems intentionally applying two different bars to the same
+consistent underlying number. Worth remembering as a standing "why do these two K-Score
+thresholds disagree" answer if it comes up again.

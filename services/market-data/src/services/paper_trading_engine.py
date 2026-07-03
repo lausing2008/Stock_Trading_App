@@ -2272,6 +2272,8 @@ _SKIP_REASON_LABEL: dict[str, str] = {
     "sector_cap": "Sector exposure cap reached",
     "sector_count_cap": "Sector position-count cap reached",
     "insufficient_cash": "Insufficient cash",
+    "conviction_gate": "Alert system's conviction gate already rejected this BUY",
+    "entry_score_below_threshold": "Entry score below minimum (DE or fallback scorer)",
 }
 
 
@@ -3185,6 +3187,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                     _failed_layers = _cgdata.get("failed", [])
                     log.info("paper.entry_gate_blocked",
                              symbol=stock.symbol, style=_style, failed=_failed_layers[:2])
+                    _skip_tally["conviction_gate"] = _skip_tally.get("conviction_gate", 0) + 1
                     continue
         except Exception:
             pass  # Redis unavailable or parse error → allow entry (fail-open)
@@ -3235,6 +3238,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                      symbol=stock.symbol, score=score, gate=gate_source,
                      min_score=cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
                      regime=regime_state, reasons=notes[:3])
+            # T232-WHYNOTRADE: this is the entry-qualifier rejection (DE score below threshold,
+            # or _should_enter()'s own hard rejects on fallback/legacy mode) — previously the
+            # one major rejection point NOT tallied, so a candidate failing only here showed as
+            # an empty top_reasons list with no explanation of why nothing traded.
+            _skip_tally["entry_score_below_threshold"] = _skip_tally.get("entry_score_below_threshold", 0) + 1
             continue
 
         log.info("paper.entry_decision",
