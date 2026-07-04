@@ -121,7 +121,10 @@ function MultipliersRow({ m }: { m: DecisionMultipliers }) {
 function PositionCard({ pos }: { pos: PositionPlan }) {
   return (
     <div style={{ marginTop: 16, padding: 14, background: '#0f172a', borderRadius: 8, border: '1px solid #1e293b' }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Position Plan</div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>Position Plan</div>
+      <div style={{ fontSize: 11, color: '#f97316', marginBottom: 10 }}>
+        Illustrative preview only — the paper trading engine sizes real entries independently and may size this trade differently or not take it at all.
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
         {[
           ['Shares', pos.shares],

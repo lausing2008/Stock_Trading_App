@@ -3399,7 +3399,18 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 notes = notes + [f"Size {score_size_mult:.2f}× (DE score {score}, excess {_score_excess:+d} from min {_min_score_cfg})"]
         else:
             score_size_mult = 1.0
-        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult * consensus_size_mult * score_size_mult
+        _risk_base     = equity * cfg["risk_per_trade_pct"]
+        risk_dollar    = _risk_base * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult * consensus_size_mult * score_size_mult
+        # T234-PT-SIZING-MULT-STACK: the 6 categories above are independent per-trade signals
+        # (each already min()-composed internally where it overlaps with another, e.g.
+        # regime_size_mult folds in VIX/breadth/HMM via min() rather than multiplying them) —
+        # multiplying independent judgments together is intentional, but with no combined floor
+        # the worst realistic stack (earnings 0.50 x regime 0.50 x confidence 0.75 x research 0.6
+        # x score 0.75 = 0.084) sizes a trade at 8.4% of the intended risk target, where
+        # commission/slippage drag can exceed the position's own expected profit. Floor the
+        # composed result at 25% of the unadjusted base so a trade that clears every other gate
+        # is never sized down to a token position — multipliers above this floor are unaffected.
+        risk_dollar    = max(risk_dollar, _risk_base * 0.25)
         shares         = risk_dollar / stop_distance
 
         # PA-C1: Max dollar loss per trade — prevents wide ATR stops from risking > 2% equity

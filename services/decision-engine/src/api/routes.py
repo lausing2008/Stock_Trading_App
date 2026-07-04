@@ -348,8 +348,16 @@ async def decide(
     """Evaluate whether to enter a position in {symbol} right now.
 
     Aggregates signal engine, ML probability, research recommendation, and market
-    regime into a single verdict (BUY / HOLD / SKIP / BLOCKED) with full position
-    sizing and per-layer score breakdown.
+    regime into a single verdict (BUY / HOLD / SKIP / BLOCKED) with an illustrative
+    position sizing preview and per-layer score breakdown.
+
+    T234-DE-SIZER-DISCARDED: the `position` field is ILLUSTRATIVE ONLY. The live
+    (paper) trading path never calls this endpoint for sizing — paper_trading_engine.py's
+    _call_decision_engine() reads only verdict/score/blocked_reason from this response
+    and computes real share counts independently via its own formula. sizer.py's
+    multiplier bands are also deliberately different in places (see sizer.py's module
+    docstring) — do not assume `position` matches what the trading engine would
+    actually do for this symbol right now.
     """
     symbol = symbol.upper()
     return await _decide(symbol, req)

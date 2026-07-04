@@ -34,6 +34,14 @@ class ScoreItem(BaseModel):
 
 
 class PositionPlan(BaseModel):
+    """T234-DE-SIZER-DISCARDED: illustrative sizing preview only.
+
+    Computed by sizer.py, which is a related but INDEPENDENT sizing model from the
+    one paper_trading_engine.py actually uses for real (paper) trades — see sizer.py's
+    module docstring for the confirmed divergences. paper_trading_engine.py never reads
+    this field. Useful for a human or API caller previewing "what would the system do",
+    not as a source of truth for what the live trading engine will actually size.
+    """
     shares: float
     size_pct: float
     dollar_risk: float
@@ -76,7 +84,7 @@ class DecisionResult(BaseModel):
     verdict: str                              # BUY | SCALE | HOLD | SKIP | BLOCKED
     score: int
     min_score: int
-    position: PositionPlan | None = None      # None when verdict is BLOCKED / SKIP / HOLD
+    position: PositionPlan | None = None      # None when verdict is BLOCKED / SKIP / HOLD; ILLUSTRATIVE ONLY — see PositionPlan docstring
     factors: Factors
     multipliers: Multipliers
     score_breakdown: list[ScoreItem]
