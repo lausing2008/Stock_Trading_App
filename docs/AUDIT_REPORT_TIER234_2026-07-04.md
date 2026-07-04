@@ -98,8 +98,18 @@ to the signal shown to a user.
 ### What's Missing (2026 retail-trader expectations, distinct from Tier 11)
 
 - No point-in-time data-integrity guarantee for backtests (survivorship bias is already a
-  documented known limitation in CLAUDE.md, not newly discovered here, but still unaddressed).
-- Zero options-derived signals (implied volatility, put/call skew, options flow).
+  documented known limitation in CLAUDE.md, not newly discovered here, but still unaddressed —
+  and per a 2026-07-05 correction, the fix that was believed to address this has regressed).
+- **CORRECTION (2026-07-05):** the original agent claimed "zero options-derived signals" — this
+  was WRONG, found and corrected the day after this report was written. `market-data/src/api/
+  routes.py:1858` (`GET /stocks/{symbol}/options-flow`) genuinely computes call/put volume,
+  cp_ratio, sentiment, unusual-activity detection, and a per-contract `is_whale` flag (premium >
+  $500K), surfaced to the frontend (`OptionsFlowContract`/`OptionsFlow` types) and partially fed
+  into signal generation (`signals.py:504` `_fetch_options_flow` reads `sentiment`/`cp_ratio`
+  only). The accurate gap is narrower: no implied-volatility surface/skew as a standalone
+  signal, and — more importantly — the per-contract whale/unusual-activity detail is
+  display-only; individual whale sweeps do NOT currently influence signal confidence or position
+  sizing, only the aggregate sentiment ratio does.
 - No peer-reviewed or third-party-auditable signal track record.
 - No macro/rates/cross-asset context feeding regime detection (SPY + VIX + Fear&Greed only).
 - No confidence interval or sample-size weighting on any headline number — a 62% win rate on 40
