@@ -3061,7 +3061,25 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                                 _si_add_shares = round(_si_add_value / (_si_live * (1 + _si_slippage)), 4)
                                 _si_cost = round(_si_add_shares * _si_live * (1 + _si_slippage), 2)
                                 portfolio.current_cash = round(portfolio.current_cash - _si_cost, 2)
-                                _si_trade.shares = round(_si_trade.shares + _si_add_shares, 4)
+                                # T234-PT-SCALEIN-COST-BASIS-BUG: blend entry_price as a weighted
+                                # average of the original and added lots (standard cost-basis
+                                # accounting), and increment entry_shares by the same amount —
+                                # the scale-IN counterpart to T232-PT6's scale-OUT tracking above.
+                                # Without this, close-time P&L used the INFLATED post-scale-in
+                                # shares against the STALE pre-scale-in entry_price (overstating
+                                # the numerator) while cost_basis used the frozen original
+                                # entry_shares (understating the denominator) — both biased
+                                # total_pnl_pct upward on every trade that scaled in, corrupting
+                                # the SignalOutcome calibration writeback downstream.
+                                _si_old_shares = _si_trade.shares
+                                _si_fill_price = round(_si_live * (1 + _si_slippage), 4)
+                                _si_new_shares = round(_si_old_shares + _si_add_shares, 4)
+                                _si_trade.entry_price = round(
+                                    (_si_old_shares * _si_trade.entry_price + _si_add_shares * _si_fill_price)
+                                    / _si_new_shares, 4
+                                )
+                                _si_trade.entry_shares = round((_si_trade.entry_shares or _si_old_shares) + _si_add_shares, 4)
+                                _si_trade.shares = _si_new_shares
                                 _si_new_notes = list(_si_notes_list)
                                 _si_new_notes.append("SCALE_IN")
                                 _si_new_notes.append(
