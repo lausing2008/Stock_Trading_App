@@ -13,7 +13,7 @@ const SIGNAL_OPTS = ['ALL', 'BUY', 'HOLD', 'WAIT', 'SELL'] as const;
 type CondKey = keyof SuppressedSignalRow['conditions'];
 
 const CONDITIONS: { key: CondKey; label: string; short: string; color: string; tip: string }[] = [
-  { key: 'weekly_gate',          label: 'Weekly Gate',         short: 'Gate',    color: '#ef4444', tip: 'RSI(14w) < 40 AND weekly trend down — hard 0.40× block after cap' },
+  { key: 'weekly_gate',          label: 'Weekly Gate',         short: 'Gate',    color: '#ef4444', tip: 'RSI(14w) ≤ 38 AND weekly trend down (SWING/LONG only) — graduated 0.40–0.65× compress after cap' },
   { key: 'stale_data',           label: 'Stale Data',          short: 'Stale',   color: '#ef4444', tip: 'Last price bar > 3 days old — signal unreliable (0.60×)' },
   { key: 'insufficient_history', label: 'Insufficient History',short: 'History', color: '#f87171', tip: '< 50 daily bars — indicators unreliable (0.50×)' },
   { key: 'weekly_misalignment',  label: 'Weekly Misalign',     short: 'W.Align', color: '#f97316', tip: 'Daily and weekly momentum directions conflict (0.85× SWING)' },
@@ -22,7 +22,7 @@ const CONDITIONS: { key: CondKey; label: string; short: string; color: string; t
   { key: 'negative_news',        label: 'Negative News',       short: 'News',    color: '#fb923c', tip: 'News sentiment < 35/100 (0.75–0.85×)' },
   { key: 'adx_choppy',          label: 'ADX Choppy',          short: 'ADX',     color: '#eab308', tip: 'ADX below minimum — directionless market (0.90× SWING)' },
   { key: 'low_breadth',         label: 'Low Breadth',         short: 'Breadth', color: '#eab308', tip: '< 40% of stocks above 200-day SMA (0.90× SWING)' },
-  { key: 'rs_lagging',          label: 'RS Lagging',          short: 'RS',      color: '#eab308', tip: 'Stock lagging sector ETF by > 20% on 20d basis (0.85× SWING)' },
+  { key: 'rs_lagging',          label: 'RS Lagging',          short: 'RS',      color: '#eab308', tip: 'RS rank < 0.70 vs sector ETF, unless stock itself is up > 5% in 20d (0.85× SWING; 0.90× SHORT, 0.80× LONG, no compression for GROWTH)' },
   { key: 'bearish_options',     label: 'Bearish Options',     short: 'Options', color: '#a3a3a3', tip: 'Elevated put volume or bearish C/P ratio (0.92–0.96×)' },
   { key: 'compression_cap',     label: 'Cap Applied',         short: 'Cap',     color: '#818cf8', tip: 'Stacked filters hit the max_compress_ratio floor' },
 ];

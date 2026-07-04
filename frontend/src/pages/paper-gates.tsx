@@ -100,9 +100,9 @@ const GATE_PIPELINE: GateRow[] = [
   {
     gate: 'consecutive_losses', label: 'Consecutive-loss streak',
     type: 'portfolio', severity: 'hard',
-    trigger: '3 consecutive losing trades without a winner (HK: 5 consecutive losses).',
+    trigger: '3 consecutive losing trades without a winner.',
     clears: 'Next trade closes positive.',
-    hk_diff: 'HK threshold is 5 consecutive losses (vs 3) — HK has higher variance.',
+    hk_diff: 'Same 3-loss threshold as US — tightened from 5 after a 0% HK win-rate incident (T222).',
   },
   {
     gate: 'daily_entry_cap', label: 'Daily entry cap',
@@ -463,7 +463,7 @@ export default function PaperGatesPage() {
                   { label: 'Index today', cond: `${mkt === 'HK' ? '^HSI' : 'SPY'} not down >1.5% on the day` },
                   { label: 'Heat brake', cond: 'Fewer than 3 stop-outs in the last 48 hours' },
                   { label: 'No loss limit', cond: 'Daily loss <4% | Weekly loss <8% | Drawdown <20%' },
-                  { label: 'No consec losses', cond: mkt === 'HK' ? '<5 consecutive losing trades' : '<3 consecutive losing trades' },
+                  { label: 'No consec losses', cond: '<3 consecutive losing trades' },
                   { label: 'Positions available', cond: `<4 open ${mkt} positions; <5 entries today; <40% equity deployed` },
                   { label: 'BUY signal', cond: `Fresh BUY signal (≤3 days old) with confidence ≥${mkt === 'HK' ? '65' : '62'}%` },
                   { label: 'K-Score', cond: 'Stock K-Score ≥48 (institutional momentum composite)' },
