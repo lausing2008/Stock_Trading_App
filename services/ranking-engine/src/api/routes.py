@@ -145,6 +145,12 @@ def _rs_score(stock_ret: float, etf_ret: float | None) -> tuple[float, float]:
     denom = 1 + etf_ret if abs(etf_ret + 1) > 1e-6 else 1e-6
     rs_rank = (1 + stock_ret) / denom
     score = float(np.clip(50 + (rs_rank - 1.0) * 100, 0, 100))
+    # T234-RANK-RS-UNBOUNDED: only `score` was clipped — rs_rank itself was returned raw and
+    # could blow up arbitrarily as etf_ret approaches -100% (denom -> the 1e-6 floor above).
+    # Bounded to [-20, 20], comfortably outside any realistic stock/sector return ratio, so a
+    # genuine benchmark near-total-loss scenario degrades to a large-but-sane number instead
+    # of an unbounded one reaching any consumer that reads rs_rank directly instead of score.
+    rs_rank = float(np.clip(rs_rank, -20.0, 20.0))
     return round(score, 2), round(rs_rank, 4)
 
 router = APIRouter(prefix="/rankings", tags=["rankings"])
@@ -219,34 +225,41 @@ def _sector_relative_scores(
         earn_g_map = _any("earnings_growth")
         roe_map    = _any("return_on_equity")
 
+        # T234-RANK-SECTOR-PEER-OFFBYONE: each *_map above includes the subject stock itself
+        # (built from the full sector `symbols` list before any exclusion). The gate below used
+        # to check `len(map) >= 3` and only exclude the subject stock on the NEXT line when
+        # building `peers` — so a sector nominally satisfying "≥3" always supplied exactly one
+        # fewer real comparison peer than the gate implied. Gate raised to >= 4 (subject stock +
+        # 3 real peers) so the peer LIST — not the pre-exclusion map — actually has >= 3 entries.
+        _MIN_PEER_GROUP = 4
         for symbol in symbols:
             val_parts: list[float] = []
             grow_parts: list[float] = []
 
             # Value: invert percentile (lower ratio → higher score)
-            if symbol in pe_map and len(pe_map) >= 3:
+            if symbol in pe_map and len(pe_map) >= _MIN_PEER_GROUP:
                 peers = [v for s2, v in pe_map.items() if s2 != symbol]
                 rank  = _percentile_rank(pe_map[symbol], peers)
                 val_parts.append(100 - rank)  # invert
 
-            if symbol in pb_map and len(pb_map) >= 3:
+            if symbol in pb_map and len(pb_map) >= _MIN_PEER_GROUP:
                 peers = [v for s2, v in pb_map.items() if s2 != symbol]
                 rank  = _percentile_rank(pb_map[symbol], peers)
                 val_parts.append(100 - rank)
 
-            if symbol in ev_map and len(ev_map) >= 3:
+            if symbol in ev_map and len(ev_map) >= _MIN_PEER_GROUP:
                 peers = [v for s2, v in ev_map.items() if s2 != symbol]
                 rank  = _percentile_rank(ev_map[symbol], peers)
                 val_parts.append(100 - rank)
 
             # Growth: direct percentile (higher growth → higher score)
-            if symbol in earn_g_map and len(earn_g_map) >= 3:
+            if symbol in earn_g_map and len(earn_g_map) >= _MIN_PEER_GROUP:
                 grow_parts.append(_percentile_rank(earn_g_map[symbol], [v for s2, v in earn_g_map.items() if s2 != symbol]))
 
-            if symbol in rev_g_map and len(rev_g_map) >= 3:
+            if symbol in rev_g_map and len(rev_g_map) >= _MIN_PEER_GROUP:
                 grow_parts.append(_percentile_rank(rev_g_map[symbol], [v for s2, v in rev_g_map.items() if s2 != symbol]))
 
-            if symbol in roe_map and len(roe_map) >= 3:
+            if symbol in roe_map and len(roe_map) >= _MIN_PEER_GROUP:
                 grow_parts.append(_percentile_rank(roe_map[symbol], [v for s2, v in roe_map.items() if s2 != symbol]))
 
             entry: dict[str, float] = {}
