@@ -48,6 +48,15 @@ again, consider parsing `entry_decision_notes` programmatically instead of leavi
 the generic fallback — the text format is consistent enough (`"Scale-out-N: sold
 {shares}sh @ ${price}"`) to regex-parse rather than requiring a hand reconstruction.
 
+**Status update (2026-07-04, Tier 234 audit):** unchanged (needs a live DB check on
+UPST/IMVT to see if they've closed by now, not done as part of this pass). Also
+found a related but DISTINCT bug this fix didn't cover: scale-**in** (adding to a
+winning position) doesn't update `entry_shares`/blend `entry_price` the way
+scale-**out** now correctly does — see `T234-PT-SCALEIN-COST-BASIS-BUG` in the
+Tier 234 tracker. This fix only addressed the scale-out side; the scale-in side has
+the same class of cost-basis bug and is still fully open, not a leftover from this
+entry's own scope.
+
 ---
 
 ## T232-OC6 — Survivorship bias: censoring instead of scoring delistings as losses
@@ -80,6 +89,18 @@ stock status field from a data provider, or a fixed rule like ">90 days with zer
 price bars and not just a market holiday gap"), switch censored rows for confirmed
 delistings to `is_correct=False` instead of `NULL`.
 
+**Status update (2026-07-04, Tier 234 audit):** confirmed `Stock.delisted` (the column
+this Revisit note implicitly assumed could eventually serve as the confirmation
+signal) is structurally dead — `grep -rn "\.delisted\s*=\s*True"` across every service
+returns zero matches. The column is defined (`shared/db/models.py:111`,
+`default=False`) and read exactly once, as a `WHERE delisted = false` filter in
+`scheduler.py:2105` — nothing anywhere ever sets it `True`. This isn't a new
+limitation, but it forecloses the most obvious "just check the flag" revisit path:
+whoever picks this up needs to either wire a real delisting data source that
+actually populates this column, or adopt the fixed-rule heuristic from the original
+Revisit note instead of assuming the column will eventually start being useful on
+its own.
+
 ---
 
 ## T233-ARCH-CONGRESS-DEDUP — Investigated, not fixed; re-scoped
@@ -98,6 +119,10 @@ market-data duplicate).
 **Revisit:** see the full corrected `fix` field on the tracker entry for the
 4-step plan. Do not attempt the "just repoint the frontend" shortcut again without
 first confirming `sync_congress_trades()` is producing `rows_upserted > 0`.
+
+**Status update (2026-07-04, Tier 234 audit):** unchanged — confirmed via `git log`
+that `congress.py` hasn't been touched since before the 2026-07-03 re-scoping note;
+the same two broken S3 URLs are still present verbatim. No one has picked this up.
 
 ---
 
@@ -121,6 +146,11 @@ swallowed exception, this is the first place to look — the audit already has t
 list of ~60 sites (Tier 232 deep logic review, `docs/AUDIT_REPORT_TIER232_2026-07-02.md`
 Part 7) cataloged but not individually triaged for logging.
 
+**Status update (2026-07-04, Tier 234 audit):** unchanged, roughly the same order
+of magnitude (grep heuristic on bare `except Exception: pass` blocks found ~14/53 in
+`paper_trading_engine.py` and ~18/75 in `scheduler.py` still silent — no batch
+triage has visibly happened since this was written).
+
 ---
 
 ## T232-ML1-PIT-EPOCH-DATE-BUG — Fixed; retraining still required
@@ -140,6 +170,19 @@ any currently-deployed model.
 picked up the fix — check that `revenue_growth`/`earnings_growth`/
 `return_on_equity`/`recommendation_mean` have non-null importance in the resulting
 model, not just that training didn't error.
+
+**Status update (2026-07-04, Tier 234 audit):** partially checkable now —
+`trainer.py` carries a queryable `trained_at` field on every model bundle
+(surfaced via the model-info route), so confirming a retrain has actually
+happened is mechanically possible. Whether it's actually been exercised requires
+a live check against the deployed model, not done as part of this audit. Also
+found a SEPARATE, more severe leakage bug in the same broadcast-fundamentals
+mechanism this fix only partially addressed: `piotroski_score` and 8 of 12
+`FUNDAMENTAL_COLUMNS` are still broadcast from a single current snapshot across
+all historical training rows — see `T234-ML-FUND-BROADCAST-LEAKAGE` in the
+Tier 234 tracker. This T232-ML1 fix correctly repaired the point-in-time `merge_asof`
+mechanism for the 4 columns it covers; it just didn't extend that mechanism to
+the other 8+ columns that needed the same treatment.
 
 ---
 
@@ -187,3 +230,16 @@ both would produce numbers that don't reconcile with anything computed before.
 may be the more natural home for MAE-aware outcome scoring (option (b) above)
 rather than adding fixed-stop approximation logic directly to
 `evaluate_signal_outcomes()`.
+
+**Status update (2026-07-04, Tier 234 audit):** unchanged — confirmed the
+Backtest Harness this is waiting on is still `todo`/design-only (no
+`shared/backtest/` directory exists; the only `backtest/` module in the repo is
+strategy-engine's pre-existing, unrelated one). Correctly not jumped ahead of.
+Separately, note that `tune_style_profiles`'s `_ev_at` helper (the EV
+double-count bug this entry fixed) has a DIFFERENT, still-open bug of its own —
+it applies in-sample-optimal gate parameters directly to Redis with no train/
+validation split, reproducing the exact failure mode `outcomes_calibrate_apply`
+(this entry's sibling, which DOES have a proper split) was built to avoid after
+a prior live incident. See `T234-SIG-INSAMPLE-GATE-TUNING` in the Tier 234
+tracker — fixing the EV arithmetic here didn't address that separate
+methodology gap in the same function.
