@@ -264,15 +264,24 @@ def _load_hk_flow_features(symbol: str) -> dict:
 def _load_fund_snapshots(symbol: str) -> list[dict]:
     """T228-POINT-IN-TIME-FUNDAMENTALS: load all fundamentals_snapshot rows for a symbol.
 
-    Returns a list of dicts with snapshot_date + the 4 time-varying fundamental columns.
+    Returns a list of dicts with snapshot_date + the time-varying fundamental columns.
     Used by build_features() for point-in-time joining so historical rows don't see future values.
+
+    T234-ML-FUND-BROADCAST-LEAKAGE: extended from the original 4 columns to also select
+    gross_margin/fcf_yield/short_ratio/short_ratio_delta/short_percent_of_float/
+    price_to_book/peg_ratio/debt_to_equity/ddm_discount/piotroski_score, matching
+    builder.py's extended _PIT_COLS list. Older snapshot rows have NULL for these
+    (column added later) — builder.py's merge_asof correctly resolves that to NaN.
     """
     from sqlalchemy import text as _text
     try:
         with SessionLocal() as session:
             rows = session.execute(_text("""
                 SELECT snapshot_date, revenue_growth, earnings_growth,
-                       return_on_equity, recommendation_mean
+                       return_on_equity, recommendation_mean,
+                       gross_margin, fcf_yield, short_ratio, short_ratio_delta,
+                       short_percent_of_float, price_to_book, peg_ratio,
+                       debt_to_equity, ddm_discount, piotroski_score
                 FROM fundamentals_snapshot
                 WHERE symbol = :sym
                 ORDER BY snapshot_date
@@ -284,6 +293,16 @@ def _load_fund_snapshots(symbol: str) -> list[dict]:
                 "earnings_growth":   r.earnings_growth,
                 "return_on_equity":  r.return_on_equity,
                 "recommendation_mean": r.recommendation_mean,
+                "gross_margin":      r.gross_margin,
+                "fcf_yield":         r.fcf_yield,
+                "short_ratio":       r.short_ratio,
+                "short_ratio_delta": r.short_ratio_delta,
+                "short_percent_of_float": r.short_percent_of_float,
+                "price_to_book":     r.price_to_book,
+                "peg_ratio":         r.peg_ratio,
+                "debt_to_equity":    r.debt_to_equity,
+                "ddm_discount":      r.ddm_discount,
+                "piotroski_score":   r.piotroski_score,
             }
             for r in rows
         ]

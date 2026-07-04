@@ -2085,6 +2085,16 @@ def _snapshot_fundamentals() -> None:
 
     Captures recommendation_mean, revenue_growth, earnings_growth, return_on_equity
     from the fundamentals table. Used to compute 8-week revision momentum.
+
+    T234-ML-FUND-BROADCAST-LEAKAGE: also captures gross_margin, fcf_yield, short_ratio,
+    short_ratio_delta, short_percent_of_float, price_to_book, peg_ratio, debt_to_equity,
+    ddm_discount, and piotroski_score — the columns ml-prediction's builder.py currently
+    broadcasts from today's snapshot across every historical training row (lookahead
+    bias). Once enough weekly history accumulates here, builder.py's PIT merge_asof join
+    (T228) can be extended to these columns too, same as revenue_growth/earnings_growth/
+    return_on_equity/recommendation_mean already are. fcf_yield/short_ratio_delta/
+    ddm_discount are derived here with the same formulas as ml-prediction's
+    trainer.py::_load_fundamentals to keep both call sites in agreement.
     """
     from datetime import datetime, timezone, date
     from db import SessionLocal
@@ -2093,20 +2103,73 @@ def _snapshot_fundamentals() -> None:
     try:
         with SessionLocal() as sess:
             today = date.today().isoformat()
-            # Copy latest fundamentals row per symbol into snapshot (idempotent via ON CONFLICT DO NOTHING)
+            # Copy latest fundamentals row per symbol into snapshot (idempotent via ON CONFLICT DO NOTHING).
+            # DISTINCT ON (s.id) + ORDER BY f.as_of DESC picks exactly the most-recent fundamentals
+            # row per stock — a stock can have many historical `fundamentals` rows (one per fetch
+            # date), and a plain join without this would pick an arbitrary one.
+            # short_ratio_delta needs the PRIOR snapshot's short_ratio for this same symbol —
+            # computed via a correlated subquery against fundamentals_snapshot itself.
             result = sess.execute(text("""
                 INSERT INTO fundamentals_snapshot
                     (symbol, snapshot_date, recommendation_mean, eps_estimate,
-                     revenue_growth, earnings_growth, return_on_equity)
-                SELECT s.symbol, :today, f.recommendation_mean, NULL,
-                       f.revenue_growth, f.earnings_growth, f.return_on_equity
-                FROM fundamentals f
-                JOIN stocks s ON s.id = f.stock_id
-                WHERE s.delisted = false
+                     revenue_growth, earnings_growth, return_on_equity,
+                     gross_margin, fcf_yield, short_ratio, short_ratio_delta,
+                     short_percent_of_float, price_to_book, peg_ratio, debt_to_equity,
+                     ddm_discount, piotroski_score)
+                SELECT
+                    latest.symbol, :today, latest.recommendation_mean, NULL,
+                    latest.revenue_growth, latest.earnings_growth, latest.return_on_equity,
+                    latest.gross_margin,
+                    CASE WHEN latest.free_cashflow IS NOT NULL AND latest.market_cap IS NOT NULL AND latest.market_cap > 0
+                         THEN latest.free_cashflow / latest.market_cap END AS fcf_yield,
+                    latest.short_ratio,
+                    latest.short_ratio - (
+                        SELECT prev.short_ratio FROM fundamentals_snapshot prev
+                        WHERE prev.symbol = latest.symbol AND prev.short_ratio IS NOT NULL
+                        ORDER BY prev.snapshot_date DESC LIMIT 1
+                    ) AS short_ratio_delta,
+                    latest.short_percent_of_float, latest.price_to_book, latest.peg_ratio, latest.debt_to_equity,
+                    CASE WHEN latest.dividend_yield IS NOT NULL AND latest.dividend_yield > 0.001
+                         THEN ROUND(CAST(latest.dividend_yield / 0.07 - 1.0 AS numeric), 4) END AS ddm_discount,
+                    NULL AS piotroski_score
+                FROM (
+                    SELECT DISTINCT ON (s.id)
+                        s.symbol, f.recommendation_mean, f.revenue_growth, f.earnings_growth,
+                        f.return_on_equity, f.gross_margin, f.free_cashflow, f.market_cap,
+                        f.short_ratio, f.short_percent_of_float, f.price_to_book, f.peg_ratio,
+                        f.debt_to_equity, f.dividend_yield
+                    FROM fundamentals f
+                    JOIN stocks s ON s.id = f.stock_id
+                    WHERE s.delisted = false
+                    ORDER BY s.id, f.as_of DESC
+                ) latest
                 ON CONFLICT (symbol, snapshot_date) DO NOTHING
             """), {"today": today})
             sess.commit()
             n = result.rowcount
+            # piotroski_score depends on several of the columns just inserted (gross_margin,
+            # fcf_yield, etc.) — compute it in a second pass reading this snapshot's own row,
+            # matching ml-prediction's builder.py::_compute_piotroski scoring rules exactly.
+            sess.execute(text("""
+                UPDATE fundamentals_snapshot fs SET piotroski_score = (
+                    (CASE WHEN fs.return_on_equity > 0 THEN 1 ELSE 0 END) +
+                    (CASE WHEN fs.fcf_yield > 0 THEN 1 ELSE 0 END) +
+                    (CASE WHEN fs.earnings_growth > 0 THEN 1 ELSE 0 END) +
+                    (CASE WHEN fs.fcf_yield IS NOT NULL AND fs.return_on_equity IS NOT NULL
+                          AND fs.fcf_yield > fs.return_on_equity * 0.5 THEN 1 ELSE 0 END) +
+                    (CASE WHEN fs.debt_to_equity < 1.0 THEN 1 ELSE 0 END) +
+                    (CASE WHEN fs.revenue_growth >= 0 THEN 1 ELSE 0 END) +
+                    (CASE WHEN (fs.earnings_growth IS NOT NULL AND fs.revenue_growth IS NOT NULL
+                                AND fs.earnings_growth > fs.revenue_growth)
+                          OR (fs.revenue_growth IS NULL AND fs.earnings_growth > 0) THEN 1 ELSE 0 END) +
+                    (CASE WHEN fs.gross_margin > 0.2 THEN 1 ELSE 0 END) +
+                    (CASE WHEN fs.earnings_growth IS NOT NULL AND fs.revenue_growth IS NOT NULL
+                          AND fs.earnings_growth >= fs.revenue_growth THEN 1 ELSE 0 END)
+                )
+                WHERE fs.snapshot_date = :today
+                  AND (fs.return_on_equity IS NOT NULL OR fs.fcf_yield IS NOT NULL OR fs.gross_margin IS NOT NULL)
+            """), {"today": today})
+            sess.commit()
         elapsed = time.monotonic() - _t0
         _record_job_status("fundamentals_snapshot", "ok", elapsed)
         log.info("scheduler.fundamentals_snapshot_complete", snapshots=n)

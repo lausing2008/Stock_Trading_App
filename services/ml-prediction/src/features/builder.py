@@ -790,7 +790,20 @@ def build_features(
     # dates matched nothing and all 4 PIT columns silently became NaN for the entire training
     # set (caught by the blanket except below, so no error surfaced). Use the actual bar dates
     # (`dates`, already computed above from df["ts"] for the macro/sector/outcome joins).
-    _PIT_COLS = ["revenue_growth", "earnings_growth", "return_on_equity", "recommendation_mean"]
+    # T234-ML-FUND-BROADCAST-LEAKAGE: extended from the original 4 to also cover
+    # gross_margin/fcf_yield/short_ratio/short_ratio_delta/short_percent_of_float/
+    # price_to_book/peg_ratio/debt_to_equity/ddm_discount/piotroski_score — these were
+    # previously broadcast unconditionally from today's fundamentals (see the loop above),
+    # which is lookahead bias for any historical training row. fundamentals_snapshot only
+    # started capturing these columns going forward (see scheduler.py::_snapshot_fundamentals),
+    # so rows before that date correctly fall back to NaN here rather than a leaky broadcast
+    # value — NaN is XGBoost-safe, a leaky value is not.
+    _PIT_COLS = [
+        "revenue_growth", "earnings_growth", "return_on_equity", "recommendation_mean",
+        "gross_margin", "fcf_yield", "short_ratio", "short_ratio_delta",
+        "short_percent_of_float", "price_to_book", "peg_ratio", "debt_to_equity",
+        "ddm_discount", "piotroski_score",
+    ]
     if not inference_mode and fund_snapshots:
         try:
             _snap_df = pd.DataFrame(fund_snapshots)

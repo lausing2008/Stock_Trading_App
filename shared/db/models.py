@@ -987,6 +987,20 @@ class FundamentalsSnapshot(Base):
     revenue_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
     earnings_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
     return_on_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # T234-ML-FUND-BROADCAST-LEAKAGE: added so builder.py can point-in-time join these
+    # columns (merge_asof) instead of broadcasting today's value across all historical
+    # training rows. History accumulates going forward only — rows before this column
+    # existed have NULL here, which builder.py's PIT join treats as NaN (XGBoost-safe).
+    gross_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fcf_yield: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_ratio_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_percent_of_float: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_to_book: Mapped[float | None] = mapped_column(Float, nullable=True)
+    peg_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    debt_to_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ddm_discount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    piotroski_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (UniqueConstraint("symbol", "snapshot_date", name="uq_fundamentals_snapshot_sym_date"),)

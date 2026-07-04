@@ -393,6 +393,20 @@ def _run_migrations() -> None:  # noqa: C901
             CREATE INDEX IF NOT EXISTS ix_fundamentals_snapshot_sym
             ON fundamentals_snapshot (symbol)
         """))
+        # T234-ML-FUND-BROADCAST-LEAKAGE: extend fundamentals_snapshot with the columns
+        # builder.py broadcasts today's value for across ALL historical training rows
+        # (lookahead bias). Backfilling these lets a future point-in-time merge_asof join
+        # replace the broadcast, same pattern already used for revenue_growth/earnings_growth/
+        # return_on_equity/recommendation_mean since T228.
+        for _col, _type in [
+            ("gross_margin", "FLOAT"), ("fcf_yield", "FLOAT"), ("short_ratio", "FLOAT"),
+            ("short_ratio_delta", "FLOAT"), ("short_percent_of_float", "FLOAT"),
+            ("price_to_book", "FLOAT"), ("peg_ratio", "FLOAT"), ("debt_to_equity", "FLOAT"),
+            ("ddm_discount", "FLOAT"), ("piotroski_score", "FLOAT"),
+        ]:
+            conn.execute(text(
+                f"ALTER TABLE fundamentals_snapshot ADD COLUMN IF NOT EXISTS {_col} {_type}"
+            ))
 
 
 def _seed_admin() -> None:
