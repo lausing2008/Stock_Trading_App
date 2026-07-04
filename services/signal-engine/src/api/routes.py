@@ -3680,10 +3680,22 @@ def tune_style_profiles(
         # calibration functions above. Multiplying by acc double-counts win probability.
         return avg_ret * 100, acc, avg_ret
 
+    # T234-SIG-INSAMPLE-GATE-TUNING: this function used to sweep every candidate directly
+    # against the full sample and apply whatever scored best — an in-sample argmax with no
+    # validation, the exact failure mode outcomes_calibrate_apply's own comments document as
+    # the cause of a prior live incident (CAL-1). Now uses the same chronological 70/30
+    # train/validation split as that sibling endpoint: search for the best candidate on the
+    # OLDER 70% (train), then only apply it if it ALSO shows a real edge on the NEWER, never-
+    # searched 30% (validation) — a candidate that only looks good in-sample won't survive this.
     for style in ("SHORT", "SWING", "LONG", "GROWTH"):
-        style_outcomes = [o for o in outcomes if o.horizon.value == style]
-        if len(style_outcomes) < min_samples * 2:
-            skipped.append({"style": style, "reason": f"only {len(style_outcomes)} outcomes (need {min_samples * 2})"})
+        style_outcomes = sorted(
+            [o for o in outcomes if o.horizon.value == style],
+            key=lambda o: o.signal_date,
+        )
+        if len(style_outcomes) < min_samples * 4:
+            # need enough for train AND validation to each independently clear min_samples * 2
+            # (min_samples * 2 was already this function's own per-sweep floor before this fix)
+            skipped.append({"style": style, "reason": f"only {len(style_outcomes)} outcomes (need {min_samples * 4} for a valid train/validation split)"})
             continue
 
         style_with_reasons = [
@@ -3691,15 +3703,20 @@ def tune_style_profiles(
             for o in style_outcomes
             if o.signal_id and o.signal_id in signals_map
         ]
-        if len(style_with_reasons) < min_samples:
+        if len(style_with_reasons) < min_samples * 2:
             skipped.append({"style": style, "reason": f"only {len(style_with_reasons)} outcomes with reasons JSON"})
             continue
 
-        # ── ml_weight_cap: sweep 0.15–0.75, find cap where EV is maximised ──
+        split = max(1, int(len(style_with_reasons) * 0.7))
+        train_sr = style_with_reasons[:split]
+        val_sr = style_with_reasons[split:]
+
+        # ── ml_weight_cap: sweep 0.15–0.75, find cap where EV is maximised on TRAIN,
+        #    then require the SAME cap to beat the effectively-uncapped baseline on VALIDATION ──
         best_ml_ev, best_ml_cap = -999.0, None
         for cap_int in range(15, 76, 5):
             cap = cap_int / 100.0
-            sub = [o for o, r in style_with_reasons if r.get("ml_weight", 0) <= cap + 0.05]
+            sub = [o for o, r in train_sr if r.get("ml_weight", 0) <= cap + 0.05]
             if len(sub) < min_samples:
                 continue
             ev_result = _ev_at(sub)
@@ -3708,17 +3725,29 @@ def tune_style_profiles(
                 best_ml_cap = cap
 
         if best_ml_cap is not None:
-            redis_client.setex(f"stockai:style_tune:{style}:ml_weight_cap", _REDIS_TTL, str(round(best_ml_cap, 2)))
-            applied.append({"style": style, "param": "ml_weight_cap", "value": best_ml_cap})
+            val_sub = [o for o, r in val_sr if r.get("ml_weight", 0) <= best_ml_cap + 0.05]
+            baseline_sub = [o for o, r in val_sr]  # uncapped baseline: every validation outcome
+            val_result = _ev_at(val_sub)
+            baseline_result = _ev_at(baseline_sub)
+            if val_result and baseline_result and len(val_sub) >= min_samples and val_result[0] > baseline_result[0]:
+                redis_client.setex(f"stockai:style_tune:{style}:ml_weight_cap", _REDIS_TTL, str(round(best_ml_cap, 2)))
+                applied.append({"style": style, "param": "ml_weight_cap", "value": best_ml_cap,
+                                "train_ev_pct": round(best_ml_ev, 2), "validation_ev_pct": round(val_result[0], 2),
+                                "validation_baseline_ev_pct": round(baseline_result[0], 2)})
+            else:
+                skipped.append({"style": style, "param": "ml_weight_cap",
+                                "reason": "did not beat baseline (or insufficient samples) on the validation slice",
+                                "train_best_cap": best_ml_cap})
 
-        # ── adx_min: find ADX level below which accuracy < 45% ──────────────
-        adx_outcomes = [(o, r) for o, r in style_with_reasons if r.get("adx") is not None]
-        if len(adx_outcomes) >= min_samples:
-            # Find where below-threshold accuracy is <45% but above is >50%
+        # ── adx_min: find ADX level below which accuracy < 45% on TRAIN, then confirm the
+        #    same threshold still shows below/above separation on VALIDATION ──
+        adx_train = [(o, r) for o, r in train_sr if r.get("adx") is not None]
+        adx_val = [(o, r) for o, r in val_sr if r.get("adx") is not None]
+        if len(adx_train) >= min_samples:
             best_adx = None
             for adx_thresh in range(10, 40, 2):
-                below = [o for o, r in adx_outcomes if r.get("adx", 99) < adx_thresh]
-                above = [o for o, r in adx_outcomes if r.get("adx", 0) >= adx_thresh]
+                below = [o for o, r in adx_train if r.get("adx", 99) < adx_thresh]
+                above = [o for o, r in adx_train if r.get("adx", 0) >= adx_thresh]
                 if len(below) < min_samples or len(above) < min_samples:
                     continue
                 below_acc = sum(1 for o in below if o.is_correct) / len(below)
@@ -3727,29 +3756,60 @@ def tune_style_profiles(
                     best_adx = adx_thresh
                     break
             if best_adx is not None:
-                redis_client.setex(f"stockai:style_tune:{style}:adx_min", _REDIS_TTL, str(best_adx))
-                applied.append({"style": style, "param": "adx_min", "value": best_adx})
+                val_below = [o for o, r in adx_val if r.get("adx", 99) < best_adx]
+                val_above = [o for o, r in adx_val if r.get("adx", 0) >= best_adx]
+                if len(val_below) >= min_samples // 2 and len(val_above) >= min_samples // 2:
+                    val_below_acc = sum(1 for o in val_below if o.is_correct) / len(val_below)
+                    val_above_acc = sum(1 for o in val_above if o.is_correct) / len(val_above)
+                    if val_below_acc < val_above_acc:
+                        redis_client.setex(f"stockai:style_tune:{style}:adx_min", _REDIS_TTL, str(best_adx))
+                        applied.append({"style": style, "param": "adx_min", "value": best_adx,
+                                        "validation_below_acc": round(val_below_acc, 3),
+                                        "validation_above_acc": round(val_above_acc, 3)})
+                    else:
+                        skipped.append({"style": style, "param": "adx_min",
+                                        "reason": "below/above separation did not replicate on validation slice",
+                                        "train_threshold": best_adx})
+                else:
+                    skipped.append({"style": style, "param": "adx_min",
+                                    "reason": "insufficient validation-slice samples to confirm train threshold",
+                                    "train_threshold": best_adx})
 
-        # ── breadth_compression: verify compression is justified (breadth<40 underperforms) ──
-        breadth_outcomes = [(o, r) for o, r in style_with_reasons if r.get("breadth_pct") is not None]
-        if len(breadth_outcomes) >= min_samples:
-            low_breadth  = [o for o, r in breadth_outcomes if r.get("breadth_pct", 100) < 40]
-            high_breadth = [o for o, r in breadth_outcomes if r.get("breadth_pct", 0) >= 40]
+        # ── breadth_compression: verify compression is justified on TRAIN (breadth<40
+        #    underperforms), then confirm the same direction holds on VALIDATION ──
+        breadth_train = [(o, r) for o, r in train_sr if r.get("breadth_pct") is not None]
+        breadth_val = [(o, r) for o, r in val_sr if r.get("breadth_pct") is not None]
+        if len(breadth_train) >= min_samples:
+            low_breadth  = [o for o, r in breadth_train if r.get("breadth_pct", 100) < 40]
+            high_breadth = [o for o, r in breadth_train if r.get("breadth_pct", 0) >= 40]
             if len(low_breadth) >= min_samples // 2 and len(high_breadth) >= min_samples // 2:
                 lb_acc = sum(1 for o in low_breadth if o.is_correct) / len(low_breadth)
                 hb_acc = sum(1 for o in high_breadth if o.is_correct) / len(high_breadth)
-                # If breadth<40 signals underperform by >8pp, confirm stronger compression
+                val_low  = [o for o, r in breadth_val if r.get("breadth_pct", 100) < 40]
+                val_high = [o for o, r in breadth_val if r.get("breadth_pct", 0) >= 40]
+                _val_ok = len(val_low) >= min_samples // 4 and len(val_high) >= min_samples // 4
                 if lb_acc < hb_acc - 0.08:
-                    new_bc = 0.88  # tighter than default 0.90
-                    redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
-                    applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
-                                    "low_breadth_acc": round(lb_acc, 3), "high_breadth_acc": round(hb_acc, 3)})
+                    if _val_ok:
+                        val_lb_acc = sum(1 for o in val_low if o.is_correct) / len(val_low)
+                        val_hb_acc = sum(1 for o in val_high if o.is_correct) / len(val_high)
+                        if val_lb_acc < val_hb_acc:
+                            new_bc = 0.88  # tighter than default 0.90
+                            redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
+                            applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
+                                            "train_low_acc": round(lb_acc, 3), "train_high_acc": round(hb_acc, 3),
+                                            "validation_low_acc": round(val_lb_acc, 3), "validation_high_acc": round(val_hb_acc, 3)})
+                        else:
+                            skipped.append({"style": style, "param": "breadth_compression",
+                                            "reason": "low-breadth underperformance did not replicate on validation slice"})
+                    else:
+                        skipped.append({"style": style, "param": "breadth_compression",
+                                        "reason": "insufficient validation-slice samples to confirm train finding"})
                 elif lb_acc > hb_acc - 0.02:
-                    # Breadth not predictive — restore default
+                    # Breadth not predictive on train — restore default without needing validation
                     new_bc = 0.95
                     redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
                     applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
-                                    "note": "low-breadth underperformance not significant"})
+                                    "note": "low-breadth underperformance not significant on train slice"})
 
     return {"applied": applied, "skipped": skipped, "n_outcomes_analyzed": len(outcomes), "redis_ttl_days": 30}
 

@@ -165,22 +165,16 @@ def compute_score(
         score += pts
         breakdown.append(ScoreItem(layer="pre_regime", pts=pts, note=note))
 
-    # ── Layer 3h: Entry zone drift — how far has price moved from optimal entry? ─
-    # A stock that has already run 8%+ since the signal was calibrated is chasing.
-    # entry2 is computed from signal-time price; comparing live_price to it reveals drift.
-    entry2 = game_plan.get("entry2")
-    if entry2 and float(entry2) > 0:
-        drift_pct = (live_price / float(entry2) - 1) * 100
-        if drift_pct < -2:
-            pts, note = 1, f"Price {abs(drift_pct):.1f}% below entry zone — stock pulled back, excellent entry"
-        elif drift_pct <= 4:
-            pts, note = 0, f"Price within entry zone (drift {drift_pct:+.1f}% from entry2)"
-        elif drift_pct <= 8:
-            pts, note = -1, f"Price {drift_pct:.1f}% above entry zone — mild chase risk"
-        else:
-            pts, note = -2, f"Price {drift_pct:.1f}% above entry zone — significant chase, wait for pullback"
-        score += pts
-        breakdown.append(ScoreItem(layer="entry_drift", pts=pts, note=note))
+    # T234-DE-SCORER-DOUBLECOUNT-ENTRYZONE: Layer 3h ("entry_drift") used to live here,
+    # scoring live_price against entry2/breakout again — the same static signal-time
+    # reference points Layer 1 ("price_zone") above already scores. Since breakout is a
+    # fixed ratio of entry2 (both computed once at signal time and never updated as
+    # live_price moves), the two layers were not independent scoring axes: they moved in
+    # lockstep, so a single directional price move got weighted twice in the aggregate
+    # score. Removed rather than "made independent" — Layer 1's 4-bucket price_zone check
+    # already captures this signal; a genuinely different freshness/volatility-adjusted
+    # measure can be added later as its own layer if warranted, rather than restoring a
+    # second view of the same static comparison.
 
     # ── Layer 4: Research alignment ───────────────────────────────────────────
     if research_rec:

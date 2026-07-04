@@ -1,8 +1,10 @@
 """K-Score: 0-100 composite of Technical / Momentum / Value / Growth / Volatility.
 
-Each sub-score is derived from price history where possible. Value + Growth are
-proxies until we wire fundamentals — plug replacements in by swapping the
-functions below, no schema change needed.
+Value and Growth are real sector-relative fundamental percentiles when available
+(passed in as value_score/growth_score). When a stock lacks fundamentals data,
+those factors are excluded from the weighted composite entirely (T234-RANK-KSCORE-
+PROXY-MIXING) rather than backfilled with a price-derived proxy — the composite
+score only ever reflects factors it has real data for.
 """
 from __future__ import annotations
 
@@ -119,36 +121,6 @@ def _volatility_score(df: pd.DataFrame) -> float:
     return float(np.clip(100 - vol * 1500, 0, 100))
 
 
-def _value_proxy(df: pd.DataFrame) -> float:
-    """Proxy: distance below 52w high, gated by trend direction.
-
-    Falling-knife guard: if both 1m and 3m returns are negative the stock is
-    in a downtrend — a deep discount without recovery is a risk, not value.
-    Cap score at 25 in that case so it can't drag down the composite K-Score.
-    """
-    high_52  = df["close"].tail(252).max()
-    if not high_52 or pd.isna(high_52) or high_52 <= 0:
-        return 50.0
-    discount = 1 - df["close"].iloc[-1] / high_52
-    raw_score = float(np.clip(discount * 200, 0, 100))
-
-    if len(df) >= 63:
-        r1m = df["close"].iloc[-1] / df["close"].iloc[-21] - 1
-        r3m = df["close"].iloc[-1] / df["close"].iloc[-63] - 1
-        if r1m < -0.05 and r3m < -0.15:
-            return min(raw_score, 25.0)
-
-    return raw_score
-
-
-def _growth_proxy(df: pd.DataFrame) -> float:
-    """Proxy: 12-month CAGR."""
-    if len(df) < 252:
-        return 50.0
-    cagr = df["close"].iloc[-1] / df["close"].iloc[-252] - 1
-    return float(np.clip(50 + cagr * 120, 0, 100))
-
-
 def compute_kscore(
     df: pd.DataFrame,
     rs_score: float | None = None,
@@ -165,30 +137,36 @@ def compute_kscore(
     """
     tech = _technical_score(df)
     mom  = _momentum_score(df)
-    # Always compute proxy for score calculation even when real data unavailable
-    val_for_score = value_score  if value_score  is not None else _value_proxy(df)
-    gro_for_score = growth_score if growth_score is not None else _growth_proxy(df)
     vol  = _volatility_score(df)
 
-    if rs_score is not None:
-        score = (
-            _WEIGHTS["technical"]        * tech
-            + _WEIGHTS["momentum"]       * mom
-            + _WEIGHTS["value"]          * val_for_score
-            + _WEIGHTS["growth"]         * gro_for_score
-            + _WEIGHTS["volatility"]     * vol
-            + _WEIGHTS["relative_strength"] * rs_score
-        )
-    else:
-        # No RS data: redistribute RS weight proportionally among other factors
-        w_sum = 1.0 - _WEIGHTS["relative_strength"]
-        score = (
-            (_WEIGHTS["technical"]    / w_sum) * tech
-            + (_WEIGHTS["momentum"]   / w_sum) * mom
-            + (_WEIGHTS["value"]      / w_sum) * val_for_score
-            + (_WEIGHTS["growth"]     / w_sum) * gro_for_score
-            + (_WEIGHTS["volatility"] / w_sum) * vol
-        )
+    # T234-RANK-KSCORE-PROXY-MIXING: value_score/growth_score used to silently fall back to
+    # _value_proxy(df)/_growth_proxy(df) (both monotonic transforms of trailing price return,
+    # like _momentum_score) and feed the proxy into the weighted composite as if it were a
+    # real fundamental percentile — while KScoreComponents.value/.growth correctly returned
+    # None. Two stocks could show an IDENTICAL K-Score while one was fundamentals-grounded and
+    # the other a pure momentum artifact wearing a value/growth label internally, and when
+    # fundamentals are missing (common for smaller/newer names), close to half the composite
+    # became the same underlying signal (recent price action) counted three times under three
+    # factor names. Fixed by excluding value/growth from the weighted sum entirely when the
+    # real fundamental is unavailable, redistributing their weight to the remaining factors —
+    # the same pattern already used just below for a missing rs_score.
+    _active_weights = dict(_WEIGHTS)
+    if value_score is None:
+        del _active_weights["value"]
+    if growth_score is None:
+        del _active_weights["growth"]
+    if rs_score is None:
+        del _active_weights["relative_strength"]
+
+    w_sum = sum(_active_weights.values())
+    _factor_values = {
+        "technical": tech, "momentum": mom, "volatility": vol,
+        "value": value_score, "growth": growth_score, "relative_strength": rs_score,
+    }
+    score = sum(
+        (weight / w_sum) * _factor_values[factor]
+        for factor, weight in _active_weights.items()
+    )
 
     sma200 = df["close"].rolling(200).mean().iloc[-1]
     fair   = float(sma200) if not pd.isna(sma200) else None
