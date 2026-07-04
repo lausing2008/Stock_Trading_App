@@ -1055,10 +1055,11 @@ def calibrate_ml_weight(
 ):
     """Find the empirically optimal ML fusion weight and apply it as the global cap.
 
-    Runs the same weight sweep as /ml-weight-validation, picks the weight with the
-    highest BUY accuracy over lookback_days, writes it to ml_weight_override.json,
-    and updates the in-process value so new signals use it immediately.
-    Returns the chosen weight and the full accuracy curve.
+    Runs the same weight sweep as /ml-weight-validation, searches for the weight with the
+    highest BUY accuracy on the calibration (train) slice, then only applies it if it ALSO
+    beats a neutral baseline (weight=0.5) on the held-out validation slice — writes to
+    ml_weight_override.json and updates the in-process value only when validated.
+    Returns the chosen weight (or None if nothing validated) and the full accuracy curve.
     """
     from ..generators.signals import set_ml_weight_global_cap, _ml_weight_global_cap as prev_cap
     import bisect
@@ -1097,6 +1098,15 @@ def calibrate_ml_weight(
         _pts[sid].append(d)
         _pclose[sid].append(float(row.close))
 
+    def _first_close_at_or_after(sid, target_date):
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_left(ts_list, target_date)
+        if idx >= len(ts_list):
+            return None
+        return _pclose[sid][idx]
+
     def _first_close_after(sid, after_date):
         ts_list = _pts.get(sid)
         if not ts_list:
@@ -1106,6 +1116,13 @@ def calibrate_ml_weight(
             return None
         return _pclose[sid][idx]
 
+    # T234-ML-WEIGHT-NO-VALIDATION-GATE: exit_p previously used whatever the MOST RECENT close
+    # happened to be, mixing holding periods from days to ~180 days (lookback_days) into the same
+    # sweep — a signal evaluated the day it fired and one evaluated 6 months later were treated as
+    # equally-measured observations. Now uses each signal's own style-specific fixed hold window
+    # (_OUTCOME_HOLD_DAYS, the same convention outcomes_calibrate_apply/tune_style_profiles already
+    # use), so every observation measures the same kind of thing: return AFTER the horizon this
+    # signal was actually meant to be held for.
     observations: list[tuple[float, float, float, object]] = []
     seen: set[tuple] = set()
     for sig, _ in rows:
@@ -1125,9 +1142,11 @@ def calibrate_ml_weight(
         entry = _first_close_after(sig.stock_id, signal_date)
         if entry is None or entry <= 0:
             continue
-        exit_p = _pclose[sig.stock_id][-1] if ts_list else None
-        if exit_p is None or ts_list[-1] <= signal_date:
-            continue
+        hold_days = _OUTCOME_HOLD_DAYS.get(sig.horizon.value, 14)
+        target_exit_date = signal_date + timedelta(days=hold_days)
+        exit_p = _first_close_at_or_after(sig.stock_id, target_exit_date)
+        if exit_p is None:
+            continue  # hold window hasn't closed yet — not a resolved observation
         pct = (exit_p - entry) / entry * 100
         observations.append((float(ml_prob), float(ta_score), pct, signal_date))
 
@@ -1138,58 +1157,90 @@ def calibrate_ml_weight(
     observations.sort(key=lambda x: x[3])
     split = max(1, int(len(observations) * 0.7))
     calib_obs = observations[:split]
-    val_obs = observations[split:] or observations  # fall back to all if too few
+    val_obs = observations[split:]
+
+    MIN_VAL_SAMPLES = 15  # same floor already proven in T232-OC3 / T234-SIG-INSAMPLE-GATE-TUNING
 
     weights = [round(w / 20, 2) for w in range(21)]
     best_acc = -1.0
     optimal_weight = 0.5
     curve = []
-    for w in weights:
-        # Select weight using calibration set only
+
+    def _accuracy_and_return(obs, w):
         correct = fired = 0
-        for ml_p, ta_s, pct, _ in calib_obs:
+        returns = []
+        for ml_p, ta_s, pct, _ in obs:
             fused = w * ml_p + (1 - w) * ta_s
             if fused > 0.5:
                 fired += 1
+                returns.append(pct)
                 if pct > 0:
                     correct += 1
-        calib_acc = correct / fired if fired else None
+        acc = correct / fired if fired else None
+        avg_ret = sum(returns) / len(returns) if returns else None
+        return acc, fired, avg_ret
+
+    for w in weights:
+        # Select weight using calibration set only
+        calib_acc, _, _ = _accuracy_and_return(calib_obs, w)
         if calib_acc is not None and calib_acc > best_acc:
             best_acc = calib_acc
             optimal_weight = w
 
-        # Curve accuracy shown on validation set
-        v_correct = v_fired = 0
-        returns = []
-        for ml_p, ta_s, pct, _ in val_obs:
-            fused = w * ml_p + (1 - w) * ta_s
-            if fused > 0.5:
-                v_fired += 1
-                if pct > 0:
-                    v_correct += 1
-                returns.append(pct)
-        acc = round(v_correct / v_fired * 100, 1) if v_fired else None
-        avg_ret = round(sum(returns) / len(returns), 2) if returns else None
-        curve.append({"weight": w, "accuracy": acc, "avg_return_pct": avg_ret})
+        # Curve accuracy shown on validation set (display only, same as before)
+        v_acc, v_fired, v_avg_ret = _accuracy_and_return(val_obs, w)
+        curve.append({
+            "weight": w,
+            "accuracy": round(v_acc * 100, 1) if v_acc is not None else None,
+            "avg_return_pct": round(v_avg_ret, 2) if v_avg_ret is not None else None,
+        })
 
-    # Report validation accuracy for the chosen weight
-    v_correct = v_fired = 0
-    for ml_p, ta_s, pct, _ in val_obs:
-        fused = optimal_weight * ml_p + (1 - optimal_weight) * ta_s
-        if fused > 0.5:
-            v_fired += 1
-            if pct > 0:
-                v_correct += 1
-    best_acc = round(v_correct / v_fired * 100, 1) if v_fired else 0.0
+    # T234-ML-WEIGHT-NO-VALIDATION-GATE: only apply optimal_weight if it ALSO beats a neutral
+    # baseline (0.5 — equal TA/ML blend) on the validation slice the search never saw. Previously
+    # set_ml_weight_global_cap() ran unconditionally regardless of what validation showed.
+    if len(val_obs) < MIN_VAL_SAMPLES:
+        return {
+            "applied": False,
+            "reason": f"only {len(val_obs)} validation-slice observations (need {MIN_VAL_SAMPLES})",
+            "optimal_weight": optimal_weight,
+            "signal_count": len(observations),
+            "lookback_days": lookback_days,
+            "curve": curve,
+        }
+
+    candidate_acc, candidate_fired, candidate_avg_ret = _accuracy_and_return(val_obs, optimal_weight)
+    baseline_acc, baseline_fired, baseline_avg_ret = _accuracy_and_return(val_obs, 0.5)
+
+    candidate_ev = (candidate_avg_ret or 0.0)
+    baseline_ev = (baseline_avg_ret or 0.0)
+    validated = (
+        candidate_fired >= MIN_VAL_SAMPLES
+        and candidate_acc is not None
+        and candidate_ev > baseline_ev
+    )
+
+    if not validated:
+        return {
+            "applied": False,
+            "reason": "candidate weight did not beat the 0.5 baseline on the validation slice",
+            "optimal_weight": optimal_weight,
+            "candidate_validation_ev_pct": round(candidate_ev, 2) if candidate_fired else None,
+            "baseline_validation_ev_pct": round(baseline_ev, 2) if baseline_fired else None,
+            "signal_count": len(observations),
+            "lookback_days": lookback_days,
+            "curve": curve,
+        }
 
     set_ml_weight_global_cap(optimal_weight)
-    log.info("calibrate_ml_weight: applied cap=%.2f (acc=%.1f%%, n=%d, lookback=%dd)",
-             optimal_weight, best_acc, len(observations), lookback_days)
+    log.info("calibrate_ml_weight: applied cap=%.2f (val_acc=%.1f%%, val_ev=%.2f%%, n=%d, lookback=%dd)",
+             optimal_weight, (candidate_acc or 0.0) * 100, candidate_ev, len(observations), lookback_days)
 
     return {
         "applied": True,
         "optimal_weight": optimal_weight,
-        "optimal_accuracy": round(best_acc, 1),
+        "optimal_accuracy": round((candidate_acc or 0.0) * 100, 1),
+        "candidate_validation_ev_pct": round(candidate_ev, 2),
+        "baseline_validation_ev_pct": round(baseline_ev, 2),
         "signal_count": len(observations),
         "lookback_days": lookback_days,
         "previous_cap": prev_cap,

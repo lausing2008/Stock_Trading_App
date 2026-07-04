@@ -46,7 +46,7 @@ backtest harness (see §4).
 |---|---|---|---|---|---|
 | 1 | Signal threshold calibration | `POST /signals/outcomes/calibrate/apply` | Real expected value (win_rate × avg_return, correctly *not* double-multiplied) | **Yes** — chronological 70/30 (T232-OC3) | Redis `stockai:signal_thresholds:{HORIZON}` and `:SELL:{HORIZON}` |
 | 2 | Style gate-parameter tuning | `POST /signals/tune_style_profiles` | Same EV metric, three params | **Yes** — chronological 70/30 (T234-SIG-INSAMPLE-GATE-TUNING) | Redis `stockai:style_tune:{STYLE}:{param}` |
-| 3 | ML fusion weight | `POST /signals/calibrate/ml-weight` (`calibrate_ml_weight`) | Calibration-set accuracy | Yes (70/30), but **picks the weight from the training/calibration side, not validation** — see §5 gap | `{model_dir}/ml_weight_override.json` (disk, not Redis) |
+| 3 | ML fusion weight | `POST /signals/calibrate_ml_weight` | Calibration-set accuracy for selection, gated by validation-slice EV (fixed 2026-07-07, T234-ML-WEIGHT-NO-VALIDATION-GATE) | **Yes** — chronological 70/30, min 15 validation samples, only applies if the candidate beats a 0.5 baseline on validation EV | `{model_dir}/ml_weight_override.json` (disk, not Redis) |
 | 4 | ML hyperparameters | `POST /ml/tune_all` | **AUC** via Optuna + `TimeSeriesSplit(n_splits=5)` — a classification proxy, not P&L | Yes, for AUC only | Per-symbol `{symbol}_params.json` |
 | 5 | Gate-threshold backtest (research only) | `GET /paper-portfolio/backtest/min-entry-score` | Real expected value via `SignalOutcome` | **Yes** — chronological 70/30, min 15 samples/side | Nothing — returns a report, does not touch Redis or config |
 | 6 | Gate-logic drift check (research only) | `GET /signals/gate_backtest` | N/A — compares old vs. new gate logic on historical signals | No | Nothing — 1-hour cache only |
@@ -166,23 +166,17 @@ qualitatively consistent, which is the intended sanity check before trusting eit
    and get silently skipped every week. No purge job is deleting this data — it simply hasn't
    accumulated yet. This should self-resolve as the system keeps running; no code fix identified.
 
-2. **`calibrate_ml_weight` has two distinct, already-tracked issues — correcting an over-credit in
-   an earlier tracker note.** `improvements.tsx`'s T232-OC3 entry describes this endpoint as already
-   doing a walk-forward split "correctly," citing it as the pattern the other calibration endpoints
-   copied. Re-reading the code directly (`routes.py:1051-1197`) while writing this doc found that
-   credit is only half right: it DOES compute a chronological 70/30 split (`routes.py:1137-1141`),
-   but the fusion weight it actually *picks* (`routes.py:1150-1159`) is chosen by maximizing accuracy
-   on the CALIBRATION/training side — the validation-side accuracy (`routes.py:1176-1183`) is
-   computed and returned for display only, never used to gate which weight gets applied
-   (`set_ml_weight_global_cap(optimal_weight)` at line 1185 runs unconditionally). This is more
-   precise than items #1/#2 in §2, which only apply a winner after it independently beats baseline
-   on a slice the search never saw. Separately, `improvements.tsx`'s T234-SIG-INSAMPLE-GATE-TUNING
-   entry already documents a second, distinct bug in the same function: `exit_p =
-   _pclose[sig.stock_id][-1]` (line 1128) uses whatever the MOST RECENT close happens to be as the
-   exit price, not a fixed hold-window exit — mixing holding periods from days to ~180 days into one
-   sweep. Neither issue has a code fix yet — filed as `T234-ML-WEIGHT-NO-VALIDATION-GATE` and
-   corrected T232-OC3's over-credit in the same pass. Do not rely on this endpoint's chosen weight
-   as validated until it's fixed.
+2. **FIXED 2026-07-07 (`T234-ML-WEIGHT-NO-VALIDATION-GATE`) — `calibrate_ml_weight` used to pick its
+   fusion weight from the training slice, not validation.** Originally found while writing this doc
+   (correcting an over-credit in T232-OC3's tracker entry, which had described this endpoint as
+   already doing a walk-forward split "correctly" — the split existed but didn't gate anything: the
+   weight selection loop maximized CALIBRATION-side accuracy, and validation-side accuracy was
+   computed only for display, never used to decide whether to apply). Also fixed in the same pass:
+   `exit_p` previously used whatever the MOST RECENT close happened to be, mixing holding periods
+   from days to ~180 days into one sweep — now uses each signal's own style-specific fixed hold
+   window (`_OUTCOME_HOLD_DAYS`, same convention as items #1/#2 in §2). The endpoint now only applies
+   a candidate weight if it beats a neutral 0.5 baseline on validation-slice EV, with the same
+   15-sample floor used elsewhere in this loop. §2's table above reflects the fixed behavior.
 
 3. **ML hyperparameter tuning optimizes AUC, not P&L.** A model can have excellent AUC and mediocre
    trading expected value if it's confident-but-wrong specifically on the highest-conviction trades.
