@@ -140,3 +140,50 @@ any currently-deployed model.
 picked up the fix — check that `revenue_growth`/`earnings_growth`/
 `return_on_equity`/`recommendation_mean` have non-null importance in the resulting
 model, not just that training didn't error.
+
+---
+
+## T232-OC4 — Win definition: cost hurdle fixed, stop-loss/MAE modeling deferred
+
+**Tracker:** `T232-OC4-WIN-DEFINITION-FLATTERING` (done, 2026-07-03)
+
+**What shipped:** `is_correct` now requires clearing a real cost hurdle
+(`_OUTCOME_WIN_HURDLE_PCT = 0.005`, i.e. `pct_return > +0.5%` for BUY / `< -0.5%`
+for SELL) instead of a bare zero line — a `+0.01%` move no longer counts as a
+win. Also fixed a separate, more consequential bug found while investigating:
+`expected_value_pct` was computed as `win_rate * avg_return` across 4 sites (the
+OC3 calibration preview/apply for BUY and SELL, plus `tune_style_profiles`'s
+`_ev_at` helper) — since `avg_return` is already the mean return across ALL
+trades (wins and losses), it already IS the expected value; multiplying by
+win_rate a second time double-counted win probability, understating true EV by
+roughly 40% in a representative example. This fed directly into which threshold
+the OC3 auto-calibration sweep picks as "optimal" and which `ml_weight_cap`
+`tune_style_profiles` selects — verified live against production data showing
+the exact `0.543 * -1.19% = -0.64%` buggy arithmetic before the fix shipped.
+
+**What was left out (explicit user decision, not silently skipped):** the
+tracker's fix text also asked for max-adverse-excursion (MAE) / intraday
+stop-out modeling using D1 lows — scoring a trade as a loss if it would have
+hit a stop-loss intraday even though it recovered by close. User was asked to
+choose between cost-hurdle-only, cost-hurdle+MAE, or deferring the whole item,
+and chose cost-hurdle-only with MAE explicitly deferred to a future pass.
+
+**Why MAE modeling is harder than it looks:** the real paper trading engine
+(`paper_trading_engine.py`) uses dynamic/trailing stops that move with the
+position, not one fixed stop-loss percentage — there is no single "the stop" to
+check D1 lows against for a signal-level outcome row, which never had its own
+simulated position/stop lifecycle. Modeling this properly would mean either (a)
+picking one fixed stop % as an approximation (loses fidelity to what the real
+engine does) or (b) replaying the actual dynamic-stop logic against historical
+D1 bars per outcome (a mini backtest per row — much closer in spirit to the
+Backtest Harness already proposed in `T233-SELFIMPROVE-PHASE2`, not a quick
+addition to `evaluate_signal_outcomes()`). Either way, this retroactively
+changes what `is_correct`/`pct_return` mean for every existing row, which the
+freshly-shipped T232-OC3 EV-lift gate and T232-OC5 calibration bands currently
+trust as ground truth — changing the definition without a coordinated re-run of
+both would produce numbers that don't reconcile with anything computed before.
+
+**Revisit:** once the Backtest Harness from `T233-SELFIMPROVE-PHASE2` exists, it
+may be the more natural home for MAE-aware outcome scoring (option (b) above)
+rather than adding fixed-stop approximation logic directly to
+`evaluate_signal_outcomes()`.

@@ -3286,11 +3286,14 @@ def outcomes_calibrate(
             rets = [o.pct_return for o in sub if o.pct_return is not None]
             acc = wins / len(sub)
             avg_ret = _stats.mean(rets) if rets else 0.0
+            # T232-OC4: avg_ret is already the mean return across ALL trades (wins and
+            # losses) in `sub` — it already IS the expected value per trade. Multiplying by
+            # acc (win rate) again double-counts win probability, understating true EV.
             return {
                 "n": len(sub),
                 "win_rate": round(acc, 3),
                 "avg_return_pct": round(avg_ret * 100, 2),
-                "expected_value_pct": round(acc * avg_ret * 100, 2),
+                "expected_value_pct": round(avg_ret * 100, 2),
             }
 
         if len(bucket) < min_samples * 2:
@@ -3428,7 +3431,9 @@ def outcomes_calibrate_apply(
             rets = [o.pct_return for o in sub if o.pct_return is not None]
             acc = wins / len(sub)
             avg_ret = _stats.mean(rets) if rets else 0.0
-            ev = acc * avg_ret * 100
+            # T232-OC4: avg_ret already IS the expected value (mean return across all trades
+            # in `sub`, wins and losses) — multiplying by acc double-counts win probability.
+            ev = avg_ret * 100
             return {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
 
         # Search for the best threshold on the TRAIN slice only.
@@ -3540,7 +3545,8 @@ def outcomes_calibrate_apply(
             rets = [-o.pct_return for o in sub if o.pct_return is not None]  # signed: SELL wins on price decline
             acc = wins / len(sub)
             avg_ret = _stats.mean(rets) if rets else 0.0
-            ev = acc * avg_ret * 100
+            # T232-OC4: avg_ret already IS the expected value — see fix note above.
+            ev = avg_ret * 100
             return {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
 
         s_best_ev = -999.0
@@ -3670,7 +3676,9 @@ def tune_style_profiles(
         rets = [o.pct_return for o in subset if o.pct_return is not None]
         acc = wins / len(subset)
         avg_ret = _stats.mean(rets) if rets else 0.0
-        return acc * avg_ret * 100, acc, avg_ret
+        # T232-OC4: avg_ret already IS the expected value — see fix note near the OC3
+        # calibration functions above. Multiplying by acc double-counts win probability.
+        return avg_ret * 100, acc, avg_ret
 
     for style in ("SHORT", "SWING", "LONG", "GROWTH"):
         style_outcomes = [o for o in outcomes if o.horizon.value == style]
@@ -4331,6 +4339,21 @@ _SELL_OUTCOME_HOLD_DAYS: dict[str, int] = {
 # ingestion lag. 10 days comfortably covers weekends/holidays plus normal scheduler delay.
 _OUTCOME_CENSOR_GRACE_DAYS = 10
 
+# T232-OC4: any positive close-to-close move (pct_return > 0) used to count as a win — a
+# +0.01% move after a 14-day hold scored identical to a real +5% winner. This flattered
+# reported win rates and fed the same wrong objective into the T232-OC3 calibration sweep.
+# Requiring a real cost hurdle instead of a bare zero line means "win" reflects a trade that
+# would have cleared round-trip costs, not just closed a cent above entry. Set to 2.5x the
+# round-trip entry+exit slippage already modeled in paper_trading_engine.py's
+# entry_slippage_pct (0.001 each way = 0.002 round trip) — comfortably above pure transaction
+# cost without being so high it starts rejecting genuine small wins. Deliberately does NOT
+# model intraday stop-outs (max-adverse-excursion) — that requires picking a stop-loss % to
+# check against, but the real paper trading engine uses dynamic/trailing stops rather than one
+# fixed distance, and retroactively changing what "win" means would destabilize the OC3
+# EV-lift gate and OC5 calibration bands other in-flight work already trusts. Tracked as a
+# known limitation for a future pass, not silently skipped — see docs/KNOWN_LIMITATIONS.md.
+_OUTCOME_WIN_HURDLE_PCT = 0.005
+
 
 @router.post("/outcomes/evaluate")
 def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = Depends(get_current_username)):
@@ -4422,7 +4445,8 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
     def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int, signal_direction: str = "BUY"):
         """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None).
 
-        is_correct: BUY wins when ret > 0; SELL wins when ret < 0.
+        is_correct: BUY wins when ret clears the cost hurdle; SELL wins when ret falls
+        below the negative hurdle (T232-OC4 — see _OUTCOME_WIN_HURDLE_PCT above).
         """
         target = entry_date + timedelta(days=days)
         if target > today:
@@ -4432,7 +4456,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
             return None, None, None
         _, price = result
         ret = (price - entry_price) / entry_price
-        is_correct = ret > 0 if signal_direction == "BUY" else ret < 0
+        is_correct = ret > _OUTCOME_WIN_HURDLE_PCT if signal_direction == "BUY" else ret < -_OUTCOME_WIN_HURDLE_PCT
         return float(price), ret, is_correct
 
     # Research recommendation cache — one network fetch per symbol per run
@@ -4533,7 +4557,12 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = D
 
         pct_return = (exit_price - entry_price) / entry_price
         hold_days_actual = (exit_date - entry_date).days
-        is_correct = pct_return > 0 if sig.signal == SignalType.BUY else pct_return < 0
+        # T232-OC4: require clearing a real cost hurdle, not just a bare zero line — see
+        # _OUTCOME_WIN_HURDLE_PCT above for why 0.5% and what's deliberately NOT modeled here.
+        is_correct = (
+            pct_return > _OUTCOME_WIN_HURDLE_PCT if sig.signal == SignalType.BUY
+            else pct_return < -_OUTCOME_WIN_HURDLE_PCT
+        )
 
         # INT-8: multi-window forward returns (pass signal direction so SELL wins on negative returns)
         _sig_dir = sig.signal.value  # "BUY" or "SELL"
