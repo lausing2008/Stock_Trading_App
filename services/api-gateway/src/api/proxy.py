@@ -34,6 +34,9 @@ _ROUTES = {
     "portfolio": _settings.portfolio_optimizer_url,
     "portfolio-risk": _settings.market_data_url,
     "research": _settings.research_engine_url,
+    # T233-ARCH-AIPROXY-EXTRACT: ai_proxy.py moved to research-engine 2026-07-04 — was
+    # previously served locally by this gateway's own ai_router, not proxied at all.
+    "ai": _settings.research_engine_url,
     "decide":   _settings.decision_engine_url,
     "events":   _settings.event_intelligence_url,
     "catalyst": _settings.event_intelligence_url,

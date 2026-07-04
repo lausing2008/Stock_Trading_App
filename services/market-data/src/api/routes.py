@@ -458,6 +458,34 @@ def regime(market: str = Query("US", description="US or HK")):
         raise HTTPException(503, "Regime data unavailable")
 
 
+@router.get("/regime-state")
+def hmm_regime_state():
+    """Current 4-state HMM regime classification (T211/T232-ML7/T233-ARCH-HMMREGIME).
+
+    Uses a GaussianHMM trained on standardized (VIX_level, SPY_5d_return, IWM_vs_EMA200).
+    States: bull | neutral | choppy | bear, labeled by a composite (return + VIX) rank.
+    Model auto-refreshes when older than 7 days; falls back to the existing pickle if a
+    refresh fails. Returns {"error": ...} if hmmlearn is not installed or data fetch fails.
+    No auth required — public endpoint, advisory data only (same pattern as /fear_greed).
+
+    T233-ARCH-HMMREGIME: moved here from ml-prediction 2026-07-04 — paper_trading_engine
+    was the only consumer anywhere in the codebase and called this over HTTP on every
+    regime computation; colocating eliminates that network hop entirely.
+    """
+    from ..services.hmm_regime import predict_current
+    return predict_current()
+
+
+@router.post("/regime-refit")
+def hmm_regime_refit(_user=Depends(get_current_user)):
+    """Force-refit the HMM regime model. Requires auth."""
+    from ..services.hmm_regime import refit
+    result = refit()
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
 @router.get("/style-params")
 def style_params():
     """Canonical per-style game-plan parameters (entry/breakout/stop/target percentages).

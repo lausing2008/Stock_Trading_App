@@ -986,20 +986,21 @@ def _fetch_market_regime(cfg: dict) -> dict:
                 f"MDY/200EMA={result.get('mdy_vs_ema200', 0):.3f} — narrow market"
             )
 
-    # QW-8: HMM regime overlay — non-blocking (3s timeout, fail-open).
+    # QW-8: HMM regime overlay — fail-open, in-process (T233-ARCH-HMMREGIME: was an HTTP call
+    # to ml-prediction:8003/regime-state on every regime computation; colocated 2026-07-04
+    # since this was the only consumer anywhere in the codebase — a real network hop
+    # eliminated, not just a cosmetic move).
     # bear_prob > 0.50 triggers a 30% position size reduction on top of rule-based regime sizing.
     # Detects early-phase downturns via volatility clustering before price action confirms.
     try:
-        import httpx as _httpx_hmm
-        _hmm_r = _httpx_hmm.get("http://ml-prediction:8003/regime-state", timeout=3.0)
-        if _hmm_r.status_code == 200:
-            _hmm_d = _hmm_r.json()
-            if not _hmm_d.get("error"):
-                _bear_p = float(_hmm_d.get("hmm_prob", {}).get("bear", 0.0))
-                result["hmm_bear_prob"] = round(_bear_p, 4)
-                result["hmm_state"] = _hmm_d.get("hmm_state")
-                if _bear_p > 0.50:
-                    result["hmm_bear_pressure"] = True
+        from .hmm_regime import predict_current as _hmm_predict_current
+        _hmm_d = _hmm_predict_current()
+        if not _hmm_d.get("error"):
+            _bear_p = float(_hmm_d.get("hmm_prob", {}).get("bear", 0.0))
+            result["hmm_bear_prob"] = round(_bear_p, 4)
+            result["hmm_state"] = _hmm_d.get("hmm_state")
+            if _bear_p > 0.50:
+                result["hmm_bear_pressure"] = True
     except Exception as _hmm_exc:
         log.debug("paper.hmm_regime_fetch_skipped", error=str(_hmm_exc))
 

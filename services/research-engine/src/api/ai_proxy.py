@@ -5,6 +5,14 @@ the gateway falls back to the admin-configured shared key stored in Redis
 (set via POST /admin/config in market-data with claude_api_key / deepseek_api_key).
 
 This means regular users get full AI features without needing their own API keys.
+
+T233-ARCH-AIPROXY-EXTRACT: moved here from api-gateway 2026-07-04. api-gateway is
+meant to be a pure reverse proxy; this is a business feature (LLM chat) that only
+lived there because the gateway happened to be the one service with outbound
+internet access. research-engine already reads the same admin-configured
+stockai:admin:claude_api_key/deepseek_api_key Redis keys for its own report-chat
+feature, so this consolidates onto a service that already depends on the same
+config rather than duplicating it a third time.
 """
 from __future__ import annotations
 

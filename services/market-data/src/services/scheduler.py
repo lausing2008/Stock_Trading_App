@@ -3191,6 +3191,12 @@ def start_scheduler() -> None:
     global _scheduler
     if _scheduler is not None:
         return
+    # T232-PT1: ENABLE_PAPER_TRADING defaults False and previously had no tracked env file
+    # setting it — local dev's paper trading engine silently never ran (three untouched
+    # portfolios, zero trades) with no visible symptom short of noticing an empty trade
+    # history. Logged plainly at startup so this is obvious from `docker logs` alone.
+    log.info("paper_trading.enabled" if _settings.enable_paper_trading else "paper_trading.disabled",
+              value=_settings.enable_paper_trading)
     _scheduler = BackgroundScheduler(timezone="UTC")
 
     # ── US Market (America/New_York — DST handled automatically) ────────────
