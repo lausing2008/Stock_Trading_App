@@ -1704,7 +1704,16 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
         live_price = live_prices.get(trade.symbol)
         if not live_price:
-            continue
+            # T234-PT-MONITOR-MISSING-PRICE-FALLBACK: a missing live quote used to skip
+            # ALL stop/target/trailing-stop checks for this trade for the entire cycle,
+            # silently — a position whose stop should have triggered during a quote gap
+            # would ride a bad move further than intended. Fall back the same way
+            # _best_price() does elsewhere in this file (live -> cached current_price ->
+            # entry_price) so exit checks still run against the best price we have.
+            live_price = trade.current_price or trade.entry_price
+            log.warning("paper.monitor_price_fallback", symbol=trade.symbol,
+                        trade_id=trade.id, fallback_price=live_price,
+                        note="live quote missing this cycle — using cached/entry price for exit checks")
 
         trade.current_price = live_price
         if trade.highest_price is None or live_price > trade.highest_price:

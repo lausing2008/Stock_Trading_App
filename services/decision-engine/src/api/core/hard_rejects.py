@@ -36,6 +36,7 @@ def check_hard_rejects(
     research_rec: str | None = None,
     game_plan: dict | None = None,
     market: str = "US",
+    reasons: dict | None = None,
 ) -> str | None:
     """Return a human-readable reject reason, or None if all checks pass."""
 
@@ -119,6 +120,49 @@ def check_hard_rejects(
 
     if days_to_earnings is not None and days_to_earnings <= 5:
         return f"Earnings in {days_to_earnings} days — binary event risk"
+
+    # T234-DE-MISSING-HARD-REJECTS: ported from paper_trading_engine.py's _should_enter()
+    # fallback (the "primary" DE gate was missing these two unconditional hard rejects that
+    # the fallback path enforces, making the normally-active gate looser than the outage-only
+    # fallback — backwards from intended). Both use signal.reasons, same as the fallback.
+    _reasons = reasons or {}
+
+    # T171: Premarket gap filter — reject if price has already gapped up significantly
+    # from its signal-time close. reasons["last_price"] is the close at signal-compute time.
+    _signal_close = _reasons.get("last_price")
+    if _signal_close and float(_signal_close) > 0:
+        _gap = live_price / float(_signal_close) - 1
+        _max_gap = cfg.get("max_entry_gap_pct", 0.04)
+        if _gap > _max_gap:
+            return (
+                f"Gap-up {_gap:.1%} above signal close ${_signal_close:.2f} "
+                f"exceeds limit {_max_gap:.0%} — entry price degraded"
+            )
+
+    # T220-D: Economic calendar blackout — reject BUY entries within 2h of major macro events.
+    # Checks reasons["macro_blackout"] first (fast path — set by signal-engine), then queries
+    # DB directly, matching the fallback's fail-open-on-error behavior.
+    _macro_evt = _reasons.get("macro_blackout")
+    if _macro_evt is None:
+        try:
+            from db import SessionLocal
+            from sqlalchemy import text
+            from datetime import timedelta
+            _now = datetime.now(timezone.utc)
+            _window_end = _now + timedelta(hours=2)
+            with SessionLocal() as _evsess:
+                _ev_row = _evsess.execute(text(
+                    "SELECT title FROM economic_events "
+                    "WHERE event_date >= :now AND event_date <= :end "
+                    "AND importance IN ('high', 'critical') "
+                    "LIMIT 1"
+                ), {"now": _now.isoformat(), "end": _window_end.isoformat()}).fetchone()
+                if _ev_row:
+                    _macro_evt = _ev_row.title
+        except Exception:
+            pass  # DB query failure → allow entry (fail-open), matching the fallback
+    if _macro_evt:
+        return f"Macro blackout: {_macro_evt} within 2h — avoid binary-event risk"
 
     # T232-DL-DUALSCORER: the caller (paper_trading_engine._call_decision_engine) sends
     # open_sector_counts/candidate_sector inside config_overrides, but this function never read

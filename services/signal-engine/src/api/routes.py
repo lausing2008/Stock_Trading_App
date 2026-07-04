@@ -4782,8 +4782,14 @@ def gate_backtest(
             failed.append("ADX")
 
         # 5 — ML probability (always soft)
+        # T234-SIG-GATEBACKTEST-DRIFT: the real gate (_is_conviction_buy) soft-passes when
+        # ml_weight == 0.0 (model trained but AUC < 0.50, so signal-engine assigned it zero
+        # fusion weight — "ML had no say, don't penalize on it"). This replica was missing
+        # that carve-out and always failed on a threshold miss regardless of ml_weight,
+        # scoring some historically-soft-passed signals as ML-gate failures.
         ml_prob = r.get("ml_probability")
-        if ml_prob is not None:
+        ml_weight = float(r.get("ml_weight") or 0.0)
+        if ml_prob is not None and ml_weight != 0.0:
             regime = r.get("market_regime", "unknown")
             thresh = _REGIME_ML_THRESH.get(regime, 0.70)
             if float(ml_prob) <= thresh:

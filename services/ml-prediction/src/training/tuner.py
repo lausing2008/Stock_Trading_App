@@ -25,7 +25,7 @@ from xgboost import XGBClassifier
 from common.logging import get_logger
 
 from ..features import build_features, compute_label_threshold, fetch_macro_features, fetch_sector_features, fetch_signal_outcome_features
-from .trainer import _blend_weights, _load_earnings_features, _load_fundamentals, _load_hk_flow_features, _load_prices, _params_path, _recency_weights, train_model
+from .trainer import _blend_weights, _load_earnings_features, _load_fund_snapshots, _load_fundamentals, _load_hk_flow_features, _load_prices, _params_path, _recency_weights, train_model
 
 log = get_logger("tuner")
 
@@ -119,9 +119,22 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
     except Exception:
         pass
 
+    # T234-ML-TUNER-MISSING-PIT: this call was never passing fund_snapshots, so the tuner
+    # always fell through to build_features' plain broadcast-from-today's-snapshot path for
+    # ALL fundamentals columns — including the 4 original T228-protected ones (revenue_growth,
+    # earnings_growth, return_on_equity, recommendation_mean) — meaning Optuna was tuning
+    # hyperparameters against lookahead-biased features even though train_model() (trainer.py)
+    # already does this correctly for the same symbol. Matches trainer.py's own wiring exactly.
+    fund_snapshots: list[dict] = []
+    try:
+        fund_snapshots = _load_fund_snapshots(symbol)
+    except Exception:
+        pass
+
     X, y_dir, _ = build_features(
         df, horizon=horizon, macro_df=macro_df, label_threshold=label_threshold,
         fund_data=fund_data, sector_df=sector_df, outcome_df=outcome_df,
+        fund_snapshots=fund_snapshots,
     )
     # Restrict tuner to first 85% of data to avoid leaking the test period
     cutoff = int(len(X) * 0.85)

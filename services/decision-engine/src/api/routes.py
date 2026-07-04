@@ -154,6 +154,7 @@ async def _decide(symbol: str, req: DecisionRequest) -> DecisionResult:
         research_rec=research_rec,
         game_plan=game_plan,
         market=market,
+        reasons=reasons,
     )
 
     # Explicit None checks so 0.0 values are preserved (truthy-or chain would coerce 0.0 → None)
