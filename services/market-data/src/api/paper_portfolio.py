@@ -1738,3 +1738,40 @@ def kelly_sizing(
         "avg_loss_pct": round(avg_loss, 2),
         "reward_risk_ratio": round(b, 2),
     }
+
+
+# ── T233-SELFIMPROVE-PHASE2 (Phase 2a): gate-threshold backtest harness ────────
+# See docs/DESIGN_BACKTEST_HARNESS_PHASE2_2026-07-06.md for full scope/rationale.
+# Manually-triggered research tool — NOT wired to any promotion gate or config write.
+# Reports what a candidate min_entry_score would have done on held-out historical data;
+# a human reads the result and decides whether to change portfolio.config by hand.
+
+@router.get("/backtest/min-entry-score")
+def backtest_min_entry_score(
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    window_days: int = Query(60, ge=14, le=365, description="Lookback window in calendar days"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Walk-forward backtest of candidate min_entry_score values via the real _should_enter().
+
+    Searches candidates on the older 70% of the window (train), only reports a candidate
+    as beating baseline if it ALSO wins on the newer 30% (validation) the search never saw.
+    Research tool only — does not write to portfolio.config or any promotion history table.
+    """
+    from ..backtest.gate_harness import walk_forward_min_entry_score
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    window_end = date.today()
+    window_start = window_end - timedelta(days=window_days)
+
+    with SessionLocal() as session:
+        return walk_forward_min_entry_score(session, style, market, base_cfg, window_start, window_end)
