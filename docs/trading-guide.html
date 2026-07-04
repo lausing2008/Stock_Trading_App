@@ -114,6 +114,8 @@
   <a href="#kscore">K-Score</a>
   <a href="#gate">Gate</a>
   <a href="#risk">Risk</a>
+  <a href="#whales">Whales &amp; Volume</a>
+  <a href="#playbook">Situations</a>
   <a href="#workflow">Workflow</a>
   <a href="#pages">All Pages</a>
 </nav>
@@ -369,6 +371,93 @@
   </tbody>
 </table>
 <div class="tip">If a stock has a BUY signal but 4+ dots: wait for conditions to clear before acting. Use this page to track when suppression lifts.</div>
+</section>
+
+<hr class="section-divider">
+
+<!-- WHALES & VOLUME -->
+<section id="whales">
+<h2>Spotting Whale &amp; Volume Activity Fast</h2>
+<p style="color:var(--muted); font-size:13px; margin-bottom:20px;">Two separate detectors exist today, on two different sides of the market. Neither pushes a notification to you automatically yet — you have to check them.</p>
+
+<h3>Equity Volume — Accumulation on the Stock Itself</h3>
+<div class="card">
+  <div style="font-size:13px; color:#94a3b8; margin-bottom:10px;"><span class="label" style="color:var(--text);">Metric:</span> <code style="color:var(--blue);">volume_z</code> — a z-score of today's share volume against the trailing 20-day mean. This already feeds directly into the signal's Trend and Volume pillars, so a real surge is partially priced into the confidence number you see before you even check separately.</div>
+  <div style="font-size:13px; color:#94a3b8;"><span class="label" style="color:var(--text);">To get notified:</span> set a <strong style="color:var(--amber);">Volume Spike</strong> price alert on the symbol (checked every minute). Start around 3× the 20-day average volume as a threshold — high enough to filter routine noise, low enough to catch a real move early.</div>
+</div>
+
+<h3>Options Flow — Institutional Conviction Bets</h3>
+<div class="card">
+  <div style="font-size:13px; color:#94a3b8; margin-bottom:10px;"><span class="label" style="color:var(--text);">Unusual activity:</span> a contract is flagged when today's volume exceeds <strong style="color:var(--text);">30% of open interest</strong> (with a floor of 50+ OI to filter thin, noisy contracts).</div>
+  <div style="font-size:13px; color:#94a3b8; margin-bottom:10px;"><span class="label" style="color:var(--text);">Whale flag:</span> separately marked <code style="color:var(--purple);">is_whale</code> when premium paid on that contract exceeds <strong style="color:var(--text);">$500,000</strong>.</div>
+  <div style="font-size:13px; color:#94a3b8; margin-bottom:10px;"><span class="label" style="color:var(--text);">How to read it:</span> a call sweep that's both unusual (vol/OI &gt; 0.3) <em>and</em> whale-sized (&gt; $500K premium), especially near-the-money and in a near expiry, is the strongest single piece of "someone with real capital has high conviction" evidence this system surfaces.</div>
+  <div class="tip" style="background:rgba(249,115,22,0.06); border-color:rgba(249,115,22,0.18);">⚠ This is <strong>display-only today</strong> — it does not automatically raise signal confidence or position size for that stock. Check the Options Flow tab on the stock detail page manually before entering, especially before a large position. There is no push alert for a whale sweep yet.</div>
+</div>
+
+<div class="tip">Practical combo: a BUY signal + volume_z above ~2 + a whale call sweep on the same stock, all the same day, is the closest this system currently gets to genuine multi-source confirmation. None of the three alone is as strong as the intersection of all three.</div>
+</section>
+
+<hr class="section-divider">
+
+<!-- SITUATIONAL PLAYBOOK -->
+<section id="playbook">
+<h2>Situational Playbook</h2>
+<p style="color:var(--muted); font-size:13px; margin-bottom:20px;">What to do when you see these specific conditions. Ordered by how often each actually comes up.</p>
+
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num" style="background:rgba(34,197,94,0.15); border-color:rgba(34,197,94,0.3); color:var(--green);">✓</div>
+    <div class="step-body">
+      <div class="step-where">BUY signal, confidence 70%+, calibrated win rate agrees</div>
+      <div class="step-title">The strongest case — size as suggested</div>
+      <div class="step-desc">Check the regime badge (bull/neutral preferred), K-Score clears the style's min gate, and the calibration sample size (n) is at least 30. If all three line up, this is the system's best-supported setup. Don't override the suggested position size upward — the sizing already composes regime, VIX, confidence, and research multipliers together.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(250,204,21,0.15); border-color:rgba(250,204,21,0.3); color:var(--yellow);">!</div>
+    <div class="step-body">
+      <div class="step-where">BUY signal but regime is choppy or risk_off</div>
+      <div class="step-title">If the gate opened anyway, that's a point in its favor</div>
+      <div class="step-desc">Position size is already cut automatically in these regimes, and the minimum entry score bar is raised. If the signal cleared the gate despite the higher bar, treat that as meaningful — but still don't add size beyond what's suggested; risk-off sizing exists because historical data showed full-size risk-off entries losing money.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(239,68,68,0.15); border-color:rgba(239,68,68,0.3); color:var(--red);">✕</div>
+    <div class="step-body">
+      <div class="step-where">Position is down, no stop hit yet</div>
+      <div class="step-title">Check the thesis before you check the P&amp;L</div>
+      <div class="step-desc">Has the original entry thesis actually changed (sector rotated, trend broken), or is this normal drawdown within the stock's typical volatility? If the thesis is intact, let the stop do its job. Exiting early on unrealized drawdown alone is the most common way a statistically sound system gets turned into a losing one — it selectively cuts winners-in-progress at their worst moment.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(239,68,68,0.15); border-color:rgba(239,68,68,0.3); color:var(--red);">✕</div>
+    <div class="step-body">
+      <div class="step-where">SELL signal fires on a position you hold</div>
+      <div class="step-title">Check how fresh it is before acting</div>
+      <div class="step-desc">SELL accuracy decays with horizon — strongest in the first 5–10 calendar days after firing, materially weaker by 20 days. A fresh SELL on an open long is worth acting on. A stale SELL that's been sitting for weeks carries much less evidence — re-check current price action rather than trusting the old label.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(99,102,241,0.15); border-color:rgba(99,102,241,0.3); color:var(--indigo);">?</div>
+    <div class="step-body">
+      <div class="step-where">Confidence and K-Score disagree with each other</div>
+      <div class="step-title">Check if K-Score is measuring something real or a proxy</div>
+      <div class="step-desc">K-Score's value/growth components fall back to price-derived proxies when real fundamentals are missing — check the stock detail page for whether they're populated. If they're proxies, you may be looking at one momentum signal counted twice under two names, not two independent opinions. Weight the confidence/calibration number more heavily in that case.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(100,116,139,0.15); border-color:rgba(100,116,139,0.3); color:var(--muted);">i</div>
+    <div class="step-body">
+      <div class="step-where">A stock has near-zero price history (recent IPO / newly added)</div>
+      <div class="step-title">A missing K-Score is expected, not a bug</div>
+      <div class="step-desc">Stocks under 60 daily bars are excluded from ranking entirely rather than given a misleading score. Wait for history to accumulate rather than trading on signal confidence alone for a stock with no ranking context yet.</div>
+    </div>
+  </div>
+</div>
+
+<div class="tip" style="background:rgba(239,68,68,0.06); border-color:rgba(239,68,68,0.18); margin-top:20px;">
+  <strong style="color:var(--red);">What not to do:</strong> don't act on a signal without checking its freshness timestamp right after a deploy or restart — that's exactly when this system's documented staleness incidents have happened. Don't compare confidence percentages across different horizons or markets as if they're on the same scale. Don't treat HK SHORT-horizon SELL signals as informative — that specific signal type is disabled by design (historical 29% win rate, no real edge).
+</div>
 </section>
 
 <hr class="section-divider">
