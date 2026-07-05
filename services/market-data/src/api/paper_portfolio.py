@@ -1775,3 +1775,85 @@ def backtest_min_entry_score(
 
     with SessionLocal() as session:
         return walk_forward_min_entry_score(session, style, market, base_cfg, window_start, window_end)
+
+
+# ── T233-SELFIMPROVE-PHASE3: promotion gate + tune history ─────────────────────
+# See docs/DESIGN_PROMOTION_GATE_PHASE3_2026-07-05.md for full scope/rationale.
+# Still manually-triggered and does NOT write to portfolio.config — records every
+# attempted tune (promoted or not) to tune_history so "what changed and did it help"
+# never requires reconstructing state from container logs across services.
+
+@router.post("/backtest/min-entry-score/promote")
+def promote_min_entry_score(
+    style: str = Query(..., description="SHORT | SWING | LONG | GROWTH"),
+    market: str = Query("US", description="US | HK"),
+    window_days: int = Query(60, ge=14, le=365, description="Lookback window in calendar days"),
+    max_worst_trade_regression_pct: float = Query(10.0, ge=0, description="Reject if candidate's worst trade is this many pp worse than baseline's"),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Run the min_entry_score backtest, apply the Phase 3 promotion gate, and record the
+    attempt (promoted or not) to tune_history. Does NOT apply the candidate to portfolio.config —
+    a human still decides whether to hand-edit the live config based on this result.
+    """
+    from ..backtest.promotion_gate import evaluate_and_record
+    from ..services.paper_trading_engine import _DEFAULT_CONFIG, _STYLE_OVERRIDES
+
+    style = style.upper()
+    if style not in ("SHORT", "SWING", "LONG", "GROWTH"):
+        raise HTTPException(status_code=400, detail=f"Unknown style: {style}")
+    market = market.upper()
+    if market not in ("US", "HK"):
+        raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+
+    base_cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(style, {})}
+    window_end = date.today()
+    window_start = window_end - timedelta(days=window_days)
+
+    with SessionLocal() as session:
+        return evaluate_and_record(
+            session, style, market, base_cfg, window_start, window_end,
+            max_worst_trade_regression_pct=max_worst_trade_regression_pct,
+        )
+
+
+@router.get("/tune-history")
+def get_tune_history(
+    style: str | None = Query(None, description="Filter to SHORT | SWING | LONG | GROWTH"),
+    market: str | None = Query(None, description="Filter to US | HK"),
+    limit: int = Query(50, ge=1, le=500),
+    _: User = Depends(get_admin_user),
+) -> dict:
+    """Browse the tune_history table — every attempted tune, promoted or rejected, with the
+    full before/after backtest numbers. Directly answers "what changed, when, and did it help"
+    without reconstructing state from container logs across services.
+    """
+    from db import TuneHistory
+
+    with SessionLocal() as session:
+        q = select(TuneHistory).order_by(desc(TuneHistory.ts)).limit(limit)
+        if style:
+            q = q.where(TuneHistory.style == style.upper())
+        if market:
+            q = q.where(TuneHistory.market == market.upper())
+        rows = session.execute(q).scalars().all()
+        return {
+            "count": len(rows),
+            "rows": [
+                {
+                    "id": r.id, "run_id": r.run_id, "ts": r.ts.isoformat(),
+                    "parameter_class": r.parameter_class, "parameter_name": r.parameter_name,
+                    "style": r.style, "market": r.market,
+                    "old_value": r.old_value, "new_value": r.new_value,
+                    "train_window": [str(r.train_window_start), str(r.train_window_end)],
+                    "validation_window": [str(r.validation_window_start), str(r.validation_window_end)],
+                    "train_ev_pct": r.train_ev_pct, "validation_ev_pct": r.validation_ev_pct,
+                    "baseline_validation_ev_pct": r.baseline_validation_ev_pct,
+                    "validation_n": r.validation_n,
+                    "approx_worst_trade_pct": r.approx_worst_trade_pct,
+                    "baseline_worst_trade_pct": r.baseline_worst_trade_pct,
+                    "promoted": r.promoted, "gate_failures": r.gate_failures,
+                    "triggered_by": r.triggered_by,
+                }
+                for r in rows
+            ],
+        }

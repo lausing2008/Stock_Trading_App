@@ -191,13 +191,20 @@ qualitatively consistent, which is the intended sanity check before trusting eit
    place to check current live values, not this document — treat any numbers written here as a
    point-in-time snapshot (2026-07-06), not a live source of truth.
 
-5. **No Promotion Gate or `tune_history` table exists yet** (Phase 3 of the original design,
-   `T233-SELFIMPROVE-PHASE3`, still `todo`). Every mechanism in §2 that writes to Redis does so
-   directly after its own internal validation check — there is no unified place to see "what
-   changed, when, and did it actually help" across all six mechanisms at once, and no automated
-   rollback if a change turns out badly in the following week. This is the single biggest
-   structural gap left in the loop — see `docs/DESIGN_SELF_IMPROVEMENT_LOOP_2026-07-04.md` §3c/§3d
-   for the proposed design (4 auditable rules, not another tunable model).
+5. **FIXED 2026-07-05 (`T233-SELFIMPROVE-PHASE3`) — Promotion Gate + `tune_history` table now
+   exist, scoped to the `min_entry_score` mechanism only.** See
+   `docs/DESIGN_PROMOTION_GATE_PHASE3_2026-07-05.md` for the full scoping (it corrects the original
+   4-rule design — rules 1-2 were already computed by the Phase 2a harness; rule 3 needed a
+   clearly-labeled APPROXIMATE "worst single trade" check instead of a true portfolio drawdown,
+   since that needs Phase 2b's equity-curve replay; rule 4 isn't checkable at all until a
+   `PaperTrade`-based backtest exists — every row explicitly records this as
+   `not_yet_available` rather than silently omitting it). `POST /paper-portfolio/backtest/
+   min-entry-score/promote` runs the check and writes exactly one `tune_history` row per call,
+   promoted or not; `GET /paper-portfolio/tune-history` browses it. Still manually triggered, does
+   NOT write to `portfolio.config` — a human still decides. **The other 5 mechanisms in §2's table
+   do not write to `tune_history` yet** — each still only has its own internal walk-forward gate
+   (fixed earlier this session), with no shared record of "what changed and did it help" across
+   mechanisms. Extending the table to cover them is a natural follow-up, not yet scoped.
 
 6. **Signal-level (`SignalOutcome`) and trade-level (`PaperTrade`) tuning are not yet reconciled.**
    A good signal can still lose money on bad sizing or a bad exit rule — `SignalOutcome`-based

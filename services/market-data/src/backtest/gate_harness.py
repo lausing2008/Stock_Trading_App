@@ -61,6 +61,11 @@ class BacktestResult:
     avg_return_pct: float | None = None   # == expected value; see T232-OC4 — do not multiply by win_rate
     skipped_reason: str | None = None     # set instead of the above when n_entered < MIN_SAMPLES_PER_SPLIT
     entered_signal_ids: list[int] = field(default_factory=list)
+    # T233-SELFIMPROVE-PHASE3: per-trade pct returns for the entered signals, in the same order
+    # as entered_signal_ids. Exposed so promotion_gate.py can compute an approximate worst-trade
+    # check without a second replay — NOT a portfolio equity curve, see promotion_gate.py's
+    # module docstring for why a faithful drawdown check needs Phase 2b instead.
+    returns: list[float] = field(default_factory=list)
 
 
 def _historical_atr(session: Session, stock_id: int, as_of: date, period: int = 14) -> float | None:
@@ -172,6 +177,7 @@ def replay_should_enter(
         result.entered_signal_ids.append(sig.id)
 
     result.n_entered = len(returns)
+    result.returns = returns
     if result.n_entered < MIN_SAMPLES_PER_SPLIT:
         result.skipped_reason = (
             f"only {result.n_entered} signals passed the gate (need {MIN_SAMPLES_PER_SPLIT})"

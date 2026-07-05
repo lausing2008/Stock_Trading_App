@@ -1004,3 +1004,43 @@ class FundamentalsSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (UniqueConstraint("symbol", "snapshot_date", name="uq_fundamentals_snapshot_sym_date"),)
+
+
+# ── T233-SELFIMPROVE-PHASE3: Tune History ──────────────────────────────────────
+
+class TuneHistory(Base):
+    """One row per attempted tuning candidate — promoted or rejected.
+
+    See docs/DESIGN_PROMOTION_GATE_PHASE3_2026-07-05.md for the full design. Written by
+    services/market-data/src/backtest/promotion_gate.py. Every call to evaluate_and_record()
+    writes exactly one row regardless of outcome, so "we tried X and it didn't help" is
+    always visible without reconstructing state from container logs across services — the
+    gap that let the CAL-1 corrupted-threshold incident go undetected.
+    """
+    __tablename__ = "tune_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(36), index=True)  # uuid4, groups a multi-style run
+    ts: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    parameter_class: Mapped[str] = mapped_column(String(32))  # "gate_threshold" for Phase 3
+    parameter_name: Mapped[str] = mapped_column(String(64))   # e.g. "min_entry_score"
+    style: Mapped[str] = mapped_column(String(16))
+    market: Mapped[str] = mapped_column(String(8))
+    old_value: Mapped[dict] = mapped_column(JSON)
+    new_value: Mapped[dict] = mapped_column(JSON)
+    train_window_start: Mapped[date] = mapped_column(Date)
+    train_window_end: Mapped[date] = mapped_column(Date)
+    validation_window_start: Mapped[date] = mapped_column(Date)
+    validation_window_end: Mapped[date] = mapped_column(Date)
+    train_ev_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    validation_ev_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_validation_ev_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    validation_n: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Deliberately NOT a true portfolio-equity drawdown — see the design doc §1/§3 for why a
+    # faithful version needs Phase 2b's full equity-curve replay. This is the largest single
+    # trade loss in the validation-slice return list, a narrower question than real drawdown.
+    approx_worst_trade_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_worst_trade_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    promoted: Mapped[bool] = mapped_column(Boolean)
+    gate_failures: Mapped[list] = mapped_column(JSON, default=list)
+    triggered_by: Mapped[str] = mapped_column(String(16), default="manual")  # manual | scheduled (Phase 5)

@@ -41,6 +41,7 @@ from .models import (
     InstitutionalTransaction,
     PoliticalEvent,
     CatalystScore,
+    TuneHistory,
 )
 from .session import SessionLocal, engine, get_session, init_db
 
@@ -87,6 +88,7 @@ __all__ = [
     "InstitutionalTransaction",
     "PoliticalEvent",
     "CatalystScore",
+    "TuneHistory",
     "SessionLocal",
     "engine",
     "get_session",
