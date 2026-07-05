@@ -42,6 +42,7 @@ _calibration_running = False
 
 
 _MIN_SHARPE_DAYS = 20  # annualizing < 20 days produces meaningless Sharpe/Calmar
+_MIN_CAGR_DAYS = 20    # same floor as Sharpe/Sortino/Calmar — see the cagr_pct comment below for why
 
 
 def _portfolio_risk_metrics(curve_rows: list) -> dict:
@@ -72,8 +73,17 @@ def _portfolio_risk_metrics(curve_rows: list) -> dict:
         cal_days = max((valid_rows[-1].date - valid_rows[0].date).days, 1)
         years = cal_days / 365.25
     except Exception:
+        cal_days = data_days
         years = max(data_days, 1) / 252
-    cagr_pct = round(((ef / e0) ** (1.0 / years) - 1) * 100, 2) if e0 > 0 and years > 0 else None
+    # Bug found 2026-07-05 (user report): CAGR had no minimum-period floor, unlike Sharpe/
+    # Sortino/Calmar (_MIN_SHARPE_DAYS below). Annualizing any gain over a short window
+    # explodes combinatorially — e.g. a 5.9x gain over 16 days annualizes to ~3.5e19%,
+    # not a data bug, just what (1+r)^(365/days) does at small `days`. Gate it the same way.
+    cagr_pct = (
+        round(((ef / e0) ** (1.0 / years) - 1) * 100, 2)
+        if e0 > 0 and years > 0 and cal_days >= _MIN_CAGR_DAYS
+        else None
+    )
 
     # Sharpe, Sortino, and Calmar require enough data to annualize meaningfully
     if data_days < _MIN_SHARPE_DAYS:

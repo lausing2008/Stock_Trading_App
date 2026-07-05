@@ -617,7 +617,12 @@ function CompareEquityChart({ data }: { data: PaperCompareData[] }) {
 
       const traces: any[] = data.map((p, i) => {
         if (!p.curve.length) return null;
-        const startEquity = p.curve[0].equity;
+        // Bug found 2026-07-05 (user report): baselining off curve[0].equity (the first row
+        // in the fetched window) diverges from the portfolio card's total_return_pct, which
+        // baselines off initial_capital — whenever a stale/pre-capital-edit row is the oldest
+        // one in range, this line could show e.g. +486% while the card correctly showed +4.4%.
+        // Use initial_capital so the chart and every other return% figure always agree.
+        const startEquity = p.initial_capital;
         return {
           x: p.curve.map(d => d.date),
           y: p.curve.map(d => ((d.equity / startEquity) - 1) * 100),
