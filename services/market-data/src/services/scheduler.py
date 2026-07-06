@@ -2496,7 +2496,12 @@ def send_morning_digest(markets: list | None = None) -> None:
         markets = ["HK", "US"]
     _t0 = time.monotonic()
     try:
-        regime = get_last_regime()
+        # Bug found 2026-07-06 (user report): this used to call get_last_regime()
+        # unconditionally, which is US/SPY-only — the HK digest email was showing the US
+        # SPY/VIX regime banner instead of the HSI regime, even though every other section
+        # (opportunities, positions, pattern alerts) was already correctly HK-scoped. Mirrors
+        # the branching send_post_open_digest already does correctly at its regime fetch.
+        regime = get_last_regime() if "US" in markets else (_fetch_hk_regime_snapshot() or {})
         date_str = datetime.now(timezone.utc).strftime("%a, %b %-d")
 
         with SessionLocal() as session:
