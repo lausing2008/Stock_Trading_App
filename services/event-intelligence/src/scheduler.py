@@ -89,7 +89,12 @@ async def start_scheduler():
     _scheduler.add_job(job_sync_congress,      "cron", hour=7,  minute=30, id="sync_congress")
     _scheduler.add_job(job_sync_political,     "cron", hour=8,  minute=0,  id="sync_political")
     _scheduler.add_job(job_recompute_catalyst, "cron", hour=0,  minute=0,  id="recompute_catalyst_midnight")
-    _scheduler.add_job(job_recompute_catalyst, "cron", hour=6,  minute=0,  id="recompute_catalyst_morning")
+    # EI-F10: was hour=6 (before earnings/insider/congress sync all complete by 07:30) — catalyst
+    # score depends on all three (see catalyst.py compute_risk_score/compute_composite_score), so
+    # the 06:00 run always used stale data for anything that changed overnight, invisible until
+    # the 12:00 recompute (5.5h+ window). Moved to 08:15 — strictly after sync_congress (07:30)
+    # and sync_political (08:00, not a catalyst dependency but scheduled last in this block).
+    _scheduler.add_job(job_recompute_catalyst, "cron", hour=8,  minute=15, id="recompute_catalyst_morning")
     _scheduler.add_job(job_recompute_catalyst, "cron", hour=12, minute=0,  id="recompute_catalyst_noon")
     _scheduler.add_job(job_recompute_catalyst, "cron", hour=18, minute=0,  id="recompute_catalyst_evening")
 

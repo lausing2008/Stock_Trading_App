@@ -11156,14 +11156,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'FE-A3-CSV-MARKET-BLANK',
-    tier: 148 as const, severity: 'low',
-    file: 'frontend/src/pages/signal-filter.tsx:437',
+    tier: 148 as const, severity: 'low', defaultStatus: 'done' as const,
+    file: 'N/A — misattributed; real CSV export is on the Screener page and already correct',
     effort: '5m',
     impact: 'Low — CSV export from the Signal Filter page always writes an empty string for the Market column. Every exported row has a blank Market cell despite the column header saying "Market". Export is useless for market-based filtering.',
-    title: 'FE-A3 (deferred): Signal filter CSV export writes empty string for Market column',
+    title: 'FE-A3: no fix needed — signal-filter.tsx no longer exists and has no CSV export; the real CSV export (Screener page) already writes market correctly',
     what: 'The CSV row template hardcodes "" for the market field. The signal object has a market property from the stock data but it was not included in the export row.',
-    fix: 'Deferred — add `s.market ?? ""` to the CSV row template.',
-    implementedNote: 'Deferred — trivial one-line fix.',
+    fix: 'Checked 2026-07-07, no change needed — frontend/src/pages/signal-filter.tsx does not exist; the real page is signal-filters.tsx (renamed at some point per git history), and it has no CSV export at all (grepped the whole file for "csv"/"CSV" — zero matches). The only CSV export anywhere in the app is on the Screener page (frontend/src/pages/screener.tsx:395-396), and it already correctly includes r.market in the row template — confirmed by reading the actual code, not assuming from the tracker\'s description. This item described a bug that does not exist in the current codebase, on a file that no longer exists.',
+    implementedNote: 'Closed 2026-07-07 — stale/misattributed tracker entry, no real bug found.',
   },
 
   // ── Tier 147 — Deep Audit: Research Engine + Signal Engine ───────────────────
@@ -11307,14 +11307,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'EI-F10-CATALYST-RECOMPUTE-ORDER',
-    tier: 144 as const, severity: 'medium',
-    file: 'services/event-intelligence/src/scheduler.py:91',
+    tier: 144 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/event-intelligence/src/scheduler.py',
     effort: '5m',
     impact: 'Medium — catalyst recompute runs at 06:00 UTC, before earnings sync at 06:30 UTC and insider sync at 07:00 UTC. A stock that just reported earnings gets its catalyst score recomputed with yesterday\'s data, and the earnings boost is invisible for ~5.5 hours (until 12:00 UTC recompute).',
-    title: 'EI-D1 (deferred): Catalyst recompute schedule precedes earnings/insider sync — 5.5h stale window',
+    title: 'EI-F10: catalyst recompute moved to 08:15 UTC — after ALL 3 dependencies, not just 2',
     what: 'APScheduler job order: 00:00 UTC catalyst, 06:00 UTC catalyst, 06:30 UTC earnings sync, 07:00 UTC insider sync, 12:00 UTC catalyst. The 06:00 catalyst run uses prior-day data.',
-    fix: 'Deferred — move morning catalyst recompute to 07:30 UTC (after all data syncs complete). Low-risk schedule change.',
-    implementedNote: 'Deferred — scheduler config change.',
+    fix: 'Fixed 2026-07-07 — before moving the job, read catalyst.py to confirm exactly which syncs the score actually depends on: compute_risk_score() and compute_composite_score() both use earnings_score, insider_score, AND congress_score (services/event-intelligence/src/services/catalyst.py:94-126). The tracker\'s own proposed fix (move to 07:30) would still run BEFORE sync_congress (07:30) completes — congress sync starts exactly when the recompute would fire, a race. Confirmed catalyst score does NOT depend on political sync data (grepped catalyst.py for "political" — zero matches), so that dependency doesn\'t need to gate the timing. Moved recompute_catalyst_morning from hour=6 to hour=8,minute=15 — strictly after sync_congress (07:30) completes, with a 45-minute buffer for that job\'s own runtime, rather than the tighter 07:30 the tracker suggested.\n\nCompile-checked (3.12 local + 3.11.15, matching the event-intelligence container). Verified live on local dev: confirmed clean restart with all 10 scheduled jobs (4 catalyst recompute crons + 6 sync jobs) registered with no errors; confirmed via direct grep of the deployed file inside the container that the new job registration reads exactly `hour=8, minute=15`. A cron-time change can\'t be verified by triggering it early (the fix IS the schedule, not a code path) — compile-check + clean restart + confirming the deployed value is the correct and complete verification for this class of change.',
+    implementedNote: 'Done 2026-07-07 — also caught that the tracker\'s own suggested fix time (07:30) would have still raced with congress sync.',
   },
 
   // ── Tier 143 — Deep Audit: Ranking Engine + Strategy Engine ──────────────────
@@ -11421,14 +11421,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'TA-D2-PATTERN-INDEX-FRAME',
-    tier: 142 as const, severity: 'medium',
-    file: 'services/technical-analysis/src/patterns/recognizer.py:169',
+    tier: 142 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/technical-analysis/src/patterns/recognizer.py — duplicate of TA-F1-TRIANGLE-IDX-OFFSET (tier 154)',
     effort: '1h',
     impact: 'Medium — triangle pattern start_idx/end_idx are relative to df.tail(window) (recent slice), while head-and-shoulders and cup-and-handle indices are relative to the full df. A consumer mapping indices to timestamps gets the wrong date for triangle patterns.',
-    title: 'TA-D2 (deferred): Pattern start_idx/end_idx have inconsistent reference frame across pattern types',
+    title: 'TA-D2: duplicate of TA-F1-TRIANGLE-IDX-OFFSET — already fixed 2026-06-23, this entry never got closed',
     what: 'detect_triangle uses sub = df.tail(window) then returns positional indices 0..(window-1). Other patterns return indices relative to the full dataframe. Same field name, different semantics.',
-    fix: 'Deferred — normalize all pattern detectors to return absolute date-based index (timestamp) rather than positional integer, so consumers always map correctly regardless of pattern type.',
-    implementedNote: 'Deferred — requires audit of all pattern consumers in research-engine and signal-engine.',
+    fix: 'No new fix needed — checked 2026-07-07 before implementing anything and found this describes the exact same bug, same file, same function, same root cause as TA-F1-TRIANGLE-IDX-OFFSET (tier 154, already marked done, fixed 2026-06-23). Read the current recognizer.py directly: detect_triangle already computes `offset = len(df) - len(sub)` and returns `offset + min(...)`/`offset + max(...)` — exactly TA-F1\'s documented fix, with a comment at the top of the function explaining why. Also independently verified the other 4 pattern detectors (head_and_shoulders, double_top_bottom, flag_pennant, cup_and_handle) all already compute absolute indices too (either by operating pivot detection on the full df directly, or by adding len(df)-based offsets), so there is no remaining cross-detector inconsistency. This tracker entry was simply never closed when TA-F1 shipped — same bug, two IDs. Marking done rather than duplicating TA-F1\'s work.',
+    implementedNote: 'Closed 2026-07-07 as a duplicate — see TA-F1-TRIANGLE-IDX-OFFSET for the actual fix (done 2026-06-23).',
   },
 
   // ── Tier 141 — Deep Audit: API Gateway + Scheduler + ML Pipeline ─────────────
