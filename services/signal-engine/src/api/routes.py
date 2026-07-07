@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from common.config import get_settings
 from common.jwt_auth import get_current_username
 from common.logging import get_logger
-from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, get_session
+from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, TuneHistory, get_session
 
 _settings = get_settings()
 
@@ -39,6 +39,47 @@ def _redis_get_float(key: str) -> float | None:
         return float(val) if val is not None else None
     except Exception:
         return None
+
+
+# ── T233-SELFIMPROVE-PHASE3 extension: shared tune_history recorder ────────────
+# See docs/DESIGN_TUNE_HISTORY_EXTENSION_2026-07-06.md for the full scoping. This mirrors
+# market-data's promotion_gate.py._write_history but lives here since signal-engine writes
+# to the same shared TuneHistory table directly (no cross-service HTTP call needed).
+
+def _record_tune_history(
+    session: Session,
+    run_id: str,
+    parameter_class: str,
+    parameter_name: str,
+    style: str,
+    market: str,
+    old_value: dict,
+    new_value: dict,
+    train_window: tuple[date, date],
+    validation_window: tuple[date, date],
+    train_ev_pct: float | None,
+    validation_ev_pct: float | None,
+    baseline_validation_ev_pct: float | None,
+    validation_n: int | None,
+    promoted: bool,
+    gate_failures: list[str],
+    triggered_by: str = "manual",
+) -> None:
+    """Write one tune_history row. Called at the exact point each mechanism already
+    decides apply-vs-skip — purely additive recording, no change to any gating logic.
+    market="ALL" is the documented convention for mechanisms that pool US+HK signals
+    without a market split (see the design doc §2) — not a claim about a specific market.
+    """
+    session.add(TuneHistory(
+        run_id=run_id, parameter_class=parameter_class, parameter_name=parameter_name,
+        style=style, market=market, old_value=old_value, new_value=new_value,
+        train_window_start=train_window[0], train_window_end=train_window[1],
+        validation_window_start=validation_window[0], validation_window_end=validation_window[1],
+        train_ev_pct=train_ev_pct, validation_ev_pct=validation_ev_pct,
+        baseline_validation_ev_pct=baseline_validation_ev_pct, validation_n=validation_n,
+        promoted=promoted, gate_failures=gate_failures, triggered_by=triggered_by,
+    ))
+    session.commit()
 
 
 _service_token_cache: str = ""
@@ -1198,7 +1239,22 @@ def calibrate_ml_weight(
     # T234-ML-WEIGHT-NO-VALIDATION-GATE: only apply optimal_weight if it ALSO beats a neutral
     # baseline (0.5 — equal TA/ML blend) on the validation slice the search never saw. Previously
     # set_ml_weight_global_cap() ran unconditionally regardless of what validation showed.
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
+    _train_end = calib_obs[-1][3] if calib_obs else date.today()
+    _train_start = calib_obs[0][3] if calib_obs else date.today()
+    _val_end = val_obs[-1][3] if val_obs else date.today()
+    _val_start = val_obs[0][3] if val_obs else date.today()
+
     if len(val_obs) < MIN_VAL_SAMPLES:
+        _record_tune_history(
+            session, _run_id, "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
+            old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
+            train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+            train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+            validation_n=len(val_obs), promoted=False,
+            gate_failures=[f"insufficient_validation_samples:{len(val_obs)}<{MIN_VAL_SAMPLES}"],
+        )
         return {
             "applied": False,
             "reason": f"only {len(val_obs)} validation-slice observations (need {MIN_VAL_SAMPLES})",
@@ -1220,6 +1276,15 @@ def calibrate_ml_weight(
     )
 
     if not validated:
+        _record_tune_history(
+            session, _run_id, "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
+            old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
+            train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+            train_ev_pct=None, validation_ev_pct=round(candidate_ev, 2) if candidate_fired else None,
+            baseline_validation_ev_pct=round(baseline_ev, 2) if baseline_fired else None,
+            validation_n=candidate_fired, promoted=False,
+            gate_failures=["ev_lift_not_positive_on_validation"],
+        )
         return {
             "applied": False,
             "reason": "candidate weight did not beat the 0.5 baseline on the validation slice",
@@ -1234,6 +1299,14 @@ def calibrate_ml_weight(
     set_ml_weight_global_cap(optimal_weight)
     log.info("calibrate_ml_weight: applied cap=%.2f (val_acc=%.1f%%, val_ev=%.2f%%, n=%d, lookback=%dd)",
              optimal_weight, (candidate_acc or 0.0) * 100, candidate_ev, len(observations), lookback_days)
+    _record_tune_history(
+        session, _run_id, "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
+        old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
+        train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+        train_ev_pct=None, validation_ev_pct=round(candidate_ev, 2),
+        baseline_validation_ev_pct=round(baseline_ev, 2), validation_n=candidate_fired,
+        promoted=True, gate_failures=[],
+    )
 
     return {
         "applied": True,
@@ -3457,17 +3530,29 @@ def outcomes_calibrate_apply(
     # holds up on the NEWER, never-searched 30% (validation) — mirrors the chronological
     # train/validation split calibrate_ml_weight() already uses correctly for the sibling
     # ML-weight calibration.
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
+
     for h in ("SHORT", "SWING", "LONG", "GROWTH"):
         bucket = sorted(
             [o for o in all_outcomes if o.horizon.value == h],
             key=lambda o: o.signal_date,
         )
         current_t = CURRENT.get(h, 0.65)  # fused-probability scale
+        _bucket_dates = (bucket[0].signal_date, bucket[-1].signal_date) if bucket else (date.today(), date.today())
 
         if len(bucket) < min_samples * 2:
             # Need enough for BOTH a train slice and a validation slice to each independently
             # clear min_samples — otherwise the split itself produces two under-powered halves.
             skipped.append({"horizon": h, "reason": f"only {len(bucket)} samples (need {min_samples * 2} for a valid train/validation split)"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={},
+                train_window=_bucket_dates, validation_window=_bucket_dates,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=None, promoted=False,
+                gate_failures=[f"insufficient_total_samples:{len(bucket)}<{min_samples * 2}"],
+            )
             continue
 
         split = max(1, int(len(bucket) * 0.7))
@@ -3497,8 +3582,19 @@ def outcomes_calibrate_apply(
                 best_ev = st["ev_pct"]
                 best_t = t
 
+        _train_window = (train_bucket[0].signal_date, train_bucket[-1].signal_date)
+        _val_window = (val_bucket[0].signal_date, val_bucket[-1].signal_date)
+
         if best_t is None:
             skipped.append({"horizon": h, "reason": "no threshold met EV/sample criteria on the train slice"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(val_bucket), promoted=False,
+                gate_failures=["no_candidate_met_train_criteria"],
+            )
             continue
 
         # Validate: both the suggested threshold and the current baseline must be independently
@@ -3508,12 +3604,28 @@ def outcomes_calibrate_apply(
 
         if best_stats is None:
             skipped.append({"horizon": h, "reason": "suggested threshold unmeasurable on the validation slice (insufficient samples)"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(val_bucket), promoted=False,
+                gate_failures=["candidate_unmeasurable_on_validation"],
+            )
             continue
 
         if current_stats is None:
             # T232-OC3: no honest baseline measurable at the current threshold — do not assume
             # EV 0 (that overstates lift and applies too eagerly). Skip instead.
             skipped.append({"horizon": h, "reason": "baseline threshold unmeasurable on the validation slice (insufficient samples)"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"], baseline_validation_ev_pct=None,
+                validation_n=best_stats["n"], promoted=False,
+                gate_failures=["baseline_unmeasurable_on_validation"],
+            )
             continue
 
         ev_lift = round(best_stats["ev_pct"] - current_stats["ev_pct"], 2)
@@ -3529,6 +3641,14 @@ def outcomes_calibrate_apply(
                 "suggested": best_t,
                 "current": current_t,
             })
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+                baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+                promoted=False, gate_failures=["ev_lift_negative"],
+            )
             continue
 
         if ev_lift < min_ev_lift and abs(best_t - current_t) < 0.03:
@@ -3538,15 +3658,39 @@ def outcomes_calibrate_apply(
                 "suggested": best_t,
                 "current": current_t,
             })
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+                baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+                promoted=False, gate_failures=["ev_lift_below_min_and_shift_too_small"],
+            )
             continue
 
         if not (_BUY_BOUNDS[0] <= best_t <= _BUY_BOUNDS[1]):
             skipped.append({"horizon": h, "reason": f"suggested {best_t} outside sane bounds {_BUY_BOUNDS}"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+                baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+                promoted=False, gate_failures=["suggested_outside_sane_bounds"],
+            )
             continue
 
         # Write to Redis — signal generator reads this at decision time (fused-probability scale)
         redis_key = f"stockai:signal_thresholds:{h}"
         redis_client.setex(redis_key, _REDIS_TTL, str(round(best_t, 4)))
+        _record_tune_history(
+            session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+            old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+            train_window=_train_window, validation_window=_val_window,
+            train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+            baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+            promoted=True, gate_failures=[],
+        )
         applied.append({
             "horizon": h,
             "previous_threshold": current_t,
@@ -3580,13 +3724,25 @@ def outcomes_calibrate_apply(
             key=lambda o: o.signal_date,
         )
 
+        _s_bucket_dates = (s_bucket[0].signal_date, s_bucket[-1].signal_date) if s_bucket else (date.today(), date.today())
+
         if len(s_bucket) < min_samples * 2:
             sell_skipped.append({"horizon": h, "reason": f"only {len(s_bucket)} SELL samples (need {min_samples * 2} for a valid train/validation split)"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={},
+                train_window=_s_bucket_dates, validation_window=_s_bucket_dates,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=None, promoted=False,
+                gate_failures=[f"insufficient_total_samples:{len(s_bucket)}<{min_samples * 2}"],
+            )
             continue
 
         s_split = max(1, int(len(s_bucket) * 0.7))
         s_train_bucket = s_bucket[:s_split]
         s_val_bucket = s_bucket[s_split:]
+        _s_train_window = (s_train_bucket[0].signal_date, s_train_bucket[-1].signal_date)
+        _s_val_window = (s_val_bucket[0].signal_date, s_val_bucket[-1].signal_date)
 
         def _sell_stats_at(threshold: float, samples: list) -> dict | None:
             sub = [o for o in samples if o.fused_prob is not None and o.fused_prob <= threshold]
@@ -3611,6 +3767,14 @@ def outcomes_calibrate_apply(
 
         if s_best_t is None:
             sell_skipped.append({"horizon": h, "reason": "no SELL threshold met criteria on the train slice"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(s_val_bucket), promoted=False,
+                gate_failures=["no_candidate_met_train_criteria"],
+            )
             continue
 
         s_best_stats = _sell_stats_at(s_best_t, s_val_bucket)
@@ -3618,10 +3782,26 @@ def outcomes_calibrate_apply(
 
         if s_best_stats is None:
             sell_skipped.append({"horizon": h, "reason": "suggested SELL threshold unmeasurable on the validation slice"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(s_val_bucket), promoted=False,
+                gate_failures=["candidate_unmeasurable_on_validation"],
+            )
             continue
 
         if s_current_stats is None:
             sell_skipped.append({"horizon": h, "reason": "SELL baseline threshold unmeasurable on the validation slice"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"], baseline_validation_ev_pct=None,
+                validation_n=s_best_stats["n"], promoted=False,
+                gate_failures=["baseline_unmeasurable_on_validation"],
+            )
             continue
 
         s_ev_lift = round(s_best_stats["ev_pct"] - s_current_stats["ev_pct"], 2)
@@ -3638,6 +3818,14 @@ def outcomes_calibrate_apply(
                 "reason": f"validation-slice EV lift {s_ev_lift}% is negative — never apply a worse threshold",
                 "suggested": s_best_t,
             })
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"],
+                baseline_validation_ev_pct=s_current_stats["ev_pct"], validation_n=s_best_stats["n"],
+                promoted=False, gate_failures=["ev_lift_negative"],
+            )
             continue
         if s_ev_lift < min_ev_lift and abs(s_best_t - _CURRENT_SELL) < 0.03:
             sell_skipped.append({
@@ -3645,13 +3833,37 @@ def outcomes_calibrate_apply(
                 "reason": f"validation-slice EV lift {s_ev_lift}% below min and shift <3pt",
                 "suggested": s_best_t,
             })
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"],
+                baseline_validation_ev_pct=s_current_stats["ev_pct"], validation_n=s_best_stats["n"],
+                promoted=False, gate_failures=["ev_lift_below_min_and_shift_too_small"],
+            )
             continue
 
         if not (_SELL_BOUNDS[0] <= s_best_t <= _SELL_BOUNDS[1]):
             sell_skipped.append({"horizon": h, "reason": f"suggested {s_best_t} outside sane bounds {_SELL_BOUNDS}"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"],
+                baseline_validation_ev_pct=s_current_stats["ev_pct"], validation_n=s_best_stats["n"],
+                promoted=False, gate_failures=["suggested_outside_sane_bounds"],
+            )
             continue
 
         redis_client.setex(f"stockai:signal_thresholds:SELL:{h}", _REDIS_TTL, str(round(s_best_t, 4)))
+        _record_tune_history(
+            session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+            old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+            train_window=_s_train_window, validation_window=_s_val_window,
+            train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"],
+            baseline_validation_ev_pct=s_current_stats["ev_pct"], validation_n=s_best_stats["n"],
+            promoted=True, gate_failures=[],
+        )
         sell_applied.append({
             "horizon": h,
             "direction": "SELL",
@@ -3719,6 +3931,8 @@ def tune_style_profiles(
     _REDIS_TTL = 30 * 86400
     applied: list[dict] = []
     skipped: list[dict] = []
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
 
     def _ev_at(subset):
         if not subset:
@@ -3761,6 +3975,8 @@ def tune_style_profiles(
         split = max(1, int(len(style_with_reasons) * 0.7))
         train_sr = style_with_reasons[:split]
         val_sr = style_with_reasons[split:]
+        _train_window = (train_sr[0][0].signal_date, train_sr[-1][0].signal_date)
+        _val_window = (val_sr[0][0].signal_date, val_sr[-1][0].signal_date)
 
         # ── ml_weight_cap: sweep 0.15–0.75, find cap where EV is maximised on TRAIN,
         #    then require the SAME cap to beat the effectively-uncapped baseline on VALIDATION ──
@@ -3780,7 +3996,10 @@ def tune_style_profiles(
             baseline_sub = [o for o, r in val_sr]  # uncapped baseline: every validation outcome
             val_result = _ev_at(val_sub)
             baseline_result = _ev_at(baseline_sub)
-            if val_result and baseline_result and len(val_sub) >= min_samples and val_result[0] > baseline_result[0]:
+            _ml_promoted = bool(
+                val_result and baseline_result and len(val_sub) >= min_samples and val_result[0] > baseline_result[0]
+            )
+            if _ml_promoted:
                 redis_client.setex(f"stockai:style_tune:{style}:ml_weight_cap", _REDIS_TTL, str(round(best_ml_cap, 2)))
                 applied.append({"style": style, "param": "ml_weight_cap", "value": best_ml_cap,
                                 "train_ev_pct": round(best_ml_ev, 2), "validation_ev_pct": round(val_result[0], 2),
@@ -3789,6 +4008,15 @@ def tune_style_profiles(
                 skipped.append({"style": style, "param": "ml_weight_cap",
                                 "reason": "did not beat baseline (or insufficient samples) on the validation slice",
                                 "train_best_cap": best_ml_cap})
+            _record_tune_history(
+                session, _run_id, "gate_threshold", "ml_weight_cap", style, "ALL",
+                old_value={}, new_value={"ml_weight_cap": best_ml_cap},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=round(best_ml_ev, 2), validation_ev_pct=round(val_result[0], 2) if val_result else None,
+                baseline_validation_ev_pct=round(baseline_result[0], 2) if baseline_result else None,
+                validation_n=len(val_sub), promoted=_ml_promoted,
+                gate_failures=[] if _ml_promoted else ["did_not_beat_baseline_or_insufficient_validation_samples"],
+            )
 
         # ── adx_min: find ADX level below which accuracy < 45% on TRAIN, then confirm the
         #    same threshold still shows below/above separation on VALIDATION ──
@@ -3809,10 +4037,14 @@ def tune_style_profiles(
             if best_adx is not None:
                 val_below = [o for o, r in adx_val if r.get("adx", 99) < best_adx]
                 val_above = [o for o, r in adx_val if r.get("adx", 0) >= best_adx]
+                # T233-SELFIMPROVE-PHASE3 extension: adx_min/breadth_compression compare
+                # accuracy, not EV — TuneHistory's EV columns stay NULL for these two params
+                # rather than force a misleading number; see docs/DESIGN_TUNE_HISTORY_EXTENSION.
                 if len(val_below) >= min_samples // 2 and len(val_above) >= min_samples // 2:
                     val_below_acc = sum(1 for o in val_below if o.is_correct) / len(val_below)
                     val_above_acc = sum(1 for o in val_above if o.is_correct) / len(val_above)
-                    if val_below_acc < val_above_acc:
+                    _adx_promoted = val_below_acc < val_above_acc
+                    if _adx_promoted:
                         redis_client.setex(f"stockai:style_tune:{style}:adx_min", _REDIS_TTL, str(best_adx))
                         applied.append({"style": style, "param": "adx_min", "value": best_adx,
                                         "validation_below_acc": round(val_below_acc, 3),
@@ -3821,10 +4053,26 @@ def tune_style_profiles(
                         skipped.append({"style": style, "param": "adx_min",
                                         "reason": "below/above separation did not replicate on validation slice",
                                         "train_threshold": best_adx})
+                    _record_tune_history(
+                        session, _run_id, "gate_threshold", "adx_min", style, "ALL",
+                        old_value={}, new_value={"adx_min": best_adx},
+                        train_window=_train_window, validation_window=_val_window,
+                        train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                        validation_n=len(val_below) + len(val_above), promoted=_adx_promoted,
+                        gate_failures=[] if _adx_promoted else ["below_above_separation_did_not_replicate"],
+                    )
                 else:
                     skipped.append({"style": style, "param": "adx_min",
                                     "reason": "insufficient validation-slice samples to confirm train threshold",
                                     "train_threshold": best_adx})
+                    _record_tune_history(
+                        session, _run_id, "gate_threshold", "adx_min", style, "ALL",
+                        old_value={}, new_value={"adx_min": best_adx},
+                        train_window=_train_window, validation_window=_val_window,
+                        train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                        validation_n=len(val_below) + len(val_above), promoted=False,
+                        gate_failures=["insufficient_validation_samples"],
+                    )
 
         # ── breadth_compression: verify compression is justified on TRAIN (breadth<40
         #    underperforms), then confirm the same direction holds on VALIDATION ──
@@ -3843,7 +4091,8 @@ def tune_style_profiles(
                     if _val_ok:
                         val_lb_acc = sum(1 for o in val_low if o.is_correct) / len(val_low)
                         val_hb_acc = sum(1 for o in val_high if o.is_correct) / len(val_high)
-                        if val_lb_acc < val_hb_acc:
+                        _bc_promoted = val_lb_acc < val_hb_acc
+                        if _bc_promoted:
                             new_bc = 0.88  # tighter than default 0.90
                             redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
                             applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
@@ -3852,15 +4101,39 @@ def tune_style_profiles(
                         else:
                             skipped.append({"style": style, "param": "breadth_compression",
                                             "reason": "low-breadth underperformance did not replicate on validation slice"})
+                        _record_tune_history(
+                            session, _run_id, "gate_threshold", "breadth_compression", style, "ALL",
+                            old_value={"breadth_compression": 0.90}, new_value={"breadth_compression": 0.88},
+                            train_window=_train_window, validation_window=_val_window,
+                            train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                            validation_n=len(val_low) + len(val_high), promoted=_bc_promoted,
+                            gate_failures=[] if _bc_promoted else ["low_breadth_underperformance_did_not_replicate"],
+                        )
                     else:
                         skipped.append({"style": style, "param": "breadth_compression",
                                         "reason": "insufficient validation-slice samples to confirm train finding"})
+                        _record_tune_history(
+                            session, _run_id, "gate_threshold", "breadth_compression", style, "ALL",
+                            old_value={"breadth_compression": 0.90}, new_value={"breadth_compression": 0.88},
+                            train_window=_train_window, validation_window=_val_window,
+                            train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                            validation_n=len(val_low) + len(val_high), promoted=False,
+                            gate_failures=["insufficient_validation_samples"],
+                        )
                 elif lb_acc > hb_acc - 0.02:
                     # Breadth not predictive on train — restore default without needing validation
                     new_bc = 0.95
                     redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
                     applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
                                     "note": "low-breadth underperformance not significant on train slice"})
+                    _record_tune_history(
+                        session, _run_id, "gate_threshold", "breadth_compression", style, "ALL",
+                        old_value={"breadth_compression": 0.90}, new_value={"breadth_compression": 0.95},
+                        train_window=_train_window, validation_window=_val_window,
+                        train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                        validation_n=len(low_breadth) + len(high_breadth), promoted=True,
+                        gate_failures=[],
+                    )
 
     return {"applied": applied, "skipped": skipped, "n_outcomes_analyzed": len(outcomes), "redis_ttl_days": 30}
 
