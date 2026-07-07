@@ -108,7 +108,7 @@ def _is_blacklisted(jti: str) -> bool:
 
 
 def _require_auth(full_path: str, request: Request) -> None:
-    """Raise HTTP 401 for protected routes that have no valid JWT."""
+    """Raise HTTP 401/403 for protected routes that have no valid JWT or lack required role."""
     prefix = full_path.strip("/").split("/", 1)[0]
     if prefix in _PUBLIC_PREFIXES:
         return
@@ -125,6 +125,15 @@ def _require_auth(full_path: str, request: Request) -> None:
             raise HTTPException(401, "Token missing jti claim")
         if _is_blacklisted(jti):
             raise HTTPException(401, "Token has been revoked")
+        # AG-D1: gateway-level backstop for /admin/* — the backend's get_admin_user()
+        # already re-checks the live DB role on every request (the authoritative check,
+        # catches mid-session role downgrades immediately); this only guards against an
+        # admin route in market-data accidentally missing its own Depends(get_admin_user).
+        # Uses the JWT's role claim (set at login, shared/common/jwt_auth.py's _make_token),
+        # not a DB lookup — a demoted admin keeps gateway-level access until their token
+        # expires, but the backend check still correctly rejects them immediately.
+        if prefix == "admin" and payload.get("role") != "admin":
+            raise HTTPException(403, "Admin access required")
     except HTTPException:
         raise
     except JWTError:

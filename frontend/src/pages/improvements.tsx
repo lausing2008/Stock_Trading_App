@@ -11500,14 +11500,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'AG-D1-ADMIN-ROLE-GATEWAY',
-    tier: 141 as const, severity: 'high',
-    file: 'services/api-gateway/src/api/proxy.py:87',
+    tier: 141 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/api-gateway/src/api/proxy.py',
     effort: '1h',
     impact: 'High — gateway _require_auth() validates JWT presence/expiry only, not the role claim. Any authenticated non-admin user can call /admin/* endpoints. The only enforcement is market-data\'s get_admin_user() dependency — if any admin route there is missing Depends(), it is a full privilege escalation with no gateway backstop.',
-    title: 'AG-D1 (deferred): Gateway does not enforce admin role on /admin/* — relies solely on backend Depends()',
+    title: 'AG-D1: Gateway now enforces admin role on /admin/* as a backstop',
     what: 'proxy.py _require_auth() checks token validity but not payload claims. All /admin/* routes in market-data use get_admin_user() — but an accidental missing Depends() in a new route would be exploitable.',
-    fix: 'Deferred — add role=admin check to gateway _require_auth() when path starts with /admin/. Requires reading the role claim from the decoded JWT in the gateway layer.',
-    implementedNote: 'Deferred — low immediate risk since market-data admin routes consistently use get_admin_user().',
+    fix: 'Fixed 2026-07-07 — before implementing, verified the premise: get_admin_user() (services/market-data/src/api/auth.py:162) does NOT read a role claim from the JWT at all — it re-derives the live role from the DB on every request via get_current_user() → User.role, which is the authoritative check and correctly catches a mid-session role downgrade immediately. However, _make_token() (auth.py:131) DOES embed a `role` claim (lowercased) in every token at mint time, so a gateway-level check IS possible without an extra DB call — added `if prefix == "admin" and payload.get("role") != "admin": raise HTTPException(403, ...)` to _require_auth(), scoped to only the /admin/ prefix. Documented the one real tradeoff in a comment: a demoted admin keeps gateway-level access until their token expires (up to jwt_expire_days), since the gateway trusts the JWT claim rather than querying the DB — not a new hole, since the backend\'s get_admin_user() still correctly rejects them immediately regardless of what the gateway allows through. Checked every internal service-to-service JWT minter (decision-engine, paper_trading_engine, ml-prediction, scheduler, research-engine, signal-engine — 7 total) and confirmed none embeds a role claim and none ever calls /admin/* through the gateway, so this change cannot break any internal service call.\n\nCompile-checked (3.12 local + 3.11.15, matching the api-gateway container). Verified live on local dev with four scenarios via direct HTTP calls (never touched real user credentials): (1) a service token with no role claim → 403 on /admin/dq-status; (2) a user token with role=user → 403; (3) a user token with role=admin → correctly passed the gateway and reached market-data (which then correctly 401\'d since the test username didn\'t exist in the DB — proving the two layers compose correctly, gateway checks the claim, backend still checks the real user); (4) a plain user token on a non-admin route (/stocks) → 200, completely unaffected, confirming zero regression to non-admin traffic. Also confirmed the check is case-sensitive to match _make_token\'s role.lower() convention (an uppercase "ADMIN" claim, which a real token would never contain, is correctly rejected).',
+    implementedNote: 'Done 2026-07-07.',
   },
 
   // ── Tier 140 — Deep Audit: Signal Outcomes + Research Engine + Alert System ───
