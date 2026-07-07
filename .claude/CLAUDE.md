@@ -662,3 +662,55 @@ batch backtests, tuning sweeps) should get its own Nginx `location` block that p
 to `api-gateway:8000`, bypassing the Next.js rewrite hop entirely — matching the `/api/ai/` and
 now `/api/research/` pattern. Do not just raise timeouts on the existing Next.js-hop block;
 that was tried once for research and the underlying double-hop fragility remained.
+
+---
+
+## Recurring Issue: Local Dev Containers Run Stale `shared/db/` — AttributeError on Recently Added Model Fields
+
+**Symptom:** A backend endpoint that reads a recently-added SQLAlchemy model field crashes with
+`AttributeError: 'ModelName' object has no attribute 'field_name'` on **local dev only** — the
+same endpoint works fine in production. Confirmed instances: `TuneHistory` missing from
+signal-engine's `shared/db/__init__.py` (2026-07-06), `Stock.index_membership` missing from
+ranking-engine's `shared/db/models.py` (2026-07-07, crashed `GET /rankings` — which also broke
+the Screener page and its RVOL feature, since both read from that endpoint).
+
+**Root cause:** `shared/db/` is baked into every service's Docker image at build time (see
+Deployment Pattern above — it is NOT one of the directories `docker cp` normally targets for
+day-to-day code changes). When a new field is added to `shared/db/models.py` and deployed via
+`docker cp` to the ONE service that immediately needs it (e.g. signal-engine for `TuneHistory`),
+every OTHER local dev container keeps running its old, pre-existing `shared/db/` copy from
+whenever its image was last built — silently, with no error, until something finally tries to
+read the new field through that stale container's ORM class.
+
+**Fix pattern (apply to any container showing this error):**
+```bash
+docker cp shared/db/__init__.py stockai-<service>-1:/app/shared/db/__init__.py
+docker cp shared/db/models.py stockai-<service>-1:/app/shared/db/models.py
+docker exec stockai-<service>-1 rm -rf /app/shared/db/__pycache__
+docker restart stockai-<service>-1
+```
+
+**Check ALL local dev containers proactively, not just the one that errored** — this bug is
+systemic, not isolated to one service. On 2026-07-07, checking every container after fixing
+ranking-engine found 4 MORE containers with the exact same staleness (technical-analysis,
+event-intelligence, strategy-engine, portfolio-optimizer, api-gateway all missing
+`index_membership` too) that had not yet crashed only because nothing had exercised that
+specific field on them yet:
+```bash
+for c in market-data signal-engine ranking-engine technical-analysis event-intelligence \
+         research-engine api-gateway ml-prediction decision-engine strategy-engine portfolio-optimizer; do
+  echo -n "$c: "; docker exec stockai-$c-1 grep -c '<newest_field_name>' /app/shared/db/models.py
+done
+```
+(A `0` or a non-fatal `grep` exit code with `0` output — not a real error — both mean "stale,
+missing the field.")
+
+**Production is NOT usually affected** — confirmed both times (TuneHistory, index_membership)
+that production's `shared/db/` was already current, because production deploys copy `shared/db/`
+files explicitly as part of each backend deploy step (per the Deployment Pattern's own
+instructions), while local dev containers accumulate drift silently between sessions since
+they're rarely rebuilt from scratch. Still, always verify production separately — don't assume.
+
+**Consider:** after any `shared/db/models.py` change, proactively sync `shared/db/` to every
+local dev container in the same pass, rather than waiting for each one to surface its own crash
+on a different field weeks later.
