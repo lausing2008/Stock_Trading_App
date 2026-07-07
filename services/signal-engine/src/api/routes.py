@@ -252,6 +252,7 @@ def _compute_stability(session: Session, stock_id: int, horizon: SignalHorizon, 
 def all_latest_signals(
     style: str | None = Query(None, description="Filter by trading style: SHORT, SWING, LONG"),
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Return the most recently persisted signal for every active stock.
 
@@ -357,6 +358,7 @@ def all_latest_signals(
 def signal_consensus(
     market: str | None = Query(None, description="Filter by market: US or HK"),
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Return the latest signal for every active stock across all 4 horizons in one call.
 

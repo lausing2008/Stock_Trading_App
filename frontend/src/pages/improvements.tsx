@@ -11169,14 +11169,14 @@ const ITEMS: Item[] = [
   // ── Tier 147 — Deep Audit: Research Engine + Signal Engine ───────────────────
   {
     id: 'SE-F4-SIGNAL-GET-NO-AUTH',
-    tier: 147 as const, severity: 'high',
-    file: 'services/signal-engine/src/api/routes.py:93',
+    tier: 147 as const, severity: 'high', defaultStatus: 'done' as const,
+    file: 'services/signal-engine/src/api/routes.py:251,356',
     effort: '10m',
     impact: 'High — GET /signals and GET /signals/consensus have no Depends(get_current_username) guard. Any unauthenticated HTTP caller on the internal Docker network can retrieve the full BUY/SELL signal database for every tracked stock including confidence levels, bullish probability, and reason JSON.',
-    title: 'SE-F4 (deferred): GET /signals and /signals/consensus unauthenticated — full signal DB readable without JWT',
+    title: 'SE-F4: GET /signals and /signals/consensus unauthenticated — full signal DB readable without JWT',
     what: 'Both endpoints lack auth dependency. The API gateway proxies /signals/* with auth, but direct calls to signal-engine:8005 from any internal container bypass this.',
-    fix: 'Deferred — add Depends(get_current_username) to both endpoints. Note: GET /signals/{symbol}?persist=true (used by aggregate overview) is currently unauthenticated by design and must remain so for internal service use.',
-    implementedNote: 'Deferred — requires careful audit of all internal callers to ensure they pass service tokens.',
+    fix: 'Fixed 2026-07-07 — added `_: str = Depends(get_current_username)` to both all_latest_signals (GET /signals) and signal_consensus (GET /signals/consensus), matching the auth pattern already used elsewhere in the file. Checked before changing: grepped every service for internal callers of these two exact paths (bare /signals and /signals/consensus) — found none, so no internal service-to-service call needed a service-token update. Confirmed the frontend\'s only caller, api.signalConsensus(), already goes through the shared request() helper which attaches a JWT on every call, so no frontend change was needed either. Left GET /signals/{symbol}?persist=true (used by aggregate overview) unauthenticated, as originally noted — that one is intentionally open for internal service use and out of scope for this fix. Compile-checked (3.12 local + 3.11.15, matching the signal-engine container). Verified live on local dev: confirmed both endpoints now return 401 with no Authorization header and 200 with a valid service JWT; confirmed zero other unexpected 401s appeared in signal-engine logs after restart (no internal caller was silently relying on the old unauthenticated access).',
+    implementedNote: 'Done 2026-07-07.',
   },
   {
     id: 'RE-F1-DATETIME-NAIVE-AWARE-MIX',
