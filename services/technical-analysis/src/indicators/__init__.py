@@ -7,7 +7,6 @@ from .core import (
     rsi,
     sma,
     supertrend,
-    vwap,
 )
 
 __all__ = [
@@ -17,7 +16,6 @@ __all__ = [
     "rsi",
     "macd",
     "bollinger_bands",
-    "vwap",
     "fibonacci_retracement",
     "supertrend",
 ]

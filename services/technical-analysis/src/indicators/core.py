@@ -52,12 +52,6 @@ def bollinger_bands(close: pd.Series, window: int = 20, n_std: float = 2.0) -> p
     )
 
 
-def vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
-    typical = (high + low + close) / 3
-    cum_vol = volume.cumsum().replace(0, np.nan)
-    return (typical * volume).cumsum() / cum_vol
-
-
 def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
     """Wilder's ATR (same formula as in signal-engine's _adx helper)."""
     prev_close = close.shift(1)
