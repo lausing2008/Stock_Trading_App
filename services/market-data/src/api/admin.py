@@ -20,6 +20,31 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 log = get_logger("admin")
 _settings = get_settings()
 
+
+def _trigger_new_stock_refresh(symbol: str, market: str) -> None:
+    """ALERT-F2: close the gap where a newly-added stock has no K-Score until the next
+    scheduled 5x/day (or weekly) rankings refresh — the conviction gate hard-blocks alerts
+    on missing K-Score, so SNDK-style spin-offs got silently gated out for hours/days.
+
+    Registered as a SECOND BackgroundTasks.add_task() after ingest_symbol — FastAPI runs
+    background tasks sequentially in registration order, so this only fires once ingestion
+    (price history backfill) has actually completed, not concurrently with it.
+    Scoped to just this stock's market (not a full-universe refresh) since only one new
+    stock needs picking up — matches the existing per-market refresh pattern already used
+    by _weekly_full_refresh in scheduler.py.
+    """
+    import httpx
+    from ..services.scheduler import _service_token
+    try:
+        tok = _service_token()
+        headers = {"Authorization": f"Bearer {tok}"} if tok else {}
+        httpx.post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": market}, headers=headers, timeout=10)
+        httpx.post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": market}, headers=headers, timeout=10)
+        log.info("add_stock.refresh_triggered", symbol=symbol, market=market)
+    except Exception as exc:
+        log.warning("add_stock.refresh_failed", symbol=symbol, market=market, error=str(exc))
+
+
 _REDIS_CLAUDE_KEY       = "stockai:admin:claude_api_key"
 _REDIS_DEEPSEEK_KEY     = "stockai:admin:deepseek_api_key"
 _REDIS_CLAUDE_MODEL     = "stockai:admin:claude_model"
@@ -180,6 +205,7 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
         existing = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
         if existing:
             tasks.add_task(ingest_symbol, symbol, existing.market.value)
+            tasks.add_task(_trigger_new_stock_refresh, symbol, existing.market.value)
             return {"status": "exists", "symbol": symbol, "name": existing.name}
 
     # Fetch metadata from yfinance
@@ -212,6 +238,7 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
     log.info("add_stock.done", symbol=symbol, name=name)
     market_val = "HK" if symbol.endswith(".HK") else "US"
     tasks.add_task(ingest_symbol, symbol, market_val)
+    tasks.add_task(_trigger_new_stock_refresh, symbol, market_val)
     return {"status": "added", "symbol": symbol, "name": name, "sector": sector}
 
 
