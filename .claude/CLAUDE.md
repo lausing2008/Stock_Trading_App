@@ -554,3 +554,48 @@ docker image prune -f      # safe cleanup — dangling images only
 
 **Consider:** a periodic (weekly) `docker image prune -f` cron job on EC2 so this doesn't
 require noticing a failed build first.
+
+---
+
+## Recurring Issue: Research Generation "NetworkError" in Browser Despite Server Success
+
+**Symptom:** Clicking "Generate Report" (or the research page auto-triggering a report) shows
+"NetworkError when attempting to fetch resource" in the browser, but refreshing the page shows
+the report loaded fine — the generation actually succeeded server-side, only the client-side
+fetch that triggered it failed.
+
+**Root cause (found 2026-07-06):** `/api/research/*` was still proxied browser → Nginx →
+Next.js (port 3000) → api-gateway (port 8000) → research-engine — a "double hop" through the
+Next.js rewrite layer. Research report generation legitimately takes 2-3 minutes (LLM call),
+and long-lived connections through the extra Next.js hop are fragile — this is the EXACT same
+failure mode that was already fixed for AI chat (`/api/ai/`) on an earlier date, per the comment
+already in `stockai.conf`: "AI chat routes directly to the API gateway — bypasses Next.js proxy
+to eliminate the double-hop that caused NetworkError in Firefox". The 2026-06-14 fix
+(`e419775`) only raised timeouts for research (`proxy_read_timeout 200s` + Next.js
+`proxyTimeout: 200000`) — it did NOT apply the same direct-bypass fix later used for chat, so
+research kept the fragile extra hop even after chat was fixed.
+
+**Fix applied (2026-07-06):** Changed `/etc/nginx/conf.d/stockai.conf`'s `location
+/api/research/` block to `proxy_pass http://127.0.0.1:8000/research/;` (was
+`http://127.0.0.1:3000;`), with the same header-forwarding lines as the `/api/ai/` block
+(`Host`, `X-Real-IP`, `Authorization`, `Content-Type`). This is an EC2-only config file, not
+tracked in git — there is no local copy of `stockai.conf` in the repo, so this fix must be
+re-applied by hand if the EC2 instance is ever rebuilt. A backup of the pre-fix config was left
+at `/etc/nginx/conf.d/stockai.conf.bak-<date>` on the instance.
+
+**What to check if this recurs (or a similar NetworkError shows up on a new long-running
+endpoint):**
+```bash
+# On EC2 — confirm the research block bypasses Next.js directly
+sudo grep -A6 "location /api/research/" /etc/nginx/conf.d/stockai.conf
+# Should show proxy_pass http://127.0.0.1:8000/research/ (NOT :3000)
+
+# Test it responds through the direct path (401 without a token is expected/correct):
+curl -s -D - -o /dev/null https://lausing.com/api/research/AAPL | head -5
+```
+
+**Design invariant:** Any endpoint whose real work can run longer than ~30-60s (LLM calls,
+batch backtests, tuning sweeps) should get its own Nginx `location` block that proxies straight
+to `api-gateway:8000`, bypassing the Next.js rewrite hop entirely — matching the `/api/ai/` and
+now `/api/research/` pattern. Do not just raise timeouts on the existing Next.js-hop block;
+that was tried once for research and the underlying double-hop fragility remained.
