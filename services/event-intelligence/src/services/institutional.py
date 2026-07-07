@@ -32,6 +32,20 @@ _TRACKED_FUNDS = [
 
 _NS = {"ns": "http://www.sec.gov/edgar/document/thirteenf/informationtable"}
 
+# EI-F4: common corporate suffixes stripped before name comparison, so "APPLE INC" and
+# "Apple Inc." both normalize to "APPLE" — reduces false negatives on the name match without
+# adding any false-positive risk (stripping a suffix never makes two different companies equal).
+_CORP_SUFFIX_RE = re.compile(
+    r"\b(INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LTD|LIMITED|LLC|LP|PLC|HOLDINGS?|GROUP|SA|NV|AG)\b\.?"
+)
+
+
+def _normalize_company_name(name: str) -> str:
+    upper = name.upper()
+    upper = _CORP_SUFFIX_RE.sub("", upper)
+    upper = re.sub(r"[^A-Z0-9]", "", upper)
+    return upper
+
 
 async def _get_latest_13f(client: httpx.AsyncClient, fund_cik: str) -> str | None:
     """Find the most recent 13F-HR accession number for a fund."""
@@ -64,33 +78,61 @@ async def _parse_13f_holdings(client: httpx.AsyncClient, fund_cik: str, accessio
         r = await client.get(idx_url, headers=_HEADERS, timeout=10.0)
         if r.status_code != 200:
             return []
-        # Find the informationtable.xml link
-        xml_links = re.findall(r'href="(/Archives/edgar/data/[^"]+informationtable[^"]*\.xml)"', r.text, re.IGNORECASE)
-        if not xml_links:
-            return []
-        xml_url = f"https://www.sec.gov{xml_links[0]}"
-        xr = await client.get(xml_url, headers=_HEADERS, timeout=15.0)
-        if xr.status_code != 200:
+        # EI-BUG: SEC does not consistently name the holdings-table file with "informationtable"
+        # in the filename (real examples: 53405.xml, primary_doc.xml, xslForm13F_X02/53405.xml) —
+        # a filename-pattern regex silently matched nothing on every real filing checked, so this
+        # function has always returned zero holdings. Instead: collect every .xml link on the
+        # index page and identify the real holdings table by its actual XML content (the root
+        # element is always <informationTable>, regardless of what the file is named) rather than
+        # guessing from the URL. The cover-page doc (primary_doc.xml) has a different root tag
+        # (<edgarSubmission>) and is correctly skipped by this check.
+        xml_links = re.findall(r'href="(/Archives/edgar/data/[^"]+\.xml)"', r.text, re.IGNORECASE)
+        holdings_xml: str | None = None
+        for link in xml_links:
+            xml_url = f"https://www.sec.gov{link}"
+            xr = await client.get(xml_url, headers=_HEADERS, timeout=15.0)
+            if xr.status_code == 200 and "<informationTable" in xr.text[:500]:
+                holdings_xml = xr.text
+                break
+        if holdings_xml is None:
             return []
 
-        root = ET.fromstring(xr.text)
+        root = ET.fromstring(holdings_xml)
         holdings = []
-        for info in root.findall(".//ns:infoTable", _NS) or root.findall(".//infoTable"):
+        # EI-BUG: `el.find(...) or el.find(...)` is broken for ElementTree elements — a leaf
+        # element (no child elements) is FALSY in a boolean context even when it was successfully
+        # found and has text content, so the `or` unconditionally falls through to the second
+        # (wrong-namespace) find() call, which returns None. This made every single-value field
+        # extraction below silently fail on every real filing. Use explicit `is not None` checks.
+        infos = root.findall(".//ns:infoTable", _NS)
+        if not infos:
+            infos = root.findall(".//infoTable")
+        for info in infos:
             def t(tag: str) -> str | None:
-                el = info.find(f"ns:{tag}", _NS) or info.find(tag)
+                el = info.find(f"ns:{tag}", _NS)
+                if el is None:
+                    el = info.find(tag)
                 return el.text.strip() if el is not None and el.text else None
 
             name = t("nameOfIssuer")
             cusip = t("cusip")
-            shares_str = t("sshPrnamt") or t("value")
             value_str = t("value")
+            shares_el = info.find("ns:shrsOrPrnAmt/ns:sshPrnamt", _NS)
+            if shares_el is None:
+                shares_el = info.find("shrsOrPrnAmt/sshPrnamt")
+            shares_str = shares_el.text.strip() if shares_el is not None and shares_el.text else None
             if not name:
                 continue
             holdings.append({
                 "name": name,
                 "cusip": cusip,
-                "shares": int(shares_str.replace(",", "")) if shares_str and shares_str.isdigit() else None,
-                "value_usd": float(value_str.replace(",", "")) * 1000 if value_str else None,
+                "shares": int(shares_str.replace(",", "")) if shares_str and shares_str.replace(",", "").isdigit() else None,
+                # EI-BUG: the `* 1000` assumed SEC's <value> field is reported in thousands (an
+                # older 13F convention) — cross-checked against real filings and it is NOT: e.g.
+                # Berkshire's Apple stake (3,776,000 shares, <value>958311040</value>) implies
+                # $253.79/share without any multiplier, vs. an absurd $253,790/share with it.
+                # The modern XML format reports <value> directly in whole dollars.
+                "value_usd": float(value_str.replace(",", "")) if value_str else None,
             })
         return holdings
     except Exception as exc:
@@ -100,9 +142,20 @@ async def _parse_13f_holdings(client: httpx.AsyncClient, fund_cik: str, accessio
 
 async def sync_institutional() -> dict:
     """Sync latest 13F holdings for all tracked funds."""
-    # Build CUSIP → stock_id lookup (approximate — we match by symbol name)
+    # EI-F4: match on normalized company NAME (Stock.name vs. the filing's nameOfIssuer) only —
+    # a name match is a reliable signal; a ticker-as-name-prefix heuristic is not. The old code
+    # matched by ticker substring/prefix (e.g. "C" in "CATERPILLAR INC" matched Citigroup, "CAT"
+    # prefix-matched "Catalyst Pharmaceuticals" too, not just Caterpillar) — tried tightening the
+    # ticker heuristic with a minimum-length gate first, but testing showed even a >=3-char
+    # ticker-as-prefix-of-name check still produces false positives (same CAT/Catalyst case), so
+    # there is no length threshold that makes ticker-vs-name-prefix matching safe. Dropped the
+    # ticker fallback entirely: if a 13F filing's issuer name doesn't match a tracked stock's
+    # name, the holding is skipped rather than risking misattribution — a real fix needs a
+    # CUSIP/ticker mapping data source (still tracked, see the tracker's own note), not a
+    # tighter heuristic on data we don't have.
     with SessionLocal() as s:
-        stocks = {sym.upper(): sid for sid, sym in s.execute(select(Stock.id, Stock.symbol)).all()}
+        rows = s.execute(select(Stock.id, Stock.name)).all()
+    stocks_by_name = {_normalize_company_name(name): sid for sid, name in rows if name}
 
     total_holdings = 0
     period_date = date.today().replace(day=1)  # approximate period
@@ -118,13 +171,9 @@ async def sync_institutional() -> dict:
 
             with SessionLocal() as s:
                 for h in holdings:
-                    # Match by name approximation
-                    stock_id = None
-                    name_upper = (h["name"] or "").upper()
-                    for sym, sid in stocks.items():
-                        if sym in name_upper or name_upper.startswith(sym[:4]):
-                            stock_id = sid
-                            break
+                    filing_name = h["name"] or ""
+                    normalized = _normalize_company_name(filing_name)
+                    stock_id = stocks_by_name.get(normalized) if normalized else None
                     if stock_id is None:
                         continue
 
