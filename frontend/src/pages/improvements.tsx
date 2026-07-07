@@ -11261,14 +11261,14 @@ const ITEMS: Item[] = [
   },
   {
     id: 'MD-F11-AVG-VOLUME-ALWAYS-NONE',
-    tier: 145 as const, severity: 'medium',
-    file: 'services/market-data/src/api/routes.py',
+    tier: 145 as const, severity: 'medium', defaultStatus: 'done' as const,
+    file: 'services/market-data/src/api/routes.py, services/market-data/src/services/scheduler.py',
     effort: '15m',
     impact: 'Medium — avg_volume was always None in the bulk fundamentals path. The code fetched only 2 days of history (period="2d") then required len(vols) >= 5 before computing an average — a condition that can never be satisfied with 2 bars. Stocks shown in screener/rankings always had null avg_volume.',
-    title: 'MD-F11 (deferred): avg_volume always None in bulk path — period="2d" gives 2 bars but >= 5 required',
+    title: 'MD-F11: avg_volume always None in bulk path — period="2d" gives 2 bars but >= 5 required',
     what: 'The 5-bar minimum was designed for the single-symbol path (which uses period="3mo"). The bulk path reused the same check but fetched only 2 days.',
-    fix: 'Deferred — needs targeted fix per path: use period="1mo" in bulk path and lower the >= 5 threshold, or compute avg_volume from the existing DB prices table.',
-    implementedNote: 'Deferred — cross-path fix needed.',
+    fix: 'Fixed 2026-07-07 — did not simply widen the bulk path\'s period="2d" to "1mo" in place, since _fetch_live_bulk runs every 1 minute during market hours for all active stocks (per its own docstring) — fetching a full month of daily bars every single minute all day for a number that barely moves intraday would be real, unnecessary load for no benefit. Instead: added a new refresh_avg_volume_cache(stocks) function that does its own period="1mo" yf.download() bulk call and writes {symbol: avg_volume} to a new Redis key (stockai:avg_volume, 6h TTL) — separate from the existing 90s-TTL live-price cache. Wired a new scheduler job (avg_volume_cache_refresh, every 4 hours) to call it, mirroring the existing live_price_cache_refresh job\'s structure but at a cadence proportional to how slowly this number actually changes. _fetch_live_bulk itself now reads avg_volume from this cache (falling back to None if not yet populated, same graceful behavior as before) instead of trying to compute a 5-bar average from its own 2-day window, which could never work. The existing single-symbol fallback path (_fetch_live_one, used for any symbol the bulk download misses) was already correct — it uses yfinance\'s fast_info.three_month_average_volume directly — and is unchanged.\n\nCompile-checked (3.12, matches market-data\'s 3.12.13 container exactly — no separate container-version check needed since local and prod both run 3.12). Verified live on local dev: manually called refresh_avg_volume_cache() on a 10-symbol sample, confirmed all 10 cached successfully with real average-volume figures (e.g. AAPL: 69,780,647; NOK: 101,732,736); confirmed _fetch_live_bulk then correctly read those exact values back for AAPL/DT/NOK instead of None; confirmed a symbol not yet in the cache (MU) fell through to the already-correct _fetch_live_one fallback path and got a real value from fast_info instead, proving both paths now work — the bulk path via the new cache, the fallback path via its pre-existing, unaffected logic.',
+    implementedNote: 'Done 2026-07-07.',
   },
 
   // ── Tier 144 — Deep Audit: Event Intelligence Engine ─────────────────────────

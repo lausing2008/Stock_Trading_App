@@ -89,7 +89,7 @@ from db import AlertCondition, PaperPortfolio, PaperTrade, Price, PriceAlert, Ra
 from .ingestion import ingest_universe
 from .email_service import send_morning_digest_email, send_price_alert_email, send_signal_alert_email, send_paper_portfolio_digest_email, send_broker_reauth_email, send_webhook_notification, send_post_open_digest_email, send_data_quality_alert_email
 from .paper_trading_engine import get_last_regime, paper_trading_step, snapshot_equity_curve, ensure_portfolio_exists, poll_broker_order_fills
-from ..api.routes import refresh_live_price_cache
+from ..api.routes import refresh_live_price_cache, refresh_avg_volume_cache
 
 log = get_logger("scheduler")
 _settings = get_settings()
@@ -3464,6 +3464,28 @@ def start_scheduler() -> None:
         "interval",
         minutes=1,
         id="live_price_cache_refresh",
+        replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
+
+    # ── Average-volume cache refresh — every 4 hours ──────────────────────────
+    # MD-F11: separate from the 1-minute live-price job since avg volume barely moves
+    # intraday — needs a wider (1mo) download window than the live-price job's 2d window,
+    # so it stays off the hot path that runs every minute all day.
+    def _avg_volume_refresh_job() -> None:
+        from db import SessionLocal
+        with SessionLocal() as session:
+            stocks = list(session.execute(
+                select(Stock.symbol, Stock.currency).where(Stock.active.is_(True))
+            ).all())
+        if stocks:
+            refresh_avg_volume_cache(stocks)
+
+    _scheduler.add_job(
+        _avg_volume_refresh_job,
+        "interval",
+        hours=4,
+        id="avg_volume_cache_refresh",
         replace_existing=True,
         max_instances=1, coalesce=True,
     )

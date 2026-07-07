@@ -59,6 +59,9 @@ def _get_redis() -> redis_lib.Redis:
 _LIVE_KEY = "stockai:live_prices"
 _LIVE_TTL = 90  # seconds — refreshed every 1 min by scheduler; 90s gives a 30s buffer
 
+_AVG_VOLUME_KEY = "stockai:avg_volume"
+_AVG_VOLUME_TTL = 6 * 3600  # 6h — refreshed a few times/day; avg volume barely moves intraday
+
 
 class StockOut(BaseModel):
     id: int
@@ -166,6 +169,11 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
     symbols = [s.symbol for s in stocks]
 
     try:
+        _avg_volume_cache: dict[str, int] = json.loads(_get_redis().get(_AVG_VOLUME_KEY) or "{}")
+    except Exception:
+        _avg_volume_cache = {}
+
+    try:
         raw = yf.download(
             symbols,
             period="2d",
@@ -206,10 +214,13 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
                 sym_data = raw[symbol] if len(symbols) > 1 else raw
                 vols = sym_data["Volume"].dropna() if "Volume" in sym_data.columns else pd.Series(dtype=float)
                 volume = int(float(vols.iloc[-1])) if not vols.empty else None
-                avg_volume = int(float(vols.mean())) if len(vols) >= 5 else None
             except Exception:
                 volume = None
-                avg_volume = None
+            # MD-F11: the 2-day download window above is too short for a meaningful average
+            # (needs len(vols) >= 5, never true with period="2d") — read the real multi-week
+            # average from the separately-cached, infrequently-refreshed avg-volume table instead
+            # of widening this every-1-minute bulk fetch just to compute one slow-moving number.
+            avg_volume = _avg_volume_cache.get(symbol)
 
             results.append({
                 "symbol": symbol,
@@ -236,6 +247,52 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
                     results.append(r)
 
     return results
+
+
+def refresh_avg_volume_cache(stocks: list) -> int:
+    """MD-F11: compute a real multi-week average volume per symbol and cache it in Redis.
+
+    Runs far less often than the 1-minute live-price refresh (see _AVG_VOLUME_TTL) since
+    average volume barely moves intraday — _fetch_live_bulk reads from this cache instead
+    of trying to compute an average from its own short 2-day download window.
+    Returns the number of symbols successfully cached.
+    """
+    if not stocks:
+        return 0
+    symbols = [s.symbol for s in stocks]
+    try:
+        raw = yf.download(
+            symbols,
+            period="1mo",
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+        )
+    except Exception as exc:
+        log.warning("avg_volume.bulk_download_failed", error=str(exc))
+        return 0
+
+    if raw is None or raw.empty:
+        return 0
+
+    cache: dict[str, int] = {}
+    for symbol in symbols:
+        try:
+            sym_data = raw[symbol] if len(symbols) > 1 else raw
+            vols = sym_data["Volume"].dropna() if "Volume" in sym_data.columns else pd.Series(dtype=float)
+            if len(vols) >= 5:
+                cache[symbol] = int(float(vols.mean()))
+        except Exception:
+            continue
+
+    if cache:
+        try:
+            _get_redis().setex(_AVG_VOLUME_KEY, _AVG_VOLUME_TTL, json.dumps(cache))
+        except Exception:
+            pass
+    log.info("avg_volume.cache_refresh", count=len(cache))
+    return len(cache)
 
 
 def _latest_prices_from_db(session: Session) -> list[LatestPriceOut]:
