@@ -149,6 +149,21 @@ export default function AdminSignalsPage() {
     { revalidateOnFocus: false }
   );
 
+  // FE-A2: system-wide win rate, not just the current 50-item page — same filters
+  // (horizon/market/days) as the page fetch above, minus symbol/signal_type/pagination,
+  // since /signals/outcomes/summary aggregates across the whole matching set server-side.
+  const { data: winRateSummary } = useSWR(
+    userRole === 'admin'
+      ? ['admin-signal-winrate', horizonFilter, marketFilter, daysBack]
+      : null,
+    () => api.outcomesSummary(
+      horizonFilter !== 'ALL' ? horizonFilter : undefined,
+      daysBack,
+      marketFilter !== 'ALL' ? marketFilter : undefined,
+    ),
+    { revalidateOnFocus: false }
+  );
+
   const handleFilterChange = useCallback(() => setPage(1), []);
 
   if (userRole == null) return null;
@@ -172,12 +187,16 @@ export default function AdminSignalsPage() {
   const items = data?.items ?? [];
   const totalPages = data?.pages ?? 1;
 
-  // Summary stats from loaded page
-  const resolved = items.filter(r => r.is_correct != null);
-  const correct = resolved.filter(r => r.is_correct).length;
-  const winRate = resolved.length > 0 ? ((correct / resolved.length) * 100).toFixed(0) : '—';
+  // Summary stats — win rate is system-wide (winRateSummary, matches current filters) rather
+  // than computed from the current 50-item page, which changed depending on which page you
+  // were viewing (FE-A2). BUY/SELL counts intentionally stay per-page — those describe what's
+  // currently displayed, not a system-wide aggregate claim, so per-page is the correct scope.
   const buyCount = items.filter(r => r.signal === 'BUY').length;
   const sellCount = items.filter(r => r.signal === 'SELL').length;
+  const systemResolvedCount = winRateSummary?.total ?? 0;
+  const systemWinRate = winRateSummary?.overall
+    ? (winRateSummary.overall.win_rate * 100).toFixed(0)
+    : '—';
 
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1400, margin: '0 auto', fontFamily: 'system-ui, sans-serif', color: '#e2e8f0' }}>
@@ -220,7 +239,7 @@ export default function AdminSignalsPage() {
           { label: 'Total signals', val: data?.total != null ? String(data.total) : '—' },
           { label: 'BUY on page', val: String(buyCount) },
           { label: 'SELL on page', val: String(sellCount) },
-          { label: 'Win rate (resolved)', val: resolved.length > 0 ? `${winRate}% of ${resolved.length}` : '—' },
+          { label: 'Win rate (resolved, system-wide)', val: systemResolvedCount > 0 ? `${systemWinRate}% of ${systemResolvedCount}` : '—' },
         ].map(s => (
           <div key={s.label} style={{ ...card, flex: '0 0 auto', margin: 0, padding: '8px 16px', minWidth: 140 }}>
             <div style={{ fontSize: 18, fontWeight: 800, color: '#f1f5f9' }}>{s.val}</div>

@@ -926,9 +926,15 @@ Return ONLY valid JSON — no markdown, no prose:
               )}
             </div>
           )}
-          {(sigSwing ?? data.signal) && (() => {
-            const badgeSig = sigSwing ?? data.signal;
-            const s = badgeSig!.signal;
+          {(() => {
+            // FE-A1: was hardcoded to sigSwing regardless of the active horizon tab — switching
+            // to LONG/SHORT/GROWTH left the header badge still showing the SWING signal, visibly
+            // contradicting the tab content below it. Same lookup pattern already used by the
+            // sidebar's tabbed horizon switcher (see allHorizonSignals.find below, ~line 1904).
+            const badgeSig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+              ?? (selectedHorizon === 'SWING' ? data.signal : null);
+            if (!badgeSig) return null;
+            const s = badgeSig.signal;
             const borderCls = s === 'BUY' ? 'border-green-800 bg-green-950/40' : s === 'SELL' ? 'border-red-800 bg-red-950/40' : s === 'WAIT' ? 'border-orange-800 bg-orange-950/40' : 'border-yellow-800 bg-yellow-950/40';
             const labelCls  = s === 'BUY' ? 'text-green-400'  : s === 'SELL' ? 'text-red-400'  : s === 'WAIT' ? 'text-orange-400'  : 'text-yellow-400';
             const valueCls  = s === 'BUY' ? 'text-green-300'  : s === 'SELL' ? 'text-red-300'  : s === 'WAIT' ? 'text-orange-300'  : 'text-yellow-300';
@@ -937,8 +943,8 @@ Return ONLY valid JSON — no markdown, no prose:
                 <div className={`text-xs font-medium mb-0.5 ${labelCls}`}>AI Signal</div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                   <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
-                  {(s === 'HOLD' || s === 'WAIT') && badgeSig!.bullish_probability != null && (() => {
-                    const bp = badgeSig!.bullish_probability;
+                  {(s === 'HOLD' || s === 'WAIT') && badgeSig.bullish_probability != null && (() => {
+                    const bp = badgeSig.bullish_probability;
                     if (bp >= 0.55 && bp < 0.65) return (
                       <span style={{ fontSize: 10, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', padding: '2px 6px', borderRadius: 4 }}
                             title={`Near BUY — ${(bp * 100).toFixed(1)}% bullish probability`}>~BUY</span>
@@ -950,7 +956,7 @@ Return ONLY valid JSON — no markdown, no prose:
                     return null;
                   })()}
                 </div>
-                <div className="text-xs text-slate-500 mt-0.5">{((badgeSig!.bullish_probability ?? 0) * 100).toFixed(0)}% bullish · stored SWING</div>
+                <div className="text-xs text-slate-500 mt-0.5">{((badgeSig.bullish_probability ?? 0) * 100).toFixed(0)}% bullish · stored {selectedHorizon}</div>
               </div>
             );
           })()}
