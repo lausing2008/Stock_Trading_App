@@ -655,8 +655,10 @@ def _bulk_persist(symbols: list[str]) -> None:
                                         research_rec=_rec,
                                         research_score=_score,
                                     )
-                        except Exception:
-                            pass  # never block signal generation on research calls
+                        except Exception as _rdiv_exc:
+                            # Never block signal generation on research calls — but log so a
+                            # research-engine outage is distinguishable from "no divergence found".
+                            log.debug("divergence_check.failed", symbol=symbol, error=str(_rdiv_exc))
                 s.commit()
 
         except Exception as exc:
