@@ -44,6 +44,41 @@ def macd(
     return pd.DataFrame({"macd": macd_line, "signal": signal_line, "hist": hist})
 
 
+def cog(close: pd.Series, period: int = 10) -> pd.DataFrame:
+    """Ehlers Center of Gravity oscillator (T236-TA-COG-INDICATOR).
+
+    A zero-lag oscillator estimating the weighted center of gravity of the last `period`
+    closes — most recent price weighted MOST heavily, oldest weighted least — then centered
+    around zero. Most useful in choppy/ranging conditions where trend-following indicators
+    (ADX, MACD) are weakest.
+
+    Formula verified against a cited open-source reference implementation of John Ehlers'
+    "The CG Oscillator" (Stocks & Commodities, 2002):
+    github.com/MathisWellmann/go_ehlers_indicators/blob/master/center_of_gravity.go — weight
+    for the current bar (j=0) is `period`, decreasing to 1 for the oldest bar in the window:
+        weight[j] = period - j, for j = 0 (most recent) .. period-1 (oldest)
+        CG = -sum(weight[j] * close[i-j]) / sum(close[i-j]) + (period + 1) / 2
+    Verified numerically against the reference before trusting it, not from the formula's
+    prose description alone — an earlier draft of this function had the weight direction
+    backwards (a plain-English summary of the indicator was ambiguous/wrong about which end
+    of the window gets the heavier weight; the actual reference source code was authoritative).
+    The signal line is CG shifted back one bar (Ehlers' own convention — the "trigger line"
+    is simply the prior bar's CG value; crossovers between CG and this signal line mark
+    potential reversals).
+    """
+    weights = np.arange(1, period + 1, dtype=float)  # [1, 2, ..., period] oldest-to-newest window order (raw=True)
+
+    def _cg_window(window: np.ndarray) -> float:
+        denom = window.sum()
+        if denom == 0:
+            return np.nan
+        return -(weights * window).sum() / denom + (period + 1) / 2
+
+    cg_line = close.rolling(period, min_periods=period).apply(_cg_window, raw=True)
+    signal_line = cg_line.shift(1)
+    return pd.DataFrame({"cog": cg_line, "cog_signal": signal_line})
+
+
 def bollinger_bands(close: pd.Series, window: int = 20, n_std: float = 2.0) -> pd.DataFrame:
     mid = close.rolling(window, min_periods=window).mean()
     std = close.rolling(window, min_periods=window).std(ddof=1)

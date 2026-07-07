@@ -1,6 +1,7 @@
 from .core import (
     atr,
     bollinger_bands,
+    cog,
     ema,
     fibonacci_retracement,
     macd,
@@ -16,6 +17,7 @@ __all__ = [
     "rsi",
     "macd",
     "bollinger_bands",
+    "cog",
     "fibonacci_retracement",
     "supertrend",
 ]
