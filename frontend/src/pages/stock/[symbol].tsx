@@ -237,11 +237,13 @@ export default function StockDetail() {
   const [gamePlanOpen, setGamePlanOpen] = useState(true);
   const [savedToBoard, setSavedToBoard] = useState(false);
   const [savingToBoard, setSavingToBoard] = useState(false);
+  const [saveBoardError, setSaveBoardError] = useState('');
   const [copied, setCopied] = useState(false);
 
   async function saveGamePlanToBoard() {
     if (!gamePlan || !symbol) return;
     setSavingToBoard(true);
+    setSaveBoardError('');
     try {
       await api.createBoardPlan({
         symbol,
@@ -254,7 +256,14 @@ export default function StockDetail() {
       });
       setSavedToBoard(true);
       globalMutate(`${u}:board`);
-    } catch { /* silently ignore */ }
+    } catch {
+      // T237-FE2: this is a user-initiated action (clicking Save), not a background poll —
+      // silently reverting the button to its idle state with no feedback let a failed save
+      // look identical to a successful one, risking the user believing their plan was saved
+      // when it wasn't (gamePlan itself resets to null on the next symbol navigation).
+      setSaveBoardError('Failed to save — try again');
+      setTimeout(() => setSaveBoardError(''), 4000);
+    }
     setSavingToBoard(false);
   }
 
@@ -409,7 +418,12 @@ export default function StockDetail() {
 
   useEffect(() => {
     if (!symbol) return;
-    api.isWatched(symbol).then(setWatched).catch(() => {});
+    // T237-FE1: guard against a stale response landing after the user has already navigated
+    // to a different symbol (e.g. clicking a Sector Peer link) — Next.js's Pages Router reuses
+    // this component instance across /stock/[symbol] navigations rather than remounting it.
+    let ignore = false;
+    api.isWatched(symbol).then(r => { if (!ignore) setWatched(r); }).catch(() => {});
+    return () => { ignore = true; };
   }, [symbol]);
 
   useEffect(() => {
@@ -424,7 +438,13 @@ export default function StockDetail() {
 
   useEffect(() => {
     if (!symbol) return;
-    api.getResearchSummary(symbol).then(setResearchSummary).catch(() => setResearchSummary(null));
+    // T237-FE1: same stale-response guard as the isWatched effect above — a late-arriving
+    // research summary for a previously-viewed symbol must not overwrite the current one.
+    let ignore = false;
+    api.getResearchSummary(symbol)
+      .then(r => { if (!ignore) setResearchSummary(r); })
+      .catch(() => { if (!ignore) setResearchSummary(null); });
+    return () => { ignore = true; };
   }, [symbol]);
 
 
@@ -2529,10 +2549,10 @@ Return ONLY valid JSON — no markdown, no prose:
                       <button
                         onClick={saveGamePlanToBoard}
                         disabled={savingToBoard || savedToBoard}
-                        title={savedToBoard ? 'Saved to Trade Board' : 'Save to Trade Board'}
-                        style={{ background: savedToBoard ? 'rgba(129,140,248,0.15)' : 'transparent', border: `1px solid ${savedToBoard ? 'rgba(129,140,248,0.4)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '2px 7px', color: savedToBoard ? '#818cf8' : '#475569', cursor: savedToBoard ? 'default' : 'pointer', fontSize: '11px', opacity: savingToBoard ? 0.5 : 1 }}
+                        title={saveBoardError || (savedToBoard ? 'Saved to Trade Board' : 'Save to Trade Board')}
+                        style={{ background: savedToBoard ? 'rgba(129,140,248,0.15)' : saveBoardError ? 'rgba(248,113,113,0.1)' : 'transparent', border: `1px solid ${savedToBoard ? 'rgba(129,140,248,0.4)' : saveBoardError ? 'rgba(248,113,113,0.4)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '5px', padding: '2px 7px', color: savedToBoard ? '#818cf8' : saveBoardError ? '#f87171' : '#475569', cursor: savedToBoard ? 'default' : 'pointer', fontSize: '11px', opacity: savingToBoard ? 0.5 : 1 }}
                       >
-                        {savingToBoard ? '…' : savedToBoard ? '📌' : '📌 Save'}
+                        {savingToBoard ? '…' : savedToBoard ? '📌' : saveBoardError ? '⚠ Failed' : '📌 Save'}
                       </button>
                       <button onClick={() => setGamePlanOpen(o => !o)} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '12px', padding: '2px 4px' }}>
                         {gamePlanOpen ? '▲' : '▼'}
