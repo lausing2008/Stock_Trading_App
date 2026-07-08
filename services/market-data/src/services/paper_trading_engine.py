@@ -2544,7 +2544,14 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 PaperTrade.exit_time >= today_open,
             )
         ).scalar() or 0.0
-        _daily_pnl_pct = round(daily_net_pnl / equity * 100, 2)
+        # Decision-engine's daily_pnl_pct is documented (and consumed by hard_rejects.py) as a
+        # FRACTION of equity (e.g. -0.015), not a percentage — this used to be `* 100`, sending
+        # e.g. -0.10 (meant as "-0.10%") which hard_rejects.py compared directly against
+        # max_daily_loss_pct (a fraction, default 0.04): -0.10 <= -0.04 is True, so the daily-loss
+        # circuit breaker tripped after any realized loss >= ~0.04% of equity instead of 4%,
+        # blocking all new entries via DE (the authoritative gate when decision_engine_mode="primary")
+        # after essentially any trivial loss.
+        _daily_pnl_pct = round(daily_net_pnl / equity, 4)
         if daily_net_pnl < 0 and abs(daily_net_pnl) / equity > max_daily_loss:
             log.warning("paper.daily_loss_limit",
                         portfolio=portfolio.name,
