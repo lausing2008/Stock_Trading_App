@@ -1039,16 +1039,36 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
 
     # Determine which models are available and blend accordingly
     # T228-ENSEMBLE-WEIGHTS: LightGBM handles 59-feature financial data better than XGBoost
-    available = [(xgb, 0.30)]
+    all_available = [(xgb, 0.30)]
     if lgb_res is not None:
-        available.append((lgb_res, 0.45))
+        all_available.append((lgb_res, 0.45))
     if rf_res is not None:
-        available.append((rf_res, 0.25))
+        all_available.append((rf_res, 0.25))
+
+    # T237-ML1: a model with oos_suppressed=True (CV-AUC < 0.52, coin-flip territory) was
+    # still contributing its neutral 0.5 at FULL nominal weight to the blended probability,
+    # buy_threshold average, and agreement vote — the top-level oos_suppressed flag only
+    # informed signal-engine's downstream compression AFTER the fact, it never stopped the
+    # bad value from corrupting the blend itself. Exclude suppressed models from the weighted
+    # blend (still shown in model_probabilities for transparency); only fall back to using
+    # them if literally every available model is suppressed, so the ensemble is never empty.
+    available = [(m, w) for m, w in all_available if not m.get("oos_suppressed")]
+    if not available:
+        available = all_available
 
     if len(available) == 1:
-        # Only XGBoost — no ensemble
-        return {**xgb, "ensemble": False, "model": "xgboost",
-                "model_probabilities": {"xgboost": round(xgb["bullish_probability"], 4)},
+        # Only one usable model — no ensemble. T237-ML1: this used to always be XGBoost (the
+        # only way to reach here was lgb/rf artifacts simply not existing), but excluding
+        # oos_suppressed models above means the single survivor can now be any of the three —
+        # return the actual survivor's own data, not always xgb's.
+        _sole_model, _ = available[0]
+        _sole_name = (
+            "xgboost" if _sole_model is xgb
+            else "lightgbm" if _sole_model is lgb_res
+            else "random_forest"
+        )
+        return {**_sole_model, "ensemble": False, "model": _sole_name,
+                "model_probabilities": {_sole_name: round(_sole_model["bullish_probability"], 4)},
                 "ensemble_agreement": "single_model"}
 
     # Renormalize weights to sum to 1.0 for whatever subset is available

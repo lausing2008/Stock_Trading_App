@@ -10,10 +10,12 @@ Each cycle (paper_trading_step, every 5-10 min during US market hours):
   5. snapshot_equity_curve()   — post-close EOD snapshot (separate scheduler job)
 
 Regime states (affect sizing, min_entry_score, trail multiplier):
-  bull     — SPY > EMA-20 AND EMA-50, VIX < 18                  100% size, score +1
+  bull     — SPY > EMA-20 AND EMA-50, VIX < 20                  100% size, score +1
   neutral  — default                                              100% size
   choppy   — SPY < EMA-20 OR VIX > 20                            75% size, min_score = 4
-  risk_off — SPY < EMA-50 OR VIX > 25                            NEW ENTRIES BLOCKED (T226-A default)
+  risk_off — SPY < EMA-50 AND VIX > 25 (M1 FIX: both legs required — NEW ENTRIES BLOCKED (T226-A default)
+             see the AND, not OR, at the actual classification site; a stale OR in this
+             docstring previously described the exact bug the M1 FIX resolved)
   bear     — SPY < EMA-50 AND VIX > 30  (OR SPY < EMA-200 + 20d return < -8%)
                                                                   NEW ENTRIES BLOCKED, trail ×0.70
 
@@ -1078,6 +1080,15 @@ def _compute_hk_breadth() -> float | None:
         return None
 
 
+# T237-REG3: HK regime had no hysteresis at all, unlike the US side's T232-DE7 mechanism —
+# despite facing the same boundary-noise risk (hard SMA-ratio comparisons that can flip on a
+# fractional HSI move near a threshold). Mirror the exact same 2-tick-confirmation pattern,
+# with its own independent state so US and HK never share/leak classification state.
+_hk_regime_confirmed_state: str | None = None
+_hk_regime_pending_state: str | None = None
+_hk_regime_pending_count: int = 0
+
+
 def _fetch_hk_market_regime(cfg: dict) -> dict:
     """HK regime detection using dual SMA (50 + 200) + breadth confirmation.
 
@@ -1085,7 +1096,9 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
     No VIX equivalent — uses HSI position vs both SMA50 and SMA200:
       bull     : HSI > SMA200 and 20d return > 0
       neutral  : HSI > SMA200 but 20d return ≤ 0 (topping / momentum fade)
-      choppy   : HSI below SMA200 but above SMA50 (recovering), or within ±5% of SMA200
+      choppy   : HSI below SMA200 but above SMA50 (recovering) — T237-REG2: this docstring
+                 previously also claimed "or within ±5% of SMA200", but no such band exists
+                 anywhere in the actual if/elif classification chain below; removed the false claim
       risk_off : HSI 8–15% below SMA200 AND below SMA50 (sustained downtrend, 50% size)
       bear     : HSI > 15% below SMA200 AND below SMA50 (extreme crash, hard block)
 
@@ -1115,7 +1128,14 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
         raw = yf.download("^HSI", period="300d", auto_adjust=True, progress=False)
         closes = raw["Close"].dropna() if "Close" in raw.columns else raw.dropna()
         if len(closes) < 50:
-            result["notes"].append("HSI data insufficient — defaulting to neutral")
+            # T237-REG1: was defaulting to (and caching for 30min) "neutral" — the most
+            # permissive state, full position size — on a data outage. Mirror the US
+            # function's fallback: fresh cache if available, else conservative "choppy".
+            log.warning("paper.hk_regime_insufficient_data", n_closes=len(closes))
+            if _hk_regime_cache and (_time.time() - _hk_regime_cache_ts) < 14_400:
+                return dict(_hk_regime_cache)
+            result["state"] = "choppy"
+            result["notes"].append("HSI data insufficient — conservative choppy default")
             return result
 
         hsi_price = float(closes.iloc[-1])
@@ -1139,7 +1159,7 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
         #
         #   bear     : HSI > 15% below SMA200 AND below SMA50 — extreme crash, hard block
         #   risk_off : HSI > 8% below SMA200 AND below SMA50 — sustained downtrend (50% size)
-        #   choppy   : HSI below SMA200 but ABOVE SMA50 (recovering), or within ±5% of SMA200
+        #   choppy   : HSI below SMA200 but ABOVE SMA50 (recovering)
         #   neutral  : HSI above SMA200, 20d return ≤ 0
         #   bull     : HSI above SMA200, 20d return > 0
         if hsi_price < sma200 * 0.85 and not above_sma50:
@@ -1176,9 +1196,49 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
                 result["notes"].append(
                     f"Breadth {breadth_pct:.0f}% not broadly weak — downgraded risk_off→choppy (decline looks concentrated)")
 
+        # T237-REG3: hysteresis on the final (post-breadth) classification — same 2-tick
+        # confirmation pattern as the US side's T232-DE7, with its own independent module
+        # state. Escalation into bear/risk_off bypasses the delay; de-escalating out of them
+        # still requires confirmation, same rationale as the US mechanism.
+        global _hk_regime_confirmed_state, _hk_regime_pending_state, _hk_regime_pending_count
+        _hk_raw_state = result["state"]
+        if _hk_regime_confirmed_state is None:
+            _hk_regime_confirmed_state = _hk_raw_state
+            _hk_regime_pending_state, _hk_regime_pending_count = _hk_raw_state, _REGIME_HYSTERESIS_TICKS
+        elif _hk_raw_state == _hk_regime_confirmed_state:
+            _hk_regime_pending_state, _hk_regime_pending_count = _hk_raw_state, 0
+        elif _hk_raw_state in ("bear", "risk_off"):
+            result["notes"].append(f"regime hysteresis bypassed for escalation to {_hk_raw_state}")
+            _hk_regime_confirmed_state = _hk_raw_state
+            _hk_regime_pending_state, _hk_regime_pending_count = _hk_raw_state, 0
+        else:
+            if _hk_regime_pending_state == _hk_raw_state:
+                _hk_regime_pending_count += 1
+            else:
+                _hk_regime_pending_state, _hk_regime_pending_count = _hk_raw_state, 1
+            if _hk_regime_pending_count >= _REGIME_HYSTERESIS_TICKS:
+                _hk_regime_confirmed_state = _hk_raw_state
+            else:
+                result["notes"].append(
+                    f"regime hysteresis: raw={_hk_raw_state} pending {_hk_regime_pending_count}/"
+                    f"{_REGIME_HYSTERESIS_TICKS} ticks — still reporting confirmed={_hk_regime_confirmed_state}"
+                )
+        result["raw_state"] = _hk_raw_state
+        result["state"] = _hk_regime_confirmed_state
+
     except Exception as exc:
+        # T237-REG1: same fallback fix as the insufficient-data branch above — use fresh
+        # cache if available, else conservative "choppy", never the permissive "neutral"
+        # default this dict was initialized with.
         log.warning("paper.hk_regime_fetch_failed", error=str(exc))
-        result["notes"].append(f"HSI fetch failed: {exc}")
+        if _hk_regime_cache and (_time.time() - _hk_regime_cache_ts) < 14_400:
+            log.warning("paper.hk_regime_fallback_to_cached", cache_age_min=round((_time.time() - _hk_regime_cache_ts) / 60, 1))
+            return dict(_hk_regime_cache)
+        result["state"] = "choppy"
+        result["notes"].append(f"HSI fetch failed — conservative choppy default: {exc}")
+        _hk_regime_cache = dict(result)
+        _hk_regime_cache_ts = _time.time()
+        return result
 
     _hk_regime_cache = dict(result)
     _hk_regime_cache_ts = _time.time()
