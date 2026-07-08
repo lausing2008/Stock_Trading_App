@@ -705,6 +705,52 @@ done
 (A `0` or a non-fatal `grep` exit code with `0` output — not a real error — both mean "stale,
 missing the field.")
 
+---
+
+## Recurring Issue: PRODUCTION Container Ran Stale Service-Local Files Despite Git Being Up To Date
+
+**Symptom:** `docker restart` on a production container crashes on startup with
+`ImportError: cannot import name 'X' from 'module'`, even though `git log`/`git status` on the
+EC2 host show the repo checkout is fully up to date and does NOT reference `X` anywhere.
+
+**Root cause (found 2026-07-07):** An earlier fix (TA-D1, removing the dead `vwap()` indicator)
+was committed, pushed, and deployed to **local dev** — but the corresponding `docker cp` step to
+the **production** `stockai-technical-analysis-1` container was never actually run at the time.
+`git pull` on the EC2 host updates the host's checkout, not the running container's `/app/src/`
+files — those only change via an explicit `docker cp`. Production kept running its old
+`routes.py`/`indicators/__init__.py` (both still importing the now-deleted `vwap`) completely
+unnoticed, because nothing had restarted that container since the gap was introduced — routine
+`docker restart`s only became necessary again once a later, unrelated fix (T237, ATR/pattern
+fixes) needed deploying to the same container, which is what finally surfaced the crash.
+
+**This means "deployed to production" was previously asserted for TA-D1 without actually being
+true** — a gap between the deployment checklist being followed in spirit (committed, pushed,
+`git pull`'d on EC2) and in fact (the specific `docker cp` + restart for that specific service
+never happening, or being silently skipped/forgotten).
+
+**Fix applied:** Synced the current (correct, git-matching) `routes.py` and
+`indicators/__init__.py` from the EC2 checkout into the container via `docker cp`, cleared
+`__pycache__`, restarted. Confirmed via `grep vwap` inside the container (empty result) and a
+successful `/health` check plus a real `GET /ta/{symbol}/patterns` call.
+
+**What to check after ANY deploy that touches a service's Python files:**
+```bash
+# Immediately after docker restart, tail logs for an ImportError/crash-loop —
+# don't just assume "docker restart" succeeding means the app booted:
+docker logs stockai-<service>-1 --tail 20
+# A clean boot ends in "Application startup complete." / "Uvicorn running on ...".
+# If you see a traceback instead, the container's /app files disagree with the
+# current git checkout — diff them directly:
+docker exec stockai-<service>-1 grep -n '<symbol_removed_or_added_by_the_last_fix>' /app/src/<file>.py
+```
+
+**Design invariant:** Never assume a past "deploy to production" step actually completed just
+because it's described as done in a tracker entry or prior session summary — after any
+`docker restart` in production, always tail logs and confirm a clean startup message before
+considering the deploy verified. A container that "looks running" (`docker ps` shows `Up`) can
+still be serving requests from **before** a crash-and-silent-fallback, or — as here — simply
+never picked up the intended change at all until the next unrelated restart exposes it.
+
 **Production is NOT usually affected** — confirmed both times (TuneHistory, index_membership)
 that production's `shared/db/` was already current, because production deploys copy `shared/db/`
 files explicitly as part of each backend deploy step (per the Deployment Pattern's own
