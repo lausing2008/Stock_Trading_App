@@ -29,18 +29,24 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     out["sma_20"]  = close.rolling(20).mean()
     out["sma_50"]  = close.rolling(50).mean()
     out["sma_200"] = close.rolling(200).mean()
-    out["ema_12"]  = close.ewm(span=12, adjust=False).mean()
-    out["ema_26"]  = close.ewm(span=26, adjust=False).mean()
+    # T237-SE2: .ewm() with no min_periods emits a value from the very first observation —
+    # unlike .rolling(N) above (which defaults min_periods=N and correctly returns NaN during
+    # warmup), so ema_12/ema_26 and everything derived from them (rsi_14, macd*, atr_14) looked
+    # "fully formed" after just 1-2 bars. Confirmed: a 6-bar series produced rsi_14=86.67 after
+    # only 2 real price diffs, and a 30-bar backtest entered a real trade on day 3 driven by
+    # this numerically meaningless value. Pass min_periods explicitly on every ewm() below.
+    out["ema_12"]  = close.ewm(span=12, adjust=False, min_periods=12).mean()
+    out["ema_26"]  = close.ewm(span=26, adjust=False, min_periods=26).mean()
 
     d = close.diff()
-    g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
-    l = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    l = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
     rs = g / l.replace(0, np.nan)
     out["rsi_14"] = 100 - 100 / (1 + rs)
 
     macd = out["ema_12"] - out["ema_26"]
     out["macd"]        = macd
-    out["macd_signal"] = macd.ewm(span=9, adjust=False).mean()
+    out["macd_signal"] = macd.ewm(span=9, adjust=False, min_periods=9).mean()
     out["macd_hist"]   = out["macd"] - out["macd_signal"]
 
     # ATR(14) — Wilder smoothing using EWM
@@ -49,7 +55,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         (high - close.shift(1)).abs(),
         (low  - close.shift(1)).abs(),
     ], axis=1).max(axis=1)
-    out["atr_14"] = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    out["atr_14"] = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
 
     # Bollinger Bands (20-period, 2σ)
     bb_std         = close.rolling(20).std()
