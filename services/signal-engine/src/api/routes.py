@@ -517,12 +517,26 @@ def _bulk_persist(symbols: list[str]) -> None:
                         # CRIT-5: re-evaluate signal direction after catalyst nudge so stored
                         # signal type stays consistent with the adjusted probability.
                         try:
-                            from ..generators.signals import _STYLE_PROFILES as _SP_cat
+                            from ..generators.signals import (
+                                _STYLE_PROFILES as _SP_cat,
+                                _get_dynamic_buy_threshold as _get_bt_cat,
+                                _get_dynamic_sell_threshold as _get_st_cat,
+                            )
                             _hor_key = _ai.horizon
                             if _hor_key in _SP_cat:
-                                _bt_vals = _SP_cat[_hor_key].get("buy_threshold", {})
-                                _min_bt = min(_bt_vals.values()) if _bt_vals else 0.70
-                                _sell_t = _SP_cat[_hor_key].get("sell_threshold", 0.35)
+                                # T237-SIG2: was min(_bt_vals.values()) — the LOOSEST of all 4
+                                # regime buy-threshold tiers, regardless of the actual current
+                                # regime. A signal generated during a real bear regime (e.g.
+                                # SWING buy_threshold=0.68) only needed to clear the unknown-tier
+                                # 0.62 to get catalyst-upgraded to BUY — exactly backwards during
+                                # the regime that should be most conservative. Use the same
+                                # regime-aware threshold functions _decide_style() itself uses.
+                                _reg_cat = _ai.reasons.get("market_regime") if _ai.reasons else None
+                                _reg_cat = _reg_cat if _reg_cat in ("bull", "high_vol", "bear", "unknown") else "unknown"
+                                _dyn_bt = _get_bt_cat(_hor_key, _reg_cat)
+                                _min_bt = _dyn_bt if _dyn_bt is not None else _SP_cat[_hor_key]["buy_threshold"][_reg_cat]
+                                _dyn_st = _get_st_cat(_hor_key)
+                                _sell_t = _dyn_st if _dyn_st is not None else 0.35
                                 if _ai.bullish_probability >= _min_bt and _ai.signal == "HOLD":
                                     _ai.signal = "BUY"
                                     _ai.reasons["catalyst_upgraded_signal"] = True
@@ -2089,9 +2103,21 @@ def filter_audit(
         count = sum(1 for k in SUPPRESSION_BOOLEAN if r.get(k))
         count += sum(1 for k, test in SUPPRESSION_NAMED.items() if test(r.get(k)))
 
-        signal_date = row.ts if isinstance(row.ts, date) else row.ts.date()
-        exit_date   = signal_date + timedelta(days=hold_days)
-        entry_price = _nearest_price(row.stock_id, signal_date)
+        # T237-SIG5: `isinstance(row.ts, date)` is always True for a datetime value too —
+        # datetime.datetime is a subclass of datetime.date in Python — so the `else
+        # row.ts.date()` branch was dead code and signal_date was always the raw datetime,
+        # not a date. This crashed filter_audit() on every real call with "TypeError: can't
+        # compare datetime.datetime to datetime.date" inside _nearest_price's `d >= target`
+        # comparison (candidates are real date objects; the endpoint was broken outright, not
+        # just biased). Check the more specific `datetime` type instead, matching the correct
+        # pattern already used a few lines above for prices_by_stock.
+        signal_date = row.ts.date() if isinstance(row.ts, datetime) else row.ts
+        # T237-SIG4: T+1 entry — use the first close STRICTLY AFTER signal_date, matching the
+        # same fix already applied to evaluate_signal_outcomes/calibrate_ta_weights this
+        # session. Was signal_date (on-or-after), the same same-day lookahead bias that let a
+        # filter-audit "entry price" be the very close the signal was itself generated from.
+        exit_date   = signal_date + timedelta(days=1 + hold_days)
+        entry_price = _nearest_price(row.stock_id, signal_date + timedelta(days=1))
         exit_price  = _nearest_price(row.stock_id, exit_date)
 
         if entry_price and exit_price and entry_price > 0:
@@ -2131,9 +2157,18 @@ def filter_audit(
         for k, test in SUPPRESSION_NAMED.items():
             filter_flags[k] = test(r.get(k))
 
-        signal_date = row.ts if isinstance(row.ts, date) else row.ts.date()
-        exit_date   = signal_date + timedelta(days=hold_days)
-        entry_price = _nearest_price(row.stock_id, signal_date)
+        # T237-SIG5: `isinstance(row.ts, date)` is always True for a datetime value too —
+        # datetime.datetime is a subclass of datetime.date in Python — so the `else
+        # row.ts.date()` branch was dead code and signal_date was always the raw datetime,
+        # not a date. This crashed filter_audit() on every real call with "TypeError: can't
+        # compare datetime.datetime to datetime.date" inside _nearest_price's `d >= target`
+        # comparison (candidates are real date objects; the endpoint was broken outright, not
+        # just biased). Check the more specific `datetime` type instead, matching the correct
+        # pattern already used a few lines above for prices_by_stock.
+        signal_date = row.ts.date() if isinstance(row.ts, datetime) else row.ts
+        # T237-SIG4: same T+1 entry fix as the filter_count loop above.
+        exit_date   = signal_date + timedelta(days=1 + hold_days)
+        entry_price = _nearest_price(row.stock_id, signal_date + timedelta(days=1))
         exit_price  = _nearest_price(row.stock_id, exit_date)
         if not (entry_price and exit_price and entry_price > 0):
             continue
@@ -5416,6 +5451,33 @@ def signal_for(
                             float(max(0.0, min(1.0, _ai_sf.bullish_probability + _adj_sf))), 4
                         )
                         _ai_sf.reasons["catalyst_prob_adj"] = round(_adj_sf, 3)
+                        # T237-SIG3: CRIT-5 re-evaluates the signal label after a catalyst nudge
+                        # in _bulk_persist() (the scheduled path), but this manual-refresh path
+                        # applied the same probability adjustment and never re-derived the label
+                        # — a signal whose nudged bullish_probability crossed the buy/sell
+                        # threshold was stored and returned with its stale, pre-nudge label.
+                        try:
+                            from ..generators.signals import (
+                                _STYLE_PROFILES as _SP_sf,
+                                _get_dynamic_buy_threshold as _get_bt_sf,
+                                _get_dynamic_sell_threshold as _get_st_sf,
+                            )
+                            _hor_key_sf = _ai_sf.horizon
+                            if _hor_key_sf in _SP_sf:
+                                _reg_sf = _ai_sf.reasons.get("market_regime") if _ai_sf.reasons else None
+                                _reg_sf = _reg_sf if _reg_sf in ("bull", "high_vol", "bear", "unknown") else "unknown"
+                                _dyn_bt_sf = _get_bt_sf(_hor_key_sf, _reg_sf)
+                                _min_bt_sf = _dyn_bt_sf if _dyn_bt_sf is not None else _SP_sf[_hor_key_sf]["buy_threshold"][_reg_sf]
+                                _dyn_st_sf = _get_st_sf(_hor_key_sf)
+                                _sell_t_sf = _dyn_st_sf if _dyn_st_sf is not None else 0.35
+                                if _ai_sf.bullish_probability >= _min_bt_sf and _ai_sf.signal == "HOLD":
+                                    _ai_sf.signal = "BUY"
+                                    _ai_sf.reasons["catalyst_upgraded_signal"] = True
+                                elif _ai_sf.bullish_probability <= _sell_t_sf and _ai_sf.signal in ("BUY", "HOLD"):
+                                    _ai_sf.signal = "SELL"
+                                    _ai_sf.reasons["catalyst_downgraded_signal"] = True
+                        except Exception:
+                            pass
         except Exception:
             pass  # catalyst enrichment is best-effort; don't block the Refresh
 

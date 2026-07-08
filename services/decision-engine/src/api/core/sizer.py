@@ -55,7 +55,15 @@ def compute_position(
     target_1    = game_plan.get("target_1",   live_price + (take_profit - live_price) * 0.5)
     target_2    = take_profit
 
-    stop_dist   = max(live_price - stop_price, 0.01)
+    # T237-DE1: an absolute 1-cent floor meant an invalid game plan (stop_price >= live_price —
+    # no real downside protection at all) produced a fake, tiny stop_dist, which fed into
+    # dollar_risk = stop_dist * shares as a misleadingly small "risk" figure shown directly to
+    # the user (decide response text, research page Dollar Risk field) — the real risk on such
+    # a plan is undefined/unbounded, not a few cents. Floor at a percentage of price instead so
+    # a degenerate stop still produces a dollar_risk in the right order of magnitude rather
+    # than an implausibly reassuring near-zero value. The equity-based max_pos_value cap below
+    # already prevents this from translating into an oversized real position either way.
+    stop_dist   = max(live_price - stop_price, live_price * 0.01)
     rr          = (take_profit - live_price) / stop_dist
 
     # ── Multipliers ────────────────────────────────────────────────────────────

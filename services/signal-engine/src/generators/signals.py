@@ -773,22 +773,29 @@ def _sr_context(df: pd.DataFrame) -> dict:
 
     nearest_res = min((r for r in resistances if r > current), default=None)
     nearest_sup = max((s for s in supports if s < current), default=None)
+    # T237-SIG1: `nearest_res` is filtered to strictly > current by construction, so the
+    # "already cleared resistance" branch below could never be true — a stock that decisively
+    # breaks to a new all-time high (clearing every pivot/52w-high in one move) got NO breakout
+    # boost at all, since no resistance level qualifies as "nearest" once price has passed it.
+    # Track the highest resistance level still <= current separately so a genuine cleared-level
+    # breakout is recognized.
+    cleared_res = max((r for r in resistances if r <= current), default=None)
 
     thr = 0.015  # 1.5% proximity threshold
     sr_context = "neutral"
 
-    if nearest_res is not None:
-        if current >= nearest_res:
-            # Price already cleared the level — always a breakout
-            sr_context = "breakout"
-        else:
-            dist = (nearest_res - current) / nearest_res
-            if dist <= thr:
-                # Approaching resistance: breakout if prev bar was clearly below
-                if prev < nearest_res * (1.0 - thr):
-                    sr_context = "breakout"
-                else:
-                    sr_context = "at_resistance"
+    if cleared_res is not None and prev < cleared_res:
+        # Price closed at/above a former resistance level that the prior bar was still below —
+        # a genuine, freshly-confirmed breakout, not just historically having traded above it.
+        sr_context = "breakout"
+    elif nearest_res is not None:
+        dist = (nearest_res - current) / nearest_res
+        if dist <= thr:
+            # Approaching resistance: breakout if prev bar was clearly below
+            if prev < nearest_res * (1.0 - thr):
+                sr_context = "breakout"
+            else:
+                sr_context = "at_resistance"
     if sr_context == "neutral" and nearest_sup is not None:
         dist = (current - nearest_sup) / current
         if dist <= thr:
