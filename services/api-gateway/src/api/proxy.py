@@ -3,6 +3,7 @@ through the gateway without knowing about internal service hosts.
 """
 from __future__ import annotations
 
+import posixpath
 import time as _time
 
 import httpx
@@ -142,6 +143,17 @@ def _require_auth(full_path: str, request: Request) -> None:
 
 @router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def reverse_proxy(full_path: str, request: Request):
+    # T237-AG1: FastAPI's {full_path:path} captures the raw, un-normalized path segment —
+    # Starlette does NOT collapse "..", but httpx DOES normalize dot-segments on the outbound
+    # request before it hits the wire. This mismatch let "auth/../stocks/AAPL" compute
+    # prefix="auth" (public, no auth check) here, while the actual request that reached
+    # market-data was normalized to "/stocks/AAPL" — a full, verified, zero-auth bypass of
+    # every route mapped in _ROUTES. Normalize BEFORE any auth/routing decision so the prefix
+    # this function reasons about always matches the prefix the upstream will actually receive.
+    normalized = posixpath.normpath("/" + full_path).lstrip("/")
+    if normalized in ("", ".") or normalized.startswith("../") or normalized == "..":
+        raise HTTPException(400, "Invalid path")
+    full_path = normalized
     if full_path in ("health", "docs", "openapi.json", "redoc"):
         raise HTTPException(404)
     _require_auth(full_path, request)
@@ -161,8 +173,15 @@ async def reverse_proxy(full_path: str, request: Request):
         safe_headers[k] = v
     # Research report generation (POST /research/*) calls the AI provider and can take 2-3 min.
     # Give it a longer timeout so the gateway doesn't cut it off before the AI responds.
+    # T237-AG2: /ai/* (AI chat, routed to research-engine's ai_proxy.py) was left on the
+    # generic 120s branch, but research-engine's own internal Claude/DeepSeek calls ALSO use a
+    # 120s httpx timeout — the gateway's clock starts strictly before research-engine's internal
+    # LLM-call clock (network hop + auth + Redis lookup happen first), so a near-120s LLM call
+    # could hit the gateway's timeout first, returning a generic 504 instead of research-engine's
+    # own more-informative timeout error, while research-engine keeps running the LLM call after
+    # the gateway has already given up. Give /ai/* the same longer budget as /research/*.
     prefix = full_path.strip("/").split("/", 1)[0]
-    proxy_timeout = 240 if prefix == "research" and request.method == "POST" else 120
+    proxy_timeout = 240 if prefix in ("research", "ai") and request.method == "POST" else 120
     try:
         async with httpx.AsyncClient(timeout=proxy_timeout) as client:
             r = await client.request(
