@@ -822,3 +822,57 @@ docker exec stockai-redis-1 redis-cli ttl paper:gate_block:<portfolio_id>
 # If two same-market portfolios show DIFFERENT regime_* gate reasons — that's the bug class
 # above; if they show different non-regime reasons (volume, K-score) — that's layer 2, expected.
 ```
+
+---
+
+## Recurring Issue: `docker compose up -d --force-recreate <one-service>` Can Recreate EVERY Service — And Recreation Silently Reverts `docker cp`-Patched Files
+
+**Symptom:** Running `docker compose -f docker/docker-compose.yml up -d --force-recreate frontend`
+(the standard, documented frontend deploy step) unexpectedly recreates every other service too —
+market-data, ml-prediction, signal-engine, decision-engine, etc. — not just frontend. Any
+in-progress background work in one of those other containers (e.g. a long-running model retrain
+started via `docker exec ... python3 -c "..."`) gets killed when its container is destroyed and
+rebuilt. Separately — and more dangerously — any file previously deployed via `docker cp` (the
+standard "hotfix without a full image rebuild" pattern used throughout this file) is **silently
+reverted** to whatever was baked into the image at its last build, because recreation destroys
+the container's writable layer entirely and starts fresh from the image.
+
+**Root cause (found 2026-07-08):** An `.env` change (SMTP_PASSWORD) earlier in the same session
+apparently altered docker-compose's computed config hash for other services too (likely because
+they share `.env` as their env_file), making compose consider them "changed" and eligible for
+recreation on the next `up -d`, even though only `frontend` was named. This surfaced in two ways
+in the same incident: (1) a production meta-model retrain running inside `stockai-ml-prediction-1`
+was silently killed mid-run when that container was swept into the same recreate; (2) after
+restarting the retrain, it *appeared* to succeed (wrote a new artifact, real AUC) but actually
+trained against a **stale, reverted** `builder.py` — the recreate had silently undone an earlier
+`docker cp` of a real code fix (removing a feature column), so the retrain used the OLD feature
+set while live inference was already using the NEW one, causing a real shape-mismatch error
+("index 66 is out of bounds for axis 1 with size 66") that looked like a fresh bug but was
+actually stale-file poisoning of the retrain itself.
+
+**What to check before AND after any `docker compose up -d --force-recreate <service>`:**
+```bash
+# Before: note which containers are currently running which images/uptimes, so you can tell
+# afterward if anything you didn't name also got recreated:
+docker ps --format '{{.Names}}: {{.Status}}'
+
+# After: re-run the same command and diff — any container with a suspiciously fresh "Up X
+# seconds" that you didn't intend to touch was swept in too:
+docker ps --format '{{.Names}}: {{.Status}}'
+
+# If ANY service besides the one you named got recreated, re-verify every docker cp-patched
+# file in that service is still current — recreation reverts to the baked-in image silently,
+# with no error, no warning:
+docker exec stockai-<service>-1 md5sum /app/<path/to/file.py>
+md5sum services/<service>/src/<path/to/file.py>   # compare against the git checkout
+# If they differ, re-run the docker cp + restart for that file before trusting anything that
+# depends on it (a retrain, a manual verification, etc.) — a mismatch here means the container
+# is running an older version of the code than what's actually committed.
+```
+
+**Design invariant:** After ANY `docker compose up -d --force-recreate`, treat every currently
+running container as a candidate for having reverted, not just the one you named — check `docker
+ps` before and after, and re-verify file checksums on anything you'd previously hotfixed via
+`docker cp` in a container that got swept in. Never assume a long-running background job (a
+retrain, a bulk backfill) survived a `docker compose up` on an unrelated service without checking
+`docker ps`/process state directly afterward.
