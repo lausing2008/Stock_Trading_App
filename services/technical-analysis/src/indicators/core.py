@@ -91,7 +91,11 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> 
     """Wilder's ATR (same formula as in signal-engine's _adx helper)."""
     prev_close = close.shift(1)
     tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-    return tr.ewm(alpha=1 / period, adjust=False).mean()
+    # T237-TA-ATR-MINPERIODS: unlike every other indicator in this file (sma, ema,
+    # bollinger_bands, cog), this .ewm() had no min_periods — it served a numeric ATR from
+    # bar 0, before `period` bars of true range had even accumulated. min_periods=period makes
+    # the warmup bars correctly NaN, consistent with the rest of this module.
+    return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
 
 def supertrend(
