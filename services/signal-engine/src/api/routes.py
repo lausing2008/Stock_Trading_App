@@ -492,7 +492,11 @@ def _bulk_persist(symbols: list[str]) -> None:
 
                     # T172-A: wire catalyst scores into fused_prob — small directional nudge
                     # Insider buying/selling is the strongest real-money conviction signal.
-                    # Congress score is 0-100 (clamped non-negative in catalyst.py).
+                    # T237-EI1: congress_score is actually clamped to [-100, 100] in
+                    # compute_congress_score (congress.py), NOT non-negative as this comment used
+                    # to claim — heavy congressional net selling legitimately produces a negative
+                    # score. Only positive thresholds were checked here, silently dropping the
+                    # bearish signal for exactly the stocks where lawmakers are net-selling.
                     _cat_adj = 0.0
                     if _insider_s is not None:
                         if _insider_s > 60:    _cat_adj += 0.03   # strong cluster of insider buys
@@ -500,8 +504,10 @@ def _bulk_persist(symbols: list[str]) -> None:
                         elif _insider_s < -30: _cat_adj -= 0.03   # heavy insider selling
                         elif _insider_s < -10: _cat_adj -= 0.015
                     if _congress_s is not None:
-                        if _congress_s > 50:   _cat_adj += 0.02   # meaningful congress net buying
-                        elif _congress_s > 25: _cat_adj += 0.01
+                        if _congress_s > 50:    _cat_adj += 0.02   # meaningful congress net buying
+                        elif _congress_s > 25:  _cat_adj += 0.01
+                        elif _congress_s < -50: _cat_adj -= 0.02   # meaningful congress net selling
+                        elif _congress_s < -25: _cat_adj -= 0.01
                     if _cat_adj != 0.0 and _ai.bullish_probability is not None:
                         import numpy as _np_cat
                         _ai.bullish_probability = round(
@@ -5392,6 +5398,8 @@ def signal_for(
                         _ai_sf.reasons["insider_score"] = round(_ins_sf, 1)
                     if _cong_sf is not None:
                         _ai_sf.reasons["congress_score"] = round(_cong_sf, 1)
+                    # T237-EI1: see the identical fix + explanation in signal_for()'s live-computation
+                    # path above — congress_score can be genuinely negative, not clamped to >=0.
                     _adj_sf = 0.0
                     if _ins_sf is not None:
                         if _ins_sf > 60:    _adj_sf += 0.03
@@ -5399,8 +5407,10 @@ def signal_for(
                         elif _ins_sf < -30: _adj_sf -= 0.03
                         elif _ins_sf < -10: _adj_sf -= 0.015
                     if _cong_sf is not None:
-                        if _cong_sf > 50:   _adj_sf += 0.02
-                        elif _cong_sf > 25: _adj_sf += 0.01
+                        if _cong_sf > 50:    _adj_sf += 0.02
+                        elif _cong_sf > 25:  _adj_sf += 0.01
+                        elif _cong_sf < -50: _adj_sf -= 0.02
+                        elif _cong_sf < -25: _adj_sf -= 0.01
                     if _adj_sf != 0.0 and _ai_sf.bullish_probability is not None:
                         _ai_sf.bullish_probability = round(
                             float(max(0.0, min(1.0, _ai_sf.bullish_probability + _adj_sf))), 4
