@@ -11,7 +11,6 @@ service, aggregates responses, and caches. All external HTTP traffic passes thro
 |---|---|
 | Transparent reverse proxy | `api/proxy.py` (~169 lines) |
 | JWT validation + auth enforcement | `api/proxy.py` `_require_auth()` |
-| Claude AI proxy (chat) | `api/ai_proxy.py` (~166 lines) |
 | Cross-service response aggregation | `api/aggregate.py` (~60 lines) |
 | Health check endpoints | `api/health.py` (~54 lines) |
 
@@ -32,7 +31,7 @@ service, aggregates responses, and caches. All external HTTP traffic passes thro
 | `/research` | research-engine:8008 | Yes |
 | `/decide` | decision-engine:8009 | Yes |
 | `/events`, `/catalyst` | event-intelligence:8010 | Yes |
-| `/ai` | ai_proxy (Claude API) | Yes |
+| `/ai` | research-engine:8008 (proxied network call — ai_proxy.py moved there 2026-07-04, no longer served locally by this gateway) | Yes |
 | `/health` | health.py (local) | No |
 
 Ports above are read via `_settings.<service>_url` env vars in `proxy.py`/`health.py`/`aggregate.py`
