@@ -574,7 +574,12 @@ def _score_fundamental(fund: dict, sector: str = "Unknown", price: float = 0.0) 
     debt = fund.get("total_debt") or 0
     book_equity = (fund.get("book_value") or 0) * (fund.get("shares_outstanding") or 0)
     de_ratio = round(debt / book_equity, 2) if book_equity > 0 else None
-    bs_assess = "Strong Balance Sheet"
+    # T237-RE3: defaulting to "Strong Balance Sheet" and never resetting it when de_ratio is
+    # None (e.g. book_value/shares_outstanding missing from the yfinance fundamentals fallback
+    # path) meant a report could show "Debt/Equity Ratio: —" directly next to
+    # "Assessment: Strong Balance Sheet" — a directly contradictory, misleadingly positive
+    # statement for a stock whose real leverage is unknown. Match the fcf_assess pattern below.
+    bs_assess = "Unknown"
     if de_ratio is not None:
         if de_ratio < 0.5:
             bs_assess = "Strong Balance Sheet"; score += 5
@@ -1518,7 +1523,12 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
             _get(client, f"{_s.market_data_url}/stocks/{sym}/prices?timeframe=1d&limit=260"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/indicators?days=400"),
             _get(client, f"{_s.technical_analysis_url}/ta/{sym}/levels"),
-            _get(client, f"{_s.signal_engine_url}/signals/{sym}", svc_auth),
+            # T237-RE1: without style=, GET /signals/{sym} returns {"signals": {SHORT:..., SWING:...}},
+            # not a flat {"signal":..., "confidence":..., "horizon":...} shape — this call previously
+            # omitted style=, so signal.get("signal")/get("confidence")/get("horizon") below were
+            # always None on every single report, silently dead-ending the frontend's Signal badge.
+            # style=SWING returns the flat shape directly, matching this app's default-style convention.
+            _get(client, f"{_s.signal_engine_url}/signals/{sym}?style=SWING", svc_auth),
             _get(client, f"{_s.ranking_engine_url}/rankings/{sym}"),
             _get(client, f"{_s.market_data_url}/stocks/latest_prices?symbols={sym}"),
             _get(client, f"{_s.event_intelligence_url}/catalyst/{sym}", svc_auth),
@@ -1648,7 +1658,11 @@ async def generate_research(symbol: str, req: ResearchRequest, request: Request,
         },
         "ranking": {
             "score": ranking.get("score"),
-            "rank": ranking.get("rank"),
+            # T237-RE2: "rank" removed — GET /rankings/{symbol} (ranking-engine) never returns a
+            # "rank" key (only rs_rank + KScoreComponents: technical/momentum/value/growth/
+            # volatility/score/fair_price/relative_strength), so this was always None. Not
+            # currently rendered anywhere in the frontend — dropped rather than left as a
+            # permanently-null stale contract; re-add for real if a peer-rank display is wanted.
             "technical": ranking.get("technical"),
             "momentum": ranking.get("momentum"),
             "value": ranking.get("value"),
