@@ -22,7 +22,13 @@ log = structlog.get_logger()
 def _compute_earnings_score(stock_id: int) -> tuple[float, int | None]:
     """Return (earnings_score 0-100, days_out)."""
     days_out = get_days_to_earnings(stock_id)
-    beat_rate = get_beat_rate(stock_id) or 0.5
+    # T237-EI2: `get_beat_rate(stock_id) or 0.5` — a genuine 0.0 beat rate (missed every one of
+    # the last 8 quarters) is falsy in Python, so `or` silently replaced it with the same 0.5
+    # default used for "no earnings history at all" (None). A stock with a real, well-established
+    # pattern of missing every quarter should not be scored identically to a brand-new stock with
+    # zero history. Use an explicit None check instead.
+    _raw_beat_rate = get_beat_rate(stock_id)
+    beat_rate = _raw_beat_rate if _raw_beat_rate is not None else 0.5
 
     score = 0.0
     if days_out is not None:
@@ -73,8 +79,10 @@ def _compute_risk_score(
     if insider_score < -30: risk += 25
     elif insider_score < -10: risk += 12
 
-    # Congress selling risk — compute_congress_score is clamped to ≥0, so check net
-    # trade direction directly from raw trades instead.
+    # Congress selling risk — checked directly from raw trade counts (not via
+    # compute_congress_score, which is actually clamped to [-100, 100], not >=0 as a prior
+    # version of this comment claimed — see T237-EI1 in signal-engine for where that same
+    # false assumption caused a real bug).
     _cong_trades = get_congress_for_symbol(stock_id, days=90)
     _cong_sells = sum(1 for t in _cong_trades if t["transaction_type"] == "sale")
     _cong_buys  = sum(1 for t in _cong_trades if t["transaction_type"] == "purchase")
@@ -256,17 +264,23 @@ def get_composite_leaderboard(limit: int = 20) -> list[dict]:
         ]
 
 
-async def recompute_all(technical_scores: dict[int, float] | None = None) -> dict:
+async def recompute_all(
+    technical_scores: dict[int, float] | None = None,
+    atr_pcts: dict[int, float] | None = None,
+) -> dict:
     """Recompute catalyst scores for all tracked stocks."""
     import asyncio as _aio
     with SessionLocal() as s:
         stocks = s.execute(select(Stock.id, Stock.symbol)).all()
 
     ts = technical_scores or {}
+    atrs = atr_pcts or {}
     computed = 0
     for stock_id, symbol in stocks:
         try:
-            await _aio.to_thread(compute_and_store, stock_id, ts.get(stock_id, 50.0))
+            await _aio.to_thread(
+                compute_and_store, stock_id, ts.get(stock_id, 50.0), atrs.get(stock_id, 0.0)
+            )
             computed += 1
         except Exception as exc:
             log.warning("catalyst.compute_fail", symbol=symbol, error=str(exc))

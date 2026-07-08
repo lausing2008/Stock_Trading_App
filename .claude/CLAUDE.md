@@ -751,11 +751,20 @@ considering the deploy verified. A container that "looks running" (`docker ps` s
 still be serving requests from **before** a crash-and-silent-fallback, or — as here — simply
 never picked up the intended change at all until the next unrelated restart exposes it.
 
-**Production is NOT usually affected** — confirmed both times (TuneHistory, index_membership)
-that production's `shared/db/` was already current, because production deploys copy `shared/db/`
-files explicitly as part of each backend deploy step (per the Deployment Pattern's own
-instructions), while local dev containers accumulate drift silently between sessions since
-they're rarely rebuilt from scratch. Still, always verify production separately — don't assume.
+**CORRECTED 2026-07-08 — production CAN also be affected, this claim was wrong:** this section
+previously claimed "production is NOT usually affected" based on two prior checks
+(TuneHistory, index_membership) that happened to find production current. On 2026-07-08, a
+routine signal-engine deploy (unrelated congress-score fix, T237-EI1) crashed on restart with
+the EXACT same `ImportError: cannot import name 'TuneHistory' from 'db'` on **production** —
+proving production's `shared/db/` had silently drifted too, the same way local dev containers
+do. The original theory (production always copies `shared/db/` explicitly per the Deployment
+Pattern) is only true when someone actually remembers to run that step for every affected
+container on every relevant deploy — exactly the kind of manual step that gets silently skipped,
+per the pattern already documented above ("PRODUCTION Container Ran Stale Service-Local Files").
+Fixed by syncing `shared/db/__init__.py` + `models.py` to `stockai-signal-engine-1` and
+restarting — same fix pattern as the local-dev case. **Do not assume production's `shared/db/`
+is current just because it "usually" was in the past** — always verify with a clean-startup log
+check after any restart, the same discipline required for service-local files.
 
 **Consider:** after any `shared/db/models.py` change, proactively sync `shared/db/` to every
 local dev container in the same pass, rather than waiting for each one to surface its own crash
