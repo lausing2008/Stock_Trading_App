@@ -214,7 +214,10 @@ def train_meta_model(db=None) -> dict:
             vec.append(float(SECTOR_MAP.get(row.sector or "", -1)))
             vec.append(float(_market_cap_bin(row.market_cap)))
             vec.append(float(HORIZON_MAP.get(str(row.horizon).upper(), -1)))
-            vec.append(float(row.confidence) if row.confidence is not None else 0.0)
+            # T237-ML-META1: row.confidence is stored 0-100 (SignalOutcome.confidence), but
+            # predict_meta()'s inference call site (trainer.py) divides xgb["confidence"] by 100
+            # before passing it in — normalize here too so training and inference features match.
+            vec.append(float(row.confidence) / 100.0 if row.confidence is not None else 0.0)
             vec.append(float(row.fused_prob) if row.fused_prob is not None else 0.0)
             vec.append(float(row.ta_score) if row.ta_score is not None else 0.0)
 

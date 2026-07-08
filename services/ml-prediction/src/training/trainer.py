@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from common.config import get_settings
 from common.logging import get_logger
-from db import EarningsEvent, Fundamental, Price, SessionLocal, Signal, SignalOutcome, Stock, TimeFrame
+from db import Fundamental, Price, SessionLocal, Signal, SignalOutcome, Stock, TimeFrame
 from sqlalchemy import desc as sa_desc
 
 from ..features import build_features, compute_label_threshold, fetch_macro_features, fetch_sector_features, fetch_signal_outcome_features, FEATURE_COLUMNS, FUNDAMENTAL_COLUMNS, SECTOR_COLUMNS, WEEKLY_COLUMNS, OUTCOME_COLUMNS
@@ -87,6 +87,22 @@ def _load_prices(symbol: str, lookback_days: int = 365 * 5) -> pd.DataFrame:
     )
 
 
+def _load_sector_and_market_cap(symbol: str) -> tuple[str | None, float | None]:
+    """Fetch a stock's sector and latest market_cap for predict_meta()'s sector_code/
+    market_cap_bin features — see T237-ML-META2."""
+    with SessionLocal() as session:
+        stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
+        if not stock:
+            return None, None
+        fund = session.execute(
+            select(Fundamental)
+            .where(Fundamental.stock_id == stock.id)
+            .order_by(sa_desc(Fundamental.as_of))
+            .limit(1)
+        ).scalar_one_or_none()
+        return stock.sector, (fund.market_cap if fund else None)
+
+
 def _load_fundamentals(symbol: str) -> dict | None:
     """Fetch the most-recent Fundamental row for a symbol and return as a dict.
 
@@ -142,122 +158,6 @@ def _load_fundamentals(symbol: str) -> dict | None:
         "peg_ratio":              getattr(row, "peg_ratio", None),
         "debt_to_equity":         getattr(row, "debt_to_equity", None),
         "ddm_discount":           ddm_discount,
-    }
-
-
-def _load_earnings_features(symbol: str) -> dict:
-    """Fetch EPS beat streak, surprise average, days-to-next-earnings, and T218 PEAD signals.
-
-    eps_beat_streak          — consecutive quarters beating consensus estimate (0=no streak; capped at 4)
-    eps_surprise_avg         — rolling 4-quarter average surprise_pct (positive = consistent beats)
-    days_to_earnings         — calendar days to next expected report (0–90; 90 when unknown or far)
-    avg_post_earnings_return_5d — mean 5-day price return after each of the last 4 earnings (PEAD signal)
-    avg_revenue_surprise_pct    — mean revenue beat/miss % over last 4 quarters (revenue quality)
-
-    All values are NaN-tolerant — missing data returns NaN keys (XGBoost handles natively).
-    """
-    today = date.today()
-    result: dict = {}
-    with SessionLocal() as session:
-        stock = session.execute(
-            select(Stock).where(Stock.symbol == symbol)
-        ).scalar_one_or_none()
-        if not stock:
-            return result
-
-        # Completed earnings (with actual EPS) — last 5 quarters
-        past = session.execute(
-            select(EarningsEvent)
-            .where(
-                EarningsEvent.stock_id == stock.id,
-                EarningsEvent.report_date <= today,
-                EarningsEvent.eps_actual.isnot(None),
-            )
-            .order_by(sa_desc(EarningsEvent.report_date))
-            .limit(5)
-        ).scalars().all()
-
-        # Next upcoming earnings date
-        next_date = session.execute(
-            select(EarningsEvent.report_date)
-            .where(
-                EarningsEvent.stock_id == stock.id,
-                EarningsEvent.report_date > today,
-            )
-            .order_by(EarningsEvent.report_date)
-            .limit(1)
-        ).scalar_one_or_none()
-
-    # EPS beat streak: count consecutive beats from most-recent going back
-    beat_streak = 0
-    for ev in past:
-        if ev.eps_actual is not None and ev.eps_estimate is not None and ev.eps_estimate != 0:
-            if ev.eps_actual > ev.eps_estimate:
-                beat_streak += 1
-            else:
-                break
-        elif ev.surprise_pct is not None:
-            if ev.surprise_pct > 0:
-                beat_streak += 1
-            else:
-                break
-    result["eps_beat_streak"] = float(min(beat_streak, 4))
-
-    # Rolling 4-quarter surprise average
-    surprises = [ev.surprise_pct for ev in past[:4] if ev.surprise_pct is not None]
-    result["eps_surprise_avg"] = float(np.mean(surprises)) if surprises else None
-
-    # T218: Post-earnings 5d drift (PEAD proxy) — mean return after each of the last 4 earnings.
-    # Positive = stock consistently drifts up after earnings beats. NaN when data unavailable.
-    post_5d = [ev.post_earnings_return_5d for ev in past[:4] if ev.post_earnings_return_5d is not None]
-    result["avg_post_earnings_return_5d"] = float(np.mean(post_5d)) if post_5d else None
-
-    # T218: Revenue surprise average — complement to EPS surprise; beats on revenue = stronger quality.
-    rev_surprises = [ev.revenue_surprise_pct for ev in past[:4] if ev.revenue_surprise_pct is not None]
-    result["avg_revenue_surprise_pct"] = float(np.mean(rev_surprises)) if rev_surprises else None
-
-    # Days to next earnings — clamp to [0, 90]; use 90 when no upcoming date known
-    if next_date is not None:
-        days = (next_date - today).days
-        result["days_to_earnings"] = float(min(max(days, 0), 90))
-    else:
-        result["days_to_earnings"] = 90.0  # unknown / far — treat as low-urgency
-
-    return result
-
-
-def _load_hk_flow_features(symbol: str) -> dict:
-    """Load HKEX Stock Connect southbound flow features for HK-listed symbols.
-
-    Returns {} for non-HK symbols — the caller merges this into fund_data and
-    build_features() will produce NaN for flow_5d_net_hkd / flow_strength on US stocks
-    (XGBoost handles NaN natively, so US models are unaffected).
-    """
-    if not symbol.upper().endswith(".HK"):
-        return {}
-    from sqlalchemy import text as _text
-    try:
-        with SessionLocal() as session:
-            rows = session.execute(_text("""
-                SELECT net_buy_hkd FROM hk_connect_flows
-                WHERE symbol = :sym AND trade_date >= now() - interval '25 days'
-                ORDER BY trade_date DESC LIMIT 20
-            """), {"sym": symbol}).fetchall()
-    except Exception:
-        return {}
-
-    nets = [float(r.net_buy_hkd) for r in rows if r.net_buy_hkd is not None]
-    if not nets:
-        return {}
-
-    flow_5d  = sum(nets[:5])  if len(nets) >= 5  else sum(nets)
-    flow_20d = sum(nets[:20]) if len(nets) >= 20 else sum(nets)
-    avg_20d  = flow_20d / min(len(nets), 20)
-    flow_strength = (flow_5d / 5) / avg_20d if avg_20d != 0 else 0.0
-
-    return {
-        "flow_5d_net_hkd": round(flow_5d / 1e6, 2),    # convert HKD → HKD millions
-        "flow_strength":   round(flow_strength, 3),
     }
 
 
@@ -562,14 +462,6 @@ def train_model(
         pass
     # T220-F: store symbol so build_features can look up earnings revision direction
     fund_data["_symbol"] = symbol
-    try:
-        fund_data.update(_load_earnings_features(symbol))
-    except Exception:
-        pass
-    try:
-        fund_data.update(_load_hk_flow_features(symbol))
-    except Exception:
-        pass
 
     # T228-POINT-IN-TIME-FUNDAMENTALS: pass historical snapshots for per-row joins
     fund_snapshots: list[dict] = []
@@ -981,14 +873,6 @@ def predict_latest(symbol: str, model_name: str = "xgboost", horizon: int = 5, s
         pass
     # T220-F: store symbol so build_features can look up earnings revision direction
     infer_fund_data["_symbol"] = symbol
-    try:
-        infer_fund_data.update(_load_earnings_features(symbol))
-    except Exception:
-        pass
-    try:
-        infer_fund_data.update(_load_hk_flow_features(symbol))
-    except Exception:
-        pass
 
     # inference_mode=True: keeps the latest bar even without a known future return
     X, _, _ = build_features(
@@ -1116,6 +1000,9 @@ def predict_latest_ensemble(symbol: str, horizon: int = 5, style: str = "SWING")
             ),
             "buy_threshold": buy_threshold,
         },
+        # T237-ML-OOS1: propagate the coin-flip-model safety flag through the ensemble boundary —
+        # signal-engine's SA-27 compression relies on this to discount noisy ML contributions.
+        "oos_suppressed": bool(xgb.get("oos_suppressed") or rf.get("oos_suppressed")),
     }
 
 
@@ -1172,20 +1059,31 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
     # predict_meta() returns None when the meta model hasn't been trained yet — falls back silently.
     _meta_prob: float | None = None
     try:
-        from training.meta_trainer import predict_meta as _predict_meta
+        # T237-ML-META3: `from training.meta_trainer import ...` (bare, no `src.`/`.` prefix) has
+        # never actually resolved in the running app — sys.path here is ['', '/app/shared', '/app',
+        # ...], never '/app/src', so this raised ModuleNotFoundError on every call, silently caught
+        # by the except below. The T89 meta-model ensemble member has never engaged in production
+        # since it was added. Use the same relative import routes.py already uses successfully.
+        from .meta_trainer import predict_meta as _predict_meta
         # Derive confidence + signal scores from the XGBoost result (best available proxy)
         _confidence = float(xgb.get("confidence", 0.0)) / 100.0  # convert to [0,1] range
         _fused_prob = float(xgb.get("bullish_probability", 0.5))
         # T228-TA-SCORE-META: use 3-model ensemble probability as ta_score proxy
         _ta_score = float(prob)
+        # T237-ML-META2: predict_meta() never fetches sector/market_cap itself — it only encodes
+        # whatever is passed in. This call previously hardcoded None for both (a stale comment
+        # claimed predict_meta looked them up internally), forcing every live prediction into the
+        # "unknown sector, unknown/micro cap" bucket even though train_meta_model() trains on the
+        # real values. Fetch them here so inference matches training.
+        _sector, _market_cap = _load_sector_and_market_cap(symbol)
         _meta_prob = _predict_meta(
             symbol=symbol,
             horizon=style,
             confidence=_confidence,
             fused_prob=_fused_prob,
             ta_score=_ta_score,
-            sector=None,    # fetched internally by predict_meta from DB
-            market_cap=None,
+            sector=_sector,
+            market_cap=_market_cap,
         )
     except Exception:
         _meta_prob = None
@@ -1264,6 +1162,9 @@ def predict_latest_ensemble_three(symbol: str, horizon: int = 5, style: str = "S
             "cv_auc_mean": round(mean_auc, 4),
             "buy_threshold": buy_threshold,
         },
+        # T237-ML-OOS1: propagate the coin-flip-model safety flag through the ensemble boundary —
+        # signal-engine's SA-27 compression relies on this to discount noisy ML contributions.
+        "oos_suppressed": bool(any(m.get("oos_suppressed") for m, _ in available)),
     }
 
 
@@ -1307,8 +1208,6 @@ def validate_walkforward(
     fund_data: dict = {}
     try:
         fund_data = _load_fundamentals(symbol) or {}
-        fund_data.update(_load_earnings_features(symbol))
-        fund_data.update(_load_hk_flow_features(symbol))
     except Exception:
         pass
     # T220-F: store symbol so build_features can look up earnings revision direction
