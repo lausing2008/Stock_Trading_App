@@ -21,8 +21,8 @@ from ..dsl import compute_features, evaluate_rule
 class BacktestResult:
     total_return: float
     cagr: float
-    sharpe: float
-    sortino: float
+    sharpe: float | None
+    sortino: float | None
     calmar: float | None
     max_drawdown: float
     win_rate: float
@@ -92,13 +92,28 @@ class BacktestEngine:
         cagr = (equity.iloc[-1]) ** (1 / years) - 1 if equity.iloc[-1] > 0 else -1.0
         # `or 1e-9` does NOT catch NaN — NaN is truthy in Python, so it bypasses `or`.
         # Use explicit NaN + zero checks for all volatility denominators.
-        _ann_vol_raw = rets.std() * np.sqrt(252)
-        ann_vol = float(_ann_vol_raw) if (not np.isnan(_ann_vol_raw) and _ann_vol_raw > 0) else 1e-9
+        # T237-SE1: the 1e-9 floor below used to feed straight into the sharpe/sortino division,
+        # which turns "no variance" (zero trades, or no losing days at all) into an explosion to
+        # +-10^7-10^9 instead of a meaningful ratio — e.g. an all-zero return series produced
+        # sharpe=-50,000,000.0, and an all-positive-day series produced sortino=2,470,000,000.0.
+        # A strict `> 0` check alone is not enough: an all-identical (but nonzero) return series
+        # has std() that's floating-point noise (~1e-17), not exactly 0.0, so it still passes
+        # `> 0` and still explodes — use a real epsilon threshold, matching the float-noise-bypass
+        # fix already applied a few lines below for gross_loss. Return None in the near-zero-
+        # variance case, same pattern as the existing calmar None-on-zero-drawdown a few lines
+        # below, rather than silently corrupting the stored/displayed ratio.
+        _VOL_EPS = 1e-9
         rf_annual = 0.05  # current T-bill rate; sharpe was overstated by ~1pt at rf=0
-        sharpe = float((rets.mean() * 252 - rf_annual) / ann_vol)
+        _ann_vol_raw = rets.std() * np.sqrt(252)
+        sharpe = (
+            float((rets.mean() * 252 - rf_annual) / _ann_vol_raw)
+            if (not np.isnan(_ann_vol_raw) and _ann_vol_raw > _VOL_EPS) else None
+        )
         _sortino_vol_raw = rets[rets < 0].std() * np.sqrt(252)
-        sortino_vol = float(_sortino_vol_raw) if (not np.isnan(_sortino_vol_raw) and _sortino_vol_raw > 0) else 1e-9
-        sortino = float((rets.mean() * 252 - rf_annual) / sortino_vol)
+        sortino = (
+            float((rets.mean() * 252 - rf_annual) / _sortino_vol_raw)
+            if (not np.isnan(_sortino_vol_raw) and _sortino_vol_raw > _VOL_EPS) else None
+        )
         # Return None (not 0.0) for zero-drawdown — 0.0 is indistinguishable from a losing strategy.
         calmar = float(cagr / dd.max()) if dd.max() > 0 else None
 
@@ -116,8 +131,8 @@ class BacktestEngine:
         return BacktestResult(
             total_return=round(total_return, 4),
             cagr=round(float(cagr), 4),
-            sharpe=round(sharpe, 4),
-            sortino=round(sortino, 4),
+            sharpe=round(sharpe, 4) if sharpe is not None else None,
+            sortino=round(sortino, 4) if sortino is not None else None,
             calmar=round(calmar, 4) if calmar is not None else None,
             max_drawdown=round(float(dd.max()), 4),
             win_rate=round(win_rate, 4),
@@ -125,5 +140,5 @@ class BacktestEngine:
             n_trades=len(trades),
             equity_curve=equity_curve,
             trades=trades,
-            metrics_raw={"ann_vol": float(ann_vol), "rf_annual": rf_annual},
+            metrics_raw={"ann_vol": float(_ann_vol_raw), "rf_annual": rf_annual},
         )
