@@ -2942,6 +2942,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                           f"{_mkt} position cap reached ({_mkt_open_count}/{_max_mkt_pos}) — no new entries until a position closes")
         return
 
+    # T237-GATE1: every portfolio-level gate above has now passed. _write_gate_block()'s Redis
+    # key only self-expires after a 4h TTL — nothing previously cleared it the moment a gate
+    # condition actually resolved (e.g. regime_risk_off -> choppy), so the Portfolio page could
+    # show a stale "Risk-Off Regime" badge for up to 4h after the regime had already recovered.
+    # Clear proactively here so the badge disappears as soon as this portfolio next scans clean.
+    _clear_gate_block(portfolio.id)
+
     # T194: Open exposure cap — block new entries if deployed capital exceeds max % of equity.
     # A human never commits more than 40% of their capital to open positions simultaneously.
     _max_exposure_pct = cfg.get("max_open_exposure_pct", 0.40)

@@ -25,7 +25,7 @@ from xgboost import XGBClassifier
 from common.logging import get_logger
 
 from ..features import build_features, compute_label_threshold, fetch_macro_features, fetch_sector_features, fetch_signal_outcome_features
-from .trainer import _blend_weights, _load_earnings_features, _load_fund_snapshots, _load_fundamentals, _load_hk_flow_features, _load_prices, _params_path, _recency_weights, train_model
+from .trainer import _blend_weights, _load_fund_snapshots, _load_fundamentals, _load_prices, _params_path, _recency_weights, train_model
 
 log = get_logger("tuner")
 
@@ -110,14 +110,6 @@ def tune_symbol(symbol: str, n_trials: int = 60, horizon: int = 5, style: str = 
         pass
     # T220-F: store symbol so build_features can look up earnings revision direction
     fund_data["_symbol"] = symbol
-    try:
-        fund_data.update(_load_earnings_features(symbol))
-    except Exception:
-        pass
-    try:
-        fund_data.update(_load_hk_flow_features(symbol))
-    except Exception:
-        pass
 
     # T234-ML-TUNER-MISSING-PIT: this call was never passing fund_snapshots, so the tuner
     # always fell through to build_features' plain broadcast-from-today's-snapshot path for
