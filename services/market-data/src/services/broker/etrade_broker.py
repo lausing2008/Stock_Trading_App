@@ -46,11 +46,14 @@ class EtradeBroker(BrokerInterface):
 
     # ── OAuth helpers ─────────────────────────────────────────────────────────
 
-    def _oauth1_base(self) -> OAuth1:
-        """OAuth1 using only consumer key/secret — for request-token step."""
+    def _oauth1_base(self, callback_uri: str = "oob") -> OAuth1:
+        """OAuth1 using only consumer key/secret — for request-token step.
+        callback_uri is passed as an OAuth header param (not a query param).
+        """
         return OAuth1(
             self._config["consumer_key"],
             self._config["consumer_secret"],
+            callback_uri=callback_uri,
         )
 
     def _oauth1(self) -> OAuth1:
@@ -68,8 +71,7 @@ class EtradeBroker(BrokerInterface):
         """
         resp = requests.get(
             f"{_PROD_BASE}/oauth/request_token",  # always prod endpoint for OAuth
-            params={"format": "json", "oauth_callback": "oob"},
-            auth=self._oauth1_base(),
+            auth=self._oauth1_base(callback_uri="oob"),  # oauth_callback in header, not query
             timeout=10,
         )
         if not resp.ok:
@@ -97,7 +99,6 @@ class EtradeBroker(BrokerInterface):
         )
         resp = requests.get(
             f"{_PROD_BASE}/oauth/access_token",
-            params={"format": "json"},
             auth=auth,
             timeout=10,
         )

@@ -67,6 +67,9 @@ Signal accuracy improvements (SA-1 through SA-7):
 from __future__ import annotations
 
 import json
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,6 +83,23 @@ from common.logging import get_logger
 log = get_logger("signal-generator")
 _settings = get_settings()
 
+# Suppress httpx INFO-level request logs — they produce a line per HTTP call
+# which fills logs with expected 404s from the ML endpoint cascade.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _adj_close(df: pd.DataFrame) -> pd.Series:
+    """Return adj_close when available (filling gaps with close), else close.
+
+    Dividend-adjusted prices prevent false SMA/ATR/MACD signals on ex-dividend
+    dates where unadjusted close drops by the dividend amount.
+    """
+    ac = df.get("adj_close")
+    if ac is not None and not ac.isna().all():
+        return ac.fillna(df["close"]).astype(float)
+    return df["close"].astype(float)
+
 # ── TA component weights (SA-5) ───────────────────────────────────────────────
 # Defaults are the hand-tuned values used since launch.
 # Run POST /signals/calibrate_ta_weights to compute logistic-regression-derived
@@ -91,6 +111,8 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "sma50_above_sma200":       0.10,
     "golden_cross_event":       0.10,
     "death_cross_penalty":      0.10,
+    "gc_spread_expanding":      0.06,
+    "gc_spread_narrowing":      0.06,
     "rsi_sweet_spot":           0.15,
     "rsi_mild_oversold":        0.08,
     "rsi_mild_overbought":      0.06,
@@ -101,6 +123,7 @@ _TA_WEIGHTS_DEFAULT: dict[str, float] = {
     "macd_strong":              0.15,
     "macd_positive":            0.08,
     "macd_zero_cross_up":       0.05,
+    "macd_momentum_fading":     0.08,
     "bb_mid_zone":              0.10,
     "price_above_vwap":         0.08,
     "price_below_vwap_penalty": 0.05,
@@ -115,10 +138,39 @@ _CONVICTION_WEIGHTS_PATH = Path(_settings.model_dir) / "conviction_weights.json"
 # Global ML weight cap override: None means use the per-style profile default.
 # Set by calibrate_ml_weight(); loaded at import time from disk if present.
 _ml_weight_global_cap: float | None = None
+_ml_weight_lock = threading.Lock()
+_ML_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml_fetch")
+
+_ml_svc_token_cache: str = ""
+
+
+def _ml_service_token() -> str:
+    """Return a long-lived service JWT for authenticating signal-engine → ml-prediction calls."""
+    global _ml_svc_token_cache
+    if _ml_svc_token_cache:
+        return _ml_svc_token_cache
+    import time
+    import uuid
+    from jose import jwt as _jwt
+    from common.config import get_settings as _gs
+    s = _gs()
+    payload = {"sub": "signal-engine", "exp": int(time.time()) + 365 * 86400, "jti": str(uuid.uuid4())}
+    _ml_svc_token_cache = _jwt.encode(payload, s.jwt_secret, algorithm="HS256")
+    return _ml_svc_token_cache
 
 
 def _load_ml_weight_override() -> float | None:
-    """Load calibrated ML weight cap from disk, or return None (use profile default)."""
+    """Load calibrated ML weight cap from Redis (primary), file (fallback)."""
+    try:
+        import redis as _redis_lib
+        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        _val = _rc.get("stockai:ml_weight_cap")
+        if _val:
+            v = float(_val)
+            if 0.0 <= v <= 1.0:
+                return v
+    except Exception:
+        pass
     try:
         if _ML_WEIGHT_OVERRIDE_PATH.exists():
             with open(_ML_WEIGHT_OVERRIDE_PATH) as f:
@@ -132,9 +184,20 @@ def _load_ml_weight_override() -> float | None:
 
 
 def set_ml_weight_global_cap(cap: float | None) -> None:
-    """Update the in-process ML weight cap override and persist to disk."""
+    """Update the in-process ML weight cap override and persist to Redis + file."""
     global _ml_weight_global_cap
-    _ml_weight_global_cap = cap
+    with _ml_weight_lock:
+        _ml_weight_global_cap = cap
+    try:
+        import redis as _redis_lib
+        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        if cap is None:
+            _rc.delete("stockai:ml_weight_cap")
+        else:
+            _rc.setex("stockai:ml_weight_cap", 90 * 86400, str(round(cap, 4)))
+    except Exception:
+        pass
+    # Legacy file write (backward compat)
     try:
         Path(_ML_WEIGHT_OVERRIDE_PATH).parent.mkdir(parents=True, exist_ok=True)
         if cap is None:
@@ -150,16 +213,28 @@ _ml_weight_global_cap = _load_ml_weight_override()
 
 
 def _load_ta_weights() -> dict[str, float]:
-    """Load calibrated TA weights from disk, falling back to defaults."""
+    """Load calibrated TA weights from Redis (primary), file (fallback), then defaults.
+
+    T228: moved from file-only to Redis-primary so Docker rebuilds don't wipe calibration state.
+    """
+    def _apply_migration(saved: dict) -> dict:
+        if "volume_surge" in saved and "volume_z" not in saved:
+            saved["volume_z"] = saved.pop("volume_surge")
+        return {**_TA_WEIGHTS_DEFAULT, **saved}
+
+    try:
+        import redis as _redis_lib
+        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        _raw = _rc.get("stockai:ta_weights")
+        if _raw:
+            return _apply_migration(json.loads(_raw))
+    except Exception:
+        pass
     try:
         if _TA_WEIGHTS_PATH.exists():
             with open(_TA_WEIGHTS_PATH) as f:
                 saved = json.load(f)
-            # Key migration: old files used 'volume_surge'; rename to 'volume_z'
-            if "volume_surge" in saved and "volume_z" not in saved:
-                saved["volume_z"] = saved.pop("volume_surge")
-            # Merge: saved values override defaults; new keys in defaults keep their value
-            return {**_TA_WEIGHTS_DEFAULT, **saved}
+            return _apply_migration(saved)
     except Exception:
         pass
     return dict(_TA_WEIGHTS_DEFAULT)
@@ -171,14 +246,39 @@ def _load_ta_weights() -> dict[str, float]:
 # loaded for all cases so the dict is always populated.
 _ta_weights: dict[str, float] = _load_ta_weights()
 _ta_weights_calibrated: bool = _TA_WEIGHTS_PATH.exists()
+_ta_weights_lock = threading.Lock()
+
+
+def set_ta_weights(new_weights: dict[str, float]) -> None:
+    """Update the in-process TA weights immediately after calibration writes them.
+
+    T232-SIG6: calibrate_ta_weights() used to write to ta_weights.json + Redis and report
+    success, but _ta_weights/_ta_weights_calibrated (the module globals _ta_score() actually
+    reads on every call) were only ever set once at import time — a running process could be
+    operating on weeks-stale weights while an admin believed the latest calibration was live.
+    Mirrors set_ml_weight_global_cap()'s existing reassign-under-lock pattern.
+    """
+    global _ta_weights, _ta_weights_calibrated
+    with _ta_weights_lock:
+        _ta_weights = dict(new_weights)
+        _ta_weights_calibrated = True
 
 
 def load_conviction_weights() -> dict[str, float]:
-    """Load calibrated conviction layer weights from disk (AL-3).
+    """Load calibrated conviction layer weights from Redis (primary), file (fallback) (AL-3).
 
     Returns a dict of {reason_flag: accuracy_vs_baseline} where values > 0 mean the
-    flag is more common in winning trades.  Returns empty dict if not yet calibrated.
+    flag is more common in winning trades. Returns empty dict if not yet calibrated.
+    T228: Redis-primary so weights survive Docker rebuilds.
     """
+    try:
+        import redis as _redis_lib
+        _rc = _redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        _raw = _rc.get("stockai:conviction_weights")
+        if _raw:
+            return json.loads(_raw).get("edge_pct", {})
+    except Exception:
+        pass
     try:
         if _CONVICTION_WEIGHTS_PATH.exists():
             with open(_CONVICTION_WEIGHTS_PATH) as f:
@@ -218,8 +318,8 @@ def _fetch_weekly_prices(symbol: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
-    """Return (bullish_probability, test_auc, ml_meta).
+def _fetch_ml_data(symbol: str, style_key: str = "SWING") -> tuple[float | None, float, dict]:
+    """Return (bullish_probability, test_auc, ml_meta) for the given style.
 
     SA-8: tries the 3-model ensemble (XGBoost+LightGBM+RF) first, then 2-model,
     then XGBoost-only. ml_meta carries per-model probabilities and agreement status
@@ -227,8 +327,11 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
 
     test_auc drives the dynamic ML/TA fusion weight — a high-quality model (AUC 0.70)
     earns up to 75% weight; a near-random model (AUC < 0.52) gets 0% weight.
+
+    style_key routes to a horizon-specific artifact (e.g. {symbol}_short.joblib).
+    Falls back gracefully to the SWING artifact if a style-specific model is absent.
     """
-    payload = {"symbol": symbol}
+    payload = {"symbol": symbol, "style": style_key}
     endpoints = [
         ("/ml/predict_ensemble_three", payload),
         ("/ml/predict_ensemble",       payload),
@@ -237,7 +340,8 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
     for endpoint, body in endpoints:
         try:
             with httpx.Client(timeout=10) as c:
-                r = c.post(f"{_settings.ml_prediction_url}{endpoint}", json=body)
+                r = c.post(f"{_settings.ml_prediction_url}{endpoint}", json=body,
+                           headers={"Authorization": f"Bearer {_ml_service_token()}"})
                 if r.status_code == 200:
                     data = r.json()
                     prob = float(data.get("bullish_probability", 0.5))
@@ -250,8 +354,12 @@ def _fetch_ml_data(symbol: str) -> tuple[float | None, float, dict]:
                         "ml_oos_suppressed": bool(data.get("oos_suppressed", False)),
                     }
                     return prob, test_auc, ml_meta
+                # 404 = no model for this endpoint — try next in cascade (expected, not an error)
+                if r.status_code != 404:
+                    log.warning("ml.fetch_unexpected_status", symbol=symbol, endpoint=endpoint, status=r.status_code)
         except Exception as exc:
             log.warning("ml.fetch_failed", symbol=symbol, endpoint=endpoint, error=str(exc))
+    log.debug("ml.no_model", symbol=symbol, note="all endpoints returned 404 — TA-only signal")
     return None, 0.0, {}
 
 
@@ -291,6 +399,25 @@ def _fetch_market_breadth() -> float | None:
     except Exception:
         pass
     return None
+
+
+def _fetch_hsi_regime() -> str:
+    """Returns 'bull', 'bear', or 'unknown' based on HSI vs its 20-day SMA.
+
+    Called only for HK stocks. Returns 'unknown' on any failure (fail-open).
+    The US SPY/VIX regime does not reflect HK market conditions — during June 2026,
+    all HK signals showed market_regime='bull' while HSI was in a sustained downtrend.
+    """
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("^HSI").history(period="35d")
+        closes = hist["Close"].dropna().tolist()
+        if len(closes) >= 20:
+            sma20 = sum(closes[-20:]) / 20
+            return "bull" if float(closes[-1]) > sma20 else "bear"
+    except Exception:
+        pass
+    return "unknown"
 
 
 def _fetch_earnings_proximity(symbol: str) -> int | None:
@@ -408,11 +535,55 @@ def _fetch_patterns_from_ta(symbol: str) -> list[dict]:
     return []
 
 
+def _supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> tuple[int, bool, bool]:
+    """Return (trend, cross_up, cross_down) from the last bar.
+
+    trend:      +1 if price above supertrend line (bullish), -1 if below
+    cross_up:   True if trend just flipped from -1 → +1 this bar
+    cross_down: True if trend just flipped from +1 → -1 this bar
+    """
+    high  = df["high"].astype(float)
+    low   = df["low"].astype(float)
+    close = _adj_close(df)
+    n = len(close)
+    if n < period + 2:
+        return 1, False, False
+
+    prev_c = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_c).abs(), (low - prev_c).abs()], axis=1).max(axis=1)
+    atr_s = tr.ewm(alpha=1 / period, adjust=False).mean()
+
+    hl2 = (high + low) / 2
+    basic_upper = (hl2 + multiplier * atr_s).values
+    basic_lower = (hl2 - multiplier * atr_s).values
+    close_v = close.values
+
+    final_upper = basic_upper.copy()
+    final_lower = basic_lower.copy()
+    trend = np.ones(n)
+
+    for i in range(1, n):
+        if np.isnan(basic_upper[i]) or np.isnan(basic_lower[i]):
+            trend[i] = trend[i - 1]
+            continue
+        final_upper[i] = basic_upper[i] if (basic_upper[i] < final_upper[i - 1] or close_v[i - 1] > final_upper[i - 1]) else final_upper[i - 1]
+        final_lower[i] = basic_lower[i] if (basic_lower[i] > final_lower[i - 1] or close_v[i - 1] < final_lower[i - 1]) else final_lower[i - 1]
+        trend[i] = 1.0 if (trend[i - 1] == -1 and close_v[i] > final_upper[i]) else (
+            -1.0 if (trend[i - 1] == 1 and close_v[i] < final_lower[i]) else trend[i - 1]
+        )
+
+    return (
+        int(trend[-1]),
+        bool(trend[-1] == 1 and trend[-2] == -1),
+        bool(trend[-1] == -1 and trend[-2] == 1),
+    )
+
+
 def _adx(df: pd.DataFrame, period: int = 14) -> tuple[float, float, float]:
     """Return (ADX, +DI, -DI). ADX > 25 = trending, > 40 = strong trend."""
     high = df["high"].astype(float)
     low  = df["low"].astype(float)
-    close = df["close"].astype(float)
+    close = _adj_close(df)
 
     prev_close = close.shift(1)
     tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
@@ -512,7 +683,7 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
     # Partial confidence for 15–25 bars (3–6 months): scales from 0.70→1.0 linearly.
     # Full confidence (1.0) requires 26+ bars (6 months).
     weekly_confidence = min(1.0, 0.70 + (len(df) - 15) / (26 - 15) * 0.30) if len(df) < 26 else 1.0
-    close = df["close"].astype(float)
+    close = _adj_close(df)
 
     d = close.diff()
     g = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
@@ -548,12 +719,21 @@ def _weekly_technicals(df: pd.DataFrame) -> dict:
     elif macd_positive:
         score += 0.10
 
+    # Count consecutive weeks RSI ≤ 38 (used by graduated bearish gate)
+    rsi_consec_low = 0
+    for v in reversed((rsi <= 38).values):
+        if v:
+            rsi_consec_low += 1
+        else:
+            break
+
     return {
         "weekly_rsi": round(rsi_val, 1) if rsi_val is not None else None,
         "weekly_trend": weekly_trend,
         "weekly_macd_bull": weekly_macd_bull,
         "weekly_score": float(np.clip(score, 0, 1)),
         "weekly_confidence": weekly_confidence,
+        "weekly_rsi_consec_low": rsi_consec_low,
     }
 
 
@@ -563,7 +743,7 @@ def _sr_context(df: pd.DataFrame) -> dict:
     Uses swing high/low pivots from the last 60 bars plus 52-week high/low.
     Returns sr_context: 'breakout' | 'at_resistance' | 'at_support' | 'neutral'.
     """
-    close = df["close"].astype(float)
+    close = _adj_close(df)
     high  = df["high"].astype(float)
     low   = df["low"].astype(float)
     current = float(close.iloc[-1])
@@ -634,7 +814,7 @@ def _pullback_recovery(df: pd.DataFrame) -> tuple[float, dict]:
     Returns (score_delta, reasons_dict). Delta is 0.04–0.07 added to the
     normalised TA score when all conditions are met.
     """
-    close  = df["close"].astype(float)
+    close  = _adj_close(df)
     volume = df["volume"].astype(float)
     reasons: dict = {}
 
@@ -727,7 +907,9 @@ def _pattern_score_adjustment(patterns: list[dict], df_len: int) -> tuple[float,
 
 
 def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> tuple[float, dict]:
-    close  = df["close"].astype(float)
+    if df.empty or len(df) < 14:
+        return 0.5, {"insufficient_data": True, "bar_count": len(df)}
+    close  = _adj_close(df)
     volume = df["volume"].astype(float)
     reasons: dict = {}
 
@@ -747,10 +929,23 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
         golden_cross_event = bool(prev50 <= prev200 and sma50 > sma200)
         death_cross_event  = bool(prev50 >= prev200 and sma50 < sma200)
 
+    # GC spread velocity: is the 50/200 spread still widening (bullish) or narrowing (exhaustion)?
+    # Narrowing spread in golden territory is an early warning even before a death cross forms.
+    gc_spread_pct = None
+    gc_spread_expanding = False
+    if not pd.isna(sma50) and not pd.isna(sma200) and sma200 > 0:
+        gc_spread_pct = round(float((sma50 - sma200) / sma200), 4)
+        if len(sma50_s.dropna()) >= 6 and len(sma200_s.dropna()) >= 6:
+            spread_now = float(sma50_s.iloc[-1] - sma200_s.iloc[-1])
+            spread_5d  = float(sma50_s.iloc[-6] - sma200_s.iloc[-6])
+            gc_spread_expanding = bool(spread_now > spread_5d)
+
     reasons["trend_above_sma50"]    = above_sma50
     reasons["sma50_above_sma200"]   = sma50_above_sma200
     reasons["golden_cross_event"]   = golden_cross_event
     reasons["death_cross_event"]    = death_cross_event
+    reasons["gc_spread_pct"]        = gc_spread_pct
+    reasons["gc_spread_expanding"]  = gc_spread_expanding
 
     # ── RSI (full series — needed for StochRSI and divergence) ────────────
     d = close.diff()
@@ -781,20 +976,28 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     # argmax in the window. The volume-inversion (0.5× on high-volume "confirmation") is
     # also unbacktested and contested. Both the penalty and the bullish bonus are zeroed
     # until the logic is rewritten to compare RSI values at the two price peaks.
-    rsi_divergence = "none"
-    reasons["rsi_divergence"] = rsi_divergence
-
     # ── MACD histogram + zero-line crossover ──────────────────────────────
     macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     hist = macd_line - macd_line.ewm(span=9, adjust=False).mean()
     macd_hist  = float(hist.iloc[-1])
     macd_rising = bool(hist.iloc[-1] > hist.iloc[-2]) if len(hist) >= 2 else False
+    # 3-bar histogram slope: smoother than single-bar, catches momentum exhaustion earlier.
+    # A falling slope on a positive histogram (macd_momentum_fading) is the key warning:
+    # it precedes price drops by 2-3 bars and was the root cause of false BUYs like 6613.HK.
+    macd_hist_slope = float(hist.iloc[-1] - hist.iloc[-3]) if len(hist.dropna()) >= 4 else 0.0
+    macd_hist_expanding  = macd_hist_slope > 0
+    # Only flag fading when slope is strictly negative — flat (slope==0) scores 0.7 in macd_score,
+    # not 0.5, so that branch is reachable.
+    macd_momentum_fading = (macd_hist > 0) and (macd_hist_slope < 0)
     macd_zero_cross_up = False
     if len(macd_line.dropna()) >= 2:
         macd_zero_cross_up = bool(macd_line.iloc[-1] > 0 and macd_line.iloc[-2] <= 0)
-    reasons["macd_hist"]          = macd_hist
-    reasons["macd_rising"]        = macd_rising
-    reasons["macd_zero_cross_up"] = macd_zero_cross_up
+    reasons["macd_hist"]             = macd_hist
+    reasons["macd_rising"]           = macd_rising
+    reasons["macd_hist_slope"]       = round(macd_hist_slope, 5)
+    reasons["macd_hist_expanding"]   = macd_hist_expanding
+    reasons["macd_momentum_fading"]  = macd_momentum_fading
+    reasons["macd_zero_cross_up"]    = macd_zero_cross_up
 
     # ── Bollinger Bands %B ────────────────────────────────────────────────
     sma20 = close.rolling(20).mean()
@@ -815,6 +1018,18 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
         price_above_vwap = bool(close.iloc[-1] > vwma_val)
     reasons["price_above_vwap"] = price_above_vwap
     reasons["vwma_20"] = float(vwma_val) if not pd.isna(vwma_val) else None
+
+    # ── Supertrend ────────────────────────────────────────────────────────
+    st_trend, st_cross_up, st_cross_down = _supertrend(df)
+    reasons["supertrend_bullish"] = bool(st_trend == 1)
+    reasons["supertrend_cross_up"] = st_cross_up
+    reasons["supertrend_cross_down"] = st_cross_down
+
+    # ── ROC (Rate of Change) — 10-day and 20-day ──────────────────────────
+    roc_10 = float((close.iloc[-1] / close.iloc[-11] - 1) * 100) if len(close) >= 11 else None
+    roc_20 = float((close.iloc[-1] / close.iloc[-21] - 1) * 100) if len(close) >= 21 else None
+    reasons["roc_10"] = round(roc_10, 2) if roc_10 is not None else None
+    reasons["roc_20"] = round(roc_20, 2) if roc_20 is not None else None
 
     # ── ADX — trend strength ──────────────────────────────────────────────
     adx_val, di_plus, di_minus = _adx(df)
@@ -846,16 +1061,27 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
     _vz = float(reasons.get("volume_z") or 0.0)
 
     # TREND pillar — structural price direction
-    # Weighted average (not max) so all 4 inputs contribute proportionally.
-    if death_cross_event:
-        p_trend = 0.0  # confirmed downtrend; hard override regardless of SMAs
+    # Supertrend included (10%): complements SMA/ADX trend confirmation.
+    # Cross-up gets extra weight (1.0) vs sustained bullish (0.7).
+    # GC spread velocity: golden territory with narrowing spread scores 0.4 (not 1.0) —
+    # 50 SMA curling back toward 200 is early-warning reversal even before a death cross.
+    if death_cross_event or st_cross_down:
+        p_trend = 0.0  # confirmed downtrend; hard override
     else:
-        _gc_score = 1.0 if (golden_cross_event and _vz > 0.5) else (0.7 if golden_cross_event else 0.0)
+        _gc_score = (
+            1.0 if (golden_cross_event and _vz > 0.5 and gc_spread_expanding) else
+            0.8 if (golden_cross_event and gc_spread_expanding) else
+            0.5 if golden_cross_event else  # fresh cross but spread already narrowing
+            0.0
+        )
+        _sma_golden_score = (0.8 if gc_spread_expanding else 0.4) if sma50_above_sma200 else 0.0
+        _st_score = 1.0 if st_cross_up else (0.7 if st_trend == 1 else 0.0)
         p_trend = (
-            (1.0 if above_sma50 else 0.0)      * 0.35 +
-            (1.0 if sma50_above_sma200 else 0.0) * 0.25 +
-            (1.0 if bullish_trend else 0.0)      * 0.25 +
-            _gc_score                            * 0.15
+            (1.0 if above_sma50 else 0.0) * 0.30 +
+            _sma_golden_score              * 0.25 +
+            (1.0 if bullish_trend else 0.0) * 0.20 +
+            _gc_score                       * 0.15 +
+            _st_score                       * 0.10
         )
 
     # MOMENTUM pillar — oscillator-based rate of change
@@ -867,9 +1093,13 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
         0.5 if (rsi_val is not None and 65 <= rsi_val < 72) else
         0.0
     )
+    # Use 3-bar histogram slope (macd_hist_expanding) instead of single-bar macd_rising.
+    # macd_momentum_fading: histogram positive but slope negative — momentum exhaustion,
+    # scores 0.5 instead of 0.7 to avoid rewarding a decaying BUY edge.
     macd_score = (
-        1.0 if (macd_hist > 0 and macd_rising) else
+        1.0 if (macd_hist > 0 and macd_hist_expanding) else
         0.9 if macd_zero_cross_up else
+        0.5 if macd_momentum_fading else
         0.7 if macd_hist > 0 else
         0.0
     )
@@ -882,11 +1112,19 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
         rsi_score   *= 0.0   # extreme overbought RSI is a warning, not a bullish signal
     p_momentum = rsi_score * 0.35 + macd_score * 0.40 + stoch_score * 0.25
 
-    # VOLUME pillar — demand confirmation
-    p_volume = max(
-        1.0 if obv_trend_bullish else 0.0,
-        0.7 if _vz > 0.5 else 0.0,
-    )
+    # VOLUME pillar — demand confirmation (SA-32: weighted AND logic)
+    # Both OBV trend and volume-z positive → full conviction (1.0).
+    # Only one positive → partial conviction (0.6); neither → 0.0.
+    # Previous OR logic (max) allowed a strong OBV trend with flat recent volume
+    # (or vice versa) to score 1.0, overstating demand confirmation.
+    obv_signal = obv_trend_bullish
+    vol_z_signal = _vz > 0.5
+    if obv_signal and vol_z_signal:
+        p_volume = 1.0
+    elif obv_signal or vol_z_signal:
+        p_volume = 0.6
+    else:
+        p_volume = 0.0
 
     # STRUCTURE pillar — price position (VWAP + Bollinger Band)
     bb_score = 0.8 if (0.2 < bb_pct_b < 0.8) else 0.0
@@ -920,15 +1158,18 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
             "sma50_above_sma200":       +1 if sma50_above_sma200 else 0,
             "golden_cross_event":       +1 if golden_cross_event else 0,
             "death_cross_penalty":      -1 if death_cross_event else 0,
+            "gc_spread_expanding":      +1 if gc_spread_expanding else 0,
+            "gc_spread_narrowing":      -1 if (sma50_above_sma200 and not gc_spread_expanding) else 0,
             "rsi_sweet_spot":           +1 if (rsi_val is not None and 45 < rsi_val < 65) else 0,
             "rsi_mild_oversold":        +1 if (rsi_val is not None and 35 < rsi_val <= 45) else 0,
             "rsi_mild_overbought":      -1 if (rsi_val is not None and 65 <= rsi_val < 72) else 0,
             "stoch_oversold":           +1 if stoch_oversold else 0,
             "stoch_overbought_penalty": -1 if stoch_overbought else 0,
             "stoch_cross_up":           +1 if stoch_cross_up else 0,
-            "macd_strong":              +1 if (macd_hist > 0 and macd_rising) else 0,
+            "macd_strong":              +1 if (macd_hist > 0 and macd_hist_expanding) else 0,
             "macd_positive":            +1 if macd_hist > 0 else 0,
             "macd_zero_cross_up":       +1 if macd_zero_cross_up else 0,
+            "macd_momentum_fading":     -1 if macd_momentum_fading else 0,
             "bb_mid_zone":              +1 if (0.2 < bb_pct_b < 0.8) else 0,
             "price_above_vwap":         +1 if price_above_vwap is True else 0,
             "price_below_vwap_penalty": -1 if price_above_vwap is False else 0,
@@ -943,11 +1184,16 @@ def _ta_score(df: pd.DataFrame, ta_weights: dict[str, float] | None = None) -> t
             base = base * 0.85 + _calibrated * 0.15
             reasons["calibrated_ta_score"] = round(_calibrated, 3)
 
-    # SA-14: pullback + recovery boost applied after pillar mean
+    # SA-14 / SA-32: pullback + recovery delta stored in reasons for deferred application.
+    # The boost is applied AFTER the pillar gate check in _apply_style_signal so it only
+    # rewards high-conviction setups that already pass the independent-pillars requirement.
+    # Applying it here (before fusion) was incorrect: a 2-pillar borderline setup could
+    # clear the pillar gate threshold only because the pullback boost inflated ta_prob.
     pr_delta, pr_reasons = _pullback_recovery(df)
     reasons.update(pr_reasons)
+    reasons["pullback_recovery_delta"] = pr_delta  # deferred; applied post-pillar-gate
 
-    return float(np.clip(base + pr_delta, 0.0, 1.0)), reasons
+    return float(np.clip(base, 0.0, 1.0)), reasons
 
 
 # ── Trading Style Profiles ────────────────────────────────────────────────────
@@ -993,7 +1239,13 @@ _STYLE_PROFILES: dict[str, dict] = {
         # SA-12: only tighten bear/high_vol — keep those unchanged.
         # SA-31: bull+unknown raised 0.65→0.67; after cap reduction, borderline ML-pushed
         # signals that cleared 0.65 only due to high ML weight are now filtered out.
-        "buy_threshold":  {"bull": 0.67, "high_vol": 0.72, "bear": 0.72, "unknown": 0.67},
+        # SA-32: bull raised 0.67→0.72; bear raised 0.72→0.76; high_vol raised 0.72→0.74.
+        # Outcomes audit: SWING BUY at fused 0.67-0.72 had lowest win rate cohort; tighter
+        # thresholds eliminate marginal entries in all regime states.
+        # T232-DL6: no separate HK SWING threshold exists — this single buy_threshold dict
+        # applies identically to US and HK SWING signals. HK-specific adjustment happens only
+        # via the HSI-regime compression gates (hsi_bear_gate etc.), not a per-market threshold.
+        "buy_threshold":  {"bull": 0.72, "high_vol": 0.74, "bear": 0.76, "unknown": 0.72},
         "hold_threshold": {"bull": 0.50, "high_vol": 0.54, "bear": 0.56, "unknown": 0.50},
         "adx_min": 15, "adx_compression": 0.90,
         "high_vol_compression": 0.85,
@@ -1001,7 +1253,7 @@ _STYLE_PROFILES: dict[str, dict] = {
         "weekly_boost": 1.12, "weekly_compress": 0.85,
         # Fixed: was {2: 0.25, 5: 0.55, 10: 0.80}. The 0.25× meant a stock needed
         # fused_prob ≈ 1.10 to fire a BUY with earnings in ≤2 days — impossible.
-        "earnings_compression": {2: 0.50, 5: 0.75, 10: 0.90},
+        "earnings_compression": {2: 0.65, 5: 0.85, 10: 0.95},
         "news_compression": {25: 0.75, 35: 0.85},
         "rs_compression": 0.85,
         "kscore_boost": False,
@@ -1032,7 +1284,10 @@ _STYLE_PROFILES: dict[str, dict] = {
     #   - No RS compression: growth stocks often lag their sector before explosive moves
     #   - No weekly BUY gate: weekly RSI can be high without being a sell signal for growth names
     "GROWTH": {
-        "ml_weight_cap": 0.70,
+        # T225-C: Reduced 0.70→0.60 — Jun 2026 signal_outcomes audit: ml_prob>0.85 GROWTH BUY
+        # had only 33% win rate (9 samples) vs 100% for ml_prob 0.75-0.85 (4 samples).
+        # Same ML overconfidence pattern found in SWING (fixed SA-31) and HK (fixed T224).
+        "ml_weight_cap": 0.60,
         "ml_weight_floor": 0.20,
         # SA-28: GROWTH bull threshold raised 0.57→0.60 — aligns with SHORT/LONG in bull markets.
         "buy_threshold":  {"bull": 0.60, "high_vol": 0.65, "bear": 0.68, "unknown": 0.60},
@@ -1059,7 +1314,7 @@ def _growth_ta_adjustment(df: pd.DataFrame, base_reasons: dict) -> float:
     This function corrects for those biases so high-growth names are not
     systematically ranked below their true signal strength.
     """
-    close = df["close"].astype(float)
+    close = _adj_close(df)
     delta = 0.0
     sma20 = close.rolling(20).mean().iloc[-1]
     sma50 = close.rolling(50).mean().iloc[-1]
@@ -1136,19 +1391,99 @@ def _fetch_analyst_momentum(symbol: str) -> tuple[int, int]:
     return 0, 0
 
 
+def _redis_get_float(key: str) -> float | None:
+    """Read a float value from Redis; return None on miss or error."""
+    try:
+        import redis as redis_lib
+        r = redis_lib.Redis.from_url(_settings.redis_url, decode_responses=True)
+        val = r.get(key)
+        return float(val) if val else None
+    except Exception:
+        return None
+
+
+_DYNAMIC_BUY_THRESHOLD_BOUNDS = (0.55, 0.85)
+_DYNAMIC_SELL_THRESHOLD_BOUNDS = (0.15, 0.45)
+
+
+def _get_dynamic_buy_threshold(style_key: str, reg: str) -> float | None:
+    """Read empirically-calibrated buy threshold from Redis if available.
+
+    Written by POST /outcomes/calibrate/apply (Tier 79) on the fused-probability scale
+    (T232-CAL1 fix — previously written on the 0-100 confidence scale and misapplied here).
+
+    T232-CAL2: the calibrated/watchdog value is stored as a single (regime-agnostic)
+    number fit mostly on bull-market samples. Rather than overriding all four regime
+    tiers with one flat value, we apply it as a delta from the hardcoded bull baseline
+    so bear/high_vol stay tighter than bull, preserving SA-32's regime-tiered protection.
+    A sanity clamp rejects corrupted/out-of-range values (defense in depth).
+    """
+    p = _STYLE_PROFILES[style_key]
+    bull_base = p["buy_threshold"]["bull"]
+    regime_base = p["buy_threshold"].get(reg, bull_base)
+
+    # Check watchdog emergency adjustment first (most recent, tightest)
+    dynamic = _redis_get_float(f"stockai:watchdog:{style_key.upper()}:threshold")
+    if dynamic is None:
+        # Calibrated threshold from weekly outcomes sweep
+        dynamic = _redis_get_float(f"stockai:signal_thresholds:{style_key.upper()}")
+    if dynamic is None:
+        return None
+
+    lo, hi = _DYNAMIC_BUY_THRESHOLD_BOUNDS
+    if not (lo <= dynamic <= hi):
+        return None  # corrupted/stale-scale value — ignore, fall back to hardcoded profile
+
+    delta = dynamic - bull_base
+    return float(np.clip(regime_base + delta, lo, hi))
+
+
+def _get_dynamic_sell_threshold(style_key: str) -> float | None:
+    """Read empirically-calibrated SELL threshold from Redis if available.
+
+    T228: written by POST /outcomes/calibrate/apply SELL sweep, fused-probability scale
+    (T232-CAL3 fix). Returns None → falls back to hardcoded 0.35 in _decide_style.
+    """
+    dynamic = _redis_get_float(f"stockai:signal_thresholds:SELL:{style_key.upper()}")
+    if dynamic is None:
+        return None
+    lo, hi = _DYNAMIC_SELL_THRESHOLD_BOUNDS
+    if not (lo <= dynamic <= hi):
+        return None
+    return dynamic
+
+
+def _get_style_tuned_param(style_key: str, param: str, default):
+    """Read a tuned style parameter from Redis if available (written by tune_style_profiles).
+
+    Falls back to `default` (the value from _STYLE_PROFILES) when absent.
+    Keys: stockai:style_tune:{STYLE}:{param}
+    """
+    val = _redis_get_float(f"stockai:style_tune:{style_key.upper()}:{param}")
+    return val if val is not None else default
+
+
 def _decide_style(fused_prob: float, style_key: str, market_regime: str) -> tuple[str, str, str]:
     """Map fused probability to a BUY/HOLD/WAIT/SELL label using style thresholds.
+
+    Reads dynamically-calibrated buy and sell thresholds from Redis if available
+    (written by POST /outcomes/calibrate/apply).  Falls back to hardcoded values.
 
     Returns (signal, style_key, threshold_tier).
     """
     p = _STYLE_PROFILES[style_key]
-    reg = market_regime if market_regime in ("bull", "high_vol", "bear") else "high_vol"
-    buy_t  = p["buy_threshold"][reg]
+    reg = market_regime if market_regime in ("bull", "high_vol", "bear", "unknown") else "unknown"
+    # Dynamic buy override from outcomes-based calibration
+    dynamic_buy = _get_dynamic_buy_threshold(style_key, reg)
+    buy_t  = dynamic_buy if dynamic_buy is not None else p["buy_threshold"][reg]
     hold_t = p["hold_threshold"][reg]
+    # T228: dynamic SELL threshold from SELL-outcomes calibration; fallback to 0.35
+    dynamic_sell = _get_dynamic_sell_threshold(style_key)
+    sell_t = dynamic_sell if dynamic_sell is not None else 0.35
     tier = "bull" if reg == "bull" else ("bear" if reg in ("bear", "high_vol") else "neutral")
     if fused_prob > buy_t:   return "BUY",  style_key, tier
     if fused_prob > hold_t:  return "HOLD", style_key, tier
-    if fused_prob >= 0.35:   return "WAIT", style_key, tier
+    if fused_prob >= sell_t: return "WAIT", style_key, tier
     return "SELL", style_key, tier
 
 
@@ -1197,10 +1532,14 @@ def _apply_style_signal(
         else:
             # Ramp from 0.20 at AUC=0.55 up to 0.75 at AUC=0.70+
             raw_w = float(np.clip(0.20 + (ml_test_auc - 0.55) / 0.15 * 0.55, 0.20, 0.75))
-        eff_cap = _ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"]
+        # Per-style ML weight cap: Redis override (tune_style_profiles) > global file override > profile default
+        _per_style_cap = _get_style_tuned_param(style_key, "ml_weight_cap", None)
+        eff_cap = _per_style_cap if _per_style_cap is not None else (_ml_weight_global_cap if _ml_weight_global_cap is not None else p["ml_weight_cap"])
         ml_w = min(raw_w, eff_cap)
         if raw_w > 0:  # floor only applies to non-zero weights — don't resurrect a zero-weighted inverse model
-            ml_w = max(ml_w, p.get("ml_weight_floor", 0.0))
+            # T228: AUC-scaled floor — near-random (AUC≈0.50) gets floor≈0; AUC≥0.60 gets full floor
+            auc_floor = max(0.0, (ml_test_auc - 0.50) / 0.10) * p.get("ml_weight_floor", 0.0)
+            ml_w = max(ml_w, auc_floor)
         gap = abs(ml_prob_c - ta_prob)
         if gap > 0.35:
             # Graduated from 25% cut (at gap=0.35) to 50% cut (at gap=0.65).
@@ -1215,12 +1554,29 @@ def _apply_style_signal(
             reasons["ml_ta_conflict"] = False
         fused = ml_w * ml_prob_c + (1.0 - ml_w) * ta_prob
         reasons["ml_weight"] = round(ml_w, 2)
+        reasons["ml_probability"] = round(float(ml_prob_c), 4)  # H-3: per-style, not shared SWING value
     else:
         fused = ta_prob
         reasons["ml_ta_conflict"] = False
         reasons["ml_weight"] = 0.0
+        reasons["ml_probability"] = None
 
     fused = float(np.clip(fused, 0.0, 1.0))
+
+    # T225-B: SWING ML over-confidence gate — when ML is very confident but TA is only moderate,
+    # the signal is ML-dominant and has historically underperformed. Jun 2026 data:
+    # SWING BUY conf 60-75 bucket (avg_ml=0.951, avg_ta=0.759): only 26.3% win rate.
+    # SWING BUY conf 75+ bucket (avg_ml=0.669, avg_ta=0.982): 55.6% — both agree.
+    # 15% compression pushes ML-dominant SWING signals below the buy threshold.
+    reasons["ml_overconfidence_gate"] = False
+    if (style_key == "SWING"
+            and ml_prob is not None
+            and float(ml_prob) > 0.90
+            and ta_prob < 0.75):
+        fused = 0.5 + (fused - 0.5) * 0.85
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["ml_overconfidence_gate"] = True
+
     fused_before_filters = fused  # snapshot before weekly blend + compression — used for cap enforcement
 
     # SA-18 (additive 15% weekly blend) was removed: the weekly alignment filter
@@ -1228,8 +1584,6 @@ def _apply_style_signal(
     # Double-applying the same weekly_score data (once as absolute blend, once as
     # directional amplifier) produced compounding effects larger than documented.
     # The alignment filter is the sole weekly integration mechanism.
-    reasons["weekly_blend_applied"] = False
-
     # ── SA-19 / SA-30: Independent pillar gate ───────────────────────────────
     # Compress signals where only 1 dimension agrees (likely market-beta noise);
     # boost where all 4 pillars converge (rare, high-confidence setup).
@@ -1241,15 +1595,20 @@ def _apply_style_signal(
     _pillars_raw = base_reasons.get("independent_pillars_active")
     if _pillars_raw is None:
         import structlog as _sl
-        _sl.get_logger().warning("pillar_gate.missing_key", symbol=stock_symbol if 'stock_symbol' in dir() else "?")
+        _sl.get_logger().warning("pillar_gate.missing_key", style=style_key)
         _pillars = 2  # neutral fallback: no gate, no boost
     else:
         _pillars = int(_pillars_raw)
     _min_pillars = int(p.get("min_pillars_for_buy", 2))
-    if _pillars < 2:
+    # T232-SIG3: independent_pillars_active counts BULLISH evidence (trend/momentum/volume/
+    # structure >= 0.5). A deeply bearish stock has 0-1 bullish pillars *by definition*, so
+    # applying this compression to SELL candidates (fused < 0.5) pulls the clearest SELLs back
+    # toward neutral — the gate was erasing exactly the signals it should confirm. Restrict to
+    # the bullish side (fused > 0.5); leave SELL candidates unaffected by this gate.
+    if fused > 0.5 and _pillars < 2:
         fused = 0.5 + (fused - 0.5) * 0.85
         reasons["pillar_gate"] = f"compressed_{_pillars}_pillar"
-    elif _pillars < _min_pillars:
+    elif fused > 0.5 and _pillars < _min_pillars:
         # SA-30: active pillars below style requirement — strong compress
         fused = 0.5 + (fused - 0.5) * 0.70
         reasons["pillar_gate"] = f"compressed_{_pillars}_pillar_below_min{_min_pillars}"
@@ -1259,6 +1618,18 @@ def _apply_style_signal(
     else:
         reasons["pillar_gate"] = f"{_pillars}_pillars"
     fused = float(np.clip(fused, 0.0, 1.0))
+
+    # ── SA-14 / SA-32: Pullback-recovery boost (deferred from _ta_score) ─────
+    # Applied AFTER the pillar gate so the boost only rewards setups that already
+    # have sufficient independent TA confirmation (>= min_pillars). A pullback
+    # recovery on a 2-pillar setup (compressed above) should not bypass that gate.
+    # Only apply when pillars met the style minimum (no compress was applied).
+    _pr_delta = base_reasons.get("pullback_recovery_delta", 0.0) or 0.0
+    if _pr_delta > 0 and _pillars >= _min_pillars:
+        fused = float(np.clip(fused + _pr_delta, 0.0, 1.0))
+        reasons["pullback_recovery_applied"] = True
+    else:
+        reasons["pullback_recovery_applied"] = False
 
     # ── Weekly multi-timeframe alignment ──────────────────────────────────────
     weekly_score = weekly_tech.get("weekly_score", 0.5)
@@ -1285,7 +1656,7 @@ def _apply_style_signal(
         reasons["weekly_alignment"] = False
 
     # ── ADX choppy-market compression ────────────────────────────────────────
-    adx_min  = p.get("adx_min")
+    adx_min  = _get_style_tuned_param(style_key, "adx_min", p.get("adx_min"))
     adx_comp = p.get("adx_compression")
     # C3 FIX: skip compression if adx_val is None (insufficient history) — don't penalise
     if adx_min is not None and adx_comp is not None and adx_val is not None and adx_val < adx_min:
@@ -1293,16 +1664,22 @@ def _apply_style_signal(
     reasons["adx_compression"] = (adx_min is not None and adx_val is not None and adx_val < adx_min)
 
     # ── High-volatility regime compression ───────────────────────────────────
-    hv_comp = p.get("high_vol_compression")
-    if hv_comp is not None and market_regime == "high_vol":
+    # T232-SIG5: only compress the bullish side. High-vol regimes are exactly the conditions
+    # that CONFIRM a SELL — compressing SELL candidates toward neutral here suppressed the
+    # signal in the regime that validates it.
+    hv_comp = _get_style_tuned_param(style_key, "high_vol_compression", p.get("high_vol_compression"))
+    hv_fired = hv_comp is not None and market_regime == "high_vol" and fused > 0.5
+    if hv_fired:
         fused = 0.5 + (fused - 0.5) * hv_comp
-    reasons["high_vol_compression"] = (hv_comp is not None and market_regime == "high_vol")
+    reasons["high_vol_compression"] = hv_fired
 
     # ── Market breadth compression ────────────────────────────────────────────
+    # T232-SIG5: same direction-blind bug — thin breadth (<40% of stocks above their MA) is
+    # itself bearish confirmation and should not mute a SELL. Bullish-only.
     breadth_pct = base_reasons.get("breadth_pct")
-    bc = p.get("breadth_compression")
+    bc = _get_style_tuned_param(style_key, "breadth_compression", p.get("breadth_compression"))
     breadth_fired = False
-    if bc is not None and breadth_pct is not None and breadth_pct < 40:
+    if bc is not None and breadth_pct is not None and breadth_pct < 40 and fused > 0.5:
         fused = 0.5 + (fused - 0.5) * bc
         breadth_fired = True
     reasons["breadth_compression"] = breadth_fired
@@ -1406,10 +1783,14 @@ def _apply_style_signal(
     # ── SA-16: Sector ETF trend filter (SWING/LONG only) ──────────────────────
     # When the stock's sector ETF is below its 50-day SMA the whole sector is
     # in a structural downtrend. A stock bucking that trend alone faces higher
-    # mean-reversion risk, so we compress the signal 15% toward neutral.
+    # mean-reversion risk, so we compress the BUY signal 15% toward neutral.
+    # Direction-aware (SA-32): only compress when fused > 0.5 (BUY direction).
+    # When fused < 0.5 (SELL direction), sector weakness CONFIRMS the signal —
+    # do not compress. Compressing a SELL in a sector downtrend was incorrectly
+    # pushing weak signals back toward neutral/HOLD, reducing SELL accuracy.
     # GROWTH and SHORT are exempt: growth names lead their sector, and SHORT is
     # purely momentum-driven and unaffected by sector-level trend.
-    if style_key in ("SWING", "LONG") and sector_etf_above_sma50 is False:
+    if style_key in ("SWING", "LONG") and sector_etf_above_sma50 is False and fused > 0.5:
         fused = 0.5 + (fused - 0.5) * 0.85
         reasons["sector_headwind"] = True
     else:
@@ -1527,6 +1908,7 @@ def _apply_style_signal(
     # above threshold, but we apply a 0.6× compression so a low-confidence model
     # doesn't unduly amplify bullish TA noise into a full BUY.
     # Absent flag = new/untuned symbol → do not penalise.
+    reasons["ml_oos_suppressed"] = ml_oos_suppressed  # per-style; each horizon has its own model
     if ml_oos_suppressed:
         fused = 0.5 + (fused - 0.5) * 0.6
         reasons["low_oos_accuracy"] = True
@@ -1562,11 +1944,27 @@ def _apply_style_signal(
             and weekly_trend is not None
             and weekly_rsi <= 38
             and weekly_trend == "down"):
-        fused = 0.5 + (fused - 0.5) * 0.40
+        # Graduated compression: brief dips (< 5 bars) get 0.65× — could recover quickly.
+        # Confirmed downtrends (≥ 20 bars) get 0.40× — structurally broken weekly chart.
+        # Linear interpolation between 5 and 20 bars.
+        _consec = weekly_tech.get("weekly_rsi_consec_low", -1)   # -1 = sentinel for missing key (99 is a valid real count)
+        if _consec == -1:
+            log.warning("weekly_gate.consec_key_missing", symbol="unknown", note="defaulting to max compression")
+            _consec = 20  # treat missing as confirmed downtrend → max compression
+        if _consec < 5:
+            _mult = 0.65
+        elif _consec >= 20:
+            _mult = 0.40
+        else:
+            _mult = 0.65 - 0.25 * (_consec - 5) / 15.0
+        fused = 0.5 + (fused - 0.5) * _mult
         fused = float(np.clip(fused, 0.0, 1.0))
         reasons["weekly_gate_fired"] = True
+        reasons["weekly_gate_bars"] = _consec
+        reasons["weekly_gate_mult"] = round(_mult, 3)
     else:
         reasons["weekly_gate_fired"] = False
+        reasons["weekly_gate_bars"] = 0
 
     # SA-28: Weekly overbought extension gate (SWING/LONG, mirrors the oversold gate above).
     # When weekly RSI > 75 and the weekly trend is up, the stock is in an extended rally —
@@ -1585,8 +1983,48 @@ def _apply_style_signal(
     else:
         reasons["weekly_overbought_gate"] = False
 
+    # T224-B: HSI downtrend compression for HK stocks. Applied post-cap so it cannot be
+    # offset by prior boosts. 20% compression toward neutral when HSI < 20-day SMA.
+    # T232-SIG5: bullish-only — an HSI downtrend is bearish confirmation and should not mute
+    # a SELL (the market condition that validates the SELL was suppressing it). Mirrors the
+    # southbound-flow gate below, which already guards with fused > 0.5.
+    if reasons.get("hsi_regime") == "bear" and fused > 0.5:
+        fused = 0.5 + (fused - 0.5) * 0.80
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["hsi_bear_gate"] = True
+    else:
+        reasons["hsi_bear_gate"] = False
+
+    # T228: HK Connect southbound flow — negative 5d net = mainland selling pressure; compress BUY
+    _is_hk_stock = base_reasons.get("hsi_regime") is not None
+    if _is_hk_stock and fused > 0.5:
+        _flow_net = base_reasons.get("flow_5d_net_hkd")
+        if _flow_net is not None and float(_flow_net) < 0:
+            fused = 0.5 + (fused - 0.5) * 0.85
+            fused = float(np.clip(fused, 0.0, 1.0))
+            reasons["hk_southbound_compression"] = True
+        else:
+            reasons["hk_southbound_compression"] = False
+    else:
+        reasons["hk_southbound_compression"] = False
+
+    # T228: HK liquidity gate — suppress SWING/GROWTH BUY for thin markets (< HKD 50M/day turnover)
+    if base_reasons.get("hk_low_liquidity") and style_key in ("SWING", "GROWTH") and fused > 0.5:
+        fused = 0.5 + (fused - 0.5) * 0.30
+        fused = float(np.clip(fused, 0.0, 1.0))
+        reasons["hk_liquidity_gate"] = True
+    else:
+        reasons["hk_liquidity_gate"] = False
+
     signal, horizon, threshold_tier = _decide_style(fused, style_key, market_regime)
     reasons["threshold_tier"] = threshold_tier  # SA-12: log which regime threshold was applied
+
+    # T228: HK SHORT SELL has 29.2% win rate — no edge; emit HOLD instead
+    if style_key == "SHORT" and _is_hk_stock and signal == "SELL":
+        signal = "HOLD"
+        reasons["hk_short_sell_disabled"] = True
+    else:
+        reasons["hk_short_sell_disabled"] = False
     confidence = round(abs(fused - 0.5) * 200, 2)
     return AIConfidence(
         signal=signal,
@@ -1615,7 +2053,7 @@ def _check_price_staleness(df: pd.DataFrame, symbol: str) -> bool:
         from datetime import timezone as _tz
         today_utc = __import__("datetime").datetime.now(_tz.utc).date()
         days_old = (today_utc - last_ts_utc.date()).days
-        if days_old > 5:
+        if days_old > 3:
             log.warning(
                 "signal.stale_price_data",
                 symbol=symbol,
@@ -1646,7 +2084,23 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     is_stale = _check_price_staleness(df, symbol)
     ta_prob, reasons = _ta_score(df, ta_weights=_ta_weights)
     sr_data = _sr_context(df)
-    ml_prob, ml_test_auc, ml_meta = _fetch_ml_data(symbol)
+
+    # T228: HK liquidity filter — flag stocks with avg 20d daily turnover < HKD 50M
+    _hk_low_liquidity = False
+    if symbol.upper().endswith(".HK") and len(df) >= 20:
+        _close_vals = _adj_close(df)
+        _vol_vals = df["volume"].astype(float)
+        _daily_turnover_20d = float((_close_vals.iloc[-20:] * _vol_vals.iloc[-20:]).mean())
+        _hk_low_liquidity = _daily_turnover_20d < 50_000_000
+    reasons["hk_low_liquidity"] = _hk_low_liquidity
+    # Per-style ML fetched in parallel — 4 sequential calls with 10s timeout each would add
+    # up to 120s worst-case when ML is slow; parallel fetch caps worst-case at 30s.
+    _ml_styles = ("SHORT", "SWING", "LONG", "GROWTH")
+    _ml_futures = {sk: _ML_EXECUTOR.submit(_fetch_ml_data, symbol, sk) for sk in _ml_styles}
+    ml_by_style: dict[str, tuple[float | None, float, dict]] = {
+        sk: f.result() for sk, f in _ml_futures.items()
+    }
+    ml_prob, ml_test_auc, ml_meta = ml_by_style["SWING"]  # canonical for shared reasons
     market_regime, fg_score = _fetch_market_regime()
     breadth_pct = _fetch_market_breadth()
     days_to_earnings = _fetch_earnings_proximity(symbol)
@@ -1668,12 +2122,13 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["fear_greed_score"]   = fg_score
     reasons["breadth_pct"]        = breadth_pct
     reasons["ta_score"]           = ta_prob
-    reasons["ml_probability"]     = ml_prob
+    # ml_probability is per-style — written inside _apply_style_signal() for each horizon
     reasons["ml_test_auc"]        = ml_test_auc
     reasons["ml_model"]           = ml_meta.get("ml_model")
     reasons["ml_agreement"]       = ml_meta.get("ml_agreement")
     reasons["ml_model_probs"]     = ml_meta.get("ml_model_probs")
-    reasons["ml_oos_suppressed"]  = ml_meta.get("ml_oos_suppressed", False)
+    # ml_oos_suppressed is per-style — written inside _apply_style_signal from the style-specific
+    # ml_meta so each horizon's stored signal reflects its own model's OOS status, not SWING's.
     reasons["weekly_ta_score"]    = round(weekly_score, 3)
     reasons["weekly_rsi"]         = weekly_tech["weekly_rsi"]
     reasons["weekly_trend"]       = weekly_tech["weekly_trend"]
@@ -1695,6 +2150,129 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             reasons["double_top_neckline"]        = meta.get("neckline")
             reasons["double_top_target"]          = meta.get("target")
             reasons["double_top_neckline_broken"] = bool(meta.get("neckline_broken"))
+    # ATR-14 and last price — used by decision-engine for ATR-based game plan stops
+    _close = _adj_close(df)
+    _high = df["high"].astype(float)
+    _low = df["low"].astype(float)
+    _tr = pd.concat([_high - _low, (_high - _close.shift(1)).abs(), (_low - _close.shift(1)).abs()], axis=1).max(axis=1)
+    _atr_series = _tr.ewm(alpha=1 / 14, adjust=False).mean()
+    _last_price = float(_close.iloc[-1])
+    _atr_14 = float(_atr_series.iloc[-1]) if not pd.isna(_atr_series.iloc[-1]) else None
+    reasons["last_price"] = round(_last_price, 4)
+    reasons["atr_14"] = round(_atr_14, 4) if _atr_14 is not None else None
+    # Use `is not None` not truthiness — _atr_14 == 0.0 is falsy but is a valid zero-ATR measurement.
+    reasons["atr_14_pct"] = round(_atr_14 / _last_price, 4) if (_atr_14 is not None and _last_price > 0) else None
+
+    # T208: 8-K filing flag — check for recent material SEC filings via direct DB query.
+    # Querying the shared PostgreSQL sec_filings table directly avoids an HTTP hop to
+    # event-intelligence and adds zero latency to signal generation.
+    # Fail-open: any exception leaves eight_k_flag=None so signal generation is never blocked.
+    try:
+        from db import SessionLocal
+        from sqlalchemy import text as _text_8k
+        with SessionLocal() as _db_8k:
+            # Fetch the most recent material filing within the last 7 days
+            _row_material = _db_8k.execute(
+                _text_8k("""
+                    SELECT filed_date, form FROM sec_filings
+                    WHERE symbol = :sym
+                      AND filed_date >= now() - interval '7 days'
+                      AND is_material = true
+                    ORDER BY filed_date DESC
+                    LIMIT 1
+                """),
+                {"sym": symbol},
+            ).fetchone()
+            if _row_material:
+                reasons["eight_k_flag"] = True
+                reasons["eight_k_date"] = str(_row_material[0])
+                reasons["eight_k_form"] = _row_material[1] or "8-K"
+            else:
+                # Check for any 8-K (even non-material) in the past 7 days
+                _row_any = _db_8k.execute(
+                    _text_8k("""
+                        SELECT filed_date, form FROM sec_filings
+                        WHERE symbol = :sym
+                          AND filed_date >= now() - interval '7 days'
+                        ORDER BY filed_date DESC
+                        LIMIT 1
+                    """),
+                    {"sym": symbol},
+                ).fetchone()
+                if _row_any:
+                    reasons["eight_k_flag"] = True
+                    reasons["eight_k_date"] = str(_row_any[0])
+                    reasons["eight_k_form"] = _row_any[1] or "8-K"
+                else:
+                    reasons["eight_k_flag"] = False
+                    reasons["eight_k_date"] = None
+                    reasons["eight_k_form"] = None
+    except Exception:
+        reasons["eight_k_flag"] = None
+        reasons["eight_k_date"] = None
+        reasons["eight_k_form"] = None
+
+    # T220-E: 13F institutional ownership QoQ change — detect smart-money accumulation.
+    # Queries institutional_holdings directly (no HTTP hop). Compares the two most recent
+    # quarterly period_dates; sets inst_change_pct (+%) and inst_ownership_increased=True
+    # when institutions collectively increased their holdings by >5% QoQ.
+    try:
+        from db import SessionLocal as _SL_inst
+        from sqlalchemy import text as _text_inst
+        with _SL_inst() as _db_inst:
+            _inst_rows = _db_inst.execute(
+                _text_inst("""
+                    SELECT ih.period_date, SUM(ih.shares) AS total_shares
+                    FROM institutional_holdings ih
+                    JOIN stocks s ON s.id = ih.stock_id
+                    WHERE s.symbol = :sym
+                    GROUP BY ih.period_date
+                    ORDER BY ih.period_date DESC
+                    LIMIT 2
+                """),
+                {"sym": symbol.upper()},
+            ).fetchall()
+        if len(_inst_rows) >= 2:
+            _latest_sh, _prior_sh = float(_inst_rows[0][1] or 0), float(_inst_rows[1][1] or 0)
+            if _prior_sh > 0:
+                _inst_chg = (_latest_sh - _prior_sh) / _prior_sh * 100
+                reasons["inst_change_pct"] = round(_inst_chg, 1)
+                reasons["inst_ownership_increased"] = _inst_chg > 5.0
+            else:
+                reasons["inst_change_pct"] = None
+                reasons["inst_ownership_increased"] = False
+        else:
+            reasons["inst_change_pct"] = None
+            reasons["inst_ownership_increased"] = False
+    except Exception:
+        reasons["inst_change_pct"] = None
+        reasons["inst_ownership_increased"] = False
+
+    # T220-F: Earnings revision momentum — recommendation_mean direction from weekly snapshots.
+    # Same logic as builder.py: recommendation_mean lower = more bullish (1=strong buy, 5=sell).
+    # Delta >0.15 means analysts have upgraded on net → +1; <-0.15 = downgrade → -1.
+    try:
+        from db import SessionLocal as _SL_eps
+        from sqlalchemy import text as _text_eps
+        with _SL_eps() as _db_eps:
+            _snaps = _db_eps.execute(
+                _text_eps("""
+                    SELECT recommendation_mean
+                    FROM fundamentals_snapshot
+                    WHERE symbol = :sym
+                    ORDER BY snapshot_date DESC
+                    LIMIT 8
+                """),
+                {"sym": symbol.upper()},
+            ).fetchall()
+        if len(_snaps) >= 2 and _snaps[0][0] is not None and _snaps[-1][0] is not None:
+            _rec_delta = float(_snaps[-1][0]) - float(_snaps[0][0])  # old - recent
+            reasons["eps_revision_direction"] = 1 if _rec_delta > 0.15 else (-1 if _rec_delta < -0.15 else 0)
+        else:
+            reasons["eps_revision_direction"] = None
+    except Exception:
+        reasons["eps_revision_direction"] = None
+
     reasons["days_to_earnings"]   = days_to_earnings
     reasons["news_sentiment"]     = news_sentiment
     reasons["rs_score"]                = rs_score
@@ -1714,16 +2292,60 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
     reasons["sr_52w_high"]          = sr_data["sr_52w_high"]
     reasons["sr_52w_low"]           = sr_data["sr_52w_low"]
 
+    # T209: HKEX Stock Connect southbound flow enrichment for HK stocks.
+    # market-data exposes a public endpoint (/stocks/hk-connect-flow/{symbol})
+    # that returns a rolling flow summary from the hk_connect_flows table.
+    # Hard timeout of 2s; any failure is silently swallowed so signal generation
+    # is never blocked by a missing or slow flow endpoint.
+    if symbol.upper().endswith(".HK"):
+        try:
+            import httpx as _httpx
+            _rflow = _httpx.get(
+                f"{_settings.market_data_url}/stocks/hk-connect-flow/{symbol.upper()}",
+                timeout=2.0,
+            )
+            if _rflow.status_code == 200:
+                _flow = _rflow.json()
+                if _flow.get("flow_strength") is not None:
+                    reasons["flow_5d_net_hkd"]  = _flow.get("flow_5d_net_hkd")
+                    reasons["flow_20d_net_hkd"] = _flow.get("flow_20d_net_hkd")
+                    reasons["flow_strength"]     = _flow.get("flow_strength")
+        except Exception:
+            pass  # flow data is best-effort; never block signal generation
+
+    # T224-B: HSI regime for HK stocks — US SPY/VIX regime is irrelevant for HK timing.
+    # Fetches ^HSI and compares to its 20-day SMA. Used in _apply_style_signal to apply
+    # a 20% compression toward neutral when HSI is in a downtrend.
+    if symbol.upper().endswith(".HK"):
+        reasons["hsi_regime"] = _fetch_hsi_regime()
+
+    # T220-C: Simple squeeze score from existing reasons data.
+    # reasons["short_pct_float"] is already in percentage form (e.g. 15.0 = 15% of float shorted).
+    # reasons["short_ratio"] is days-to-cover.
+    _sp_float = reasons.get("short_pct_float")
+    _s_ratio = reasons.get("short_ratio")
+    if _sp_float is not None:
+        try:
+            _sp = float(_sp_float)
+            _sr = float(_s_ratio) if _s_ratio is not None else 5.0
+            # Simple composite: 60% SI% + 40% days-to-cover (normalized to 15-day max)
+            _squeeze = min(100, (_sp * 0.6) + (min(_sr, 15) / 15 * 100 * 0.4))
+            if _squeeze >= 40:
+                reasons["squeeze_score"] = round(_squeeze, 1)
+        except Exception:
+            pass
+
     # SA-13: GROWTH style uses an adjusted TA score that de-penalises momentum RSI and
     # substitutes SMA20>SMA50 for the SMA50>SMA200 structural requirement.
     ta_prob_growth = float(np.clip(ta_prob + _growth_ta_adjustment(df, reasons), 0.0, 1.0))
 
     def _make_signal(style_key: str) -> "AIConfidence":
+        _ml_prob, _ml_auc, _ml_m = ml_by_style[style_key]
         tp = ta_prob_growth if style_key == "GROWTH" else ta_prob
         return _apply_style_signal(
             ta_prob=tp,
-            ml_prob=ml_prob,
-            ml_test_auc=ml_test_auc,
+            ml_prob=_ml_prob,
+            ml_test_auc=_ml_auc,
             style_key=style_key,
             market_regime=market_regime,
             adx_val=reasons.get("adx"),
@@ -1742,7 +2364,7 @@ def generate_all_signals(symbol: str) -> dict[str, "AIConfidence"]:
             short_pct_float=short_pct_float,
             analyst_upgrades_7d=analyst_upgrades_7d,
             analyst_downgrades_7d=analyst_downgrades_7d,
-            ml_oos_suppressed=ml_meta.get("ml_oos_suppressed", False),
+            ml_oos_suppressed=_ml_m.get("ml_oos_suppressed", False),
         )
 
     return {k: _make_signal(k) for k in ("SHORT", "SWING", "LONG", "GROWTH")}

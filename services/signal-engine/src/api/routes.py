@@ -4,13 +4,13 @@ import json
 import os as _os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from common.config import get_settings
 from common.jwt_auth import get_current_username
 from common.logging import get_logger
-from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, get_session
+from db import Price, Signal, SignalHorizon, SignalOutcome, SignalType, Stock, TimeFrame, TuneHistory, get_session
 
 _settings = get_settings()
 
@@ -33,23 +33,75 @@ def _cache_set(key: str, value, ttl: int = 3600) -> None:
     except Exception:
         pass
 
+def _redis_get_float(key: str) -> float | None:
+    try:
+        val = _get_redis().get(key)
+        return float(val) if val is not None else None
+    except Exception:
+        return None
+
+
+# ── T233-SELFIMPROVE-PHASE3 extension: shared tune_history recorder ────────────
+# See docs/DESIGN_TUNE_HISTORY_EXTENSION_2026-07-06.md for the full scoping. This mirrors
+# market-data's promotion_gate.py._write_history but lives here since signal-engine writes
+# to the same shared TuneHistory table directly (no cross-service HTTP call needed).
+
+def _record_tune_history(
+    session: Session,
+    run_id: str,
+    parameter_class: str,
+    parameter_name: str,
+    style: str,
+    market: str,
+    old_value: dict,
+    new_value: dict,
+    train_window: tuple[date, date],
+    validation_window: tuple[date, date],
+    train_ev_pct: float | None,
+    validation_ev_pct: float | None,
+    baseline_validation_ev_pct: float | None,
+    validation_n: int | None,
+    promoted: bool,
+    gate_failures: list[str],
+    triggered_by: str = "manual",
+) -> None:
+    """Write one tune_history row. Called at the exact point each mechanism already
+    decides apply-vs-skip — purely additive recording, no change to any gating logic.
+    market="ALL" is the documented convention for mechanisms that pool US+HK signals
+    without a market split (see the design doc §2) — not a claim about a specific market.
+    """
+    session.add(TuneHistory(
+        run_id=run_id, parameter_class=parameter_class, parameter_name=parameter_name,
+        style=style, market=market, old_value=old_value, new_value=new_value,
+        train_window_start=train_window[0], train_window_end=train_window[1],
+        validation_window_start=validation_window[0], validation_window_end=validation_window[1],
+        train_ev_pct=train_ev_pct, validation_ev_pct=validation_ev_pct,
+        baseline_validation_ev_pct=baseline_validation_ev_pct, validation_n=validation_n,
+        promoted=promoted, gate_failures=gate_failures, triggered_by=triggered_by,
+    ))
+    session.commit()
+
 
 _service_token_cache: str = ""
+_service_token_exp: float = 0.0  # epoch seconds when the cached token expires
 
 
 def _service_token() -> str:
-    """Long-lived JWT for signal-engine → internal service calls (sub='signal-engine')."""
-    global _service_token_cache
-    if _service_token_cache:
-        return _service_token_cache
+    """Long-lived JWT for signal-engine → internal service calls (sub='signal-engine').
+    Refreshes 7 days before expiry so the cached token is never used stale."""
+    global _service_token_cache, _service_token_exp
     import time
     from jose import jwt as _jwt
+    if _service_token_cache and time.time() < _service_token_exp - 7 * 86400:
+        return _service_token_cache
+    exp = int(time.time()) + 365 * 86400
     payload = {
         "sub": "signal-engine",
-        "exp": int(time.time()) + 365 * 86400,
-        "jti": "signal-engine-service",
+        "exp": exp,
+        "jti": str(__import__("uuid").uuid4()),
     }
     _service_token_cache = _jwt.encode(payload, _settings.jwt_secret, algorithm="HS256")
+    _service_token_exp = float(exp)
     return _service_token_cache
 
 
@@ -58,6 +110,123 @@ from ..generators import generate_signal, generate_all_signals
 log = get_logger("signals")
 
 router = APIRouter(prefix="/signals", tags=["signals"])
+
+
+# ── T223: Confidence calibration — outcome-based win rate lookup ──────────────
+# Confidence band → actual win rate from signal_outcomes (Redis-cached, 1h TTL).
+# Enriches every signal response so traders know if "70 confidence" means 55% or 65% wins.
+
+_CONF_BANDS: list[tuple[float, float, str]] = [
+    (0, 40, "0-40"),
+    (40, 55, "40-55"),
+    (55, 70, "55-70"),
+    (70, 85, "70-85"),
+    (85, 101, "85+"),
+]
+_CONF_CAL_CACHE_KEY = "signal:confidence_calibration"
+_CONF_CAL_TTL = 3600  # 1 hour
+# T232-OC5: confidence is direction-agnostic, so pooling BUY+SELL, all horizons, and both
+# markets into one band mixed populations with documented divergent base rates (SELL 43.7%
+# vs BUY 63.3% in production; HK vs US also diverge materially). Calibration is now keyed by
+# (horizon, direction, market) first; if that specific bucket doesn't reach the min-count, it
+# falls back to (horizon, direction) pooled across markets, which is still far more precise
+# than the old fully-pooled map. min-count raised 10 -> 30 (10 gives a ±30pp confidence
+# interval — not tight enough for the green/amber UI coloring to mean anything).
+_CONF_CAL_MIN_COUNT = 30
+
+
+def _cal_bucket_key(horizon: str, direction: str, market: str | None, band: str) -> str:
+    if market:
+        return f"{horizon}|{direction}|{market}|{band}"
+    return f"{horizon}|{direction}|{band}"
+
+
+def _build_confidence_calibration(session: Session) -> dict:
+    """Query signal_outcomes and compute win rate per (horizon, direction, market, band).
+
+    Returns a flat dict keyed by "HORIZON|DIRECTION|MARKET|BAND" (market-specific) plus
+    "HORIZON|DIRECTION|BAND" fallback entries (pooled across markets, used when the
+    market-specific bucket is too thin), each {"win_rate": float, "count": int}, or {}.
+    """
+    cutoff = date.today() - timedelta(days=180)
+    rows = session.execute(
+        select(
+            SignalOutcome.confidence, SignalOutcome.is_correct,
+            SignalOutcome.horizon, SignalOutcome.signal_direction, Stock.market,
+        )
+        .join(Stock, Stock.id == SignalOutcome.stock_id)
+        .where(
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_date >= cutoff,
+        )
+    ).all()
+
+    buckets: dict[str, dict] = {}
+    for lo, hi, band in _CONF_BANDS:
+        band_rows = [r for r in rows if lo <= r.confidence < hi]
+        if not band_rows:
+            continue
+        # Market-specific buckets
+        by_market: dict[tuple, list] = {}
+        by_pooled: dict[tuple, list] = {}
+        for r in band_rows:
+            horiz = r.horizon.value if hasattr(r.horizon, "value") else r.horizon
+            # str, enum.Enum members stringify as "Market.US" via f-string/str(), not "US" —
+            # use .value explicitly so the bucket key and API response are the plain string.
+            mkt = r.market.value if hasattr(r.market, "value") else r.market
+            by_market.setdefault((horiz, r.signal_direction, mkt), []).append(r.is_correct)
+            by_pooled.setdefault((horiz, r.signal_direction), []).append(r.is_correct)
+        for (horiz, direction, market), outcomes in by_market.items():
+            if len(outcomes) >= _CONF_CAL_MIN_COUNT:
+                key = _cal_bucket_key(horiz, direction, market, band)
+                buckets[key] = {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
+        for (horiz, direction), outcomes in by_pooled.items():
+            if len(outcomes) >= _CONF_CAL_MIN_COUNT:
+                key = _cal_bucket_key(horiz, direction, None, band)
+                buckets[key] = {"win_rate": round(sum(outcomes) / len(outcomes), 3), "count": len(outcomes)}
+    return buckets
+
+
+def _get_confidence_calibration(session: Session) -> dict:
+    """Return calibration map from Redis cache; rebuild if stale."""
+    cached = _cache_get(_CONF_CAL_CACHE_KEY)
+    if cached:
+        return cached
+    try:
+        cal = _build_confidence_calibration(session)
+        if cal:
+            _cache_set(_CONF_CAL_CACHE_KEY, cal, _CONF_CAL_TTL)
+        return cal
+    except Exception as exc:
+        log.warning("confidence_calibration.build_failed", error=str(exc))
+        return {}
+
+
+def _calibrated_win_rate(
+    confidence: float, cal_map: dict, horizon: str | None = None,
+    direction: str | None = None, market: str | None = None,
+) -> tuple[float, int] | None:
+    """Return (win_rate, sample_count) for this confidence/horizon/direction/market;
+    None if insufficient data. Falls back from market-specific to horizon+direction-pooled
+    when horizon/direction are known but the market-specific bucket doesn't meet min-count.
+    Falls back further to confidence-band-only (old pooled behavior) when horizon/direction
+    are not supplied by the caller, so existing callers keep working during rollout.
+    """
+    for lo, hi, band in _CONF_BANDS:
+        if not (lo <= confidence < hi):
+            continue
+        if horizon and direction:
+            if market:
+                entry = cal_map.get(_cal_bucket_key(horizon, direction, market, band))
+                if entry:
+                    return entry["win_rate"], entry["count"]
+            entry = cal_map.get(_cal_bucket_key(horizon, direction, None, band))
+            if entry:
+                return entry["win_rate"], entry["count"]
+            return None
+        # Legacy fallback: no horizon/direction supplied — cannot key precisely.
+        return None
+    return None
 
 
 def _compute_stability(session: Session, stock_id: int, horizon: SignalHorizon, current_signal: str, limit: int = 30) -> int:
@@ -82,6 +251,7 @@ def _compute_stability(session: Session, stock_id: int, horizon: SignalHorizon, 
 def all_latest_signals(
     style: str | None = Query(None, description="Filter by trading style: SHORT, SWING, LONG"),
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Return the most recently persisted signal for every active stock.
 
@@ -183,6 +353,51 @@ def all_latest_signals(
     ]
 
 
+@router.get("/consensus")
+def signal_consensus(
+    market: str | None = Query(None, description="Filter by market: US or HK"),
+    session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
+):
+    """Return the latest signal for every active stock across all 4 horizons in one call.
+
+    Response: { symbol: { SHORT: {signal, confidence, bullish_probability, ts, stability_days},
+                           SWING: {...}, LONG: {...}, GROWTH: {...} } }
+    Only includes horizons that have a stored signal.
+    """
+    latest_subq = (
+        select(Signal.stock_id, Signal.horizon, func.max(Signal.ts).label("max_ts"))
+        .group_by(Signal.stock_id, Signal.horizon)
+        .subquery()
+    )
+    q = (
+        select(Stock.symbol, Signal.stock_id, Signal.signal, Signal.horizon,
+               Signal.confidence, Signal.bullish_probability, Signal.ts)
+        .join(Signal, Stock.id == Signal.stock_id)
+        .join(latest_subq, (Signal.stock_id == latest_subq.c.stock_id)
+              & (Signal.horizon == latest_subq.c.horizon)
+              & (Signal.ts == latest_subq.c.max_ts))
+        .where(Stock.active.is_(True))
+    )
+    if market:
+        q = q.where(Stock.market == market.upper())
+
+    rows = session.execute(q).all()
+    result: dict[str, dict] = {}
+    for row in rows:
+        sym = row.symbol
+        hor = row.horizon.value
+        if sym not in result:
+            result[sym] = {}
+        result[sym][hor] = {
+            "signal": row.signal.value,
+            "confidence": row.confidence,
+            "bullish_probability": row.bullish_probability,
+            "ts": row.ts.isoformat() if row.ts else None,
+        }
+    return result
+
+
 @router.post("/refresh")
 def refresh_signals(
     tasks: BackgroundTasks,
@@ -225,74 +440,254 @@ def reset_signals(tasks: BackgroundTasks, session: Session = Depends(get_session
 def _bulk_persist(symbols: list[str]) -> None:
     from db import SessionLocal
     from sqlalchemy import desc
+    _failures: list[tuple[str, str]] = []  # (symbol, error_message)
     for symbol in symbols:
         try:
             all_sig = generate_all_signals(symbol)
+
+            # 40-B: Cross-horizon consensus — annotate each signal with how many other
+            # styles also fired BUY for this symbol in this same batch.
+            buy_styles = [sk for sk, ai in all_sig.items() if ai.signal == "BUY"]
+            for style_key, ai in all_sig.items():
+                if ai.reasons is None:
+                    ai.reasons = {}
+                others = [sk for sk in buy_styles if sk != style_key]
+                ai.reasons["cross_style_buys"] = len(others)
+                if others:
+                    ai.reasons["cross_style_buy_styles"] = others
+
+            # Enrich reasons with catalyst intelligence (once per symbol, fail-silent)
+            _catalyst: dict | None = None
+            try:
+                import httpx as _httpx_cat
+                _ta_score = 50.0
+                if all_sig:
+                    _first_reasons = (next(iter(all_sig.values())).reasons or {})
+                    _ta_score = float(_first_reasons.get("ta_score", 50.0))
+                _cr = _httpx_cat.get(
+                    f"{_settings.event_intelligence_url}/catalyst/{symbol}",
+                    params={"technical_score": _ta_score},
+                    headers={"Authorization": f"Bearer {_service_token()}"},
+                    timeout=2.0,
+                )
+                if _cr.status_code == 200:
+                    _catalyst = _cr.json()
+            except Exception:
+                pass
+
+            if _catalyst:
+                _insider_s  = _catalyst.get("insider_score")
+                _congress_s = _catalyst.get("congress_score")
+                for _ai in all_sig.values():
+                    if _ai.reasons is None:
+                        _ai.reasons = {}
+                    if _catalyst.get("catalyst_score") is not None:
+                        _ai.reasons["catalyst_score"] = round(_catalyst["catalyst_score"], 1)
+                    if _insider_s is not None:
+                        _ai.reasons["insider_score"] = round(_insider_s, 1)
+                    if _congress_s is not None:
+                        _ai.reasons["congress_score"] = round(_congress_s, 1)
+                    if _catalyst.get("composite_score") is not None:
+                        _ai.reasons["composite_score"] = round(_catalyst["composite_score"], 1)
+
+                    # T172-A: wire catalyst scores into fused_prob — small directional nudge
+                    # Insider buying/selling is the strongest real-money conviction signal.
+                    # Congress score is 0-100 (clamped non-negative in catalyst.py).
+                    _cat_adj = 0.0
+                    if _insider_s is not None:
+                        if _insider_s > 60:    _cat_adj += 0.03   # strong cluster of insider buys
+                        elif _insider_s > 30:  _cat_adj += 0.015
+                        elif _insider_s < -30: _cat_adj -= 0.03   # heavy insider selling
+                        elif _insider_s < -10: _cat_adj -= 0.015
+                    if _congress_s is not None:
+                        if _congress_s > 50:   _cat_adj += 0.02   # meaningful congress net buying
+                        elif _congress_s > 25: _cat_adj += 0.01
+                    if _cat_adj != 0.0 and _ai.bullish_probability is not None:
+                        import numpy as _np_cat
+                        _ai.bullish_probability = round(
+                            float(_np_cat.clip(_ai.bullish_probability + _cat_adj, 0.0, 1.0)), 4
+                        )
+                        _ai.reasons["catalyst_prob_adj"] = round(_cat_adj, 3)
+                        # CRIT-5: re-evaluate signal direction after catalyst nudge so stored
+                        # signal type stays consistent with the adjusted probability.
+                        try:
+                            from ..generators.signals import _STYLE_PROFILES as _SP_cat
+                            _hor_key = _ai.horizon
+                            if _hor_key in _SP_cat:
+                                _bt_vals = _SP_cat[_hor_key].get("buy_threshold", {})
+                                _min_bt = min(_bt_vals.values()) if _bt_vals else 0.70
+                                _sell_t = _SP_cat[_hor_key].get("sell_threshold", 0.35)
+                                if _ai.bullish_probability >= _min_bt and _ai.signal == "HOLD":
+                                    _ai.signal = "BUY"
+                                    _ai.reasons["catalyst_upgraded_signal"] = True
+                                elif _ai.bullish_probability <= _sell_t and _ai.signal in ("BUY", "HOLD"):
+                                    _ai.signal = "SELL"
+                                    _ai.reasons["catalyst_downgraded_signal"] = True
+                        except Exception:
+                            pass
+
+                    # T220-A/H: Boolean flags for UI chips (threshold-based from scores above)
+                    if _insider_s is not None and _insider_s >= 60:
+                        _ai.reasons["insider_cluster"] = True
+                        _ai.reasons["insider_buy_usd"] = _catalyst.get("insider_buy_usd")  # may be None
+                    if _congress_s is not None and _congress_s > 50:
+                        _ai.reasons["congress_buy"] = True
+                    if _catalyst.get("institutional_score") is not None:
+                        _ai.reasons["institutional_score"] = round(float(_catalyst["institutional_score"]), 1)
+
             with SessionLocal() as s:
                 stock = s.query(Stock).filter(Stock.symbol == symbol).one_or_none()
                 if not stock:
                     continue
+
+                # F2: load prior confidence for each horizon to compute confidence_delta
+                prior_conf: dict[str, float | None] = {}
+                try:
+                    from sqlalchemy import text as _text2
+                    rows = s.execute(_text2("""
+                        SELECT CAST(horizon AS text), confidence FROM signals
+                        WHERE stock_id = :sid
+                        ORDER BY ts DESC
+                    """), {"sid": stock.id}).fetchall()
+                    seen: set[str] = set()
+                    for row in rows:
+                        if row[0] not in seen:
+                            prior_conf[row[0]] = float(row[1]) if row[1] is not None else None
+                            seen.add(row[0])
+                except Exception:
+                    pass
+
+                # T220-G: Sector rotation — add sector_momentum to reasons
+                try:
+                    import httpx as _httpx_rot
+                    _rot_r = _httpx_rot.get(
+                        f"{_settings.market_data_url}/stocks/sector-rotation",
+                        headers={"Authorization": f"Bearer {_service_token()}"},
+                        timeout=2.0,
+                    )
+                    if _rot_r.status_code == 200:
+                        _rotation = _rot_r.json()
+                        _sector = stock.sector
+                        if _sector and _sector in _rotation:
+                            _sector_momentum = _rotation[_sector].get("momentum", 0)
+                            if _sector_momentum != 0:
+                                for _ai in all_sig.values():
+                                    if _ai.reasons is None:
+                                        _ai.reasons = {}
+                                    _ai.reasons["sector_momentum"] = _sector_momentum
+                except Exception:
+                    pass
+
+                # Cache the research summary once per symbol (shared across styles)
+                _research_summary: dict | None = None
+                _research_fetched = False
                 for style_key, ai in all_sig.items():
                     horizon_enum = SignalHorizon(ai.horizon)
-                    # Only insert if the signal type changed for this (stock, horizon) pair,
-                    # or if a new signal of the same type is being generated on a different day.
-                    last = s.execute(
-                        select(Signal.signal, Signal.ts)
-                        .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
-                        .order_by(desc(Signal.ts))
-                        .limit(1)
-                    ).one_or_none()
-                    if last is not None and last[0] == SignalType(ai.signal) and last[1].date() == date.today():
-                        continue
-                    s.add(Signal(
-                        stock_id=stock.id,
-                        signal=SignalType(ai.signal),
-                        horizon=horizon_enum,
-                        confidence=ai.confidence,
-                        bullish_probability=ai.bullish_probability,
-                        reasons=ai.reasons,
-                    ))
+                    # F2: annotate confidence_delta before upsert
+                    prev = prior_conf.get(ai.horizon)
+                    if prev is not None and ai.confidence is not None:
+                        delta = round(float(ai.confidence) - float(prev), 1)
+                        if ai.reasons is None:
+                            ai.reasons = {}
+                        ai.reasons["confidence_delta"] = delta
+                    # Upsert: one signal row per (stock, horizon, calendar day).
+                    # Conflict on the unique index uq_signals_stock_horizon_day
+                    # → update in place so signal type changes within a day overwrite rather than grow the table.
+                    # Use CAST() instead of ::type to avoid SQLAlchemy named-param
+                    # binding ambiguity with PostgreSQL :: cast syntax (BUG-6).
+                    s.execute(
+                        text("""
+                            INSERT INTO signals
+                                (stock_id, signal, horizon, confidence, bullish_probability, reasons, source)
+                            VALUES
+                                (:sid, CAST(:sig AS signaltype), CAST(:hor AS signalhorizon),
+                                 :conf, :bp, CAST(:rsns AS jsonb), :src)
+                            ON CONFLICT (stock_id, horizon, date_trunc('day', ts))
+                            DO UPDATE SET
+                                signal              = EXCLUDED.signal,
+                                confidence          = EXCLUDED.confidence,
+                                bullish_probability = EXCLUDED.bullish_probability,
+                                reasons             = EXCLUDED.reasons,
+                                source              = EXCLUDED.source,
+                                ts                  = NOW()
+                        """),
+                        dict(
+                            sid=stock.id,
+                            sig=ai.signal,
+                            hor=ai.horizon,
+                            conf=ai.confidence,
+                            bp=ai.bullish_probability,
+                            rsns=json.dumps(ai.reasons),
+                            src="signal-engine",
+                        ),
+                    )
+
+                    # INT-4: auto-trigger research on new BUY signal (fire-and-forget)
+                    # INT-7: log divergence if research and signal disagree (per-style)
+                    if ai.signal in ("BUY", "STRONG BUY"):
+                        try:
+                            import httpx as _httpx
+                            _url = _settings.research_engine_url
+                            if not _research_fetched:
+                                # INT-4: trigger background research if stale
+                                _httpx.post(f"{_url}/research/{symbol}/trigger", timeout=1.5)
+                                # INT-7: fetch summary once; reused for all BUY styles
+                                _tok = _service_token()
+                                _sr = _httpx.get(
+                                    f"{_url}/research/{symbol}/summary",
+                                    timeout=1.5,
+                                    headers={"Authorization": f"Bearer {_tok}"},
+                                )
+                                if _sr.status_code == 200:
+                                    _research_summary = _sr.json()
+                                _research_fetched = True
+                            if _research_summary:
+                                _rec = _research_summary.get("recommendation", "")
+                                _score = float(_research_summary.get("overall_score") or 0)
+                                if _rec in ("AVOID", "SELL") or (_rec == "WATCH" and _score < 60):
+                                    log.warning(
+                                        "signal.research_divergence",
+                                        symbol=symbol,
+                                        style=style_key,
+                                        signal=ai.signal,
+                                        signal_conf=round(ai.confidence or 0, 1),
+                                        research_rec=_rec,
+                                        research_score=_score,
+                                    )
+                        except Exception as _rdiv_exc:
+                            # Never block signal generation on research calls — but log so a
+                            # research-engine outage is distinguishable from "no divergence found".
+                            log.debug("divergence_check.failed", symbol=symbol, error=str(_rdiv_exc))
                 s.commit()
 
-                # INT-4: auto-trigger research on new BUY signal (fire-and-forget)
-                # INT-7: log divergence if research and signal disagree
-                if ai.signal in ("BUY", "STRONG BUY"):
-                    try:
-                        import httpx as _httpx
-                        _url = _settings.research_engine_url
-                        # INT-4: trigger background research if stale
-                        _httpx.post(f"{_url}/research/{symbol}/trigger", timeout=1.5)
-                        # INT-7: check divergence (service token required — endpoint needs auth)
-                        _tok = _service_token()
-                        _sr = _httpx.get(
-                            f"{_url}/research/{symbol}/summary",
-                            timeout=1.5,
-                            headers={"Authorization": f"Bearer {_tok}"},
-                        )
-                        if _sr.status_code == 200:
-                            _rd = _sr.json()
-                            _rec = _rd.get("recommendation", "")
-                            _score = float(_rd.get("overall_score") or 0)
-                            if _rec in ("AVOID", "SELL") or (_rec == "WATCH" and _score < 60):
-                                log.warning(
-                                    "signal.research_divergence",
-                                    symbol=symbol,
-                                    signal=ai.signal,
-                                    signal_conf=round(ai.confidence or 0, 1),
-                                    research_rec=_rec,
-                                    research_score=_score,
-                                )
-                    except Exception:
-                        pass  # never block signal generation on research calls
-
         except Exception as exc:
+            _failures.append((symbol, str(exc)))
             log.warning("signals.refresh.skip", symbol=symbol, error=str(exc))
+
+    if _failures:
+        fail_rate = len(_failures) / len(symbols) if symbols else 0.0
+        if fail_rate > 0.05:
+            log.error(
+                "signals.refresh.high_failure_rate",
+                total=len(symbols),
+                failed=len(_failures),
+                fail_rate_pct=round(fail_rate * 100, 1),
+                sample_failures=_failures[:5],
+            )
+        else:
+            log.warning(
+                "signals.refresh.failures",
+                total=len(symbols),
+                failed=len(_failures),
+                fail_rate_pct=round(fail_rate * 100, 1),
+            )
 
 
 @router.get("/accuracy")
 def signal_accuracy(
     lookback_days: int = Query(90, ge=2, le=365),
     symbol: str | None = None,
+    market: str | None = Query(None, regex="^(US|HK)$"),
     from_date: str | None = None,
     to_date: str | None = None,
     page: int = Query(1, ge=1),
@@ -328,6 +723,8 @@ def signal_accuracy(
     )
     if symbol:
         q = q.where(Stock.symbol == symbol.upper())
+    if market:
+        q = q.where(Stock.market == market.upper())
 
     rows = session.execute(q).all()
     if not rows:
@@ -407,7 +804,7 @@ def signal_accuracy(
 
         pct_change  = (exit_close - entry_close) / entry_close * 100
         signal_type = sig.signal.value
-        correct     = (signal_type == "BUY" and pct_change > 0) or (signal_type == "SELL" and pct_change < 0)
+        correct     = (signal_type == "BUY" and pct_change >= 0) or (signal_type == "SELL" and pct_change <= 0)
 
         results.append({
             "symbol": sym,
@@ -702,10 +1099,11 @@ def calibrate_ml_weight(
 ):
     """Find the empirically optimal ML fusion weight and apply it as the global cap.
 
-    Runs the same weight sweep as /ml-weight-validation, picks the weight with the
-    highest BUY accuracy over lookback_days, writes it to ml_weight_override.json,
-    and updates the in-process value so new signals use it immediately.
-    Returns the chosen weight and the full accuracy curve.
+    Runs the same weight sweep as /ml-weight-validation, searches for the weight with the
+    highest BUY accuracy on the calibration (train) slice, then only applies it if it ALSO
+    beats a neutral baseline (weight=0.5) on the held-out validation slice — writes to
+    ml_weight_override.json and updates the in-process value only when validated.
+    Returns the chosen weight (or None if nothing validated) and the full accuracy curve.
     """
     from ..generators.signals import set_ml_weight_global_cap, _ml_weight_global_cap as prev_cap
     import bisect
@@ -744,6 +1142,15 @@ def calibrate_ml_weight(
         _pts[sid].append(d)
         _pclose[sid].append(float(row.close))
 
+    def _first_close_at_or_after(sid, target_date):
+        ts_list = _pts.get(sid)
+        if not ts_list:
+            return None
+        idx = bisect.bisect_left(ts_list, target_date)
+        if idx >= len(ts_list):
+            return None
+        return _pclose[sid][idx]
+
     def _first_close_after(sid, after_date):
         ts_list = _pts.get(sid)
         if not ts_list:
@@ -753,6 +1160,13 @@ def calibrate_ml_weight(
             return None
         return _pclose[sid][idx]
 
+    # T234-ML-WEIGHT-NO-VALIDATION-GATE: exit_p previously used whatever the MOST RECENT close
+    # happened to be, mixing holding periods from days to ~180 days (lookback_days) into the same
+    # sweep — a signal evaluated the day it fired and one evaluated 6 months later were treated as
+    # equally-measured observations. Now uses each signal's own style-specific fixed hold window
+    # (_OUTCOME_HOLD_DAYS, the same convention outcomes_calibrate_apply/tune_style_profiles already
+    # use), so every observation measures the same kind of thing: return AFTER the horizon this
+    # signal was actually meant to be held for.
     observations: list[tuple[float, float, float, object]] = []
     seen: set[tuple] = set()
     for sig, _ in rows:
@@ -772,9 +1186,11 @@ def calibrate_ml_weight(
         entry = _first_close_after(sig.stock_id, signal_date)
         if entry is None or entry <= 0:
             continue
-        exit_p = _pclose[sig.stock_id][-1] if ts_list else None
-        if exit_p is None or ts_list[-1] <= signal_date:
-            continue
+        hold_days = _OUTCOME_HOLD_DAYS.get(sig.horizon.value, 14)
+        target_exit_date = signal_date + timedelta(days=hold_days)
+        exit_p = _first_close_at_or_after(sig.stock_id, target_exit_date)
+        if exit_p is None:
+            continue  # hold window hasn't closed yet — not a resolved observation
         pct = (exit_p - entry) / entry * 100
         observations.append((float(ml_prob), float(ta_score), pct, signal_date))
 
@@ -785,58 +1201,122 @@ def calibrate_ml_weight(
     observations.sort(key=lambda x: x[3])
     split = max(1, int(len(observations) * 0.7))
     calib_obs = observations[:split]
-    val_obs = observations[split:] or observations  # fall back to all if too few
+    val_obs = observations[split:]
+
+    MIN_VAL_SAMPLES = 15  # same floor already proven in T232-OC3 / T234-SIG-INSAMPLE-GATE-TUNING
 
     weights = [round(w / 20, 2) for w in range(21)]
     best_acc = -1.0
     optimal_weight = 0.5
     curve = []
-    for w in weights:
-        # Select weight using calibration set only
+
+    def _accuracy_and_return(obs, w):
         correct = fired = 0
-        for ml_p, ta_s, pct, _ in calib_obs:
+        returns = []
+        for ml_p, ta_s, pct, _ in obs:
             fused = w * ml_p + (1 - w) * ta_s
             if fused > 0.5:
                 fired += 1
+                returns.append(pct)
                 if pct > 0:
                     correct += 1
-        calib_acc = correct / fired if fired else None
+        acc = correct / fired if fired else None
+        avg_ret = sum(returns) / len(returns) if returns else None
+        return acc, fired, avg_ret
+
+    for w in weights:
+        # Select weight using calibration set only
+        calib_acc, _, _ = _accuracy_and_return(calib_obs, w)
         if calib_acc is not None and calib_acc > best_acc:
             best_acc = calib_acc
             optimal_weight = w
 
-        # Curve accuracy shown on validation set
-        v_correct = v_fired = 0
-        returns = []
-        for ml_p, ta_s, pct, _ in val_obs:
-            fused = w * ml_p + (1 - w) * ta_s
-            if fused > 0.5:
-                v_fired += 1
-                if pct > 0:
-                    v_correct += 1
-                returns.append(pct)
-        acc = round(v_correct / v_fired * 100, 1) if v_fired else None
-        avg_ret = round(sum(returns) / len(returns), 2) if returns else None
-        curve.append({"weight": w, "accuracy": acc, "avg_return_pct": avg_ret})
+        # Curve accuracy shown on validation set (display only, same as before)
+        v_acc, v_fired, v_avg_ret = _accuracy_and_return(val_obs, w)
+        curve.append({
+            "weight": w,
+            "accuracy": round(v_acc * 100, 1) if v_acc is not None else None,
+            "avg_return_pct": round(v_avg_ret, 2) if v_avg_ret is not None else None,
+        })
 
-    # Report validation accuracy for the chosen weight
-    v_correct = v_fired = 0
-    for ml_p, ta_s, pct, _ in val_obs:
-        fused = optimal_weight * ml_p + (1 - optimal_weight) * ta_s
-        if fused > 0.5:
-            v_fired += 1
-            if pct > 0:
-                v_correct += 1
-    best_acc = round(v_correct / v_fired * 100, 1) if v_fired else 0.0
+    # T234-ML-WEIGHT-NO-VALIDATION-GATE: only apply optimal_weight if it ALSO beats a neutral
+    # baseline (0.5 — equal TA/ML blend) on the validation slice the search never saw. Previously
+    # set_ml_weight_global_cap() ran unconditionally regardless of what validation showed.
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
+    _train_end = calib_obs[-1][3] if calib_obs else date.today()
+    _train_start = calib_obs[0][3] if calib_obs else date.today()
+    _val_end = val_obs[-1][3] if val_obs else date.today()
+    _val_start = val_obs[0][3] if val_obs else date.today()
+
+    if len(val_obs) < MIN_VAL_SAMPLES:
+        _record_tune_history(
+            session, _run_id, "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
+            old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
+            train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+            train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+            validation_n=len(val_obs), promoted=False,
+            gate_failures=[f"insufficient_validation_samples:{len(val_obs)}<{MIN_VAL_SAMPLES}"],
+        )
+        return {
+            "applied": False,
+            "reason": f"only {len(val_obs)} validation-slice observations (need {MIN_VAL_SAMPLES})",
+            "optimal_weight": optimal_weight,
+            "signal_count": len(observations),
+            "lookback_days": lookback_days,
+            "curve": curve,
+        }
+
+    candidate_acc, candidate_fired, candidate_avg_ret = _accuracy_and_return(val_obs, optimal_weight)
+    baseline_acc, baseline_fired, baseline_avg_ret = _accuracy_and_return(val_obs, 0.5)
+
+    candidate_ev = (candidate_avg_ret or 0.0)
+    baseline_ev = (baseline_avg_ret or 0.0)
+    validated = (
+        candidate_fired >= MIN_VAL_SAMPLES
+        and candidate_acc is not None
+        and candidate_ev > baseline_ev
+    )
+
+    if not validated:
+        _record_tune_history(
+            session, _run_id, "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
+            old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
+            train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+            train_ev_pct=None, validation_ev_pct=round(candidate_ev, 2) if candidate_fired else None,
+            baseline_validation_ev_pct=round(baseline_ev, 2) if baseline_fired else None,
+            validation_n=candidate_fired, promoted=False,
+            gate_failures=["ev_lift_not_positive_on_validation"],
+        )
+        return {
+            "applied": False,
+            "reason": "candidate weight did not beat the 0.5 baseline on the validation slice",
+            "optimal_weight": optimal_weight,
+            "candidate_validation_ev_pct": round(candidate_ev, 2) if candidate_fired else None,
+            "baseline_validation_ev_pct": round(baseline_ev, 2) if baseline_fired else None,
+            "signal_count": len(observations),
+            "lookback_days": lookback_days,
+            "curve": curve,
+        }
 
     set_ml_weight_global_cap(optimal_weight)
-    log.info("calibrate_ml_weight: applied cap=%.2f (acc=%.1f%%, n=%d, lookback=%dd)",
-             optimal_weight, best_acc, len(observations), lookback_days)
+    log.info("calibrate_ml_weight: applied cap=%.2f (val_acc=%.1f%%, val_ev=%.2f%%, n=%d, lookback=%dd)",
+             optimal_weight, (candidate_acc or 0.0) * 100, candidate_ev, len(observations), lookback_days)
+    _record_tune_history(
+        session, _run_id, "ml_fusion_weight", "ml_weight_global_cap", "ALL", "ALL",
+        old_value={"ml_weight_global_cap": prev_cap}, new_value={"ml_weight_global_cap": optimal_weight},
+        train_window=(_train_start, _train_end), validation_window=(_val_start, _val_end),
+        train_ev_pct=None, validation_ev_pct=round(candidate_ev, 2),
+        baseline_validation_ev_pct=round(baseline_ev, 2), validation_n=candidate_fired,
+        promoted=True, gate_failures=[],
+    )
 
     return {
         "applied": True,
         "optimal_weight": optimal_weight,
-        "optimal_accuracy": round(best_acc, 1),
+        "optimal_accuracy": round((candidate_acc or 0.0) * 100, 1),
+        "candidate_validation_ev_pct": round(candidate_ev, 2),
+        "baseline_validation_ev_pct": round(baseline_ev, 2),
         "signal_count": len(observations),
         "lookback_days": lookback_days,
         "previous_cap": prev_cap,
@@ -996,6 +1476,7 @@ def trade_performance(
     lookback_days: int = Query(180, ge=7, le=730),
     symbol: str | None = None,
     horizon: str = Query("SWING", regex="^(SHORT|SWING|LONG|GROWTH)$"),
+    market: str | None = Query(None, regex="^(US|HK)$", description="Filter to one market"),
     wait_exits: bool = Query(False, description="Treat same-horizon WAIT as exit (exits when momentum fades)"),
     max_hold_days: int | None = Query(None, ge=1, le=365, description="Force-close after N days. Defaults: SHORT=7, SWING=25, LONG=90"),
     min_confidence: float = Query(0.0, ge=0, le=100, description="Only include BUY signals with confidence >= this value"),
@@ -1036,6 +1517,8 @@ def trade_performance(
     )
     if symbol:
         q = q.where(Stock.symbol == symbol.upper())
+    if market:
+        q = q.where(Stock.market == market.upper())
     if min_confidence > 0:
         q = q.where(Signal.confidence >= min_confidence)
     buy_rows = session.execute(q).all()
@@ -1129,10 +1612,15 @@ def trade_performance(
         if sid in in_open_trade:
             continue
 
-        entry_date = sig.ts.date() + timedelta(days=1)  # execute next day, consistent with /accuracy
-        entry_price = price_on_or_before(sid, entry_date)
-        if entry_price is None:
+        # Entry on the first trading day with actual price data after the signal date.
+        # price_on_or_before(signal_date + 1 calendar day) was wrong for Friday signals:
+        # signal_date + 1 = Saturday → price_on_or_before returns Friday's close (lookahead).
+        _sid_ts = _price_ts.get(sid, [])
+        _entry_idx = bisect.bisect_right(_sid_ts, sig.ts.date())
+        if _entry_idx >= len(_sid_ts):
             continue
+        entry_date = _sid_ts[_entry_idx]
+        entry_price = _price_close[sid][_entry_idx]
 
         exit_ts, exit_signal_val = next_exit(sid, sig.ts)
 
@@ -1311,6 +1799,7 @@ def trade_performance(
 @router.get("/suppressed")
 def suppressed_signals(
     style: str = Query("SWING", description="Trading style: SHORT, SWING, LONG"),
+    market: str | None = Query(None, description="Filter by market: US or HK"),
     session: Session = Depends(get_session),
 ):
     """All active stocks with their latest signal and full suppression condition breakdown.
@@ -1329,7 +1818,7 @@ def suppressed_signals(
 
     q = (
         select(
-            Stock.symbol, Stock.name,
+            Stock.symbol, Stock.name, Stock.market,
             Signal.stock_id, Signal.signal, Signal.horizon, Signal.confidence,
             Signal.bullish_probability, Signal.ts, Signal.reasons,
         )
@@ -1347,6 +1836,9 @@ def suppressed_signals(
         q = q.where(Signal.horizon == SignalHorizon(horizon_filter))
     except ValueError:
         pass
+
+    if market:
+        q = q.where(Stock.market == market.upper())
 
     rows = session.execute(q).all()
 
@@ -1393,6 +1885,7 @@ def suppressed_signals(
         results.append({
             "symbol":              row.symbol,
             "name":                row.name,
+            "market":              row.market,
             "signal":              row.signal.value,
             "horizon":             row.horizon.value,
             "confidence":          round(row.confidence, 1),
@@ -1416,6 +1909,11 @@ def suppressed_signals(
             "pillar_volume":       r.get("pillar_volume"),
             "pillar_structure":    r.get("pillar_structure"),
             "pillars_active":      r.get("independent_pillars_active"),
+            # T175/T181: catalyst intelligence scores (from event-intelligence, stored in reasons by _bulk_persist)
+            "insider_score":       r.get("insider_score"),
+            "congress_score":      r.get("congress_score"),
+            "catalyst_score":      r.get("catalyst_score"),
+            "catalyst_prob_adj":   r.get("catalyst_prob_adj"),
         })
 
     # Compute days_active per condition — how many consecutive days each flag has been True.
@@ -1567,7 +2065,9 @@ def filter_audit(
     from collections import defaultdict
     prices_by_stock: dict[int, list[tuple]] = defaultdict(list)
     for p in price_rows:
-        prices_by_stock[p.stock_id].append((p.ts, float(p.close)))
+        # Convert datetime → date so _nearest_price can compare against date objects
+        _d = p.ts.date() if hasattr(p.ts, "date") else p.ts
+        prices_by_stock[p.stock_id].append((_d, float(p.close)))
 
     def _nearest_price(stock_id: int, target: date) -> float | None:
         candidates = prices_by_stock.get(stock_id, [])
@@ -1703,7 +2203,7 @@ def calibrate_ta_weights(
     except ImportError:
         raise HTTPException(status_code=500, detail="scikit-learn not installed in signal-engine")
 
-    from ..generators.signals import _TA_WEIGHTS_DEFAULT, _TA_WEIGHTS_PATH
+    from ..generators.signals import _TA_WEIGHTS_DEFAULT, _TA_WEIGHTS_PATH, set_ta_weights
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     rows = session.execute(
@@ -1720,7 +2220,6 @@ def calibrate_ta_weights(
         "above_sma50", "sma50_above_sma200", "golden_cross_event",
         "rsi_sweet_spot", "rsi_mild_oversold", "rsi_mild_overbought",
         "stoch_oversold", "stoch_cross_up",
-        "rsi_divergence_bullish",
         "macd_strong", "macd_positive", "macd_zero_cross_up",
         "bb_mid_zone", "price_above_vwap",
         "bullish_trend", "obv_trend_bullish", "volume_surge",
@@ -1737,9 +2236,8 @@ def calibrate_ta_weights(
         "rsi_mild_overbought":    lambda r: 65 <= (r.get("rsi") or 0) < 72,
         "stoch_oversold":         lambda r: bool(r.get("stoch_rsi_oversold")),
         "stoch_cross_up":         lambda r: bool(r.get("stoch_rsi_cross_up")),
-        "rsi_divergence_bullish": lambda r: r.get("rsi_divergence") == "bullish",
-        "macd_strong":            lambda r: (r.get("macd_hist") or 0) > 0 and bool(r.get("macd_rising")),
-        "macd_positive":          lambda r: (r.get("macd_hist") or 0) > 0 and not bool(r.get("macd_rising")),
+        "macd_strong":            lambda r: (r.get("macd_hist") or 0) > 0 and bool(r.get("macd_hist_expanding")),
+        "macd_positive":          lambda r: (r.get("macd_hist") or 0) > 0 and not bool(r.get("macd_hist_expanding")),
         "macd_zero_cross_up":     lambda r: bool(r.get("macd_zero_cross_up")),
         "bb_mid_zone":            lambda r: 0.2 < (r.get("bb_pct_b") or 0) < 0.8,
         "price_above_vwap":       lambda r: r.get("price_above_vwap") is True,
@@ -1789,9 +2287,15 @@ def calibrate_ta_weights(
             skipped += 1
             continue
 
+        # T+1 entry: use the first close STRICTLY AFTER signal_date, matching the same fix
+        # already applied in evaluate_signal_outcomes (see its "T+1 entry" comment) — the
+        # signal is generated from that day's already-known close, so using the SAME day's
+        # close as "entry price" bakes in look-ahead bias (fitting weights as if you could
+        # buy at the exact price the BUY decision was itself based on). Exit is measured
+        # hold_days after the actual T+1 entry date, not after signal_date, for consistency.
         signal_date = row.ts.date() if hasattr(row.ts, "date") else row.ts
-        entry_price_row = _lookup_price(row.stock_id, signal_date)
-        exit_price_row = _lookup_price(row.stock_id, signal_date + timedelta(days=hold_days))
+        entry_price_row = _lookup_price(row.stock_id, signal_date + timedelta(days=1))
+        exit_price_row = _lookup_price(row.stock_id, signal_date + timedelta(days=1 + hold_days))
 
         if entry_price_row is None or exit_price_row is None:
             skipped += 1
@@ -1835,6 +2339,16 @@ def calibrate_ta_weights(
     _tmp = Path(_TA_WEIGHTS_PATH).with_suffix(".tmp")
     _tmp.write_text(json.dumps(new_weights, indent=2))
     _os.replace(str(_tmp), str(_TA_WEIGHTS_PATH))
+    # T228: also persist to Redis so weights survive Docker rebuilds (90-day TTL)
+    try:
+        _get_redis().setex("stockai:ta_weights", 90 * 86400, json.dumps(new_weights))
+    except Exception:
+        pass
+    # T232-SIG6: the persistence writes above only affect the NEXT process restart unless the
+    # in-process globals are also refreshed here — this used to be the entire bug (calibration
+    # reported success but the running process kept scoring signals against the old weights
+    # until it happened to restart for an unrelated reason).
+    set_ta_weights(new_weights)
     log.info("calibrate_ta_weights: wrote %s (accuracy=%.3f, n=%d)", _TA_WEIGHTS_PATH, accuracy, len(X_rows))
 
     return {
@@ -1949,6 +2463,11 @@ def calibrate_conviction_weights(
         Path(_CONVICTION_WEIGHTS_PATH).write_text(json.dumps(payload, indent=2))
     except Exception as exc:
         log.warning("conviction_weights.write_failed", error=str(exc))
+    # T228: also persist to Redis so weights survive Docker rebuilds (90-day TTL)
+    try:
+        _get_redis().setex("stockai:conviction_weights", 90 * 86400, json.dumps(payload))
+    except Exception:
+        pass
 
     log.info("conviction_weights.calibrated", layers=len(layer_stats), noise=payload["noise_count"])
     return payload
@@ -2143,7 +2662,8 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
     try:
         url = f"{_settings.market_data_url}/stocks/{symbol}/prices"
         with httpx.Client(timeout=10) as c:
-            r = c.get(url, params={"timeframe": "1d", "start": start.isoformat(), "limit": 1000})
+            r = c.get(url, params={"timeframe": "1d", "start": start.isoformat(), "limit": 1000},
+                      headers={"Authorization": f"Bearer {_service_token()}"})
             if r.status_code != 200:
                 return None
         data = r.json()
@@ -2183,6 +2703,87 @@ def _wf_benchmark(symbol: str, start: date, windows: list[dict]) -> dict | None:
         }
     except Exception:
         return None
+
+
+@router.get("/recent_changes")
+def recent_signal_changes(
+    symbols: str = Query(..., description="Comma-separated symbols to check"),
+    hours: int = Query(48, ge=1, le=168),
+    session: Session = Depends(get_session),
+):
+    """Return recent signal direction changes for the given symbols.
+
+    For each symbol+horizon pair, compares the two most recent stored signals
+    within the time window. Returns entries where the signal flipped, newest first.
+    """
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()][:50]
+    if not sym_list:
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    stocks = session.execute(
+        select(Stock.id, Stock.symbol, Stock.name)
+        .where(Stock.symbol.in_(sym_list))
+    ).all()
+    stock_ids = [r.id for r in stocks]
+    symbol_map = {r.id: r.symbol for r in stocks}
+    name_map = {r.id: r.name for r in stocks}
+
+    if not stock_ids:
+        return []
+
+    from sqlalchemy import func as _func
+    rn_subq = (
+        select(
+            Signal.stock_id,
+            Signal.horizon,
+            Signal.signal,
+            Signal.ts,
+            Signal.confidence,
+            Signal.bullish_probability,
+            _func.row_number().over(
+                partition_by=[Signal.stock_id, Signal.horizon],
+                order_by=Signal.ts.desc(),
+            ).label("rn"),
+        )
+        .where(
+            Signal.stock_id.in_(stock_ids),
+            Signal.ts >= cutoff,
+        )
+        .subquery()
+    )
+
+    rows = session.execute(
+        select(rn_subq).where(rn_subq.c.rn <= 2)
+    ).all()
+
+    from collections import defaultdict as _dd
+    groups: dict[tuple, list] = _dd(list)
+    for r in rows:
+        groups[(r.stock_id, r.horizon)].append(r)
+
+    changes = []
+    for (sid, horizon), pair in groups.items():
+        if len(pair) < 2:
+            continue
+        pair.sort(key=lambda r: r.ts, reverse=True)
+        latest, prev = pair[0], pair[1]
+        if latest.signal == prev.signal:
+            continue
+        changes.append({
+            "symbol": symbol_map[sid],
+            "name": name_map[sid],
+            "horizon": horizon.value if hasattr(horizon, "value") else str(horizon),
+            "from_signal": prev.signal.value if hasattr(prev.signal, "value") else str(prev.signal),
+            "to_signal": latest.signal.value if hasattr(latest.signal, "value") else str(latest.signal),
+            "ts": latest.ts.isoformat(),
+            "confidence": round(float(latest.confidence), 1),
+            "bullish_probability": round(float(latest.bullish_probability), 3) if latest.bullish_probability is not None else None,
+            "prev_ts": prev.ts.isoformat(),
+        })
+
+    changes.sort(key=lambda c: c["ts"], reverse=True)
+    return changes
 
 
 @router.get("/{symbol}/history")
@@ -2267,25 +2868,75 @@ def detect_patterns(
     def _add(name: str, label: str, description: str, bullish: bool) -> None:
         patterns.append({"name": name, "label": label, "description": description, "bullish": bullish})
 
-    # 1. Golden Cross — EMA50 crossed above EMA200 within last 5 bars
+    # 1. Golden Cross / Death Cross — EMA50 vs EMA200
+    # Guards: (a) verify EMA50 is STILL above EMA200 before showing golden cross badge —
+    # otherwise a cross that fired 4 days ago but has already reversed keeps showing as bullish.
+    # (b) Add spread-velocity context: "spread narrowing" is an early reversal warning.
     if len(close) >= 200:
         ema50 = close.ewm(span=50, adjust=False).mean()
         ema200 = close.ewm(span=200, adjust=False).mean()
+        currently_golden = bool(ema50.iloc[-1] > ema200.iloc[-1])
+
+        gc_fired = dc_fired = False
         for i in range(max(-5, -len(close) + 1), 0):
             if ema50.iloc[i - 1] < ema200.iloc[i - 1] and ema50.iloc[i] >= ema200.iloc[i]:
-                _add("golden_cross", "Golden Cross", f"EMA50 crossed above EMA200 ({ema200.iloc[-1]:.2f})", True)
+                gc_fired = True
+                break
+            if ema50.iloc[i - 1] > ema200.iloc[i - 1] and ema50.iloc[i] <= ema200.iloc[i]:
+                dc_fired = True
                 break
 
-    # 2. MACD Bullish Cross — MACD crossed above signal within last 3 bars
+        spread_now = float(ema50.iloc[-1] - ema200.iloc[-1])
+        spread_5d  = float(ema50.iloc[-6] - ema200.iloc[-6]) if len(close) >= 7 else spread_now
+        gc_expanding = spread_now > spread_5d
+
+        if gc_fired and currently_golden:
+            suffix = " • spread expanding" if gc_expanding else " • spread narrowing ⚠"
+            _add("golden_cross", f"Golden Cross{suffix}",
+                 f"EMA50 crossed above EMA200 ({ema200.iloc[-1]:.2f})", True)
+        elif dc_fired and not currently_golden:
+            _add("death_cross", "Death Cross",
+                 f"EMA50 crossed below EMA200 ({ema200.iloc[-1]:.2f})", False)
+        elif currently_golden and not gc_expanding:
+            # In golden territory but spread narrowing — early warning before death cross
+            _add("gc_narrowing", "GC Spread Narrowing ⚠",
+                 f"EMA50 above EMA200 but gap shrinking — momentum fading ({ema200.iloc[-1]:.2f})", False)
+
+    # 2. MACD Cross — verify MACD is still above signal before showing bullish badge
+    # Also detect histogram fading: positive MACD but slope declining (momentum exhaustion).
     if len(close) >= 35:
         ema12 = close.ewm(span=12, adjust=False).mean()
         ema26 = close.ewm(span=26, adjust=False).mean()
-        macd = ema12 - ema26
-        sig = macd.ewm(span=9, adjust=False).mean()
+        macd_line = ema12 - ema26
+        sig_line = macd_line.ewm(span=9, adjust=False).mean()
+        hist = macd_line - sig_line
+        currently_bull_macd = bool(macd_line.iloc[-1] > sig_line.iloc[-1])
+        hist_slope = float(hist.iloc[-1] - hist.iloc[-3]) if len(hist.dropna()) >= 4 else 0.0
+        hist_fading = bool(hist.iloc[-1] > 0 and hist_slope < 0)
+
+        bull_cross = bear_cross = False
         for i in range(max(-3, -len(close) + 1), 0):
-            if macd.iloc[i - 1] < sig.iloc[i - 1] and macd.iloc[i] >= sig.iloc[i]:
-                _add("macd_bullish_cross", "MACD Cross ↑", f"MACD crossed above signal ({sig.iloc[-1]:.3f})", True)
+            if macd_line.iloc[i - 1] < sig_line.iloc[i - 1] and macd_line.iloc[i] >= sig_line.iloc[i]:
+                bull_cross = True
                 break
+            if macd_line.iloc[i - 1] > sig_line.iloc[i - 1] and macd_line.iloc[i] <= sig_line.iloc[i]:
+                bear_cross = True
+                break
+
+        if bull_cross and currently_bull_macd:
+            if hist_fading:
+                _add("macd_bullish_cross", "MACD Cross ↑ • hist fading ⚠",
+                     f"MACD crossed signal but momentum slowing (slope {hist_slope:.4f})", True)
+            else:
+                _add("macd_bullish_cross", "MACD Cross ↑",
+                     f"MACD crossed above signal ({sig_line.iloc[-1]:.3f})", True)
+        elif bear_cross and not currently_bull_macd:
+            _add("macd_bear_cross", "MACD Cross ↓",
+                 f"MACD crossed below signal ({sig_line.iloc[-1]:.3f})", False)
+        elif currently_bull_macd and hist_fading:
+            # No recent cross but histogram positive and fading — surfaces the exhaustion signal
+            _add("macd_fading", "MACD Hist Fading ⚠",
+                 f"MACD positive but momentum slowing (3-bar slope {hist_slope:.4f})", False)
 
     # 3. RSI Oversold Bounce — RSI crossed above 30 within last 3 bars
     if len(close) >= 16:
@@ -2335,6 +2986,8 @@ def detect_patterns(
 def outcomes_summary(
     horizon: str | None = Query(None, description="SHORT | SWING | LONG"),
     days: int = Query(90, description="Look-back window in calendar days"),
+    market: str | None = Query(None, description="US | HK — filter by stock market"),
+    symbol: str | None = Query(None, description="Filter to a single symbol (e.g. AAPL)"),
     session: Session = Depends(get_session),
 ):
     """Return win-rate and return stats from the signal_outcomes table.
@@ -2355,11 +3008,35 @@ def outcomes_summary(
             q = q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))
         except ValueError:
             raise HTTPException(400, f"Unknown horizon: {horizon}")
+    _needs_stock_join = market or symbol
+    if _needs_stock_join:
+        q = q.join(Stock, Stock.id == SignalOutcome.stock_id)
+        if market:
+            q = q.where(Stock.market == market.upper())
+        if symbol:
+            q = q.where(Stock.symbol == symbol.upper())
 
     outcomes = session.execute(q).scalars().all()
 
+    # T232-OC6: count censored outcomes (hold window closed, price permanently missing —
+    # delisting/halt) in the same window/filters, so win rates can be reported alongside
+    # the fraction of outcomes that were excluded rather than silently vanishing.
+    censored_q = select(func.count()).select_from(SignalOutcome).where(
+        SignalOutcome.signal_date >= cutoff,
+        SignalOutcome.skip_reason.is_not(None),
+    )
+    if horizon:
+        censored_q = censored_q.where(SignalOutcome.horizon == SignalHorizon(horizon.upper()))
+    if _needs_stock_join:
+        censored_q = censored_q.join(Stock, Stock.id == SignalOutcome.stock_id)
+        if market:
+            censored_q = censored_q.where(Stock.market == market.upper())
+        if symbol:
+            censored_q = censored_q.where(Stock.symbol == symbol.upper())
+    censored_count = session.execute(censored_q).scalar_one()
+
     if not outcomes:
-        return {"total": 0, "message": "No evaluated outcomes yet in this window"}
+        return {"total": 0, "censored": censored_count, "message": "No evaluated outcomes yet in this window"}
 
     # Overall stats
     wins = [o for o in outcomes if o.is_correct]
@@ -2476,9 +3153,93 @@ def outcomes_summary(
         "20d": _window_stats(outcomes, "is_correct_20d", "return_20d"),
     }
 
+    # BUY vs SELL win rate by horizon — reveals directional bias in signal accuracy
+    direction_stats: dict = {}
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        for direction in ("BUY", "SELL"):
+            bucket = [o for o in outcomes if o.horizon.value == h and o.signal_direction == direction]
+            if not bucket:
+                continue
+            bucket_returns = [o.pct_return for o in bucket if o.pct_return is not None]
+            direction_stats[f"{h}/{direction}"] = {
+                "count": len(bucket),
+                "win_rate": round(sum(1 for o in bucket if o.is_correct) / len(bucket), 3),
+                "avg_return_pct": round(statistics.mean(bucket_returns) * 100, 2) if bucket_returns else None,
+            }
+
+    # By market (US vs HK) — T223-SIGNAL-WINRATE-API: surfaces cross-market win rate difference
+    market_ids = list({o.stock_id for o in outcomes})
+    _market_map: dict[int, str] = {}
+    if market_ids:
+        _mkt_rows = session.execute(
+            select(Stock.id, Stock.market).where(Stock.id.in_(market_ids))
+        ).all()
+        _market_map = {r.id: r.market for r in _mkt_rows}
+
+    market_stats: dict[str, dict] = {}
+    for o in outcomes:
+        mkt = _market_map.get(o.stock_id, "US")
+        if mkt not in market_stats:
+            market_stats[mkt] = {"count": 0, "wins": 0, "returns": []}
+        market_stats[mkt]["count"] += 1
+        if o.is_correct:
+            market_stats[mkt]["wins"] += 1
+        if o.pct_return is not None:
+            market_stats[mkt]["returns"].append(o.pct_return)
+    by_market = {
+        mkt: {
+            "count": v["count"],
+            "win_rate": round(v["wins"] / v["count"], 3),
+            "avg_return_pct": round(statistics.mean(v["returns"]) * 100, 2) if v["returns"] else None,
+        }
+        for mkt, v in market_stats.items()
+    }
+
+    signal_dates = [o.signal_date for o in outcomes if o.signal_date is not None]
+    date_range = {
+        "oldest": min(signal_dates).isoformat() if signal_dates else None,
+        "newest": max(signal_dates).isoformat() if signal_dates else None,
+    }
+
+    # Per-symbol breakdown — fetch symbol names in one query
+    stock_ids = list({o.stock_id for o in outcomes})
+    symbol_map: dict[int, str] = {}
+    if stock_ids:
+        rows = session.execute(select(Stock.id, Stock.symbol).where(Stock.id.in_(stock_ids))).all()
+        symbol_map = {r.id: r.symbol for r in rows}
+
+    sym_groups: dict[str, dict] = {}
+    for o in outcomes:
+        sym = symbol_map.get(o.stock_id, f"id:{o.stock_id}")
+        if sym not in sym_groups:
+            sym_groups[sym] = {"count": 0, "wins": 0, "returns": []}
+        sym_groups[sym]["count"] += 1
+        if o.is_correct:
+            sym_groups[sym]["wins"] += 1
+        if o.pct_return is not None:
+            sym_groups[sym]["returns"].append(o.pct_return)
+
+    by_symbol = sorted(
+        [
+            {
+                "symbol": sym,
+                "count": v["count"],
+                "win_rate": round(v["wins"] / v["count"], 3),
+                "avg_return_pct": round(statistics.mean(v["returns"]) * 100, 2) if v["returns"] else None,
+                "wins": v["wins"],
+                "losses": v["count"] - v["wins"],
+            }
+            for sym, v in sym_groups.items()
+            if v["count"] >= 2
+        ],
+        key=lambda x: -(x["avg_return_pct"] or -999),
+    )
+
     return {
         "total": len(outcomes),
+        "censored": censored_count,
         "days_lookback": days,
+        "date_range": date_range,
         "overall": {
             "win_rate": round(len(wins) / len(outcomes), 3),
             "avg_return_pct": round(statistics.mean(returns) * 100, 2) if returns else None,
@@ -2486,9 +3247,1102 @@ def outcomes_summary(
         },
         "by_confidence_band": band_stats,
         "by_horizon": horizon_stats,
+        "by_market": by_market,
+        "by_direction": direction_stats,
         "by_market_regime": regime_summary,
         "by_research_alignment": research_summary,
         "by_window": multi_window,
+        "by_symbol": by_symbol,
+    }
+
+
+@router.get("/outcomes/calibration")
+def outcomes_calibration(
+    days: int = Query(180, ge=30, le=365, description="Look-back window in calendar days"),
+    session: Session = Depends(get_session),
+):
+    """Calibration curve data for the reliability diagram.
+
+    For each horizon × confidence band combination, returns the actual win rate
+    vs expected (midpoint of the band). Used to assess whether confidence scores
+    are well-calibrated and to recommend minimum confidence thresholds.
+    """
+    import statistics
+    cutoff = date.today() - timedelta(days=days)
+
+    outcomes = session.execute(
+        select(SignalOutcome)
+        .where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+        )
+    ).scalars().all()
+
+    if not outcomes:
+        return {"total": 0, "horizons": [], "overall": {}, "message": "No evaluated BUY outcomes yet"}
+
+    bands = [
+        (50, 60, "50-60", 55.0),
+        (60, 65, "60-65", 62.5),
+        (65, 70, "65-70", 67.5),
+        (70, 75, "70-75", 72.5),
+        (75, 80, "75-80", 77.5),
+        (80, 101, "80+", 85.0),
+    ]
+
+    horizons = ["SHORT", "SWING", "LONG", "GROWTH"]
+    horizon_stats = []
+
+    for hor in horizons:
+        hor_outcomes = [o for o in outcomes if o.horizon == hor or o.horizon == SignalHorizon(hor)]
+        if not hor_outcomes:
+            continue
+
+        band_data = []
+        for lo, hi, label, midpoint in bands:
+            bucket = [o for o in hor_outcomes if lo <= o.confidence < hi]
+            if len(bucket) < 3:
+                continue
+            wins = sum(1 for o in bucket if o.is_correct)
+            rets = [o.pct_return for o in bucket if o.pct_return is not None]
+            band_data.append({
+                "band": label,
+                "midpoint": midpoint,
+                "count": len(bucket),
+                "win_rate": round(wins / len(bucket), 3),
+                "win_rate_pct": round(wins / len(bucket) * 100, 1),
+                "avg_return_pct": round(statistics.mean(rets) * 100, 2) if rets else None,
+                "calibration_gap": round((wins / len(bucket)) - (midpoint / 100), 3),
+            })
+
+        if not band_data:
+            continue
+
+        # Suggest min_confidence: lowest band with win_rate >= 0.52
+        suggested_min = None
+        for bd in sorted(band_data, key=lambda x: x["midpoint"]):
+            if bd["win_rate"] >= 0.52 and bd["count"] >= 5:
+                suggested_min = bd["midpoint"] - 5  # use band start
+                break
+
+        hor_wins = sum(1 for o in hor_outcomes if o.is_correct)
+        hor_rets = [o.pct_return for o in hor_outcomes if o.pct_return is not None]
+        horizon_stats.append({
+            "horizon": hor,
+            "total": len(hor_outcomes),
+            "win_rate_pct": round(hor_wins / len(hor_outcomes) * 100, 1),
+            "avg_return_pct": round(statistics.mean(hor_rets) * 100, 2) if hor_rets else None,
+            "suggested_min_confidence": suggested_min,
+            "bands": band_data,
+        })
+
+    # Overall
+    all_wins = sum(1 for o in outcomes if o.is_correct)
+    all_rets = [o.pct_return for o in outcomes if o.pct_return is not None]
+
+    return {
+        "total": len(outcomes),
+        "days": days,
+        "overall": {
+            "win_rate_pct": round(all_wins / len(outcomes) * 100, 1),
+            "avg_return_pct": round(statistics.mean(all_rets) * 100, 2) if all_rets else None,
+        },
+        "horizons": horizon_stats,
+    }
+
+
+@router.get("/outcomes/calibrate")
+def outcomes_calibrate(
+    days: int = Query(180, description="Look-back window in calendar days"),
+    min_samples: int = Query(15, description="Minimum signals required to suggest a threshold"),
+    session: Session = Depends(get_session),
+):
+    """Sweep confidence thresholds per horizon to find the empirically optimal buy_threshold.
+
+    For each horizon × BUY, finds the confidence level (0-100 scale) that maximises
+    expected_value = win_rate × avg_return, subject to n >= min_samples.
+    Compares the suggested threshold against the current hardcoded thresholds in
+    _STYLE_PROFILES so you can see whether signal tuning is needed.
+    """
+    import statistics as _stats
+    from ..generators.signals import _STYLE_PROFILES
+
+    # Current bull-regime thresholds, fused-probability scale (T232-CAL1: sweep/report on the
+    # same scale _decide_style actually compares against — previously this used a 0-100
+    # confidence scale here while POST /apply wrote a misinterpreted 0-100 value too).
+    CURRENT: dict[str, float] = {
+        h: _STYLE_PROFILES[h]["buy_threshold"]["bull"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
+    }
+
+    cutoff = date.today() - timedelta(days=days)
+    all_outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+        )
+    ).scalars().all()
+
+    # T232-OC3: walk-forward split — mirrors the fix in POST /outcomes/calibrate/apply so this
+    # preview endpoint reports the SAME methodology that actually gets applied, instead of a
+    # more optimistic in-sample number that would disagree with what apply's response shows.
+    calibrations = []
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        bucket = sorted(
+            [o for o in all_outcomes if o.horizon.value == h],
+            key=lambda o: o.signal_date,
+        )
+        current_t = CURRENT.get(h, 0.65)
+
+        def _stats_at(threshold: float, samples: list) -> dict | None:
+            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob >= threshold]
+            if len(sub) < min_samples:
+                return None
+            wins = sum(1 for o in sub if o.is_correct)
+            rets = [o.pct_return for o in sub if o.pct_return is not None]
+            acc = wins / len(sub)
+            avg_ret = _stats.mean(rets) if rets else 0.0
+            # T232-OC4: avg_ret is already the mean return across ALL trades (wins and
+            # losses) in `sub` — it already IS the expected value per trade. Multiplying by
+            # acc (win rate) again double-counts win probability, understating true EV.
+            return {
+                "n": len(sub),
+                "win_rate": round(acc, 3),
+                "avg_return_pct": round(avg_ret * 100, 2),
+                "expected_value_pct": round(avg_ret * 100, 2),
+            }
+
+        if len(bucket) < min_samples * 2:
+            calibrations.append({
+                "horizon": h,
+                "current_threshold": current_t,
+                "suggested_threshold": None,
+                "n_total": len(bucket),
+                "note": f"Insufficient data (need ≥{min_samples * 2} evaluated BUY outcomes for a valid train/validation split)",
+            })
+            continue
+
+        split = max(1, int(len(bucket) * 0.7))
+        train_bucket = bucket[:split]
+        val_bucket = bucket[split:]
+
+        # Search on the train slice only.
+        best_ev = -999.0
+        best_t: float | None = None
+        for t_i in range(55, 86):
+            st = _stats_at(t_i / 100.0, train_bucket)
+            if st is not None and st["expected_value_pct"] > best_ev:
+                best_ev = st["expected_value_pct"]
+                best_t = t_i / 100.0
+
+        # Report stats on the validation slice — data the search never saw.
+        best_stats = _stats_at(best_t, val_bucket) if best_t is not None else None
+        at_current = _stats_at(current_t, val_bucket)
+        ev_lift = None
+        if best_stats and at_current:
+            ev_lift = round(best_stats["expected_value_pct"] - at_current["expected_value_pct"], 2)
+
+        calibrations.append({
+            "horizon": h,
+            "current_threshold": current_t,
+            "suggested_threshold": round(best_t, 2) if best_t else None,
+            "ev_lift_pct": ev_lift,
+            "n_total": len(bucket),
+            "train_n": len(train_bucket),
+            "validation_n": len(val_bucket),
+            "at_current_threshold": at_current,
+            "at_suggested_threshold": best_stats,
+        })
+
+    return {
+        "days": days,
+        "min_samples": min_samples,
+        "calibrations": calibrations,
+    }
+
+
+@router.post("/outcomes/calibrate/apply")
+def outcomes_calibrate_apply(
+    days: int = Query(180, description="Look-back window in calendar days"),
+    min_samples: int = Query(50, description="Minimum signals required to apply a new threshold"),
+    min_ev_lift: float = Query(0.1, description="Minimum expected-value lift (%) before applying"),
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Apply empirically-optimal buy/sell thresholds to Redis so signal generator picks them up live.
+
+    T232-CAL1/CAL3 fix: sweeps and writes directly on the fused-probability (0-1) scale that
+    _decide_style actually compares against — previously this swept SignalOutcome.confidence
+    (a 0-100 distance-from-neutral scale) and wrote best_t/100, which was silently misapplied
+    as a fused-probability threshold (confidence 62 ≡ fused 0.81, was written+read as 0.62).
+
+    Reads the same calibration data as GET /outcomes/calibrate and, for each horizon
+    where the suggested threshold has a positive EV lift and sufficient sample size,
+    writes `stockai:signal_thresholds:{HORIZON}` to Redis with a 30-day TTL. The value
+    written is a delta from the hardcoded bull baseline, applied per-regime by
+    _get_dynamic_buy_threshold (T232-CAL2) rather than overriding all regimes with one flat
+    number, and is bounds-checked before being written (defense in depth alongside the
+    reader-side clamp).
+
+    The signal generator reads these keys at signal decision time (falls back to the
+    hardcoded _STYLE_PROFILES values if absent).  Run this weekly via the scheduler.
+    """
+    import statistics as _stats
+    from ..generators.signals import _STYLE_PROFILES
+
+    # Bull-regime buy thresholds — source of truth is _STYLE_PROFILES (T232-SIG12: no more
+    # independently-drifting hardcoded copies).
+    CURRENT: dict[str, float] = {
+        h: _STYLE_PROFILES[h]["buy_threshold"]["bull"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
+    }
+    _BUY_BOUNDS = (0.55, 0.85)
+    _SELL_BOUNDS = (0.15, 0.45)
+
+    cutoff = date.today() - timedelta(days=days)
+    all_outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+        )
+    ).scalars().all()
+
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    redis_client = _get_redis()
+    _REDIS_TTL = 30 * 86400  # 30 days
+
+    # T232-OC3 / T233-SELFIMPROVE-PHASE1: the threshold search used to sweep 31 overlapping
+    # cumulative subsets of ONE sample and take the argmax — an in-sample search evaluated on
+    # the exact data it was fit to. At min_samples=50 the win-rate standard error is still ~7pp,
+    # so an unvalidated argmax over 31 correlated subsets is prone to surfacing an upward-biased
+    # fluke as "optimal" (the same failure mode that produced the CAL-1 incident documented
+    # elsewhere in this report). Fixed with a genuine walk-forward split: search for the best
+    # threshold on the OLDER 70% of the window (train), then only apply it if the EV lift ALSO
+    # holds up on the NEWER, never-searched 30% (validation) — mirrors the chronological
+    # train/validation split calibrate_ml_weight() already uses correctly for the sibling
+    # ML-weight calibration.
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
+
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        bucket = sorted(
+            [o for o in all_outcomes if o.horizon.value == h],
+            key=lambda o: o.signal_date,
+        )
+        current_t = CURRENT.get(h, 0.65)  # fused-probability scale
+        _bucket_dates = (bucket[0].signal_date, bucket[-1].signal_date) if bucket else (date.today(), date.today())
+
+        if len(bucket) < min_samples * 2:
+            # Need enough for BOTH a train slice and a validation slice to each independently
+            # clear min_samples — otherwise the split itself produces two under-powered halves.
+            skipped.append({"horizon": h, "reason": f"only {len(bucket)} samples (need {min_samples * 2} for a valid train/validation split)"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={},
+                train_window=_bucket_dates, validation_window=_bucket_dates,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=None, promoted=False,
+                gate_failures=[f"insufficient_total_samples:{len(bucket)}<{min_samples * 2}"],
+            )
+            continue
+
+        split = max(1, int(len(bucket) * 0.7))
+        train_bucket = bucket[:split]
+        val_bucket = bucket[split:]
+
+        def _stats_at(threshold: float, samples: list) -> dict | None:
+            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob >= threshold]
+            if len(sub) < min_samples:
+                return None
+            wins = sum(1 for o in sub if o.is_correct)
+            rets = [o.pct_return for o in sub if o.pct_return is not None]
+            acc = wins / len(sub)
+            avg_ret = _stats.mean(rets) if rets else 0.0
+            # T232-OC4: avg_ret already IS the expected value (mean return across all trades
+            # in `sub`, wins and losses) — multiplying by acc double-counts win probability.
+            ev = avg_ret * 100
+            return {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
+
+        # Search for the best threshold on the TRAIN slice only.
+        best_ev = -999.0
+        best_t: float | None = None
+        for t_i in range(55, 86):
+            t = t_i / 100.0
+            st = _stats_at(t, train_bucket)
+            if st is not None and st["ev_pct"] > best_ev:
+                best_ev = st["ev_pct"]
+                best_t = t
+
+        _train_window = (train_bucket[0].signal_date, train_bucket[-1].signal_date)
+        _val_window = (val_bucket[0].signal_date, val_bucket[-1].signal_date)
+
+        if best_t is None:
+            skipped.append({"horizon": h, "reason": "no threshold met EV/sample criteria on the train slice"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(val_bucket), promoted=False,
+                gate_failures=["no_candidate_met_train_criteria"],
+            )
+            continue
+
+        # Validate: both the suggested threshold and the current baseline must be independently
+        # measurable on the VALIDATION slice — a candidate that never sees this data.
+        best_stats = _stats_at(best_t, val_bucket)
+        current_stats = _stats_at(current_t, val_bucket)
+
+        if best_stats is None:
+            skipped.append({"horizon": h, "reason": "suggested threshold unmeasurable on the validation slice (insufficient samples)"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(val_bucket), promoted=False,
+                gate_failures=["candidate_unmeasurable_on_validation"],
+            )
+            continue
+
+        if current_stats is None:
+            # T232-OC3: no honest baseline measurable at the current threshold — do not assume
+            # EV 0 (that overstates lift and applies too eagerly). Skip instead.
+            skipped.append({"horizon": h, "reason": "baseline threshold unmeasurable on the validation slice (insufficient samples)"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"], baseline_validation_ev_pct=None,
+                validation_n=best_stats["n"], promoted=False,
+                gate_failures=["baseline_unmeasurable_on_validation"],
+            )
+            continue
+
+        ev_lift = round(best_stats["ev_pct"] - current_stats["ev_pct"], 2)
+
+        # T232-OC3-FOLLOWUP: never apply a threshold with negative validated EV lift, regardless
+        # of how large the threshold shift is — see the SELL-side comment above for the live
+        # incident (a large shift previously bypassed the lift check entirely via the old
+        # `ev_lift < min AND shift < 3pt` AND-logic).
+        if ev_lift < 0:
+            skipped.append({
+                "horizon": h,
+                "reason": f"validation-slice EV lift {ev_lift}% is negative — never apply a worse threshold",
+                "suggested": best_t,
+                "current": current_t,
+            })
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+                baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+                promoted=False, gate_failures=["ev_lift_negative"],
+            )
+            continue
+
+        if ev_lift < min_ev_lift and abs(best_t - current_t) < 0.03:
+            skipped.append({
+                "horizon": h,
+                "reason": f"validation-slice EV lift {ev_lift}% below min {min_ev_lift}% and threshold shift <3pt",
+                "suggested": best_t,
+                "current": current_t,
+            })
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+                baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+                promoted=False, gate_failures=["ev_lift_below_min_and_shift_too_small"],
+            )
+            continue
+
+        if not (_BUY_BOUNDS[0] <= best_t <= _BUY_BOUNDS[1]):
+            skipped.append({"horizon": h, "reason": f"suggested {best_t} outside sane bounds {_BUY_BOUNDS}"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+                old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+                baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+                promoted=False, gate_failures=["suggested_outside_sane_bounds"],
+            )
+            continue
+
+        # Write to Redis — signal generator reads this at decision time (fused-probability scale)
+        redis_key = f"stockai:signal_thresholds:{h}"
+        redis_client.setex(redis_key, _REDIS_TTL, str(round(best_t, 4)))
+        _record_tune_history(
+            session, _run_id, "signal_threshold", "buy_threshold", h, "ALL",
+            old_value={"buy_threshold": current_t}, new_value={"buy_threshold": best_t},
+            train_window=_train_window, validation_window=_val_window,
+            train_ev_pct=best_ev, validation_ev_pct=best_stats["ev_pct"],
+            baseline_validation_ev_pct=current_stats["ev_pct"], validation_n=best_stats["n"],
+            promoted=True, gate_failures=[],
+        )
+        applied.append({
+            "horizon": h,
+            "previous_threshold": current_t,
+            "new_threshold": round(best_t, 4),
+            "ev_lift_pct": ev_lift,
+            "train_n": len(train_bucket),
+            "validation_stats": best_stats,
+        })
+
+    # T228-SELL-CALIBRATION (T232-CAL3 fix): sweep SELL threshold per horizon.
+    # For SELL, LOWER fused_prob = stronger conviction (confidence = (0.5-fused)*200), so the
+    # sweep selects fused_prob <= t — the mirror image of the BUY sweep above — and uses signed
+    # SELL profit (a SELL is profitable when price falls, i.e. -pct_return), not abs().
+    sell_outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "SELL",
+        )
+    ).scalars().all()
+
+    sell_applied: list[dict] = []
+    sell_skipped: list[dict] = []
+    _CURRENT_SELL = 0.35  # fused-probability scale, matches the hardcoded fallback in signals.py
+
+    # T232-OC3: same walk-forward fix as the BUY sweep above — train on the older 70%,
+    # validate the chosen threshold's EV lift on the newer, never-searched 30%.
+    for h in ("SHORT", "SWING", "LONG", "GROWTH"):
+        s_bucket = sorted(
+            [o for o in sell_outcomes if o.horizon.value == h],
+            key=lambda o: o.signal_date,
+        )
+
+        _s_bucket_dates = (s_bucket[0].signal_date, s_bucket[-1].signal_date) if s_bucket else (date.today(), date.today())
+
+        if len(s_bucket) < min_samples * 2:
+            sell_skipped.append({"horizon": h, "reason": f"only {len(s_bucket)} SELL samples (need {min_samples * 2} for a valid train/validation split)"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={},
+                train_window=_s_bucket_dates, validation_window=_s_bucket_dates,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=None, promoted=False,
+                gate_failures=[f"insufficient_total_samples:{len(s_bucket)}<{min_samples * 2}"],
+            )
+            continue
+
+        s_split = max(1, int(len(s_bucket) * 0.7))
+        s_train_bucket = s_bucket[:s_split]
+        s_val_bucket = s_bucket[s_split:]
+        _s_train_window = (s_train_bucket[0].signal_date, s_train_bucket[-1].signal_date)
+        _s_val_window = (s_val_bucket[0].signal_date, s_val_bucket[-1].signal_date)
+
+        def _sell_stats_at(threshold: float, samples: list) -> dict | None:
+            sub = [o for o in samples if o.fused_prob is not None and o.fused_prob <= threshold]
+            if len(sub) < min_samples:
+                return None
+            wins = sum(1 for o in sub if o.is_correct)
+            rets = [-o.pct_return for o in sub if o.pct_return is not None]  # signed: SELL wins on price decline
+            acc = wins / len(sub)
+            avg_ret = _stats.mean(rets) if rets else 0.0
+            # T232-OC4: avg_ret already IS the expected value — see fix note above.
+            ev = avg_ret * 100
+            return {"n": len(sub), "win_rate": round(acc, 3), "ev_pct": round(ev, 2)}
+
+        s_best_ev = -999.0
+        s_best_t: float | None = None
+        for t_i in range(15, 41):
+            t = t_i / 100.0
+            st = _sell_stats_at(t, s_train_bucket)
+            if st is not None and st["ev_pct"] > s_best_ev:
+                s_best_ev = st["ev_pct"]
+                s_best_t = t
+
+        if s_best_t is None:
+            sell_skipped.append({"horizon": h, "reason": "no SELL threshold met criteria on the train slice"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(s_val_bucket), promoted=False,
+                gate_failures=["no_candidate_met_train_criteria"],
+            )
+            continue
+
+        s_best_stats = _sell_stats_at(s_best_t, s_val_bucket)
+        s_current_stats = _sell_stats_at(_CURRENT_SELL, s_val_bucket)
+
+        if s_best_stats is None:
+            sell_skipped.append({"horizon": h, "reason": "suggested SELL threshold unmeasurable on the validation slice"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                validation_n=len(s_val_bucket), promoted=False,
+                gate_failures=["candidate_unmeasurable_on_validation"],
+            )
+            continue
+
+        if s_current_stats is None:
+            sell_skipped.append({"horizon": h, "reason": "SELL baseline threshold unmeasurable on the validation slice"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"], baseline_validation_ev_pct=None,
+                validation_n=s_best_stats["n"], promoted=False,
+                gate_failures=["baseline_unmeasurable_on_validation"],
+            )
+            continue
+
+        s_ev_lift = round(s_best_stats["ev_pct"] - s_current_stats["ev_pct"], 2)
+
+        # T232-OC3-FOLLOWUP: this used to be `ev_lift < min_ev_lift AND shift < 3pt` — an AND
+        # meant a large threshold shift could bypass the EV check entirely even with NEGATIVE
+        # validated lift (caught live: a run applied SELL:GROWTH 0.35->0.30 with a validated
+        # ev_lift of -0.01%, because the 5pt shift satisfied "not small" while the lift check
+        # was skipped). Never apply a threshold with negative validated EV lift regardless of
+        # shift size; the small-shift-plus-small-lift skip is now a separate, narrower check.
+        if s_ev_lift < 0:
+            sell_skipped.append({
+                "horizon": h, "direction": "SELL",
+                "reason": f"validation-slice EV lift {s_ev_lift}% is negative — never apply a worse threshold",
+                "suggested": s_best_t,
+            })
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"],
+                baseline_validation_ev_pct=s_current_stats["ev_pct"], validation_n=s_best_stats["n"],
+                promoted=False, gate_failures=["ev_lift_negative"],
+            )
+            continue
+        if s_ev_lift < min_ev_lift and abs(s_best_t - _CURRENT_SELL) < 0.03:
+            sell_skipped.append({
+                "horizon": h, "direction": "SELL",
+                "reason": f"validation-slice EV lift {s_ev_lift}% below min and shift <3pt",
+                "suggested": s_best_t,
+            })
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"],
+                baseline_validation_ev_pct=s_current_stats["ev_pct"], validation_n=s_best_stats["n"],
+                promoted=False, gate_failures=["ev_lift_below_min_and_shift_too_small"],
+            )
+            continue
+
+        if not (_SELL_BOUNDS[0] <= s_best_t <= _SELL_BOUNDS[1]):
+            sell_skipped.append({"horizon": h, "reason": f"suggested {s_best_t} outside sane bounds {_SELL_BOUNDS}"})
+            _record_tune_history(
+                session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+                old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+                train_window=_s_train_window, validation_window=_s_val_window,
+                train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"],
+                baseline_validation_ev_pct=s_current_stats["ev_pct"], validation_n=s_best_stats["n"],
+                promoted=False, gate_failures=["suggested_outside_sane_bounds"],
+            )
+            continue
+
+        redis_client.setex(f"stockai:signal_thresholds:SELL:{h}", _REDIS_TTL, str(round(s_best_t, 4)))
+        _record_tune_history(
+            session, _run_id, "signal_threshold", "sell_threshold", h, "ALL",
+            old_value={"sell_threshold": _CURRENT_SELL}, new_value={"sell_threshold": s_best_t},
+            train_window=_s_train_window, validation_window=_s_val_window,
+            train_ev_pct=s_best_ev, validation_ev_pct=s_best_stats["ev_pct"],
+            baseline_validation_ev_pct=s_current_stats["ev_pct"], validation_n=s_best_stats["n"],
+            promoted=True, gate_failures=[],
+        )
+        sell_applied.append({
+            "horizon": h,
+            "direction": "SELL",
+            "previous_threshold": _CURRENT_SELL,
+            "new_threshold": round(s_best_t, 4),
+            "ev_lift_pct": s_ev_lift,
+            "train_n": len(s_train_bucket),
+            "validation_stats": s_best_stats,
+        })
+
+    return {
+        "buy_applied": applied,
+        "buy_skipped": skipped,
+        "sell_applied": sell_applied,
+        "sell_skipped": sell_skipped,
+        "redis_ttl_days": 30,
+    }
+
+
+@router.post("/tune_style_profiles")
+def tune_style_profiles(
+    days: int = Query(120, description="Look-back window in calendar days"),
+    min_samples: int = Query(10, description="Minimum outcomes required per bucket"),
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Sweep style-specific gate parameters against live signal_outcomes and apply optimal values.
+
+    For each style × parameter combination, groups outcomes by the relevant field in
+    signal.reasons, finds the value that maximises expected-value (win_rate × avg_return),
+    and writes it to Redis (stockai:style_tune:{STYLE}:{param}, 30-day TTL).
+
+    Parameters tuned:
+      - ml_weight_cap: optimal maximum ML fusion weight per style
+      - adx_min: optimal ADX minimum threshold below which signals are compressed
+      - high_vol_compression: whether high-vol compression is helping or hurting
+      - breadth_compression: whether breadth compression threshold is calibrated
+
+    Signal generator reads these from Redis via _get_style_tuned_param().
+    Run weekly (Sunday) alongside TA and conviction weight calibration.
+    """
+    import statistics as _stats
+
+    cutoff = date.today() - timedelta(days=days)
+    outcomes = session.execute(
+        select(SignalOutcome).where(
+            SignalOutcome.signal_date >= cutoff,
+            SignalOutcome.is_correct.is_not(None),
+            SignalOutcome.signal_direction == "BUY",
+        )
+    ).scalars().all()
+
+    # Fetch reasons JSON for each outcome's signal
+    signal_ids = [o.signal_id for o in outcomes if o.signal_id]
+    signals_map: dict[int, dict] = {}
+    if signal_ids:
+        rows = session.execute(
+            select(Signal.id, Signal.reasons).where(Signal.id.in_(signal_ids))
+        ).all()
+        for row in rows:
+            if row.reasons:
+                signals_map[row.id] = row.reasons
+
+    redis_client = _get_redis()
+    _REDIS_TTL = 30 * 86400
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    import uuid as _uuid
+    _run_id = str(_uuid.uuid4())
+
+    def _ev_at(subset):
+        if not subset:
+            return None
+        wins = sum(1 for o in subset if o.is_correct)
+        rets = [o.pct_return for o in subset if o.pct_return is not None]
+        acc = wins / len(subset)
+        avg_ret = _stats.mean(rets) if rets else 0.0
+        # T232-OC4: avg_ret already IS the expected value — see fix note near the OC3
+        # calibration functions above. Multiplying by acc double-counts win probability.
+        return avg_ret * 100, acc, avg_ret
+
+    # T234-SIG-INSAMPLE-GATE-TUNING: this function used to sweep every candidate directly
+    # against the full sample and apply whatever scored best — an in-sample argmax with no
+    # validation, the exact failure mode outcomes_calibrate_apply's own comments document as
+    # the cause of a prior live incident (CAL-1). Now uses the same chronological 70/30
+    # train/validation split as that sibling endpoint: search for the best candidate on the
+    # OLDER 70% (train), then only apply it if it ALSO shows a real edge on the NEWER, never-
+    # searched 30% (validation) — a candidate that only looks good in-sample won't survive this.
+    for style in ("SHORT", "SWING", "LONG", "GROWTH"):
+        style_outcomes = sorted(
+            [o for o in outcomes if o.horizon.value == style],
+            key=lambda o: o.signal_date,
+        )
+        if len(style_outcomes) < min_samples * 4:
+            # need enough for train AND validation to each independently clear min_samples * 2
+            # (min_samples * 2 was already this function's own per-sweep floor before this fix)
+            skipped.append({"style": style, "reason": f"only {len(style_outcomes)} outcomes (need {min_samples * 4} for a valid train/validation split)"})
+            continue
+
+        style_with_reasons = [
+            (o, signals_map.get(o.signal_id, {}))
+            for o in style_outcomes
+            if o.signal_id and o.signal_id in signals_map
+        ]
+        if len(style_with_reasons) < min_samples * 2:
+            skipped.append({"style": style, "reason": f"only {len(style_with_reasons)} outcomes with reasons JSON"})
+            continue
+
+        split = max(1, int(len(style_with_reasons) * 0.7))
+        train_sr = style_with_reasons[:split]
+        val_sr = style_with_reasons[split:]
+        _train_window = (train_sr[0][0].signal_date, train_sr[-1][0].signal_date)
+        _val_window = (val_sr[0][0].signal_date, val_sr[-1][0].signal_date)
+
+        # ── ml_weight_cap: sweep 0.15–0.75, find cap where EV is maximised on TRAIN,
+        #    then require the SAME cap to beat the effectively-uncapped baseline on VALIDATION ──
+        best_ml_ev, best_ml_cap = -999.0, None
+        for cap_int in range(15, 76, 5):
+            cap = cap_int / 100.0
+            sub = [o for o, r in train_sr if r.get("ml_weight", 0) <= cap + 0.05]
+            if len(sub) < min_samples:
+                continue
+            ev_result = _ev_at(sub)
+            if ev_result and ev_result[0] > best_ml_ev:
+                best_ml_ev = ev_result[0]
+                best_ml_cap = cap
+
+        if best_ml_cap is not None:
+            val_sub = [o for o, r in val_sr if r.get("ml_weight", 0) <= best_ml_cap + 0.05]
+            baseline_sub = [o for o, r in val_sr]  # uncapped baseline: every validation outcome
+            val_result = _ev_at(val_sub)
+            baseline_result = _ev_at(baseline_sub)
+            _ml_promoted = bool(
+                val_result and baseline_result and len(val_sub) >= min_samples and val_result[0] > baseline_result[0]
+            )
+            if _ml_promoted:
+                redis_client.setex(f"stockai:style_tune:{style}:ml_weight_cap", _REDIS_TTL, str(round(best_ml_cap, 2)))
+                applied.append({"style": style, "param": "ml_weight_cap", "value": best_ml_cap,
+                                "train_ev_pct": round(best_ml_ev, 2), "validation_ev_pct": round(val_result[0], 2),
+                                "validation_baseline_ev_pct": round(baseline_result[0], 2)})
+            else:
+                skipped.append({"style": style, "param": "ml_weight_cap",
+                                "reason": "did not beat baseline (or insufficient samples) on the validation slice",
+                                "train_best_cap": best_ml_cap})
+            _record_tune_history(
+                session, _run_id, "gate_threshold", "ml_weight_cap", style, "ALL",
+                old_value={}, new_value={"ml_weight_cap": best_ml_cap},
+                train_window=_train_window, validation_window=_val_window,
+                train_ev_pct=round(best_ml_ev, 2), validation_ev_pct=round(val_result[0], 2) if val_result else None,
+                baseline_validation_ev_pct=round(baseline_result[0], 2) if baseline_result else None,
+                validation_n=len(val_sub), promoted=_ml_promoted,
+                gate_failures=[] if _ml_promoted else ["did_not_beat_baseline_or_insufficient_validation_samples"],
+            )
+
+        # ── adx_min: find ADX level below which accuracy < 45% on TRAIN, then confirm the
+        #    same threshold still shows below/above separation on VALIDATION ──
+        adx_train = [(o, r) for o, r in train_sr if r.get("adx") is not None]
+        adx_val = [(o, r) for o, r in val_sr if r.get("adx") is not None]
+        if len(adx_train) >= min_samples:
+            best_adx = None
+            for adx_thresh in range(10, 40, 2):
+                below = [o for o, r in adx_train if r.get("adx", 99) < adx_thresh]
+                above = [o for o, r in adx_train if r.get("adx", 0) >= adx_thresh]
+                if len(below) < min_samples or len(above) < min_samples:
+                    continue
+                below_acc = sum(1 for o in below if o.is_correct) / len(below)
+                above_acc = sum(1 for o in above if o.is_correct) / len(above)
+                if below_acc < 0.45 and above_acc > below_acc + 0.05:
+                    best_adx = adx_thresh
+                    break
+            if best_adx is not None:
+                val_below = [o for o, r in adx_val if r.get("adx", 99) < best_adx]
+                val_above = [o for o, r in adx_val if r.get("adx", 0) >= best_adx]
+                # T233-SELFIMPROVE-PHASE3 extension: adx_min/breadth_compression compare
+                # accuracy, not EV — TuneHistory's EV columns stay NULL for these two params
+                # rather than force a misleading number; see docs/DESIGN_TUNE_HISTORY_EXTENSION.
+                if len(val_below) >= min_samples // 2 and len(val_above) >= min_samples // 2:
+                    val_below_acc = sum(1 for o in val_below if o.is_correct) / len(val_below)
+                    val_above_acc = sum(1 for o in val_above if o.is_correct) / len(val_above)
+                    _adx_promoted = val_below_acc < val_above_acc
+                    if _adx_promoted:
+                        redis_client.setex(f"stockai:style_tune:{style}:adx_min", _REDIS_TTL, str(best_adx))
+                        applied.append({"style": style, "param": "adx_min", "value": best_adx,
+                                        "validation_below_acc": round(val_below_acc, 3),
+                                        "validation_above_acc": round(val_above_acc, 3)})
+                    else:
+                        skipped.append({"style": style, "param": "adx_min",
+                                        "reason": "below/above separation did not replicate on validation slice",
+                                        "train_threshold": best_adx})
+                    _record_tune_history(
+                        session, _run_id, "gate_threshold", "adx_min", style, "ALL",
+                        old_value={}, new_value={"adx_min": best_adx},
+                        train_window=_train_window, validation_window=_val_window,
+                        train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                        validation_n=len(val_below) + len(val_above), promoted=_adx_promoted,
+                        gate_failures=[] if _adx_promoted else ["below_above_separation_did_not_replicate"],
+                    )
+                else:
+                    skipped.append({"style": style, "param": "adx_min",
+                                    "reason": "insufficient validation-slice samples to confirm train threshold",
+                                    "train_threshold": best_adx})
+                    _record_tune_history(
+                        session, _run_id, "gate_threshold", "adx_min", style, "ALL",
+                        old_value={}, new_value={"adx_min": best_adx},
+                        train_window=_train_window, validation_window=_val_window,
+                        train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                        validation_n=len(val_below) + len(val_above), promoted=False,
+                        gate_failures=["insufficient_validation_samples"],
+                    )
+
+        # ── breadth_compression: verify compression is justified on TRAIN (breadth<40
+        #    underperforms), then confirm the same direction holds on VALIDATION ──
+        breadth_train = [(o, r) for o, r in train_sr if r.get("breadth_pct") is not None]
+        breadth_val = [(o, r) for o, r in val_sr if r.get("breadth_pct") is not None]
+        if len(breadth_train) >= min_samples:
+            low_breadth  = [o for o, r in breadth_train if r.get("breadth_pct", 100) < 40]
+            high_breadth = [o for o, r in breadth_train if r.get("breadth_pct", 0) >= 40]
+            if len(low_breadth) >= min_samples // 2 and len(high_breadth) >= min_samples // 2:
+                lb_acc = sum(1 for o in low_breadth if o.is_correct) / len(low_breadth)
+                hb_acc = sum(1 for o in high_breadth if o.is_correct) / len(high_breadth)
+                val_low  = [o for o, r in breadth_val if r.get("breadth_pct", 100) < 40]
+                val_high = [o for o, r in breadth_val if r.get("breadth_pct", 0) >= 40]
+                _val_ok = len(val_low) >= min_samples // 4 and len(val_high) >= min_samples // 4
+                if lb_acc < hb_acc - 0.08:
+                    if _val_ok:
+                        val_lb_acc = sum(1 for o in val_low if o.is_correct) / len(val_low)
+                        val_hb_acc = sum(1 for o in val_high if o.is_correct) / len(val_high)
+                        _bc_promoted = val_lb_acc < val_hb_acc
+                        if _bc_promoted:
+                            new_bc = 0.88  # tighter than default 0.90
+                            redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
+                            applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
+                                            "train_low_acc": round(lb_acc, 3), "train_high_acc": round(hb_acc, 3),
+                                            "validation_low_acc": round(val_lb_acc, 3), "validation_high_acc": round(val_hb_acc, 3)})
+                        else:
+                            skipped.append({"style": style, "param": "breadth_compression",
+                                            "reason": "low-breadth underperformance did not replicate on validation slice"})
+                        _record_tune_history(
+                            session, _run_id, "gate_threshold", "breadth_compression", style, "ALL",
+                            old_value={"breadth_compression": 0.90}, new_value={"breadth_compression": 0.88},
+                            train_window=_train_window, validation_window=_val_window,
+                            train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                            validation_n=len(val_low) + len(val_high), promoted=_bc_promoted,
+                            gate_failures=[] if _bc_promoted else ["low_breadth_underperformance_did_not_replicate"],
+                        )
+                    else:
+                        skipped.append({"style": style, "param": "breadth_compression",
+                                        "reason": "insufficient validation-slice samples to confirm train finding"})
+                        _record_tune_history(
+                            session, _run_id, "gate_threshold", "breadth_compression", style, "ALL",
+                            old_value={"breadth_compression": 0.90}, new_value={"breadth_compression": 0.88},
+                            train_window=_train_window, validation_window=_val_window,
+                            train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                            validation_n=len(val_low) + len(val_high), promoted=False,
+                            gate_failures=["insufficient_validation_samples"],
+                        )
+                elif lb_acc > hb_acc - 0.02:
+                    # Breadth not predictive on train — restore default without needing validation
+                    new_bc = 0.95
+                    redis_client.setex(f"stockai:style_tune:{style}:breadth_compression", _REDIS_TTL, str(new_bc))
+                    applied.append({"style": style, "param": "breadth_compression", "value": new_bc,
+                                    "note": "low-breadth underperformance not significant on train slice"})
+                    _record_tune_history(
+                        session, _run_id, "gate_threshold", "breadth_compression", style, "ALL",
+                        old_value={"breadth_compression": 0.90}, new_value={"breadth_compression": 0.95},
+                        train_window=_train_window, validation_window=_val_window,
+                        train_ev_pct=None, validation_ev_pct=None, baseline_validation_ev_pct=None,
+                        validation_n=len(low_breadth) + len(high_breadth), promoted=True,
+                        gate_failures=[],
+                    )
+
+    return {"applied": applied, "skipped": skipped, "n_outcomes_analyzed": len(outcomes), "redis_ttl_days": 30}
+
+
+@router.post("/watchdog")
+def signal_watchdog(
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Self-healing threshold watchdog: monitor rolling win rates and auto-adjust.
+
+    Checks the last 14-day rolling win rate per style. If win rate drops below 38%,
+    applies an emergency threshold tightening (+0.03). If signal count drops to zero
+    for 7+ consecutive days, relaxes the threshold by 0.02 (floor: hardcoded default).
+
+    Writes to stockai:watchdog:{STYLE}:threshold (Redis, 7-day TTL) — this key is
+    read by _get_dynamic_buy_threshold() BEFORE the calibrated key, ensuring the
+    watchdog's response is immediate.
+
+    Caps adjustments at 3 tightenings before requiring a manual review (prevents
+    the system from silencing itself completely).
+
+    Schedule: daily (06:00 ET) from market-data scheduler.
+    """
+    from ..generators.signals import _STYLE_PROFILES
+
+    _14D = date.today() - timedelta(days=14)
+    _7D  = date.today() - timedelta(days=7)
+    _REDIS_TTL_7D = 7 * 86400
+    _MAX_TIGHTEN = 3
+
+    # Bull-regime thresholds as floors — source of truth is _STYLE_PROFILES (T232-SIG12).
+    _DEFAULT_THRESHOLDS = {
+        h: _STYLE_PROFILES[h]["buy_threshold"]["bull"] for h in ("SHORT", "SWING", "LONG", "GROWTH")
+    }
+
+    redis_client = _get_redis()
+    actions: list[dict] = []
+    status: list[dict] = []
+
+    for style in ("SHORT", "SWING", "LONG", "GROWTH"):
+        # 14-day outcomes
+        outcomes_14d = session.execute(
+            select(SignalOutcome).where(
+                SignalOutcome.signal_date >= _14D,
+                SignalOutcome.is_correct.is_not(None),
+                SignalOutcome.signal_direction == "BUY",
+                SignalOutcome.horizon == SignalHorizon[style],
+            )
+        ).scalars().all()
+
+        # 7-day signal count (regardless of evaluation status)
+        signals_7d = session.execute(
+            select(func.count(Signal.id)).where(
+                Signal.ts >= _7D,
+                Signal.signal == SignalType.BUY,
+                Signal.horizon == SignalHorizon[style],
+            )
+        ).scalar() or 0
+
+        win_rate_14d = None
+        if outcomes_14d:
+            wins = sum(1 for o in outcomes_14d if o.is_correct)
+            win_rate_14d = wins / len(outcomes_14d)
+
+        # Current watchdog adjustment
+        current_key = f"stockai:watchdog:{style}:threshold"
+        tighten_count_key = f"stockai:watchdog:{style}:tighten_count"
+        current_adj = redis_client.get(current_key)
+        tighten_count = int(redis_client.get(tighten_count_key) or 0)
+
+        floor_threshold = _DEFAULT_THRESHOLDS.get(style, 0.65)
+
+        action = None
+        if win_rate_14d is not None and win_rate_14d < 0.38 and len(outcomes_14d) >= 5:
+            if tighten_count >= _MAX_TIGHTEN:
+                action = "max_tighten_reached_manual_review_needed"
+                actions.append({"style": style, "action": action, "win_rate_14d": round(win_rate_14d, 3)})
+            else:
+                # Tighten by 0.03 from the current adjustment (or calibrated base)
+                current_val = float(current_adj) if current_adj else (
+                    float(redis_client.get(f"stockai:signal_thresholds:{style}") or 0) or floor_threshold
+                )
+                new_val = min(current_val + 0.03, floor_threshold + 0.12)  # max +12pp above floor
+                redis_client.setex(current_key, _REDIS_TTL_7D, str(round(new_val, 4)))
+                redis_client.setex(tighten_count_key, _REDIS_TTL_7D, str(tighten_count + 1))
+                action = "tightened"
+                actions.append({"style": style, "action": action, "from": round(current_val, 4),
+                                 "to": round(new_val, 4), "win_rate_14d": round(win_rate_14d, 3),
+                                 "tighten_count": tighten_count + 1})
+
+        elif signals_7d == 0 and current_adj:
+            # No signals for 7 days — the threshold may be too tight; relax
+            current_val = float(current_adj)
+            if current_val > floor_threshold + 0.01:
+                new_val = max(current_val - 0.02, floor_threshold)
+                redis_client.setex(current_key, _REDIS_TTL_7D, str(round(new_val, 4)))
+                redis_client.delete(tighten_count_key)  # reset tighten count on relax
+                action = "relaxed"
+                actions.append({"style": style, "action": action, "from": round(current_val, 4),
+                                 "to": round(new_val, 4), "signals_7d": signals_7d})
+
+        status.append({
+            "style": style,
+            "win_rate_14d": round(win_rate_14d, 3) if win_rate_14d is not None else None,
+            "n_outcomes_14d": len(outcomes_14d),
+            "signals_7d": signals_7d,
+            "current_watchdog_threshold": float(current_adj) if current_adj else None,
+            "tighten_count": tighten_count,
+            "action": action,
+        })
+
+    return {"actions": actions, "status": status}
+
+
+@router.get("/tune_status")
+def tune_status(
+    _: str = Depends(get_current_username),
+    session: Session = Depends(get_session),
+):
+    """Read-only snapshot of all self-tuning system state (TIER88).
+
+    Returns per-style: hardcoded defaults, Redis overrides (watchdog/calibrated/
+    auto-tuner), effective values (priority: watchdog > calibrated > default),
+    14-day rolling win rate, 7-day BUY signal count, and watchdog state.
+    No side effects — safe to poll from the frontend.
+    """
+    from ..generators.signals import _STYLE_PROFILES
+
+    redis_client = _get_redis()
+    _14D = date.today() - timedelta(days=14)
+    _7D  = date.today() - timedelta(days=7)
+
+    styles_out: dict = {}
+    for style in ("SHORT", "SWING", "LONG", "GROWTH"):
+        p = _STYLE_PROFILES[style]
+
+        # Read all Redis overrides
+        watchdog_threshold     = _redis_get_float(f"stockai:watchdog:{style}:threshold")
+        calibrated_threshold   = _redis_get_float(f"stockai:signal_thresholds:{style}")
+        ml_weight_cap_tuned    = _redis_get_float(f"stockai:style_tune:{style}:ml_weight_cap")
+        adx_min_tuned          = _redis_get_float(f"stockai:style_tune:{style}:adx_min")
+        breadth_comp_tuned     = _redis_get_float(f"stockai:style_tune:{style}:breadth_compression")
+        tighten_count          = int(redis_client.get(f"stockai:watchdog:{style}:tighten_count") or 0)
+
+        # Effective values — priority: watchdog > calibrated > hardcoded
+        eff_threshold = watchdog_threshold or calibrated_threshold or p["buy_threshold"]["bull"]
+        eff_ml_cap    = ml_weight_cap_tuned if ml_weight_cap_tuned is not None else p["ml_weight_cap"]
+        eff_adx_min   = adx_min_tuned       if adx_min_tuned is not None       else p.get("adx_min")
+        eff_breadth   = breadth_comp_tuned  if breadth_comp_tuned is not None  else p.get("breadth_compression")
+
+        # 14-day win rate
+        outcomes_14d = session.execute(
+            select(SignalOutcome).where(
+                SignalOutcome.signal_date >= _14D,
+                SignalOutcome.is_correct.is_not(None),
+                SignalOutcome.signal_direction == "BUY",
+                SignalOutcome.horizon == SignalHorizon[style],
+            )
+        ).scalars().all()
+
+        win_rate_14d: float | None = None
+        if outcomes_14d:
+            wins = sum(1 for o in outcomes_14d if o.is_correct)
+            win_rate_14d = round(wins / len(outcomes_14d), 3)
+
+        # 7-day BUY signal count
+        signals_7d = session.execute(
+            select(func.count(Signal.id)).where(
+                Signal.ts >= _7D,
+                Signal.signal == SignalType.BUY,
+                Signal.horizon == SignalHorizon[style],
+            )
+        ).scalar() or 0
+
+        # Watchdog status label
+        if watchdog_threshold is not None:
+            watchdog_status = "max_tighten_review" if tighten_count >= 3 else f"tightened_{tighten_count}x"
+        else:
+            watchdog_status = "nominal"
+
+        styles_out[style] = {
+            "defaults": {
+                "buy_threshold_bull": p["buy_threshold"]["bull"],
+                "ml_weight_cap": p["ml_weight_cap"],
+                "adx_min": p.get("adx_min"),
+                "breadth_compression": p.get("breadth_compression"),
+            },
+            "redis_overrides": {
+                "watchdog_threshold": watchdog_threshold,
+                "calibrated_threshold": calibrated_threshold,
+                "ml_weight_cap": ml_weight_cap_tuned,
+                "adx_min": adx_min_tuned,
+                "breadth_compression": breadth_comp_tuned,
+            },
+            "effective": {
+                "buy_threshold_bull": round(eff_threshold, 4),
+                "ml_weight_cap": round(eff_ml_cap, 4),
+                "adx_min": round(eff_adx_min, 1) if eff_adx_min is not None else None,
+                "breadth_compression": round(eff_breadth, 3) if eff_breadth is not None else None,
+            },
+            "performance": {
+                "win_rate_14d": win_rate_14d,
+                "n_outcomes_14d": len(outcomes_14d),
+                "signals_7d": signals_7d,
+            },
+            "watchdog": {
+                "status": watchdog_status,
+                "tighten_count": tighten_count,
+                "current_threshold": watchdog_threshold,
+            },
+        }
+
+    return {
+        "as_of": date.today().isoformat(),
+        "styles": styles_out,
     }
 
 
@@ -2788,79 +4642,42 @@ def _stored_signal_for_style(session: Session, stock_id: int, style_key: str) ->
     }
 
 
-@router.get("/{symbol}")
-def signal_for(
-    symbol: str,
-    persist: bool = False,
-    live: bool = Query(True, description="False = return latest persisted DB signal (matches signal filter). True = compute fresh (may differ from DB)."),
-    style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG, GROWTH. Returns all if omitted."),
+@router.get("/confidence-calibration")
+def confidence_calibration_map(
+    refresh: bool = Query(False, description="Force rebuild from DB, bypassing Redis cache"),
     session: Session = Depends(get_session),
 ):
-    """Return signal(s) for a symbol.
+    """Return actual win rate by (horizon, direction, market, confidence band) from the
+    last 180 days of signal_outcomes.
 
-    live=False (default on detail page): reads latest stored DB signal — consistent with signal filter.
-    live=True + persist=True: recomputes fresh and overwrites DB — used by the Refresh button.
+    T223/T232-OC5: Makes signal confidence auditable, keyed narrowly enough that the
+    comparison is meaningful. Confidence is direction-agnostic, and BUY/SELL, different
+    horizons, and US/HK have documented divergent base rates — pooling them into a single
+    band-only win rate mixed populations that shouldn't be compared. Keys are
+    "HORIZON|DIRECTION|MARKET|BAND" (market-specific, preferred) or "HORIZON|DIRECTION|BAND"
+    (pooled across markets, used when the market-specific bucket doesn't reach the
+    min-count of 30). Use this to compare confidence bands within the same
+    horizon+direction(+market) and tune entry filters accordingly — comparing across
+    different horizons/directions/markets is exactly the mistake this keying prevents.
+
+    T232-OC5: this route MUST be registered before /{symbol} below — FastAPI matches
+    routes in registration order, and /{symbol} would otherwise swallow this path,
+    treating "confidence-calibration" as a stock symbol (this bug existed from when the
+    route was first added and made the endpoint completely unreachable).
     """
-    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
-
-    if not live and not persist:
-        # DB-first path: return stored signals — matches Signal Filter exactly.
-        if not stock:
-            raise HTTPException(404, f"Stock {symbol} not found")
-        all_styles = ["SHORT", "SWING", "LONG", "GROWTH"]
-        stored: dict[str, dict] = {}
-        for s_key in all_styles:
-            d = _stored_signal_for_style(session, stock.id, s_key)
-            if d:
-                stored[s_key] = d
-        if stored:
-            if style:
-                s_key = style.upper()
-                data = stored.get(s_key)
-                if data:
-                    return {"symbol": symbol, "source": "db", **data}
-            else:
-                return {"symbol": symbol, "source": "db", "signals": stored}
-        # No stored signals for this stock yet — fall through to live generation
-        # and auto-persist so the Signal Filter picks it up on the next query.
-        persist = True
-
-    # Live computation (fresh ML/TA — used on Refresh or first-time stock)
-    try:
-        all_sig = generate_all_signals(symbol)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-    if persist and stock:
-        for ai in all_sig.values():
-            session.add(Signal(
-                stock_id=stock.id,
-                signal=SignalType(ai.signal),
-                horizon=SignalHorizon(ai.horizon),
-                confidence=ai.confidence,
-                bullish_probability=ai.bullish_probability,
-                reasons=ai.reasons,
-            ))
-        session.commit()
-
-    # Inject stability_days into each signal's reasons dict
-    if stock:
-        for ai in all_sig.values():
-            try:
-                horiz = SignalHorizon(ai.horizon)
-            except ValueError:
-                continue
-            ai.reasons["stability_days"] = _compute_stability(session, stock.id, horiz, ai.signal)
-
-    if style:
-        style_key = style.upper()
-        ai = all_sig.get(style_key) or all_sig["SWING"]
-        return {"symbol": symbol, "source": "live", **asdict(ai)}
-
+    if refresh:
+        try:
+            _get_redis().delete(_CONF_CAL_CACHE_KEY)
+        except Exception:
+            pass
+    cal = _get_confidence_calibration(session)
+    if not cal:
+        return {"message": f"Insufficient signal_outcomes data (need >={_CONF_CAL_MIN_COUNT} evaluated outcomes per bucket)", "buckets": {}}
     return {
-        "symbol": symbol,
-        "source": "live",
-        "signals": {k: asdict(v) for k, v in all_sig.items()},
+        "buckets": cal,
+        "note": "win_rate = fraction of signals in this (horizon, direction[, market]) confidence band that were correct within the hold window",
+        "min_count": _CONF_CAL_MIN_COUNT,
+        "lookback_days": 180,
     }
 
 
@@ -2874,9 +4691,48 @@ _OUTCOME_HOLD_DAYS: dict[str, int] = {
     "GROWTH": 14,   # same window as SWING; growth trades are momentum-based
 }
 
+# T232-SIG10: SELL's primary is_correct/pct_return used to be evaluated at the SAME window as
+# BUY for each style — but live SignalOutcome data shows SELL accuracy decays sharply with
+# horizon (57.6% at 5d, 58.6% at 10d, dropping to 48.5% at 20d as of 2026-07-04), while BUY's
+# per-style windows (14-28 calendar days for SWING/GROWTH/LONG) are exactly the range where
+# SELL's edge has already eroded. Using a shorter, SELL-specific window for the fields that
+# drive reporting/calibration (is_correct, pct_return, exit_date) means the system's own
+# accuracy metrics reflect where SELL genuinely has signal, instead of diluting it with a
+# window where it doesn't. Deliberately does NOT touch BUY's windows or attempt regime-tiered
+# SELL thresholds — regime-tiering was investigated and found unsupported by current data
+# (96%+ of SELL outcomes are bull-regime only; near-zero bear/choppy/risk_off samples to
+# calibrate against). Values below mirror the horizons where the calendar-day data above shows
+# real, validated signal (5-10 calendar days), not a guess.
+_SELL_OUTCOME_HOLD_DAYS: dict[str, int] = {
+    "SHORT":  5,    # SELL's strongest cohort in live data — keep close to its natural window
+    "SWING":  7,    # was 14 — shortened to where accuracy hasn't yet decayed
+    "LONG":   10,   # was 28 — LONG SELL sample is thin; 10d is a conservative middle ground
+    "GROWTH": 7,    # was 14, same reasoning as SWING
+}
+
+# T232-OC6: how many calendar days past exit_target to wait, with still no exit price found,
+# before concluding the price is permanently gone (delisting/halt) rather than just an
+# ingestion lag. 10 days comfortably covers weekends/holidays plus normal scheduler delay.
+_OUTCOME_CENSOR_GRACE_DAYS = 10
+
+# T232-OC4: any positive close-to-close move (pct_return > 0) used to count as a win — a
+# +0.01% move after a 14-day hold scored identical to a real +5% winner. This flattered
+# reported win rates and fed the same wrong objective into the T232-OC3 calibration sweep.
+# Requiring a real cost hurdle instead of a bare zero line means "win" reflects a trade that
+# would have cleared round-trip costs, not just closed a cent above entry. Set to 2.5x the
+# round-trip entry+exit slippage already modeled in paper_trading_engine.py's
+# entry_slippage_pct (0.001 each way = 0.002 round trip) — comfortably above pure transaction
+# cost without being so high it starts rejecting genuine small wins. Deliberately does NOT
+# model intraday stop-outs (max-adverse-excursion) — that requires picking a stop-loss % to
+# check against, but the real paper trading engine uses dynamic/trailing stops rather than one
+# fixed distance, and retroactively changing what "win" means would destabilize the OC3
+# EV-lift gate and OC5 calibration bands other in-flight work already trusts. Tracked as a
+# known limitation for a future pass, not silently skipped — see docs/KNOWN_LIMITATIONS.md.
+_OUTCOME_WIN_HURDLE_PCT = 0.005
+
 
 @router.post("/outcomes/evaluate")
-def evaluate_signal_outcomes(session: Session = Depends(get_session)):
+def evaluate_signal_outcomes(session: Session = Depends(get_session), _: str = Depends(get_current_username)):
     """Evaluate closed signal outcomes and persist them to signal_outcomes.
 
     For each BUY/SELL signal whose hold window has expired:
@@ -2900,7 +4756,10 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
     from sqlalchemy import or_
 
     today = date.today()
-    min_hold = min(_OUTCOME_HOLD_DAYS.values())
+    # T232-SIG10: consider both tables — SELL's shortest window (5d SHORT) is smaller than
+    # BUY's shortest (7d SHORT), so the candidate-signal cutoff must use whichever is smaller
+    # or SELL signals eligible under their own shorter window would be filtered out too early.
+    min_hold = min(min(_OUTCOME_HOLD_DAYS.values()), min(_SELL_OUTCOME_HOLD_DAYS.values()))
     cutoff = today - timedelta(days=min_hold)
 
     # IDs already in signal_outcomes — skip re-evaluation by signal_id
@@ -2959,17 +4818,22 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
             return None
         return bucket[idx]
 
-    def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int):
-        """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None)."""
+    def _window_return(stock_id: int, entry_date: "date", entry_price: float, days: int, signal_direction: str = "BUY"):
+        """Return (price, return_pct, is_correct) for a +N-day window, or (None, None, None).
+
+        is_correct: BUY wins when ret clears the cost hurdle; SELL wins when ret falls
+        below the negative hurdle (T232-OC4 — see _OUTCOME_WIN_HURDLE_PCT above).
+        """
         target = entry_date + timedelta(days=days)
-        if target >= today:
+        if target > today:
             return None, None, None
         result = _lookup_outcome_price(stock_id, target)
         if result is None or entry_price <= 0:
             return None, None, None
         _, price = result
         ret = (price - entry_price) / entry_price
-        return float(price), ret, ret > 0
+        is_correct = ret > _OUTCOME_WIN_HURDLE_PCT if signal_direction == "BUY" else ret < -_OUTCOME_WIN_HURDLE_PCT
+        return float(price), ret, is_correct
 
     # Research recommendation cache — one network fetch per symbol per run
     _research_cache: dict[str, tuple] = {}
@@ -2994,14 +4858,18 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         _research_cache[symbol] = result
         return result
 
-    evaluated, skipped_open, skipped_no_price = 0, 0, 0
+    evaluated, skipped_open, skipped_no_price, censored = 0, 0, 0, 0
 
     for sig, symbol in pending_signals:
         if sig.id in evaluated_ids:
             continue
 
         horizon = sig.horizon.value
-        hold_days = _OUTCOME_HOLD_DAYS[horizon]
+        # T232-SIG10: SELL uses its own shorter hold window — see _SELL_OUTCOME_HOLD_DAYS above.
+        hold_days = (
+            _SELL_OUTCOME_HOLD_DAYS[horizon] if sig.signal == SignalType.SELL
+            else _OUTCOME_HOLD_DAYS[horizon]
+        )
         signal_date = sig.ts.date()
 
         # Skip if another signal_id for the same (stock, horizon, date) was already evaluated.
@@ -3011,7 +4879,10 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         if sighd_key in evaluated_sighd:
             continue
 
-        entry_result = _lookup_outcome_price(sig.stock_id, signal_date)
+        # T+1 entry: use the first close STRICTLY AFTER signal_date so we avoid
+        # same-day look-ahead bias (signal was generated after close; realistic
+        # fill is the next trading day's open/close).
+        entry_result = _lookup_outcome_price(sig.stock_id, signal_date + timedelta(days=1))
         if entry_result is None:
             skipped_no_price += 1
             continue
@@ -3019,13 +4890,40 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         entry_date, entry_price = entry_result
         exit_target = entry_date + timedelta(days=hold_days)
 
-        if exit_target >= today:
+        if exit_target > today:
             skipped_open += 1
             continue
 
         exit_result = _lookup_outcome_price(sig.stock_id, exit_target)
         if exit_result is None:
-            skipped_open += 1
+            # T232-OC6: exit_target has passed but no price bar exists on/after it. Give
+            # ordinary ingestion lag a grace window (weekends/holidays plus a buffer) before
+            # concluding the price is permanently gone — otherwise a stock that's merely a
+            # few days behind on ingestion gets wrongly censored as delisted.
+            if today - exit_target > timedelta(days=_OUTCOME_CENSOR_GRACE_DAYS):
+                censored += 1
+                outcome = SignalOutcome(
+                    signal_id=sig.id,
+                    stock_id=sig.stock_id,
+                    symbol=symbol,
+                    horizon=sig.horizon,
+                    signal_direction=sig.signal.value,
+                    signal_date=signal_date,
+                    confidence=sig.confidence,
+                    fused_prob=sig.bullish_probability,
+                    ta_score=(sig.reasons or {}).get("ta_score"),
+                    ml_prob=(sig.reasons or {}).get("ml_probability"),
+                    ml_auc=(sig.reasons or {}).get("ml_test_auc"),
+                    market_regime=(sig.reasons or {}).get("market_regime"),
+                    entry_date=entry_date,
+                    entry_price=entry_price,
+                    skip_reason="no_exit_price",
+                )
+                session.add(outcome)
+                evaluated_ids.add(sig.id)
+                evaluated_sighd.add(sighd_key)
+            else:
+                skipped_open += 1
             continue
 
         exit_date, exit_price = exit_result
@@ -3035,12 +4933,18 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
 
         pct_return = (exit_price - entry_price) / entry_price
         hold_days_actual = (exit_date - entry_date).days
-        is_correct = pct_return > 0 if sig.signal == SignalType.BUY else pct_return < 0
+        # T232-OC4: require clearing a real cost hurdle, not just a bare zero line — see
+        # _OUTCOME_WIN_HURDLE_PCT above for why 0.5% and what's deliberately NOT modeled here.
+        is_correct = (
+            pct_return > _OUTCOME_WIN_HURDLE_PCT if sig.signal == SignalType.BUY
+            else pct_return < -_OUTCOME_WIN_HURDLE_PCT
+        )
 
-        # INT-8: multi-window forward returns
-        p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5)
-        p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10)
-        p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20)
+        # INT-8: multi-window forward returns (pass signal direction so SELL wins on negative returns)
+        _sig_dir = sig.signal.value  # "BUY" or "SELL"
+        p5, r5, c5   = _window_return(sig.stock_id, entry_date, entry_price, 5,  _sig_dir)
+        p10, r10, c10 = _window_return(sig.stock_id, entry_date, entry_price, 10, _sig_dir)
+        p20, r20, c20 = _window_return(sig.stock_id, entry_date, entry_price, 20, _sig_dir)
         res_rec, res_score = _fetch_research(symbol)
 
         reasons = sig.reasons or {}
@@ -3085,7 +4989,7 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         .where(
             SignalOutcome.entry_date.is_not(None),
             SignalOutcome.entry_price.is_not(None),
-            SignalOutcome.signal_direction == "BUY",
+            # Include both BUY and SELL outcomes — SELL wins when return < 0
             or_(
                 SignalOutcome.price_5d.is_(None),
                 SignalOutcome.price_10d.is_(None),
@@ -3115,18 +5019,19 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         for out in needs_update:
             changed = False
             ep, ed = out.entry_price, out.entry_date
+            _out_dir = out.signal_direction or "BUY"  # SELL wins on negative return
             if out.price_5d is None:
-                p5, r5, c5 = _window_return(out.stock_id, ed, ep, 5)
+                p5, r5, c5 = _window_return(out.stock_id, ed, ep, 5, _out_dir)
                 if p5 is not None:
                     out.price_5d, out.return_5d, out.is_correct_5d = p5, r5, c5
                     changed = True
             if out.price_10d is None:
-                p10, r10, c10 = _window_return(out.stock_id, ed, ep, 10)
+                p10, r10, c10 = _window_return(out.stock_id, ed, ep, 10, _out_dir)
                 if p10 is not None:
                     out.price_10d, out.return_10d, out.is_correct_10d = p10, r10, c10
                     changed = True
             if out.price_20d is None:
-                p20, r20, c20 = _window_return(out.stock_id, ed, ep, 20)
+                p20, r20, c20 = _window_return(out.stock_id, ed, ep, 20, _out_dir)
                 if p20 is not None:
                     out.price_20d, out.return_20d, out.is_correct_20d = p20, r20, c20
                     changed = True
@@ -3145,12 +5050,14 @@ def evaluate_signal_outcomes(session: Session = Depends(get_session)):
         evaluated=evaluated,
         skipped_open=skipped_open,
         skipped_no_price=skipped_no_price,
+        censored=censored,
         updated_windows=updated,
     )
     return {
         "evaluated": evaluated,
         "skipped_open": skipped_open,
         "skipped_no_price": skipped_no_price,
+        "censored": censored,
         "updated_windows": updated,
     }
 
@@ -3161,6 +5068,7 @@ def gate_backtest(
     style: str = Query("SWING", regex="^(SHORT|SWING|LONG|GROWTH)$"),
     hold_days: int = Query(10, ge=1, le=60),
     session: Session = Depends(get_session),
+    _: str = Depends(get_current_username),
 ):
     """Compare old vs new conviction gate logic against historical BUY signals.
 
@@ -3250,8 +5158,14 @@ def gate_backtest(
             failed.append("ADX")
 
         # 5 — ML probability (always soft)
+        # T234-SIG-GATEBACKTEST-DRIFT: the real gate (_is_conviction_buy) soft-passes when
+        # ml_weight == 0.0 (model trained but AUC < 0.50, so signal-engine assigned it zero
+        # fusion weight — "ML had no say, don't penalize on it"). This replica was missing
+        # that carve-out and always failed on a threshold miss regardless of ml_weight,
+        # scoring some historically-soft-passed signals as ML-gate failures.
         ml_prob = r.get("ml_probability")
-        if ml_prob is not None:
+        ml_weight = float(r.get("ml_weight") or 0.0)
+        if ml_prob is not None and ml_weight != 0.0:
             regime = r.get("market_regime", "unknown")
             thresh = _REGIME_ML_THRESH.get(regime, 0.70)
             if float(ml_prob) <= thresh:
@@ -3383,3 +5297,175 @@ def gate_backtest(
     }
     _cache_set(cache_key, result, ttl=3600)
     return result
+
+
+# T232-OC5: /{symbol} MUST be registered after every other static-path route in this router.
+# FastAPI matches routes in registration order, and a bare /{symbol} catch-all placed earlier
+# swallows any later static route with the same prefix depth (e.g. /signals/gate_backtest was
+# being treated as symbol="gate_backtest" and 500ing on an invalid stock lookup — completely
+# unreachable since it was added). Moved here, after every other GET, so this can never recur
+# by accident; if you add a new static GET route to this router, add it ABOVE this line.
+@router.get("/{symbol}")
+def signal_for(
+    symbol: str,
+    persist: bool = False,
+    live: bool = Query(True, description="False = return latest persisted DB signal (matches signal filter). True = compute fresh (may differ from DB)."),
+    style: str | None = Query(None, description="Trading style: SHORT, SWING, LONG, GROWTH. Returns all if omitted."),
+    session: Session = Depends(get_session),
+):
+    """Return signal(s) for a symbol.
+
+    live=False (default on detail page): reads latest stored DB signal — consistent with signal filter.
+    live=True + persist=True: recomputes fresh and overwrites DB — used by the Refresh button.
+    """
+    stock = session.query(Stock).filter(Stock.symbol == symbol).one_or_none()
+
+    if not live and not persist:
+        # DB-first path: return stored signals — matches Signal Filter exactly.
+        if not stock:
+            raise HTTPException(404, f"Stock {symbol} not found")
+        all_styles = ["SHORT", "SWING", "LONG", "GROWTH"]
+        stored: dict[str, dict] = {}
+        for s_key in all_styles:
+            d = _stored_signal_for_style(session, stock.id, s_key)
+            if d:
+                stored[s_key] = d
+        if stored:
+            # T223/T232-OC5: enrich with calibrated win rate, keyed by (horizon, direction, market)
+            _cal_map = _get_confidence_calibration(session)
+            if _cal_map:
+                for s_key_h, s_data in stored.items():
+                    _sig_dir = s_data.get("signal")
+                    if _sig_dir not in ("BUY", "SELL"):
+                        continue  # calibration only meaningful for directional signals
+                    _cwr = _calibrated_win_rate(
+                        s_data.get("confidence", 0.0), _cal_map,
+                        horizon=s_key_h, direction=_sig_dir,
+                        market=stock.market.value if hasattr(stock.market, "value") else stock.market,
+                    )
+                    if _cwr is not None:
+                        if s_data.get("reasons") is None:
+                            s_data["reasons"] = {}
+                        s_data["reasons"]["calibrated_win_rate"] = _cwr[0]
+                        s_data["reasons"]["calibrated_win_rate_count"] = _cwr[1]
+            if style:
+                s_key = style.upper()
+                data = stored.get(s_key)
+                if data:
+                    return {"symbol": symbol, "source": "db", **data}
+            else:
+                return {"symbol": symbol, "source": "db", "signals": stored}
+        # No stored signals for this stock yet — fall through to live generation
+        # and auto-persist so the Signal Filter picks it up on the next query.
+        persist = True
+
+    # Live computation (fresh ML/TA — used on Refresh or first-time stock)
+    try:
+        all_sig = generate_all_signals(symbol)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    if persist and stock:
+        # Apply catalyst adjustment (same logic as _bulk_persist) so manual Refresh doesn't
+        # overwrite a catalyst-adjusted bullish_probability with the raw generator value.
+        try:
+            import httpx as _httpx_sf
+            _ta_score_sf = 50.0
+            if all_sig:
+                _ta_score_sf = float((next(iter(all_sig.values())).reasons or {}).get("ta_score", 50.0))
+            _cr_sf = _httpx_sf.get(
+                f"{_settings.event_intelligence_url}/catalyst/{symbol}",
+                params={"technical_score": _ta_score_sf},
+                headers={"Authorization": f"Bearer {_service_token()}"},
+                timeout=2.0,
+            )
+            if _cr_sf.status_code == 200:
+                _cat_sf = _cr_sf.json()
+                _ins_sf = _cat_sf.get("insider_score")
+                _cong_sf = _cat_sf.get("congress_score")
+                for _ai_sf in all_sig.values():
+                    if _ai_sf.reasons is None:
+                        _ai_sf.reasons = {}
+                    if _cat_sf.get("catalyst_score") is not None:
+                        _ai_sf.reasons["catalyst_score"] = round(_cat_sf["catalyst_score"], 1)
+                    if _ins_sf is not None:
+                        _ai_sf.reasons["insider_score"] = round(_ins_sf, 1)
+                    if _cong_sf is not None:
+                        _ai_sf.reasons["congress_score"] = round(_cong_sf, 1)
+                    _adj_sf = 0.0
+                    if _ins_sf is not None:
+                        if _ins_sf > 60:    _adj_sf += 0.03
+                        elif _ins_sf > 30:  _adj_sf += 0.015
+                        elif _ins_sf < -30: _adj_sf -= 0.03
+                        elif _ins_sf < -10: _adj_sf -= 0.015
+                    if _cong_sf is not None:
+                        if _cong_sf > 50:   _adj_sf += 0.02
+                        elif _cong_sf > 25: _adj_sf += 0.01
+                    if _adj_sf != 0.0 and _ai_sf.bullish_probability is not None:
+                        _ai_sf.bullish_probability = round(
+                            float(max(0.0, min(1.0, _ai_sf.bullish_probability + _adj_sf))), 4
+                        )
+                        _ai_sf.reasons["catalyst_prob_adj"] = round(_adj_sf, 3)
+        except Exception:
+            pass  # catalyst enrichment is best-effort; don't block the Refresh
+
+        today = date.today()
+        for ai in all_sig.values():
+            horizon_enum = SignalHorizon(ai.horizon)
+            # Guard against same-day duplicate: skip if an identical signal was already stored today.
+            existing = session.execute(
+                select(Signal.signal, Signal.ts)
+                .where(Signal.stock_id == stock.id, Signal.horizon == horizon_enum)
+                .order_by(Signal.ts.desc())
+                .limit(1)
+            ).one_or_none()
+            if existing is not None and existing[0] == SignalType(ai.signal) and existing[1].date() == today:
+                continue
+            session.add(Signal(
+                stock_id=stock.id,
+                signal=SignalType(ai.signal),
+                horizon=horizon_enum,
+                confidence=ai.confidence,
+                bullish_probability=ai.bullish_probability,
+                reasons=ai.reasons,
+            ))
+        session.commit()
+
+    # Inject stability_days into each signal's reasons dict
+    if stock:
+        for ai in all_sig.values():
+            try:
+                horiz = SignalHorizon(ai.horizon)
+            except ValueError:
+                continue
+            ai.reasons["stability_days"] = _compute_stability(session, stock.id, horiz, ai.signal)
+
+    # T223/T232-OC5: enrich live signals with calibrated win rate, keyed by (horizon, direction, market)
+    _cal_map_live = _get_confidence_calibration(session)
+    if _cal_map_live:
+        for ai in all_sig.values():
+            if ai.signal not in ("BUY", "SELL"):
+                continue  # calibration only meaningful for directional signals
+            _stock_mkt = None
+            if stock is not None:
+                _stock_mkt = stock.market.value if hasattr(stock.market, "value") else stock.market
+            _cwr = _calibrated_win_rate(
+                ai.confidence, _cal_map_live,
+                horizon=ai.horizon, direction=ai.signal, market=_stock_mkt,
+            )
+            if _cwr is not None:
+                if ai.reasons is None:
+                    ai.reasons = {}
+                ai.reasons["calibrated_win_rate"] = _cwr[0]
+                ai.reasons["calibrated_win_rate_count"] = _cwr[1]
+
+    if style:
+        style_key = style.upper()
+        ai = all_sig.get(style_key) or all_sig["SWING"]
+        return {"symbol": symbol, "source": "live", **asdict(ai)}
+
+    return {
+        "symbol": symbol,
+        "source": "live",
+        "signals": {k: asdict(v) for k, v in all_sig.items()},
+    }

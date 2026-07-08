@@ -13,13 +13,13 @@ Regime states (affect sizing, min_entry_score, trail multiplier):
   bull     — SPY > EMA-20 AND EMA-50, VIX < 18                  100% size, score +1
   neutral  — default                                              100% size
   choppy   — SPY < EMA-20 OR VIX > 20                            75% size, min_score = 4
-  risk_off — SPY < EMA-50 OR VIX > 25                            50% size, min_score = 5, trail ×0.85
+  risk_off — SPY < EMA-50 OR VIX > 25                            NEW ENTRIES BLOCKED (T226-A default)
   bear     — SPY < EMA-50 AND VIX > 30  (OR SPY < EMA-200 + 20d return < -8%)
                                                                   NEW ENTRIES BLOCKED, trail ×0.70
 
 Entry circuit breakers (checked in order):
   max_positions | live_prices health | portfolio drawdown (20%) |
-  daily loss (4%) | daily entries (5) | bear regime gate
+  daily loss (4%) | daily entries (3) | bear regime gate
 
 Style overrides (on top of _DEFAULT_CONFIG):
   GROWTH — RSI 38-85, stop -12%, target +35%, 60d time stop, trail ×2.0
@@ -38,7 +38,7 @@ import pandas as pd
 
 from common.logging import get_logger
 from db import (
-    PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
+    Indicator, PaperEquityCurve, PaperPortfolio, PaperTrade, Price, TimeFrame,
     Ranking, SessionLocal, Signal, SignalAlert, Stock, User, Watchlist, WatchlistItem,
 )
 from sqlalchemy import desc, func, select
@@ -46,13 +46,240 @@ from .email_service import send_trade_exit_email
 
 log = get_logger("paper_trading_engine")
 
+# AL-1: RL agent — loaded once at module level; falls back gracefully if missing
+try:
+    from .rl_agent import rl_recommend as _rl_recommend
+    _RL_AVAILABLE = True
+except ImportError:
+    _rl_recommend = None  # type: ignore[assignment]
+    _RL_AVAILABLE = False
+    log.warning("paper_trading_engine.rl_agent_unavailable", reason="import failed")
+
+# ── Service-to-service JWT token (for calling auth-protected internal endpoints) ──
+
+_svc_token_cache: str = ""
+
+
+def _svc_token() -> str:
+    global _svc_token_cache
+    if _svc_token_cache:
+        return _svc_token_cache
+    import time
+    from common.config import get_settings as _gs_tok
+    from jose import jwt as _jwt
+    _s = _gs_tok()
+    _svc_token_cache = _jwt.encode(
+        {"sub": "paper-engine", "exp": int(time.time()) + 365 * 86400, "jti": str(__import__("uuid").uuid4())},
+        _s.jwt_secret, algorithm="HS256",
+    )
+    return _svc_token_cache
+
+
+# ── Broker order routing (E*Trade sandbox / live) ─────────────────────────────
+
+def _etrade_symbol(symbol: str) -> str:
+    """Strip market suffix for E*Trade API: 'AAPL.US' → 'AAPL'."""
+    return symbol.split(".")[0]
+
+
+def _get_portfolio_broker(session, portfolio: "PaperPortfolio"):
+    """Return a broker adapter for the portfolio, or None if not configured/authorized."""
+    if not portfolio.broker_connection_id:
+        return None
+    try:
+        from db.models import BrokerConnection
+        from src.api.broker import _decrypt_config
+        from src.services.broker import get_broker
+        conn = session.get(BrokerConnection, portfolio.broker_connection_id)
+        if not conn or not conn.is_authorized:
+            return None
+        return get_broker(conn.broker_type, _decrypt_config(conn.config))
+    except Exception as exc:
+        log.warning("broker.load_failed", portfolio_id=portfolio.id, error=str(exc))
+        return None
+
+
+def _place_broker_entry(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
+    """Submit a market BUY to the linked broker (US only — HK skipped).
+
+    On success: stores broker_order_id. If filled immediately (sandbox), updates
+    entry_price with the actual fill and adjusts portfolio cash for the delta.
+    Falls back silently to the simulated entry on any error.
+    """
+    if trade.symbol.upper().endswith(".HK"):
+        return
+    broker = _get_portfolio_broker(session, portfolio)
+    if broker is None:
+        return
+    try:
+        from src.services.broker.interface import OrderSide, OrderType
+        order = broker.place_order(
+            symbol=_etrade_symbol(trade.symbol),
+            qty=int(trade.shares),
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+        )
+        trade.broker_order_id = order.order_id
+        log.info("broker.entry_order_placed",
+                 symbol=trade.symbol, order_id=order.order_id, shares=int(trade.shares))
+        # Immediate fill check — sandbox fills market orders instantly
+        try:
+            filled = broker.get_order(order.order_id)
+            if filled.status == "filled" and filled.filled_avg_price:
+                fill_p = round(float(filled.filled_avg_price), 4)
+                delta = round((trade.entry_price - fill_p) * trade.shares, 2)
+                portfolio.current_cash = round(portfolio.current_cash + delta, 2)
+                trade.entry_price   = fill_p
+                trade.current_price = fill_p
+                trade.highest_price = fill_p
+                log.info("broker.entry_filled", symbol=trade.symbol, fill_price=fill_p, delta=delta)
+        except Exception:
+            pass  # polling job will update fill later
+    except Exception as exc:
+        log.warning("broker.entry_order_failed", symbol=trade.symbol, error=str(exc))
+
+
+def _place_broker_exit(session, trade: "PaperTrade", portfolio: "PaperPortfolio") -> None:
+    """Submit a market SELL to the linked broker for a position that was broker-entered.
+
+    If the sandbox fills immediately, updates trade.exit_price with actual fill and
+    adjusts portfolio cash for the delta vs the simulated exit. Falls back silently.
+    """
+    if trade.symbol.upper().endswith(".HK"):
+        return
+    if not trade.broker_order_id:
+        return  # only broker-exit positions that were broker-entered
+    broker = _get_portfolio_broker(session, portfolio)
+    if broker is None:
+        return
+    try:
+        from src.services.broker.interface import OrderSide, OrderType
+        order = broker.place_order(
+            symbol=_etrade_symbol(trade.symbol),
+            qty=int(trade.shares),
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+        )
+        log.info("broker.exit_order_placed",
+                 symbol=trade.symbol, order_id=order.order_id, shares=int(trade.shares))
+        try:
+            filled = broker.get_order(order.order_id)
+            if filled.status == "filled" and filled.filled_avg_price:
+                fill_p    = round(float(filled.filled_avg_price), 4)
+                old_exit  = trade.exit_price or fill_p
+                delta     = round((fill_p - old_exit) * trade.shares, 2)
+                portfolio.current_cash = round(portfolio.current_cash + delta, 2)
+                trade.exit_price  = fill_p
+                # T232-PT6: fold in realized_pnl from scale-out partials here too — this path
+                # overwrites trade.pnl/pct_return with the actual broker fill and would
+                # otherwise silently re-drop the partial P&L folded in at simulated close.
+                remaining_pnl_dollar = round((fill_p - trade.entry_price) * trade.shares, 2)
+                total_pnl_dollar = round((trade.realized_pnl or 0.0) + remaining_pnl_dollar, 2)
+                _cost_basis = trade.entry_price * (trade.entry_shares or trade.shares)
+                total_pnl_pct = (total_pnl_dollar / _cost_basis) if _cost_basis else 0.0
+                trade.pnl         = total_pnl_dollar
+                trade.pct_return  = round(total_pnl_pct * 100, 4)
+                log.info("broker.exit_filled", symbol=trade.symbol, fill_price=fill_p,
+                         pnl=trade.pnl)
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("broker.exit_order_failed", symbol=trade.symbol, error=str(exc))
+
+
+def poll_broker_order_fills(session=None) -> None:
+    """Check open trades with pending broker entry orders and update fill prices.
+
+    Called each intraday scheduler cycle. Handles the case where E*Trade didn't
+    fill immediately (e.g., order placed just before market close).
+    """
+    own_session = session is None
+    if own_session:
+        session = SessionLocal()
+    try:
+        pending = session.execute(
+            select(PaperTrade).where(
+                PaperTrade.stage == "open",
+                PaperTrade.broker_order_id.isnot(None),
+            )
+        ).scalars().all()
+        if not pending:
+            return
+        portfolio_ids = list({t.portfolio_id for t in pending})
+        portfolios = {
+            p.id: p for p in session.execute(
+                select(PaperPortfolio).where(PaperPortfolio.id.in_(portfolio_ids))
+            ).scalars().all()
+        }
+        updated = 0
+        for trade in pending:
+            port = portfolios.get(trade.portfolio_id)
+            if not port:
+                continue
+            broker = _get_portfolio_broker(session, port)
+            if broker is None:
+                continue
+            try:
+                filled = broker.get_order(trade.broker_order_id)
+                if filled.status == "filled" and filled.filled_avg_price:
+                    fill_p = round(float(filled.filled_avg_price), 4)
+                    if abs(fill_p - trade.entry_price) > 0.001:
+                        delta = round((trade.entry_price - fill_p) * trade.shares, 2)
+                        port.current_cash   = round(port.current_cash + delta, 2)
+                        trade.entry_price   = fill_p
+                        trade.current_price = fill_p
+                        updated += 1
+                        log.info("broker.poll_fill_updated",
+                                 symbol=trade.symbol, fill_price=fill_p)
+            except Exception as exc:
+                log.debug("broker.poll_check_failed",
+                          order_id=trade.broker_order_id, error=str(exc))
+        if updated:
+            session.commit()
+            log.info("broker.poll_fills_updated", count=updated)
+    except Exception as exc:
+        log.warning("broker.poll_error", error=str(exc))
+    finally:
+        if own_session:
+            session.close()
+
+
+# ── PT-3: Entry score calibration — learned weights from closed paper trades ──
+
+_ENTRY_WEIGHTS_FILE = Path("/data/models/entry_weights.json")
+_entry_weights_cache: dict | None = None  # None = not loaded yet; {} = no file
+
+
+def _load_entry_weights() -> dict:
+    """Load calibrated entry weights from disk. Cached in memory after first load."""
+    global _entry_weights_cache
+    if _entry_weights_cache is not None:
+        return _entry_weights_cache
+    try:
+        if _ENTRY_WEIGHTS_FILE.exists():
+            _entry_weights_cache = json.loads(_ENTRY_WEIGHTS_FILE.read_text())
+            log.info("paper.entry_weights_loaded", n_trades=_entry_weights_cache.get("n_trades"))
+        else:
+            _entry_weights_cache = {}
+    except Exception as exc:
+        log.warning("paper.entry_weights_load_failed", error=str(exc))
+        _entry_weights_cache = {}
+    return _entry_weights_cache
+
+
+def reload_entry_weights() -> None:
+    """Force reload of entry weights on next _should_enter() call (called after calibration)."""
+    global _entry_weights_cache
+    _entry_weights_cache = None
+
+
 # ── Default portfolio config ──────────────────────────────────────────────────
 
 _DEFAULT_CONFIG: dict[str, Any] = {
     "trading_style":        "GROWTH",  # which signal horizon to trade
     "market":               "US",      # "US" or "HK" — determines market hours + stock universe
     "max_positions":        6,         # max concurrent open positions (fewer = higher quality)
-    "max_sector_pct":       0.30,      # max 30% in one sector
+    "max_sector_pct":       0.25,      # max 25% in one sector (spec requirement)
     "max_sector_positions": 3,         # max positions per sector (RISK-3)
     "risk_per_trade_pct":   0.01,      # risk 1% of equity per trade
     "max_position_pct":     0.10,      # cap any single position at 10% of equity
@@ -72,6 +299,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "max_portfolio_drawdown_pct":0.20,  # pause entries if equity drops 20% from peak
     "max_daily_loss_pct":        0.04,  # pause entries if realized losses today > 4% of equity
     "max_entries_per_day":       3,     # cap new positions opened in one trading day (quality > quantity)
+    "max_entry_gap_pct":         0.04,  # T171: reject if live_price is >4% above signal's last_price (gap-up filter)
     "require_kscore":            True,  # reject stocks with no ranking row (unknown quality)
     "max_open_risk_pct":         0.12,  # max aggregate open risk across all positions (12%)
     "max_loss_per_trade_pct":    0.02,  # cap dollar loss on any single trade at 2% of equity
@@ -80,6 +308,25 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "hold_stall_days":           30,    # exit if position gains < hold_stall_max_gain for this many days
     "hold_stall_max_gain":       0.05,  # max unrealized gain threshold for stall detection (5%)
     "enforce_market_hours":      True,  # skip new entries outside 9:30–16:00 ET Mon–Fri
+    # T222-C: Signal freshness gate — reject BUY signals older than this many hours.
+    # 72h = 3 calendar days. Signals are computed 5×/day; a 3-day-old signal is 15+ refreshes stale.
+    "max_signal_age_hours":      72,   # was 96h (4 days) — 3 days is sufficient with 5×/day refresh
+    # T221-D: Post-stop cooldown — 5 days prevents re-entering a stock that's in a downtrend.
+    "stop_cooldown_hours":       120,   # hours after stop_hit before re-entering same symbol (was 24h)
+    # T221-B: Market cluster cap — prevent entering more positions when already at limit for one market.
+    # Multiple correlated positions in HK/US all stop out together on big down days.
+    "max_market_positions":      4,     # max open positions in any single market (HK or US)
+    # T221-E: Portfolio heat brake — if this many stops hit in the window, pause all new entries.
+    "heat_brake_max_stops":      3,     # stop count threshold (3 stops in 48h = adverse conditions)
+    "heat_brake_window_hours":   48,    # lookback window for heat brake
+    # T221-A: Cross-portfolio symbol cap — max total open positions per symbol across ALL portfolios.
+    # Prevents SWING + GROWTH both going long the same stock, tripling concentration risk.
+    "max_positions_per_symbol_global": 1,
+    # T221-INDEX-TREND-GATE: Skip new entries when today's market index is down >threshold%.
+    # SPY for US portfolios, ^HSI for HK. Single bad days (FOMC, CPI, HSI circuit break) cause
+    # cascade stops. Regime filter catches multi-day bears; this catches single-day shocks.
+    "index_trend_gate_enabled":  True,
+    "index_trend_gate_pct":      -0.015,  # -1.5%: index down >1.5% today → no new entries
     # Regime engine
     "enable_regime_filter":      True,   # master on/off
     "regime_vix_high":           25.0,   # VIX above this → risk_off
@@ -89,9 +336,33 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "regime_choppy_size_mult":   0.75,   # 75 % size in choppy
     "regime_bull_size_mult":     1.0,    # full size (can boost to 1.1 for bull)
     "regime_risk_off_min_score": 5,      # stricter entry gate in risk_off
+    # T226-A: Block all new entries in risk_off by default. 9/30 closed paper trades entered
+    # in risk_off — 0% win rate, avg -5.0% return. Set False per-portfolio to revert to 50% size.
+    "regime_risk_off_gate":      True,
     "regime_choppy_min_score":   4,      # slightly stricter in choppy
     "enabled":                   True,
+    # Decision Engine mode — authoritative since Tier 73.
+    # "primary": DE verdict is the gate (fallback to _should_enter() if DE unreachable).
+    # "shadow":  old behavior — _should_enter() decides, DE logged for comparison only.
+    "decision_engine_mode":    "primary",
 }
+
+
+def _regime_risk_off_override_active(cfg: dict) -> bool:
+    """True if a time-boxed risk_off gate override (T232-HKOVERRIDE) is currently active.
+
+    Set via POST /paper-portfolio/risk-off-override?hours=N; expires on its own — no cron
+    job clears it, this check is what makes the expiry take effect.
+    """
+    until_str = cfg.get("regime_risk_off_override_until")
+    if not until_str:
+        return False
+    try:
+        until = datetime.fromisoformat(until_str)
+        return datetime.utcnow() < until
+    except (ValueError, TypeError):
+        return False
+
 
 # Mirrors scheduler._STYLE_PARAMS — inlined here to avoid circular import.
 _STYLE_PARAMS: dict[str, dict] = {
@@ -150,27 +421,69 @@ def _round_step(price: float) -> float:
 
 # Style-specific overrides applied on top of defaults
 _STYLE_OVERRIDES: dict[str, dict] = {
+    "SHORT": {
+        "max_hold_days": 10,   # SHORT signals are 3-5 day momentum plays; exit by day 10
+        "hold_stall_days": 7,  # exit earlier than default if position stalls (shorter time horizon)
+    },
     "GROWTH": {
         "max_hold_days": 60, "trail_atr_mult": 2.0,
-        # Trail arms early so gains are protected; breakeven at +2% locks capital fast.
-        "trail_trigger_pct": 0.04, "breakeven_trigger_pct": 0.02,
-        # Scale out later for GROWTH (35% target) — don't cut winners short.
-        "partial_tp_pct": 0.12, "partial_tp2_pct": 0.22,
+        # T227-D: Separate trail trigger from BE trigger. Both were at 0.04 — when BE fired
+        # at +4%, the trailing stop was also armed from that same peak, giving no additional
+        # upside protection. Now BE fires at +4% (safety net) and trail arms at +7% (once the
+        # trade has real momentum). 30-trade audit: open GROWTH trades avg +8% — they need room.
+        "breakeven_trigger_pct": 0.04, "trail_trigger_pct": 0.07,
+        # T227-E: Raise first partial TP from +12% to +15%. Open GROWTH trades cluster at
+        # +11-17%. Partial TP at +12% was trimming positions when they had more room to run.
+        # Second TP stays at +22% (no change).
+        "partial_tp_pct": 0.15, "partial_tp2_pct": 0.22,
         "wait_exit_days": 5, "min_confidence": 45.0, "min_kscore": 48.0,
+        "max_entry_gap_pct": 0.04,  # T171: GROWTH stocks are volatile; allow 4% gap before rejecting
     },
     "SWING": {
-        "max_hold_days": 20, "trail_atr_mult": 1.5,
+        "max_hold_days": 20,
+        # T222-E: Wider trailing stop — winners were hitting +12-14% targets in 2-8 days.
+        # 1.5× ATR was shaking out valid trades. 2.0× ATR gives winners room to breathe.
+        "trail_atr_mult": 2.0,
         # Trail arms at +3%; breakeven at +1.5% for tighter SWING stops.
         "trail_trigger_pct": 0.03, "breakeven_trigger_pct": 0.015,
-        # SWING target is +12%: scale at +7% and +10%.
-        "partial_tp_pct": 0.07, "partial_tp2_pct": 0.10,
+        # T222-E: Scale at +10% and +18% (was +7%/+10%) — winners averaged +13%, so old
+        # partial TP at +7% was selling too soon and reducing average winner size.
+        "partial_tp_pct": 0.10, "partial_tp2_pct": 0.18,
         "wait_exit_days": 3, "min_confidence": 50.0, "min_kscore": 52.0,
+        "max_entry_gap_pct": 0.03,  # T171: SWING can't tolerate as much gap chasing
+        # T225-A/T226-B: TA floor gate. T225 added at 0.50 (ta_lo50 31.4% win rate).
+        # T226: raised to 0.65 — US SWING BUY avg_ta=0.622 (38% win), HK SWING BUY avg_ta=0.620 (26% win).
+        "min_ta_score": 0.65,
+        # T226-C: SWING requires score=5 in all regimes (was 4 default; already 5 in risk_off).
+        # SWING entries with score=4 had 0% win rate in the 30-trade audit.
+        "min_entry_score": 5,
     },
     "LONG": {
         "max_hold_days": 90, "trail_atr_mult": 2.0,
         "trail_trigger_pct": 0.06, "breakeven_trigger_pct": 0.04,
+        "partial_tp_pct": 0.15, "partial_tp2_pct": 0.20,
         "wait_exit_days": 7, "min_confidence": 40.0, "min_kscore": 50.0,
+        "max_entry_gap_pct": 0.05,  # T171: LONG can tolerate slightly more gap (wider stops, larger targets)
     },
+}
+
+# HK market needs looser circuit breakers — HSI stays risk_off longer than US indices
+# during normal consolidation; HK stocks are more volatile (higher false-signal rate).
+# Applied in _scan_for_entries when market == "HK" IF not already in portfolio.config.
+_HK_MARKET_OVERRIDES: dict = {
+    "regime_suspension_days":  7,   # 3d is too tight; HSI can be risk_off for weeks during consolidation
+    "max_consecutive_losses":  3,   # Tightened from 5 — stop trading HK after 3 consecutive losses (same as US default)
+    # T222-A: Tighter entry gates for HK — 0% win rate on 9 trades (June 2026 audit).
+    # HK signals fire on momentum that doesn't sustain; require stronger conviction.
+    "min_entry_score":         6,   # default is 4; HK requires 6 (stronger multi-factor conviction)
+    "min_confidence":          65.0, # default is 45; HK BUY signals need higher ML confidence
+    # T222-F: Reduce HK position sizing — HK ATR is large, a 2× ATR stop equals a huge % move.
+    "trail_atr_mult":          1.5,  # tighter trailing stop (SWING default=1.5, GROWTH default=2.0)
+    "max_position_pct":        0.07, # max 7% of equity per position (vs 10% US default)
+    "risk_per_trade_pct":      0.007, # risk only 0.7% per trade (vs 1% US default)
+    # T224-C/T226-B: TA score gate. T224 set 0.60; T226 raised to 0.65 to match SWING gate.
+    # HK SWING BUY at 26% win rate with avg_ta=0.620 in June 2026 audit.
+    "min_ta_score":            0.65,
 }
 
 
@@ -378,6 +691,16 @@ def _is_market_hours(market: str = "US") -> bool:
         now_hkt = datetime.now(ZoneInfo("Asia/Hong_Kong"))
         if now_hkt.weekday() >= 5:
             return False
+        # H-1: HKEX public holiday check (lazy import avoids circular dependency).
+        # Was importing via the wrong absolute path (services.scheduler doesn't exist as a
+        # top-level module here) — ImportError every call, so HK holidays were never
+        # actually excluded from market hours (silently swallowed, no visible symptom).
+        try:
+            from .scheduler import _HK_HOLIDAYS as _hkh
+            if (now_hkt.year, now_hkt.month, now_hkt.day) in _hkh:
+                return False
+        except ImportError:
+            pass
         morning_open  = now_hkt.replace(hour=9,  minute=30, second=0, microsecond=0)
         morning_close = now_hkt.replace(hour=12, minute=0,  second=0, microsecond=0)
         aftnoon_open  = now_hkt.replace(hour=13, minute=0,  second=0, microsecond=0)
@@ -399,10 +722,33 @@ def _is_market_hours(market: str = "US") -> bool:
 _regime_cache: dict = {}          # last successful result
 _regime_cache_ts: float = 0.0     # epoch seconds of last successful fetch
 
+# T232-DE7: hysteresis state for regime classification. _fetch_market_regime() is called
+# fresh (new yfinance download + reclassification, no debounce) on every _refresh_5m tick —
+# every 5 minutes during market hours. A candidate sitting right at an EMA boundary can
+# genuinely flip choppy<->bull on consecutive ticks with no real change in market conditions,
+# swinging score/size_mult/min_rr on the same signal within minutes. A pending new state must
+# now be observed on _REGIME_HYSTERESIS_TICKS consecutive classifications before it actually
+# takes effect — a single-tick flip is treated as noise and the previously CONFIRMED state is
+# returned instead.
+_REGIME_HYSTERESIS_TICKS = 2
+_regime_confirmed_state: str | None = None   # last state that passed hysteresis and was returned
+_regime_pending_state: str | None = None     # raw state seen on the most recent call(s)
+_regime_pending_count: int = 0               # consecutive ticks _regime_pending_state has held
+
 
 def get_last_regime() -> dict:
-    """Return the most recently cached market regime dict, or {} if not yet populated."""
-    return dict(_regime_cache)
+    """Return the most recently cached market regime dict.
+
+    If the cache is empty (e.g. after a container restart before any paper trading step),
+    performs a fresh fetch so callers like the morning digest always get real data.
+    """
+    if _regime_cache:
+        return dict(_regime_cache)
+    # Lazy fetch on first call (container just started, no paper trading step yet)
+    try:
+        return _fetch_market_regime(_DEFAULT_CONFIG)
+    except Exception:
+        return {}
 
 
 def _fetch_market_regime(cfg: dict) -> dict:
@@ -438,6 +784,10 @@ def _fetch_market_regime(cfg: dict) -> dict:
         "breadth_size_mult": 1.0,     # 0.80 if one below 200EMA; 0.60 if both
         "iwm_vs_ema200": None,        # IWM price / 200EMA (for logging)
         "mdy_vs_ema200": None,        # MDY price / 200EMA (for logging)
+        # QW-8: HMM regime overlay
+        "hmm_bear_pressure": False,   # True when HMM bear_prob > 0.50
+        "hmm_bear_prob": None,        # raw bear posterior probability
+        "hmm_state": None,            # "bull" | "neutral" | "choppy" | "bear"
     }
     try:
         import yfinance as yf
@@ -567,6 +917,39 @@ def _fetch_market_regime(cfg: dict) -> dict:
         notes.append(f"SPY {spy_str} — mixed signals")
         result["state"] = "neutral"
 
+    # T232-DE7: hysteresis — require a NEW state to be observed on 2 consecutive ticks before
+    # it actually takes effect, so a single boundary-noise flip doesn't change what every
+    # gate/sizing/min_rr check sees. Escalation into the two most severe states (bear,
+    # risk_off) is NOT delayed — hysteresis exists to filter noise between benign states, not
+    # to slow down the system's reaction to a genuine deterioration signal. De-escalating OUT
+    # of bear/risk_off still requires confirmation, same as any other transition.
+    global _regime_confirmed_state, _regime_pending_state, _regime_pending_count
+    _raw_state = result["state"]
+    if _regime_confirmed_state is None:
+        # First classification since startup — nothing to compare against, accept immediately.
+        _regime_confirmed_state = _raw_state
+        _regime_pending_state, _regime_pending_count = _raw_state, _REGIME_HYSTERESIS_TICKS
+    elif _raw_state == _regime_confirmed_state:
+        _regime_pending_state, _regime_pending_count = _raw_state, 0
+    elif _raw_state in ("bear", "risk_off"):
+        notes.append(f"regime hysteresis bypassed for escalation to {_raw_state}")
+        _regime_confirmed_state = _raw_state
+        _regime_pending_state, _regime_pending_count = _raw_state, 0
+    else:
+        if _regime_pending_state == _raw_state:
+            _regime_pending_count += 1
+        else:
+            _regime_pending_state, _regime_pending_count = _raw_state, 1
+        if _regime_pending_count >= _REGIME_HYSTERESIS_TICKS:
+            _regime_confirmed_state = _raw_state
+        else:
+            notes.append(
+                f"regime hysteresis: raw={_raw_state} pending {_regime_pending_count}/"
+                f"{_REGIME_HYSTERESIS_TICKS} ticks — still reporting confirmed={_regime_confirmed_state}"
+            )
+    result["raw_state"] = _raw_state
+    result["state"] = _regime_confirmed_state
+
     # RE-9: Compute early warning flags AFTER state classification
     if spy and e20:
         result["spy_pct_above_ema20"] = round((spy / e20 - 1) * 100, 2)
@@ -603,6 +986,24 @@ def _fetch_market_regime(cfg: dict) -> dict:
                 f"MDY/200EMA={result.get('mdy_vs_ema200', 0):.3f} — narrow market"
             )
 
+    # QW-8: HMM regime overlay — fail-open, in-process (T233-ARCH-HMMREGIME: was an HTTP call
+    # to ml-prediction:8003/regime-state on every regime computation; colocated 2026-07-04
+    # since this was the only consumer anywhere in the codebase — a real network hop
+    # eliminated, not just a cosmetic move).
+    # bear_prob > 0.50 triggers a 30% position size reduction on top of rule-based regime sizing.
+    # Detects early-phase downturns via volatility clustering before price action confirms.
+    try:
+        from .hmm_regime import predict_current as _hmm_predict_current
+        _hmm_d = _hmm_predict_current()
+        if not _hmm_d.get("error"):
+            _bear_p = float(_hmm_d.get("hmm_prob", {}).get("bear", 0.0))
+            result["hmm_bear_prob"] = round(_bear_p, 4)
+            result["hmm_state"] = _hmm_d.get("hmm_state")
+            if _bear_p > 0.50:
+                result["hmm_bear_pressure"] = True
+    except Exception as _hmm_exc:
+        log.debug("paper.hmm_regime_fetch_skipped", error=str(_hmm_exc))
+
     log.info("paper.regime_classified",
              state=result["state"],
              spy=result["spy_price"],
@@ -620,6 +1021,9 @@ def _fetch_market_regime(cfg: dict) -> dict:
              vix_5d_trend=result["vix_5d_trend"],
              is_pre_choppy=result["is_pre_choppy"],
              is_pre_risk_off=result["is_pre_risk_off"],
+             hmm_state=result["hmm_state"],
+             hmm_bear_prob=result["hmm_bear_prob"],
+             hmm_bear_pressure=result["hmm_bear_pressure"],
              notes=notes)
     import time as _time
     _regime_cache = dict(result)
@@ -631,15 +1035,65 @@ _hk_regime_cache: dict = {}
 _hk_regime_cache_ts: float = 0.0
 
 
+def _compute_hk_breadth() -> float | None:
+    """% of tracked HK stocks trading above their own 200-day SMA.
+
+    Distinguishes a broad HSI decline from a handful of mega-caps dragging the index
+    down (e.g. a single Tencent/Alibaba selloff) — the index-only dual-SMA check can't
+    tell these apart. Uses the existing tracked HK universe (no HSI constituent list
+    needed) — only stocks with >=200 daily bars are counted, mirroring the sample the
+    US breadth_pct calculation implicitly relies on via its own universe.
+    """
+    try:
+        with SessionLocal() as session:
+            rows = session.execute(
+                select(Stock.id, Stock.symbol).where(Stock.market == "HK", Stock.active.is_(True))
+            ).all()
+            if not rows:
+                return None
+            stock_ids = [r.id for r in rows]
+            price_rows = session.execute(
+                select(Price.stock_id, Price.close)
+                .where(Price.stock_id.in_(stock_ids), Price.timeframe == TimeFrame.D1)
+                .order_by(Price.stock_id, Price.ts.desc())
+            ).all()
+            from collections import defaultdict as _dd
+            closes_by_stock: dict[int, list[float]] = _dd(list)
+            for sid, close in price_rows:
+                if len(closes_by_stock[sid]) < 200:
+                    closes_by_stock[sid].append(float(close))
+            above = total = 0
+            for sid, closes in closes_by_stock.items():
+                if len(closes) < 200:
+                    continue
+                total += 1
+                sma200 = sum(closes) / len(closes)
+                if closes[0] >= sma200:  # closes[0] is most recent (DESC order)
+                    above += 1
+            if total < 10:  # too small a sample to be meaningful
+                return None
+            return round(above / total * 100, 1)
+    except Exception as exc:
+        log.warning("paper.hk_breadth_calc_failed", error=str(exc))
+        return None
+
+
 def _fetch_hk_market_regime(cfg: dict) -> dict:
-    """Basic HK regime detection: HSI vs 200-day SMA.
+    """HK regime detection using dual SMA (50 + 200) + breadth confirmation.
 
     Returns a simplified regime dict compatible with the US version.
-    No VIX equivalent — uses HSI distance from 200SMA as the sole signal:
-      bull   : HSI > 200 SMA and 20d return > 0
-      neutral: HSI > 200 SMA but 20d return ≤ 0 (topping / momentum fade)
-      choppy : HSI within ±2% of 200 SMA
-      bear   : HSI < 200 SMA
+    No VIX equivalent — uses HSI position vs both SMA50 and SMA200:
+      bull     : HSI > SMA200 and 20d return > 0
+      neutral  : HSI > SMA200 but 20d return ≤ 0 (topping / momentum fade)
+      choppy   : HSI below SMA200 but above SMA50 (recovering), or within ±5% of SMA200
+      risk_off : HSI 8–15% below SMA200 AND below SMA50 (sustained downtrend, 50% size)
+      bear     : HSI > 15% below SMA200 AND below SMA50 (extreme crash, hard block)
+
+    Breadth confirmation (T232-HKBREADTH): a risk_off/bear call driven by index-level
+    weakness alone is downgraded one tier when breadth (% of tracked HK stocks above their
+    own 200d SMA) is NOT also weak (<40%) — i.e. the decline looks concentrated in a few
+    heavyweights rather than broad-based. This does not apply in the other direction: real
+    broad-based weakness (breadth <40%) does not escalate a milder index reading.
     """
     global _hk_regime_cache, _hk_regime_cache_ts
     import time as _time
@@ -650,9 +1104,10 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
         "state": "neutral", "vix": None, "spy_price": None,
         "spy_ema20": None, "spy_ema50": None, "spy_ema200": None,
         "spy_20d_ret": None, "qqq_price": None, "qqq_ema50": None,
-        "breadth_weak": False, "breadth_size_mult": 1.0,
+        "breadth_weak": False, "breadth_size_mult": 1.0, "breadth_pct": None,
         "vix_term_inverted": False, "vix_5d_trend": None,
         "spy_pct_above_ema20": None, "is_pre_choppy": False, "is_pre_risk_off": False,
+        "hmm_bear_pressure": False, "hmm_bear_prob": None, "hmm_state": None,
         "notes": [],
     }
     try:
@@ -665,27 +1120,61 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
 
         hsi_price = float(closes.iloc[-1])
         sma200 = float(closes.tail(200).mean()) if len(closes) >= 200 else float(closes.mean())
+        sma50  = float(closes.tail(50).mean())  if len(closes) >= 50  else float(closes.mean())
         sma20  = float(closes.tail(20).mean())
         ret20  = (hsi_price / float(closes.iloc[-20]) - 1) if len(closes) >= 20 else 0.0
 
-        pct_above = (hsi_price / sma200 - 1) if sma200 else 0.0
+        pct_above_200 = (hsi_price / sma200 - 1) if sma200 else 0.0
+        pct_above_50  = (hsi_price / sma50  - 1) if sma50  else 0.0
+        above_sma50   = hsi_price >= sma50
         result["spy_price"]   = hsi_price      # reuse field for UI compat
         result["spy_ema200"]  = sma200
+        result["spy_ema50"]   = sma50
         result["spy_ema20"]   = sma20
         result["spy_20d_ret"] = round(ret20 * 100, 2)
 
-        if hsi_price < sma200 * 0.98:
+        # HK regime — dual-SMA (50 + 200) to distinguish recovery from sustained downtrend.
+        # SMA200 alone is too restrictive: a market recovering from a trough is below its SMA200
+        # but above its SMA50. Treating that as risk_off blocks trades in a rising market.
+        #
+        #   bear     : HSI > 15% below SMA200 AND below SMA50 — extreme crash, hard block
+        #   risk_off : HSI > 8% below SMA200 AND below SMA50 — sustained downtrend (50% size)
+        #   choppy   : HSI below SMA200 but ABOVE SMA50 (recovering), or within ±5% of SMA200
+        #   neutral  : HSI above SMA200, 20d return ≤ 0
+        #   bull     : HSI above SMA200, 20d return > 0
+        if hsi_price < sma200 * 0.85 and not above_sma50:
             result["state"] = "bear"
-            result["notes"].append(f"HSI {pct_above*100:.1f}% below 200 SMA → bear")
-        elif abs(pct_above) < 0.02:
+            result["notes"].append(f"HSI {pct_above_200*100:.1f}% below SMA200 + below SMA50 → bear")
+        elif hsi_price < sma200 * 0.92 and not above_sma50:
+            result["state"] = "risk_off"
+            result["notes"].append(f"HSI {pct_above_200*100:.1f}% below SMA200 + below SMA50 → risk_off (50% size)")
+        elif hsi_price < sma200:
+            # Below SMA200 but above SMA50: short-term trend is up — recovering market
             result["state"] = "choppy"
-            result["notes"].append("HSI within ±2% of 200 SMA → choppy")
+            result["notes"].append(f"HSI {pct_above_200*100:.1f}% below SMA200 but above SMA50 ({pct_above_50*100:.1f}%) → choppy (recovering)")
         elif ret20 <= 0:
             result["state"] = "neutral"
-            result["notes"].append(f"HSI above 200 SMA but 20d return {ret20*100:.1f}% → neutral")
+            result["notes"].append(f"HSI above SMA200 but 20d return {ret20*100:.1f}% → neutral")
         else:
             result["state"] = "bull"
-            result["notes"].append(f"HSI {pct_above*100:.1f}% above 200 SMA + positive 20d return → bull")
+            result["notes"].append(f"HSI {pct_above_200*100:.1f}% above SMA200 + positive 20d return → bull")
+
+        # T232-HKBREADTH: confirm index-level bear/risk_off calls with breadth. A decline
+        # concentrated in a few heavyweights (breadth NOT weak) is downgraded one tier —
+        # broad-based weakness (breadth IS weak, <40%) leaves the call unchanged. Never
+        # escalates a milder reading — this only softens bear/risk_off, one direction.
+        breadth_pct = _compute_hk_breadth()
+        result["breadth_pct"] = breadth_pct
+        if breadth_pct is not None:
+            result["breadth_weak"] = breadth_pct < 40.0
+            if result["state"] == "bear" and breadth_pct >= 40.0:
+                result["state"] = "risk_off"
+                result["notes"].append(
+                    f"Breadth {breadth_pct:.0f}% not broadly weak — downgraded bear→risk_off (decline looks concentrated)")
+            elif result["state"] == "risk_off" and breadth_pct >= 40.0:
+                result["state"] = "choppy"
+                result["notes"].append(
+                    f"Breadth {breadth_pct:.0f}% not broadly weak — downgraded risk_off→choppy (decline looks concentrated)")
 
     except Exception as exc:
         log.warning("paper.hk_regime_fetch_failed", error=str(exc))
@@ -694,6 +1183,21 @@ def _fetch_hk_market_regime(cfg: dict) -> dict:
     _hk_regime_cache = dict(result)
     _hk_regime_cache_ts = _time.time()
     return result
+
+
+def get_last_hk_regime() -> dict:
+    """Return the most recently cached HK market regime dict.
+
+    Mirrors get_last_regime() for the US side. T232-DL-REGIME5X: exposed via
+    GET /stocks/regime?market=HK so decision-engine and signal-engine can call this single
+    implementation over HTTP instead of maintaining their own independent classifiers.
+    """
+    if _hk_regime_cache:
+        return dict(_hk_regime_cache)
+    try:
+        return _fetch_hk_market_regime(_DEFAULT_CONFIG)
+    except Exception:
+        return {}
 
 
 # ── Live price fetch ──────────────────────────────────────────────────────────
@@ -727,6 +1231,7 @@ def _should_enter(
     game_plan: dict,
     cfg: dict,
     live_regime: dict | None = None,
+    kscore: float | None = None,
 ) -> tuple[bool, int, list[str]]:
     """Score current conditions to decide if NOW is a good time to enter.
 
@@ -750,7 +1255,7 @@ def _should_enter(
     # Confidence hard floor — signals between 90%–100% of min_confidence get scored
     # but signals truly below 90% are rejected here (SQL filter lets them through at 90%)
     confidence = float(signal_data.get("confidence") or 0.0)
-    min_conf = cfg.get("min_confidence", 62.0)
+    min_conf = cfg.get("min_confidence", _DEFAULT_CONFIG["min_confidence"])
     if confidence < min_conf * 0.90:
         return False, -99, [f"Confidence {confidence:.1f}% below floor {min_conf * 0.90:.1f}%"]
 
@@ -770,6 +1275,44 @@ def _should_enter(
     dte = reasons.get("days_to_earnings")
     if dte is not None and int(dte) <= 5:
         return False, -99, [f"Earnings in {dte} days — binary event risk; skip"]
+
+    # T171: Premarket gap filter — reject if stock has already gapped up significantly
+    # from its signal price. Signal reasons["last_price"] is the close at signal-compute time.
+    # If live price is already >max_entry_gap_pct above that close, we're chasing the move.
+    _signal_close = reasons.get("last_price")
+    if _signal_close and float(_signal_close) > 0:
+        _gap = live_price / float(_signal_close) - 1
+        _max_gap = cfg.get("max_entry_gap_pct", 0.04)
+        if _gap > _max_gap:
+            return False, -99, [
+                f"Gap-up {_gap:.1%} above signal close ${_signal_close:.2f} "
+                f"exceeds limit {_max_gap:.0%} — entry price degraded"
+            ]
+
+    # T220-D: Economic calendar blackout — reject BUY entries within 2h of major macro events.
+    # FOMC, CPI, NFP, PCE cause unpredictable 1-3% moves; entries in this window have higher failure rates.
+    # Checks reasons["macro_blackout"] first (fast path — set by signal-engine), then queries DB directly.
+    _macro_evt = reasons.get("macro_blackout")
+    if _macro_evt is None:
+        try:
+            from db import SessionLocal
+            from sqlalchemy import text
+            from datetime import datetime, timezone, timedelta
+            _now = datetime.now(timezone.utc)
+            _window_end = _now + timedelta(hours=2)
+            with SessionLocal() as _evsess:
+                _ev_row = _evsess.execute(text(
+                    "SELECT title FROM economic_events "
+                    "WHERE event_date >= :now AND event_date <= :end "
+                    "AND importance IN ('high', 'critical') "
+                    "LIMIT 1"
+                ), {"now": _now.isoformat(), "end": _window_end.isoformat()}).fetchone()
+                if _ev_row:
+                    _macro_evt = _ev_row.title
+        except Exception:
+            pass  # DB query failure → allow entry (fail-open)
+    if _macro_evt:
+        return False, -99, [f"Macro blackout: {_macro_evt} within 2h — avoid binary-event risk"]
 
     # ── Price zone (where is price relative to the game plan?) ───────────────
     # CB-2 FIX: old values (+4/+3) equalled the min_entry_score threshold (3–5), making it a
@@ -857,9 +1400,80 @@ def _should_enter(
         except Exception:
             pass  # malformed ts: no freshness adjustment
 
+    # ── AL-1: RL policy score adjustment ─────────────────────────────────────
+    # Linear Q-function trained on closed paper trades. Adjusts the additive score
+    # (±1) before the calibrated or raw threshold comparison.
+    if _RL_AVAILABLE and _rl_recommend is not None:
+        try:
+            _rl_rec = _rl_recommend(
+                rr_ratio=rr,
+                confidence=confidence,
+                entry_score=float(score),
+                kscore=kscore if kscore is not None else 50.0,
+                style=cfg.get("trading_style", "SWING"),
+                regime=(live_regime.get("state", "neutral") if live_regime else "neutral"),
+            )
+            if _rl_rec["available"]:
+                if _rl_rec["action"] == "BUY":
+                    score += 1
+                    notes.append(f"RL policy BUY (Q={_rl_rec['q_value']:.3f})")
+                else:
+                    score -= 1
+                    notes.append(f"RL policy WAIT (Q={_rl_rec['q_value']:.3f})")
+        except Exception:
+            pass  # RL call failure is non-fatal
+
+    # ── Cross-horizon consensus scoring ──────────────────────────────────────
+    cross_buys_h = int(reasons.get("cross_style_buys", 0))
+    regime_state_h = (live_regime.get("state", "neutral") if live_regime else "neutral")
+    if cross_buys_h >= 2:
+        score += 1
+        notes.append(f"Cross-horizon: {cross_buys_h}+ styles BUY — strong multi-timeframe alignment")
+    elif cross_buys_h == 0 and regime_state_h in ("bear", "choppy"):
+        score -= 1
+        notes.append("No cross-horizon support in bear/choppy regime — conviction penalty")
+
+    # ── T172-B: Catalyst intelligence scoring ─────────────────────────────────
+    # insider_score and congress_score are stored in signal.reasons by signal-engine.
+    # Real-money conviction (insider buys/sells) gets ±1; congress net buying gets +1.
+    _insider_sc  = reasons.get("insider_score")
+    _congress_sc = reasons.get("congress_score")
+    if _insider_sc is not None:
+        _insider_sc = float(_insider_sc)
+        if _insider_sc >= 60:
+            score += 1
+            notes.append(f"Strong insider buying (score {_insider_sc:.0f}) — real-money conviction")
+        elif _insider_sc < -30:
+            score -= 1
+            notes.append(f"Significant insider selling (score {_insider_sc:.0f}) — management caution")
+    if _congress_sc is not None:
+        _congress_sc = float(_congress_sc)
+        if _congress_sc > 50:
+            score += 1
+            notes.append(f"Congress net buying (score {_congress_sc:.0f}) — informed capital inflow")
+
     # ── Decision ─────────────────────────────────────────────────────────────
 
-    should = score >= cfg.get("min_entry_score", 3)
+    # PT-3: Use calibrated logistic weights when available (>=100 closed trades).
+    # Falls back to raw additive threshold when no calibration data exists.
+    weights = _load_entry_weights()
+    if weights.get("intercept") is not None and weights.get("n_trades", 0) >= 100:
+        import math as _math
+        w = weights
+        ks = kscore if kscore is not None else 50.0
+        logit = (
+            w["intercept"]
+            + w["w_rr"]        * min(rr, 8.0)
+            + w["w_confidence"] * confidence
+            + w["w_score"]     * float(score)
+            + w["w_kscore"]    * ks
+        )
+        cal_prob = 1.0 / (1.0 + _math.exp(-logit))
+        should = cal_prob >= w.get("threshold", 0.52)
+        notes.append(f"Calibrated win-prob {cal_prob*100:.0f}% (threshold {w.get('threshold',0.52)*100:.0f}%)")
+    else:
+        should = score >= cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"])
+
     return should, score, notes
 
 
@@ -885,7 +1499,9 @@ def _build_game_plan_for_style(
 
     # Stop: ATR-based is more adaptive than fixed %
     if atr and atr > 0:
-        stop = round((current_price - atr * (2.5 if style == "GROWTH" else 2.0)) / step) * step
+        # GROWTH stocks are high-volatility; wider ATR multiplier avoids premature stops.
+        atr_mult = 3.0 if style.upper() == "GROWTH" else 2.0
+        stop = round((current_price - atr * atr_mult) / step) * step
         stop = max(stop, round(current_price * params["stop_pct"] / step) * step)
     else:
         stop = round(current_price * params["stop_pct"] / step) * step
@@ -940,6 +1556,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             .join(latest_ts_subq,
                   (Signal.stock_id == latest_ts_subq.c.stock_id) &
                   (Signal.ts == latest_ts_subq.c.max_ts))
+            .where(Signal.horizon == style)
         ).all()
         for sig, stk in batch_sigs:
             latest_signals[stk.symbol] = sig
@@ -1008,6 +1625,30 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         [(t.symbol, t.sector) for t in open_trades]
     )
 
+    # PT-I1: Fundamental deterioration — if research recommendation is now AVOID or SELL
+    # for a held position, tighten the trail to exit faster. Fire-and-forget http calls
+    # (short timeout), swallowed on any error so monitor is never blocked.
+    _research_deteriorated: dict[str, bool] = {}
+    try:
+        from common.config import get_settings as _gs_mon
+        _res_url = _gs_mon().research_engine_url
+        import httpx as _hx_mon
+        symbols_to_check = list({t.symbol for t in open_trades if t.stage == "open"})
+        for _sym in symbols_to_check:
+            try:
+                _rr = _hx_mon.get(
+                    f"{_res_url}/research/{_sym}/summary", timeout=1.0,
+                    headers={"Authorization": f"Bearer {_svc_token()}"},
+                )
+                if _rr.status_code == 200:
+                    _rd = _rr.json()
+                    if (_rd.get("recommendation") or "").upper() in ("AVOID", "SELL"):
+                        _research_deteriorated[_sym] = True
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Regime-adjusted trail multiplier — tighten stops in risk-off environments
     # so existing positions are protected even though new entries are paused/sized down
     regime_trail_adj = 1.0
@@ -1026,17 +1667,53 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
     ]
     monitor_atr_cache: dict[str, float | None] = _batch_compute_atr(list(set(armed_symbols)))
 
+    # PT-H5: Batch-fetch latest RSI-14 for all armed positions to detect overbought peaks.
+    # Uses the pre-computed indicators table (cheaper than recomputing from prices).
+    _rsi_overbought: dict[str, bool] = {}
+    if armed_symbols:
+        try:
+            rsi_rows = session.execute(
+                select(Stock.symbol, Indicator.value)
+                .join(Indicator, Stock.id == Indicator.stock_id)
+                .where(
+                    Stock.symbol.in_(armed_symbols),
+                    Indicator.name == "rsi_14",
+                    Indicator.timeframe == TimeFrame.D1,
+                )
+                .order_by(Stock.symbol, Indicator.ts.desc())
+                .distinct(Stock.symbol)
+            ).all()
+            for sym, rsi_val in rsi_rows:
+                if rsi_val is not None and float(rsi_val) > 75:
+                    _rsi_overbought[sym] = True
+        except Exception:
+            pass
+
     now = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _et_date = now.astimezone(_ZI("America/New_York")).date()
+    except Exception:
+        _et_date = now.date()
 
     for trade in open_trades:
         # PT-B3: hold days in trading days (excludes weekends/holidays)
         # +1 so today counts as day 1 (busday_count is exclusive of end date)
-        days_held = int(np.busday_count(trade.entry_date, date.today() + timedelta(days=1)))
+        days_held = int(np.busday_count(trade.entry_date, _et_date + timedelta(days=1)))
         trade.hold_days = days_held
 
         live_price = live_prices.get(trade.symbol)
         if not live_price:
-            continue
+            # T234-PT-MONITOR-MISSING-PRICE-FALLBACK: a missing live quote used to skip
+            # ALL stop/target/trailing-stop checks for this trade for the entire cycle,
+            # silently — a position whose stop should have triggered during a quote gap
+            # would ride a bad move further than intended. Fall back the same way
+            # _best_price() does elsewhere in this file (live -> cached current_price ->
+            # entry_price) so exit checks still run against the best price we have.
+            live_price = trade.current_price or trade.entry_price
+            log.warning("paper.monitor_price_fallback", symbol=trade.symbol,
+                        trade_id=trade.id, fallback_price=live_price,
+                        note="live quote missing this cycle — using cached/entry price for exit checks")
 
         trade.current_price = live_price
         if trade.highest_price is None or live_price > trade.highest_price:
@@ -1066,11 +1743,21 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
         }
 
         if live_price <= stop:
-            exit_reason = "stop_hit"
-            exit_notes = {**_base_notes,
-                "message": f"Stop ${stop:.2f} breached at live price ${live_price:.2f}",
-                "pnl_pct": round(pnl_pct * 100, 2),
-            }
+            # T197: Distinguish break-even stops (stop ≈ entry) from real losses.
+            # A break-even exit means the trade ran positive, came back, and exited flat.
+            _be_tol = entry * 0.005  # 0.5% tolerance around entry
+            if abs(stop - entry) <= _be_tol:
+                exit_reason = "breakeven_stop"
+                exit_notes = {**_base_notes,
+                    "message": f"Break-even stop hit: stop ${stop:.2f} ≈ entry ${entry:.2f}, live ${live_price:.2f}",
+                    "pnl_pct": round(pnl_pct * 100, 2),
+                }
+            else:
+                exit_reason = "stop_hit"
+                exit_notes = {**_base_notes,
+                    "message": f"Stop ${stop:.2f} breached at live price ${live_price:.2f}",
+                    "pnl_pct": round(pnl_pct * 100, 2),
+                }
 
         elif target and live_price >= target:
             exit_reason = "target_reached"
@@ -1111,6 +1798,33 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                          hold_days=days_held, pnl_pct=round(pnl_pct * 100, 1),
                          stall_days=stall_days, stall_max_gain_pct=stall_max_gain * 100)
 
+        # ── T207: Momentum exhaustion exit ───────────────────────────────────────
+        # OBV distribution (price holding but volume declining) + RSI rolled from overbought
+        # signals the rally is exhausting. Exit profitable positions early rather than ride back.
+
+        elif (
+            exit_reason is None
+            and pnl_pct > 0
+            and cfg.get("momentum_exit_enabled", True)
+            and days_held >= cfg.get("momentum_exit_min_days", 3)
+            and _obv_divergence.get(trade.symbol)
+            and _rsi_overbought.get(trade.symbol)
+        ):
+            exit_reason = "momentum_fade"
+            exit_notes = {**_base_notes,
+                "message": (
+                    f"Momentum exhaustion: OBV distribution + RSI rolled from overbought "
+                    f"at ${live_price:.2f} (+{pnl_pct*100:.1f}%)"
+                ),
+                "pnl_pct": round(pnl_pct * 100, 2),
+                "obv_divergence": True,
+                "rsi_overbought_rolled": True,
+            }
+            log.info("paper.momentum_fade_exit",
+                     symbol=trade.symbol, pnl_pct=round(pnl_pct * 100, 1),
+                     hold_days=days_held,
+                     note="OBV declining + RSI rolled from overbought — protecting gains")
+
         # ── WAIT decay exit ───────────────────────────────────────────────────
 
         elif sig_type == "WAIT":
@@ -1122,6 +1836,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                     Stock.symbol == trade.symbol,
                     Signal.horizon == style,
                     Signal.signal != "WAIT",
+                    Signal.ts >= trade.entry_time,
                 )
             ).scalar()
 
@@ -1150,23 +1865,56 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             # PT-B6: apply exit slippage (sells at a slightly lower price than quoted)
             # RISK-2: stop-hit exits fill at stop level (not gap price) — simulates stop-limit semantics
             slippage = cfg.get("entry_slippage_pct", 0.001)
-            fill_base = stop if exit_reason == "stop_hit" else live_price
+            # QW-7: use min(stop, live_price) so gap-downs fill at market price, not stop price
+            fill_base = min(stop, live_price) if exit_reason == "stop_hit" else live_price
             exit_price = round(fill_base * (1 - slippage), 4)
             exit_commission = round(cfg.get("commission_per_share", 0.0) * trade.shares, 4)
             exit_value = round(exit_price * trade.shares, 2)
             pnl_dollar = round((exit_price - entry) * trade.shares, 2)
-            pnl_pct    = (exit_price - entry) / entry  # recalc with slipped exit
+            pnl_pct    = (exit_price - entry) / entry  # recalc with slipped exit; unweighted, kept in exit_notes for reference
+            exit_notes["pnl_pct"] = round(pnl_pct * 100, 2)  # overwrite pre-slippage value
+            # T232-PT6: fold in realized P&L from any scale-out partials so a trade that
+            # took profit on the way up and trailed the remainder to breakeven is scored as
+            # the winner it actually was, not a ~$0/negative loser. pct_return is recomputed
+            # against the ORIGINAL cost basis (entry_shares), not just the shares remaining
+            # at close, since the partials already returned part of that capital.
+            total_pnl_dollar = round((trade.realized_pnl or 0.0) + pnl_dollar, 2)
+            _cost_basis = entry * (trade.entry_shares or trade.shares)
+            total_pnl_pct = (total_pnl_dollar / _cost_basis) if _cost_basis else pnl_pct
             trade.stage               = "closed"
             trade.exit_time           = now
             trade.exit_price          = exit_price
             trade.exit_reason         = exit_reason
             trade.exit_reasons        = exit_notes
-            trade.pnl                 = pnl_dollar
-            trade.pct_return          = round(pnl_pct * 100, 4)
+            trade.pnl                 = total_pnl_dollar
+            trade.pct_return          = round(total_pnl_pct * 100, 4)
             # PA-G3: record signal state at exit for walk-forward attribution
             trade.signal_at_exit_id   = current_sig.id   if current_sig else None
-            trade.signal_at_exit_type = current_sig.signal.value if current_sig else None
+            trade.signal_at_exit_type = current_sig.signal.value if current_sig and current_sig.signal else None
             portfolio.current_cash = max(0.0, round(portfolio.current_cash + exit_value - exit_commission, 2))
+            # Broker exit routing: submit real SELL for broker-entered positions
+            if portfolio.broker_connection_id and trade.broker_order_id:
+                _place_broker_exit(session, trade, portfolio)
+            # PT-J1: write actual trade result back to signal_outcomes for signal accuracy calibration
+            if trade.signal_id is not None:
+                try:
+                    from db.models import SignalOutcome
+                    _so = session.execute(
+                        select(SignalOutcome).where(SignalOutcome.signal_id == trade.signal_id)
+                    ).scalar_one_or_none()
+                    if _so is not None:
+                        _so.entry_price = entry
+                        _so.entry_date  = trade.entry_date
+                        _so.exit_price  = exit_price
+                        _so.exit_date   = now.date()
+                        # AUD19-DB3: cutoffs are calendar-day approximations of trading-day horizons.
+                        # 7 calendar days ≈ 5 trading days (SHORT), 14 ≈ 10 (SWING), 15+ ≈ 11–20+ (LONG).
+                        _bucket = "5d" if days_held <= 7 else ("10d" if days_held <= 14 else "20d")
+                        setattr(_so, f"return_{_bucket}", round(pnl_pct, 4))
+                        setattr(_so, f"is_correct_{_bucket}", pnl_dollar > 0)
+                        session.flush()
+                except Exception as _soe:
+                    log.warning("paper.signal_outcome_writeback_failed", signal_id=trade.signal_id, error=str(_soe))
             # PA-G4: rich attribution log — enables "why did this trade exit?" queries in logs
             log.info("paper.exit",
                      symbol=trade.symbol, reason=exit_reason,
@@ -1218,6 +1966,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
             partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
             trade.shares = round(trade.shares - partial_shares, 4)
+            trade.realized_pnl = round((trade.realized_pnl or 0.0) + partial_pnl - partial_commission, 2)
             portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
             if trade.current_stop < entry:
                 trade.current_stop = entry
@@ -1241,6 +1990,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
             partial_pnl    = round((partial_price - entry) * partial_shares, 2)
             partial_commission = round(cfg.get("commission_per_share", 0.0) * partial_shares, 4)
             trade.shares = round(trade.shares - partial_shares, 4)
+            trade.realized_pnl = round((trade.realized_pnl or 0.0) + partial_pnl - partial_commission, 2)
             portfolio.current_cash = round(portfolio.current_cash + partial_value - partial_commission, 2)
             lock_stop = round(entry * 1.05, 2)
             if trade.current_stop < lock_stop:
@@ -1312,7 +2062,7 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                 from sqlalchemy import text as sa_text
                 sig_reasons = session.execute(
                     sa_text("SELECT reasons FROM signals WHERE stock_id = :sid AND horizon = :h ORDER BY ts DESC LIMIT 1"),
-                    {"sid": trade.stock_id, "h": trade.style or cfg.get("trading_style", "GROWTH")},
+                    {"sid": trade.stock_id, "h": trade.trading_style or cfg.get("trading_style", "GROWTH")},
                 ).mappings().one_or_none()
                 sig_reasons = dict(sig_reasons["reasons"] or {}) if sig_reasons else {}
             except Exception:
@@ -1378,6 +2128,36 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
                             new_stop=round(rs_trail, 2),
                             note="Stock lagging sector ETF by >10pp over 5d — sector RS weakness")
 
+        # PT-H5: RSI overbought trail tightening — when RSI > 75 AND we have a gain to
+        # protect (trail armed), tighten to 1.0× ATR to lock in profits near the peak.
+        # Only fires when profitable (pnl ≥ 5%) to avoid over-managing early-stage trades.
+        if (not earnings_near and trail_armed and atr is not None and atr > 0.01 and
+                pnl_pct >= 0.05 and _rsi_overbought.get(trade.symbol)):
+            rsi_mult  = 1.0 * regime_trail_adj
+            rsi_trail = max((trade.highest_price or live_price) - atr * rsi_mult, trade.stop_loss)
+            if rsi_trail > trade.current_stop:
+                trade.current_stop = round(rsi_trail, 4)
+                log.info("paper.rsi_overbought_trail_tightened",
+                         symbol=trade.symbol,
+                         pnl_pct=round(pnl_pct * 100, 1),
+                         new_stop=round(rsi_trail, 2),
+                         note="RSI > 75 with gain ≥5% — tightening trail to 1.0× ATR to lock in profits")
+
+        # PT-I1: Fundamental deterioration exit — if research now says AVOID/SELL and we
+        # have a profit to protect, tighten trail to 1.5× ATR to exit faster without a
+        # hard cut. Only fires when trail is armed and pnl ≥ 2%.
+        if (not earnings_near and trail_armed and atr is not None and atr > 0.01 and
+                pnl_pct >= 0.02 and _research_deteriorated.get(trade.symbol)):
+            det_mult  = 1.5 * regime_trail_adj
+            det_trail = max((trade.highest_price or live_price) - atr * det_mult, trade.stop_loss)
+            if det_trail > trade.current_stop:
+                trade.current_stop = round(det_trail, 4)
+                log.info("paper.research_deterioration_trail_tightened",
+                         symbol=trade.symbol,
+                         pnl_pct=round(pnl_pct * 100, 1),
+                         new_stop=round(det_trail, 2),
+                         note="Research AVOID/SELL with gain ≥2% — tightening trail to 1.5× ATR")
+
         # PA-A3: Breakeven stop — unconditional (not elif) so it fires even when trail
         # is armed but ATR trail is still below entry (e.g. large ATR, small gain so far)
         if pnl_pct >= be_trigger and trade.current_stop < entry:
@@ -1411,9 +2191,214 @@ def _monitor_positions(session, portfolio: PaperPortfolio, live_prices: dict[str
 
 # ── Entry scanner ─────────────────────────────────────────────────────────────
 
+def _recent_win_rate(session, portfolio_id: int, n: int = 20) -> float | None:
+    """Win rate of the last n closed trades for this portfolio. Returns None if < 5 trades."""
+    rows = session.execute(
+        select(PaperTrade.exit_reason, PaperTrade.pnl)
+        .where(
+            PaperTrade.portfolio_id == portfolio_id,
+            PaperTrade.stage == "closed",
+            PaperTrade.pnl.isnot(None),
+        )
+        .order_by(PaperTrade.exit_time.desc())
+        .limit(n)
+    ).all()
+    if len(rows) < 5:
+        return None
+    wins = sum(1 for _, pnl in rows if pnl > 0)
+    return wins / len(rows)
+
+
+def _consec_loss_streak(session, portfolio_id: int) -> int:
+    """Count of consecutive losing trades from the tail of closed history."""
+    rows = session.execute(
+        select(PaperTrade.pnl)
+        .where(
+            PaperTrade.portfolio_id == portfolio_id,
+            PaperTrade.stage == "closed",
+            PaperTrade.pnl.isnot(None),
+        )
+        .order_by(PaperTrade.exit_time.desc())
+        .limit(10)
+    ).scalars().all()
+    streak = 0
+    for pnl in rows:
+        if pnl < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _call_decision_engine(
+    symbol: str,
+    live_price: float,
+    game_plan: dict,
+    equity: float,
+    open_count: int,
+    cfg: dict,
+    daily_pnl_pct: float = 0.0,
+    recent_win_rate: float | None = None,
+    open_sector_counts: dict | None = None,
+    candidate_sector: str | None = None,
+    consec_losses: int = 0,
+) -> tuple[bool, str, int, str | None] | None:
+    """Call Decision Engine and return (should_enter, verdict, score, blocked_reason).
+
+    Returns None if the DE is unreachable (caller falls back to _should_enter()).
+    Never raises — failures return None so DE unavailability never blocks entries.
+    """
+    try:
+        import httpx as _httpx
+        from common.config import get_settings as _gs_de
+        de_url = _gs_de().decision_engine_url
+        r = _httpx.post(
+            f"{de_url}/decide/{symbol}",
+            json={
+                "style":            cfg.get("trading_style", "SWING"),
+                "equity":           equity,
+                "open_positions":   open_count,
+                "max_positions":    cfg.get("max_positions", 6),
+                "live_price":       live_price,
+                "game_plan":        game_plan,
+                "market":           cfg.get("market", "US"),
+                "daily_pnl_pct":    daily_pnl_pct,
+                "config_overrides": {
+                    "min_entry_score":        cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
+                    "min_confidence":         cfg.get("min_confidence", _DEFAULT_CONFIG["min_confidence"]),
+                    "min_rr_ratio":           cfg.get("min_rr_ratio", 2.0),
+                    "risk_per_trade_pct":     cfg.get("risk_per_trade_pct", 0.01),
+                    "max_position_pct":       cfg.get("max_position_pct", 0.10),
+                    "max_loss_per_trade_pct": cfg.get("max_loss_per_trade_pct", 0.02),
+                    **( {"recent_win_rate": recent_win_rate} if recent_win_rate is not None else {} ),
+                    **( {"open_sector_counts": open_sector_counts, "candidate_sector": candidate_sector}
+                        if open_sector_counts is not None else {} ),
+                    **( {"consec_losses": consec_losses} if consec_losses > 0 else {} ),
+                },
+            },
+            headers={"Authorization": f"Bearer {_svc_token()}"},
+            timeout=2.5,
+        )
+        if r.status_code != 200:
+            log.warning("decision_engine.bad_status", symbol=symbol, status=r.status_code)
+            return None
+        result = r.json()
+        verdict       = result.get("verdict", "SKIP")
+        should_enter  = verdict in ("BUY", "SCALE")
+        score         = result.get("score", 0)
+        blocked       = result.get("blocked_reason")
+        return should_enter, verdict, score, blocked
+    except Exception as exc:
+        log.debug("decision_engine.call_error", symbol=symbol, error=str(exc))
+        return None
+
+
+def _clear_gate_block(portfolio_id: int) -> None:
+    """Delete the Redis gate_block key so the UI no longer shows a block reason."""
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_gb
+        _r = _rb.Redis.from_url(_gs_gb().redis_url, decode_responses=True)
+        _r.delete(f"paper:gate_block:{portfolio_id}")
+    except Exception:
+        pass
+
+
+def _write_gate_block(portfolio_id: int, gate: str, reason: str) -> None:
+    """Record the most recent portfolio-level gate that blocked new entries.
+
+    Stored in Redis as paper:gate_block:{portfolio_id} (JSON, 4h TTL).
+    Read by the /paper-portfolio/portfolios list endpoint to surface the reason in the UI.
+    Fail-silent — gate block display is informational only.
+    """
+    import json as _json
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_gb
+        _r = _rb.Redis.from_url(_gs_gb().redis_url, decode_responses=True)
+        _r.setex(
+            f"paper:gate_block:{portfolio_id}",
+            60 * 60 * 4,  # 4 hour TTL
+            _json.dumps({"gate": gate, "reason": reason,
+                         "ts": datetime.now(timezone.utc).isoformat()}),
+        )
+    except Exception:
+        pass
+
+
+_SKIP_REASON_LABEL: dict[str, str] = {
+    "stop_cooldown": "Recently stopped out",
+    "global_symbol_cap": "Already open in another portfolio",
+    "no_ranking": "No K-Score ranking available",
+    "kscore": "K-Score below minimum",
+    "stale_signal": "Signal too old",
+    "confluence_fail": "Short-horizon signal disagrees",
+    "price_drift": "Price moved too far from signal",
+    "low_volume": "Volume below average — entry postponed",
+    "hk_flow_gate": "HK Stock Connect flow unfavorable",
+    "ta_gate": "TA score below minimum",
+    "declining_confidence": "Confidence declining since signal",
+    "research_gate": "Research recommendation unfavorable",
+    "min_position": "Position size below minimum",
+    "open_risk_cap": "Portfolio open-risk cap reached",
+    "sector_cap": "Sector exposure cap reached",
+    "sector_count_cap": "Sector position-count cap reached",
+    "insufficient_cash": "Insufficient cash",
+    "conviction_gate": "Alert system's conviction gate already rejected this BUY",
+    "entry_score_below_threshold": "Entry score below minimum (DE or fallback scorer)",
+}
+
+
+def _write_no_entry_summary(portfolio_id: int, candidates_seen: int, skip_tally: dict[str, int]) -> None:
+    """Record why zero entries happened this cycle when no portfolio-level gate fired.
+
+    T232-WHYNOTRADE: complements _write_gate_block — that only covers portfolio-level
+    blocks (drawdown, daily loss, regime, ...). When those are all clear but every BUY
+    candidate individually fails its own per-symbol check (K-Score, volume, TA score,
+    cooldown, ...), nothing was previously surfaced anywhere except raw container logs.
+    Stored in Redis as paper:no_entry_summary:{portfolio_id} (JSON, 4h TTL).
+    """
+    import json as _json
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_ne
+        _r = _rb.Redis.from_url(_gs_ne().redis_url, decode_responses=True)
+        top_reasons = sorted(skip_tally.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        _r.setex(
+            f"paper:no_entry_summary:{portfolio_id}",
+            60 * 60 * 4,  # 4 hour TTL
+            _json.dumps({
+                "candidates_seen": candidates_seen,
+                "top_reasons": [
+                    {"reason": k, "label": _SKIP_REASON_LABEL.get(k, k), "count": v}
+                    for k, v in top_reasons
+                ],
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }),
+        )
+    except Exception:
+        pass
+
+
+def _clear_no_entry_summary(portfolio_id: int) -> None:
+    """Clear the no-entry summary once the portfolio actually enters a position."""
+    try:
+        import redis as _rb
+        from common.config import get_settings as _gs_ne
+        _r = _rb.Redis.from_url(_gs_ne().redis_url, decode_responses=True)
+        _r.delete(f"paper:no_entry_summary:{portfolio_id}")
+    except Exception:
+        pass
+
+
 def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str, float], live_regime: dict | None = None) -> None:
     """Find fresh BUY signals and evaluate them for entry."""
     cfg = {**_DEFAULT_CONFIG, **_STYLE_OVERRIDES.get(portfolio.config.get("trading_style", "GROWTH"), {}), **portfolio.config}
+    # Apply HK-specific circuit breaker overrides when not explicitly set in the portfolio config.
+    if cfg.get("market") == "HK":
+        for _k, _v in _HK_MARKET_OVERRIDES.items():
+            if _k not in (portfolio.config or {}):
+                cfg[_k] = _v
     style   = cfg["trading_style"]
     now     = datetime.now(timezone.utc)
     # CB-3 FIX + CB-W1 FIX: signals use dedup-on-change persistence — a persistent BUY never
@@ -1436,12 +2421,28 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
     equity = _compute_equity(session, portfolio, live_prices)
 
-    # Symbols already in open positions
+    # T201: Equity floor circuit breaker — suspend all entries if account has dropped too far
+    # below initial capital. A human stops trading a badly damaged account and steps back.
+    _equity_floor_pct = float(cfg.get("equity_floor_pct", 0.80))
+    if _equity_floor_pct > 0 and portfolio.initial_capital > 0:
+        _floor_ratio = equity / portfolio.initial_capital
+        if _floor_ratio < _equity_floor_pct:
+            log.warning("paper.equity_floor_triggered",
+                        portfolio=portfolio.name,
+                        equity=round(equity, 0),
+                        initial_capital=portfolio.initial_capital,
+                        equity_pct=round(_floor_ratio * 100, 1),
+                        floor_pct=round(_equity_floor_pct * 100, 1),
+                        note="account equity below floor — all new entries suspended")
+            return
+
+    # Symbols already in open positions — checked across ALL portfolios to prevent cross-portfolio
+    # race condition (e.g. 2382.HK entered 3× when SWING + GROWTH both scanned simultaneously).
     open_symbols: set[str] = set(
         r[0] for r in session.execute(
             select(Stock.symbol)
             .join(PaperTrade, PaperTrade.symbol == Stock.symbol)
-            .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
+            .where(PaperTrade.stage == "open")
         ).all()
     )
 
@@ -1524,13 +2525,17 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                             current_dd_pct=round(current_dd * 100, 1),
                             limit_pct=round(max_dd_cfg * 100, 1),
                             note="new entries suspended until equity recovers")
+                _write_gate_block(portfolio.id, "drawdown",
+                                  f"Portfolio drawdown {current_dd*100:.1f}% exceeds {max_dd_cfg*100:.0f}% limit — no new entries until equity recovers")
                 return
 
     # ── Daily realized-loss circuit breaker (net P&L — winners offset losers) ──────
+    _daily_pnl_pct = 0.0  # captured for DE call below
+    _recent_wr = _recent_win_rate(session, portfolio.id)      # T184: passed to DE for drawdown-aware floor
+    _consec_losses = _consec_loss_streak(session, portfolio.id)  # T187: passed to DE for consec-loss gate
     max_daily_loss = cfg.get("max_daily_loss_pct", 0.04)
     if max_daily_loss and max_daily_loss > 0 and equity > 0:
-        from zoneinfo import ZoneInfo
-        today_open = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_open = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
         daily_net_pnl = session.execute(
             select(func.sum(PaperTrade.pnl))
             .where(
@@ -1539,6 +2544,14 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 PaperTrade.exit_time >= today_open,
             )
         ).scalar() or 0.0
+        # Decision-engine's daily_pnl_pct is documented (and consumed by hard_rejects.py) as a
+        # FRACTION of equity (e.g. -0.015), not a percentage — this used to be `* 100`, sending
+        # e.g. -0.10 (meant as "-0.10%") which hard_rejects.py compared directly against
+        # max_daily_loss_pct (a fraction, default 0.04): -0.10 <= -0.04 is True, so the daily-loss
+        # circuit breaker tripped after any realized loss >= ~0.04% of equity instead of 4%,
+        # blocking all new entries via DE (the authoritative gate when decision_engine_mode="primary")
+        # after essentially any trivial loss.
+        _daily_pnl_pct = round(daily_net_pnl / equity, 4)
         if daily_net_pnl < 0 and abs(daily_net_pnl) / equity > max_daily_loss:
             log.warning("paper.daily_loss_limit",
                         portfolio=portfolio.name,
@@ -1546,13 +2559,79 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         daily_net_pnl_pct=round(daily_net_pnl / equity * 100, 1),
                         limit_pct=round(max_daily_loss * 100, 1),
                         note="new entries suspended for today")
+            _write_gate_block(portfolio.id, "daily_loss",
+                              f"Daily loss {abs(daily_net_pnl)/equity*100:.1f}% exceeds {max_daily_loss*100:.0f}% limit — no more entries today")
             return
 
-    # ── Max entries per day ───────────────────────────────────────────────────────
-    max_entries_day = cfg.get("max_entries_per_day", 5)
-    if max_entries_day and max_entries_day > 0:
+    # ── Weekly realized P&L checks — loss limit + gain lock ─────────────────────
+    # Compute weekly pnl once; used for both the loss circuit breaker and T191 gain lock.
+    max_weekly_loss = cfg.get("max_weekly_loss_pct", 0.08)
+    max_weekly_gain = cfg.get("max_weekly_gain_pct", 0.06)  # T191: 6% weekly gain → lock (was 1.5% — too tight, locked out profitable weeks)
+    _needs_weekly = (
+        (max_weekly_loss and max_weekly_loss > 0) or
+        (max_weekly_gain and max_weekly_gain > 0)
+    )
+    if _needs_weekly and equity > 0:
         from zoneinfo import ZoneInfo
-        today_start = datetime.now(ZoneInfo("America/New_York")).replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)
+        weekly_net_pnl = session.execute(
+            select(func.sum(PaperTrade.pnl))
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_time >= week_start,
+            )
+        ).scalar() or 0.0
+        if max_weekly_loss and weekly_net_pnl < 0 and abs(weekly_net_pnl) / equity > max_weekly_loss:
+            log.warning("paper.weekly_loss_limit",
+                        portfolio=portfolio.name,
+                        weekly_net_pnl=round(weekly_net_pnl, 2),
+                        weekly_net_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
+                        limit_pct=round(max_weekly_loss * 100, 1),
+                        note="new entries suspended for remainder of week")
+            _write_gate_block(portfolio.id, "weekly_loss",
+                              f"Weekly loss {abs(weekly_net_pnl)/equity*100:.1f}% exceeds {max_weekly_loss*100:.0f}% limit — no entries until next week")
+            return
+        # T191: Weekly gain lock — don't give back a good week by overtrading.
+        # Once weekly realized PnL crosses the gain lock threshold, no new entries until next week.
+        if max_weekly_gain and weekly_net_pnl > 0 and weekly_net_pnl / equity > max_weekly_gain:
+            log.info("paper.weekly_gain_lock",
+                     portfolio=portfolio.name,
+                     weekly_pnl_pct=round(weekly_net_pnl / equity * 100, 1),
+                     lock_pct=round(max_weekly_gain * 100, 1),
+                     note="weekly gain target reached — protecting profits, no new entries")
+            _write_gate_block(portfolio.id, "weekly_gain_lock",
+                              f"Weekly gain lock — up {weekly_net_pnl/equity*100:.1f}% this week; protecting profits until Monday")
+            return
+
+    # ── Consecutive-loss circuit breaker ─────────────────────────────────────────
+    # Uses precomputed _consec_losses (avoids a second DB query here).
+    max_consec_losses = cfg.get("max_consecutive_losses", 3)
+    if max_consec_losses and max_consec_losses > 0 and _consec_losses >= max_consec_losses:
+        if open_count > 0:
+            # Open trades exist — wait for one to close positive before entering again.
+            log.warning("paper.consecutive_loss_limit",
+                        portfolio=portfolio.name,
+                        consecutive_losses=_consec_losses,
+                        note="new entries suspended until a trade closes positive")
+            _write_gate_block(portfolio.id, "consecutive_losses",
+                              f"{_consec_losses} consecutive losses — no new entries until a winning trade")
+            return
+        else:
+            # Deadlock: no open trades and consecutive loss limit hit — there is no trade
+            # that can close positive to reset the counter. Allow one recovery entry and
+            # zero out consec_losses for the DE call so hard_rejects doesn't also block.
+            log.warning("paper.consecutive_loss_restart",
+                        portfolio=portfolio.name,
+                        consecutive_losses=_consec_losses,
+                        note="no open trades — allowing one recovery entry to break deadlock")
+            _consec_losses = 0
+            _clear_gate_block(portfolio.id)  # remove stale Redis gate so UI clears
+
+    # ── Max entries per day ───────────────────────────────────────────────────────
+    max_entries_day = cfg.get("max_entries_per_day", 3)
+    if max_entries_day and max_entries_day > 0:
+        today_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
         entries_today = session.execute(
             select(func.count()).select_from(PaperTrade)
             .where(
@@ -1562,20 +2641,124 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         ).scalar() or 0
         if entries_today >= max_entries_day:
             log.info("paper.daily_entry_cap", entries_today=entries_today, limit=max_entries_day)
+            _write_gate_block(portfolio.id, "daily_entry_cap",
+                              f"Daily entry cap reached ({entries_today}/{max_entries_day}) — no more entries today")
             return
+
+    # ── Per-symbol post-stop cooldown ─────────────────────────────────────────────
+    # T221-D: After a stop_hit, don't re-enter for 5 days (120h). A stopped-out stock
+    # is in a downtrend — re-entering the next day means catching a falling knife.
+    stop_cooldown_hours = cfg.get("stop_cooldown_hours", 120)
+    _recently_stopped: set[str] = set()
+    if stop_cooldown_hours > 0:
+        _stop_cutoff = datetime.now(timezone.utc) - timedelta(hours=stop_cooldown_hours)
+        _recently_stopped = set(session.execute(
+            select(PaperTrade.symbol)
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_reason == "stop_hit",
+                PaperTrade.exit_time >= _stop_cutoff,
+            )
+        ).scalars().all())
+        if _recently_stopped:
+            log.info("paper.stop_cooldown_active",
+                     symbols=sorted(_recently_stopped),
+                     cooldown_hours=stop_cooldown_hours)
+
+    # T197: Break-even stop cooldown — shorter than real-loss cooldown (2h default vs 24h).
+    # A break-even exit is less severe than a loss; allow re-entry sooner if setup recovers.
+    be_cooldown_hours = cfg.get("breakeven_cooldown_hours", 2)
+    if be_cooldown_hours > 0:
+        _be_cutoff = datetime.now(timezone.utc) - timedelta(hours=be_cooldown_hours)
+        _be_stopped = set(session.execute(
+            select(PaperTrade.symbol)
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_reason == "breakeven_stop",
+                PaperTrade.exit_time >= _be_cutoff,
+            )
+        ).scalars().all())
+        if _be_stopped:
+            _recently_stopped |= _be_stopped
+            log.info("paper.breakeven_cooldown_active",
+                     symbols=sorted(_be_stopped),
+                     cooldown_hours=be_cooldown_hours)
 
     # ── Regime filter ─────────────────────────────────────────────────────────────
     regime_state = (live_regime or {}).get("state", "neutral")
     regime_size_mult = 1.0
     if cfg.get("enable_regime_filter", True) and live_regime:
+        # HK has no VIX equivalent (US-only index) — live_regime["vix"] is always None for
+        # HK portfolios. Build the gate message from whichever index this market actually
+        # uses (SPY+VIX for US, HSI for HK) instead of a US-shaped template with "VIX N/A"
+        # bolted on. HK's own regime notes already state the real condition (e.g. "HSI
+        # -11.0% below SMA200 + below SMA50"), so lean on those rather than reconstructing it.
+        _is_hk = cfg.get("market") == "HK"
+        if _is_hk:
+            _idx_note = (live_regime.get("notes") or ["HSI trend deteriorating"])[0]
+        else:
+            _vix_val = live_regime.get("vix")
+            _vix_str = f"{_vix_val:.1f}" if _vix_val is not None else "N/A"
         if regime_state == "bear":
-            log.warning("paper.regime_gate_bear",
-                        portfolio=portfolio.name,
-                        vix=live_regime.get("vix"),
-                        spy=live_regime.get("spy_price"),
-                        notes=live_regime.get("notes"),
-                        note="all new entries suspended in bear regime")
+            log.info("paper.regime_gate_bear",
+                     portfolio=portfolio.name,
+                     vix=live_regime.get("vix"),
+                     spy=live_regime.get("spy_price"),
+                     notes=live_regime.get("notes"),
+                     note="all new entries suspended in bear regime")
+            _bear_msg = (f"Bear market — {_idx_note}; all new entries suspended" if _is_hk else
+                         f"Bear market — SPY below 200EMA + VIX {_vix_str}; all new entries suspended")
+            _write_gate_block(portfolio.id, "regime_bear", _bear_msg)
             return
+        # T173/T226-A: risk_off gate — blocks all new entries when regime_risk_off_gate=True.
+        # T226-A changed default to True: 9/30 closed paper trades in risk_off had 0% win rate.
+        # T232-HKOVERRIDE: a deliberate, time-boxed override (set via POST
+        # /paper-portfolio/risk-off-override?hours=N) can temporarily disable this gate —
+        # self-expiring, checked here on every evaluation rather than needing a cron job
+        # to turn it back off.
+        if regime_state == "risk_off" and cfg.get("regime_risk_off_gate", True) and not _regime_risk_off_override_active(cfg):
+            log.info("paper.regime_gate_risk_off",
+                     portfolio=portfolio.name,
+                     vix=live_regime.get("vix"),
+                     spy=live_regime.get("spy_price"),
+                     note="all new entries suspended in risk_off regime (strict gate enabled)")
+            _risk_off_msg = (f"Risk-off regime — {_idx_note}; no new entries until regime improves" if _is_hk else
+                              f"Risk-off regime — SPY below 50EMA + VIX {_vix_str}; no new entries until regime improves")
+            _write_gate_block(portfolio.id, "regime_risk_off", _risk_off_msg)
+            return
+
+        # T210: Regime suspension circuit breaker — if the market has been risk_off or bear
+        # for N consecutive calendar days, suspend all new entries regardless of gate setting.
+        # Stores one snapshot per day in Redis; checks the last N unique days.
+        _regime_suspend_days = int(cfg.get("regime_suspension_days", 3))
+        if _regime_suspend_days > 0:
+            try:
+                import redis as _redis_t210
+                from common.config import get_settings as _gs_t210
+                _t210_redis = _redis_t210.Redis.from_url(_gs_t210().redis_url, decode_responses=True)
+                _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                _regime_key = f"paper:regime_daily:{portfolio.id}"
+                # Store today's state (date-keyed; only writes once per day via NX)
+                _t210_redis.hset(_regime_key, _today_str, regime_state)
+                _t210_redis.expire(_regime_key, 60 * 60 * 24 * 10)  # keep 10 days of history
+                # Collect last N distinct dates, sorted descending
+                _all_days = sorted(_t210_redis.hgetall(_regime_key).items(), reverse=True)
+                _bad_states = {"risk_off", "bear"}
+                _recent_bad = [s for _, s in _all_days[:_regime_suspend_days] if s in _bad_states]
+                if len(_recent_bad) >= _regime_suspend_days:
+                    log.warning("paper.regime_suspension_triggered",
+                                portfolio=portfolio.name,
+                                days=_regime_suspend_days,
+                                recent_states=[s for _, s in _all_days[:_regime_suspend_days]],
+                                note="market in sustained stress — all entries suspended until regime improves")
+                    _write_gate_block(portfolio.id, "regime_suspension",
+                                      f"Market in sustained stress for {_regime_suspend_days}+ days — entries suspended until regime improves")
+                    return
+            except Exception:
+                pass  # Redis unavailable — fail-open; normal gates still apply
+
         regime_size_mult = {
             "bull":     cfg.get("regime_bull_size_mult", 1.0),
             "neutral":  1.0,
@@ -1585,11 +2768,11 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         # Tighten entry score threshold for risk-off environments
         if regime_state == "risk_off":
             cfg["min_entry_score"] = max(
-                cfg.get("min_entry_score", 3), cfg.get("regime_risk_off_min_score", 5)
+                cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_risk_off_min_score", 5)
             )
         elif regime_state == "choppy":
             cfg["min_entry_score"] = max(
-                cfg.get("min_entry_score", 3), cfg.get("regime_choppy_min_score", 4)
+                cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_choppy_min_score", 4)
             )
         if regime_state not in ("bull", "neutral"):
             log.info("paper.regime_applied",
@@ -1598,13 +2781,13 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
 
         # RE-9: Pre-emptive early warning — apply stricter thresholds BEFORE the regime flips
         if live_regime.get("is_pre_choppy"):
-            cfg["min_entry_score"] = max(cfg.get("min_entry_score", 3), cfg.get("regime_choppy_min_score", 4))
+            cfg["min_entry_score"] = max(cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_choppy_min_score", 4))
             regime_size_mult = min(regime_size_mult, cfg.get("regime_choppy_size_mult", 0.75))
             log.warning("paper.pre_choppy_warning", vix_5d_trend=live_regime.get("vix_5d_trend"),
                         spy_pct_above_ema20=live_regime.get("spy_pct_above_ema20"),
                         note="applying choppy thresholds preemptively — regime deteriorating")
         elif live_regime.get("is_pre_risk_off"):
-            cfg["min_entry_score"] = max(cfg.get("min_entry_score", 3), cfg.get("regime_risk_off_min_score", 5))
+            cfg["min_entry_score"] = max(cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]), cfg.get("regime_risk_off_min_score", 5))
             regime_size_mult = min(regime_size_mult, cfg.get("regime_risk_off_size_mult", 0.50))
             log.warning("paper.pre_risk_off_warning", vix=live_regime.get("vix"),
                         note="applying risk_off sizing preemptively — VIX elevated near 50EMA")
@@ -1623,6 +2806,105 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         mdy_vs_ema200=live_regime.get("mdy_vs_ema200"),
                         note="IWM/MDY breadth below 200EMA — reducing position size")
 
+        # QW-8: HMM bear pressure — reduces sizing 30% when HMM model sees bear_prob > 0.50.
+        # Complements rule-based regime: catches early-phase downturns via volatility clustering
+        # before SMA/VIX thresholds trigger. Fail-open: if HMM unavailable, no effect.
+        if live_regime.get("hmm_bear_pressure"):
+            prev_mult = regime_size_mult
+            regime_size_mult = min(regime_size_mult, 0.70)
+            log.warning("paper.hmm_bear_pressure_size_reduced",
+                        hmm_bear_prob=live_regime.get("hmm_bear_prob"),
+                        hmm_state=live_regime.get("hmm_state"),
+                        prev_mult=round(prev_mult, 2),
+                        new_mult=round(regime_size_mult, 2),
+                        note="HMM bear_prob > 0.50 — reducing position size to 70%")
+
+    # T192 / HIGH-4: VIX-adjusted position sizing — continuous gradient replaces binary bands.
+    # Matches decision-engine formula: max(0.5, 1 - max(0, (VIX - 20) / 30)).
+    # VIX≤20 → 1.00×, VIX=25 → 0.83×, VIX=30 → 0.67×, VIX≥35 → 0.50×.
+    if live_regime and cfg.get("vix_size_adjust_enabled", True):
+        _vix = live_regime.get("vix")
+        if _vix is not None:
+            _vix_f = float(_vix)
+            _vix_mult = round(max(0.5, 1.0 - max(0.0, (_vix_f - 20.0) / 30.0)), 3)
+            if _vix_mult < regime_size_mult:
+                regime_size_mult = _vix_mult
+                log.info("paper.vix_size_reduced", vix=round(_vix_f, 1),
+                         mult=_vix_mult, note="VIX gradient sizing applied")
+
+    # T189: Regime-aware entry throttle — choppy/risk_off regimes cap new entries at 1/day.
+    # Human traders become more selective in difficult markets and don't force setups.
+    if cfg.get("regime_entry_throttle", True) and regime_state in ("choppy", "risk_off"):
+        _te_start = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
+        _te_count = session.execute(
+            select(func.count()).select_from(PaperTrade).where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.entry_time >= _te_start,
+            )
+        ).scalar() or 0
+        if _te_count >= 1:
+            log.info("paper.regime_entry_throttle",
+                     portfolio=portfolio.name,
+                     regime=regime_state,
+                     entries_today=_te_count,
+                     note="choppy/risk_off: max 1 new entry per day")
+            _write_gate_block(portfolio.id, "entry_throttle",
+                              f"Entry throttle — {regime_state} regime limits 1 entry/day; already entered today")
+            return
+
+    # T221-E: Portfolio heat brake — too many stops in recent window = adverse market conditions.
+    # Entering more positions into a market that is stopping us out compounds losses.
+    _heat_max = cfg.get("heat_brake_max_stops", 3)
+    if _heat_max > 0:
+        _heat_h = cfg.get("heat_brake_window_hours", 48)
+        _heat_cutoff = datetime.now(timezone.utc) - timedelta(hours=_heat_h)
+        _recent_stops = session.execute(
+            select(func.count()).select_from(PaperTrade)
+            .where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.stage == "closed",
+                PaperTrade.exit_reason == "stop_hit",
+                PaperTrade.exit_time >= _heat_cutoff,
+            )
+        ).scalar() or 0
+        if _recent_stops >= _heat_max:
+            log.warning("paper.heat_brake_triggered",
+                        portfolio=portfolio.name,
+                        recent_stops=_recent_stops,
+                        window_hours=_heat_h,
+                        note=f"{_recent_stops} stops hit in {_heat_h}h — adverse conditions, pausing entries")
+            _write_gate_block(portfolio.id, "heat_brake",
+                              f"Heat brake — {_recent_stops} stops hit in {_heat_h}h; entries paused until market conditions improve")
+            return
+
+    # T221-INDEX-TREND-GATE: Skip entries when today's market index is down >threshold%.
+    # Regime filter handles sustained bear/risk_off conditions; this catches single-day macro
+    # shocks (FOMC surprise, CPI print, HSI circuit-breaker open) where any long entry will
+    # immediately fight the tide. Uses yfinance fast_info; fail-open on network errors.
+    _mkt = cfg.get("market", "US")  # defined here — reused in market cluster cap below
+    if cfg.get("index_trend_gate_enabled", True):
+        _idx_sym = "^HSI" if _mkt == "HK" else "SPY"
+        _idx_threshold = float(cfg.get("index_trend_gate_pct", -0.015))
+        try:
+            import yfinance as yf
+            _idx_fi = yf.Ticker(_idx_sym).fast_info
+            _idx_prev = getattr(_idx_fi, "previous_close", None)
+            _idx_last = getattr(_idx_fi, "last_price", None)
+            if _idx_prev and _idx_last and float(_idx_prev) > 0:
+                _idx_ret = (float(_idx_last) - float(_idx_prev)) / float(_idx_prev)
+                if _idx_ret < _idx_threshold:
+                    log.info("paper.index_trend_gate",
+                             portfolio=portfolio.name, market=_mkt,
+                             index=_idx_sym,
+                             index_return_pct=round(_idx_ret * 100, 2),
+                             threshold_pct=round(_idx_threshold * 100, 1),
+                             note=f"index down {abs(_idx_ret)*100:.1f}% today — blocking new entries")
+                    _write_gate_block(portfolio.id, "index_trend",
+                                      f"{_idx_sym} down {abs(_idx_ret)*100:.1f}% today — no new entries on bad index days")
+                    return
+        except Exception:
+            pass  # fail-open — yfinance unavailable doesn't block trading
+
     # PT-D6: Re-sort candidates by composite priority — confidence + K-Score + breakout context
     def _composite_priority(row):
         sig_r, _, rank_r = row
@@ -1633,14 +2915,135 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         return 0.5 * conf_score + 0.3 * kscore_score + 0.2 * breakout_bonus
     buy_signals = sorted(buy_signals, key=_composite_priority, reverse=True)
 
+    # AUD19-PERF2: Pre-fetch all open trades + their stocks ONCE before the candidate loop.
+    # Eliminates N+1 queries for open-risk, sector value, and sector count checks.
+    _prefetched_open: list[tuple] = session.execute(
+        select(PaperTrade, Stock)
+        .join(Stock, PaperTrade.stock_id == Stock.id)
+        .where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open")
+    ).all()
+
+    # T186: Pre-compute open sector counts once; passed to DE per candidate for sector gate.
+    from collections import Counter as _Counter
+    _open_sector_counts: dict[str, int] = dict(_Counter(
+        (st.sector or "unclassified") for _, st in _prefetched_open
+    ))
+
+    # T221-B: Market cluster cap — block new entries when at the per-market position limit.
+    # HK stocks are highly correlated: a market-wide down day stops out all positions simultaneously.
+    _max_mkt_pos = cfg.get("max_market_positions", 4)
+    _mkt_open_count = sum(1 for _, st in _prefetched_open if st.market == _mkt)
+    if _mkt_open_count >= _max_mkt_pos:
+        log.info("paper.market_cluster_cap",
+                 portfolio=portfolio.name, market=_mkt,
+                 open=_mkt_open_count, max=_max_mkt_pos,
+                 note="market position cap reached — prevent single-market cluster loss")
+        _write_gate_block(portfolio.id, "market_cluster_cap",
+                          f"{_mkt} position cap reached ({_mkt_open_count}/{_max_mkt_pos}) — no new entries until a position closes")
+        return
+
+    # T194: Open exposure cap — block new entries if deployed capital exceeds max % of equity.
+    # A human never commits more than 40% of their capital to open positions simultaneously.
+    _max_exposure_pct = cfg.get("max_open_exposure_pct", 0.40)
+    if _max_exposure_pct and _max_exposure_pct > 0 and equity > 0:
+        _open_exposure = sum(float(t.entry_price) * float(t.shares) for t, _ in _prefetched_open)
+        if _open_exposure / equity > _max_exposure_pct:
+            log.info("paper.open_exposure_cap",
+                     portfolio=portfolio.name,
+                     open_exposure_pct=round(_open_exposure / equity * 100, 1),
+                     max_pct=round(_max_exposure_pct * 100, 1),
+                     note="deployed capital cap reached — no new entries until positions close")
+            return
+
+    # T215: Multi-timeframe confluence — for GROWTH/LONG portfolios, pre-fetch SHORT horizon
+    # signals for all candidates. A GROWTH BUY that contradicts the SHORT signal (SELL) means
+    # near-term momentum is against the trade. Batch-query once; check in candidate loop.
+    _short_signals: dict[int, str] = {}
+    # T222-B: Extended to SWING — US SWING data shows 35.7% win rate; filtering contra-SHORT
+    # entries should remove the subset where SHORT is already signalling a reversal.
+    if cfg.get("confluence_check_enabled", True) and style in ("GROWTH", "LONG", "SWING"):
+        _candidate_stock_ids = [stock.id for _, stock, _ in buy_signals]
+        if _candidate_stock_ids:
+            try:
+                _short_ts_subq = (
+                    select(Signal.stock_id, func.max(Signal.ts).label("max_ts"))
+                    .where(Signal.stock_id.in_(_candidate_stock_ids), Signal.horizon == "SHORT")
+                    .group_by(Signal.stock_id)
+                    .subquery()
+                )
+                for _s_sig, _s_stk in session.execute(
+                    select(Signal, Stock)
+                    .join(Stock, Signal.stock_id == Stock.id)
+                    .join(_short_ts_subq,
+                          (Signal.stock_id == _short_ts_subq.c.stock_id) &
+                          (Signal.ts == _short_ts_subq.c.max_ts))
+                    .where(Signal.horizon == "SHORT")
+                ).all():
+                    _short_signals[_s_stk.id] = _s_sig.signal.value
+            except Exception:
+                pass  # fail-open — confluence check skipped if query fails
+
     # PT-P2 + PA-F1: batch-fetch ATR for all candidates in ONE yfinance download
     candidate_syms = [stock.symbol for _, stock, _ in buy_signals]
     atr_cache: dict[str, float | None] = _batch_compute_atr(list(set(candidate_syms)))
 
+    # T196: Batch-fetch daily close at signal date — used to detect price-chasing.
+    # One query per candidate (small N); fail-open if price row missing.
+    _sig_ref_prices: dict[int, float] = {}
+    for _sr, _sk, _ in buy_signals:
+        if _sr.ts is None or _sk.id in _sig_ref_prices:
+            continue
+        _sig_date = (_sr.ts.replace(tzinfo=timezone.utc) if _sr.ts.tzinfo is None else _sr.ts).date()
+        try:
+            _ref_close = session.execute(
+                select(Price.close)
+                .where(
+                    Price.stock_id == _sk.id,
+                    Price.timeframe == TimeFrame.D1,
+                    func.date(Price.ts) <= _sig_date,
+                )
+                .order_by(Price.ts.desc())
+                .limit(1)
+            ).scalar()
+            if _ref_close is not None:
+                _sig_ref_prices[_sk.id] = float(_ref_close)
+        except Exception:
+            pass  # fail-open — missing price row doesn't block the candidate
+
+    # T221-A: Cross-portfolio symbol dedup — batch-fetch global open counts for all candidates.
+    # Prevents SWING + GROWTH both entering the same stock, tripling concentration risk.
+    _max_global_per_sym = cfg.get("max_positions_per_symbol_global", 1)
+    _global_sym_open: dict[str, int] = {}
+    if _max_global_per_sym > 0 and candidate_syms:
+        for _gsym, _gcnt in session.execute(
+            select(PaperTrade.symbol, func.count().label("c"))
+            .where(PaperTrade.stage == "open", PaperTrade.symbol.in_(candidate_syms))
+            .group_by(PaperTrade.symbol)
+        ).all():
+            _global_sym_open[_gsym] = _gcnt
+
     entries_made = 0
+    # T232-WHYNOTRADE: tally per-candidate skip reasons so "no portfolio-level gate fired,
+    # yet zero entries happened" is visible somewhere other than raw container logs — this
+    # is exactly the situation from the 2026-07-03 HK GROWTH investigation, where every
+    # candidate failed its OWN gate (volume, K-Score, cooldown, ...) rather than a
+    # portfolio-level one, and nothing surfaced that anywhere in the UI.
+    _skip_tally: dict[str, int] = {}
     for sig, stock, ranking in buy_signals:
         if open_count + entries_made >= cfg["max_positions"]:
             break
+        if stock.symbol in _recently_stopped:
+            log.info("paper.skip_stop_cooldown", symbol=stock.symbol, cooldown_hours=stop_cooldown_hours)
+            _skip_tally["stop_cooldown"] = _skip_tally.get("stop_cooldown", 0) + 1
+            continue
+        # T221-A: Skip if this symbol already has an open position in another portfolio.
+        if stock.symbol not in open_symbols and _global_sym_open.get(stock.symbol, 0) >= _max_global_per_sym:
+            log.info("paper.skip_global_symbol_cap",
+                     symbol=stock.symbol,
+                     global_open=_global_sym_open.get(stock.symbol, 0),
+                     note="symbol open in another portfolio — cross-portfolio concentration cap")
+            _skip_tally["global_symbol_cap"] = _skip_tally.get("global_symbol_cap", 0) + 1
+            continue
         if stock.symbol in open_symbols:
             # Scale-in: add to profitable position on fresh high-conviction signal
             if cfg.get("scale_in_enabled", True):
@@ -1659,13 +3062,31 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         _si_already = any("SCALE_IN" in str(n) for n in _si_notes_list)
                         _si_conf = float(sig.confidence or 0.0)
                         if not _si_already and _si_pnl_pct >= 0.05 and _si_conf >= 60.0:
-                            _si_add_value = _si_trade.entry_price * _si_trade.shares * 0.25
+                            _si_add_value = _si_live * _si_trade.shares * 0.25
                             if portfolio.current_cash >= _si_add_value * 1.1:
                                 _si_slippage = cfg.get("entry_slippage_pct", 0.001)
                                 _si_add_shares = round(_si_add_value / (_si_live * (1 + _si_slippage)), 4)
                                 _si_cost = round(_si_add_shares * _si_live * (1 + _si_slippage), 2)
                                 portfolio.current_cash = round(portfolio.current_cash - _si_cost, 2)
-                                _si_trade.shares = round(_si_trade.shares + _si_add_shares, 4)
+                                # T234-PT-SCALEIN-COST-BASIS-BUG: blend entry_price as a weighted
+                                # average of the original and added lots (standard cost-basis
+                                # accounting), and increment entry_shares by the same amount —
+                                # the scale-IN counterpart to T232-PT6's scale-OUT tracking above.
+                                # Without this, close-time P&L used the INFLATED post-scale-in
+                                # shares against the STALE pre-scale-in entry_price (overstating
+                                # the numerator) while cost_basis used the frozen original
+                                # entry_shares (understating the denominator) — both biased
+                                # total_pnl_pct upward on every trade that scaled in, corrupting
+                                # the SignalOutcome calibration writeback downstream.
+                                _si_old_shares = _si_trade.shares
+                                _si_fill_price = round(_si_live * (1 + _si_slippage), 4)
+                                _si_new_shares = round(_si_old_shares + _si_add_shares, 4)
+                                _si_trade.entry_price = round(
+                                    (_si_old_shares * _si_trade.entry_price + _si_add_shares * _si_fill_price)
+                                    / _si_new_shares, 4
+                                )
+                                _si_trade.entry_shares = round((_si_trade.entry_shares or _si_old_shares) + _si_add_shares, 4)
+                                _si_trade.shares = _si_new_shares
                                 _si_new_notes = list(_si_notes_list)
                                 _si_new_notes.append("SCALE_IN")
                                 _si_new_notes.append(
@@ -1686,15 +3107,106 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             if cfg.get("require_kscore", True):
                 log.info("paper.skip_no_ranking", symbol=stock.symbol,
                          note="no ranking row; skipped (require_kscore=True)")
+                _skip_tally["no_ranking"] = _skip_tally.get("no_ranking", 0) + 1
                 continue
         elif ranking.score < cfg["min_kscore"]:
             log.info("paper.skip_kscore", symbol=stock.symbol,
                      kscore=ranking.score, min=cfg["min_kscore"])
+            _skip_tally["kscore"] = _skip_tally.get("kscore", 0) + 1
             continue
+
+        # T195: Signal staleness gate — configurable max age (default 96h / 4 days).
+        # Tighter than the 5-day query cutoff; handles normal 3-day weekends (≤84h).
+        # A human discards a thesis that has sat untouched for days.
+        if sig.ts is not None:
+            _ts_aware = sig.ts.replace(tzinfo=timezone.utc) if sig.ts.tzinfo is None else sig.ts
+            _sig_age_h = (datetime.now(timezone.utc) - _ts_aware).total_seconds() / 3600
+            _max_age_h = float(cfg.get("max_signal_age_hours", 96))
+            if _sig_age_h > _max_age_h:
+                log.info("paper.skip_stale_signal", symbol=stock.symbol,
+                         age_h=round(_sig_age_h, 1), max_age_h=_max_age_h, ts=str(sig.ts)[:19])
+                _skip_tally["stale_signal"] = _skip_tally.get("stale_signal", 0) + 1
+                continue
+
+        # T215: Multi-timeframe confluence — GROWTH/LONG BUY that contradicts SHORT SELL
+        # means near-term momentum is working against the entry. Skip until SHORT agrees.
+        if _short_signals and stock.id in _short_signals:
+            if _short_signals[stock.id] == "SELL":
+                log.info("paper.skip_confluence_fail",
+                         symbol=stock.symbol, style=style,
+                         short_signal="SELL",
+                         note="BUY contradicts SHORT SELL — near-term momentum against trade")
+                _skip_tally["confluence_fail"] = _skip_tally.get("confluence_fail", 0) + 1
+                continue
 
         live_price = live_prices.get(stock.symbol)
         if not live_price or live_price < 1.00:  # reject $0, pennies, and recently-delisted data
             continue
+
+        # T196: Price drift gate — don't chase a stock that has rallied >N% since signal date.
+        # Reference close fetched pre-loop; fail-open if missing.
+        _max_drift = float(cfg.get("max_price_drift_pct", 3.0)) / 100.0
+        if stock.id in _sig_ref_prices and _max_drift > 0:
+            _drift = live_price / _sig_ref_prices[stock.id] - 1
+            if _drift > _max_drift:
+                log.info("paper.skip_price_drift",
+                         symbol=stock.symbol,
+                         drift_pct=round(_drift * 100, 1),
+                         sig_close=round(_sig_ref_prices[stock.id], 2),
+                         live_price=round(live_price, 2),
+                         max_drift_pct=round(_max_drift * 100, 1),
+                         note="price rallied too far from signal reference — chasing blocked")
+                _skip_tally["price_drift"] = _skip_tally.get("price_drift", 0) + 1
+                continue
+
+        # T200: Volume confirmation gate — skip entries when intraday volume is abnormally low.
+        # volume_z is stored in signal reasons by the signal engine (z-score vs 20-day avg).
+        # Very low volume = thin market, harder to exit, higher slippage risk.
+        # T232-DL5: a missing volume_z must NOT be treated as 0 (exactly average) — that silently
+        # passes the gate for a data gap. Fail-open (skip the gate) only when data is genuinely absent.
+        _vol_z_raw = (sig.reasons or {}).get("volume_z") if sig.reasons else None
+        if _vol_z_raw is not None:
+            _vol_z = float(_vol_z_raw)
+            _min_vol_z = float(cfg.get("min_volume_z", -1.5))
+            if _vol_z < _min_vol_z:
+                log.info("paper.skip_low_volume",
+                         symbol=stock.symbol,
+                         volume_z=round(_vol_z, 2),
+                         min_vol_z=_min_vol_z,
+                         note="below-average volume — entry postponed, higher slippage risk")
+                _skip_tally["low_volume"] = _skip_tally.get("low_volume", 0) + 1
+                continue
+
+        # T224-A: Mainland flow gate — HK entries require positive 5-day southbound flow.
+        # flow_5d_net_hkd < 0 means mainland money is net-selling the stock (bearish pressure).
+        # Fail-open if flow data is absent (not all stocks are Stock Connect eligible).
+        if cfg.get("market") == "HK":
+            _flow5d = (sig.reasons or {}).get("flow_5d_net_hkd")
+            if _flow5d is not None and float(_flow5d) <= 0:
+                log.info("paper.skip_hk_flow_gate",
+                         symbol=stock.symbol,
+                         flow_5d_net_hkd=round(float(_flow5d), 0),
+                         note="mainland outflow — HK BUY entry blocked (T224-A)")
+                _skip_tally["hk_flow_gate"] = _skip_tally.get("hk_flow_gate", 0) + 1
+                continue
+
+        # T224-C / T225-A: TA score gate — applies to any market/style with min_ta_score set.
+        # HK: 0.60 (from _HK_MARKET_OVERRIDES) — ML is US-biased, TA is more reliable for HK.
+        # SWING: 0.50 (from _STYLE_OVERRIDES) — ta_lo50 bucket had 31.4% win rate (Jun 2026 audit).
+        # Fail-open if ta_score absent from reasons (defaults to 1.0).
+        _min_ta = float(cfg.get("min_ta_score", 0.0))
+        if _min_ta > 0:
+            _ta_raw = (sig.reasons or {}).get("ta_score")
+            _ta = float(_ta_raw) if _ta_raw is not None else 1.0
+            if _ta < _min_ta:
+                log.info("paper.skip_ta_gate",
+                         symbol=stock.symbol,
+                         market=cfg.get("market"),
+                         ta_score=round(_ta, 3),
+                         min_ta_score=_min_ta,
+                         note="TA score below minimum — entry blocked")
+                _skip_tally["ta_gate"] = _skip_tally.get("ta_gate", 0) + 1
+                continue
 
         # Build game plan using cached ATR
         atr = atr_cache.get(stock.symbol)
@@ -1716,6 +3228,18 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 confidence_delta = round(float(sig.confidence) - float(prior_conf), 1)
         except Exception:
             pass  # trajectory optional; don't block entry on query failure
+
+        # T202: Declining confidence gate — don't enter when signal conviction is falling.
+        # A setup losing confidence over multiple refreshes is degrading, not improving.
+        _conf_decline_threshold = float(cfg.get("max_confidence_decline", -8.0))
+        if confidence_delta is not None and confidence_delta < _conf_decline_threshold:
+            log.info("paper.skip_declining_confidence",
+                     symbol=stock.symbol,
+                     confidence_delta=round(confidence_delta, 1),
+                     threshold=_conf_decline_threshold,
+                     note="signal losing confidence — setup degrading, wait for stabilisation")
+            _skip_tally["declining_confidence"] = _skip_tally.get("declining_confidence", 0) + 1
+            continue
 
         signal_data = {
             "signal": sig.signal.value,
@@ -1741,20 +3265,85 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                         reason="target <= price", target=round(gp_target, 2), price=round(live_price, 2))
             continue
 
-        # Entry qualifier: "Is now a good time?"
-        should_enter, score, notes = _should_enter(
-            stock.symbol, signal_data, live_price, game_plan, cfg, live_regime
-        )
+        # Conviction gate hard-block: if the alert system already evaluated this
+        # BUY and the conviction gate failed, skip the entry — paper trading must
+        # agree with what the alert system would notify (TIER66-PAPER-GATE).
+        # Uses the existing conv_gate:{symbol}:{style} Redis key (1-day TTL).
+        # No gate key = gate not yet run (allow entry; first BUY before next alert cycle).
+        try:
+            import redis as _redis_lib
+            from common.config import get_settings as _gs_gate
+            _gate_settings = _gs_gate()
+            _gate_redis = _redis_lib.Redis.from_url(_gate_settings.redis_url, decode_responses=True)
+            _style = style
+            _cgval = _gate_redis.get(f"conv_gate:{stock.symbol}:{_style}")
+            if _cgval:
+                _cgdata = json.loads(_cgval)
+                # sent=False means the gate explicitly failed for this BUY signal
+                if _cgdata.get("signal") == "BUY" and _cgdata.get("sent") is False:
+                    _failed_layers = _cgdata.get("failed", [])
+                    log.info("paper.entry_gate_blocked",
+                             symbol=stock.symbol, style=_style, failed=_failed_layers[:2])
+                    _skip_tally["conviction_gate"] = _skip_tally.get("conviction_gate", 0) + 1
+                    continue
+        except Exception:
+            pass  # Redis unavailable or parse error → allow entry (fail-open)
+
+        # Entry qualifier: Decision Engine is authoritative; _should_enter() is the fallback.
+        de_mode = cfg.get("decision_engine_mode", "primary")
+        kscore_f = float(ranking.score) if ranking and ranking.score is not None else None
+        gate_source = "de"
+
+        if de_mode == "primary":
+            de_result = _call_decision_engine(
+                symbol=stock.symbol,
+                live_price=live_price,
+                game_plan=game_plan,
+                equity=equity,
+                open_count=open_count,
+                cfg=cfg,
+                daily_pnl_pct=_daily_pnl_pct,
+                recent_win_rate=_recent_wr,
+                open_sector_counts=_open_sector_counts,   # T186: sector gate
+                candidate_sector=stock.sector,             # T186: sector gate
+                consec_losses=_consec_losses,              # T187: streak gate
+            )
+            if de_result is not None:
+                should_enter, de_verdict, score, de_blocked = de_result
+                notes = [f"DE: {de_verdict}"] + ([f"blocked: {de_blocked}"] if de_blocked else [])
+                log.info("paper.de_verdict", symbol=stock.symbol,
+                         verdict=de_verdict, score=score, blocked=de_blocked)
+            else:
+                # DE unreachable — fall back to _should_enter() so trading continues
+                should_enter, score, notes = _should_enter(
+                    stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
+                    kscore=kscore_f,
+                )
+                gate_source = "fallback"
+                log.warning("paper.de_fallback", symbol=stock.symbol,
+                            note="DE unreachable; using _should_enter()")
+        else:
+            # Legacy shadow mode: _should_enter() decides, DE logged only
+            should_enter, score, notes = _should_enter(
+                stock.symbol, signal_data, live_price, game_plan, cfg, live_regime,
+                kscore=kscore_f,
+            )
+            gate_source = "legacy"
 
         if not should_enter:
             log.info("paper.entry_skipped",
-                     symbol=stock.symbol, score=score,
-                     min_score=cfg.get("min_entry_score", 3),
+                     symbol=stock.symbol, score=score, gate=gate_source,
+                     min_score=cfg.get("min_entry_score", _DEFAULT_CONFIG["min_entry_score"]),
                      regime=regime_state, reasons=notes[:3])
+            # T232-WHYNOTRADE: this is the entry-qualifier rejection (DE score below threshold,
+            # or _should_enter()'s own hard rejects on fallback/legacy mode) — previously the
+            # one major rejection point NOT tallied, so a candidate failing only here showed as
+            # an empty top_reasons list with no explanation of why nothing traded.
+            _skip_tally["entry_score_below_threshold"] = _skip_tally.get("entry_score_below_threshold", 0) + 1
             continue
 
         log.info("paper.entry_decision",
-                 symbol=stock.symbol, score=score, notes=notes[:2])
+                 symbol=stock.symbol, score=score, gate=gate_source, notes=notes[:2])
 
         # Position sizing: risk_dollar / stop_distance = shares
         stop        = game_plan["stop"]
@@ -1788,6 +3377,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             notes = notes + [f"Size 0.75× (confidence {sig_conf:.0f}% — marginal signal)"]
 
         # INT-3: Research-gated position sizing — reduce size when research disagrees
+        _research_rec = ""  # captured outside try for hard gate below
         research_size_mult = 1.0
         if cfg.get("research_gating_enabled", True):
             try:
@@ -1796,26 +3386,65 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                 _res = _httpx.get(
                     f"{_gs().research_engine_url}/research/{stock.symbol}/summary",
                     timeout=1.5,
+                    headers={"Authorization": f"Bearer {_svc_token()}"},
                 )
                 if _res.status_code == 200:
                     _rs = _res.json()
-                    _rec = _rs.get("recommendation", "")
+                    _research_rec = _rs.get("recommendation", "")
                     _score = float(_rs.get("overall_score") or 0)
-                    if _rec == "STRONG BUY" and _score >= 75:
+                    if _research_rec == "STRONG BUY" and _score >= 75:
                         research_size_mult = 1.2
-                        notes = notes + [f"Size 1.2× (Research: {_rec} {_score:.0f})"]
-                    elif _rec == "BUY" and _score >= 65:
+                        notes = notes + [f"Size 1.2× (Research: {_research_rec} {_score:.0f})"]
+                    elif _research_rec == "BUY" and _score >= 65:
                         research_size_mult = 1.0
-                    elif _rec == "WATCH" and _score >= 60:
+                    elif _research_rec == "WATCH" and _score >= 60:
                         research_size_mult = 0.8
-                        notes = notes + [f"Size 0.8× (Research: {_rec} {_score:.0f})"]
-                    elif _rec in ("WATCH", "AVOID", "SELL"):
+                        notes = notes + [f"Size 0.8× (Research: {_research_rec} {_score:.0f})"]
+                    elif _research_rec in ("WATCH", "AVOID", "SELL"):
                         research_size_mult = 0.6
-                        notes = notes + [f"Size 0.6× (Research: {_rec} {_score:.0f})"]
+                        notes = notes + [f"Size 0.6× (Research: {_research_rec} {_score:.0f})"]
             except Exception:
                 pass  # no research data → neutral 1.0×
 
-        risk_dollar    = equity * cfg["risk_per_trade_pct"] * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult
+        # Hard gate: AVOID/SELL research blocks entry entirely — mirrors DE hard_rejects logic
+        if cfg.get("research_gating_enabled", True) and _research_rec in ("AVOID", "SELL"):
+            log.info("paper.skip_research_gate", symbol=stock.symbol, research_rec=_research_rec)
+            _skip_tally["research_gate"] = _skip_tally.get("research_gate", 0) + 1
+            continue
+
+        # 40-B: Cross-horizon consensus boost — when ≥2 other styles also fired BUY
+        # for this stock in the same signal batch, we have rare multi-timeframe alignment.
+        consensus_size_mult = 1.0
+        cross_buys = int((sig.reasons or {}).get("cross_style_buys", 0))
+        if cross_buys >= 2:
+            consensus_size_mult = 1.15
+            notes = notes + [f"Size 1.15× (multi-timeframe consensus: {cross_buys} other styles BUY)"]
+        elif cross_buys == 1:
+            consensus_size_mult = 1.07
+            notes = notes + [f"Size 1.07× (partial consensus: 1 other style BUY)"]
+
+        # T188: Score-to-size multiplier — high-conviction DE scores get more capital, marginal scores less.
+        # Score just at min threshold (excess=0): 0.75×. Score +2 above (normal): 1.0×. Score +4+: 1.25×.
+        _min_score_cfg = cfg.get("min_entry_score", 4)
+        if gate_source == "de" and de_result is not None:
+            _score_excess = score - _min_score_cfg
+            score_size_mult = round(max(0.75, min(1.25, 0.75 + _score_excess * 0.125)), 3)
+            if score_size_mult != 1.0:
+                notes = notes + [f"Size {score_size_mult:.2f}× (DE score {score}, excess {_score_excess:+d} from min {_min_score_cfg})"]
+        else:
+            score_size_mult = 1.0
+        _risk_base     = equity * cfg["risk_per_trade_pct"]
+        risk_dollar    = _risk_base * earnings_size_mult * regime_size_mult * confidence_size_mult * research_size_mult * consensus_size_mult * score_size_mult
+        # T234-PT-SIZING-MULT-STACK: the 6 categories above are independent per-trade signals
+        # (each already min()-composed internally where it overlaps with another, e.g.
+        # regime_size_mult folds in VIX/breadth/HMM via min() rather than multiplying them) —
+        # multiplying independent judgments together is intentional, but with no combined floor
+        # the worst realistic stack (earnings 0.50 x regime 0.50 x confidence 0.75 x research 0.6
+        # x score 0.75 = 0.084) sizes a trade at 8.4% of the intended risk target, where
+        # commission/slippage drag can exceed the position's own expected profit. Floor the
+        # composed result at 25% of the unadjusted base so a trade that clears every other gate
+        # is never sized down to a token position — multipliers above this floor are unaffected.
+        risk_dollar    = max(risk_dollar, _risk_base * 0.25)
         shares         = risk_dollar / stop_distance
 
         # PA-C1: Max dollar loss per trade — prevents wide ATR stops from risking > 2% equity
@@ -1831,10 +3460,16 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
         shares         = round(shares, 4)
         position_value = round(shares * live_price, 2)
 
-        # FIN-07: skip near-zero share positions that would pollute the journal
-        if shares < 0.01 or position_value <= 0:
-            log.info("paper.skip_min_shares", symbol=stock.symbol,
-                     shares=shares, position_value=position_value)
+        # FIN-07: skip near-zero share positions that would pollute the journal.
+        # Also serves as an implicit ATR-volatility filter: extreme ATR → wide stop →
+        # tiny shares (via max_loss_per_trade_pct cap) → position_value < min_position_value → skip.
+        min_pos_val = cfg.get("min_position_value", 200.0)
+        if shares < 0.01 or position_value <= 0 or position_value < min_pos_val:
+            atr_pct = round(atr / live_price * 100, 1) if (atr and live_price > 0) else None
+            log.info("paper.skip_min_position", symbol=stock.symbol,
+                     shares=shares, position_value=position_value, min_required=min_pos_val,
+                     atr_pct=atr_pct, stop_dist=round(stop_distance, 2))
+            _skip_tally["min_position"] = _skip_tally.get("min_position", 0) + 1
             continue
 
         # Cap position at max_position_pct of equity
@@ -1844,35 +3479,43 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             position_value = round(shares * live_price, 2)
 
         # PT-B5: Aggregate open-risk check — sum (price - stop) * shares for all open trades
+        # AUD19-PERF2: uses _prefetched_open (pre-fetched before the loop) — no DB query.
         max_open_risk = cfg.get("max_open_risk_pct", 0.12)
         if max_open_risk and equity > 0:
             open_risk = sum(
                 abs(live_prices.get(t.symbol, t.entry_price) - t.current_stop) * t.shares
-                for t in session.execute(
-                    select(PaperTrade).where(
-                        PaperTrade.portfolio_id == portfolio.id, PaperTrade.stage == "open"
-                    )
-                ).scalars().all()
+                for t, _ in _prefetched_open
             )
             new_trade_risk = stop_distance * shares
             if (open_risk + new_trade_risk) / equity > max_open_risk:
                 log.info("paper.skip_open_risk_cap", symbol=stock.symbol,
                          open_risk_pct=round((open_risk + new_trade_risk) / equity * 100, 1),
                          limit_pct=round(max_open_risk * 100, 1))
+                _skip_tally["open_risk_cap"] = _skip_tally.get("open_risk_cap", 0) + 1
                 continue
 
-        # Sector concentration check — applies to ALL stocks, including null-sector ones
+        # Sector concentration check — AUD19-PERF2: computed in Python from pre-fetched open trades.
         _sector = stock.sector  # may be None (unclassified stocks count against a shared bucket)
-        sector_value = _sector_value(session, portfolio, _sector, live_prices)
+        sector_value = sum(
+            _best_price(t, live_prices) * t.shares
+            for t, st in _prefetched_open
+            if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
+        )
         if (sector_value + position_value) / max(equity, 1) > cfg["max_sector_pct"]:
             log.info("paper.skip_sector_cap", symbol=stock.symbol,
                      sector=_sector or "unclassified",
                      sector_pct=round((sector_value + position_value) / equity * 100, 1))
+            _skip_tally["sector_cap"] = _skip_tally.get("sector_cap", 0) + 1
             continue
         max_sector_pos = int(cfg.get("max_sector_positions", 3))
-        if _sector_count(session, portfolio, _sector) >= max_sector_pos:
+        sector_count = sum(
+            1 for _, st in _prefetched_open
+            if (st.sector is None) == (_sector is None) and (st.sector == _sector or _sector is None and st.sector is None)
+        )
+        if sector_count >= max_sector_pos:
             log.info("paper.skip_sector_count_cap", symbol=stock.symbol,
                      sector=_sector or "unclassified", limit=max_sector_pos)
+            _skip_tally["sector_count_cap"] = _skip_tally.get("sector_count_cap", 0) + 1
             continue
 
         # Ensure we have the cash
@@ -1880,6 +3523,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             log.info("paper.skip_insufficient_cash",
                      symbol=stock.symbol, need=position_value,
                      have=portfolio.current_cash)
+            _skip_tally["insufficient_cash"] = _skip_tally.get("insufficient_cash", 0) + 1
             continue
 
         # PT-B6: Apply entry slippage — simulates spread / market impact
@@ -1901,6 +3545,7 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             sector                = stock.sector,    # H-SECTOR FIX: PA-D1 monitor reads trade.sector
             stock_id              = stock.id,        # PT-H2: needed for double-top mid-trade detection
             shares                = shares,
+            entry_shares          = shares,          # T232-PT6: snapshot before scale-outs shrink `shares`
             stop_loss             = stop,
             take_profit           = take_profit,
             current_stop          = stop,
@@ -1917,6 +3562,9 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
             hold_days             = 0,
         )
         session.add(trade)
+        # Broker routing: submit real BUY order to linked broker (US only; falls back on error)
+        if portfolio.broker_connection_id:
+            _place_broker_entry(session, trade, portfolio)
         open_symbols.add(stock.symbol)
         entries_made += 1
         # Recalculate equity after each entry so successive entries in this cycle
@@ -1928,6 +3576,16 @@ def _scan_for_entries(session, portfolio: PaperPortfolio, live_prices: dict[str,
                  shares=round(shares, 2), stop=stop,
                  target=take_profit, score=score, rr=round(rr, 2),
                  cash_remaining=round(portfolio.current_cash, 2))
+
+    # T232-WHYNOTRADE: when the scan reaches this point with zero entries, no
+    # portfolio-level gate blocked it (those `return` earlier in this function) — every
+    # candidate individually failed its own per-symbol check. Surface the tally so this
+    # is visible in the UI (paper-gates.tsx / paper-portfolio.tsx) instead of requiring a
+    # container-log dig, same place _write_gate_block's portfolio-level reason shows up.
+    if entries_made == 0:
+        _write_no_entry_summary(portfolio.id, len(buy_signals), _skip_tally)
+    else:
+        _clear_no_entry_summary(portfolio.id)
 
 
 # ── Equity computation ────────────────────────────────────────────────────────

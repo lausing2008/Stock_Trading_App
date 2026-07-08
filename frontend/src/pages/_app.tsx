@@ -13,6 +13,7 @@ import { api, type Stock } from '@/lib/api';
 
 const PUBLIC_PATHS = ['/login', '/gate'];
 const GATE_COOKIE  = 'stockai_gate';
+let _configPushed = false;
 
 function hasGateCookie() {
   if (typeof document === 'undefined') return false;
@@ -39,11 +40,14 @@ const NAV_GROUPS: NavGroupDef[] = [
     label: 'Research',
     items: [
       { label: 'Screener',      href: '/screener' },
+      { label: 'Compare',       href: '/compare',       color: '#818cf8' },
       { label: 'Opportunities', href: '/opportunities', color: '#a78bfa' },
       { label: 'Earnings',      href: '/earnings',      color: '#fb923c', tag: 'cal' },
       { label: 'Analyst',       href: '/analyst',       color: '#818cf8' },
-      { label: 'Short Squeeze', href: '/short-squeeze', color: '#f87171' },
-      { label: 'Research Engine', href: '/research', color: '#4ade80', tag: 'ai' },
+      { label: 'Short Squeeze',    href: '/short-squeeze',  color: '#f87171' },
+      { label: 'Short Interest',   href: '/short-selling',  color: '#fb923c' },
+      { label: 'Research Engine',  href: '/research',       color: '#4ade80', tag: 'ai' },
+      { label: 'Event Intelligence', href: '/intelligence', color: '#f59e0b', tag: 'new' },
     ],
   },
   {
@@ -61,6 +65,8 @@ const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { label: 'Strategies',      href: '/strategies' },
       { label: 'Alerts',          href: '/alerts' },
+      { label: 'Decision Engine', href: '/decide',   color: '#34d399', tag: 'new' },
+      { label: 'Market Regime',   href: '/regime',   color: '#6366f1', tag: 'new' },
       { label: 'Insider Trading', href: '/insider',  color: '#fb923c' },
       { label: 'Congress Trades', href: '/congress', color: '#f97316' },
     ],
@@ -70,8 +76,12 @@ const NAV_GROUPS: NavGroupDef[] = [
     adminOnly: true,
     items: [
       { label: 'Paper Portfolio',  href: '/paper-portfolio',  color: '#22c55e' },
+      { label: 'Entry Gates',      href: '/paper-gates',      color: '#22c55e' },
+      { label: 'Horizon Compare',  href: '/horizon-compare',  color: '#38bdf8', tag: 'new' },
       { label: 'Signal Accuracy',  href: '/signal-accuracy',  color: '#a78bfa' },
       { label: 'Signal Filters',   href: '/signal-filters',   color: '#f97316' },
+      { label: 'Signal Quality',   href: '/signal-quality',   color: '#818cf8', tag: 'new' },
+      { label: 'Signal Tuning',    href: '/signal-tuning',    color: '#a78bfa', tag: 'new' },
       { label: 'Trade Performance', href: '/trade-performance', color: '#34d399' },
       { label: 'Signal Log',       href: '/admin-signals',    color: '#f87171' },
       { label: 'System Health',    href: '/admin-health',     color: '#38bdf8' },
@@ -362,7 +372,8 @@ export default function App({ Component, pageProps }: AppProps) {
         setRole(session.role);
         setImpersonating(getImpersonatedUser());
         const settings = loadSettings();
-        if (settings.polygonApiKey || settings.alphaVantageApiKey) {
+        if (!_configPushed && (settings.polygonApiKey || settings.alphaVantageApiKey)) {
+          _configPushed = true;
           api.pushConfig({
             polygon_api_key: settings.polygonApiKey || undefined,
             alpha_vantage_api_key: settings.alphaVantageApiKey || undefined,
@@ -379,6 +390,7 @@ export default function App({ Component, pageProps }: AppProps) {
           const r = await fetch('/api/gate');
           const { enabled } = await r.json() as { enabled: boolean };
           if (enabled) {
+            setChecked(true);
             router.replace(`/gate?next=${encodeURIComponent(router.pathname)}`);
             return;
           }

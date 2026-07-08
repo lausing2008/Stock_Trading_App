@@ -3,12 +3,14 @@ import useSWR from 'swr';
 import RankingsTable from '@/components/RankingsTable';
 import MarketClosedBanner from '@/components/MarketClosedBanner';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
-import { api, type Stock, type WatchlistItem, type LatestPrice, type RankingRow, type SignalSummary, type TradePlan } from '@/lib/api';
+import { api, type Stock, type WatchlistItem, type WatchlistMeta, type LatestPrice, type RankingRow, type SignalSummary, type TradePlan } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
 
 export default function RankingsPage() {
   const [market, setMarket] = useState<'US' | 'HK' | ''>('');
+  const [filterWatchlistId, setFilterWatchlistId] = useState<number | null>(null);
   const [compareSymbols, setCompareSymbols] = useState<Set<string>>(new Set());
+  const [signalFilter, setSignalFilter] = useState<'all' | 'BUY' | 'HOLD' | 'SELL' | 'divergent'>('all');
   const [compareOpen, setCompareOpen] = useState(false);
 
   function toggleCompare(symbol: string) {
@@ -23,15 +25,36 @@ export default function RankingsPage() {
     `rankings-${market}`,
     () => api.rankings(market || undefined),
   );
+  const { data: watchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
   const { data: watchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
+  const { data: filteredWatchlistItems } = useSWR<WatchlistItem[]>(
+    filterWatchlistId != null ? `watchlist-${filterWatchlistId}` : null,
+    () => api.listWatchlist(filterWatchlistId!),
+  );
   const { data: stocks } = useSWR<Stock[]>('stocks', () => api.listStocks());
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
+  const filteredSet = useMemo(
+    () => filterWatchlistId != null ? new Set(filteredWatchlistItems?.map(w => w.symbol) ?? []) : watchedSet,
+    [filterWatchlistId, filteredWatchlistItems, watchedSet],
+  );
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalList } = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()), { refreshInterval: 300_000 });
   const { data: boardData } = useSWR<TradePlan[]>('board', () => api.listBoard());
   const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage !== 'closed').map(p => p.symbol) ?? []), [boardData]);
 
   const { data: sectorEtf } = useSWR('sector-rotation-etf', () => api.sectorRotationEtf(), { revalidateOnFocus: false });
+  const { data: outcomesSummary } = useSWR(
+    'outcomes-summary-rankings-' + getSignalStyle() + '-' + market,
+    () => api.outcomesSummary(getSignalStyle(), 90, market || undefined),
+    { revalidateOnFocus: false },
+  );
+  const symbolWR = useMemo(() => {
+    const m: Record<string, { wr: number; n: number }> = {};
+    for (const s of outcomesSummary?.by_symbol ?? []) {
+      if (s.count >= 3) m[s.symbol] = { wr: s.win_rate, n: s.count };
+    }
+    return m;
+  }, [outcomesSummary]);
 
   const priceMap = useMemo(() => {
     const m: Record<string, LatestPrice> = {};
@@ -49,12 +72,10 @@ export default function RankingsPage() {
     if (!data) return [];
     const rankedSymbols = new Set(data.rankings.map(r => r.symbol));
 
-    // Ranked stocks filtered to user's watchlist
-    const ranked = data.rankings.filter(r => watchedSet.has(r.symbol));
+    const ranked = data.rankings.filter(r => filteredSet.has(r.symbol));
 
-    // Watchlisted stocks not yet in rankings (insufficient price history)
     const unranked: RankingRow[] = (stocks ?? [])
-      .filter(s => watchedSet.has(s.symbol) && !rankedSymbols.has(s.symbol))
+      .filter(s => filteredSet.has(s.symbol) && !rankedSymbols.has(s.symbol))
       .filter(s => !market || s.market === market.toUpperCase())
       .map(s => ({
         symbol: s.symbol,
@@ -73,12 +94,39 @@ export default function RankingsPage() {
       }));
 
     return [...ranked, ...unranked];
-  }, [data, watchedSet, stocks, market]);
+  }, [data, filteredSet, stocks, market]);
 
   const compareRows = useMemo(
     () => rows.filter(r => compareSymbols.has(r.symbol)),
     [rows, compareSymbols],
   );
+
+  const signalCounts = useMemo(() => {
+    const isDivergent = (r: RankingRow) => {
+      const sig = signalMap[r.symbol]?.signal;
+      return r.score != null && sig != null && (
+        (r.score >= 65 && sig !== 'BUY') || (r.score < 40 && sig === 'BUY')
+      );
+    };
+    return {
+      all: rows.length,
+      BUY: rows.filter(r => signalMap[r.symbol]?.signal === 'BUY').length,
+      HOLD: rows.filter(r => signalMap[r.symbol]?.signal === 'HOLD').length,
+      SELL: rows.filter(r => signalMap[r.symbol]?.signal === 'SELL').length,
+      divergent: rows.filter(isDivergent).length,
+    };
+  }, [rows, signalMap]);
+
+  const filteredRows = useMemo(() => {
+    if (signalFilter === 'all') return rows;
+    if (signalFilter === 'divergent') return rows.filter(r => {
+      const sig = signalMap[r.symbol]?.signal;
+      return r.score != null && sig != null && (
+        (r.score >= 65 && sig !== 'BUY') || (r.score < 40 && sig === 'BUY')
+      );
+    });
+    return rows.filter(r => signalMap[r.symbol]?.signal === signalFilter);
+  }, [rows, signalMap, signalFilter]);
 
   return (
     <div>
@@ -137,6 +185,20 @@ export default function RankingsPage() {
           >
             ↓ CSV
           </button>
+          <select
+            value={filterWatchlistId ?? ''}
+            onChange={e => setFilterWatchlistId(e.target.value === '' ? null : Number(e.target.value))}
+            style={{
+              padding: '4px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+              border: '1px solid #334155', background: '#0f172a', color: filterWatchlistId ? '#a5b4fc' : '#475569',
+              appearance: 'none', WebkitAppearance: 'none',
+            }}
+          >
+            <option value="">All watchlists</option>
+            {(watchlists ?? []).map(w => (
+              <option key={w.id} value={w.id}>{w.name} ({w.item_count})</option>
+            ))}
+          </select>
           {(['', 'US', 'HK'] as const).map((m) => (
             <button
               key={m || 'all'}
@@ -184,16 +246,45 @@ export default function RankingsPage() {
         </div>
       )}
 
+      {/* Signal filter chips (48-A) */}
+      {data && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: '#475569', marginRight: 2 }}>Signal:</span>
+          {([
+            { key: 'all',       label: 'All',         color: '#64748b' },
+            { key: 'BUY',       label: 'BUY',         color: '#4ade80' },
+            { key: 'HOLD',      label: 'HOLD',        color: '#94a3b8' },
+            { key: 'SELL',      label: 'SELL',        color: '#f87171' },
+            { key: 'divergent', label: '⚡ Divergent', color: '#fbbf24' },
+          ] as const).map(({ key, label, color }) => {
+            const active = signalFilter === key;
+            const count = signalCounts[key];
+            return (
+              <button key={key} onClick={() => setSignalFilter(key)}
+                style={{
+                  padding: '3px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                  border: `1px solid ${active ? color : '#1e293b'}`,
+                  background: active ? `${color}18` : 'transparent',
+                  color: active ? color : '#475569',
+                }}>
+                {label} <span style={{ opacity: 0.6, fontSize: 11 }}>({count})</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {isLoading && <div>Loading…</div>}
       {error && <div className="text-slate-300">Unable to load rankings.</div>}
       {data && (
         <RankingsTable
-          rows={rows}
+          rows={filteredRows}
           prices={priceMap}
           signals={signalMap}
           selectedSymbols={compareSymbols}
           onToggleCompare={toggleCompare}
           boardSet={boardSet}
+          symbolWR={symbolWR}
         />
       )}
       {compareOpen && compareRows.length >= 2 && (

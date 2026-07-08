@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
-import { api, type SchedulerJob, type MlModelMetric, type SignalSummary } from '@/lib/api';
+import { api, type SchedulerJob, type MlModelMetric, type SignalSummary, type ServiceHealthReport } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string }> = {
@@ -10,9 +10,16 @@ const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string
   us_post_close:             { label: 'US Post-Close',               maxAgeDays: 3,  desc: 'Final daily bar + ML retrain for all US stocks (Mon–Fri 16:30 ET)' },
   hk_post_close:             { label: 'HK Post-Close',               maxAgeDays: 3,  desc: 'Final daily bar + ML retrain for all HK stocks (Mon–Fri 16:30 HKT)' },
   paper_trading:             { label: 'Paper Trading Engine',        maxAgeDays: 2,  desc: 'Autonomous GROWTH-style paper trade step (runs after each US refresh)' },
-  // Morning digests
-  morning_digest_us:         { label: 'US Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + watchlist moves (Mon–Fri 09:00 ET)' },
-  morning_digest_hk:         { label: 'HK Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + watchlist moves (Mon–Fri 08:55 HKT)' },
+  // Morning digests — one email per market, sent 40 min before that market opens (T232-UI4:
+  // reverted from a brief combined-job experiment back to separate per-market digests).
+  morning_digest_us:         { label: 'US Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + open positions for US (Mon–Fri 08:50 ET)' },
+  morning_digest_hk:         { label: 'HK Morning Digest',           maxAgeDays: 2,  desc: 'Email digest of top signals + open positions for HK (Mon–Fri 08:50 HKT)' },
+  // Post-open digests — only emails when something changed (regime shift, signal flip, new
+  // BUY/SELL, big move); the job still records "ok" on skip, so staleness tracking works.
+  post_open_digest_us_30min: { label: 'US +30min Update',            maxAgeDays: 2,  desc: 'Regime/signal/mover changes since open — sent only if something changed (Mon–Fri 10:00 ET)' },
+  post_open_digest_us_1hr:   { label: 'US +1hr Update',              maxAgeDays: 2,  desc: 'Delta vs the +30min check — sent only if something changed (Mon–Fri 10:30 ET)' },
+  post_open_digest_hk_30min: { label: 'HK +30min Update',            maxAgeDays: 2,  desc: 'Regime/signal/mover changes since open — sent only if something changed (Mon–Fri 10:00 HKT)' },
+  post_open_digest_hk_1hr:   { label: 'HK +1hr Update',              maxAgeDays: 2,  desc: 'Delta vs the +30min check — sent only if something changed (Mon–Fri 10:30 HKT)' },
   // Intraday refresh (full pipeline)
   us_refresh:                { label: 'US Intraday Refresh',         maxAgeDays: 2,  desc: 'Prices + K-Score rankings + signals every 5 min (US market hours)' },
   hk_refresh:                { label: 'HK Intraday Refresh',         maxAgeDays: 2,  desc: 'Prices + K-Score rankings + signals every 5 min (HK market hours)' },
@@ -28,9 +35,11 @@ const JOB_META: Record<string, { label: string; maxAgeDays: number; desc: string
   live_price_cache_refresh:  { label: 'Live Price Cache',            maxAgeDays: 1,  desc: 'Writes live prices to Redis every 1 min during market hours (US/HK 09–17)' },
   price_alert_check:         { label: 'Price Alert Check',           maxAgeDays: 1,  desc: 'Checks user alert thresholds against Redis live cache every 1 min' },
   // Maintenance
+  paper_portfolio_digest:    { label: 'Portfolio Digest Email',      maxAgeDays: 2,  desc: 'After-market portfolio digest email to all users — 17:00 ET on trading days' },
   db_purge_weekly:           { label: 'DB Weekly Purge',             maxAgeDays: 8,  desc: 'Deletes prices_5m + scheduler_jobs rows older than 90 days (Sun 15:00 PST)' },
   tune_all_sent:             { label: 'Optuna Tune-All',             maxAgeDays: 8,  desc: 'Weekly XGBoost hyperparameter tuning sent to ML service (Optuna search)' },
   calibrate_ta_weights_sent: { label: 'TA Weight Calibration',       maxAgeDays: 8,  desc: 'Weekly TA logistic regression calibration — updates ta_weights.json' },
+  rl_agent_train:            { label: 'RL Agent Train',              maxAgeDays: 8,  desc: 'Contextual bandit (Ridge Q-function) trained on closed paper trades. Requires ≥50 closed trades — shows "skipped" until paper trading accumulates enough history.' },
 };
 
 function relTime(iso: string): string {
@@ -46,10 +55,11 @@ function JobCard({ job }: { job: SchedulerJob }) {
   const ageDays = (Date.now() - new Date(job.last_run).getTime()) / 86400000;
   const stale = ageDays > meta.maxAgeDays;
 
-  const statusColor = job.status === 'ok' ? '#4ade80' : job.status === 'error' ? '#f87171' : '#94a3b8';
-  const statusBg = job.status === 'ok' ? 'rgba(74,222,128,0.08)' : job.status === 'error' ? 'rgba(239,68,68,0.1)' : 'rgba(148,163,184,0.06)';
-  const statusBorder = job.status === 'ok' ? 'rgba(74,222,128,0.2)' : job.status === 'error' ? 'rgba(239,68,68,0.3)' : 'rgba(148,163,184,0.15)';
-  const statusLabel = job.status === 'ok' ? '✓ OK' : job.status === 'error' ? '✗ Error' : '– Skipped';
+  const isSkipped = job.status.startsWith('skipped:') || job.status.startsWith('Need ');
+  const statusColor  = job.status === 'ok' ? '#4ade80' : job.status === 'error' ? '#f87171' : isSkipped ? '#fbbf24' : '#94a3b8';
+  const statusBg     = job.status === 'ok' ? 'rgba(74,222,128,0.08)' : job.status === 'error' ? 'rgba(239,68,68,0.1)' : isSkipped ? 'rgba(251,191,36,0.08)' : 'rgba(148,163,184,0.06)';
+  const statusBorder = job.status === 'ok' ? 'rgba(74,222,128,0.2)'  : job.status === 'error' ? 'rgba(239,68,68,0.3)'   : isSkipped ? 'rgba(251,191,36,0.2)'    : 'rgba(148,163,184,0.15)';
+  const statusLabel  = job.status === 'ok' ? '✓ OK' : job.status === 'error' ? '✗ Error' : isSkipped ? '⊘ Skipped' : '– Unknown';
 
   return (
     <div style={{
@@ -132,6 +142,12 @@ export default function AdminHealthPage() {
     { revalidateOnFocus: false, refreshInterval: 30_000 },
   );
 
+  const { data: dqData } = useSWR(
+    authed ? 'dq-status' : null,
+    () => api.dqStatus(),
+    { revalidateOnFocus: false, refreshInterval: 30_000 },
+  );
+
   const { data: mlData } = useSWR(
     authed ? 'ml-metrics-all' : null,
     () => api.mlMetrics('xgboost'),
@@ -142,6 +158,12 @@ export default function AdminHealthPage() {
     authed ? 'signals-SWING' : null,
     () => api.allSignals('SWING'),
     { revalidateOnFocus: false, refreshInterval: 120_000 },
+  );
+
+  const { data: healthData, mutate: mutateHealth } = useSWR<ServiceHealthReport>(
+    authed ? 'health-deep' : null,
+    () => api.healthDeep(),
+    { revalidateOnFocus: false, refreshInterval: 60_000 },
   );
 
   const signalCounts = useMemo(() => {
@@ -195,6 +217,48 @@ export default function AdminHealthPage() {
         </div>
       </div>
 
+      {/* Data Quality Checks — checks actual data freshness, independent of job-run status.
+          See run_data_quality_checks() docstring: a job can report "ok" while writing zero
+          rows (the 2026-07-03 rankings incident) — this section catches that class of bug. */}
+      {dqData && dqData.checks.length > 0 && (
+        <div style={{ marginBottom: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>DATA QUALITY CHECKS</div>
+            {dqData.checks.every(c => c.ok) ? (
+              <span style={{ fontSize: '10px', fontWeight: 700, color: '#4ade80' }}>✓ all fresh</span>
+            ) : (
+              <span style={{ fontSize: '10px', fontWeight: 700, color: '#f87171' }}>
+                {dqData.checks.filter(c => !c.ok).length} failing
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px' }}>
+            {dqData.checks.map(c => (
+              <div key={c.name} style={{
+                padding: '14px 16px', borderRadius: '10px', background: '#0d1424',
+                border: `1px solid ${c.ok ? '#1e293b' : 'rgba(239,68,68,0.35)'}`,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{c.name}</div>
+                    <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px' }}>{c.description}</div>
+                  </div>
+                  <span style={{ fontSize: '10px', fontWeight: 700, color: c.ok ? '#4ade80' : '#f87171', flexShrink: 0, marginLeft: '10px' }}>
+                    {c.ok ? '✓ fresh' : '⚠ stale'}
+                  </span>
+                </div>
+                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '8px' }}>
+                  Last updated: <strong style={{ color: c.ok ? '#e2e8f0' : '#f87171' }}>
+                    {c.age_hours != null ? `${c.age_hours.toFixed(1)}h ago` : 'never'}
+                  </strong>
+                  <span style={{ color: '#475569' }}> (max {c.max_age_hours}h)</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {isLoading && (
         <div style={{ textAlign: 'center', padding: '40px', color: '#475569', fontSize: '13px' }}>Loading…</div>
       )}
@@ -239,10 +303,31 @@ export default function AdminHealthPage() {
             })}
           </div>
 
+          {/* Post-open digests */}
+          <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>POST-OPEN UPDATES</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px', marginBottom: '24px' }}>
+            {['post_open_digest_us_30min', 'post_open_digest_us_1hr', 'post_open_digest_hk_30min', 'post_open_digest_hk_1hr'].map(key => {
+              const job = jobs.find(j => j.job === key);
+              if (!job) return (
+                <div key={key} style={{ padding: '14px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>{JOB_META[key]?.label ?? key}</div>
+                  {JOB_META[key]?.desc && <div style={{ fontSize: '10px', color: '#1e293b', marginTop: '2px' }}>{JOB_META[key].desc}</div>}
+                  <div style={{ fontSize: '11px', color: '#1e293b', marginTop: '4px' }}>No record yet</div>
+                </div>
+              );
+              return <JobCard key={key} job={job} />;
+            })}
+          </div>
+
           {/* Intraday + background jobs */}
           <div style={{ marginBottom: '8px', fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>INTRADAY &amp; BACKGROUND</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '10px' }}>
-            {jobs.filter(j => !['weekly_refresh', 'us_post_close', 'hk_post_close', 'paper_trading', 'morning_digest_us', 'morning_digest_hk'].includes(j.job)).map(j => (
+            {jobs.filter(j => ![
+              'weekly_refresh', 'us_post_close', 'hk_post_close', 'paper_trading',
+              'morning_digest_us', 'morning_digest_hk',
+              'post_open_digest_us_30min', 'post_open_digest_us_1hr',
+              'post_open_digest_hk_30min', 'post_open_digest_hk_1hr',
+            ].includes(j.job)).map(j => (
               <JobCard key={j.job} job={j} />
             ))}
           </div>
@@ -331,6 +416,49 @@ export default function AdminHealthPage() {
           </div>
         </div>
       )}
+
+      {/* Service Connectivity */}
+      <div style={{ marginTop: '28px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+          <div style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>SERVICE CONNECTIVITY</div>
+          <button
+            onClick={() => mutateHealth()}
+            style={{ padding: '3px 10px', borderRadius: '5px', fontSize: '10px', fontWeight: 600, cursor: 'pointer', border: '1px solid #1e293b', background: 'transparent', color: '#475569' }}
+          >
+            ↺
+          </button>
+        </div>
+        {!healthData && (
+          <div style={{ padding: '14px 16px', borderRadius: '10px', background: '#080f1e', border: '1px solid #1e293b', fontSize: '12px', color: '#334155' }}>
+            Loading service ping…
+          </div>
+        )}
+        {healthData && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '8px' }}>
+            {healthData.results.map(r => {
+              const ok = r.status === 'ok';
+              const timeout = r.status === 'timeout';
+              const color = ok ? '#4ade80' : timeout ? '#fbbf24' : '#f87171';
+              const bg = ok ? 'rgba(74,222,128,0.04)' : timeout ? 'rgba(251,191,36,0.06)' : 'rgba(239,68,68,0.07)';
+              const border = ok ? 'rgba(74,222,128,0.15)' : timeout ? 'rgba(251,191,36,0.25)' : 'rgba(239,68,68,0.25)';
+              return (
+                <div key={r.service} style={{ padding: '10px 14px', borderRadius: '8px', background: bg, border: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: '#cbd5e1', fontFamily: 'monospace' }}>{r.service}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '10px', color: '#475569' }}>{r.latency_ms}ms</span>
+                    <span style={{ fontSize: '11px', fontWeight: 700, color }}>{ok ? '✓' : timeout ? '⏱' : '✗'}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {healthData && (
+          <div style={{ marginTop: '8px', fontSize: '11px', color: '#334155' }}>
+            {healthData.services_ok}/{healthData.services_total} services reachable — refreshes every 60s
+          </div>
+        )}
+      </div>
 
       {/* ML Training Health */}
       {mlData && mlData.count > 0 && (

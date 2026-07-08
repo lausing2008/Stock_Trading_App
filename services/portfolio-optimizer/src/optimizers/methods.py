@@ -114,7 +114,7 @@ def mean_variance(returns: pd.DataFrame, max_weight: float = 0.40) -> PortfolioW
         method="SLSQP",
         options={"ftol": 1e-9, "maxiter": 1000},
     )
-    w = _normalize(np.clip(res.x, 0, None))
+    w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
     return _pack(symbols, w, "mean_variance", mu, cov, returns)
 
 
@@ -142,7 +142,7 @@ def risk_parity(returns: pd.DataFrame, max_weight: float = 0.60) -> PortfolioWei
         method="SLSQP",
         options={"ftol": 1e-12, "maxiter": 2000},
     )
-    w = _normalize(np.clip(res.x, 1e-6, None))
+    w = _normalize(np.clip(res.x, 1e-6, None)) if res.success else np.full(n, 1.0 / n)
     return _pack(symbols, w, "risk_parity", mu, cov, returns)
 
 
@@ -234,15 +234,25 @@ def ai_allocation(
         vol = float(np.sqrt(np.clip(w @ cov @ w, 1e-12, None)))
         return -(ret - RISK_FREE) / vol
 
-    x0 = np.full(n, 1 / n)
-    res = minimize(
-        neg_sharpe, x0,
-        bounds=[(0.0, max_weight)] * n,
-        constraints=[{"type": "eq", "fun": lambda w: w.sum() - 1.0}],
-        method="SLSQP",
-        options={"ftol": 1e-9, "maxiter": 1000},
-    )
-    w = _normalize(np.clip(res.x, 0, None))
+    if n == 1:
+        # Single stock: SLSQP is infeasible (max_weight=0.40 < required sum=1.0), skip it
+        w = np.array([1.0])
+    else:
+        x0 = np.full(n, 1 / n)
+        res = minimize(
+            neg_sharpe, x0,
+            bounds=[(0.0, max_weight)] * n,
+            constraints=[{"type": "eq", "fun": lambda w: w.sum() - 1.0}],
+            method="SLSQP",
+            options={"ftol": 1e-9, "maxiter": 1000},
+        )
+        w = _normalize(np.clip(res.x, 0, None)) if res.success else np.full(n, 1.0 / n)
     w_scaled = w * (1 - cash_floor)
     cash = round(1 - float(w_scaled.sum()), 4)
-    return _pack(keep, w_scaled, "ai_allocation", blended_mu, cov, ret_sub, cash=cash)
+    # Compute risk/return metrics on w (fully invested, sums to 1.0) so they are
+    # comparable to mean_variance/risk_parity/HRP outputs. w_scaled (which sums to
+    # 1-cash_floor) would understate expected_return and Sharpe by the cash fraction.
+    m = _metrics(w, blended_mu, cov, ret_sub)
+    return PortfolioWeights("ai_allocation",
+                            {s: float(round(wi, 4)) for s, wi in zip(keep, w_scaled)},
+                            cash=cash, **m)

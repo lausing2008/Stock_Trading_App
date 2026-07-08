@@ -20,6 +20,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -107,6 +108,9 @@ class Stock(Base):
     industry: Mapped[str | None] = mapped_column(String(128), nullable=True)
     currency: Mapped[str] = mapped_column(String(8), default="USD")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    delisted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    cik: Mapped[str | None] = mapped_column(String(16), nullable=True)  # T208: SEC EDGAR CIK
+    index_membership: Mapped[str | None] = mapped_column(String(256), nullable=True)  # T11: comma-separated index names
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     prices: Mapped[list["Price"]] = relationship(back_populates="stock")
@@ -167,6 +171,10 @@ class Signal(Base):
     __table_args__ = (
         Index("ix_signals_stock_ts", "stock_id", "ts"),
         Index("ix_signals_stock_horizon_ts", "stock_id", "horizon", "ts"),
+        # DB also has: UNIQUE (stock_id, horizon, date_trunc('day', ts)) — uq_signals_stock_horizon_day
+        # This is a function-based index, not expressible as UniqueConstraint in SQLAlchemy.
+        # Created manually: CREATE UNIQUE INDEX uq_signals_stock_horizon_day ON signals
+        #   USING btree (stock_id, horizon, date_trunc('day', ts));
     )
 
 
@@ -179,8 +187,13 @@ class Ranking(Base):
     score: Mapped[float] = mapped_column(Float)  # K-Score 0-100
     technical: Mapped[float] = mapped_column(Float)
     momentum: Mapped[float] = mapped_column(Float)
-    value: Mapped[float] = mapped_column(Float)
-    growth: Mapped[float] = mapped_column(Float)
+    # T232-RANKSTALE: value/growth were NOT NULL, but compute_kscore legitimately returns
+    # None for stocks lacking sufficient fundamentals data (KS-4) — every bulk ranking
+    # refresh batch containing even one such stock failed the whole INSERT with
+    # NotNullViolation, silently (no logging existed at the time) stalling rankings for
+    # both markets for 10+ days. Made nullable to match what the scoring layer produces.
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    growth: Mapped[float | None] = mapped_column(Float, nullable=True)
     volatility: Mapped[float] = mapped_column(Float)
     fair_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     rs_score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -296,6 +309,8 @@ class AlertCondition(str, enum.Enum):
     RSI_OVERSOLD_BOUNCE  = "rsi_oversold_bounce"   # RSI crosses above 30 from below; threshold unused
     DOUBLE_BOTTOM        = "double_bottom"         # W-pattern detected; threshold unused
     BREAKOUT             = "breakout"              # Price closes above 20-day high with volume surge
+    VOLUME_SPIKE         = "volume_spike"          # threshold = multiplier of 20-day avg volume (e.g. 3.0)
+    PCT_BELOW_52WK_HIGH  = "pct_below_52wk_high"   # threshold = % below 52-week high to trigger (e.g. 10)
 
 
 class PriceAlert(Base):
@@ -312,6 +327,7 @@ class PriceAlert(Base):
     triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     recurring: Mapped[bool] = mapped_column(Boolean, default=False)
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    webhook_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="price_alerts")
@@ -347,8 +363,8 @@ class UserPosition(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
-    shares: Mapped[float] = mapped_column(Float)
-    avg_cost: Mapped[float] = mapped_column(Float)
+    shares: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    avg_cost: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
     currency: Mapped[str] = mapped_column(String(8), default="USD")
     added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -370,8 +386,8 @@ class PositionTrade(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     position_id: Mapped[int] = mapped_column(ForeignKey("user_positions.id", ondelete="CASCADE"), index=True)
     type: Mapped[str] = mapped_column(String(8))  # BUY | SELL
-    shares: Mapped[float] = mapped_column(Float)
-    price: Mapped[float] = mapped_column(Float)
+    shares: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    price: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
     date: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     position: Mapped["UserPosition"] = relationship(back_populates="trades")
@@ -383,7 +399,7 @@ class UserCash(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     currency: Mapped[str] = mapped_column(String(8))
-    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    amount: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False), default=0.0)
 
     user: Mapped["User"] = relationship(back_populates="cash_balances")
 
@@ -475,6 +491,11 @@ class SignalOutcome(Base):
     research_rec: Mapped[str | None] = mapped_column(String(16), nullable=True)
     research_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     ts_evaluated: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # T232-OC6: set when the hold window closed but no exit price was ever found (delisting,
+    # halt, or ingestion gap) — is_correct/pct_return/exit_date stay NULL. NULL means normal,
+    # fully-evaluated outcome. Written after a grace period so a brief ingestion delay isn't
+    # mistaken for a permanent loss of price data.
+    skip_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     __table_args__ = (
         Index("ix_signal_outcomes_horizon_correct", "horizon", "is_correct"),
@@ -545,8 +566,8 @@ class PaperPortfolio(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(128), default="Paper Portfolio")
-    initial_capital: Mapped[float] = mapped_column(Float)
-    current_cash: Mapped[float] = mapped_column(Float)
+    initial_capital: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    current_cash: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
     # JSON config — see paper_trading_engine.py _DEFAULT_CONFIG
     config: Mapped[dict] = mapped_column(JSON)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -575,11 +596,11 @@ class PaperTrade(Base):
     # Entry
     entry_date: Mapped[date] = mapped_column(Date, index=True)
     entry_time: Mapped[datetime] = mapped_column(DateTime)
-    entry_price: Mapped[float] = mapped_column(Float)
-    shares: Mapped[float] = mapped_column(Float)
-    stop_loss: Mapped[float] = mapped_column(Float)    # initial hard stop
-    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
-    current_stop: Mapped[float] = mapped_column(Float)  # trails up
+    entry_price: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    shares: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))
+    stop_loss: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))    # initial hard stop
+    take_profit: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
+    current_stop: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False))  # trails up
 
     # Decision quality at entry
     entry_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -591,17 +612,25 @@ class PaperTrade(Base):
     entry_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Signal.reasons snapshot
 
     # Live tracking
-    current_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    highest_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_price: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
+    highest_price: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
     stage: Mapped[str] = mapped_column(String(20), default="open", index=True)  # open|closed
     hold_days: Mapped[int] = mapped_column(Integer, default=0)
 
+    # T232-PT6: realized P&L from scale-out partial exits, accumulated as they happen.
+    # Folded into `pnl` at final close so a trade that scaled out profitably then trailed
+    # to breakeven on the remainder is scored as a win, not a loser. entry_shares is the
+    # original position size before any scale-outs shrank `shares` — needed to compute a
+    # cost-basis-correct pct_return once part of the position has already been sold.
+    realized_pnl: Mapped[float] = mapped_column(Numeric(20, 6, asdecimal=False), default=0.0)
+    entry_shares: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
+
     # Exit (null until closed)
     exit_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
     exit_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     exit_reasons: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pnl: Mapped[float | None] = mapped_column(Numeric(20, 6, asdecimal=False), nullable=True)
     pct_return: Mapped[float | None] = mapped_column(Float, nullable=True)
     # PA-G3: signal lifecycle — which signal was active at exit (for walk-forward attribution)
     signal_at_exit_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id", ondelete="SET NULL"), nullable=True)
@@ -677,9 +706,341 @@ class Fundamental(Base):
     # Analyst consensus
     recommendation_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
     number_of_analysts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Phase 1 additions — valuation
+    peg_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    debt_to_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # T217-B: DDM — trailing annual dividend yield (dividend_rate / price), 0–1 scale
+    dividend_yield: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint("stock_id", "as_of", name="uq_fundamentals_stock_date"),
     )
+
+
+# ── Event Intelligence Platform ───────────────────────────────────────────────
+
+class EconomicEvent(Base):
+    __tablename__ = "economic_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    country: Mapped[str] = mapped_column(String(8), index=True)
+    event_date: Mapped[datetime] = mapped_column(DateTime, index=True)
+    actual_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expected_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    previous_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    importance: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("event_type", "country", "event_date", name="uq_economic_event"),
+    )
+
+
+class EarningsEvent(Base):
+    __tablename__ = "earnings_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    report_date: Mapped[date] = mapped_column(Date, index=True)
+    period: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    fiscal_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fiscal_quarter: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eps_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eps_actual: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_actual: Mapped[float | None] = mapped_column(Float, nullable=True)
+    surprise_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_surprise_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_strength_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    post_earnings_return_1d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    post_earnings_return_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", "fiscal_year", "fiscal_quarter", name="uq_earnings_stock_period"),
+        Index("ix_earnings_stock_date", "stock_id", "report_date"),
+        Index("ix_earnings_report_date", "report_date"),
+    )
+
+
+class InsiderTransaction(Base):
+    __tablename__ = "insider_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    insider_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    insider_role: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    transaction_type: Mapped[str] = mapped_column(String(32))
+    shares: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    price_per_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    transaction_date: Mapped[date] = mapped_column(Date, index=True)
+    filing_date: Mapped[date] = mapped_column(Date, index=True)
+    accession_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("accession_number", name="uq_insider_accession"),
+        Index("ix_insider_stock_date", "stock_id", "transaction_date"),
+    )
+
+
+class CongressTrade(Base):
+    __tablename__ = "congress_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    politician_name: Mapped[str] = mapped_column(String(255), index=True)
+    party: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    chamber: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    state: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    stock_id: Mapped[int | None] = mapped_column(ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)
+    transaction_type: Mapped[str] = mapped_column(String(32))
+    amount_range: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    amount_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
+    disclosure_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("politician_name", "ticker", "trade_date", "transaction_type", name="uq_congress_trade"),
+        Index("ix_congress_ticker_date", "ticker", "trade_date"),
+    )
+
+
+class InstitutionalHolding(Base):
+    __tablename__ = "institutional_holdings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fund_name: Mapped[str] = mapped_column(String(255), index=True)
+    fund_cik: Mapped[str] = mapped_column(String(32), index=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    period_date: Mapped[date] = mapped_column(Date, index=True)
+    shares: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    value_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("fund_cik", "stock_id", "period_date", name="uq_inst_holding"),
+        Index("ix_inst_holding_value", "value_usd"),
+    )
+
+
+class InstitutionalTransaction(Base):
+    __tablename__ = "institutional_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fund_name: Mapped[str] = mapped_column(String(255), index=True)
+    fund_cik: Mapped[str] = mapped_column(String(32))
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    period_date: Mapped[date] = mapped_column(Date, index=True)
+    change_type: Mapped[str] = mapped_column(String(32))
+    shares_change: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    value_change_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("fund_cik", "stock_id", "period_date", name="uq_inst_txn"),
+    )
+
+
+class PoliticalEvent(Base):
+    __tablename__ = "political_events"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "event_type", "event_date", "agency", name="uq_political_event"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int | None] = mapped_column(ForeignKey("stocks.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(512))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    amount_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    agency: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    event_date: Mapped[date] = mapped_column(Date, index=True)
+    impact: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class StockConnectFlow(Base):
+    """Daily Stock Connect southbound flow per HK stock (mainland investors buying HK)."""
+    __tablename__ = "stock_connect_flows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    flow_date: Mapped[date] = mapped_column(Date, index=True)
+    net_shares: Mapped[float | None] = mapped_column(Float, nullable=True)   # daily change in mainland holdings (shares)
+    net_hkd_m: Mapped[float | None] = mapped_column(Float, nullable=True)    # net buy value in HKD millions
+    holdings_shares: Mapped[float | None] = mapped_column(Float, nullable=True)  # total mainland holdings (shares)
+    holdings_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # % of total issued shares held by mainland
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)         # 0-100 southbound momentum score
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", "flow_date", name="uq_stock_connect_flow"),
+    )
+
+
+class CatalystScore(Base):
+    __tablename__ = "catalyst_scores"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id", ondelete="CASCADE"), index=True)
+    catalyst_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    insider_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    congress_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    institutional_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    economic_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    composite_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_days_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_insider_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_congress_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("stock_id", name="uq_catalyst_stock"),
+    )
+
+
+# ── T208: SEC EDGAR 8-K Filings ───────────────────────────────────────────────
+
+class SecFiling(Base):
+    """SEC EDGAR 8-K filing record — one row per unique accession number.
+
+    Ingested daily (post-US-close) for tracked US stocks. HK stocks have no
+    EDGAR filings and are skipped automatically in the ingest function.
+    is_material=True when the filing touches items 1.01, 2.01, 2.06, 5.02, or
+    8.01 — the items most likely to move stock prices materially.
+    """
+    __tablename__ = "sec_filings"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    cik: Mapped[str] = mapped_column(String(16), nullable=False)
+    accession: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    form: Mapped[str] = mapped_column(String(16), nullable=False, default="8-K")
+    filed_date: Mapped[date] = mapped_column(Date, nullable=False)
+    report_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    items: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    description: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_material: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_sec_filings_symbol_date", "symbol", "filed_date"),
+    )
+
+
+# ── T209: HKEX Stock Connect Southbound Flows ─────────────────────────────────
+
+class HkConnectFlow(Base):
+    """Daily HKEX Stock Connect southbound flow per HK stock (symbol-keyed).
+
+    Populated by hk_connect.ingest_southbound_flows() — called once daily after
+    HK market close. Unlike StockConnectFlow (which uses a stock_id FK), this
+    table uses the symbol string directly so the ingest function does not require
+    a stocks table lookup for each symbol.
+    """
+    __tablename__ = "hk_connect_flows"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    net_buy_hkd: Mapped[float | None] = mapped_column(Float, nullable=True)    # net buy in HKD
+    buy_hkd: Mapped[float | None] = mapped_column(Float, nullable=True)        # gross buy in HKD
+    sell_hkd: Mapped[float | None] = mapped_column(Float, nullable=True)       # gross sell in HKD
+    quota_used_pct: Mapped[float | None] = mapped_column(Float, nullable=True) # daily quota utilisation %
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_hk_connect_flow"),
+    )
+
+
+# ── T220-F: Fundamentals Snapshot for Earnings Revision Momentum ──────────────
+
+class FundamentalsSnapshot(Base):
+    """Weekly snapshot of per-symbol fundamentals for revision momentum tracking.
+
+    Populated every Sunday by the fundamentals_snapshot_weekly scheduler job.
+    Used by the ML feature builder to compute eps_revision_direction — the
+    direction of analyst recommendation changes over the prior 8 snapshots.
+    """
+    __tablename__ = "fundamentals_snapshot"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    recommendation_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eps_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_on_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # T234-ML-FUND-BROADCAST-LEAKAGE: added so builder.py can point-in-time join these
+    # columns (merge_asof) instead of broadcasting today's value across all historical
+    # training rows. History accumulates going forward only — rows before this column
+    # existed have NULL here, which builder.py's PIT join treats as NaN (XGBoost-safe).
+    gross_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fcf_yield: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_ratio_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_percent_of_float: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_to_book: Mapped[float | None] = mapped_column(Float, nullable=True)
+    peg_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    debt_to_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ddm_discount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    piotroski_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("symbol", "snapshot_date", name="uq_fundamentals_snapshot_sym_date"),)
+
+
+# ── T233-SELFIMPROVE-PHASE3: Tune History ──────────────────────────────────────
+
+class TuneHistory(Base):
+    """One row per attempted tuning candidate — promoted or rejected.
+
+    See docs/DESIGN_PROMOTION_GATE_PHASE3_2026-07-05.md for the full design. Written by
+    services/market-data/src/backtest/promotion_gate.py. Every call to evaluate_and_record()
+    writes exactly one row regardless of outcome, so "we tried X and it didn't help" is
+    always visible without reconstructing state from container logs across services — the
+    gap that let the CAL-1 corrupted-threshold incident go undetected.
+    """
+    __tablename__ = "tune_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(36), index=True)  # uuid4, groups a multi-style run
+    ts: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    parameter_class: Mapped[str] = mapped_column(String(32))  # "gate_threshold" for Phase 3
+    parameter_name: Mapped[str] = mapped_column(String(64))   # e.g. "min_entry_score"
+    style: Mapped[str] = mapped_column(String(16))
+    market: Mapped[str] = mapped_column(String(8))
+    old_value: Mapped[dict] = mapped_column(JSON)
+    new_value: Mapped[dict] = mapped_column(JSON)
+    train_window_start: Mapped[date] = mapped_column(Date)
+    train_window_end: Mapped[date] = mapped_column(Date)
+    validation_window_start: Mapped[date] = mapped_column(Date)
+    validation_window_end: Mapped[date] = mapped_column(Date)
+    train_ev_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    validation_ev_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_validation_ev_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    validation_n: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Deliberately NOT a true portfolio-equity drawdown — see the design doc §1/§3 for why a
+    # faithful version needs Phase 2b's full equity-curve replay. This is the largest single
+    # trade loss in the validation-slice return list, a narrower question than real drawdown.
+    approx_worst_trade_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_worst_trade_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    promoted: Mapped[bool] = mapped_column(Boolean)
+    gate_failures: Mapped[list] = mapped_column(JSON, default=list)
+    triggered_by: Mapped[str] = mapped_column(String(16), default="manual")  # manual | scheduled (Phase 5)

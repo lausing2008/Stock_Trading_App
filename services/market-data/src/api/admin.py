@@ -20,6 +20,31 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 log = get_logger("admin")
 _settings = get_settings()
 
+
+def _trigger_new_stock_refresh(symbol: str, market: str) -> None:
+    """ALERT-F2: close the gap where a newly-added stock has no K-Score until the next
+    scheduled 5x/day (or weekly) rankings refresh — the conviction gate hard-blocks alerts
+    on missing K-Score, so SNDK-style spin-offs got silently gated out for hours/days.
+
+    Registered as a SECOND BackgroundTasks.add_task() after ingest_symbol — FastAPI runs
+    background tasks sequentially in registration order, so this only fires once ingestion
+    (price history backfill) has actually completed, not concurrently with it.
+    Scoped to just this stock's market (not a full-universe refresh) since only one new
+    stock needs picking up — matches the existing per-market refresh pattern already used
+    by _weekly_full_refresh in scheduler.py.
+    """
+    import httpx
+    from ..services.scheduler import _service_token
+    try:
+        tok = _service_token()
+        headers = {"Authorization": f"Bearer {tok}"} if tok else {}
+        httpx.post(f"{_settings.ranking_engine_url}/rankings/refresh", params={"market": market}, headers=headers, timeout=10)
+        httpx.post(f"{_settings.signal_engine_url}/signals/refresh", params={"market": market}, headers=headers, timeout=10)
+        log.info("add_stock.refresh_triggered", symbol=symbol, market=market)
+    except Exception as exc:
+        log.warning("add_stock.refresh_failed", symbol=symbol, market=market, error=str(exc))
+
+
 _REDIS_CLAUDE_KEY       = "stockai:admin:claude_api_key"
 _REDIS_DEEPSEEK_KEY     = "stockai:admin:deepseek_api_key"
 _REDIS_CLAUDE_MODEL     = "stockai:admin:claude_model"
@@ -180,6 +205,7 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
         existing = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
         if existing:
             tasks.add_task(ingest_symbol, symbol, existing.market.value)
+            tasks.add_task(_trigger_new_stock_refresh, symbol, existing.market.value)
             return {"status": "exists", "symbol": symbol, "name": existing.name}
 
     # Fetch metadata from yfinance
@@ -212,6 +238,7 @@ def add_stock(req: AddStockRequest, tasks: BackgroundTasks, _: User = Depends(ge
     log.info("add_stock.done", symbol=symbol, name=name)
     market_val = "HK" if symbol.endswith(".HK") else "US"
     tasks.add_task(ingest_symbol, symbol, market_val)
+    tasks.add_task(_trigger_new_stock_refresh, symbol, market_val)
     return {"status": "added", "symbol": symbol, "name": name, "sector": sector}
 
 
@@ -296,9 +323,15 @@ def trigger_morning_digest(
     market: str = Query("US", regex="^(US|HK)$"),
     _: User = Depends(get_admin_user),
 ):
-    """Manually trigger the morning digest email for a market (admin only). Runs in background."""
+    """Manually trigger the morning digest email for a market (admin only). Runs in background.
+
+    T232-UI2: send_morning_digest(markets: list | None) iterates `for _mkt in markets` — passing
+    the bare `market` string here (a leftover from the old two-job design) iterated its
+    characters ('U', 'S') instead of treating it as one market, silently producing an empty
+    digest. Wrap it in a list.
+    """
     from ..services.scheduler import send_morning_digest
-    background_tasks.add_task(send_morning_digest, market)
+    background_tasks.add_task(send_morning_digest, [market])
     return {"status": "queued", "market": market, "message": f"Morning digest [{market}] is being sent to all users with email configured."}
 
 
@@ -316,4 +349,61 @@ def scheduler_status(_: User = Depends(get_admin_user)):
             except Exception:
                 pass
     return {"jobs": jobs}
+
+
+@router.get("/dq-status")
+def data_quality_status(_: User = Depends(get_admin_user)):
+    """Return the latest result of each data-quality staleness check (from Redis).
+
+    Distinct from /scheduler-status: that reports whether a JOB ran; this reports
+    whether the DATA that job was supposed to produce is actually fresh. See
+    run_data_quality_checks() in scheduler.py for why the two can diverge (the
+    2026-07-03 rankings incident: the job "ran" and returned 200 for 10+ days while
+    silently writing zero rows).
+    """
+    r = _get_redis()
+    keys = sorted(r.keys("dq_check:*"))
+    checks = []
+    for key in keys:
+        if key in ("dq_check:last_alert_ts",):
+            continue
+        val = r.get(key)
+        if val:
+            try:
+                checks.append(json.loads(val))
+            except Exception:
+                pass
+    return {"checks": checks}
+
+
+@router.post("/backfill-index-membership")
+def backfill_index_membership(
+    session: Session = Depends(get_session),
+    _: User = Depends(get_admin_user),
+):
+    """Backfill stocks.index_membership for US stocks in DOW_30, NASDAQ_100, SP500."""
+    from .index_members import DOW_30, NASDAQ_100, SP500
+
+    index_map: dict[str, list[str]] = {}
+    for sym in DOW_30:
+        index_map.setdefault(sym, []).append("DOW_30")
+    for sym in NASDAQ_100:
+        index_map.setdefault(sym, []).append("NASDAQ_100")
+    for sym in SP500:
+        index_map.setdefault(sym, []).append("SP500")
+
+    stocks = session.execute(
+        select(Stock).where(Stock.active.is_(True), Stock.market == "US")
+    ).scalars().all()
+
+    updated = 0
+    for stock in stocks:
+        indices = index_map.get(stock.symbol, [])
+        new_val = ",".join(sorted(set(indices))) if indices else None
+        if stock.index_membership != new_val:
+            stock.index_membership = new_val
+            updated += 1
+
+    session.commit()
+    return {"status": "ok", "updated": updated}
 

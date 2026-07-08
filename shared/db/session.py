@@ -125,6 +125,9 @@ def _run_migrations() -> None:  # noqa: C901
         # We only add values here for existing AWS DBs that were created before new conditions were added.
         for _val in ('CROSS_ABOVE_EMA', 'CROSS_BELOW_EMA', 'NEW_52WK_HIGH', 'NEW_52WK_LOW', 'GOLDEN_CROSS', 'DEATH_CROSS'):
             conn.execute(text(f"ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS '{_val}'"))
+        # Pattern conditions added after initial DB creation (lowercase, matching Python enum values)
+        for _val in ('macd_bullish_cross', 'rsi_oversold_bounce', 'double_bottom', 'breakout'):
+            conn.execute(text(f"ALTER TYPE alertcondition ADD VALUE IF NOT EXISTS '{_val}'"))
         # SA-13: add GROWTH horizon to the signalhorizon enum (idempotent on existing DBs)
         conn.execute(text("ALTER TYPE signalhorizon ADD VALUE IF NOT EXISTS 'GROWTH'"))
         conn.execute(text("""
@@ -147,6 +150,8 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_price_alerts_symbol ON price_alerts (symbol)"
         ))
+        conn.execute(text("ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS recurring BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMP"))
         # ── Signal alerts ──────────────────────────────────────────────────────
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS signal_alerts (
@@ -255,6 +260,153 @@ def _run_migrations() -> None:  # noqa: C901
         conn.execute(text(
             "ALTER TABLE paper_equity_curve ADD COLUMN IF NOT EXISTS market_regime VARCHAR(16)"
         ))
+        # aud14-survivorship: delisted flag on stocks — included in ML training universe
+        conn.execute(text(
+            "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS delisted BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        # aud14-float-financials: migrate cash ledger columns to NUMERIC for exact arithmetic
+        # Idempotent: only converts when the column is still DOUBLE PRECISION
+        for _tbl, _col in [
+            ("user_cash",        "amount"),
+            ("user_positions",   "shares"),
+            ("user_positions",   "avg_cost"),
+            ("position_trades",  "shares"),
+            ("position_trades",  "price"),
+            ("paper_portfolios", "initial_capital"),
+            ("paper_portfolios", "current_cash"),
+            ("paper_trades",     "entry_price"),
+            ("paper_trades",     "shares"),
+            ("paper_trades",     "stop_loss"),
+            ("paper_trades",     "take_profit"),
+            ("paper_trades",     "current_stop"),
+            ("paper_trades",     "exit_price"),
+            ("paper_trades",     "pnl"),
+            ("paper_trades",     "current_price"),
+            ("paper_trades",     "highest_price"),
+        ]:
+            conn.execute(text(f"""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='{_tbl}' AND column_name='{_col}'
+                          AND data_type='double precision'
+                    ) THEN
+                        ALTER TABLE {_tbl}
+                            ALTER COLUMN {_col} TYPE NUMERIC(20,6)
+                            USING {_col}::NUMERIC(20,6);
+                    END IF;
+                END $$;
+            """))
+        # Phase-1, T217-B, and T204: fundamentals columns added to ORM model without DB migration
+        for _fund_col in ["peg_ratio", "debt_to_equity", "dividend_yield",
+                          "short_percent_of_float", "short_ratio"]:
+            conn.execute(text(
+                f"ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS {_fund_col} FLOAT"
+            ))
+        # INT-8 forward-return tracking columns added to signal_outcomes after initial table creation
+        for _col, _type in [
+            ("price_5d",       "FLOAT"),
+            ("return_5d",      "FLOAT"),
+            ("is_correct_5d",  "BOOLEAN"),
+            ("price_10d",      "FLOAT"),
+            ("return_10d",     "FLOAT"),
+            ("is_correct_10d", "BOOLEAN"),
+            ("price_20d",      "FLOAT"),
+            ("return_20d",     "FLOAT"),
+            ("is_correct_20d", "BOOLEAN"),
+            ("research_rec",   "VARCHAR(16)"),
+            ("research_score", "FLOAT"),
+        ]:
+            conn.execute(text(
+                f"ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS {_col} {_type}"
+            ))
+        # T208: SEC 8-K filings table for material event detection
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS sec_filings (
+                id          BIGSERIAL PRIMARY KEY,
+                symbol      VARCHAR(32) NOT NULL,
+                cik         VARCHAR(16) NOT NULL,
+                accession   VARCHAR(32) NOT NULL UNIQUE,
+                form        VARCHAR(16) NOT NULL DEFAULT '8-K',
+                filed_date  DATE NOT NULL,
+                report_date DATE,
+                items       VARCHAR(512),
+                description VARCHAR(512),
+                is_material BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at  TIMESTAMP NOT NULL DEFAULT now()
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_sec_filings_symbol ON sec_filings (symbol)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_sec_filings_filed_date ON sec_filings (filed_date)"
+        ))
+        # T208: CIK column on stocks table for fast EDGAR lookup
+        conn.execute(text(
+            "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS cik VARCHAR(16)"
+        ))
+        # T11: index membership column on stocks
+        conn.execute(text(
+            "ALTER TABLE stocks ADD COLUMN IF NOT EXISTS index_membership VARCHAR(256)"
+        ))
+        # T209: HKEX Stock Connect southbound flow table
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS hk_connect_flows (
+                id              BIGSERIAL PRIMARY KEY,
+                symbol          VARCHAR(32) NOT NULL,
+                trade_date      DATE NOT NULL,
+                net_buy_hkd     FLOAT,
+                buy_hkd         FLOAT,
+                sell_hkd        FLOAT,
+                quota_used_pct  FLOAT,
+                created_at      TIMESTAMP NOT NULL DEFAULT now(),
+                UNIQUE(symbol, trade_date)
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hk_connect_symbol ON hk_connect_flows (symbol)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_hk_connect_date ON hk_connect_flows (trade_date)"
+        ))
+        # T220-F: fundamentals_snapshot for earnings revision momentum tracking
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS fundamentals_snapshot (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                snapshot_date DATE NOT NULL,
+                recommendation_mean FLOAT,
+                eps_estimate FLOAT,
+                revenue_growth FLOAT,
+                earnings_growth FLOAT,
+                return_on_equity FLOAT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_fundamentals_snapshot_sym_date
+            ON fundamentals_snapshot (symbol, snapshot_date)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_fundamentals_snapshot_sym
+            ON fundamentals_snapshot (symbol)
+        """))
+        # T234-ML-FUND-BROADCAST-LEAKAGE: extend fundamentals_snapshot with the columns
+        # builder.py broadcasts today's value for across ALL historical training rows
+        # (lookahead bias). Backfilling these lets a future point-in-time merge_asof join
+        # replace the broadcast, same pattern already used for revenue_growth/earnings_growth/
+        # return_on_equity/recommendation_mean since T228.
+        for _col, _type in [
+            ("gross_margin", "FLOAT"), ("fcf_yield", "FLOAT"), ("short_ratio", "FLOAT"),
+            ("short_ratio_delta", "FLOAT"), ("short_percent_of_float", "FLOAT"),
+            ("price_to_book", "FLOAT"), ("peg_ratio", "FLOAT"), ("debt_to_equity", "FLOAT"),
+            ("ddm_discount", "FLOAT"), ("piotroski_score", "FLOAT"),
+        ]:
+            conn.execute(text(
+                f"ALTER TABLE fundamentals_snapshot ADD COLUMN IF NOT EXISTS {_col} {_type}"
+            ))
 
 
 def _seed_admin() -> None:
@@ -290,3 +442,19 @@ def _seed_admin() -> None:
             text("UPDATE watchlist_items SET user_id = :uid WHERE user_id IS NULL"),
             {"uid": admin_id},
         )
+
+        # AUD19-ARCH1: Seed service accounts so service JWT tokens (sub="scheduler",
+        # sub="paper-engine") resolve via get_current_user DB lookup when called via HTTP.
+        # These users have no usable password — login is blocked; only service JWTs work.
+        for _svc_user in ("scheduler", "paper-engine"):
+            _exists = conn.execute(
+                text("SELECT 1 FROM users WHERE username = :u"), {"u": _svc_user}
+            ).fetchone()
+            if not _exists:
+                conn.execute(
+                    text("""
+                        INSERT INTO users (username, password_hash, role, is_active, created_at)
+                        VALUES (:u, 'SERVICE_ACCOUNT_NO_LOGIN', 'ADMIN', true, now())
+                    """),
+                    {"u": _svc_user},
+                )

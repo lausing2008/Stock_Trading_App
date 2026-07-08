@@ -15,10 +15,12 @@ type Row = RankingRow & {
   price?: number;
   change_pct?: number;
   inWatchlist: boolean;
+  rvol?: number;   // today's volume ÷ avg_volume — T236-RVOL-MARKET-WIDE-SCREEN
 };
 
 type SortKey = 'symbol' | 'score' | 'technical' | 'momentum' | 'value' | 'growth'
-             | 'bullish_probability' | 'change_pct' | 'price' | 'confidence' | 'relative_strength';
+             | 'bullish_probability' | 'change_pct' | 'price' | 'confidence' | 'relative_strength'
+             | 'trailing_pe' | 'revenue_growth' | 'peg_ratio' | 'rvol';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -34,6 +36,7 @@ const ALL_SIGNALS = ['BUY', 'HOLD', 'WAIT', 'SELL'] as const;
 const DEFAULT_FILTERS = {
   market: 'All' as 'All' | 'US' | 'HK',
   signals: new Set<string>(),        // empty = show all
+  indices: new Set<string>(),        // empty = show all; options: SP500, NASDAQ_100, DOW_30
   minScore: '',
   minTechnical: '',
   minMomentum: '',
@@ -48,6 +51,16 @@ const DEFAULT_FILTERS = {
   minFairDiscount: '',   // min % stock trades BELOW fair value (positive = undervalued)
   minRS: '',             // min relative strength score (0-100)
   minConfidence: '',     // min signal confidence (0-100)
+  minVolRatio: '',       // min volume ratio (avg5d / avg20d) — 2+ = volume spike
+  minRvol: '',           // min RVOL (today's volume ÷ avg_volume) — 1.5+ = elevated, 2+ = unusual
+  // Fundamental filters
+  maxPE: '',             // max trailing P/E (exclude expensive)
+  minRevGrowth: '',      // min revenue growth % YoY
+  maxDebt: '',           // max debt-to-equity ratio
+  maxPEG: '',            // max PEG ratio (PE / growth)
+  minInstOwnership: '',  // min institutional ownership % (0-100)
+  capTier: '',           // mega|large|mid|small|micro
+  patterns: new Set<string>(), // chart patterns to require (AND logic)
   watchlistOnly: true,
   search: '',
 };
@@ -217,6 +230,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     return (rankData?.rankings ?? []).map(r => {
       const sig = signalMap[r.symbol];
       const prc = priceMap[r.symbol];
+      const rvol = prc?.volume && prc?.avg_volume ? prc.volume / prc.avg_volume : undefined;
       return {
         ...r,
         signal:             sig?.signal,
@@ -225,6 +239,7 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
         price:              prc?.price,
         change_pct:         prc?.change_pct ?? undefined,
         inWatchlist:        wlSymbols.has(r.symbol),
+        rvol,
       };
     });
   }, [rankData, signalMap, priceMap, wlSymbols]);
@@ -247,15 +262,31 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
     const minBullish  = filters.minBullish   ? +filters.minBullish / 100 : null;
     const minRS       = filters.minRS        ? +filters.minRS        : null;
     const minConf     = filters.minConfidence ? +filters.minConfidence : null;
+    const minVolRat   = filters.minVolRatio   ? +filters.minVolRatio   : null;
+    const minRvol     = filters.minRvol       ? +filters.minRvol       : null;
     const minChg      = filters.minChange    ? +filters.minChange    : null;
     const maxChg      = filters.maxChange    ? +filters.maxChange    : null;
     const minPrc      = filters.minPrice     ? +filters.minPrice     : null;
     const maxPrc      = filters.maxPrice     ? +filters.maxPrice     : null;
     const minDisc     = filters.minFairDiscount ? +filters.minFairDiscount / 100 : null;
+    const maxPE       = filters.maxPE        ? +filters.maxPE        : null;
+    const minRevGrow  = filters.minRevGrowth ? +filters.minRevGrowth / 100 : null;
+    const maxDebt     = filters.maxDebt      ? +filters.maxDebt      : null;
+    const maxPEG      = filters.maxPEG       ? +filters.maxPEG       : null;
+    const minInstOwn  = filters.minInstOwnership ? +filters.minInstOwnership / 100 : null;
+    const capTierMap: Record<string, [number, number]> = {
+      mega:  [200e9, Infinity], large: [10e9, 200e9],
+      mid:   [2e9, 10e9],      small: [300e6, 2e9], micro: [0, 300e6],
+    };
+    const capRange = filters.capTier ? capTierMap[filters.capTier] : null;
 
     return rows.filter(r => {
       if (filters.market !== 'All' && r.market !== filters.market) return false;
       if (filters.signals.size > 0 && (!r.signal || !filters.signals.has(r.signal))) return false;
+      if (filters.indices.size > 0) {
+        const membership = new Set((r.index_membership ?? '').split(',').filter(Boolean));
+        if (![...filters.indices].some(idx => membership.has(idx))) return false;
+      }
       if ((!isAdmin || filters.watchlistOnly) && !r.inWatchlist) return false;
       if (search && !r.symbol.toLowerCase().includes(search) && !r.name.toLowerCase().includes(search)) return false;
       if (filters.sector && r.sector !== filters.sector) return false;
@@ -267,6 +298,8 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
       if (minBullish != null && (r.bullish_probability ?? 0) < minBullish) return false;
       if (minRS      != null && (r.relative_strength ?? 0) < minRS) return false;
       if (minConf    != null && (r.confidence ?? 0) < minConf) return false;
+      if (minVolRat  != null && (r.vol_ratio == null || r.vol_ratio < minVolRat)) return false;
+      if (minRvol    != null && (r.rvol == null || r.rvol < minRvol)) return false;
       if (minChg     != null && (r.change_pct ?? 0) < minChg) return false;
       if (maxChg     != null && (r.change_pct ?? 0) > maxChg) return false;
       if (minPrc     != null && (r.price ?? 0) < minPrc) return false;
@@ -275,6 +308,16 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
         if (r.fair_price == null || r.price == null) return false;
         const discount = (r.fair_price - r.price) / r.price;
         if (discount < minDisc) return false;
+      }
+      if (maxPE != null && (r.trailing_pe == null || r.trailing_pe > maxPE)) return false;
+      if (minRevGrow != null && (r.revenue_growth == null || r.revenue_growth < minRevGrow)) return false;
+      if (maxDebt != null && (r.debt_to_equity == null || r.debt_to_equity > maxDebt)) return false;
+      if (maxPEG != null && (r.peg_ratio == null || r.peg_ratio > maxPEG)) return false;
+      if (minInstOwn != null && (r.held_percent_institutions == null || r.held_percent_institutions < minInstOwn)) return false;
+      if (capRange != null && (r.market_cap == null || r.market_cap < capRange[0] || r.market_cap >= capRange[1])) return false;
+      if (filters.patterns.size > 0) {
+        const stockPats = new Set(r.patterns ?? []);
+        for (const p of filters.patterns) { if (!stockPats.has(p)) return false; }
       }
       return true;
     });
@@ -295,6 +338,10 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
       else if (sort.key === 'price')              { av = a.price ?? -1;               bv = b.price ?? -1; }
       else if (sort.key === 'confidence')         { av = a.confidence ?? -1;          bv = b.confidence ?? -1; }
       else if (sort.key === 'relative_strength')  { av = a.relative_strength ?? -1;   bv = b.relative_strength ?? -1; }
+      else if (sort.key === 'trailing_pe')        { av = a.trailing_pe ?? 9999;        bv = b.trailing_pe ?? 9999; }
+      else if (sort.key === 'revenue_growth')     { av = a.revenue_growth ?? -999;     bv = b.revenue_growth ?? -999; }
+      else if (sort.key === 'peg_ratio')          { av = a.peg_ratio ?? 9999;          bv = b.peg_ratio ?? 9999; }
+      else if (sort.key === 'rvol')               { av = a.rvol ?? -1;                 bv = b.rvol ?? -1; }
 
       if (typeof av === 'string') return sort.dir === 'asc' ? av.localeCompare(bv as string) : (bv as string).localeCompare(av);
       return sort.dir === 'asc' ? av - (bv as number) : (bv as number) - av;
@@ -314,18 +361,21 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
   }
 
   function resetFilters() {
-    setFilters({ ...DEFAULT_FILTERS, signals: new Set() });
+    setFilters({ ...DEFAULT_FILTERS, signals: new Set(), indices: new Set() });
   }
 
   const isDefaultFilters = (
-    filters.market === 'All' && filters.signals.size === 0 && !filters.minScore && !filters.minTechnical &&
+    filters.market === 'All' && filters.signals.size === 0 && filters.indices.size === 0 &&
+    !filters.minScore && !filters.minTechnical &&
     !filters.minMomentum && !filters.minValue && !filters.minGrowth && !filters.minBullish &&
     !filters.minChange && !filters.maxChange && !filters.minPrice && !filters.maxPrice &&
     !filters.sector && !filters.minFairDiscount && !filters.minRS && !filters.minConfidence &&
+    !filters.maxPE && !filters.minRevGrowth && !filters.maxDebt && !filters.maxPEG &&
+    !filters.minInstOwnership && !filters.capTier && !filters.minVolRatio && filters.patterns.size === 0 &&
     !filters.watchlistOnly && !filters.search
   );
 
-  const loading = !rankData || !signals || !prices;
+  const loading = !rankData || !signals;
 
   return (
     <div style={{ maxWidth: '1400px', margin: '0 auto', padding: '20px 16px' }}>
@@ -370,6 +420,23 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
             </button>
           )}
         </div>
+      </div>
+
+      {/* Preset filter chips */}
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+        {[
+          { label: 'Vol Surge ⚡', apply: () => setFilters(f => ({ ...f, minVolRatio: '2' })), active: filters.minVolRatio === '2' },
+          { label: 'Unusual Vol Today 🔥', apply: () => setFilters(f => ({ ...f, minRvol: '1.5' })), active: filters.minRvol === '1.5' },
+          { label: 'Strong BUY', apply: () => setFilters(f => ({ ...f, signals: new Set(['BUY']), minScore: '65', minConfidence: '60' })), active: filters.signals.size === 1 && filters.signals.has('BUY') && filters.minScore === '65' },
+          { label: 'High Short', apply: () => setFilters(f => ({ ...f, minFairDiscount: '' })), active: false },
+          { label: 'Deep Value', apply: () => setFilters(f => ({ ...f, minFairDiscount: '15', maxPE: '20' })), active: filters.minFairDiscount === '15' && filters.maxPE === '20' },
+          { label: 'Growth Momentum', apply: () => setFilters(f => ({ ...f, minRevGrowth: '20', minMomentum: '60' })), active: filters.minRevGrowth === '20' && filters.minMomentum === '60' },
+        ].map(preset => (
+          <button key={preset.label} onClick={preset.apply}
+            style={{ padding: '4px 10px', borderRadius: '5px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', border: `1px solid ${preset.active ? '#6366f1' : '#1e293b'}`, background: preset.active ? 'rgba(99,102,241,0.15)' : 'transparent', color: preset.active ? '#818cf8' : '#64748b', transition: 'all 0.1s' }}>
+            {preset.label}
+          </button>
+        ))}
       </div>
 
       {/* AI Natural Language Screener */}
@@ -502,10 +569,85 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
             </select>
           </div>
 
+          {/* Index membership */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Index</span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {([['SP500', 'S&P 500'], ['NASDAQ_100', 'NDX 100'], ['DOW_30', 'Dow 30']] as [string, string][]).map(([key, label]) => {
+                const active = filters.indices.has(key);
+                return (
+                  <button key={key} onClick={() => setFilters(f => {
+                    const next = new Set(f.indices);
+                    active ? next.delete(key) : next.add(key);
+                    return { ...f, indices: next };
+                  })} style={{
+                    padding: '3px 8px', borderRadius: '5px', fontSize: '11px', fontWeight: 600, cursor: 'pointer',
+                    border: `1px solid ${active ? '#38bdf8' : '#1e293b'}`,
+                    background: active ? 'rgba(56,189,248,0.12)' : 'transparent',
+                    color: active ? '#38bdf8' : '#64748b',
+                  }}>{label}</button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Fair-value discount */}
           <NumInput label="Min Underval %" value={filters.minFairDiscount} onChange={v => setFilters(f => ({ ...f, minFairDiscount: v }))} placeholder="e.g. 10" />
           <NumInput label="Min RS Score"   value={filters.minRS}           onChange={v => setFilters(f => ({ ...f, minRS: v }))}           placeholder="e.g. 50" />
           <NumInput label="Min Confidence" value={filters.minConfidence}   onChange={v => setFilters(f => ({ ...f, minConfidence: v }))}   placeholder="e.g. 60" />
+          <NumInput label="Min Vol Ratio"  value={filters.minVolRatio}     onChange={v => setFilters(f => ({ ...f, minVolRatio: v }))}     placeholder="e.g. 2" />
+          <NumInput label="Min RVOL"       value={filters.minRvol}         onChange={v => setFilters(f => ({ ...f, minRvol: v }))}         placeholder="e.g. 1.5" />
+
+          {/* Fundamental filters */}
+          <div style={{ width: '1px', background: '#1e293b', alignSelf: 'stretch' }} />
+          <NumInput label="Max P/E"       value={filters.maxPE}           onChange={v => setFilters(f => ({ ...f, maxPE: v }))}           placeholder="e.g. 25" />
+          <NumInput label="Min Rev Grw %" value={filters.minRevGrowth}    onChange={v => setFilters(f => ({ ...f, minRevGrowth: v }))}    placeholder="e.g. 10" />
+          <NumInput label="Max D/E"       value={filters.maxDebt}         onChange={v => setFilters(f => ({ ...f, maxDebt: v }))}         placeholder="e.g. 2" />
+          <NumInput label="Max PEG"       value={filters.maxPEG}          onChange={v => setFilters(f => ({ ...f, maxPEG: v }))}          placeholder="e.g. 1.5" />
+          <NumInput label="Min Inst Own %" value={filters.minInstOwnership} onChange={v => setFilters(f => ({ ...f, minInstOwnership: v }))} placeholder="e.g. 40" />
+
+          {/* Market cap tier */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Market Cap</span>
+            <select value={filters.capTier} onChange={e => setFilters(f => ({ ...f, capTier: e.target.value }))}
+              style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #1e293b', background: '#080f1e', color: '#e2e8f0', fontSize: '12px', minWidth: '90px' }}>
+              <option value="">All</option>
+              <option value="mega">Mega (&gt;200B)</option>
+              <option value="large">Large (10-200B)</option>
+              <option value="mid">Mid (2-10B)</option>
+              <option value="small">Small (0.3-2B)</option>
+              <option value="micro">Micro (&lt;300M)</option>
+            </select>
+          </div>
+
+          {/* Chart pattern chips */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Pattern</span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', maxWidth: '320px' }}>
+              {(['double_bottom', 'double_top', 'head_and_shoulders', 'ascending_triangle', 'descending_triangle', 'symmetric_triangle', 'bull_flag', 'bear_flag', 'cup_and_handle'] as const).map(pat => {
+                const labels: Record<string, string> = {
+                  double_bottom: 'Dbl Bottom', double_top: 'Dbl Top',
+                  head_and_shoulders: 'H&S', ascending_triangle: '▲ Triangle',
+                  descending_triangle: '▽ Triangle', symmetric_triangle: '◇ Triangle',
+                  bull_flag: 'Bull Flag', bear_flag: 'Bear Flag', cup_and_handle: 'Cup',
+                };
+                const active = filters.patterns.has(pat);
+                return (
+                  <button key={pat} onClick={() => setFilters(f => {
+                    const next = new Set(f.patterns);
+                    active ? next.delete(pat) : next.add(pat);
+                    return { ...f, patterns: next };
+                  })} style={{
+                    padding: '3px 8px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer',
+                    border: `1px solid ${active ? '#6366f1' : '#1e293b'}`,
+                    background: active ? 'rgba(99,102,241,0.15)' : 'transparent',
+                    color: active ? '#a5b4fc' : '#475569',
+                    fontWeight: active ? 700 : 400,
+                  }}>{labels[pat]}</button>
+                );
+              })}
+            </div>
+          </div>
 
           {/* Watchlist toggle — admin only */}
           {isAdmin && (
@@ -555,6 +697,13 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                   <Th label="Confidence" col="confidence"          sort={sort} onSort={toggleSort} />
                   <Th label="Day Chg"    col="change_pct"          sort={sort} onSort={toggleSort} />
                   <Th label="Price"      col="price"               sort={sort} onSort={toggleSort} />
+                  {filters.minVolRatio && <th style={{ padding: '8px 10px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#f59e0b', borderBottom: '1px solid #1e293b', background: '#080f1e', whiteSpace: 'nowrap' }}>Vol Ratio</th>}
+                  {filters.minRvol && <Th label="RVOL" col="rvol" sort={sort} onSort={toggleSort} />}
+                  {(filters.maxPE || filters.minRevGrowth || filters.maxDebt || filters.maxPEG) && <>
+                    <Th label="P/E"       col="trailing_pe"    sort={sort} onSort={toggleSort} />
+                    <Th label="Rev Grw"   col="revenue_growth" sort={sort} onSort={toggleSort} />
+                    <Th label="PEG"       col="peg_ratio"      sort={sort} onSort={toggleSort} />
+                  </>}
                   <th style={{ padding: '8px 10px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#475569', borderBottom: '1px solid #1e293b', background: '#080f1e' }} />
                 </tr>
               </thead>
@@ -649,6 +798,38 @@ Respond with ONLY valid JSON — no markdown, no extra text. Set only fields rel
                       <td style={{ padding: '8px 10px', color: '#94a3b8', fontVariantNumeric: 'tabular-nums', fontSize: '12px' }}>
                         {row.price != null ? row.price.toFixed(2) : '—'}
                       </td>
+
+                      {/* Vol Ratio column — shown when vol filter active */}
+                      {filters.minVolRatio && (
+                        <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontSize: '12px', fontWeight: 700,
+                          color: row.vol_ratio == null ? '#334155' : row.vol_ratio >= 2 ? '#f59e0b' : row.vol_ratio >= 1.5 ? '#4ade80' : '#64748b' }}>
+                          {row.vol_ratio != null ? `${row.vol_ratio.toFixed(2)}×` : '—'}
+                          {row.vol_ratio != null && row.vol_ratio >= 2 && <span style={{ marginLeft: '4px', fontSize: '9px' }}>⚡</span>}
+                        </td>
+                      )}
+
+                      {/* RVOL column — today's volume ÷ avg_volume, shown when RVOL filter active.
+                          Same 1.5x/2.0x thresholds as the stock detail page's RVOL chip (T220-I). */}
+                      {filters.minRvol && (
+                        <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontSize: '12px', fontWeight: 700,
+                          color: row.rvol == null ? '#334155' : row.rvol >= 2 ? '#f87171' : row.rvol >= 1.5 ? '#fbbf24' : '#64748b' }}>
+                          {row.rvol != null ? `${row.rvol.toFixed(2)}×` : '—'}
+                          {row.rvol != null && row.rvol >= 2 && <span style={{ marginLeft: '4px', fontSize: '9px' }}>🔥</span>}
+                        </td>
+                      )}
+
+                      {/* Fundamental columns — shown when any fundamental filter active */}
+                      {(filters.maxPE || filters.minRevGrowth || filters.maxDebt || filters.maxPEG) && <>
+                        <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontSize: '12px', color: row.trailing_pe == null ? '#334155' : row.trailing_pe > 30 ? '#fbbf24' : '#94a3b8' }}>
+                          {row.trailing_pe != null ? row.trailing_pe.toFixed(1) : '—'}
+                        </td>
+                        <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontSize: '12px', color: row.revenue_growth == null ? '#334155' : row.revenue_growth >= 0.2 ? '#4ade80' : row.revenue_growth >= 0 ? '#94a3b8' : '#f87171' }}>
+                          {row.revenue_growth != null ? `${(row.revenue_growth * 100).toFixed(0)}%` : '—'}
+                        </td>
+                        <td style={{ padding: '8px 10px', fontVariantNumeric: 'tabular-nums', fontSize: '12px', color: row.peg_ratio == null ? '#334155' : row.peg_ratio < 1 ? '#4ade80' : row.peg_ratio < 2 ? '#fbbf24' : '#f87171' }}>
+                          {row.peg_ratio != null ? row.peg_ratio.toFixed(2) : '—'}
+                        </td>
+                      </>}
 
                       {/* Actions */}
                       <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>

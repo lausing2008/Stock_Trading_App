@@ -59,6 +59,9 @@ def _get_redis() -> redis_lib.Redis:
 _LIVE_KEY = "stockai:live_prices"
 _LIVE_TTL = 90  # seconds — refreshed every 1 min by scheduler; 90s gives a 30s buffer
 
+_AVG_VOLUME_KEY = "stockai:avg_volume"
+_AVG_VOLUME_TTL = 6 * 3600  # 6h — refreshed a few times/day; avg volume barely moves intraday
+
 
 class StockOut(BaseModel):
     id: int
@@ -166,6 +169,11 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
     symbols = [s.symbol for s in stocks]
 
     try:
+        _avg_volume_cache: dict[str, int] = json.loads(_get_redis().get(_AVG_VOLUME_KEY) or "{}")
+    except Exception:
+        _avg_volume_cache = {}
+
+    try:
         raw = yf.download(
             symbols,
             period="2d",
@@ -206,10 +214,13 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
                 sym_data = raw[symbol] if len(symbols) > 1 else raw
                 vols = sym_data["Volume"].dropna() if "Volume" in sym_data.columns else pd.Series(dtype=float)
                 volume = int(float(vols.iloc[-1])) if not vols.empty else None
-                avg_volume = int(float(vols.mean())) if len(vols) >= 5 else None
             except Exception:
                 volume = None
-                avg_volume = None
+            # MD-F11: the 2-day download window above is too short for a meaningful average
+            # (needs len(vols) >= 5, never true with period="2d") — read the real multi-week
+            # average from the separately-cached, infrequently-refreshed avg-volume table instead
+            # of widening this every-1-minute bulk fetch just to compute one slow-moving number.
+            avg_volume = _avg_volume_cache.get(symbol)
 
             results.append({
                 "symbol": symbol,
@@ -236,6 +247,52 @@ def _fetch_live_bulk(stocks: list) -> list[dict]:
                     results.append(r)
 
     return results
+
+
+def refresh_avg_volume_cache(stocks: list) -> int:
+    """MD-F11: compute a real multi-week average volume per symbol and cache it in Redis.
+
+    Runs far less often than the 1-minute live-price refresh (see _AVG_VOLUME_TTL) since
+    average volume barely moves intraday — _fetch_live_bulk reads from this cache instead
+    of trying to compute an average from its own short 2-day download window.
+    Returns the number of symbols successfully cached.
+    """
+    if not stocks:
+        return 0
+    symbols = [s.symbol for s in stocks]
+    try:
+        raw = yf.download(
+            symbols,
+            period="1mo",
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+        )
+    except Exception as exc:
+        log.warning("avg_volume.bulk_download_failed", error=str(exc))
+        return 0
+
+    if raw is None or raw.empty:
+        return 0
+
+    cache: dict[str, int] = {}
+    for symbol in symbols:
+        try:
+            sym_data = raw[symbol] if len(symbols) > 1 else raw
+            vols = sym_data["Volume"].dropna() if "Volume" in sym_data.columns else pd.Series(dtype=float)
+            if len(vols) >= 5:
+                cache[symbol] = int(float(vols.mean()))
+        except Exception:
+            continue
+
+    if cache:
+        try:
+            _get_redis().setex(_AVG_VOLUME_KEY, _AVG_VOLUME_TTL, json.dumps(cache))
+        except Exception:
+            pass
+    log.info("avg_volume.cache_refresh", count=len(cache))
+    return len(cache)
 
 
 def _latest_prices_from_db(session: Session) -> list[LatestPriceOut]:
@@ -380,7 +437,7 @@ def _compute_fear_greed() -> dict:
             v = float(vix_close.iloc[i])
             s = float(spx_close.iloc[i])
             ma = float(spx_close.rolling(125).mean().iloc[i])
-            r = float(spx_close.iloc[i] / spx_close.iloc[i - 20] - 1) if abs(i - 20) < len(spx_close) else 0.0
+            r = float(spx_close.iloc[i] / spx_close.iloc[i - 20] - 1) if abs(i - 20) <= len(spx_close) else 0.0
             vm = float(vix_close.rolling(20).mean().iloc[i])
             vs = 100 - min(max((v - 10) / 30 * 100, 0), 100)
             ms = 75.0 if s > ma else 25.0
@@ -434,6 +491,74 @@ def fear_greed():
     except Exception:
         pass
     return result
+
+
+@router.get("/regime")
+def regime(market: str = Query("US", description="US or HK")):
+    """Current market regime — the single canonical classifier used to gate paper trading entries.
+
+    T232-DL-REGIME5X: this is paper_trading_engine's own _fetch_market_regime()/
+    _fetch_hk_market_regime() output, exposed over HTTP so other services (decision-engine,
+    signal-engine) can call the SAME classifier instead of maintaining independent copies that
+    drift apart. Unauthenticated — read-only, no sensitive data, same pattern as /fear_greed.
+
+    Returns the cached value from the most recent paper trading cycle (fresh within one scan
+    interval); performs a lazy fetch if the cache is empty (e.g. right after a container restart).
+    """
+    from ..services.paper_trading_engine import get_last_regime, get_last_hk_regime
+    try:
+        if market.upper() == "HK":
+            return get_last_hk_regime()
+        return get_last_regime()
+    except Exception as exc:
+        log.warning("regime.fetch_failed", market=market, error=str(exc))
+        raise HTTPException(503, "Regime data unavailable")
+
+
+@router.get("/regime-state")
+def hmm_regime_state():
+    """Current 4-state HMM regime classification (T211/T232-ML7/T233-ARCH-HMMREGIME).
+
+    Uses a GaussianHMM trained on standardized (VIX_level, SPY_5d_return, IWM_vs_EMA200).
+    States: bull | neutral | choppy | bear, labeled by a composite (return + VIX) rank.
+    Model auto-refreshes when older than 7 days; falls back to the existing pickle if a
+    refresh fails. Returns {"error": ...} if hmmlearn is not installed or data fetch fails.
+    No auth required — public endpoint, advisory data only (same pattern as /fear_greed).
+
+    T233-ARCH-HMMREGIME: moved here from ml-prediction 2026-07-04 — paper_trading_engine
+    was the only consumer anywhere in the codebase and called this over HTTP on every
+    regime computation; colocating eliminates that network hop entirely.
+    """
+    from ..services.hmm_regime import predict_current
+    return predict_current()
+
+
+@router.post("/regime-refit")
+def hmm_regime_refit(_user=Depends(get_current_user)):
+    """Force-refit the HMM regime model. Requires auth."""
+    from ..services.hmm_regime import refit
+    result = refit()
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@router.get("/style-params")
+def style_params():
+    """Canonical per-style game-plan parameters (entry/breakout/stop/target percentages).
+
+    T232-DL-STYLEPARAMS3X: this dict was previously triplicated (scheduler.py, inlined again
+    in paper_trading_engine.py, and re-invented a third time in decision-engine's aggregator.py
+    with WRONG values for GROWTH and two dead styles — SCALP/INCOME — that don't exist in the
+    real trading engine). Only 4 real styles exist: SHORT, SWING, LONG, GROWTH.
+
+    Reads paper_trading_engine's live in-memory _STYLE_PARAMS, which _load_tuned_params()
+    overwrites with Optuna-tuned stop_pct/default_tp_pct values when available — so this
+    endpoint reflects the ACTUAL values currently in effect, not a static snapshot.
+    Unauthenticated — read-only, no sensitive data.
+    """
+    from ..services.paper_trading_engine import _STYLE_PARAMS
+    return _STYLE_PARAMS
 
 
 _MARKET_BREADTH_KEY = "stockai:market_breadth"
@@ -666,6 +791,9 @@ class FundamentalsOut(BaseModel):
     dividend_yield: float | None = None
     dividend_rate: float | None = None
     ex_dividend_date: str | None = None   # YYYY-MM-DD, from yfinance exDividendDate (unix ts → date)
+    # Valuation ratios (Phase 1 additions)
+    peg_ratio: float | None = None        # PE / forward earnings growth (yfinance pegRatio)
+    debt_to_equity: float | None = None   # total debt / total equity (yfinance debtToEquity)
     # Returns & risk
     return_on_equity: float | None = None
     return_on_assets: float | None = None
@@ -705,6 +833,7 @@ class FundamentalsOut(BaseModel):
     short_percent_of_float: float | None = None
     short_ratio: float | None = None
     shares_short: int | None = None
+    shares_short_prior_month: int | None = None  # prior month short interest (yfinance sharesShortPriorMonth)
     # Ownership breakdown
     held_percent_institutions: float | None = None
     held_percent_insiders: float | None = None
@@ -762,6 +891,8 @@ def fundamentals_bulk(session: Session = Depends(get_session)):
         "profit_margin", "operating_margin",
         "return_on_equity", "return_on_assets",
         "revenue_growth", "earnings_growth",
+        "peg_ratio", "debt_to_equity",
+        "held_percent_institutions", "held_percent_insiders",
     )
     for symbol in active_symbols:
         try:
@@ -924,6 +1055,8 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         dividend_yield=_safe(info, "dividendYield"),
         dividend_rate=_safe(info, "dividendRate"),
         ex_dividend_date=_parse_ex_div_date(_safe(info, "exDividendDate")),
+        peg_ratio=_safe(info, "pegRatio"),
+        debt_to_equity=_safe(info, "debtToEquity"),
         return_on_equity=_safe(info, "returnOnEquity"),
         return_on_assets=_safe(info, "returnOnAssets"),
         revenue_growth=_safe(info, "revenueGrowth"),
@@ -955,6 +1088,7 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
         short_percent_of_float=_safe(info, "shortPercentOfFloat"),
         short_ratio=_safe(info, "shortRatio"),
         shares_short=_safe(info, "sharesShort"),
+        shares_short_prior_month=_safe(info, "sharesShortPriorMonth"),
         held_percent_institutions=_safe(info, "heldPercentInstitutions"),
         held_percent_insiders=_safe(info, "heldPercentInsiders"),
     )
@@ -1023,6 +1157,9 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                 short_ratio=data.short_ratio,
                 recommendation_mean=data.recommendation_mean,
                 number_of_analysts=data.number_of_analysts,
+                peg_ratio=data.peg_ratio,
+                debt_to_equity=data.debt_to_equity,
+                dividend_yield=data.dividend_yield,
             ).on_conflict_do_update(
                 constraint="uq_fundamentals_stock_date",
                 set_=dict(
@@ -1041,6 +1178,9 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
                     short_ratio=data.short_ratio,
                     recommendation_mean=data.recommendation_mean,
                     number_of_analysts=data.number_of_analysts,
+                    peg_ratio=data.peg_ratio,
+                    debt_to_equity=data.debt_to_equity,
+                    dividend_yield=data.dividend_yield,
                     fetched_at=func.now(),
                 ),
             )
@@ -1052,6 +1192,60 @@ def get_fundamentals(symbol: str, refresh: bool = False, db: Session = Depends(g
 
     log.info("fundamentals.ok", symbol=symbol)
     return data
+
+
+_QUARTERLY_TTL = 86_400  # 24 hours
+
+
+@router.get("/{symbol}/quarterly")
+def get_quarterly_financials(symbol: str):
+    """Last 8 quarters of income statement data from yfinance, Redis-cached for 24 h."""
+    cache_key = f"stockai:quarterly:{symbol.upper()}"
+    try:
+        cached = _get_redis().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    result: list[dict] = []
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.quarterly_income_stmt
+        if df is not None and not df.empty:
+            # Columns are dates (newest first), rows are line items
+            import math as _math
+            cols = list(df.columns)[:8]  # last 8 quarters, newest first
+
+            def _val(df_, col_, row_name: str):
+                try:
+                    v = df_.loc[row_name, col_] if row_name in df_.index else None
+                    if v is None:
+                        return None
+                    if isinstance(v, float) and _math.isnan(v):
+                        return None
+                    return int(v)
+                except Exception:
+                    return None
+
+            for col in cols:
+                date_str = col.strftime("%Y-%m-%d") if hasattr(col, "strftime") else str(col)[:10]
+                result.append({
+                    "date": date_str,
+                    "revenue": _val(df, col, "Total Revenue"),
+                    "gross_profit": _val(df, col, "Gross Profit"),
+                    "net_income": _val(df, col, "Net Income"),
+                    "ebitda": _val(df, col, "EBITDA"),
+                })
+    except Exception as exc:
+        log.warning("quarterly_financials.fetch_failed", symbol=symbol, error=str(exc))
+
+    try:
+        _get_redis().setex(cache_key, _QUARTERLY_TTL, json.dumps(result))
+    except Exception:
+        pass
+
+    return result
 
 
 class QuickScanRequest(BaseModel):
@@ -1546,6 +1740,64 @@ def analyst_ratings(days: int = Query(30, ge=1, le=180), session: Session = Depe
     return results
 
 
+# ── Short Interest Dashboard ──────────────────────────────────────────────────
+
+@router.get("/short-interest")
+def short_interest(
+    _user=Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Return stocks sorted by short percent of float (from fundamentals table)."""
+    from sqlalchemy import text as _text
+    rows = session.execute(_text("""
+        SELECT st.symbol, st.name, st.market,
+               f.short_percent_of_float, f.short_ratio, f.market_cap
+        FROM stocks st
+        JOIN (
+            SELECT DISTINCT ON (stock_id) stock_id,
+                   short_percent_of_float, short_ratio, market_cap
+            FROM fundamentals
+            WHERE short_percent_of_float IS NOT NULL
+            ORDER BY stock_id, as_of DESC
+        ) f ON f.stock_id = st.id
+        WHERE st.active = TRUE
+        ORDER BY f.short_percent_of_float DESC
+        LIMIT 200
+    """)).fetchall()
+    return [
+        {
+            "symbol": r.symbol,
+            "name": r.name,
+            "market": r.market if isinstance(r.market, str) else r.market.value,
+            "short_percent_of_float": float(r.short_percent_of_float) * 100 if r.short_percent_of_float is not None else None,
+            "short_ratio": float(r.short_ratio) if r.short_ratio is not None else None,
+            "market_cap": int(r.market_cap) if r.market_cap is not None else None,
+        }
+        for r in rows
+    ]
+
+
+# ── T220-G: Sector K-Score Rotation ──────────────────────────────────────────
+
+@router.get("/stocks/sector-rotation")
+def get_sector_rotation():
+    """Return current sector K-Score momentum (computed Sunday, cached in Redis).
+
+    Returns {sector_name: {momentum: +1/0/-1, recent_kscore, prior_kscore, delta}}
+    where momentum=+1 means sector K-Score rose >3 pts vs 4 weeks ago (institutional
+    tailwind), -1 means fell >3 pts (headwind), 0 means flat.
+    """
+    import json as _json
+    r = _get_redis()
+    raw = r.get("stockai:sector_rotation")
+    if not raw:
+        return {}
+    try:
+        return _json.loads(raw)
+    except Exception:
+        return {}
+
+
 # ── Short Squeeze Scanner ─────────────────────────────────────────────────────
 
 @router.get("/short_squeeze")
@@ -1602,6 +1854,7 @@ def short_squeeze(
                 "short_percent_of_float": round(spf * 100, 2),
                 "short_ratio": data.get("short_ratio"),
                 "shares_short": data.get("shares_short"),
+                "shares_short_prior_month": data.get("shares_short_prior_month"),
                 "price": p.get("price") if p else None,
                 "change_pct": p.get("change_pct") if p else None,
                 "momentum_score": rank.momentum if rank else None,
@@ -1918,7 +2171,7 @@ def get_dividends(symbol: str):
         _get_redis().setex(cache_key, 60 * 60 * 72, json.dumps(data))
         return data
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch dividends for {sym}: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch dividends for {sym}")
 
 
 # ── Institutional Holdings ────────────────────────────────────────────────────
@@ -1984,7 +2237,7 @@ def get_institutional(symbol: str):
         _get_redis().setex(cache_key, 60 * 60 * 72, json.dumps(data))
         return data
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch institutional data for {sym}: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch institutional data for {sym}")
 
 
 @router.get("/conviction")
@@ -1992,7 +2245,7 @@ def conviction_status():
     """Return latest conviction gate check result per symbol:style from Redis."""
     import json as _json
     r = _get_redis()
-    keys = r.keys("conv_gate:*")
+    keys = list(r.scan_iter("conv_gate:*"))
     result: dict = {}
     for key in keys:
         parts = key.split(":", 2)
@@ -2051,6 +2304,108 @@ def stock_atr(
     }
 
 
+@router.get("/hk-connect-flow/{symbol}")
+def hk_connect_flow(
+    symbol: str,
+    days: int = Query(20, ge=1, le=90),
+    session: Session = Depends(get_session),
+):
+    """T209: Return HKEX Stock Connect southbound flow summary for a HK stock.
+
+    Intentionally public (no auth) — signal-engine calls this without a JWT.
+    Returns {} when no flow data is available (e.g. non-HK symbol, not yet ingested).
+
+    Keys:
+      flow_5d_net_hkd  — rolling 5-day net buy sum in HKD millions (positive = net buying)
+      flow_20d_net_hkd — rolling 20-day net buy sum in HKD millions
+      flow_strength    — 5-day avg vs 20-day avg; >1.0 = southbound flow accelerating
+    """
+    from ..services.hk_connect import get_flow_summary
+    return get_flow_summary(session, symbol.upper(), days=days)
+
+
+@router.get("/{symbol}/rvol")
+def get_rvol(symbol: str, session: Session = Depends(get_session)):
+    """Relative volume: today's cumulative volume vs 20-day average for same time-of-day.
+
+    Returns {"symbol": str, "rvol": float | None, "today_volume": int, "avg_volume": float}.
+    RVOL > 2.0 = unusual institutional accumulation.
+    """
+    from sqlalchemy import text
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    today_str = now.date().isoformat()
+    current_minute = now.hour * 60 + now.minute
+
+    # Today's cumulative volume up to current minute
+    today_vol_row = session.execute(text("""
+        SELECT COALESCE(SUM(volume), 0) as vol
+        FROM prices_5m
+        WHERE symbol = :sym
+          AND DATE(ts AT TIME ZONE 'UTC') = :today
+          AND (EXTRACT(hour FROM ts AT TIME ZONE 'UTC') * 60 + EXTRACT(minute FROM ts AT TIME ZONE 'UTC')) <= :cur_min
+    """), {"sym": symbol.upper(), "today": today_str, "cur_min": current_minute}).fetchone()
+    today_vol = int(today_vol_row.vol) if today_vol_row else 0
+
+    if today_vol == 0:
+        return {"symbol": symbol.upper(), "rvol": None, "today_volume": 0, "avg_volume": 0.0}
+
+    # Average cumulative volume for same time-of-day over last 20 trading days (exclude today)
+    avg_row = session.execute(text("""
+        SELECT AVG(daily_vol) as avg_vol
+        FROM (
+            SELECT DATE(ts AT TIME ZONE 'UTC') as dt, SUM(volume) as daily_vol
+            FROM prices_5m
+            WHERE symbol = :sym
+              AND DATE(ts AT TIME ZONE 'UTC') < :today
+              AND DATE(ts AT TIME ZONE 'UTC') >= :cutoff
+              AND (EXTRACT(hour FROM ts AT TIME ZONE 'UTC') * 60 + EXTRACT(minute FROM ts AT TIME ZONE 'UTC')) <= :cur_min
+            GROUP BY DATE(ts AT TIME ZONE 'UTC')
+            ORDER BY dt DESC
+            LIMIT 20
+        ) sub
+    """), {
+        "sym": symbol.upper(),
+        "today": today_str,
+        "cutoff": (now - timedelta(days=30)).date().isoformat(),
+        "cur_min": current_minute,
+    }).fetchone()
+
+    avg_vol = float(avg_row.avg_vol) if avg_row and avg_row.avg_vol else 0.0
+    rvol = round(today_vol / avg_vol, 2) if avg_vol > 0 else None
+
+    return {"symbol": symbol.upper(), "rvol": rvol, "today_volume": today_vol, "avg_volume": round(avg_vol, 0)}
+
+
+@router.get("/signal-outcomes/summary")
+def get_signal_outcomes_summary(days: int = 30, session: Session = Depends(get_session)):
+    """T225-D: Win rate + avg return by (market, style, direction) for the last N days.
+
+    Gives permanent operational visibility into signal quality without SQL access.
+    Returns list of {market, horizon, signal_direction, n, win_pct, avg_return,
+    avg_confidence, avg_ta_score, avg_ml_prob}.
+    """
+    from sqlalchemy import text as _text
+    rows = session.execute(_text("""
+        SELECT
+            st.market,
+            so.horizon,
+            so.signal_direction,
+            COUNT(*) AS n,
+            ROUND(AVG(CASE WHEN so.is_correct THEN 1.0 ELSE 0 END) * 100, 1) AS win_pct,
+            ROUND(AVG(so.pct_return)::numeric, 3) AS avg_return,
+            ROUND(AVG(so.confidence)::numeric, 1) AS avg_confidence,
+            ROUND(AVG(so.ta_score)::numeric, 3) AS avg_ta_score,
+            ROUND(AVG(so.ml_prob)::numeric, 3) AS avg_ml_prob
+        FROM signal_outcomes so
+        JOIN stocks st ON so.stock_id = st.id
+        WHERE so.ts_evaluated >= NOW() - CAST(:days || ' days' AS INTERVAL)
+        GROUP BY st.market, so.horizon, so.signal_direction
+        ORDER BY st.market, so.horizon, so.signal_direction
+    """), {"days": days}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
 @router.get("/{symbol}", response_model=StockOut)
 def get_stock(symbol: str, session: Session = Depends(get_session)):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -2059,13 +2414,100 @@ def get_stock(symbol: str, session: Session = Depends(get_session)):
     return stock
 
 
+class PriceTfOut(BaseModel):
+    ts: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+@router.get("/{symbol}/prices_tf", response_model=list[PriceTfOut])
+def get_prices_tf(
+    symbol: str,
+    tf: str = Query("1d", regex="^(15m|1h|4h|1d)$"),
+):
+    """Return OHLCV bars for the requested timeframe, computed on-demand via yfinance.
+
+    Supported timeframes:
+      15m  — last 5 days,  15-minute bars
+      1h   — last 60 days, 1-hour bars
+      4h   — last 120 days, 60-minute bars resampled to 4-hour
+      1d   — handled by frontend using existing daily prices (returns empty list here)
+
+    Results are cached in Redis for 10 minutes.
+    """
+    if tf == "1d":
+        return []
+
+    cache_key = f"stockai:prices_tf:{symbol.upper()}:{tf}"
+    try:
+        r = _get_redis()
+        cached = r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    yf_params: dict = {}
+    if tf == "15m":
+        yf_params = {"period": "5d", "interval": "15m"}
+    elif tf == "1h":
+        yf_params = {"period": "60d", "interval": "1h"}
+    elif tf == "4h":
+        yf_params = {"period": "120d", "interval": "60m"}
+
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(**yf_params, auto_adjust=True)
+        if hist.empty:
+            return []
+
+        # Normalise MultiIndex columns (yfinance sometimes returns them)
+        if isinstance(hist.columns, pd.MultiIndex):
+            hist.columns = hist.columns.get_level_values(0)
+
+        hist = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
+        hist.index = pd.to_datetime(hist.index, utc=True)
+
+        if tf == "4h":
+            hist = (
+                hist.resample("4h")
+                .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+                .dropna()
+            )
+
+        rows = []
+        for ts, row in hist.iterrows():
+            rows.append({
+                "ts": ts.strftime("%Y-%m-%dT%H:%M:%S"),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": float(row["Volume"]),
+            })
+
+        try:
+            r = _get_redis()
+            r.setex(cache_key, 600, json.dumps(rows))
+        except Exception:
+            pass
+
+        return rows
+    except Exception as exc:
+        log.warning("prices_tf.error", symbol=symbol, tf=tf, error=str(exc))
+        raise HTTPException(500, f"Failed to fetch {tf} prices for {symbol}: {exc}")
+
+
 @router.get("/{symbol}/prices", response_model=list[PriceOut])
 def get_prices(
     symbol: str,
     timeframe: str = "1d",
     start: date | None = None,
     end: date | None = None,
-    limit: int = Query(1000, le=10000),
+    limit: int = Query(1000, ge=1, le=10000),
     session: Session = Depends(get_session),
 ):
     stock = session.execute(select(Stock).where(Stock.symbol == symbol)).scalar_one_or_none()
@@ -2076,7 +2518,12 @@ def get_prices(
     except ValueError:
         raise HTTPException(400, f"Invalid timeframe '{timeframe}'. Valid values: {[v.value for v in TimeFrame]}")
     if not end:
-        end = date.today()
+        # Use tomorrow as upper bound so all of today's intraday bars are included.
+        # date.today() converts to midnight 00:00:00 UTC in PostgreSQL, which excludes
+        # any bar timestamped after midnight today (i.e. all intraday 5m/1m bars).
+        end = date.today() + timedelta(days=1)
+    if start and end and start > end:
+        raise HTTPException(400, "start date must not be after end date")
 
     stmt = (
         select(Price)

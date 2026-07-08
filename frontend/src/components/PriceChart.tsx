@@ -29,6 +29,17 @@ type Props = {
   levels?: Levels;
   signalMarkers?: SignalHistoryPoint[];
   patterns?: PatternSignal[];
+  gamePlanLevels?: {
+    entryLow?: number | null;
+    entryHigh?: number | null;
+    stopLoss?: number | null;
+    target1?: number | null;
+    target2?: number | null;
+  } | null;
+  /** T230: External intraday bars (15m/1h/4h) — when provided, forces intraday rendering mode */
+  intradayOverride?: Price[] | null;
+  /** T230: Comparison overlay data (daily bars for a second symbol, e.g. SPY) */
+  compareData?: { symbol: string; prices: Price[] } | null;
 };
 
 // Daily ranges — 1D removed; use the 5m button for intraday view
@@ -103,7 +114,7 @@ function computeVolMA(priceData: Price[], period = 20): (number | null)[] {
 type SmaVals  = { sma_20: number|null; sma_50: number|null; sma_200: number|null; ema_20: number|null; ema_50: number|null; ema_200: number|null };
 type MacdVals = { macd: number|null; signal: number|null; hist: number|null };
 
-export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns }: Props) {
+export default function PriceChart({ symbol, prices, indicators, levels, signalMarkers, patterns, gamePlanLevels, intradayOverride, compareData }: Props) {
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef  = useRef<HTMLDivElement>(null);
   const macdRef = useRef<HTMLDivElement>(null);
@@ -125,16 +136,30 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   // ── Intraday 5m state ─────────────────────────────────────────────────────
   const [intradayPrices, setIntradayPrices] = useState<Price[] | null>(null);
   const [intradayLoading, setIntradayLoading] = useState(false);
-  const isIntraday = range === '5m';
+  // intradayOverride: externally provided intraday bars (15m/1h/4h) force intraday mode
+  const isIntraday = range === '5m' || (intradayOverride != null && intradayOverride.length > 0);
 
   useEffect(() => {
+    // When intradayOverride is active, skip the internal 5m fetch
+    if (intradayOverride != null) { setIntradayPrices(null); return; }
     if (!isIntraday) { setIntradayPrices(null); return; }
     setIntradayLoading(true);
-    api.getPrices(symbol, '5m', 100)
-      .then(data => setIntradayPrices(data))
+    // Pass today's UTC date so only the current session is returned — prevents
+    // the overnight gap from appearing as a disconnection and avoids showing
+    // yesterday's higher prices as a false spike in the Y-axis range.
+    const todayUTC = new Date().toISOString().slice(0, 10);
+    api.getPrices(symbol, '5m', 200, todayUTC)
+      .then(data => {
+        // Safety: if today returned very few bars (< 5, e.g. pre-market),
+        // fall back to 100 bars without the date filter to show recent history.
+        if (data.length < 5) {
+          return api.getPrices(symbol, '5m', 100).then(d => setIntradayPrices(d));
+        }
+        setIntradayPrices(data);
+      })
       .catch(() => setIntradayPrices([]))
       .finally(() => setIntradayLoading(false));
-  }, [isIntraday, symbol]);
+  }, [isIntraday, symbol, intradayOverride]);
 
   // ── Daily slice (memoised to avoid chart flicker on SWR polls) ────────────
   const dailyConfig = DAILY_RANGES.find(r => r.label === range);
@@ -165,8 +190,10 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
   const [srLabels, setSrLabels] = useState<LabelPos[]>([]);
   const chartRef = useRef<IChartApi | null>(null);
 
-  // Active price data: intraday when 5m selected, daily otherwise
-  const activePrices = isIntraday ? (intradayPrices ?? []) : visiblePrices;
+  // Active price data: intradayOverride > internal 5m > daily
+  const activePrices = intradayOverride != null && intradayOverride.length > 0
+    ? intradayOverride
+    : isIntraday ? (intradayPrices ?? []) : visiblePrices;
 
   useEffect(() => {
     if (!mainRef.current || activePrices.length === 0) return;
@@ -353,6 +380,61 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
         title: '',
       });
     }
+
+    // ── Game Plan levels (daily only) ─────────────────────────────────────
+    if (!isIntraday && gamePlanLevels) {
+      const gpl = gamePlanLevels;
+      if (gpl.entryLow && gpl.entryLow > 0) {
+        candles.createPriceLine({ price: gpl.entryLow, color: '#4ade80', lineWidth: 2 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'Entry Low' });
+      }
+      if (gpl.entryHigh && gpl.entryHigh > 0) {
+        candles.createPriceLine({ price: gpl.entryHigh, color: '#4ade80', lineWidth: 2 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'Entry High' });
+      }
+      if (gpl.stopLoss && gpl.stopLoss > 0) {
+        candles.createPriceLine({ price: gpl.stopLoss, color: '#f87171', lineWidth: 2 as const, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: 'Stop' });
+      }
+      if (gpl.target1 && gpl.target1 > 0) {
+        candles.createPriceLine({ price: gpl.target1, color: '#a78bfa', lineWidth: 1 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'Target 1' });
+      }
+      if (gpl.target2 && gpl.target2 > 0) {
+        candles.createPriceLine({ price: gpl.target2, color: '#38bdf8', lineWidth: 1 as const, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'Target 2' });
+      }
+    }
+
+    // ── T230: Normalized comparison overlay (daily mode only) ─────────────────
+    // Renders a dashed line showing the compare symbol's % return from period start,
+    // on a separate price scale so it doesn't interfere with the main price axis.
+    if (!isIntraday && compareData && compareData.prices.length > 1) {
+      // Align compare prices to the visible window using date keys
+      const visStart = activePrices.length > 0 ? activePrices[0].ts.slice(0, 10) : null;
+      const visEnd   = activePrices.length > 0 ? activePrices[activePrices.length - 1].ts.slice(0, 10) : null;
+      const aligned = visStart && visEnd
+        ? compareData.prices.filter(p => {
+            const d = p.ts.slice(0, 10);
+            return d >= visStart && d <= visEnd;
+          })
+        : compareData.prices;
+      if (aligned.length > 1) {
+        const firstClose = +aligned[0].close;
+        const normData: LineData<Time>[] = aligned.map(p => ({
+          time: toTime(p.ts),
+          value: ((+p.close / firstClose) - 1) * 100,
+        }));
+        const compareLine = chart.addLineSeries({
+          color: '#f59e0b',
+          lineWidth: 1 as const,
+          lineStyle: LineStyle.Dashed,
+          priceScaleId: 'compare',
+          title: compareData.symbol,
+        });
+        chart.priceScale('compare').applyOptions({
+          scaleMargins: { top: 0.1, bottom: 0.1 },
+          visible: false,  // hide axis label; use legend instead
+        });
+        compareLine.setData(normData);
+      }
+    }
+
     chartRef.current = chart;
 
     function updateSrLabels() {
@@ -453,7 +535,7 @@ export default function PriceChart({ symbol, prices, indicators, levels, signalM
       chartRef.current = null;
       setSrLabels([]);
     };
-  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, isIntraday]);
+  }, [activePrices, visibleIndicators, levels, prices, signalMarkers, gamePlanLevels, showSMA20, showSMA50, showSMA200, showEMA20, showEMA50, showEMA200, showBB, showVol, showVWAP, showRSI, showMACD, showSignals, isIntraday, intradayOverride, compareData]);
 
   const btn = (active: boolean, label: string, onClick: () => void, color?: string) => (
     <button

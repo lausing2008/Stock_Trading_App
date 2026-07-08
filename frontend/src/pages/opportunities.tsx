@@ -454,13 +454,15 @@ export default function Opportunities() {
   const { data: rankData, isLoading } = useSWR('rankings-all', () => api.rankings());
   const { data: pricesData } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData } = useSWR('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
+  const { data: convictionData } = useSWR('conviction-all', () => api.convictionAll(), { refreshInterval: 300_000 });
   const { data: watchlist, mutate: mutateWatchlist } = useSWR<WatchlistItem[]>('watchlist', () => api.listWatchlist());
   const { data: watchlists, mutate: mutateWatchlists } = useSWR<WatchlistMeta[]>('watchlists', () => api.listWatchlists());
   const { data: boardData } = useSWR<TradePlan[]>('board', () => api.listBoard());
   const { data: earningsData, isLoading: earningsLoading, error: earningsError } = useSWR<EarningsItem[]>('earnings-14d', () => api.earningsCalendar(14));
 
   const watchedSet = useMemo(() => new Set(watchlist?.map(w => w.symbol) ?? []), [watchlist]);
-  const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage !== 'closed').map(p => p.symbol) ?? []), [boardData]);
+  const activeSet = useMemo(() => new Set(boardData?.filter(p => p.stage === 'active').map(p => p.symbol) ?? []), [boardData]);
+  const boardSet = useMemo(() => new Set(boardData?.filter(p => p.stage === 'watch' || p.stage === 'planning').map(p => p.symbol) ?? []), [boardData]);
   const earningsSet = useMemo(() => new Set(earningsData?.map(e => e.symbol) ?? []), [earningsData]);
 
   // Radar watchlist — fetch its contents separately so we know what's already in it
@@ -1149,9 +1151,14 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                           {sig.signal}
                         </span>
                       )}
+                      {activeSet.has(r.symbol) && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)' }}>
+                          ▶ ACTIVE
+                        </span>
+                      )}
                       {boardSet.has(r.symbol) && (
                         <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 7px', borderRadius: '4px', color: '#34d399', background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.3)' }}>
-                          ✓ On Board
+                          ✓ Watching
                         </span>
                       )}
                       {earningsSet.has(r.symbol) && (
@@ -1167,6 +1174,20 @@ Return ONLY a valid JSON array — no markdown fences, no prose outside the JSON
                         return (
                           <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', color: RC[rs.recommendation] ?? '#94a3b8', background: `${RC[rs.recommendation] ?? '#475569'}18`, border: `1px solid ${RC[rs.recommendation] ?? '#475569'}44` }}>
                             R: {rs.recommendation === 'STRONG BUY' ? 'S.BUY' : rs.recommendation}
+                          </span>
+                        );
+                      })()}
+                      {/* Conviction gate badge */}
+                      {(() => {
+                        const style = getSignalStyle()?.toUpperCase() ?? 'SWING';
+                        const cv = convictionData?.[`${r.symbol}:${style}`];
+                        if (!cv) return null;
+                        const tier = cv.failed.length === 0 ? 'FULL' : cv.failed.length === 1 ? 'NEAR' : null;
+                        if (!tier) return null;
+                        const isFull = tier === 'FULL';
+                        return (
+                          <span style={{ fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', color: isFull ? '#4ade80' : '#facc15', background: isFull ? 'rgba(74,222,128,0.1)' : 'rgba(250,204,21,0.1)', border: `1px solid ${isFull ? 'rgba(74,222,128,0.3)' : 'rgba(250,204,21,0.3)'}` }}>
+                            {isFull ? '✓ Gate FULL' : '~ Gate NEAR'}
                           </span>
                         );
                       })()}

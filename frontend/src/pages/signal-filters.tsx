@@ -1,8 +1,8 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { api, type SuppressedSignalRow, type ResearchAlignmentBand } from '@/lib/api';
+import { api, type SuppressedSignalRow } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 
 // ── Static config ─────────────────────────────────────────────────────────────
@@ -13,7 +13,7 @@ const SIGNAL_OPTS = ['ALL', 'BUY', 'HOLD', 'WAIT', 'SELL'] as const;
 type CondKey = keyof SuppressedSignalRow['conditions'];
 
 const CONDITIONS: { key: CondKey; label: string; short: string; color: string; tip: string }[] = [
-  { key: 'weekly_gate',          label: 'Weekly Gate',         short: 'Gate',    color: '#ef4444', tip: 'RSI(14w) < 40 AND weekly trend down — hard 0.40× block after cap' },
+  { key: 'weekly_gate',          label: 'Weekly Gate',         short: 'Gate',    color: '#ef4444', tip: 'RSI(14w) ≤ 38 AND weekly trend down (SWING/LONG only) — graduated 0.40–0.65× compress after cap' },
   { key: 'stale_data',           label: 'Stale Data',          short: 'Stale',   color: '#ef4444', tip: 'Last price bar > 3 days old — signal unreliable (0.60×)' },
   { key: 'insufficient_history', label: 'Insufficient History',short: 'History', color: '#f87171', tip: '< 50 daily bars — indicators unreliable (0.50×)' },
   { key: 'weekly_misalignment',  label: 'Weekly Misalign',     short: 'W.Align', color: '#f97316', tip: 'Daily and weekly momentum directions conflict (0.85× SWING)' },
@@ -22,14 +22,17 @@ const CONDITIONS: { key: CondKey; label: string; short: string; color: string; t
   { key: 'negative_news',        label: 'Negative News',       short: 'News',    color: '#fb923c', tip: 'News sentiment < 35/100 (0.75–0.85×)' },
   { key: 'adx_choppy',          label: 'ADX Choppy',          short: 'ADX',     color: '#eab308', tip: 'ADX below minimum — directionless market (0.90× SWING)' },
   { key: 'low_breadth',         label: 'Low Breadth',         short: 'Breadth', color: '#eab308', tip: '< 40% of stocks above 200-day SMA (0.90× SWING)' },
-  { key: 'rs_lagging',          label: 'RS Lagging',          short: 'RS',      color: '#eab308', tip: 'Stock lagging sector ETF by > 20% on 20d basis (0.85× SWING)' },
+  { key: 'rs_lagging',          label: 'RS Lagging',          short: 'RS',      color: '#eab308', tip: 'RS rank < 0.70 vs sector ETF, unless stock itself is up > 5% in 20d (0.85× SWING; 0.90× SHORT, 0.80× LONG, no compression for GROWTH)' },
   { key: 'bearish_options',     label: 'Bearish Options',     short: 'Options', color: '#a3a3a3', tip: 'Elevated put volume or bearish C/P ratio (0.92–0.96×)' },
   { key: 'compression_cap',     label: 'Cap Applied',         short: 'Cap',     color: '#818cf8', tip: 'Stacked filters hit the max_compress_ratio floor' },
 ];
 
 type SortKey =
   | 'symbol' | 'signal' | 'bullish_probability' | 'suppression_count'
-  | 'weekly_rsi' | 'rsi' | 'adx' | 'days_to_earnings' | 'news_sentiment' | 'rs_score' | 'breadth_pct';
+  | 'weekly_rsi' | 'rsi' | 'adx' | 'days_to_earnings' | 'news_sentiment' | 'rs_score' | 'breadth_pct'
+  | 'vol_ratio';
+
+type PresetState = { style: string; market: string; sigFilter: string; sortKey?: string; sortDir?: string };
 
 // Tooltip text for every sortable column header
 const COL_TIPS: Record<SortKey, string> = {
@@ -44,13 +47,14 @@ const COL_TIPS: Record<SortKey, string> = {
   news_sentiment:     'Aggregate news sentiment score 0–100 (50 = neutral). Claude Haiku when API key set, otherwise enhanced VADER. Below 25 = strong negative (0.75×). Below 35 = negative (0.85×). SWING only.',
   rs_score:           'Relative Strength score vs sector ETF (XLK, XLV, etc.) on a 20-day return basis. 50 = in-line. Below 40 = lagging (compresses 15%). Above 60 = outperforming.',
   breadth_pct:        'Percentage of all tracked US stocks currently trading above their 200-day SMA. Below 40% = broad market weakness — signal compressed 10% even in a nominally-bull SPY regime.',
+  vol_ratio:          'Volume ratio: today\'s volume vs 20-day average. >2.0x = unusual surge (green). >1.5x = elevated (yellow). Sourced from rankings data.',
 };
 
 const SORT_LABELS: Record<SortKey, string> = {
   symbol: 'Symbol', signal: 'Signal', bullish_probability: 'Bull%',
   suppression_count: 'Filters', weekly_rsi: 'W.RSI', rsi: 'RSI',
   adx: 'ADX', days_to_earnings: 'Earn.d', news_sentiment: 'News',
-  rs_score: 'RS', breadth_pct: 'Breadth',
+  rs_score: 'RS', breadth_pct: 'Breadth', vol_ratio: 'Vol',
 };
 
 const SIGNAL_COLORS: Record<string, string> = {
@@ -76,7 +80,7 @@ function fmtTs(ts: string | null | undefined): string {
   } catch { return ''; }
 }
 
-function numVal(row: SuppressedSignalRow, key: SortKey): number {
+function numVal(row: SuppressedSignalRow, key: SortKey, volRatioMap?: Record<string, number>): number {
   if (key === 'symbol') return 0;
   if (key === 'signal') return ['BUY', 'HOLD', 'WAIT', 'SELL'].indexOf(row.signal);
   if (key === 'bullish_probability') return row.bullish_probability ?? 0;
@@ -88,6 +92,7 @@ function numVal(row: SuppressedSignalRow, key: SortKey): number {
   if (key === 'news_sentiment') return row.news_sentiment ?? 50;
   if (key === 'rs_score') return row.rs_score ?? 50;
   if (key === 'breadth_pct') return row.breadth_pct ?? 50;
+  if (key === 'vol_ratio') return volRatioMap?.[row.symbol] ?? -1;
   return 0;
 }
 
@@ -196,58 +201,6 @@ function SummaryBar({ rows }: { rows: SuppressedSignalRow[] }) {
   );
 }
 
-// Research alignment win-rate panel (INT-8 data)
-const ALIGN_CONFIG: { key: 'aligned' | 'partial' | 'divergent' | 'no_research'; label: string; color: string; tip: string }[] = [
-  { key: 'aligned',     label: 'Aligned',     color: '#22c55e', tip: 'Signal BUY + research BUY/STRONG BUY — both agree' },
-  { key: 'partial',     label: 'Partial',      color: '#f59e0b', tip: 'Signal BUY + research WATCH — cautious alignment' },
-  { key: 'divergent',   label: 'Divergent',    color: '#ef4444', tip: 'Signal BUY + research AVOID/SELL — disagreement' },
-  { key: 'no_research', label: 'No research',  color: '#64748b', tip: 'No research report available at signal time' },
-];
-
-function ResearchAlignmentPanel({
-  data,
-}: {
-  data: Partial<Record<string, ResearchAlignmentBand>> | undefined;
-}) {
-  if (!data || Object.keys(data).length === 0) return null;
-  const hasAny = ALIGN_CONFIG.some(c => data[c.key]?.count);
-  if (!hasAny) return null;
-
-  return (
-    <div style={{
-      marginBottom: 16, padding: '10px 14px', background: '#0b1420',
-      borderRadius: 10, border: '1px solid #1e293b',
-    }}>
-      <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        Research alignment win-rates (90d BUY outcomes)
-      </p>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        {ALIGN_CONFIG.map(({ key, label, color, tip }) => {
-          const band = data[key];
-          if (!band?.count) return null;
-          const wr = band.win_rate != null ? Math.round(band.win_rate * 100) : null;
-          const ret = band.avg_return_pct;
-          return (
-            <div key={key} title={tip} style={{
-              padding: '6px 12px', borderRadius: 8, cursor: 'help',
-              background: `${color}12`, border: `1px solid ${color}33`,
-              display: 'flex', flexDirection: 'column', gap: 2, minWidth: 110,
-            }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
-              <span style={{ fontSize: 16, fontWeight: 700, color: wr != null ? (wr >= 55 ? '#22c55e' : wr >= 45 ? '#f59e0b' : '#ef4444') : '#475569' }}>
-                {wr != null ? `${wr}%` : '—'}
-              </span>
-              <span style={{ fontSize: 10, color: '#475569' }}>
-                {band.count} signals{ret != null ? ` · ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% avg` : ''}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SignalFiltersPage() {
@@ -262,55 +215,40 @@ export default function SignalFiltersPage() {
   }, [router]);
 
   const [style, setStyle] = useState<string>('SWING');
+  const [market, setMarket] = useState<string>('ALL');
   const [sigFilter, setSigFilter] = useState<string>('ALL');
   const [condFilters, setCondFilters] = useState<Set<CondKey>>(new Set());
   const [onlySuppressed, setOnlySuppressed] = useState(false);
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('suppression_count');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
-  const [copied, setCopied] = useState(false);
-
-  const urlReady = useRef(false);
-
-  // Restore filter state from URL on initial load (runs once when router is ready)
-  useEffect(() => {
-    if (!router.isReady || urlReady.current) return;
-    urlReady.current = true;
-    const q = router.query;
-    if (q.style && STYLES.includes(q.style as typeof STYLES[number])) setStyle(q.style as string);
-    if (q.sig && SIGNAL_OPTS.includes(q.sig as typeof SIGNAL_OPTS[number])) setSigFilter(q.sig as string);
-    if (q.cond) setCondFilters(new Set((q.cond as string).split(',').filter(Boolean) as CondKey[]));
-    if (q.sup === '1') setOnlySuppressed(true);
-    if (q.search) setSearch(q.search as string);
-    if (q.sort) setSortKey(q.sort as SortKey);
-    if (q.dir === 'asc' || q.dir === 'desc') setSortDir(q.dir as 'asc' | 'desc');
-  }, [router.isReady]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Sync filter state → URL whenever filters change (shallow replace = no history entry)
-  useEffect(() => {
-    if (!urlReady.current) return;
-    const q: Record<string, string> = {};
-    if (style !== 'SWING') q.style = style;
-    if (sigFilter !== 'ALL') q.sig = sigFilter;
-    if (condFilters.size > 0) q.cond = [...condFilters].join(',');
-    if (onlySuppressed) q.sup = '1';
-    if (search) q.search = search;
-    if (sortKey !== 'suppression_count') q.sort = sortKey;
-    if (sortDir !== 'desc') q.dir = sortDir;
-    router.replace({ pathname: router.pathname, query: q }, undefined, { shallow: true });
-  }, [style, sigFilter, condFilters, onlySuppressed, search, sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [savedPresets, setSavedPresets] = useState<Record<string, PresetState>>(() => {
+    try { return JSON.parse(localStorage.getItem('signal_filter_presets') ?? '{}'); } catch { return {}; }
+  });
 
   const { data, isLoading, error, mutate } = useSWR(
-    authed ? ['suppressed', style] : null,
-    () => api.suppressedSignals(style),
+    // T232: market is now part of the cache key and passed through to the API — the row
+    // type never carried a `market` field, so the old client-side filter (`x.market === market`)
+    // always compared against `undefined` and silently returned zero rows for US/HK.
+    authed ? ['suppressed', style, market] : null,
+    () => api.suppressedSignals(style, market !== 'ALL' ? market : undefined),
     { revalidateOnFocus: false },
   );
 
-  const { data: outcomesSummary } = useSWR(
-    authed ? ['outcomes-summary', style] : null,
-    () => api.outcomesSummary(style, 90),
+  const { data: rankData } = useSWR(
+    authed ? 'rankings-all' : null,
+    () => api.rankings(),
     { revalidateOnFocus: false },
   );
+
+  const volRatioMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    (rankData?.rankings ?? []).forEach(r => {
+      const vr = r.vol_ratio;
+      if (vr != null) m[r.symbol] = vr;
+    });
+    return m;
+  }, [rankData]);
 
   function handleSort(key: SortKey) {
     if (key === sortKey) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -325,8 +263,60 @@ export default function SignalFiltersPage() {
     });
   }
 
+  function applyPreset(p: Partial<PresetState>) {
+    if (p.style !== undefined) setStyle(p.style);
+    if (p.market !== undefined) setMarket(p.market);
+    if (p.sigFilter !== undefined) setSigFilter(p.sigFilter);
+    if (p.sortKey !== undefined) setSortKey(p.sortKey as SortKey);
+    if (p.sortDir !== undefined) setSortDir(p.sortDir as 'asc' | 'desc');
+  }
+
+  function saveCurrentPreset() {
+    const name = window.prompt('Name this preset:');
+    if (!name?.trim()) return;
+    const preset: PresetState = { style, market, sigFilter, sortKey, sortDir };
+    const next = { ...savedPresets, [name.trim()]: preset };
+    setSavedPresets(next);
+    localStorage.setItem('signal_filter_presets', JSON.stringify(next));
+  }
+
+  function deleteSavedPreset(name: string) {
+    const next = { ...savedPresets };
+    delete next[name];
+    setSavedPresets(next);
+    localStorage.setItem('signal_filter_presets', JSON.stringify(next));
+  }
+
+  // Built-in presets
+  const BUILT_IN_PRESETS: { label: string; state: Partial<PresetState> }[] = [
+    { label: 'All BUY',      state: { sigFilter: 'BUY',  style: 'SWING',  market: 'ALL' } },
+    { label: 'US BUY',       state: { sigFilter: 'BUY',  style: 'SWING',  market: 'US'  } },
+    { label: 'HK BUY',       state: { sigFilter: 'BUY',  style: 'SWING',  market: 'HK'  } },
+    { label: 'Short Setup',  state: { sigFilter: 'BUY',  style: 'SHORT',  market: 'US'  } },
+    { label: 'Long Value',   state: { sigFilter: 'BUY',  style: 'LONG',   market: 'ALL' } },
+    { label: 'Momentum',     state: { sigFilter: 'BUY',  style: 'GROWTH', market: 'ALL' } },
+    { label: 'Near Earnings',state: { sigFilter: 'ALL',  sortKey: 'days_to_earnings', sortDir: 'asc' } },
+    { label: 'Watch Sells',  state: { sigFilter: 'SELL', style: 'SWING',  market: 'ALL' } },
+  ];
+
+  function isBuiltInActive(p: Partial<PresetState>): boolean {
+    if (p.sigFilter !== undefined && p.sigFilter !== sigFilter) return false;
+    if (p.style !== undefined && p.style !== style) return false;
+    if (p.market !== undefined && p.market !== market) return false;
+    if (p.sortKey !== undefined && p.sortKey !== sortKey) return false;
+    if (p.sortDir !== undefined && p.sortDir !== sortDir) return false;
+    return true;
+  }
+
+  function isSavedActive(p: PresetState): boolean {
+    return p.sigFilter === sigFilter && p.style === style && p.market === market;
+  }
+
   const rows = useMemo(() => {
     let r = data ?? [];
+
+    // Market filtering now happens server-side (see useSWR fetch above) — `data` already
+    // contains only the requested market's rows.
 
     // Signal type filter
     if (sigFilter !== 'ALL') r = r.filter(x => x.signal === sigFilter);
@@ -347,8 +337,8 @@ export default function SignalFiltersPage() {
 
     // Sort
     r = [...r].sort((a, b) => {
-      let av: number | string = sortKey === 'symbol' ? a.symbol : numVal(a, sortKey);
-      let bv: number | string = sortKey === 'symbol' ? b.symbol : numVal(b, sortKey);
+      let av: number | string = sortKey === 'symbol' ? a.symbol : numVal(a, sortKey, volRatioMap);
+      let bv: number | string = sortKey === 'symbol' ? b.symbol : numVal(b, sortKey, volRatioMap);
       if (typeof av === 'string' && typeof bv === 'string') {
         return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
       }
@@ -356,7 +346,7 @@ export default function SignalFiltersPage() {
     });
 
     return r;
-  }, [data, sigFilter, onlySuppressed, condFilters, search, sortKey, sortDir]);
+  }, [data, market, sigFilter, onlySuppressed, condFilters, search, sortKey, sortDir, volRatioMap]);
 
   const total = data?.length ?? 0;
   const buyCount = data?.filter(r => r.signal === 'BUY').length ?? 0;
@@ -377,56 +367,15 @@ export default function SignalFiltersPage() {
             All active stocks with suppression conditions from the latest signal. Hover dots for descriptions. Click headers to sort.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={() => {
-              if (!rows.length) return;
-              const headers = ['Symbol','Name','Market','Signal','Horizon','Confidence','Bullish%','RSI','Weekly RSI','ADX','RS Score','Breadth%','Days to Earnings','Suppression Count','Regime'];
-              const csvRows = rows.map(r => [
-                r.symbol, r.name, '', r.signal, r.horizon,
-                r.confidence?.toFixed(1) ?? '',
-                r.bullish_probability != null ? (r.bullish_probability * 100).toFixed(1) : '',
-                r.rsi?.toFixed(1) ?? '', r.weekly_rsi?.toFixed(1) ?? '',
-                r.adx?.toFixed(1) ?? '', r.rs_score?.toFixed(1) ?? '',
-                r.breadth_pct?.toFixed(1) ?? '', r.days_to_earnings ?? '',
-                r.suppression_count, r.market_regime ?? '',
-              ].map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','));
-              const csv = [headers.join(','), ...csvRows].join('\n');
-              const a = document.createElement('a');
-              a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-              a.download = `signal-filters-${new Date().toISOString().slice(0,10)}.csv`;
-              a.click();
-            }}
-            style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #1e293b', background: '#0b1420', color: '#64748b', cursor: 'pointer', fontSize: 12 }}
-          >
-            ↓ CSV
-          </button>
-          <button
-            onClick={() => {
-              navigator.clipboard.writeText(window.location.href).then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-              });
-            }}
-            style={{
-              padding: '7px 14px', borderRadius: 8, border: '1px solid #1e293b',
-              background: copied ? '#0f2a1a' : '#0b1420',
-              color: copied ? '#22c55e' : '#64748b', cursor: 'pointer', fontSize: 12,
-              transition: 'color 0.2s, background 0.2s',
-            }}
-          >
-            {copied ? '✓ Copied' : '🔗 Copy link'}
-          </button>
-          <button
-            onClick={() => mutate()}
-            style={{
-              padding: '7px 16px', borderRadius: 8, border: '1px solid #1e293b',
-              background: '#0b1420', color: '#94a3b8', cursor: 'pointer', fontSize: 12,
-            }}
-          >
-            Refresh
-          </button>
-        </div>
+        <button
+          onClick={() => mutate()}
+          style={{
+            padding: '7px 16px', borderRadius: 8, border: '1px solid #1e293b',
+            background: '#0b1420', color: '#94a3b8', cursor: 'pointer', fontSize: 12,
+          }}
+        >
+          Refresh
+        </button>
       </div>
 
       {/* Stat pills */}
@@ -448,6 +397,71 @@ export default function SignalFiltersPage() {
         ))}
       </div>
 
+      {/* ── Preset toolbar ───────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10, alignItems: 'center' }}>
+        <span style={{ fontSize: 11, color: '#475569', alignSelf: 'center', marginRight: 2, fontWeight: 600 }}>Presets:</span>
+        {BUILT_IN_PRESETS.map(p => {
+          const active = isBuiltInActive(p.state);
+          return (
+            <button
+              key={p.label}
+              onClick={() => applyPreset(p.state)}
+              style={{
+                padding: '5px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                background: active ? '#3b82f620' : '#1e293b',
+                border: active ? '1px solid #3b82f6' : '1px solid #334155',
+                color: active ? '#3b82f6' : '#94a3b8',
+                fontWeight: active ? 700 : 400,
+              }}
+            >
+              {p.label}
+            </button>
+          );
+        })}
+        {/* Saved presets */}
+        {Object.entries(savedPresets).map(([name, preset]) => {
+          const active = isSavedActive(preset);
+          return (
+            <span key={name} style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
+              <button
+                onClick={() => applyPreset(preset)}
+                style={{
+                  padding: '5px 8px', borderRadius: '6px 0 0 6px', fontSize: 12, cursor: 'pointer',
+                  background: active ? '#7c3aed20' : '#1e293b',
+                  border: active ? '1px solid #7c3aed' : '1px solid #7c3aed66',
+                  borderRight: 'none',
+                  color: active ? '#a78bfa' : '#94a3b8',
+                  fontWeight: active ? 700 : 400,
+                }}
+              >
+                {name}
+              </button>
+              <button
+                onClick={() => deleteSavedPreset(name)}
+                title="Delete preset"
+                style={{
+                  padding: '5px 6px', borderRadius: '0 6px 6px 0', fontSize: 11, cursor: 'pointer',
+                  background: active ? '#7c3aed20' : '#1e293b',
+                  border: active ? '1px solid #7c3aed' : '1px solid #7c3aed66',
+                  color: '#64748b',
+                }}
+              >
+                ×
+              </button>
+            </span>
+          );
+        })}
+        <button
+          onClick={saveCurrentPreset}
+          style={{
+            padding: '5px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+            background: '#1e293b', border: '1px solid #334155', color: '#64748b',
+          }}
+        >
+          + Save
+        </button>
+      </div>
+
       {/* ── Controls ─────────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         {/* Style */}
@@ -458,6 +472,17 @@ export default function SignalFiltersPage() {
               background: style === s ? '#6366f1' : 'transparent',
               color: style === s ? '#fff' : '#64748b',
             }}>{s}</button>
+          ))}
+        </div>
+
+        {/* Market */}
+        <div style={{ display: 'flex', gap: 2, background: '#0b1420', padding: 3, borderRadius: 8, border: '1px solid #1e293b' }}>
+          {(['ALL', 'US', 'HK'] as const).map(m => (
+            <button key={m} onClick={() => setMarket(m)} style={{
+              padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+              background: market === m ? '#0ea5e9' : 'transparent',
+              color: market === m ? '#fff' : '#64748b',
+            }}>{m}</button>
           ))}
         </div>
 
@@ -537,9 +562,6 @@ export default function SignalFiltersPage() {
         )}
       </div>
 
-      {/* Research alignment win-rates */}
-      <ResearchAlignmentPanel data={outcomesSummary?.by_research_alignment} />
-
       {/* Summary bar */}
       {data && <SummaryBar rows={rows} />}
 
@@ -568,6 +590,7 @@ export default function SignalFiltersPage() {
                   </span>
                 </th>
                 <SortTh col="bullish_probability" label="Bull%"   sortKey={sortKey} dir={sortDir} onSort={handleSort} />
+                <SortTh col="vol_ratio"           label="Vol"      sortKey={sortKey} dir={sortDir} onSort={handleSort} />
                 <SortTh col="suppression_count"  label="Filters"  sortKey={sortKey} dir={sortDir} onSort={handleSort} />
 
                 {/* Condition columns — coloured, not sortable, each has ! tooltip */}
@@ -652,30 +675,12 @@ export default function SignalFiltersPage() {
                       </span>
                     </td>
 
-                    {/* Signal badge + SA-19 pillar mini-bars */}
+                    {/* Signal badge */}
                     <td style={TD}>
                       <span style={{
                         padding: '2px 8px', borderRadius: 5, fontSize: 11, fontWeight: 700,
                         background: sigColor + '22', color: sigColor, border: `1px solid ${sigColor}44`,
                       }}>{row.signal}</span>
-                      {row.pillar_trend != null && (
-                        <span
-                          style={{ display: 'flex', gap: 3, marginTop: 3, alignItems: 'center' }}
-                          title={`Pillars (SA-19): Trend ${(row.pillar_trend*100).toFixed(0)}% · Momentum ${((row.pillar_momentum??0)*100).toFixed(0)}% · Volume ${((row.pillar_volume??0)*100).toFixed(0)}% · Structure ${((row.pillar_structure??0)*100).toFixed(0)}%`}
-                        >
-                          {(['T','M','V','S'] as const).map((lbl, i) => {
-                            const v = [row.pillar_trend, row.pillar_momentum, row.pillar_volume, row.pillar_structure][i] ?? 0;
-                            const c = v >= 0.7 ? '#22c55e' : v >= 0.4 ? '#f59e0b' : '#475569';
-                            return (
-                              <span key={lbl} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
-                                <span style={{ width: 14, height: Math.round(v * 12) + 2, background: c, borderRadius: 2, minHeight: 2 }} />
-                                <span style={{ fontSize: 8, color: c, lineHeight: 1 }}>{lbl}</span>
-                              </span>
-                            );
-                          })}
-                          <span style={{ fontSize: 9, color: '#64748b', marginLeft: 2 }}>{row.pillars_active ?? 0}/4</span>
-                        </span>
-                      )}
                     </td>
 
                     {/* Alert / conviction gate */}
@@ -711,6 +716,17 @@ export default function SignalFiltersPage() {
                     <td style={{ ...TD, color: (row.bullish_probability ?? 0) >= 0.5 ? '#22c55e' : '#f87171', fontWeight: 600 }}>
                       {row.bullish_probability != null ? `${(row.bullish_probability * 100).toFixed(1)}%` : '—'}
                     </td>
+
+                    {/* Vol ratio */}
+                    {(() => {
+                      const v = volRatioMap[row.symbol];
+                      const color = v == null ? '#475569' : v > 2.0 ? '#22c55e' : v > 1.5 ? '#eab308' : '#94a3b8';
+                      return (
+                        <td style={{ ...TD, color, fontWeight: v != null && v > 2.0 ? 700 : 400 }}>
+                          {v != null ? `${v.toFixed(1)}x` : '—'}
+                        </td>
+                      );
+                    })()}
 
                     {/* Filter count badge */}
                     <td style={{ ...TD, textAlign: 'center' }}>

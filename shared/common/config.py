@@ -33,15 +33,15 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context) -> None:  # pydantic v2 hook
         _WEAK = "stockai-change-me-in-production-secret-key"
-        if self.env == "production" and self.jwt_secret == _WEAK:
+        if self.env != "development" and self.jwt_secret == _WEAK:
             raise RuntimeError(
-                "JWT_SECRET must be set to a strong random value in production. "
+                "JWT_SECRET must be set to a strong random value in non-development envs. "
                 "The default placeholder is not safe."
             )
-        if self.env == "production" and (not self.cors_origins or "*" in self.cors_origins):
+        if self.env != "development" and (not self.cors_origins or "*" in self.cors_origins):
             import warnings
             warnings.warn(
-                "CORS_ORIGINS is not set or uses wildcard '*' in production. "
+                "CORS_ORIGINS is not set or uses wildcard '*' in non-development env. "
                 "Set CORS_ORIGINS=https://yourdomain.com in .env.production to lock down CORS.",
                 stacklevel=2,
             )
@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     strategy_engine_url: str = "http://strategy-engine:8006"
     portfolio_optimizer_url: str = "http://portfolio-optimizer:8007"
     research_engine_url: str = "http://research-engine:8008"
+    decision_engine_url: str = "http://decision-engine:8009"
+    event_intelligence_url: str = "http://event-intelligence:8010"
+
+    # Event Intelligence
+    fred_api_key: str = ""      # https://fred.stlouisfed.org/docs/api/api_key.html (free)
+    fmp_api_key: str = ""       # https://site.financialmodelingprep.com (free tier)
+
+    # Paper trading — disabled by default in development; set ENABLE_PAPER_TRADING=true in production .env
+    enable_paper_trading: bool = False
 
     # Storage
     parquet_dir: str = "/data/parquet"

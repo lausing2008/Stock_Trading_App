@@ -37,7 +37,7 @@ import SignalCard from '@/components/SignalCard';
 import PositionSizer from '@/components/PositionSizer';
 import PeerCompareDrawer from '@/components/PeerCompareDrawer';
 import NewsCard from '@/components/NewsCard';
-import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult } from '@/lib/api';
+import { api, type Overview, type Signal, type Prediction, type NewsItem, type LatestPrice, type WatchlistMeta, type PriceAlert, type FearGreed, type SignalAlertItem, type DividendData, type InstitutionalData, type RankingRow, type SignalHistoryPoint, type PatternSignal, type ResearchSummary, type FeatureImportanceResult, type OutcomesSummary, type QuarterlyRow } from '@/lib/api';
 import { confluenceScoreFull, confluenceGrade } from '@/lib/confluence';
 import { mutate as globalMutate } from 'swr';
 import { askAI, isAiConfigured, getAiProviderLabel, type AiMessage } from '@/lib/ai';
@@ -168,6 +168,8 @@ export default function StockDetail() {
 
   // Research summary (INT-1, INT-2, INT-6)
   const [researchSummary, setResearchSummary] = useState<ResearchSummary | null>(null);
+  const [researchRefreshing, setResearchRefreshing] = useState(false);
+  const [researchTriggerMsg, setResearchTriggerMsg] = useState<string | null>(null);
 
   // AI chat state
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
@@ -186,6 +188,7 @@ export default function StockDetail() {
   // live=false → reads stored DB signal (matches signal filter); Refresh button uses live=true
   const { data: sigShort,  mutate: mutateSigShort }  = useSWR(symbol ? `sig-${symbol}-SHORT`  : null, () => api.signal(symbol, 'SHORT',  false), { revalidateOnFocus: false });
   const { data: sigSwing,  mutate: mutateSigSwing }  = useSWR(symbol ? `sig-${symbol}-SWING`  : null, () => api.signal(symbol, 'SWING',  false), { revalidateOnFocus: false });
+  const { data: tuneStatus } = useSWR('tune-status', () => api.signalTuneStatus(), { refreshInterval: 5 * 60_000, revalidateOnFocus: false });
   const { data: sigLong,   mutate: mutateSigLong }   = useSWR(symbol ? `sig-${symbol}-LONG`   : null, () => api.signal(symbol, 'LONG',   false), { revalidateOnFocus: false });
   const { data: sigGrowth, mutate: mutateSigGrowth } = useSWR(symbol ? `sig-${symbol}-GROWTH` : null, () => api.signal(symbol, 'GROWTH', false), { revalidateOnFocus: false });
   const allHorizonSignals: { label: string; horizon: string; sig: typeof sigShort }[] = [
@@ -199,6 +202,24 @@ export default function StockDetail() {
   const [selectedHorizon, setSelectedHorizon] = useState<string>('SWING');
   // Sync to watchlist style when page loads (pageStyle comes from router.query, may arrive late)
   useEffect(() => { if (pageStyle) setSelectedHorizon(pageStyle); }, [pageStyle]);
+
+  // T230-CHARTING-TIMEFRAMES: chart timeframe selector state
+  const [chartTf, setChartTf] = useState<'5m' | '15m' | '1h' | '4h' | '1d'>('1d');
+  const { data: tfPrices } = useSWR(
+    symbol && chartTf !== '1d' && chartTf !== '5m' ? `prices-tf-${symbol}-${chartTf}` : null,
+    () => api.pricesTf(symbol!, chartTf as '15m' | '1h' | '4h'),
+    { revalidateOnFocus: false },
+  );
+
+  // T230-CHARTING-COMPARE-OVERLAY: comparison overlay state
+  const [compareSymbol, setCompareSymbol] = useState<string | null>(null);
+  const [compareInputOpen, setCompareInputOpen] = useState(false);
+  const [compareCustomInput, setCompareCustomInput] = useState('');
+  const { data: comparePrices } = useSWR(
+    compareSymbol ? `compare-prices-${compareSymbol}` : null,
+    () => api.getPrices(compareSymbol!, '1d', 400),
+    { revalidateOnFocus: false },
+  );
 
   // Game plan state
   type GamePlanEntry = { label: string; price: number; rationale: string };
@@ -319,9 +340,22 @@ export default function StockDetail() {
     { revalidateOnFocus: false },
   );
 
+  const activeHorizon = selectedHorizon || 'SWING';
+
   const { data: signalHistory } = useSWR<SignalHistoryPoint[]>(
-    symbol ? `signal-history-${symbol}-${pageStyle || 'SWING'}` : null,
-    () => api.signalHistory(symbol, pageStyle || 'SWING', 60),
+    symbol ? `signal-history-${symbol}-${activeHorizon}` : null,
+    () => api.signalHistory(symbol, activeHorizon, 60),
+    { revalidateOnFocus: false },
+  );
+  const { data: symbolOutcomes } = useSWR(
+    symbol ? `symbol-outcomes-${symbol}-${activeHorizon}` : null,
+    () => api.symbolOutcomes(symbol, activeHorizon),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: quarterly } = useSWR<QuarterlyRow[]>(
+    symbol ? `quarterly-${symbol}` : null,
+    () => api.quarterlyFinancials(symbol!),
     { revalidateOnFocus: false },
   );
 
@@ -485,16 +519,19 @@ export default function StockDetail() {
 
     const lp = allPrices?.find(p => p.symbol === symbol);
     const currentPrice = lp?.price ?? (data.prices?.at(-1)?.close ?? null);
-    const sig = data.signal;
+    // Use the signal for the active horizon tab, not just the default SWING signal
+    const sig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+      ?? (selectedHorizon === 'SWING' ? data.signal : data.signal);
     const rank = data.ranking;
     const fund = data.fundamentals;
     const levels = data.levels;
 
-    const tradeStyle = (sig?.horizon ?? 'SWING').toUpperCase() as 'SHORT' | 'SWING' | 'LONG';
+    const tradeStyle = (sig?.horizon ?? 'SWING').toUpperCase() as 'SHORT' | 'SWING' | 'LONG' | 'GROWTH';
     const styleLabels: Record<string, string> = {
       SHORT: 'Short-Term (1–5 Days)',
       SWING: 'Swing (5–30 Days)',
       LONG: 'Position (1–12 Months)',
+      GROWTH: 'Growth Momentum (10–20 Days)',
     };
     const styleRules: Record<string, string> = {
       SHORT: `TRADING STYLE: SHORT-TERM (1–5 days)
@@ -517,6 +554,13 @@ export default function StockDetail() {
 - Stop loss: 10% below current — wide stop allows for normal volatility; weekly close below invalidates thesis
 - Take profit: analyst mean/high target or +25% from current (position trade requires large reward/risk)
 - Note this is a multi-month hold; size for volatility and manage around earnings`,
+      GROWTH: `TRADING STYLE: GROWTH MOMENTUM (10–20 days)
+- Entry 1: at or just above nearest support below current price (typically 1.5–2.5% below)
+- Entry 2: at a deeper support level for averaging down (typically 4–5% below)
+- Breakout entry: above nearest resistance — take 60% size on confirmed momentum
+- Stop loss: just below the lowest entry support (typically 6% below) — wider than SWING to tolerate momentum volatility
+- Take profit: +15–20% from current or nearest resistance; consider partial exit at +10%
+- Note this is a higher-volatility momentum style; size accordingly and trail stop after +8% gain`,
     };
     const planLabel = styleLabels[tradeStyle] ?? tradeStyle;
     const styleInstruction = styleRules[tradeStyle] ?? styleRules['SWING'];
@@ -558,7 +602,8 @@ ${Object.entries(fib).map(([k, v]) => `  ${k}%: $${(v as number).toFixed(2)}`).j
 
 TECHNICAL INDICATORS:
   RSI(14): ${reasons.rsi != null ? Number(reasons.rsi).toFixed(1) : '?'}
-  MACD hist: ${reasons.macd_hist != null ? Number(reasons.macd_hist).toFixed(3) : '?'} (${reasons.macd_rising ? 'rising' : 'falling'})
+  MACD hist: ${reasons.macd_hist != null ? Number(reasons.macd_hist).toFixed(3) : '?'} (${reasons.macd_momentum_fading ? 'fading ⚠ — momentum exhausting' : reasons.macd_hist_expanding !== undefined ? (reasons.macd_hist_expanding ? 'expanding' : 'contracting') : (reasons.macd_rising ? 'rising' : 'falling')})${reasons.macd_hist_slope != null ? ` slope: ${Number(reasons.macd_hist_slope).toFixed(4)}` : ''}
+  GC spread: ${reasons.gc_spread_pct != null ? `${(Number(reasons.gc_spread_pct)*100).toFixed(1)}%` : '?'} (${reasons.gc_spread_expanding === true ? 'expanding' : reasons.gc_spread_expanding === false ? 'narrowing ⚠' : 'unknown'})
   Above SMA50: ${reasons.trend_above_sma50 ? 'Yes' : 'No'} | SMA50>SMA200: ${reasons.sma50_above_sma200 ? 'Yes' : 'No'}
   ADX: ${reasons.adx != null ? Number(reasons.adx).toFixed(1) : '?'} | Stoch RSI %K: ${reasons.stoch_rsi_k != null ? (Number(reasons.stoch_rsi_k) * 100).toFixed(0) : '?'}%
   VWMA(20d): ${reasons.price_above_vwap === true ? 'Price ABOVE VWMA' : reasons.price_above_vwap === false ? 'Price BELOW VWMA' : 'N/A'}${reasons.vwma_20 != null ? ` ($${Number(reasons.vwma_20).toFixed(2)})` : ''}
@@ -626,6 +671,18 @@ Return ONLY valid JSON — no markdown, no prose:
     } finally {
       setFundRefreshing(false);
     }
+  }
+
+  async function handleResearchRefresh() {
+    setResearchRefreshing(true);
+    setResearchTriggerMsg(null);
+    try {
+      const res = await api.triggerResearch(symbol);
+      setResearchTriggerMsg(res?.status === 'triggered' ? 'Refresh queued — report updates in ~30s' : 'Refresh queued');
+    } catch {
+      setResearchTriggerMsg('Trigger failed');
+    }
+    setResearchRefreshing(false);
   }
 
   async function runML() {
@@ -750,7 +807,7 @@ Return ONLY valid JSON — no markdown, no prose:
     // Sortino: downside std (returns below 0 only)
     const downside = returns.filter(r => r < 0);
     const downsideStd = downside.length > 1
-      ? Math.sqrt(downside.reduce((a, b) => a + b ** 2, 0) / downside.length)
+      ? Math.sqrt(downside.reduce((a, b) => a + b ** 2, 0) / n)
       : std;
     // Max drawdown over the window
     let peak = window[0], maxDD = 0;
@@ -825,6 +882,29 @@ Return ONLY valid JSON — no markdown, no prose:
             )}
           </div>
 
+          {/* RVOL chip (T220-I) — derived from liveQuote volume vs avg_volume */}
+          {liveQuote?.volume != null && liveQuote?.avg_volume != null && liveQuote.avg_volume > 0 && (() => {
+            const rvol = liveQuote.volume! / liveQuote.avg_volume!;
+            if (rvol < 1.5) return null;
+            const isHigh = rvol >= 2.0;
+            return (
+              <div
+                title={`Relative volume ${rvol.toFixed(2)}× 20-day avg — ${isHigh ? 'unusual institutional activity detected' : 'above-average volume'}`}
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  padding: '6px 12px', borderRadius: 8,
+                  border: `1px solid ${isHigh ? 'rgba(239,68,68,0.4)' : 'rgba(251,191,36,0.35)'}`,
+                  background: isHigh ? 'rgba(239,68,68,0.08)' : 'rgba(251,191,36,0.08)',
+                  minWidth: 72,
+                }}
+              >
+                <span style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>RVOL</span>
+                <span style={{ fontSize: 18, fontWeight: 800, color: isHigh ? '#f87171' : '#fbbf24', lineHeight: 1.1 }}>{rvol.toFixed(1)}×</span>
+                <span style={{ fontSize: 9, color: isHigh ? '#f87171' : '#fbbf24', marginTop: 1 }}>{isHigh ? 'Unusual vol' : 'Elevated'}</span>
+              </div>
+            );
+          })()}
+
           {ranking?.fair_price != null && (
             <div className="rounded-md border border-indigo-800 bg-indigo-950/40 px-4 py-2 text-center" style={{ minWidth: 120 }}>
               <div className="text-xs text-indigo-400 font-medium mb-0.5">Fair Value</div>
@@ -846,16 +926,37 @@ Return ONLY valid JSON — no markdown, no prose:
               )}
             </div>
           )}
-          {data.signal && (() => {
-            const s = data.signal.signal;
+          {(() => {
+            // FE-A1: was hardcoded to sigSwing regardless of the active horizon tab — switching
+            // to LONG/SHORT/GROWTH left the header badge still showing the SWING signal, visibly
+            // contradicting the tab content below it. Same lookup pattern already used by the
+            // sidebar's tabbed horizon switcher (see allHorizonSignals.find below, ~line 1904).
+            const badgeSig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+              ?? (selectedHorizon === 'SWING' ? data.signal : null);
+            if (!badgeSig) return null;
+            const s = badgeSig.signal;
             const borderCls = s === 'BUY' ? 'border-green-800 bg-green-950/40' : s === 'SELL' ? 'border-red-800 bg-red-950/40' : s === 'WAIT' ? 'border-orange-800 bg-orange-950/40' : 'border-yellow-800 bg-yellow-950/40';
             const labelCls  = s === 'BUY' ? 'text-green-400'  : s === 'SELL' ? 'text-red-400'  : s === 'WAIT' ? 'text-orange-400'  : 'text-yellow-400';
             const valueCls  = s === 'BUY' ? 'text-green-300'  : s === 'SELL' ? 'text-red-300'  : s === 'WAIT' ? 'text-orange-300'  : 'text-yellow-300';
             return (
               <div className={`rounded-md border px-4 py-2 text-center ${borderCls}`}>
                 <div className={`text-xs font-medium mb-0.5 ${labelCls}`}>AI Signal</div>
-                <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
-                <div className="text-xs text-slate-500 mt-0.5">{((data.signal.bullish_probability ?? 0) * 100).toFixed(0)}% bullish</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                  <div className={`text-xl font-bold ${valueCls}`}>{s}</div>
+                  {(s === 'HOLD' || s === 'WAIT') && badgeSig.bullish_probability != null && (() => {
+                    const bp = badgeSig.bullish_probability;
+                    if (bp >= 0.55 && bp < 0.65) return (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', padding: '2px 6px', borderRadius: 4 }}
+                            title={`Near BUY — ${(bp * 100).toFixed(1)}% bullish probability`}>~BUY</span>
+                    );
+                    if (bp > 0.35 && bp <= 0.45) return (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.35)', padding: '2px 6px', borderRadius: 4 }}
+                            title={`Near SELL — ${(bp * 100).toFixed(1)}% bullish probability`}>~SELL</span>
+                    );
+                    return null;
+                  })()}
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">{((badgeSig.bullish_probability ?? 0) * 100).toFixed(0)}% bullish · stored {selectedHorizon}</div>
               </div>
             );
           })()}
@@ -1041,14 +1142,247 @@ Return ONLY valid JSON — no markdown, no prose:
         {/* Left column: chart + analysis panels */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-          {/* Chart */}
-          {data.prices && data.prices.length > 0 ? (
-            <PriceChart symbol={symbol as string} prices={data.prices} indicators={data.indicators} levels={data.levels} signalMarkers={signalHistory} patterns={livePatterns?.patterns} />
-          ) : (
+          {/* T230-CHARTING-TIMEFRAMES: Timeframe selector + Compare overlay controls */}
+          {data.prices && data.prices.length > 0 && (() => {
+            // Compute compare stat for the badge (% change over the shared visible period)
+            let compareStat: string | null = null;
+            if (compareSymbol && comparePrices && comparePrices.length > 1 && data.prices && data.prices.length > 0) {
+              const mainStart = data.prices[0].ts.slice(0, 10);
+              const mainEnd = data.prices[data.prices.length - 1].ts.slice(0, 10);
+              const cAligned = comparePrices.filter(p => {
+                const d = p.ts.slice(0, 10);
+                return d >= mainStart && d <= mainEnd;
+              });
+              if (cAligned.length > 1) {
+                const cRet = ((+cAligned[cAligned.length - 1].close / +cAligned[0].close) - 1) * 100;
+                const sRet = ((+data.prices[data.prices.length - 1].close / +data.prices[0].close) - 1) * 100;
+                compareStat = `${symbol} ${sRet >= 0 ? '+' : ''}${sRet.toFixed(1)}%  vs  ${compareSymbol} ${cRet >= 0 ? '+' : ''}${cRet.toFixed(1)}%`;
+              }
+            }
+
+            return (
+              <div>
+                {/* Timeframe + Compare toolbar */}
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '11px', color: '#475569', fontWeight: 600, marginRight: '2px' }}>TF</span>
+                  {(['5m', '15m', '1h', '4h', '1d'] as const).map(tf => (
+                    <button
+                      key={tf}
+                      onClick={() => setChartTf(tf)}
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        border: chartTf === tf ? 'none' : '1px solid #1e293b',
+                        background: chartTf === tf ? '#4f46e5' : 'rgba(255,255,255,0.03)',
+                        color: chartTf === tf ? '#fff' : '#64748b',
+                        cursor: 'pointer',
+                        transition: 'all 0.12s',
+                      }}
+                    >
+                      {tf}
+                    </button>
+                  ))}
+                  <span style={{ margin: '0 4px', width: '1px', height: '14px', background: '#1e293b', display: 'inline-block' }} />
+                  {/* Compare button */}
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      onClick={() => {
+                        if (compareSymbol) { setCompareSymbol(null); setCompareCustomInput(''); setCompareInputOpen(false); }
+                        else setCompareInputOpen(v => !v);
+                      }}
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        border: compareSymbol ? 'none' : '1px solid #1e293b',
+                        background: compareSymbol ? '#78350f' : 'rgba(255,255,255,0.03)',
+                        color: compareSymbol ? '#fbbf24' : '#64748b',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {compareSymbol ? `vs ${compareSymbol} x` : 'Compare'}
+                    </button>
+                    {compareInputOpen && !compareSymbol && (
+                      <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 50, marginTop: '4px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px', padding: '10px', minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                          {['SPY', 'QQQ', '^HSI'].map(preset => (
+                            <button
+                              key={preset}
+                              onClick={() => { setCompareSymbol(preset); setCompareInputOpen(false); }}
+                              style={{ padding: '3px 10px', borderRadius: '8px', fontSize: '11px', fontWeight: 600, border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer' }}
+                            >
+                              {preset === '^HSI' ? 'HSI' : preset}
+                            </button>
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <input
+                            value={compareCustomInput}
+                            onChange={e => setCompareCustomInput(e.target.value.toUpperCase())}
+                            onKeyDown={e => { if (e.key === 'Enter' && compareCustomInput.trim()) { setCompareSymbol(compareCustomInput.trim()); setCompareInputOpen(false); } }}
+                            placeholder="e.g. NVDA"
+                            style={{ flex: 1, padding: '4px 8px', borderRadius: '6px', border: '1px solid #334155', background: '#1e293b', color: '#e2e8f0', fontSize: '11px', outline: 'none' }}
+                          />
+                          <button
+                            onClick={() => { if (compareCustomInput.trim()) { setCompareSymbol(compareCustomInput.trim()); setCompareInputOpen(false); } }}
+                            style={{ padding: '4px 10px', borderRadius: '6px', fontSize: '11px', background: '#4f46e5', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                          >
+                            Go
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* Compare stat badge */}
+                  {compareStat && (
+                    <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: '4px', fontFamily: 'monospace' }}>
+                      {compareStat}
+                    </span>
+                  )}
+                  {/* Loading indicator for tf prices */}
+                  {chartTf !== '1d' && chartTf !== '5m' && !tfPrices && (
+                    <span style={{ fontSize: '11px', color: '#475569' }}>loading…</span>
+                  )}
+                </div>
+
+                {/* Chart */}
+                <PriceChart
+                  symbol={symbol as string}
+                  prices={data.prices}
+                  indicators={chartTf === '1d' ? data.indicators : undefined}
+                  levels={chartTf === '1d' ? data.levels : undefined}
+                  signalMarkers={chartTf === '1d' ? signalHistory : undefined}
+                  patterns={livePatterns?.patterns}
+                  gamePlanLevels={gamePlan && chartTf === '1d' ? {
+                    entryLow: gamePlan.entries[0]?.price ?? null,
+                    entryHigh: gamePlan.entries[1]?.price ?? gamePlan.entries[0]?.price ?? null,
+                    stopLoss: gamePlan.stop_loss?.price ?? null,
+                    target1: gamePlan.take_profit?.price ?? null,
+                  } : null}
+                  intradayOverride={
+                    chartTf !== '1d' && chartTf !== '5m'
+                      ? (tfPrices ?? null)
+                      : null
+                  }
+                  compareData={
+                    compareSymbol && comparePrices && comparePrices.length > 1
+                      ? { symbol: compareSymbol, prices: comparePrices }
+                      : null
+                  }
+                />
+              </div>
+            );
+          })()}
+          {data.prices && data.prices.length === 0 && (
             <div className="rounded-md border border-slate-800 bg-slate-900 p-4 text-slate-400">
               No price data available for {symbol}. Try clicking Full Refresh above to ingest history.
             </div>
           )}
+
+          {/* Volume Bar Chart */}
+          {data.prices && data.prices.length >= 5 && (() => {
+            const dailyBars = [...data.prices!]
+              .filter(p => p.volume > 0)
+              .sort((a, b) => a.ts.localeCompare(b.ts))
+              .slice(-60);
+            if (dailyBars.length < 5) return null;
+            // 20-day moving average volume per bar
+            const avgVols = dailyBars.map((_, i) => {
+              const window = dailyBars.slice(Math.max(0, i - 19), i + 1);
+              return window.reduce((s, p) => s + p.volume, 0) / window.length;
+            });
+            const maxVol = Math.max(...dailyBars.map(p => p.volume));
+            const latestVol = dailyBars[dailyBars.length - 1].volume;
+            const latestAvg = avgVols[avgVols.length - 1];
+            const latestRatio = latestAvg > 0 ? latestVol / latestAvg : null;
+            const isSpike = latestRatio != null && latestRatio >= 2;
+            const padL = 44, padR = 8, padT = 12, padB = 24;
+            const W = 600, H = 100;
+            const chartW = W - padL - padR;
+            const chartH = H - padT - padB;
+            const barW = Math.max(1, chartW / dailyBars.length - 1);
+            function xPos(i: number) { return padL + (i / (dailyBars.length - 1)) * chartW; }
+            function yPos(v: number) { return padT + chartH - (v / maxVol) * chartH; }
+            function barColor(vol: number, avg: number) {
+              if (avg <= 0) return '#334155';
+              const r = vol / avg;
+              if (r >= 2) return '#f59e0b';
+              if (r >= 1.5) return '#4ade80';
+              if (r >= 1) return '#6366f1';
+              return '#334155';
+            }
+            const tickVols = [0, maxVol * 0.5, maxVol];
+            function fmtVolShort(v: number) {
+              if (v >= 1e9) return `${(v/1e9).toFixed(1)}B`;
+              if (v >= 1e6) return `${(v/1e6).toFixed(0)}M`;
+              if (v >= 1e3) return `${(v/1e3).toFixed(0)}K`;
+              return String(Math.round(v));
+            }
+            const xLabels: { i: number; label: string }[] = [];
+            const step = Math.max(1, Math.floor(dailyBars.length / 5));
+            dailyBars.forEach((p, i) => {
+              if (i % step === 0 || i === dailyBars.length - 1) {
+                xLabels.push({ i, label: p.ts.slice(5, 10) });
+              }
+            });
+            return (
+              <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px', padding: '14px 16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Volume</span>
+                  {isSpike && (
+                    <span style={{ fontSize: '10px', fontWeight: 800, background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '4px', padding: '1px 6px', letterSpacing: '0.06em' }}>
+                      ⚡ VOLUME SPIKE {latestRatio!.toFixed(1)}× AVG
+                    </span>
+                  )}
+                  {latestRatio != null && !isSpike && (
+                    <span style={{ fontSize: '11px', color: latestRatio >= 1 ? '#4ade80' : '#64748b' }}>
+                      {latestRatio.toFixed(2)}× avg today
+                    </span>
+                  )}
+                  <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#475569' }}>20d avg — dashed</span>
+                </div>
+                <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+                  {/* Y-axis gridlines + labels */}
+                  {tickVols.map((tv, ti) => (
+                    <g key={ti}>
+                      <line x1={padL} y1={yPos(tv)} x2={W - padR} y2={yPos(tv)} stroke="#1e293b" strokeWidth={1} />
+                      <text x={padL - 4} y={yPos(tv) + 4} fill="#475569" fontSize={9} textAnchor="end">{fmtVolShort(tv)}</text>
+                    </g>
+                  ))}
+                  {/* Volume bars */}
+                  {dailyBars.map((p, i) => {
+                    const bx = xPos(i);
+                    return (
+                      <rect key={i}
+                        x={bx - barW / 2} y={padT + chartH - (p.volume / maxVol) * chartH}
+                        width={barW} height={(p.volume / maxVol) * chartH}
+                        fill={barColor(p.volume, avgVols[i])}
+                        opacity={0.85}
+                      />
+                    );
+                  })}
+                  {/* 20d avg line */}
+                  <polyline
+                    points={avgVols.map((av, i) => `${xPos(i).toFixed(1)},${yPos(av).toFixed(1)}`).join(' ')}
+                    fill="none" stroke="#60a5fa" strokeWidth={1.5} strokeDasharray="4,3" opacity={0.7}
+                  />
+                  {/* X-axis labels */}
+                  {xLabels.map(({ i, label }) => (
+                    <text key={i} x={xPos(i)} y={H - 4} fill="#475569" fontSize={9} textAnchor="middle">{label}</text>
+                  ))}
+                </svg>
+                <div style={{ display: 'flex', gap: '16px', marginTop: '6px', fontSize: '10px', color: '#475569' }}>
+                  <span><span style={{ color: '#f59e0b' }}>■</span> Spike (≥2× avg)</span>
+                  <span><span style={{ color: '#4ade80' }}>■</span> High (≥1.5×)</span>
+                  <span><span style={{ color: '#6366f1' }}>■</span> Normal (≥1×)</span>
+                  <span><span style={{ color: '#60a5fa' }}>— —</span> 20d Avg</span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* K-Score + Fear & Greed side by side */}
           {(ranking || fearGreed) && (
@@ -1127,6 +1461,83 @@ Return ONLY valid JSON — no markdown, no prose:
                         })()}
                       </div>
                     )}
+                  </div>
+                );
+              })()}
+
+              {/* Snowflake Radar */}
+              {ranking && (() => {
+                const axes = [
+                  { label: 'Technical', value: ranking.technical ?? 0, color: '#38bdf8' },
+                  { label: 'Momentum',  value: ranking.momentum  ?? 0, color: '#fb923c' },
+                  { label: 'Value',     value: ranking.value     ?? 0, color: '#a78bfa' },
+                  { label: 'Growth',    value: ranking.growth    ?? 0, color: '#34d399' },
+                  { label: 'Strength',  value: Math.min(100, ranking.relative_strength ?? 50), color: '#facc15' },
+                ];
+                const n = axes.length;
+                const cx = 80; const cy = 80; const R = 60;
+                const step = (2 * Math.PI) / n;
+                const angle = (i: number) => -Math.PI / 2 + i * step;
+                const pt = (i: number, r: number) => ({
+                  x: cx + r * Math.cos(angle(i)),
+                  y: cy + r * Math.sin(angle(i)),
+                });
+                // Polygon points for filled area
+                const polyPts = axes.map((a, i) => {
+                  const { x, y } = pt(i, (a.value / 100) * R);
+                  return `${x.toFixed(1)},${y.toFixed(1)}`;
+                }).join(' ');
+                // Grid rings at 25, 50, 75, 100
+                const rings = [0.25, 0.5, 0.75, 1.0];
+                return (
+                  <div className="rounded-md border border-slate-800 bg-slate-900 p-4">
+                    <h3 className="text-sm font-semibold text-slate-300 mb-3">Score Profile</h3>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+                      <svg viewBox="0 0 160 160" style={{ width: 160, height: 160, flexShrink: 0 }}>
+                        {/* Grid rings */}
+                        {rings.map(r => (
+                          <polygon key={r}
+                            points={axes.map((_, i) => { const p = pt(i, r * R); return `${p.x.toFixed(1)},${p.y.toFixed(1)}`; }).join(' ')}
+                            fill="none" stroke="#1e293b" strokeWidth={1} />
+                        ))}
+                        {/* Axis lines */}
+                        {axes.map((_, i) => {
+                          const p = pt(i, R);
+                          return <line key={i} x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="#1e293b" strokeWidth={1} />;
+                        })}
+                        {/* Filled polygon */}
+                        <polygon points={polyPts} fill="#4f46e540" stroke="#6366f1" strokeWidth={1.5} strokeLinejoin="round" />
+                        {/* Dots */}
+                        {axes.map((a, i) => {
+                          const { x, y } = pt(i, (a.value / 100) * R);
+                          return <circle key={i} cx={x} cy={y} r={3} fill={a.color} />;
+                        })}
+                        {/* Labels */}
+                        {axes.map((a, i) => {
+                          const { x, y } = pt(i, R + 14);
+                          return (
+                            <text key={i} x={x} y={y} textAnchor="middle" dominantBaseline="middle"
+                              fontSize={8} fill="#64748b" fontWeight={600}>
+                              {a.label}
+                            </text>
+                          );
+                        })}
+                      </svg>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1 }}>
+                        {axes.map(a => (
+                          <div key={a.label} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: a.color, flexShrink: 0 }} />
+                            <span style={{ fontSize: '11px', color: '#94a3b8', width: '68px' }}>{a.label}</span>
+                            <div style={{ flex: 1, height: '3px', background: '#1e293b', borderRadius: '2px' }}>
+                              <div style={{ width: `${a.value}%`, height: '100%', background: a.color, borderRadius: '2px', transition: 'width 0.4s' }} />
+                            </div>
+                            <span style={{ fontSize: '11px', fontWeight: 700, color: a.color, width: '28px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                              {a.value.toFixed(0)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 );
               })()}
@@ -1561,8 +1972,16 @@ Return ONLY valid JSON — no markdown, no prose:
                       const r = activeSig.reasons as Record<string, unknown>;
                       const kscore = data?.ranking?.score;
                       const regime = (r.market_regime as string) || 'unknown';
-                      const mlThreshMap: Record<string, number> = { bull: 0.65, neutral: 0.70, high_vol: 0.78, bear: 0.78 };
-                      const mlThresh = mlThreshMap[regime] ?? 0.70;
+                      // H2: use effective thresholds from tune_status watchdog/calibration (5-min cache)
+                      const tuneStyleData = tuneStatus?.styles?.[selectedHorizon];
+                      const baseMlThresh = tuneStyleData?.effective?.buy_threshold_bull ?? 0.558;
+                      const mlThreshMap: Record<string, number> = {
+                        bull: baseMlThresh,
+                        neutral: Math.min(baseMlThresh + 0.05, 0.82),
+                        high_vol: Math.min(baseMlThresh + 0.12, 0.85),
+                        bear: Math.min(baseMlThresh + 0.12, 0.85),
+                      };
+                      const mlThresh = mlThreshMap[regime] ?? Math.min(baseMlThresh + 0.05, 0.82);
                       const mlProb = r.ml_probability != null ? Number(r.ml_probability) : null;
                       // ml_weight=0 means model AUC<0.50 — signal-engine gave it zero weight,
                       // so the gate mirrors that: soft-pass ML (same logic as Python gate)
@@ -1571,13 +1990,14 @@ Return ONLY valid JSON — no markdown, no prose:
                       const rsiLo = selectedHorizon === 'GROWTH' ? 50 : 45;
                       const rsiHi = selectedHorizon === 'GROWTH' ? 85 : 72;
                       const macdHist = Number(r.macd_hist || 0);
-                      const macdRising = Boolean(r.macd_rising);
+                      const macdExpanding = r.macd_hist_expanding !== undefined ? Boolean(r.macd_hist_expanding) : Boolean(r.macd_rising);
+                      const macdFading = Boolean(r.macd_momentum_fading);
                       const macdCross = Boolean(r.macd_zero_cross_up);
                       const layers = [
                         { key: 'ks',  label: 'K-Score',  ok: kscore != null && kscore >= 55,  detail: kscore != null ? `${kscore.toFixed(0)} (min 55)` : 'unavailable', soft: false },
                         { key: 'up',  label: 'Uptrend',  ok: selectedHorizon === 'GROWTH' ? Boolean(r.trend_above_sma50) : Boolean(r.sma50_above_sma200) && Boolean(r.trend_above_sma50), detail: selectedHorizon === 'GROWTH' ? 'price > SMA50' : 'SMA50>200 & price>SMA50', soft: false },
                         { key: 'rsi', label: 'RSI',      ok: rsi != null && rsi >= rsiLo && rsi <= rsiHi, detail: rsi != null ? `${rsi.toFixed(0)} (${rsiLo}–${rsiHi})` : 'n/a', soft: false },
-                        { key: 'mac', label: 'MACD',     ok: macdHist > 0 || macdRising || macdCross, detail: `hist ${macdHist.toFixed(3)} ${macdRising ? '↑' : '↓'}`, soft: true },
+                        { key: 'mac', label: 'MACD',     ok: (macdHist > 0 || macdCross) && !macdFading, detail: `hist ${macdHist.toFixed(3)} ${macdExpanding ? '↑ expanding' : macdFading ? '⚠ fading' : '↓'}`, soft: true },
                         { key: 'obv', label: 'OBV',      ok: Boolean(r.obv_trend_bullish), detail: Boolean(r.obv_trend_bullish) ? 'confirming' : 'not confirming', soft: true },
                         { key: 'adx', label: 'ADX',      ok: Boolean(r.adx_trending), detail: r.adx != null ? `ADX ${Number(r.adx).toFixed(0)} (min 25)` : 'n/a', soft: true },
                         { key: 'ml',  label: 'ML Model', ok: mlProb == null || mlWeight === 0 || mlProb > mlThresh, detail: mlProb != null ? (mlWeight === 0 ? `AUC<0.50 — zero weight, gate skipped` : `${(mlProb*100).toFixed(0)}% vs ${(mlThresh*100).toFixed(0)}% (${regime})`) : 'no model', soft: true },
@@ -1681,6 +2101,15 @@ Return ONLY valid JSON — no markdown, no prose:
                     )}
                     {resScore !== null && <span style={{ fontSize: 10, color: '#64748b' }}>{resScore} pts</span>}
                     {resAge !== null && <span style={{ fontSize: 9, color: staleResearch ? '#f87171' : '#334155' }}>{resAge < 24 ? `${resAge}h ago` : `${Math.floor(resAge / 24)}d ago`}{staleResearch ? ' · STALE' : ''}</span>}
+                    <button
+                      onClick={handleResearchRefresh}
+                      disabled={researchRefreshing}
+                      title="Trigger a fresh research report"
+                      style={{ marginLeft: 4, padding: '2px 7px', borderRadius: 5, border: '1px solid rgba(129,140,248,0.25)', background: 'rgba(129,140,248,0.08)', color: researchRefreshing ? '#f59e0b' : '#818cf8', cursor: researchRefreshing ? 'default' : 'pointer', fontSize: 10, fontWeight: 700, lineHeight: 1 }}
+                    >
+                      {researchRefreshing ? '…' : '↻'}
+                    </button>
+                    {researchTriggerMsg && <span style={{ fontSize: 9, color: '#4ade80', marginLeft: 4 }}>{researchTriggerMsg}</span>}
                     {!resCore && <span style={{ fontSize: 10, color: '#334155' }}>—</span>}
                   </div>
                   {/* Conviction gauge (INT-6) */}
@@ -1693,6 +2122,21 @@ Return ONLY valid JSON — no markdown, no prose:
                       )}
                     </div>
                   )}
+                  {(() => {
+                    const symBySym = symbolOutcomes?.by_symbol;
+                    if (!symBySym?.length) return null;
+                    const row = symBySym.find(r => r.symbol === symbol) ?? symBySym[0];
+                    if (row.count < 3) return null;
+                    const wr = Math.round(row.win_rate * 100);
+                    const wrColor = wr >= 55 ? '#4ade80' : wr >= 45 ? '#facc15' : '#f87171';
+                    return (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} title={`${row.count} closed signals in last 90d`}>
+                        <span style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{activeHorizon} 90d</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: wrColor }}>{wr}%WR</span>
+                        <span style={{ fontSize: 9, color: '#334155' }}>({row.count})</span>
+                      </div>
+                    );
+                  })()}
                 </div>
                 {/* Alignment indicator (INT-2) */}
                 {alignLabel && (
@@ -1710,6 +2154,46 @@ Return ONLY valid JSON — no markdown, no prose:
                     )}
                   </div>
                 )}
+              </div>
+            );
+          })()}
+
+          {/* Event Intelligence panel — catalyst/insider/congress scores from signal reasons */}
+          {(() => {
+            const r = data?.signal?.reasons as Record<string, unknown> | null | undefined;
+            if (!r) return null;
+            const catalystScore  = r?.catalyst_score  != null ? Number(r.catalyst_score)  : null;
+            const insiderScore   = r?.insider_score   != null ? Number(r.insider_score)   : null;
+            const congressScore  = r?.congress_score  != null ? Number(r.congress_score)  : null;
+            const compositeScore = r?.composite_score != null ? Number(r.composite_score) : null;
+            if (catalystScore == null && insiderScore == null && congressScore == null) return null;
+            const sc = (n: number | null) => n == null ? '#6b7280' : n >= 60 ? '#22c55e' : n >= 30 ? '#f59e0b' : n < 0 ? '#ef4444' : '#6b7280';
+            const fmt = (n: number | null) => n == null ? '—' : n.toFixed(0);
+            const bar = (n: number | null, maxAbs = 100) => {
+              if (n == null) return null;
+              const pct = Math.max(0, Math.min(100, ((n + maxAbs) / (2 * maxAbs)) * 100));
+              return <div style={{ flex: 1, height: 4, background: '#1f2937', borderRadius: 2 }}><div style={{ width: `${pct}%`, height: '100%', borderRadius: 2, background: sc(n) }} /></div>;
+            };
+            return (
+              <div style={{ background: '#0a0f1e', border: '1px solid #1e293b', borderRadius: 8, padding: '10px 14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Event Intelligence</span>
+                  <a href="/intelligence" style={{ fontSize: 9, color: '#f59e0b', textDecoration: 'none', opacity: 0.7 }}>Full dashboard →</a>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {[
+                    { label: 'Catalyst', val: catalystScore, tip: 'Composite: earnings × insider × congress × institutional' },
+                    { label: 'Insider',  val: insiderScore,  tip: 'Net insider buying pressure (−100 to +100, role-weighted)' },
+                    { label: 'Congress', val: congressScore, tip: 'Congressional buying interest (0–100, net purchase bias)' },
+                    { label: 'AI Composite', val: compositeScore, tip: '0.5×catalyst + 0.3×(100−risk) + 0.2×earnings' },
+                  ].map(({ label, val, tip }) => (
+                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }} title={tip}>
+                      <span style={{ fontSize: 10, color: '#64748b', width: 70, flexShrink: 0 }}>{label}</span>
+                      {bar(val)}
+                      <span style={{ fontSize: 10, fontWeight: 700, color: sc(val), width: 28, textAlign: 'right', flexShrink: 0 }}>{fmt(val)}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             );
           })()}
@@ -1982,8 +2466,14 @@ Return ONLY valid JSON — no markdown, no prose:
             );
           })()}
 
-          {/* Game Plan — only for bullish/neutral signals where a buy plan makes sense */}
-          {isAiConfigured() && data.signal?.signal !== 'SELL' && (
+          {/* Game Plan — only for BUY/HOLD signals; hidden for WAIT/SELL */}
+          {isAiConfigured() && (() => {
+            const gpSig = allHorizonSignals.find(h => h.horizon === selectedHorizon)?.sig
+              ?? (selectedHorizon === 'SWING' ? data.signal : data.signal);
+            const gpDirection = gpSig?.signal;
+            if (gpDirection === 'WAIT' || gpDirection === 'SELL') return null;
+            const gpButtonLabel = 'Generate 10-Day Game Plan';
+            return (
             <div>
               {/* Generate button */}
               {!gamePlan && !gamePlanLoading && (
@@ -1999,7 +2489,7 @@ Return ONLY valid JSON — no markdown, no prose:
                   }}
                 >
                   <span style={{ fontSize: '14px' }}>📋</span>
-                  <span style={{ flex: 1 }}>Generate 10-Day Game Plan</span>
+                  <span style={{ flex: 1 }}>{gpButtonLabel}</span>
                   <span style={{ fontSize: '10px', color: '#22c55e', opacity: 0.7 }}>AI</span>
                 </button>
               )}
@@ -2125,7 +2615,8 @@ Return ONLY valid JSON — no markdown, no prose:
                 </div>
               )}
             </div>
-          )}
+          );
+          })()}
 
         </div>
       </div>
@@ -2330,6 +2821,12 @@ Return ONLY valid JSON — no markdown, no prose:
                         const label = pct >= 20 ? 'High — squeeze risk' : pct >= 10 ? 'Elevated' : 'Low';
                         return card('Short % of Float', `${pct.toFixed(1)}%`, label, color);
                       })()}
+                      {f.shares_short != null && f.shares_short_prior_month != null && (() => {
+                        const rising = f.shares_short > f.shares_short_prior_month!;
+                        const pctChg = ((f.shares_short - f.shares_short_prior_month!) / f.shares_short_prior_month!) * 100;
+                        const color = rising ? '#f87171' : '#4ade80';
+                        return card('Short Trend', rising ? `↑ ${pctChg.toFixed(0)}% MoM` : `↓ ${Math.abs(pctChg).toFixed(0)}% MoM`, rising ? 'Shorts rising (bearish)' : 'Shorts falling (bullish)', color);
+                      })()}
                       {f.short_ratio != null && (() => {
                         const color = f.short_ratio >= 5 ? '#f87171' : f.short_ratio >= 3 ? '#fbbf24' : '#94a3b8';
                         return card('Days to Cover', `${f.short_ratio.toFixed(1)}d`, 'short ratio', color);
@@ -2341,7 +2838,64 @@ Return ONLY valid JSON — no markdown, no prose:
                 );
               })()}
 
-              {/* Row 6 — EPS Surprise History */}
+              {/* Row 6 — Quarterly Revenue & Earnings Trend (T230) */}
+              {quarterly && quarterly.length > 0 && (() => {
+                function fmtQ(n: number | null): string {
+                  if (n == null) return '—';
+                  const abs = Math.abs(n);
+                  const sign = n < 0 ? '-' : '';
+                  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(1)}T`;
+                  if (abs >= 1e9)  return `${sign}$${(abs / 1e9).toFixed(1)}B`;
+                  if (abs >= 1e6)  return `${sign}$${(abs / 1e6).toFixed(0)}M`;
+                  if (abs >= 1e3)  return `${sign}$${(abs / 1e3).toFixed(0)}K`;
+                  return `${sign}$${abs.toFixed(0)}`;
+                }
+                const qRows: { label: string; key: keyof QuarterlyRow; color?: (v: number | null) => string }[] = [
+                  { label: 'Revenue',      key: 'revenue' },
+                  { label: 'Gross Profit', key: 'gross_profit' },
+                  { label: 'Net Income',   key: 'net_income',   color: (v) => v == null ? '#94a3b8' : v >= 0 ? '#4ade80' : '#f87171' },
+                  { label: 'EBITDA',       key: 'ebitda' },
+                ];
+                return (
+                  <div>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#0891b2', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                      Quarterly Trend (last {quarterly.length}Q)
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'left', color: '#475569', fontWeight: 600, padding: '4px 8px 4px 0', whiteSpace: 'nowrap', width: '90px' }}></th>
+                            {quarterly.map(q => (
+                              <th key={q.date} style={{ textAlign: 'right', color: '#475569', fontWeight: 600, padding: '4px 6px', whiteSpace: 'nowrap', fontSize: '10px' }}>
+                                {q.date.slice(0, 7)}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {qRows.map(row => (
+                            <tr key={row.label} style={{ borderTop: '1px solid #1e293b' }}>
+                              <td style={{ color: '#94a3b8', padding: '5px 8px 5px 0', whiteSpace: 'nowrap', fontWeight: 600 }}>{row.label}</td>
+                              {quarterly.map(q => {
+                                const v = q[row.key] as number | null;
+                                const cellColor = row.color ? row.color(v) : '#e2e8f0';
+                                return (
+                                  <td key={q.date} style={{ textAlign: 'right', padding: '5px 6px', fontWeight: 600, color: cellColor, whiteSpace: 'nowrap' }}>
+                                    {fmtQ(v)}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Row 7 — EPS Surprise History */}
               {f.eps_history && f.eps_history.length > 0 && (
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
@@ -3127,6 +3681,37 @@ Return ONLY valid JSON — no markdown, no prose:
                       <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0' }}>{item.value}</div>
                     </div>
                   ))}
+                  {/* Dividend sustainability grade */}
+                  {dividendData.payout_ratio != null && (() => {
+                    const pr = dividendData.payout_ratio;
+                    const eg = data.fundamentals?.earnings_growth ?? null;
+                    const dy = dividendData.dividend_yield ?? 0;
+                    let score = 100;
+                    if (pr > 0.9) score -= 50;
+                    else if (pr > 0.75) score -= 30;
+                    else if (pr > 0.6) score -= 15;
+                    else if (pr > 0.4) score -= 5;
+                    if (eg != null) {
+                      if (eg < -0.1) score -= 20;
+                      else if (eg < 0) score -= 10;
+                      else if (eg > 0.1) score += 10;
+                    }
+                    if (dy > 0.08) score -= 10;
+                    const [g, c, d] = score >= 90 ? ['A', '#4ade80', 'Very safe'] :
+                                      score >= 75 ? ['B', '#86efac', 'Sustainable'] :
+                                      score >= 55 ? ['C', '#fbbf24', 'Adequate'] :
+                                      score >= 35 ? ['D', '#fb923c', 'Stretched'] :
+                                                    ['F', '#f87171', 'At risk'];
+                    return (
+                      <div>
+                        <div style={{ fontSize: '10px', color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '3px' }}>Div Safety</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontSize: '18px', fontWeight: 800, color: c }}>{g}</span>
+                          <span style={{ fontSize: '11px', color: '#64748b' }}>{d}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
                 {dividendData.dividends.length === 0 ? (
                   <div style={{ fontSize: '12px', color: '#475569' }}>No dividend history found.</div>

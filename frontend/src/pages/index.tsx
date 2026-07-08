@@ -2,7 +2,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
-import { api, type Stock, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex, type MarketBreadth } from '@/lib/api';
+import { api, type Stock, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type MarketIndex, type MarketBreadth, type SignalChange } from '@/lib/api';
 import { getSignalStyle } from '@/lib/settings';
 import AddStockModal from '@/components/AddStockModal';
 
@@ -107,6 +107,7 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
   }
 
   return (
+    <>
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '10px' }}>
 
       {/* US Markets */}
@@ -187,6 +188,54 @@ function MarketOverview({ indices, signals, breadth }: { indices: MarketIndex[];
         )}
       </div>
     </div>
+
+    {/* Market Pulse — signal breadth + VIX */}
+    <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+      {/* Signal breadth */}
+      {total > 0 && (
+        <div style={{ borderRadius: 10, border: '1px solid #1e293b', background: '#0b1120', padding: '10px 16px', flex: 1, minWidth: 200 }}>
+          <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Signal Breadth</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {(['BUY', 'HOLD', 'WAIT', 'SELL'] as const).map(sig => {
+              const colors: Record<string, string> = { BUY: '#22c55e', HOLD: '#38bdf8', WAIT: '#f59e0b', SELL: '#ef4444' };
+              const c = colors[sig];
+              const n = sigCounts[sig];
+              const pct = total > 0 ? Math.round(n / total * 100) : 0;
+              return n > 0 ? (
+                <div key={sig} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: c, background: `${c}18`, border: `1px solid ${c}44`, padding: '2px 7px', borderRadius: 4 }}>{sig}</span>
+                  <span style={{ fontSize: 11, color: '#94a3b8' }}>{n} <span style={{ color: '#475569' }}>({pct}%)</span></span>
+                </div>
+              ) : null;
+            })}
+          </div>
+          {/* Breadth bar */}
+          <div style={{ marginTop: 8, height: 5, borderRadius: 3, background: '#1e293b', overflow: 'hidden', display: 'flex' }}>
+            {(['BUY', 'HOLD', 'WAIT', 'SELL'] as const).map(sig => {
+              const colors: Record<string, string> = { BUY: '#22c55e', HOLD: '#38bdf8', WAIT: '#f59e0b', SELL: '#ef4444' };
+              const pct = total > 0 ? (sigCounts[sig] / total) * 100 : 0;
+              return pct > 0 ? <div key={sig} style={{ height: '100%', width: `${pct}%`, background: colors[sig] }} /> : null;
+            })}
+          </div>
+        </div>
+      )}
+      {/* VIX snapshot */}
+      {(() => {
+        const vixIdx = indices.find(i => i.ticker === '^VIX');
+        if (!vixIdx || vixIdx.price == null) return null;
+        const vix = vixIdx.price;
+        const vixColor = vix < 15 ? '#22c55e' : vix < 20 ? '#facc15' : vix < 30 ? '#f97316' : '#ef4444';
+        const vixLabel = vix < 15 ? 'Low Fear' : vix < 20 ? 'Moderate' : vix < 30 ? 'Elevated Fear' : 'Extreme Fear';
+        return (
+          <div style={{ borderRadius: 10, border: '1px solid #1e293b', background: '#0b1120', padding: '10px 16px', minWidth: 130 }}>
+            <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>VIX Fear</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: vixColor }}>{vix.toFixed(1)}</div>
+            <div style={{ fontSize: 11, color: vixColor, marginTop: 2 }}>{vixLabel}</div>
+          </div>
+        );
+      })()}
+    </div>
+    </>
   );
 }
 
@@ -199,6 +248,12 @@ export default function Home() {
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-' + getSignalStyle(), () => api.allSignals(getSignalStyle()));
   const { data: marketData } = useSWR<MarketIndex[]>('market-overview', () => api.marketOverview(), { refreshInterval: 60_000 });
   const { data: breadthData } = useSWR<MarketBreadth>('market-breadth', () => api.marketBreadth(), { refreshInterval: 4 * 60 * 60 * 1000 });
+  const watchlistSymbols = useMemo(() => watchlist?.map(w => w.symbol) ?? [], [watchlist]);
+  const { data: signalChanges } = useSWR<SignalChange[]>(
+    watchlistSymbols.length ? ['signal-changes', watchlistSymbols.join(',')] : null,
+    () => api.signalChanges(watchlistSymbols, 48),
+    { refreshInterval: 15 * 60 * 1000 },
+  );
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -747,6 +802,53 @@ export default function Home() {
           )}
         </div>
       )}
+
+      {/* Signal Change Feed */}
+      {signalChanges && signalChanges.length > 0 && (() => {
+        const SIG_COLOR: Record<string, string> = { BUY: '#22c55e', HOLD: '#facc15', WAIT: '#f97316', SELL: '#ef4444' };
+        const SIG_BG: Record<string, string> = { BUY: 'rgba(34,197,94,0.1)', HOLD: 'rgba(250,204,21,0.1)', WAIT: 'rgba(249,115,22,0.1)', SELL: 'rgba(239,68,68,0.1)' };
+        function timeAgo(ts: string) {
+          const diff = Date.now() - new Date(ts).getTime();
+          const h = Math.floor(diff / 3_600_000);
+          const m = Math.floor((diff % 3_600_000) / 60_000);
+          if (h >= 24) return `${Math.floor(h / 24)}d ago`;
+          if (h > 0) return `${h}h ago`;
+          return `${m}m ago`;
+        }
+        const isBuyUpgrade = (from: string, to: string) => to === 'BUY' && from !== 'BUY';
+        const isSellDowngrade = (from: string, to: string) => to === 'SELL' && from !== 'SELL';
+        return (
+          <div style={{ marginTop: '32px', background: '#0a1628', border: '1px solid #1e293b', borderRadius: '14px', padding: '16px 20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+              <span style={{ fontSize: '13px', fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.01em' }}>Signal Changes</span>
+              <span style={{ fontSize: '10px', color: '#475569', background: '#1e293b', padding: '2px 7px', borderRadius: '4px' }}>last 48h</span>
+              <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#334155' }}>{signalChanges.length} flip{signalChanges.length !== 1 ? 's' : ''}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {signalChanges.map((c, i) => {
+                const upgrade = isBuyUpgrade(c.from_signal, c.to_signal);
+                const downgrade = isSellDowngrade(c.from_signal, c.to_signal);
+                return (
+                  <a key={i} href={`/stock/${c.symbol}`} style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '8px', background: upgrade ? 'rgba(34,197,94,0.04)' : downgrade ? 'rgba(239,68,68,0.04)' : 'transparent', border: upgrade ? '1px solid rgba(34,197,94,0.12)' : downgrade ? '1px solid rgba(239,68,68,0.12)' : '1px solid transparent', transition: 'background 0.1s' }}>
+                    <span style={{ fontWeight: 800, fontSize: '13px', color: '#e2e8f0', minWidth: '70px' }}>{c.symbol}</span>
+                    <span style={{ fontSize: '10px', color: '#475569', background: '#1e293b', padding: '1px 5px', borderRadius: '3px', flexShrink: 0 }}>{c.horizon}</span>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: SIG_COLOR[c.from_signal] ?? '#64748b', background: SIG_BG[c.from_signal] ?? 'transparent', padding: '1px 7px', borderRadius: '4px' }}>{c.from_signal}</span>
+                    <span style={{ color: '#334155', fontSize: '14px' }}>→</span>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: SIG_COLOR[c.to_signal] ?? '#64748b', background: SIG_BG[c.to_signal] ?? 'transparent', padding: '1px 7px', borderRadius: '4px' }}>{c.to_signal}</span>
+                    {(upgrade || downgrade) && (
+                      <span style={{ fontSize: '10px', fontWeight: 700, color: upgrade ? '#22c55e' : '#ef4444' }}>
+                        {upgrade ? '▲ Upgrade' : '▼ Downgrade'}
+                      </span>
+                    )}
+                    <span style={{ marginLeft: 'auto', fontSize: '10px', color: '#334155', flexShrink: 0 }}>{timeAgo(c.ts)}</span>
+                    <span style={{ fontSize: '10px', color: '#475569', flexShrink: 0 }}>{c.confidence.toFixed(0)}% conf</span>
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {showAddModal && (
         <AddStockModal onClose={() => setShowAddModal(false)} onAdded={handleAdded} lists={watchlists ?? []} />

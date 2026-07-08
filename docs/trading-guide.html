@@ -1,0 +1,955 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StockAI — System Reference & Workflow Guide</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #060e1c; --bg2: #0a1628; --bg3: #0f1e35; --bg4: #1e293b;
+    --border: #1e293b; --border2: #2d3f57;
+    --text: #e2e8f0; --muted: #64748b; --dim: #334155;
+    --green: #22c55e; --yellow: #facc15; --orange: #f97316; --red: #ef4444;
+    --blue: #38bdf8; --indigo: #6366f1; --purple: #a78bfa; --teal: #34d399; --amber: #f59e0b;
+    --radius: 10px;
+  }
+  html { scroll-behavior: smooth; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; font-size: 14px; }
+
+  /* NAV */
+  nav { position: sticky; top: 0; z-index: 100; background: rgba(6,14,28,0.95); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 0 20px; display: flex; align-items: center; gap: 0; overflow-x: auto; white-space: nowrap; }
+  nav a { display: inline-block; padding: 14px 14px; font-size: 12px; font-weight: 600; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; transition: all 0.15s; flex-shrink: 0; }
+  nav a:hover { color: var(--text); border-color: var(--indigo); }
+  .nav-brand { font-weight: 800; font-size: 14px; color: var(--text); padding: 14px 16px 14px 0; border-right: 1px solid var(--border); margin-right: 8px; flex-shrink: 0; }
+
+  /* LAYOUT */
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 20px 80px; }
+
+  /* HEADINGS */
+  h1 { font-size: 28px; font-weight: 800; color: var(--text); letter-spacing: -0.02em; margin-bottom: 6px; }
+  h2 { font-size: 19px; font-weight: 800; color: var(--text); letter-spacing: -0.01em; margin: 40px 0 16px; padding-top: 8px; }
+  h3 { font-size: 13px; font-weight: 700; color: var(--purple); text-transform: uppercase; letter-spacing: 0.08em; margin: 28px 0 10px; }
+  h4 { font-size: 13px; font-weight: 700; color: var(--text); margin: 16px 0 6px; }
+  .section-divider { border: none; border-top: 1px solid var(--border); margin: 48px 0; }
+
+  /* CARDS */
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 12px; }
+  .card-sm { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 8px; }
+
+  /* METRIC GLOSSARY TABLE */
+  .glossary { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .glossary th { padding: 8px 12px; text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); background: var(--bg); border-bottom: 1px solid var(--border); }
+  .glossary td { padding: 9px 12px; border-bottom: 1px solid rgba(30,41,59,0.5); vertical-align: top; }
+  .glossary tr:last-child td { border-bottom: none; }
+  .glossary tr:hover td { background: rgba(99,102,241,0.04); }
+  .label { font-weight: 700; color: var(--text); white-space: nowrap; }
+  .def { color: #94a3b8; }
+  .range { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; }
+  .tag-buy { background: rgba(34,197,94,0.12); color: var(--green); border: 1px solid rgba(34,197,94,0.2); }
+  .tag-hold { background: rgba(250,204,21,0.12); color: var(--yellow); border: 1px solid rgba(250,204,21,0.2); }
+  .tag-wait { background: rgba(249,115,22,0.12); color: var(--orange); border: 1px solid rgba(249,115,22,0.2); }
+  .tag-sell { background: rgba(239,68,68,0.12); color: var(--red); border: 1px solid rgba(239,68,68,0.2); }
+  .tag-blue { background: rgba(56,189,248,0.1); color: var(--blue); border: 1px solid rgba(56,189,248,0.2); }
+  .tag-indigo { background: rgba(99,102,241,0.12); color: var(--indigo); border: 1px solid rgba(99,102,241,0.2); }
+  .tag-purple { background: rgba(167,139,250,0.12); color: var(--purple); border: 1px solid rgba(167,139,250,0.2); }
+  .tag-amber { background: rgba(245,158,11,0.12); color: var(--amber); border: 1px solid rgba(245,158,11,0.2); }
+
+  /* WORKFLOW STEPS */
+  .step-grid { display: flex; flex-direction: column; gap: 16px; }
+  .step { display: flex; gap: 16px; align-items: flex-start; }
+  .step-num { flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.3); color: var(--indigo); font-weight: 800; font-size: 14px; display: flex; align-items: center; justify-content: center; margin-top: 2px; }
+  .step-body { flex: 1; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .step-title { font-weight: 700; font-size: 14px; color: var(--text); margin-bottom: 4px; }
+  .step-where { font-size: 10px; font-weight: 700; letter-spacing: 0.07em; color: var(--indigo); text-transform: uppercase; margin-bottom: 6px; }
+  .step-desc { color: #94a3b8; font-size: 13px; line-height: 1.55; }
+  .step-bullets { margin-top: 8px; padding-left: 14px; }
+  .step-bullets li { color: #94a3b8; font-size: 12px; line-height: 1.6; }
+  .step-bullets li strong { color: var(--text); }
+
+  /* PHASE HEADERS */
+  .phase-header { display: flex; align-items: center; gap: 10px; margin: 32px 0 14px; }
+  .phase-num { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; flex-shrink: 0; }
+  .phase-title { font-size: 16px; font-weight: 800; color: var(--text); }
+  .phase-sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
+
+  /* INTRO */
+  .intro-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin: 16px 0 24px; }
+  .intro-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .intro-card .icon { font-size: 20px; margin-bottom: 6px; }
+  .intro-card .title { font-weight: 700; font-size: 13px; color: var(--text); }
+  .intro-card .desc { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+  /* COLOR SCALE LEGEND */
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* HIGHLIGHT BOX */
+  .highlight { background: rgba(99,102,241,0.07); border: 1px solid rgba(99,102,241,0.2); border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 13px; color: #94a3b8; }
+  .highlight strong { color: var(--text); }
+  .tip { background: rgba(34,197,94,0.06); border: 1px solid rgba(34,197,94,0.18); border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 12px; color: #94a3b8; }
+  .tip::before { content: '💡 '; }
+  .warn { background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.18); border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 12px; color: #94a3b8; }
+  .warn::before { content: '⚠️ '; }
+
+  /* SIGNAL TABLE */
+  .sig-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .sig-table td, .sig-table th { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .sig-table th { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); background: var(--bg); }
+
+  @media (max-width: 600px) {
+    .intro-grid { grid-template-columns: 1fr 1fr; }
+    .glossary td:nth-child(3) { display: none; }
+  }
+</style>
+</head>
+<body>
+<nav>
+  <span class="nav-brand">StockAI</span>
+  <a href="#overview">Overview</a>
+  <a href="#stock-detail">Stock Detail</a>
+  <a href="#signals">Signals</a>
+  <a href="#kscore">K-Score</a>
+  <a href="#gate">Gate</a>
+  <a href="#risk">Risk</a>
+  <a href="#checklist">Checklist</a>
+  <a href="#whales">Whales &amp; Volume</a>
+  <a href="#playbook">Situations</a>
+  <a href="#workflow">Workflow</a>
+  <a href="#pages">All Pages</a>
+</nav>
+
+<main>
+
+<!-- TITLE -->
+<div style="margin-bottom:28px; padding-top:8px;">
+  <h1>StockAI — Reference &amp; Workflow Guide</h1>
+  <p style="color:var(--muted); font-size:13px; margin-top:4px;">What every label means · How to use every feature · End-to-end trading workflow</p>
+</div>
+
+<!-- SYSTEM OVERVIEW -->
+<section id="overview">
+<h2>System Overview</h2>
+<div class="intro-grid">
+  <div class="intro-card"><div class="icon">🏠</div><div class="title">Home / Watchlist</div><div class="desc">Monitor your stocks. See signals, K-Score, fair price, market breadth, and recent signal flips at a glance.</div></div>
+  <div class="intro-card"><div class="icon">📊</div><div class="title">Screener</div><div class="desc">Filter all tracked stocks by signal, score, momentum, volume surge, valuation, and more.</div></div>
+  <div class="intro-card"><div class="icon">💡</div><div class="title">Opportunities</div><div class="desc">Pre-built strategy tabs (Swing, Short-Term, Long-Term, Growth, Confluence) with ranked candidates.</div></div>
+  <div class="intro-card"><div class="icon">🔍</div><div class="title">Stock Detail</div><div class="desc">Full deep-dive per stock: AI signal, K-Score, chart, patterns, ML model, research, game plan, alerts.</div></div>
+  <div class="intro-card"><div class="icon">📋</div><div class="title">Signal Filter</div><div class="desc">See what conditions are suppressing each stock's signal. Debug why a stock isn't showing BUY.</div></div>
+  <div class="intro-card"><div class="icon">💼</div><div class="title">Paper Portfolio</div><div class="desc">Simulated trading with equity curve, Monte Carlo projection, benchmark comparison, P&amp;L tracking.</div></div>
+  <div class="intro-card"><div class="icon">🔔</div><div class="title">Alerts</div><div class="desc">Email alerts for price levels, RSI, MACD crossovers, SMA breaks, signal changes.</div></div>
+  <div class="intro-card"><div class="icon">📰</div><div class="title">Research</div><div class="desc">AI research reports: fundamental analysis, risk assessment, recommendation (STRONG BUY → SELL).</div></div>
+</div>
+
+<div class="highlight">
+  <strong>Core philosophy:</strong> No single signal is enough. The system works by <strong>confluence</strong> — when AI Signal, K-Score, Conviction Gate, Research, and Technical Indicators all agree, that's when to act. Disagreement is a warning to wait.
+</div>
+</section>
+
+<hr class="section-divider">
+
+<!-- STOCK DETAIL PAGE -->
+<section id="stock-detail">
+<h2>Stock Detail Page — Every Label Explained</h2>
+
+<h3>AI Signal (Multi-Horizon)</h3>
+<p style="color:var(--muted); font-size:13px; margin-bottom:10px;">Four independent signal engines running different time horizons. Select the tab that matches your intended hold period.</p>
+
+<table class="sig-table" style="margin-bottom:16px;">
+  <thead><tr><th>Tab</th><th>Hold Period</th><th>Best For</th></tr></thead>
+  <tbody>
+    <tr><td><span class="tag tag-blue">SHORT</span></td><td>1–5 days</td><td>Short-term momentum plays, earnings plays, news catalysts</td></tr>
+    <tr><td><span class="tag tag-indigo">SWING</span></td><td>5–30 days</td><td>Swing trades on technical setups, most common use case</td></tr>
+    <tr><td><span class="tag tag-purple">LONG</span></td><td>30–90 days</td><td>Trend-following with fundamentals, position trades</td></tr>
+    <tr><td><span class="tag tag-amber">GROWTH</span></td><td>90+ days</td><td>High-momentum growth stocks, higher volatility expected</td></tr>
+  </tbody>
+</table>
+
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it measures</th><th>What to look for</th></tr></thead>
+  <tbody>
+    <tr><td class="label"><span class="tag tag-buy">BUY</span> / <span class="tag tag-hold">HOLD</span> / <span class="tag tag-wait">WAIT</span> / <span class="tag tag-sell">SELL</span></td><td class="def">AI signal direction. BUY = upward edge detected. WAIT = conditions not favorable yet. HOLD = maintain position. SELL = downside edge.</td><td class="def">BUY with ≥60% confidence + Gate FULL = strongest setup</td></tr>
+    <tr><td class="label">Bullish Probability %</td><td class="def">ML model's estimated probability of an upward move in the signal's time horizon. Ranges 0–100%.</td><td class="def">≥65% = strong bullish lean. Below 50% with BUY = low conviction.</td></tr>
+    <tr><td class="label">Confidence %</td><td class="def">How certain the signal engine is in its direction call. Combines technical strength + ML agreement + suppression filters.</td><td class="def">≥60% = act on it. 40–60% = watch. Below 40% = very low confidence.</td></tr>
+    <tr><td class="label">Signal Age</td><td class="def">How many hours or days ago this signal was last computed. Signals refresh 5× per market day.</td><td class="def">Under 24h = fresh. Over 3d = stale, may not reflect current price action.</td></tr>
+    <tr><td class="label">Conviction Gate</td><td class="def">8-layer hardening filter applied ON TOP of the BUY signal. Each layer checks a specific technical condition.</td><td class="def">FULL = all conditions pass (strongest). NEAR = exactly one soft-layer miss (OBV, ADX, ML, or MACD) with every hard layer (K-Score, Uptrend, RSI, Disqualifiers) passing. Any hard-layer failure = FAILED, even with 7/8 nominally passing.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="gate">Conviction Gate — 8 Layers</h3>
+<p style="color:var(--muted); font-size:13px; margin-bottom:10px;">Every BUY signal is filtered through 8 independent checks. FULL = all pass. NEAR = exactly one <em>soft</em> layer (OBV, ADX, ML, or MACD) misses, with all hard layers (K-Score, Uptrend, RSI, Disqualifiers) passing — a hard-layer miss is FAILED regardless of how many other layers pass.</p>
+<table class="glossary">
+  <thead><tr><th>Layer</th><th>Type</th><th>What it checks</th><th>Threshold</th></tr></thead>
+  <tbody>
+    <tr><td class="label">K-Score</td><td class="def">Hard</td><td class="def">Composite stock quality score must exceed minimum</td><td class="def">≥55 required</td></tr>
+    <tr><td class="label">Uptrend</td><td class="def">Hard</td><td class="def">Structural trend confirmation</td><td class="def">SMA50 &gt; SMA200 AND price &gt; SMA50 (GROWTH style: price &gt; SMA50 only; a confirmed double-bottom neckline break also auto-passes)</td></tr>
+    <tr><td class="label">RSI Bounds</td><td class="def">Hard</td><td class="def">Daily RSI must not be overbought or oversold at extreme levels</td><td class="def">RSI between 45–72 (GROWTH style: 50–85)</td></tr>
+    <tr><td class="label">MACD</td><td class="def">Soft</td><td class="def">Momentum confirmation — lagging indicator, so a lone miss here doesn't hard-block</td><td class="def">Passes if histogram is positive, OR rising, OR there's a zero-line crossover; fails only when negative <em>and</em> falling</td></tr>
+    <tr><td class="label">OBV Trend</td><td class="def">Soft</td><td class="def">On-Balance Volume must confirm buying pressure (accumulation)</td><td class="def">OBV trending up</td></tr>
+    <tr><td class="label">ADX</td><td class="def">Soft</td><td class="def">Average Directional Index confirms a trending (not choppy) market</td><td class="def">ADX &gt; 25</td></tr>
+    <tr><td class="label">ML Probability</td><td class="def">Soft</td><td class="def">Machine learning model's bullish probability must exceed a regime-adaptive threshold</td><td class="def">&gt;65% bull regime · &gt;70% neutral · &gt;78% bear/high-vol. Soft-passes automatically when the model has zero fusion weight (AUC below random) — the gate doesn't penalize a vote the fusion itself ignores.</td></tr>
+    <tr><td class="label">Disqualifiers</td><td class="def">Hard</td><td class="def">Two override checks that block regardless of every other layer's score</td><td class="def">Bearish RSI divergence, or Stochastic RSI overbought — either fails the gate outright</td></tr>
+  </tbody>
+</table>
+
+<h3 id="kscore">K-Score System (0–100)</h3>
+<p style="color:var(--muted); font-size:13px; margin-bottom:10px;">A composite score built from 6 weighted sub-scores. Graded A+/A/B/C/D/F. Refreshed 5× per day.</p>
+<table class="glossary">
+  <thead><tr><th>Component</th><th>Weight</th><th>What it measures</th><th>Ideal range</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Momentum</td><td style="color:var(--amber); font-weight:700;">23%</td><td class="def">Recent price velocity and volume: rate of price change, volume trend</td><td class="def">≥60 = accelerating</td></tr>
+    <tr><td class="label">Technical</td><td style="color:var(--blue); font-weight:700;">22%</td><td class="def">Price action quality: RSI, MACD, trend alignment, SMA crossovers, ADX, momentum indicators</td><td class="def">≥65 = strong setup</td></tr>
+    <tr><td class="label">Volatility</td><td style="color:var(--muted); font-weight:700;">18%</td><td class="def">Price stability (higher score = more stable, lower risk). High volatility stocks score lower.</td><td class="def">≥50 = acceptable risk</td></tr>
+    <tr><td class="label">Growth</td><td style="color:var(--teal); font-weight:700;">14%</td><td class="def">Revenue and earnings growth trajectory vs sector peers (falls back to a price-derived proxy — shown as "—" on the UI — when real fundamentals aren't available)</td><td class="def">≥60 = growing faster than peers</td></tr>
+    <tr><td class="label">Value</td><td style="color:var(--purple); font-weight:700;">13%</td><td class="def">Valuation attractiveness vs sector peers: P/E, P/B, earnings yield percentile ranking (same proxy fallback as Growth when fundamentals are sparse)</td><td class="def">≥55 = fairly valued</td></tr>
+    <tr><td class="label">Relative Strength</td><td style="color:var(--teal); font-weight:700;">10%</td><td class="def">How this stock is performing vs other stocks in its sector. Percentile rank 0–100.</td><td class="def">≥60 = sector leader. Below 40 = lagging.</td></tr>
+    <tr><td class="label">Fair Price</td><td>—</td><td class="def">K-Score derived intrinsic value estimate, not itself a weighted component. Shows % upside or overvaluation vs current price.</td><td class="def">Positive % = undervalued</td></tr>
+  </tbody>
+</table>
+<div class="tip">When a stock has sparse real fundamentals, Value and Growth quietly fall back to price-derived proxies — meaning up to 27% of the composite can end up measuring the same underlying momentum that Technical and Momentum already measure, just under different names. Check whether Value/Growth show a real number or "—" on the stock detail page before treating K-Score as three genuinely independent signals.</div>
+
+<h3 id="risk">Risk Metrics</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it measures</th><th>Scale</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Sharpe Ratio</td><td class="def">Return per unit of total risk (annualized). How much gain are you getting for each unit of volatility?</td><td class="def">≥1.5 Excellent · ≥1.0 Good · ≥0.5 Acceptable · &lt;0.5 Poor</td></tr>
+    <tr><td class="label">Sortino Ratio</td><td class="def">Like Sharpe but only penalizes <em>downside</em> volatility. Better metric for asymmetric returns.</td><td class="def">≥2.0 Excellent · ≥1.2 Good · ≥0.6 Acceptable</td></tr>
+    <tr><td class="label">Max Drawdown</td><td class="def">Worst peak-to-trough loss in the trailing 1 year. How deep has this stock fallen before?</td><td class="def">≤10% Low · ≤20% Moderate · ≤35% High · &gt;35% Extreme</td></tr>
+    <tr><td class="label">Beta</td><td class="def">How much the stock moves relative to S&amp;P 500. Beta=1 means it moves with the market.</td><td class="def">β&lt;1 Less volatile · β=1 Market-like · β&gt;1 More volatile</td></tr>
+  </tbody>
+</table>
+
+<h3>Technical Indicators (Price Chart)</h3>
+<table class="glossary">
+  <thead><tr><th>Indicator</th><th>What it measures</th><th>Signal meaning</th></tr></thead>
+  <tbody>
+    <tr><td class="label">RSI (14)</td><td class="def">Relative Strength Index. Measures speed and magnitude of price changes on a 0–100 scale.</td><td class="def">&lt;35 Oversold (potential bounce) · &gt;70 Overbought (potential pullback)</td></tr>
+    <tr><td class="label">MACD Histogram</td><td class="def">Difference between 12-day and 26-day EMA, smoothed. Measures momentum direction and acceleration.</td><td class="def">Positive &amp; rising = bullish momentum. Negative or falling = bearish.</td></tr>
+    <tr><td class="label">SMA 20 / 50 / 200</td><td class="def">Simple Moving Averages over 20, 50, 200 days. Price above = uptrend at that timeframe.</td><td class="def">Price &gt; SMA50 &gt; SMA200 = strong uptrend. Golden Cross (50 crosses above 200) = major bullish signal.</td></tr>
+    <tr><td class="label">ADX (14)</td><td class="def">Average Directional Index. Measures trend strength regardless of direction.</td><td class="def">≥25 = trending (good for trend trades). &lt;20 = choppy (avoid breakouts).</td></tr>
+    <tr><td class="label">Stoch RSI %K</td><td class="def">RSI of RSI. More sensitive momentum oscillator.</td><td class="def">&gt;80 Overbought (caution on longs). &lt;20 Oversold (potential reversal).</td></tr>
+    <tr><td class="label">VWAP (20d)</td><td class="def">Volume-Weighted Average Price. The average price weighted by volume — institutional benchmark.</td><td class="def">Price above VWAP = bullish. Below = bearish. Used for intraday entries.</td></tr>
+    <tr><td class="label">Weekly Alignment</td><td class="def">Do daily momentum signals agree with weekly signals? Measures time-frame confluence.</td><td class="def">CONFIRMED = both timeframes bullish (ideal). CONFLICT = caution.</td></tr>
+    <tr><td class="label">Weekly RSI</td><td class="def">RSI calculated on weekly bars (5-day candles). Indicates medium-term momentum direction.</td><td class="def">&lt;40 = weekly bearish pressure. &gt;60 = weekly bullish strength.</td></tr>
+    <tr><td class="label">OBV (On-Balance Volume)</td><td class="def">Cumulative volume indicator. Rises on up days, falls on down days. Confirms price moves.</td><td class="def">OBV rising with price = confirmed uptrend. OBV falling with rising price = distribution (warning).</td></tr>
+    <tr><td class="label">Fibonacci Levels</td><td class="def">Price retracement levels (23.6%, 38.2%, 50%, 61.8%, 78.6%) from recent swing high/low.</td><td class="def">Common support/resistance zones. 38.2% and 61.8% are strongest.</td></tr>
+    <tr><td class="label">Support / Resistance</td><td class="def">Price levels where buying (support) or selling (resistance) has repeatedly occurred. Strength shown by # of touches.</td><td class="def">More touches = stronger level. Break above resistance = breakout. Drop below support = breakdown.</td></tr>
+  </tbody>
+</table>
+
+<h3>Volume Analysis</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Volume (Today)</td><td class="def">Total shares traded today. Compare vs "Avg Vol (3M)" to see if activity is unusual.</td></tr>
+    <tr><td class="label">Avg Vol (3M)</td><td class="def">3-month average daily volume. Baseline for what's "normal" for this stock.</td></tr>
+    <tr><td class="label">X× Avg</td><td class="def">Today's volume as a multiple of the 3M average (e.g. "2.3× avg" = 2.3× normal volume today).</td></tr>
+    <tr><td class="label"><span style="color:var(--amber);">⚡ VOLUME SPIKE</span></td><td class="def">Today's volume is ≥2× the 20-day average. Strong institutional interest or news catalyst. Chart bars color: <span style="color:var(--amber);">■</span> amber ≥2×, <span style="color:var(--green);">■</span> green 1.5–2×, <span style="color:var(--indigo);">■</span> indigo 1–1.5×, <span style="color:var(--dim);">■</span> gray &lt;1×.</td></tr>
+    <tr><td class="label">Vol Ratio (Screener)</td><td class="def">Ratio of avg-5-day volume to avg-20-day volume. Detects sustained volume surges over a week vs the monthly baseline.</td></tr>
+  </tbody>
+</table>
+
+<h3>Fundamentals &amp; Valuation</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it measures</th><th>Context</th></tr></thead>
+  <tbody>
+    <tr><td class="label">P/E (Trailing)</td><td class="def">Price ÷ Trailing 12-month earnings per share. How much you're paying per dollar of past earnings.</td><td class="def">&lt;15 cheap · 15–25 fair · &gt;25 expensive (growth premium)</td></tr>
+    <tr><td class="label">P/E (Forward)</td><td class="def">Price ÷ consensus next-12-month EPS estimate. Forward-looking valuation.</td><td class="def">Lower than trailing = earnings growth expected</td></tr>
+    <tr><td class="label">PEG Ratio</td><td class="def">P/E ÷ Expected earnings growth rate. Corrects P/E for growth — fair valuation for growth stocks.</td><td class="def">&lt;1 Undervalued for growth · 1–2 Fair · &gt;2 Expensive</td></tr>
+    <tr><td class="label">EV/EBITDA</td><td class="def">Enterprise Value ÷ EBITDA. Valuation multiple used for comparison regardless of capital structure or taxes.</td><td class="def">&lt;10 cheap · 10–15 fair · &gt;20 expensive</td></tr>
+    <tr><td class="label">P/B (Price-to-Book)</td><td class="def">Price ÷ Book value per share. What you pay for net assets.</td><td class="def">&lt;1 below asset value · 1–3 reasonable · &gt;5 very premium</td></tr>
+    <tr><td class="label">Debt/Equity (D/E)</td><td class="def">Total debt ÷ total shareholders' equity. Leverage ratio.</td><td class="def">&lt;0.5 conservative · 0.5–2 normal · &gt;2 high leverage</td></tr>
+    <tr><td class="label">Revenue Growth %</td><td class="def">Year-over-year revenue growth rate.</td><td class="def">≥20% = high growth · 10–20% = solid growth</td></tr>
+    <tr><td class="label">Institutional Own %</td><td class="def">% of shares held by institutional investors (funds, ETFs, etc.). Higher = more professional interest.</td><td class="def">≥60% = strong institutional confidence</td></tr>
+    <tr><td class="label">Target Price (Mean)</td><td class="def">Average analyst 12-month price target. Represents consensus "fair value" per Wall Street.</td><td class="def">% upside vs current price = potential return</td></tr>
+    <tr><td class="label">Recommendation</td><td class="def">Analyst consensus rating: STRONG BUY / BUY / HOLD / UNDERPERFORM / SELL.</td><td class="def">Strong Buy + BUY signal = high conviction alignment</td></tr>
+    <tr><td class="label">Analyst Rating Bars</td><td class="def">Breakdown of individual analyst ratings: Strong Buy, Buy, Hold, Underperform, Sell counts.</td><td class="def">Most in Strong Buy/Buy = bullish consensus</td></tr>
+  </tbody>
+</table>
+
+<h3>Short Interest</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Short % of Float</td><td class="def">% of tradable shares currently sold short. High short interest can mean bearish sentiment, or fuel for a short squeeze.</td></tr>
+    <tr><td class="label">Short Trend (↑↓)</td><td class="def">Month-over-month change in short interest. ↑ rising shorts = increasing bearish bets. ↓ falling shorts = short covering (bullish for price).</td></tr>
+    <tr><td class="label">Days to Cover</td><td class="def">Shares Short ÷ Avg Daily Volume. How many days of normal trading to close all short positions. High = harder to cover quickly.</td></tr>
+  </tbody>
+</table>
+
+<h3>EPS &amp; Earnings</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td class="label">EPS Beat Rate</td><td class="def">% of last 8 quarters where actual EPS exceeded analyst estimates. Shows consistency of earnings delivery.</td></tr>
+    <tr><td class="label">Avg Surprise %</td><td class="def">Average % by which actual EPS beat or missed analyst estimates. Positive = consistently beats.</td></tr>
+    <tr><td class="label">Surprise Trend</td><td class="def">Are recent earnings surprises better or worse than historical ones? Improving / Stable / Declining.</td></tr>
+    <tr><td class="label">Earnings History Bars</td><td class="def">Per-quarter breakdown: green bar = beat, red bar = miss, % shown is the surprise magnitude.</td></tr>
+    <tr><td class="label">Next Earnings Date</td><td class="def">Upcoming earnings announcement date. Red ≤7 days, yellow ≤21 days (higher uncertainty risk).</td></tr>
+  </tbody>
+</table>
+
+<h3>Fear &amp; Greed / Market Context</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Fear &amp; Greed Index</td><td class="def">CNN composite of 7 market indicators (momentum, breadth, junk bonds, options, etc.). Measures overall market emotion.</td></tr>
+    <tr><td class="label">Extreme Fear (0–25)</td><td class="def">Market deeply oversold, often at or near bottoms. Contrarian buy signal for long-term investors.</td></tr>
+    <tr><td class="label">Neutral (45–55)</td><td class="def">Balanced market sentiment — neither overbought nor oversold.</td></tr>
+    <tr><td class="label">Extreme Greed (75–100)</td><td class="def">Market potentially overbought. Higher risk for new entries. Corrections more likely.</td></tr>
+    <tr><td class="label">Market Regime</td><td class="def">Current S&amp;P 500 trend: Bull (above 200MA), Bear (below 200MA). Sets the backdrop for all individual stock signals.</td></tr>
+    <tr><td class="label">Market Breadth %</td><td class="def">% of all tracked US stocks trading above their 200-day MA. Above 60% = healthy bull. Below 40% = broad weakness.</td></tr>
+    <tr><td class="label">VIX</td><td class="def">CBOE Volatility Index. Market's expected 30-day volatility. &lt;15=calm, 15–20=normal, 20–30=elevated, &gt;30=crisis.</td></tr>
+  </tbody>
+</table>
+
+<h3>Research Intelligence</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Research Recommendation</td><td class="def">AI-generated fundamental research verdict: STRONG BUY / BUY / WATCH / AVOID / SELL. Based on financial analysis, sector context, and risk assessment.</td></tr>
+    <tr><td class="label">Alignment</td><td class="def">Agreement between the AI Signal (technical) and Research (fundamental). STRONGLY ALIGNED = both say BUY. DIVERGENT = one says BUY, other says AVOID — proceed with caution.</td></tr>
+    <tr><td class="label">Conviction Score</td><td class="def">Blended score: 50% from AI Signal confidence + 50% from Research score. 0–100 scale. ≥70 = high conviction.</td></tr>
+  </tbody>
+</table>
+
+<h3>ML Prediction &amp; Position Sizing</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Direction (UP ↑ / DOWN ↓)</td><td class="def">XGBoost model's directional prediction for the stock's move over the signal's time horizon.</td></tr>
+    <tr><td class="label">Kelly Criterion</td><td class="def">Mathematical formula for optimal position sizing based on edge size and odds. The system shows fractional Kelly (safer) and half-Kelly (conservative).</td></tr>
+    <tr><td class="label">Max Position Size %</td><td class="def">Recommended allocation based on Confluence Score: Strong (≥80) = 8–10%, Good (≥65) = 5–7%, Moderate (≥50) = 2–4%, Weak (&lt;50) = avoid.</td></tr>
+    <tr><td class="label">ML Feature Importance</td><td class="def">Top 8 factors driving the ML model's decision for this specific stock, split by category: Technical (green), Macro (blue), Fundamental (purple).</td></tr>
+  </tbody>
+</table>
+
+<h3>Game Plan</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Entry Orders (1–3)</td><td class="def">Specific limit prices for scale-in entries, with position sizing rationale. Often near support levels or key retracements.</td></tr>
+    <tr><td class="label">Stop Loss</td><td class="def">Exit price if the trade thesis breaks. Below key support. Defines your max risk per trade.</td></tr>
+    <tr><td class="label">Take Profit</td><td class="def">Target exit price. Usually analyst mean target, fair value estimate, or nearest resistance.</td></tr>
+    <tr><td class="label">Catalysts</td><td class="def">Specific upcoming events or conditions that could drive the trade (earnings, sector rotation, macro event).</td></tr>
+    <tr><td class="label">Key Risk</td><td class="def">The single biggest threat to the trade thesis. Read this before entering.</td></tr>
+    <tr><td class="label">Confluence Score</td><td class="def">0–100 composite of all active signals: AI Signal + K-Score + Analyst consensus + Technical + Momentum. ≥70 = high-conviction setup.</td></tr>
+  </tbody>
+</table>
+
+<h3>Signal Change Feed (Home Page)</h3>
+<table class="glossary">
+  <thead><tr><th>Label</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td class="label">▲ Upgrade</td><td class="def">Signal flipped TO BUY from a non-BUY state (HOLD/WAIT/SELL → BUY). Potential entry signal — most actionable change.</td></tr>
+    <tr><td class="label">▼ Downgrade</td><td class="def">Signal flipped TO SELL from any other state. Potential exit or short signal.</td></tr>
+    <tr><td class="label">No label</td><td class="def">Lateral flip (WAIT↔HOLD, BUY→WAIT, etc.). Informational — monitor but not immediately actionable.</td></tr>
+  </tbody>
+</table>
+</section>
+
+<hr class="section-divider">
+
+<!-- SIGNAL FILTER PAGE -->
+<section id="signals">
+<h2>Signal Filter Page — Suppression Conditions</h2>
+<p style="color:var(--muted); font-size:13px; margin-bottom:14px;">The Signal Filter shows WHY a stock's signal is being suppressed even when the raw calculation says BUY. Each dot = an active condition multiplying down the probability.</p>
+<table class="glossary">
+  <thead><tr><th>Condition</th><th>Color</th><th>What triggers it</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Weekly Gate</td><td><span style="color:var(--red);">■ Red</span></td><td class="def">Weekly RSI at or below 38 (not 40) AND price in weekly downtrend, with graduated 0.40–0.65× compression scaled by how long the downtrend has run. SWING/LONG styles only — GROWTH is exempt. Major suppressor — overrides short-term bullish signals.</td></tr>
+    <tr><td class="label">Stale Data</td><td><span style="color:var(--red);">■ Red</span></td><td class="def">Last price bar is more than 3 days old. Signal can't be trusted with outdated prices.</td></tr>
+    <tr><td class="label">Weekly Misalignment</td><td><span style="color:var(--orange);">■ Orange</span></td><td class="def">Daily momentum says bullish but weekly says bearish. Counter-trend trades carry more risk.</td></tr>
+    <tr><td class="label">High-Vol Regime</td><td><span style="color:var(--orange);">■ Orange</span></td><td class="def">Fear &amp; Greed index below 30 (Extreme Fear). Market-wide risk-off, all signals suppressed.</td></tr>
+    <tr><td class="label">Earnings Risk</td><td><span style="color:var(--amber);">■ Amber</span></td><td class="def">Earnings within 10 days — this is the signal-suppression check, tiered at ≤2/≤5/≤10 days. Separate and stricter from the paper-trading engine's own hard entry block at ≤5 days (see Quick Gate Reference above) — the two exist at different layers and aren't the same number.</td></tr>
+    <tr><td class="label">Negative News</td><td><span style="color:var(--amber);">■ Amber</span></td><td class="def">News sentiment score below 35/100 based on recent headlines.</td></tr>
+    <tr><td class="label">ADX Choppy</td><td><span style="color:var(--yellow);">■ Yellow</span></td><td class="def">ADX below the style's minimum — SHORT 27, SWING 15, GROWTH 12 (LONG is exempt). Not a single fixed number — stock is in a sideways, non-trending phase for that style's timeframe.</td></tr>
+    <tr><td class="label">Low Breadth</td><td><span style="color:var(--yellow);">■ Yellow</span></td><td class="def">Less than 40% of all tracked stocks above 200MA. Weak broad market. Individual stocks struggle.</td></tr>
+    <tr><td class="label">RS Lagging</td><td><span style="color:var(--yellow);">■ Yellow</span></td><td class="def">Stock underperforming its sector ETF by more than 30% over 20 days (skipped entirely if the stock itself is up more than 5% over that window). Why buy a sector laggard?</td></tr>
+    <tr><td class="label">Bearish Options</td><td><span style="color:var(--muted);">■ Gray</span></td><td class="def">Options flow showing elevated put volume. Smart money hedging downside.</td></tr>
+    <tr><td class="label">Cap Applied</td><td><span style="color:var(--blue);">■ Blue</span></td><td class="def">So many suppression filters stacked that they hit the style's configured floor — filters cannot compress the signal below roughly half of its pre-filter strength (there's no fixed "5%" floor; the cap ratio is style-specific). Further filters had no additional effect once the cap engaged.</td></tr>
+  </tbody>
+</table>
+<div class="tip">If a stock has a BUY signal but 4+ dots: wait for conditions to clear before acting. Use this page to track when suppression lifts.</div>
+</section>
+
+<hr class="section-divider">
+
+<!-- PRE-TRADE CHECKLIST -->
+<section id="checklist">
+<h2>Before You Act on Any Signal</h2>
+<p style="color:var(--muted); font-size:13px; margin-bottom:20px;">Run this in under a minute. Ordered by how often each check actually catches a real problem, based on this system's own incident history.</p>
+
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <div class="step-title">Check the freshness timestamp, not just the badge</div>
+      <div class="step-desc">This system has a documented history of signals sitting stale for days during background auth failures while still displaying with full confidence. If "last refreshed" is more than a few hours old during market hours, treat the signal as unverified.</div>
+      <div style="margin-top:6px;"><span class="tag tag-amber">&gt; 4h stale = suspect</span></div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <div class="step-title">Check the sample size behind the win rate</div>
+      <div class="step-desc">Shown as <code style="background:var(--bg3); padding:1px 5px; border-radius:3px; color:var(--blue);">n=</code> next to the calibrated win rate on the signal card. A 70% win rate on 8 signals is noise; the same number on 150 signals is a real edge.</div>
+      <div style="margin-top:6px;"><span class="tag tag-amber">n &lt; 30 = low confidence</span></div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <div class="step-title">Check which regime the confidence number was measured in</div>
+      <div class="step-desc">Calibration is split by horizon, direction, and market — a 70% shown for a SWING BUY in a bull regime does not transfer to a bear regime or to SELL signals. Confirm the regime badge matches the calibration context.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">4</div>
+    <div class="step-body">
+      <div class="step-title">Look at Paper Gates before you look at the badge</div>
+      <div class="step-desc">The gate list will tell you plainly if this candidate is currently suppressed by a portfolio-level rule (heat brake, consecutive-loss streak, regime suspension) that the signal badge itself doesn't reflect.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">5</div>
+    <div class="step-body">
+      <div class="step-title">Cross-check research alignment</div>
+      <div class="step-desc">If the AI research report disagrees with the signal direction (research says AVOID, signal says BUY), that divergence is tracked for a reason — it's historically correlated with worse outcomes. Don't average the two; treat divergence as a reason to wait.</div>
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top:32px;">What the Numbers Actually Mean</h3>
+<p style="color:var(--muted); font-size:13px; margin-bottom:12px;">Three numbers get conflated by traders unfamiliar with the system. They measure different things.</p>
+<table class="glossary">
+  <thead><tr><th>Number</th><th>What it actually is</th><th>What it is NOT</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Confidence %</td><td class="def">The fused TA+ML model's raw output for this specific signal, right now.</td><td class="def" style="color:var(--muted);">Not a probability of profit</td></tr>
+    <tr><td class="label">Calibrated Win Rate</td><td class="def">The <em>historical</em> outcome rate of past signals in this exact confidence band, horizon, direction, and market.</td><td class="def" style="color:var(--muted);">Not a guarantee for this trade</td></tr>
+    <tr><td class="label">K-Score</td><td class="def">A ranking of the stock's overall setup quality (technical + momentum + relative strength, weighted).</td><td class="def" style="color:var(--muted);">Not a timing signal</td></tr>
+  </tbody>
+</table>
+<div class="tip"><strong style="color:var(--text);">The honest read:</strong> confidence tells you what the model thinks right now. Calibrated win rate tells you how much to trust that thought, based on history. K-Score tells you if this is a good stock to be looking at at all. You need at least two of the three pointing the same way before a signal is worth acting on alone.</div>
+
+<h3 style="margin-top:28px;">Quick Gate Reference</h3>
+<p style="color:var(--muted); font-size:13px; margin-bottom:12px;">What you'll see on the Paper Gates page and what each one is actually protecting against.</p>
+<table class="glossary">
+  <thead><tr><th>Gate</th><th>Fires when</th><th>Protects against</th></tr></thead>
+  <tbody>
+    <tr><td class="label">Heat Brake</td><td class="def">Multiple stop-outs in a short window</td><td class="def">Trading through genuinely adverse, high-volatility conditions</td></tr>
+    <tr><td class="label">Consec-Loss Streak</td><td class="def">3 consecutive losing trades suspend new entries</td><td class="def">A model/regime mismatch that hasn't been caught yet</td></tr>
+    <tr><td class="label">Regime Suspension</td><td class="def">Risk-off or bear regime confirmed</td><td class="def">Entering new risk when the broad market is actively deteriorating</td></tr>
+    <tr><td class="label">Index Trend Gate</td><td class="def">Broad index down sharply intraday</td><td class="def">Catching a falling market on the way down</td></tr>
+    <tr><td class="label">Earnings Proximity</td><td class="def">Earnings within 5 days blocks new entries outright; within 2 days also freezes stop-trail updates on positions already open</td><td class="def">Binary event risk the model wasn't trained to price</td></tr>
+    <tr><td class="label">Correlation / Sector Cap</td><td class="def">Too much exposure to one sector already</td><td class="def">Five correlated bets disguised as five independent ones</td></tr>
+  </tbody>
+</table>
+</section>
+
+<hr class="section-divider">
+
+<!-- WHALES & VOLUME -->
+<section id="whales">
+<h2>Spotting Whale &amp; Volume Activity Fast</h2>
+<p style="color:var(--muted); font-size:13px; margin-bottom:20px;">Two separate detectors exist today, on two different sides of the market. Neither pushes a notification to you automatically yet — you have to check them.</p>
+
+<h3>Equity Volume — Accumulation on the Stock Itself</h3>
+<div class="card">
+  <div style="font-size:13px; color:#94a3b8; margin-bottom:10px;"><span class="label" style="color:var(--text);">Metric:</span> <code style="color:var(--blue);">volume_z</code> — a z-score of today's share volume against the trailing 20-day mean. This already feeds directly into the signal's Trend and Volume pillars, so a real surge is partially priced into the confidence number you see before you even check separately.</div>
+  <div style="font-size:13px; color:#94a3b8;"><span class="label" style="color:var(--text);">To get notified:</span> set a <strong style="color:var(--amber);">Volume Spike</strong> price alert on the symbol (checked every minute). Start around 3× the 20-day average volume as a threshold — high enough to filter routine noise, low enough to catch a real move early.</div>
+</div>
+
+<h3>Options Flow — Institutional Conviction Bets</h3>
+<div class="card">
+  <div style="font-size:13px; color:#94a3b8; margin-bottom:10px;"><span class="label" style="color:var(--text);">Unusual activity:</span> a contract is flagged when today's volume exceeds <strong style="color:var(--text);">30% of open interest</strong> (with a floor of 50+ OI to filter thin, noisy contracts).</div>
+  <div style="font-size:13px; color:#94a3b8; margin-bottom:10px;"><span class="label" style="color:var(--text);">Whale flag:</span> separately marked <code style="color:var(--purple);">is_whale</code> when premium paid on that contract exceeds <strong style="color:var(--text);">$500,000</strong>.</div>
+  <div style="font-size:13px; color:#94a3b8; margin-bottom:10px;"><span class="label" style="color:var(--text);">How to read it:</span> a call sweep that's both unusual (vol/OI &gt; 0.3) <em>and</em> whale-sized (&gt; $500K premium), especially near-the-money and in a near expiry, is the strongest single piece of "someone with real capital has high conviction" evidence this system surfaces.</div>
+  <div class="tip" style="background:rgba(249,115,22,0.06); border-color:rgba(249,115,22,0.18);">⚠ This is <strong>display-only today</strong> — it does not automatically raise signal confidence or position size for that stock. Check the Options Flow tab on the stock detail page manually before entering, especially before a large position. There is no push alert for a whale sweep yet.</div>
+</div>
+
+<div class="tip">Practical combo: a BUY signal + volume_z above ~2 + a whale call sweep on the same stock, all the same day, is the closest this system currently gets to genuine multi-source confirmation. None of the three alone is as strong as the intersection of all three.</div>
+</section>
+
+<hr class="section-divider">
+
+<!-- SITUATIONAL PLAYBOOK -->
+<section id="playbook">
+<h2>Situational Playbook</h2>
+<p style="color:var(--muted); font-size:13px; margin-bottom:20px;">What to do when you see these specific conditions. Ordered by how often each actually comes up.</p>
+
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num" style="background:rgba(34,197,94,0.15); border-color:rgba(34,197,94,0.3); color:var(--green);">✓</div>
+    <div class="step-body">
+      <div class="step-where">BUY signal, confidence 70%+, calibrated win rate agrees</div>
+      <div class="step-title">The strongest case — size as suggested</div>
+      <div class="step-desc">Check the regime badge (bull/neutral preferred), K-Score clears the style's min gate, and the calibration sample size (n) is at least 30. If all three line up, this is the system's best-supported setup. Don't override the suggested position size upward — the sizing already composes regime, VIX, confidence, and research multipliers together.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(250,204,21,0.15); border-color:rgba(250,204,21,0.3); color:var(--yellow);">!</div>
+    <div class="step-body">
+      <div class="step-where">BUY signal but regime is choppy or risk_off</div>
+      <div class="step-title">If the gate opened anyway, that's a point in its favor</div>
+      <div class="step-desc">Position size is already cut automatically in these regimes, and the minimum entry score bar is raised. If the signal cleared the gate despite the higher bar, treat that as meaningful — but still don't add size beyond what's suggested; risk-off sizing exists because historical data showed full-size risk-off entries losing money.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(239,68,68,0.15); border-color:rgba(239,68,68,0.3); color:var(--red);">✕</div>
+    <div class="step-body">
+      <div class="step-where">Position is down, no stop hit yet</div>
+      <div class="step-title">Check the thesis before you check the P&amp;L</div>
+      <div class="step-desc">Has the original entry thesis actually changed (sector rotated, trend broken), or is this normal drawdown within the stock's typical volatility? If the thesis is intact, let the stop do its job. Exiting early on unrealized drawdown alone is the most common way a statistically sound system gets turned into a losing one — it selectively cuts winners-in-progress at their worst moment.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(239,68,68,0.15); border-color:rgba(239,68,68,0.3); color:var(--red);">✕</div>
+    <div class="step-body">
+      <div class="step-where">SELL signal fires on a position you hold</div>
+      <div class="step-title">Check how fresh it is before acting</div>
+      <div class="step-desc">SELL accuracy decays with horizon — strongest in the first 5–10 calendar days after firing, materially weaker by 20 days (the reason SELL outcome hold-windows were deliberately shortened per-style in signals evaluation, separate from BUY's windows). A fresh SELL on an open long is worth acting on. A stale SELL that's been sitting for weeks carries much less evidence — re-check current price action rather than trusting the old label.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(99,102,241,0.15); border-color:rgba(99,102,241,0.3); color:var(--indigo);">?</div>
+    <div class="step-body">
+      <div class="step-where">Confidence and K-Score disagree with each other</div>
+      <div class="step-title">Check if K-Score is measuring something real or a proxy</div>
+      <div class="step-desc">K-Score's value/growth components fall back to price-derived proxies when real fundamentals are missing — check the stock detail page for whether they're populated. If they're proxies, you may be looking at one momentum signal counted twice under two names, not two independent opinions. Weight the confidence/calibration number more heavily in that case.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num" style="background:rgba(100,116,139,0.15); border-color:rgba(100,116,139,0.3); color:var(--muted);">i</div>
+    <div class="step-body">
+      <div class="step-where">A stock has near-zero price history (recent IPO / newly added)</div>
+      <div class="step-title">A missing K-Score is expected, not a bug</div>
+      <div class="step-desc">Stocks under 60 daily bars are excluded from ranking entirely rather than given a misleading score. Wait for history to accumulate rather than trading on signal confidence alone for a stock with no ranking context yet.</div>
+    </div>
+  </div>
+</div>
+
+<div class="tip" style="background:rgba(239,68,68,0.06); border-color:rgba(239,68,68,0.18); margin-top:20px;">
+  <strong style="color:var(--red);">What not to do:</strong> don't act on a signal without checking its freshness timestamp right after a deploy or restart — that's exactly when this system's documented staleness incidents have happened. Don't compare confidence percentages across different horizons or markets as if they're on the same scale. Don't treat HK SHORT-horizon SELL signals as informative — that specific signal type is disabled by design (historical 29% win rate, no real edge).
+</div>
+</section>
+
+<hr class="section-divider">
+
+<!-- FULL WORKFLOW -->
+<section id="workflow">
+<h2>End-to-End Trading Workflow</h2>
+<p style="color:var(--muted); font-size:13px; margin-bottom:20px;">A complete process from market morning to executing and managing trades. Follow this daily routine to get the most out of every feature.</p>
+
+<!-- PHASE 1 -->
+<div class="phase-header">
+  <div class="phase-num" style="background:rgba(56,189,248,0.12); color:var(--blue);">1</div>
+  <div><div class="phase-title">Morning Check — Market Context</div><div class="phase-sub">5–10 minutes · Do this before looking at any individual stock</div></div>
+</div>
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num">①</div>
+    <div class="step-body">
+      <div class="step-where">Home Page → Market Overview</div>
+      <div class="step-title">Read the macro environment</div>
+      <div class="step-desc">Check SPY/QQQ/HSI % change, VIX level, and Fear &amp; Greed index. These set the risk backdrop for the whole day.</div>
+      <ul class="step-bullets">
+        <li>VIX &gt; 25 → <strong>reduce position sizes, tighten stops</strong></li>
+        <li>F&amp;G &lt; 30 (Extreme Fear) → <strong>suppression filters active, wait for stabilization</strong></li>
+        <li>F&amp;G &gt; 75 (Extreme Greed) → <strong>be selective, avoid chasing</strong></li>
+        <li>Market Breadth &gt; 60% → <strong>healthy backdrop, act on setups</strong></li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">②</div>
+    <div class="step-body">
+      <div class="step-where">Home Page → Signal Changes Feed (bottom)</div>
+      <div class="step-title">Check what flipped overnight</div>
+      <div class="step-desc">The Signal Change Feed shows every ▲ Upgrade (→ BUY) and ▼ Downgrade (→ SELL) across your watchlist in the last 48h. Start here to find today's candidates.</div>
+      <ul class="step-bullets">
+        <li><strong>▲ Upgrade to BUY</strong> → add to today's watch list (buy-confidence thresholds vary 20–44% by style and regime — there's no single fixed cutoff to check against)</li>
+        <li><strong>▼ Downgrade on a position you hold</strong> → review for exit</li>
+        <li>Multiple upgrades in same sector → sector momentum building</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">③</div>
+    <div class="step-body">
+      <div class="step-where">Rankings → Sector Rotation</div>
+      <div class="step-title">Identify leading sectors</div>
+      <div class="step-desc">Check which sectors are leading (green) vs lagging (red) vs distributing. Trade with sector tailwinds, not against them.</div>
+      <ul class="step-bullets">
+        <li>Buy stocks in <strong>leading sectors</strong> (≥SPY+3%)</li>
+        <li>Avoid or short stocks in <strong>distributing sectors</strong> (≤SPY-5%)</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 2 -->
+<div class="phase-header" style="margin-top:28px;">
+  <div class="phase-num" style="background:rgba(99,102,241,0.12); color:var(--indigo);">2</div>
+  <div><div class="phase-title">Candidate Discovery — Find Setups</div><div class="phase-sub">10–20 minutes · Multiple paths to find trade candidates</div></div>
+</div>
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num">④</div>
+    <div class="step-body">
+      <div class="step-where">Opportunities Page</div>
+      <div class="step-title">Use pre-built strategy tabs</div>
+      <div class="step-desc">Seven curated strategy views do the filtering for you. Pick the tab that matches your trading style.</div>
+      <ul class="step-bullets">
+        <li><strong>Swing tab</strong> → 5–30d trades with strong technical + BUY signal</li>
+        <li><strong>Confluence tab</strong> → highest-conviction setups where signal + K-Score + technical all agree (≥65)</li>
+        <li><strong>Short-Term tab</strong> → 1–5d momentum plays, often with volume spike</li>
+        <li><strong>AI Signal tab</strong> → ranked by ML confidence</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑤</div>
+    <div class="step-body">
+      <div class="step-where">Screener → Preset Filters or Custom</div>
+      <div class="step-title">Screen for specific conditions</div>
+      <div class="step-desc">Use one-click presets or build your own filter combination. Then review results.</div>
+      <ul class="step-bullets">
+        <li><strong>Vol Surge ⚡</strong> preset → volume ≥2× avg (unusual interest / potential breakout)</li>
+        <li><strong>Strong BUY</strong> preset → BUY signal + K-Score ≥65 + Confidence ≥60%</li>
+        <li><strong>Deep Value</strong> preset → ≥15% below fair price + P/E ≤20</li>
+        <li>Custom: add <strong>Min RS Score 60</strong> to ensure you're only in sector leaders</li>
+        <li>Add <strong>Min Momentum 60</strong> to ensure price is actually moving</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑥</div>
+    <div class="step-body">
+      <div class="step-where">Screener → AI Natural Language</div>
+      <div class="step-title">Use plain English to screen</div>
+      <div class="step-desc">Type what you want in plain English. Examples:</div>
+      <ul class="step-bullets">
+        <li>"<strong>tech stocks with BUY signal and high momentum above 70</strong>"</li>
+        <li>"<strong>undervalued healthcare stocks with analyst buy rating</strong>"</li>
+        <li>"<strong>HK stocks with BUY signal and low PE below 15</strong>"</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 3 -->
+<div class="phase-header" style="margin-top:28px;">
+  <div class="phase-num" style="background:rgba(34,197,94,0.1); color:var(--green);">3</div>
+  <div><div class="phase-title">Deep Analysis — Validate the Setup</div><div class="phase-sub">5–15 minutes per stock · Go to Stock Detail for each candidate</div></div>
+</div>
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num">⑦</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → AI Signal Tab (your horizon)</div>
+      <div class="step-title">Check the Conviction Gate</div>
+      <div class="step-desc">A BUY signal means nothing without Gate confirmation. This is your first filter.</div>
+      <ul class="step-bullets">
+        <li><strong>FULL</strong> → all 8 technical conditions pass. Strongest entry.</li>
+        <li><strong>NEAR</strong> → 6–7 conditions pass. Acceptable if other factors align.</li>
+        <li><strong>FAILED</strong> → don't enter. The technical foundation is broken.</li>
+        <li>Check which specific layers are failing — e.g., if only "RSI Bounds" fails, it may be temporarily overbought and recoverable.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑧</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → K-Score Panel</div>
+      <div class="step-title">Validate stock quality</div>
+      <div class="step-desc">Read the 5 sub-scores. A strong setup has high Technical + Momentum, with acceptable Value and Growth.</div>
+      <ul class="step-bullets">
+        <li>K-Score ≥65 + Grade A or B = quality stock in good shape</li>
+        <li>Low Value score (below 40) is fine for growth stocks — they trade at a premium</li>
+        <li>Low Momentum (&lt;40) despite BUY signal = momentum hasn't started yet. Higher risk.</li>
+        <li>Check <strong>Relative Strength</strong>: ≥60 = sector leader (best for longs)</li>
+        <li>Check <strong>Fair Price</strong>: positive % = stock is undervalued</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑨</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → Research Panel</div>
+      <div class="step-title">Check fundamental alignment</div>
+      <div class="step-desc">The AI Signal is technical. Research is fundamental. When they agree, conviction is highest.</div>
+      <ul class="step-bullets">
+        <li><strong>STRONGLY ALIGNED</strong> (Signal BUY + Research STRONG BUY/BUY) → maximum conviction</li>
+        <li><strong>DIVERGENT</strong> (Signal BUY + Research AVOID/SELL) → proceed very cautiously or skip</li>
+        <li>Check Conviction Score: ≥70 = high conviction. ≥80 = exceptional.</li>
+        <li>If research is stale (&gt;14 days old), click "Generate Research" to refresh</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑩</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → Technical Indicators + Volume Chart</div>
+      <div class="step-title">Confirm technical picture</div>
+      <div class="step-desc">Verify the indicators independently of the AI signal.</div>
+      <ul class="step-bullets">
+        <li>RSI between 40–65 = sweet spot for BUY entries (not overbought)</li>
+        <li>MACD histogram positive AND rising = momentum accelerating</li>
+        <li>Weekly Alignment: CONFIRMED = both timeframes agree</li>
+        <li><strong>Volume spike on an up day</strong> = institutional buying. Best entry signal.</li>
+        <li>Active chart pattern (double bottom, flag, cup) = technical setup confirms</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑪</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → Signal Filter (or Signal Filter page)</div>
+      <div class="step-title">Check suppression conditions</div>
+      <div class="step-desc">Even a BUY with Gate FULL can be suppressed. Check how many dots are active.</div>
+      <ul class="step-bullets">
+        <li>0 dots = clean setup. Act with full size.</li>
+        <li>1–2 yellow dots = minor suppression. Reduce size slightly.</li>
+        <li>3+ dots or any red/orange dot = wait for conditions to clear</li>
+        <li>Weekly Gate (red) = the most important single suppressor. Never trade against a weekly downtrend.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑫</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → Earnings Calendar + Risk Metrics</div>
+      <div class="step-title">Check risk factors before entry</div>
+      <div class="step-desc">Know your risks before entering.</div>
+      <ul class="step-bullets">
+        <li><strong>Earnings within 7 days</strong> → high binary risk. Consider reducing size or waiting.</li>
+        <li><strong>High Max Drawdown</strong> (≥35%) → stock has crashed before. Set tighter stops.</li>
+        <li><strong>Short Trend ↑ (rising shorts)</strong> → bearish institutional pressure. Not disqualifying but a warning.</li>
+        <li><strong>Low Sharpe (&lt;0.5)</strong> → poor risk-adjusted returns historically</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 4 -->
+<div class="phase-header" style="margin-top:28px;">
+  <div class="phase-num" style="background:rgba(245,158,11,0.1); color:var(--amber);">4</div>
+  <div><div class="phase-title">Trade Planning — Define Entry, Stop, Target</div><div class="phase-sub">5–10 minutes · Use the Game Plan as your foundation</div></div>
+</div>
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num">⑬</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → Game Plan Panel</div>
+      <div class="step-title">Generate and review the AI Game Plan</div>
+      <div class="step-desc">Click "Generate Game Plan" for an AI-drafted trade structure. Review every component critically — it's a starting point, not a guaranteed plan.</div>
+      <ul class="step-bullets">
+        <li><strong>Entry Orders</strong>: limit prices near support or key levels. Use the lowest entry if you want the best risk:reward.</li>
+        <li><strong>Stop Loss</strong>: this IS your risk. Know it before you enter. Loss = (Entry - Stop) × Shares.</li>
+        <li><strong>Take Profit</strong>: initial target. Consider scaling out (sell half at TP1, trail the rest).</li>
+        <li><strong>Key Risk</strong>: read this carefully. If the risk is "earnings surprise" and earnings are in 5 days, wait.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑭</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → ML Panel (Kelly Criterion)</div>
+      <div class="step-title">Determine position size</div>
+      <div class="step-desc">Use Kelly Criterion as a guide for position sizing. Half-Kelly is conservative and recommended.</div>
+      <ul class="step-bullets">
+        <li>Confluence Score Strong (≥80): 8–10% of portfolio</li>
+        <li>Confluence Score Good (≥65): 5–7% of portfolio</li>
+        <li>Confluence Score Moderate (≥50): 2–4% of portfolio</li>
+        <li>Confluence Score Weak (&lt;50): avoid</li>
+        <li>Never risk more than 1% of total capital on a single trade's stop loss</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑮</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → AI Chat</div>
+      <div class="step-title">Ask the AI specific questions</div>
+      <div class="step-desc">The AI chat has full context (price, signal, K-Score, analyst target, recent news). Use it to pressure-test your thesis.</div>
+      <ul class="step-bullets">
+        <li>"What are the main risks to a SWING BUY on this stock right now?"</li>
+        <li>"How does this stock's valuation compare to its sector peers?"</li>
+        <li>"What would need to happen for this BUY signal to fail?"</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 5 -->
+<div class="phase-header" style="margin-top:28px;">
+  <div class="phase-num" style="background:rgba(239,68,68,0.1); color:var(--red);">5</div>
+  <div><div class="phase-title">Set Alerts — Never Miss a Move</div><div class="phase-sub">2–5 minutes per stock · Set before the trade, not after</div></div>
+</div>
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num">⑯</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → Price Alert Section (or Opportunities → Alert Suggestions)</div>
+      <div class="step-title">Set entry trigger alerts</div>
+      <div class="step-desc">If you want to buy at a specific limit price, set a "price crosses above X" alert to notify you when it's close. The Opportunities page generates smart alert suggestions based on current technicals.</div>
+      <ul class="step-bullets">
+        <li><strong>Support level break</strong> → alert if price drops below support (stop-loss trigger)</li>
+        <li><strong>Resistance break</strong> → alert if price breaks above resistance (breakout entry)</li>
+        <li><strong>RSI Oversold</strong> → alert when RSI drops below 35 (mean reversion setup)</li>
+        <li><strong>Golden Cross</strong> → alert when SMA50 crosses above SMA200 (major bullish signal)</li>
+        <li><strong>Recurring alerts</strong> → re-arm automatically (useful for ongoing monitoring)</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑰</div>
+    <div class="step-body">
+      <div class="step-where">Alerts Page</div>
+      <div class="step-title">Manage all active alerts</div>
+      <div class="step-desc">View, edit, and delete all your price alerts in one place. See which have triggered and when.</div>
+      <ul class="step-bullets">
+        <li>Set <strong>take-profit alert</strong> when you enter a trade (price reaches your target)</li>
+        <li>Set <strong>stop-loss alert</strong> at your stop level</li>
+        <li>These are email alerts — check your email for notifications</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 6 -->
+<div class="phase-header" style="margin-top:28px;">
+  <div class="phase-num" style="background:rgba(52,211,153,0.1); color:var(--teal);">6</div>
+  <div><div class="phase-title">Paper Trading — Test Before You Risk Real Money</div><div class="phase-sub">Ongoing · Track every trade in the paper portfolio</div></div>
+</div>
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num">⑱</div>
+    <div class="step-body">
+      <div class="step-where">Paper Portfolio Page</div>
+      <div class="step-title">Run the strategy in simulation first</div>
+      <div class="step-desc">The paper portfolio auto-trades based on signals — or you can manually simulate entries. Review performance weekly.</div>
+      <ul class="step-bullets">
+        <li><strong>Equity Curve</strong>: is your portfolio line beating SPY/QQQ? If not, why?</li>
+        <li><strong>Win Rate</strong>: &gt;55% is good for swing trading. Quality matters more than quantity.</li>
+        <li><strong>Sharpe Ratio</strong>: ≥1.0 means you're getting good return for the risk you're taking</li>
+        <li><strong>Monte Carlo P(Positive)</strong>: probability your strategy is profitable by year end. Below 50% = rethink the strategy.</li>
+        <li>Use the benchmark comparison to see if you're actually adding alpha vs just riding the market</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 7 -->
+<div class="phase-header" style="margin-top:28px;">
+  <div class="phase-num" style="background:rgba(167,139,250,0.1); color:var(--purple);">7</div>
+  <div><div class="phase-title">Ongoing Monitoring — Manage Open Positions</div><div class="phase-sub">Daily · 5 minutes per day</div></div>
+</div>
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num">⑲</div>
+    <div class="step-body">
+      <div class="step-where">Home Page → Watchlist + Signal Changes</div>
+      <div class="step-title">Check for signal changes on open positions</div>
+      <div class="step-desc">Scroll to the Signal Change Feed every morning. A ▼ Downgrade on a position you hold is an exit signal.</div>
+      <ul class="step-bullets">
+        <li>BUY → HOLD: the setup is weakening. Tighten stops or take partial profits.</li>
+        <li>BUY → SELL: exit or reduce the position.</li>
+        <li>HOLD → BUY upgrade: add to the position if still within your risk limit.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">⑳</div>
+    <div class="step-body">
+      <div class="step-where">Stock Detail → Volume Chart + Signal Filter</div>
+      <div class="step-title">Watch for deterioration signals</div>
+      <div class="step-desc">For any open position, check these warning signs:</div>
+      <ul class="step-bullets">
+        <li><strong>Weekly Gate turns red</strong>: immediate caution — weekly downtrend</li>
+        <li><strong>Volume spike on a DOWN day</strong>: distribution (selling into weakness)</li>
+        <li><strong>RSI &gt; 70 + Stoch RSI &gt; 80</strong>: overbought, take partial profits</li>
+        <li><strong>MACD histogram turns negative</strong>: momentum has reversed</li>
+        <li><strong>Earnings in &lt;7 days</strong>: decide: hold through earnings (higher risk) or exit before</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 8 -->
+<div class="phase-header" style="margin-top:28px;">
+  <div class="phase-num" style="background:rgba(56,189,248,0.1); color:var(--blue);">8</div>
+  <div><div class="phase-title">Review &amp; Improve — Weekly Analysis</div><div class="phase-sub">Weekly · 20–30 minutes</div></div>
+</div>
+<div class="step-grid">
+  <div class="step">
+    <div class="step-num">㉑</div>
+    <div class="step-body">
+      <div class="step-where">Signal Accuracy Page</div>
+      <div class="step-title">Review signal performance</div>
+      <div class="step-desc">See the historical win rate, average return, and Sharpe ratio of signals you've followed. Are you executing on the best signals?</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">㉒</div>
+    <div class="step-body">
+      <div class="step-where">Trade Performance Page</div>
+      <div class="step-title">Analyze closed trades</div>
+      <div class="step-desc">Review every closed paper trade: duration, exit reason, P&amp;L. Look for patterns in what's working and what's not.</div>
+      <ul class="step-bullets">
+        <li>Are your losses bigger than your wins? Fix your stop loss discipline.</li>
+        <li>Are most wins from Confluence A setups? Focus there.</li>
+        <li>Is a particular horizon (SHORT/SWING) underperforming? Adjust your focus.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">㉓</div>
+    <div class="step-body">
+      <div class="step-where">Journal Page</div>
+      <div class="step-title">Log observations and lessons</div>
+      <div class="step-desc">Write down what worked and what didn't each week. The pattern recognition builds over time and is the most valuable thing you can do to improve.</div>
+    </div>
+  </div>
+</div>
+</section>
+
+<hr class="section-divider">
+
+<!-- ALL PAGES -->
+<section id="pages">
+<h2>All Pages — Quick Reference</h2>
+<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap:10px;">
+  <div class="card-sm"><strong style="color:var(--text);">🏠 Home</strong><div class="range">Watchlist, market overview, breadth, VIX, Fear &amp; Greed, signal changes feed, quick actions</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">🔍 Stock Detail</strong><div class="range">Full per-stock analysis: AI signal, Gate, K-Score, chart, technicals, research, ML, game plan, alerts, chat</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">💡 Opportunities</strong><div class="range">7 strategy tabs (Top Picks, Swing, Short-Term, Long-Term, Growth, AI Signal, Confluence) with ranked candidates + AI outlook</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">📊 Screener</strong><div class="range">Custom multi-factor filter + AI text screener + preset chips. Vol spike, RS, fundamentals, patterns</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">📋 Signal Filter</strong><div class="range">See active suppression conditions per stock. Debug why signals aren't firing. Alert column shows gate pass/fail.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">🏆 Rankings</strong><div class="range">Leaderboard by K-Score. Sector rotation heatmap. Divergence flags. Peer radar comparison.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">💼 Paper Portfolio</strong><div class="range">Simulated trading. Equity curve vs benchmarks. Monte Carlo. Position tracker. P&amp;L by trade.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">🔔 Alerts</strong><div class="range">Price alerts, RSI triggers, MACD crossovers, SMA breaks. Email notifications. Recurring options.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">📰 Research</strong><div class="range">AI fundamental research reports per stock. STRONG BUY to SELL with rationale and risk factors.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">⚡ Short Squeeze</strong><div class="range">Stocks with high short interest + momentum. MoM short trend. Days to cover. Prime candidate highlights.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">📅 Earnings</strong><div class="range">Upcoming earnings across watchlist grouped by time. Signal at earnings. Beat rate history.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">📈 Compare</strong><div class="range">Normalized multi-stock performance chart. Enter 2–5 tickers. Range selector. Return summary table.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">🗺️ Sector Rotation</strong><div class="range">Sector ETF performance vs SPY. Leading vs lagging sectors. Top stocks per sector.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">🌡️ Heatmap</strong><div class="range">All stocks color-coded by today's performance, organized by sector.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">🏛️ Congress Trades</strong><div class="range">Recent Congressional stock trades. Buys/sells by senator/representative.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">👤 Insider</strong><div class="range">Form 4 insider buying/selling activity. Strong insider buying = management confidence.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">📊 Signal Accuracy</strong><div class="range">Historical win rates, avg return, Sharpe by signal type. Calibration data.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">📓 Trade Performance</strong><div class="range">Closed trade review. P&amp;L, exit reason, duration, benchmark comparison.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">📝 Journal</strong><div class="range">Free-form trading notes and lessons by date.</div></div>
+  <div class="card-sm"><strong style="color:var(--text);">🌐 Market Regime</strong><div class="range">Bull/Bear/Choppy/Risk-off regime status based on SPY, VIX, and breadth.</div></div>
+</div>
+
+<div class="highlight" style="margin-top:20px;">
+  <strong>Quick action shortcut:</strong> On any page, clicking a stock symbol takes you to its Stock Detail page. From there, all analysis, alerts, research, and game planning is one click away.
+</div>
+</section>
+
+</main>
+</body>
+</html>

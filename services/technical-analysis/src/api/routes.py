@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from db import Price, Stock, TimeFrame, get_session
 
-from ..indicators import bollinger_bands, fibonacci_retracement, macd, rsi, sma, vwap
+from ..indicators import bollinger_bands, cog, fibonacci_retracement, macd, rsi, sma, supertrend
 from ..indicators.trendlines import detect_support_resistance, detect_trendlines
 from ..patterns import detect_patterns
 
@@ -62,18 +62,94 @@ def get_indicators(
         "ema_26": df["close"].ewm(span=26, adjust=False).mean(),
         "ema_50": df["close"].ewm(span=50, adjust=False).mean(),
         "rsi_14": rsi(df["close"], 14),
-        "vwap": vwap(df["high"], df["low"], df["close"], df["volume"]),
     }
     macd_df = macd(df["close"])
     out.update({c: macd_df[c] for c in macd_df.columns})
     bb = bollinger_bands(df["close"])
     out.update({c: bb[c] for c in bb.columns})
 
+    cog_df = cog(df["close"])
+    out.update({c: cog_df[c] for c in cog_df.columns})
+
+    st = supertrend(df)
+    out["supertrend"] = st["supertrend"]
+    out["supertrend_trend"] = st["trend"]
+
     values = {
         k: [None if pd.isna(x) else float(x) for x in v.tolist()]
         for k, v in out.items()
     }
     return IndicatorOut(ts=[t.isoformat() for t in df["ts"]], values=values)
+
+
+# ---------------------------------------------------------------------------
+# Bulk pattern scan — module-level cache (TTL = 6 hours)
+# NOTE: must be registered BEFORE /{symbol}/patterns or FastAPI will
+# interpret "patterns" as a symbol value and return 404 for this route.
+# ---------------------------------------------------------------------------
+_patterns_bulk_cache: dict = {}  # {market_key: (timestamp, {symbol: [pattern_names]})}
+
+
+@router.get("/patterns/bulk")
+def get_patterns_bulk(
+    market: str | None = None,
+    session: Session = Depends(get_session),
+):
+
+    import time as _time
+
+    market_key = market if market is not None else "__all__"
+    now = _time.time()
+
+    cached = _patterns_bulk_cache.get(market_key)
+    if cached is not None:
+        ts, data = cached
+        if now - ts < 21600:
+            return {"patterns": data, "count": len(data)}
+
+    # Build stock query
+    stmt = select(Stock).where(Stock.active == True)  # noqa: E712
+    if market is not None:
+        stmt = stmt.where(Stock.market == market)
+    stocks = session.execute(stmt).scalars().all()
+
+    since = date.today() - timedelta(days=400)
+    result: dict = {}
+
+    for stock in stocks:
+        try:
+            rows = session.execute(
+                select(Price)
+                .where(
+                    Price.stock_id == stock.id,
+                    Price.timeframe == TimeFrame("1d"),
+                    Price.ts >= since,
+                )
+                .order_by(Price.ts)
+            ).scalars().all()
+
+            if len(rows) < 30:
+                continue
+
+            df = pd.DataFrame(
+                {
+                    "ts": [r.ts for r in rows],
+                    "open": [r.open for r in rows],
+                    "high": [r.high for r in rows],
+                    "low": [r.low for r in rows],
+                    "close": [r.close for r in rows],
+                    "volume": [r.volume for r in rows],
+                }
+            )
+
+            hits = detect_patterns(df)
+            if hits:
+                result[stock.symbol] = [p["name"] for p in hits]
+        except Exception:
+            continue
+
+    _patterns_bulk_cache[market_key] = (now, result)
+    return {"patterns": result, "count": len(result)}
 
 
 @router.get("/{symbol}/patterns")
@@ -97,7 +173,11 @@ def get_levels(
     df = _load_prices(session, symbol, timeframe, days)
     levels = detect_support_resistance(df)
     lines = detect_trendlines(df)
-    fib = fibonacci_retracement(float(df["high"].max()), float(df["low"].min()))
+    swing = df.tail(90)
+    swing_high = swing["high"].max()
+    swing_low = swing["low"].min()
+    import math as _math
+    fib = fibonacci_retracement(float(swing_high), float(swing_low)) if not _math.isnan(swing_high) else {}
     return {
         "symbol": symbol,
         "support_resistance": [vars(L) for L in levels],

@@ -3,7 +3,7 @@ import useSWR, { mutate as globalMutate } from 'swr';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import MarketClosedBanner from '@/components/MarketClosedBanner';
-import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem } from '@/lib/api';
+import { api, type AppUser, type WatchlistItem, type WatchlistMeta, type RankingRow, type LatestPrice, type SignalSummary, type Stock, type PriceAlert, type RelPerfPoint, type SignalAlertItem, type DecisionResult, type OutcomesSummary } from '@/lib/api';
 import { storage } from '@/lib/storage';
 import { getSignalStyle } from '@/lib/settings';
 
@@ -234,12 +234,16 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
   onClose: () => void;
   onAdded: () => void;
 }) {
+  const [tab, setTab] = useState<'search' | 'bulk'>('search');
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState<string | null>(null);
   const [added, setAdded] = useState<Set<string>>(new Set());
+  const [bulkText, setBulkText] = useState('');
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  const [bulkDone, setBulkDone] = useState<number | null>(null);
   const { data: stocks } = useSWR<Stock[]>('stocks-universe', () => api.listStocks());
   const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { inputRef.current?.focus(); }, []);
+  useEffect(() => { if (tab === 'search') inputRef.current?.focus(); }, [tab]);
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', fn);
@@ -262,6 +266,26 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
     onAdded();
   }
 
+  async function handleBulkAdd() {
+    const tokens = bulkText
+      .split(/[\s,\n]+/)
+      .map(t => t.trim().toUpperCase())
+      .filter(t => t.length > 0);
+    const unique = [...new Set(tokens)].filter(sym => !currentSymbols.has(sym));
+    if (unique.length === 0) { setBulkDone(0); return; }
+    setBulkDone(null);
+    setBulkProgress({ done: 0, total: unique.length });
+    for (let i = 0; i < unique.length; i++) {
+      await api.addToWatchlist(unique[i], listId);
+      setBulkProgress({ done: i + 1, total: unique.length });
+    }
+    setBulkProgress(null);
+    setBulkDone(unique.length);
+    onAdded();
+  }
+
+  const bulkRunning = bulkProgress !== null;
+
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
       <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(6,8,20,0.85)', backdropFilter: 'blur(6px)' }} />
@@ -271,40 +295,82 @@ function AddToListModal({ listId, currentSymbols, onClose, onAdded }: {
           <span style={{ fontSize: '15px', fontWeight: 700, color: '#f1f5f9' }}>Add stocks to list</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '16px' }}>✕</button>
         </div>
-        <div style={{ padding: '0 20px 12px', flexShrink: 0 }}>
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Search by symbol or name…"
-            style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box' }}
-          />
+        {/* Tab switcher */}
+        <div style={{ display: 'flex', gap: '6px', padding: '0 20px 12px', flexShrink: 0 }}>
+          <button
+            onClick={() => setTab('search')}
+            style={{ padding: '6px 16px', borderRadius: '8px', border: 'none', fontSize: '13px', fontWeight: 600, cursor: 'pointer', background: tab === 'search' ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.05)', color: tab === 'search' ? '#818cf8' : '#64748b', transition: 'background 0.15s, color 0.15s' }}
+          >
+            Search
+          </button>
+          <button
+            onClick={() => setTab('bulk')}
+            style={{ padding: '6px 16px', borderRadius: '8px', border: 'none', fontSize: '13px', fontWeight: 600, cursor: 'pointer', background: tab === 'bulk' ? 'rgba(100,116,139,0.25)' : 'rgba(255,255,255,0.05)', color: tab === 'bulk' ? '#94a3b8' : '#64748b', transition: 'background 0.15s, color 0.15s' }}
+          >
+            Bulk Paste
+          </button>
         </div>
-        <div style={{ overflowY: 'auto', padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          {!stocks && <div style={{ color: '#475569', fontSize: '13px', padding: '12px 0' }}>Loading…</div>}
-          {filtered.map(stock => {
-            const inList = currentSymbols.has(stock.symbol) || added.has(stock.symbol);
-            const isAdding = adding === stock.symbol;
-            return (
-              <div key={stock.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 12px', borderRadius: '8px', background: inList ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${inList ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.05)'}` }}>
-                <div style={{ minWidth: 0 }}>
-                  <span style={{ fontWeight: 700, fontSize: '13px', color: '#f1f5f9', fontFamily: 'ui-monospace, monospace' }}>{stock.symbol}</span>
-                  <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{stock.name}</span>
-                </div>
-                <button
-                  onClick={() => !inList && addStock(stock.symbol)}
-                  disabled={inList || isAdding}
-                  style={{ flexShrink: 0, marginLeft: '8px', padding: '5px 12px', borderRadius: '6px', border: 'none', fontSize: '12px', fontWeight: 700, cursor: inList ? 'default' : 'pointer', background: inList ? 'rgba(34,197,94,0.1)' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: inList ? '#4ade80' : '#fff', opacity: isAdding ? 0.6 : 1 }}
-                >
-                  {isAdding ? '…' : inList ? '✓' : '+ Add'}
-                </button>
+        {tab === 'search' ? (
+          <>
+            <div style={{ padding: '0 20px 12px', flexShrink: 0 }}>
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search by symbol or name…"
+                style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box' }}
+              />
+            </div>
+            <div style={{ overflowY: 'auto', padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {!stocks && <div style={{ color: '#475569', fontSize: '13px', padding: '12px 0' }}>Loading…</div>}
+              {filtered.map(stock => {
+                const inList = currentSymbols.has(stock.symbol) || added.has(stock.symbol);
+                const isAdding = adding === stock.symbol;
+                return (
+                  <div key={stock.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 12px', borderRadius: '8px', background: inList ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${inList ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.05)'}` }}>
+                    <div style={{ minWidth: 0 }}>
+                      <span style={{ fontWeight: 700, fontSize: '13px', color: '#f1f5f9', fontFamily: 'ui-monospace, monospace' }}>{stock.symbol}</span>
+                      <span style={{ fontSize: '12px', color: '#475569', marginLeft: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{stock.name}</span>
+                    </div>
+                    <button
+                      onClick={() => !inList && addStock(stock.symbol)}
+                      disabled={inList || isAdding}
+                      style={{ flexShrink: 0, marginLeft: '8px', padding: '5px 12px', borderRadius: '6px', border: 'none', fontSize: '12px', fontWeight: 700, cursor: inList ? 'default' : 'pointer', background: inList ? 'rgba(34,197,94,0.1)' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: inList ? '#4ade80' : '#fff', opacity: isAdding ? 0.6 : 1 }}
+                    >
+                      {isAdding ? '…' : inList ? '✓' : '+ Add'}
+                    </button>
+                  </div>
+                );
+              })}
+              {stocks && filtered.length === 0 && (
+                <div style={{ color: '#475569', fontSize: '13px', padding: '16px 0', textAlign: 'center' }}>No tracked stocks match "{query}"</div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div style={{ padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <textarea
+              value={bulkText}
+              onChange={e => { setBulkText(e.target.value); setBulkDone(null); }}
+              placeholder={'Paste symbols separated by commas or newlines…\ne.g. AAPL, GOOGL, TSLA'}
+              rows={7}
+              disabled={bulkRunning}
+              style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: '#f1f5f9', outline: 'none', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'ui-monospace, monospace', lineHeight: '1.5', opacity: bulkRunning ? 0.5 : 1 }}
+            />
+            <button
+              onClick={handleBulkAdd}
+              disabled={bulkRunning || bulkText.trim().length === 0}
+              style={{ padding: '9px 0', borderRadius: '8px', border: 'none', fontSize: '13px', fontWeight: 700, cursor: bulkRunning || bulkText.trim().length === 0 ? 'default' : 'pointer', background: bulkRunning || bulkText.trim().length === 0 ? 'rgba(99,102,241,0.2)' : 'linear-gradient(135deg,#4f46e5,#6366f1)', color: '#fff', opacity: bulkRunning || bulkText.trim().length === 0 ? 0.6 : 1, transition: 'opacity 0.15s' }}
+            >
+              {bulkRunning ? `Adding ${bulkProgress!.done}/${bulkProgress!.total}…` : 'Add All'}
+            </button>
+            {bulkDone !== null && (
+              <div style={{ fontSize: '13px', color: '#4ade80', textAlign: 'center', padding: '4px 0' }}>
+                {bulkDone === 0 ? 'No new symbols to add (all already in list)' : `Done — added ${bulkDone} symbol${bulkDone === 1 ? '' : 's'}`}
               </div>
-            );
-          })}
-          {stocks && filtered.length === 0 && (
-            <div style={{ color: '#475569', fontSize: '13px', padding: '16px 0', textAlign: 'center' }}>No tracked stocks match "{query}"</div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -499,6 +565,23 @@ export default function Watchlist() {
   const { data: rankingsData, mutate: mutateRankings } = useSWR<{ rankings: RankingRow[] }>('rankings-all', () => api.rankings());
   const { data: pricesData, mutate: mutatePrices } = useSWR<LatestPrice[]>('latest-prices', () => api.latestPrices(), { refreshInterval: 60_000 });
   const { data: signalsData, mutate: mutateSignals } = useSWR<SignalSummary[]>('signals-' + effectiveStyle, () => api.allSignals(effectiveStyle));
+  const { data: consensusData } = useSWR<Record<string, Record<string, { signal: string; confidence: number; bullish_probability: number | null; ts: string | null }>>>(
+    'signals-consensus',
+    () => api.signalConsensus(),
+    { revalidateOnFocus: false },
+  );
+  const { data: outcomesSummary } = useSWR<OutcomesSummary>(
+    ['outcomes-summary-wl', effectiveStyle],
+    () => api.outcomesSummary(effectiveStyle, 90),
+    { revalidateOnFocus: false },
+  );
+  const symbolWR = useMemo(() => {
+    const m: Record<string, { wr: number; n: number }> = {};
+    for (const s of outcomesSummary?.by_symbol ?? []) {
+      if (s.count >= 3) m[s.symbol] = { wr: s.win_rate, n: s.count };
+    }
+    return m;
+  }, [outcomesSummary]);
 
   const { data: alertsData, mutate: mutateAlerts } = useSWR<PriceAlert[]>('alerts', () => api.listAlerts(), { refreshInterval: 30_000 });
   const { data: signalAlerts, mutate: mutateSignalAlerts } = useSWR<SignalAlertItem[]>('signal-alerts', () => api.listSignalAlerts(), { refreshInterval: 60_000 });
@@ -513,6 +596,7 @@ export default function Watchlist() {
   const [moving, setMoving] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [sigFilter, setSigFilter] = useState<SigFilter>('ALL');
+  const [marketFilter, setMarketFilter] = useState<'ALL' | 'US' | 'HK'>('ALL');
   const [sortKey, setSortKey] = useState<SortKey>('symbol');
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [noteModal, setNoteModal] = useState<string | null>(null);
@@ -521,6 +605,8 @@ export default function Watchlist() {
   const [viewMode, setViewMode] = useState<'list' | 'compare'>('list');
   const [compareSymbols, setCompareSymbols] = useState<string[]>([]);
   const [compareDays, setCompareDays] = useState(90);
+  const [deScanResults, setDeScanResults] = useState<DecisionResult[] | null>(null);
+  const [deScanLoading, setDeScanLoading] = useState(false);
 
   const { data: relPerfData, isLoading: relPerfLoading } = useSWR<Record<string, RelPerfPoint[]>>(
     viewMode === 'compare' && compareSymbols.length > 0
@@ -705,15 +791,17 @@ export default function Watchlist() {
   const stats = useMemo(() => {
     const counts = { BUY: 0, HOLD: 0, WAIT: 0, SELL: 0 };
     for (const item of data ?? []) {
+      if (marketFilter !== 'ALL' && item.market !== marketFilter) continue;
       const s = getSignal(item.symbol);
       if (s === 'BUY' || s === 'HOLD' || s === 'WAIT' || s === 'SELL') counts[s]++;
     }
     return counts;
-  }, [data, signalMap, rankMap]);
+  }, [data, signalMap, rankMap, marketFilter]);
 
   /* Filtered + sorted */
   const visible = useMemo(() => {
     let list = (data ?? []).filter(item => {
+      if (marketFilter !== 'ALL' && item.market !== marketFilter) return false;
       if (sigFilter === 'ALL') return true;
       return getSignal(item.symbol) === sigFilter;
     });
@@ -731,7 +819,7 @@ export default function Watchlist() {
       return 0;
     });
     return list;
-  }, [data, sigFilter, sortKey, priceMap, rankMap, signalMap]);
+  }, [data, sigFilter, marketFilter, sortKey, priceMap, rankMap, signalMap]);
 
   const noteItem  = noteModal  ? data?.find(d => d.symbol === noteModal)  : null;
   const alertItem = alertModal ? data?.find(d => d.symbol === alertModal) : null;
@@ -775,6 +863,24 @@ export default function Watchlist() {
           <button onClick={handleRefresh} disabled={refreshing} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '6px', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(255,255,255,0.03)', color: refreshing ? '#818cf8' : '#64748b', cursor: 'pointer', fontSize: '13px' }}>
             <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
             {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+          <button
+            onClick={async () => {
+              if (!data || data.length === 0) return;
+              setDeScanLoading(true);
+              setDeScanResults(null);
+              try {
+                const symbols = visible.map(i => i.symbol);
+                const market = marketFilter !== 'ALL' ? marketFilter : 'US';
+                const results = await api.decideBatch(symbols, effectiveStyle, market);
+                setDeScanResults(results);
+              } catch { setDeScanResults([]); }
+              finally { setDeScanLoading(false); }
+            }}
+            disabled={deScanLoading || !data || visible.length === 0}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', borderRadius: '6px', border: '1px solid rgba(52,211,153,0.3)', background: deScanLoading ? 'rgba(52,211,153,0.05)' : 'rgba(52,211,153,0.08)', color: deScanLoading ? '#64748b' : '#34d399', cursor: deScanLoading ? 'default' : 'pointer', fontSize: '13px', fontWeight: 600 }}
+          >
+            {deScanLoading ? 'Scanning…' : '⚡ DE Scan'}
           </button>
         </div>
       </div>
@@ -885,10 +991,58 @@ export default function Watchlist() {
             </div>
           ))}
           <div style={{ borderRadius: '10px', border: '1px solid #1e293b', background: '#0f172a', padding: '10px 18px', textAlign: 'center', minWidth: '80px' }}>
-            <div style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0', lineHeight: 1 }}>{data.length}</div>
+            <div style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0', lineHeight: 1 }}>{marketFilter === 'ALL' ? data.length : data.filter(d => d.market === marketFilter).length}</div>
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', marginTop: '3px', letterSpacing: '0.06em' }}>TOTAL</div>
           </div>
         </div>
+
+        {/* DE Scan results panel */}
+        {deScanResults && deScanResults.length > 0 && (() => {
+          const VERDICT_COLOR: Record<string, string> = { BUY: '#22c55e', SCALE: '#86efac', HOLD: '#f59e0b', SKIP: '#64748b', BLOCKED: '#ef4444' };
+          return (
+            <div style={{ background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 10, padding: '14px 16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#34d399' }}>⚡ Decision Engine Scan</span>
+                <span style={{ fontSize: 11, color: '#475569' }}>{deScanResults.length} symbols · {effectiveStyle} style · sorted by score</span>
+                <button onClick={() => setDeScanResults(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>×</button>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #1e293b' }}>
+                      {['Symbol', 'Verdict', 'Score', 'Min', 'Regime', 'Confidence', 'ML Prob', 'Research', 'Vol Z', 'R:R', 'Position'].map(h => (
+                        <th key={h} style={{ padding: '5px 8px', textAlign: 'left', color: '#475569', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deScanResults.map(r => (
+                      <tr key={r.symbol} style={{ borderBottom: '1px solid #0f172a' }}>
+                        <td style={{ padding: '5px 8px', fontWeight: 700, color: '#e2e8f0' }}>
+                          <a href={`/stock/${r.symbol}`} style={{ color: '#e2e8f0', textDecoration: 'none' }}>{r.symbol}</a>
+                        </td>
+                        <td style={{ padding: '5px 8px' }}>
+                          <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: `${VERDICT_COLOR[r.verdict] ?? '#334155'}18`, color: VERDICT_COLOR[r.verdict] ?? '#94a3b8', border: `1px solid ${VERDICT_COLOR[r.verdict] ?? '#334155'}` }}>
+                            {r.verdict}
+                          </span>
+                        </td>
+                        <td style={{ padding: '5px 8px', fontWeight: 700, color: r.score >= r.min_score ? '#22c55e' : '#ef4444' }}>{r.score}</td>
+                        <td style={{ padding: '5px 8px', color: '#64748b' }}>{r.min_score}</td>
+                        <td style={{ padding: '5px 8px', color: '#94a3b8', fontSize: 11 }}>{r.factors.regime ?? '—'}</td>
+                        <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{r.factors.signal_confidence != null ? `${r.factors.signal_confidence.toFixed(0)}%` : '—'}</td>
+                        <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{r.factors.ml_bull_prob != null ? `${(r.factors.ml_bull_prob * 100).toFixed(0)}%` : '—'}</td>
+                        <td style={{ padding: '5px 8px', color: r.factors.research_recommendation === 'BUY' ? '#22c55e' : '#64748b', fontSize: 11 }}>{r.factors.research_recommendation ?? '—'}</td>
+                        <td style={{ padding: '5px 8px', color: (r.factors.volume_z ?? 0) >= 1.5 ? '#f59e0b' : '#64748b' }}>{r.factors.volume_z != null ? r.factors.volume_z.toFixed(1) : '—'}</td>
+                        <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{r.position ? `${r.position.rr_ratio.toFixed(1)}:1` : '—'}</td>
+                        <td style={{ padding: '5px 8px', color: '#64748b', fontSize: 11 }}>{r.position ? `${r.position.shares}sh @ $${r.position.entry_price.toFixed(2)}` : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Filter + Sort bar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
@@ -896,6 +1050,13 @@ export default function Watchlist() {
             {(['ALL', 'BUY', 'HOLD', 'WAIT', 'SELL'] as SigFilter[]).map(f => (
               <button key={f} onClick={() => setSigFilter(f)} style={{ padding: '6px 12px', border: 'none', cursor: 'pointer', transition: 'all 0.15s', background: sigFilter === f ? (f === 'BUY' ? 'rgba(34,197,94,0.2)' : f === 'SELL' ? 'rgba(239,68,68,0.2)' : f === 'WAIT' ? 'rgba(251,146,60,0.15)' : f === 'HOLD' ? 'rgba(250,204,21,0.15)' : '#334155') : 'transparent', color: sigFilter === f ? (f === 'BUY' ? '#4ade80' : f === 'SELL' ? '#f87171' : f === 'WAIT' ? '#fb923c' : f === 'HOLD' ? '#facc15' : '#e2e8f0') : '#64748b' }}>
                 {f}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', borderRadius: '6px', border: '1px solid #334155', overflow: 'hidden', fontSize: '12px', fontWeight: 600 }}>
+            {(['ALL', 'US', 'HK'] as const).map(m => (
+              <button key={m} onClick={() => setMarketFilter(m)} style={{ padding: '6px 12px', border: 'none', cursor: 'pointer', transition: 'all 0.15s', background: marketFilter === m ? (m === 'HK' ? 'rgba(251,146,60,0.2)' : m === 'US' ? 'rgba(99,102,241,0.2)' : '#334155') : 'transparent', color: marketFilter === m ? (m === 'HK' ? '#fb923c' : m === 'US' ? '#818cf8' : '#e2e8f0') : '#64748b' }}>
+                {m === 'ALL' ? 'All Markets' : m}
               </button>
             ))}
           </div>
@@ -980,6 +1141,92 @@ export default function Watchlist() {
                   {sig && sigLabel && (
                     <span style={{ fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '5px', color: sig.color, background: sig.bg, border: `1px solid ${sig.border}`, letterSpacing: '0.05em' }}>{sigLabel}</span>
                   )}
+                  {sigLabel === 'HOLD' && (() => {
+                    const bp = signalMap[item.symbol]?.bullish_probability;
+                    if (bp == null || bp < 0.55 || bp >= 0.65) return null;
+                    return (
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', padding: '2px 5px', borderRadius: '3px' }}
+                            title={`Near BUY — bullish probability ${(bp * 100).toFixed(1)}% (threshold: 65%)`}>
+                        ~BUY
+                      </span>
+                    );
+                  })()}
+                  {(sigLabel === 'HOLD' || sigLabel === 'WAIT') && (() => {
+                    const bp = signalMap[item.symbol]?.bullish_probability;
+                    if (bp == null || bp <= 0.35 || bp > 0.45) return null;
+                    return (
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: '#f87171', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', padding: '2px 5px', borderRadius: '3px' }}
+                            title={`Near SELL — bullish probability ${(bp * 100).toFixed(1)}% (approaching sell zone: ≤35%)`}>
+                        ~SELL
+                      </span>
+                    );
+                  })()}
+                  {symbolWR[item.symbol] && (() => {
+                    const { wr, n } = symbolWR[item.symbol];
+                    const wrPct = Math.round(wr * 100);
+                    const col = wrPct >= 55 ? '#22c55e' : wrPct >= 45 ? '#f59e0b' : '#ef4444';
+                    return (
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: col, background: `${col}18`, border: `1px solid ${col}44`, padding: '2px 5px', borderRadius: '3px' }}
+                            title={`90d win rate: ${wrPct}% (${n} outcomes)`}>
+                        {wrPct}%WR
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    const conf = signalMap[item.symbol]?.confidence;
+                    if (conf == null) return null;
+                    const col = conf >= 70 ? '#22c55e' : conf >= 55 ? '#f59e0b' : '#f87171';
+                    return (
+                      <span style={{ fontSize: '9px', fontWeight: 600, color: col, padding: '1px 4px' }}
+                            title={`Signal confidence: ${conf.toFixed(0)}%`}>
+                        {conf.toFixed(0)}%
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    const ts = signalMap[item.symbol]?.ts;
+                    if (!ts) return null;
+                    const ageHours = (Date.now() - new Date(ts).getTime()) / 3_600_000;
+                    if (ageHours < 24) return null;
+                    const ageDays = Math.floor(ageHours / 24);
+                    const col = ageHours > 72 ? '#ef4444' : '#f59e0b';
+                    return (
+                      <span style={{ fontSize: '8px', fontWeight: 600, color: col, opacity: 0.8 }}
+                            title={`Signal is ${ageDays}d old — may need refresh`}>
+                        {ageDays}d
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    const cons = consensusData?.[item.symbol];
+                    if (!cons) return null;
+                    const HORIZONS = ['SHORT', 'SWING', 'LONG', 'GROWTH'] as const;
+                    const LABELS: Record<string, string> = { SHORT: 'S', SWING: 'W', LONG: 'L', GROWTH: 'G' };
+                    const SIG_COL: Record<string, string> = { BUY: '#22c55e', SELL: '#ef4444', HOLD: '#38bdf8', WAIT: '#f59e0b' };
+                    const buyCount = HORIZONS.filter(h => cons[h]?.signal === 'BUY').length;
+                    const hasAny = HORIZONS.some(h => cons[h]);
+                    if (!hasAny) return null;
+                    return (
+                      <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}
+                           title={`Multi-horizon signals: ${HORIZONS.map(h => `${h}: ${cons[h]?.signal ?? '—'}`).join(', ')}`}>
+                        {HORIZONS.map(h => {
+                          const s = cons[h];
+                          if (!s) return <span key={h} style={{ fontSize: '8px', color: '#334155', fontWeight: 600 }}>{LABELS[h]}–</span>;
+                          const col = SIG_COL[s.signal] ?? '#64748b';
+                          return (
+                            <span key={h} style={{ fontSize: '8px', fontWeight: 700, color: col, opacity: 0.85 }}>
+                              {LABELS[h]}
+                            </span>
+                          );
+                        })}
+                        {buyCount >= 3 && (
+                          <span style={{ fontSize: '8px', fontWeight: 700, color: '#22c55e', background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', padding: '1px 3px', borderRadius: '2px', marginLeft: 1 }}>
+                            {buyCount}/4
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {rank?.score != null && (
                     <div style={{ flex: 1 }}>
                       <div style={{ height: '4px', borderRadius: '2px', background: '#1e293b', overflow: 'hidden' }}>

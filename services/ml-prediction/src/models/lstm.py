@@ -45,7 +45,7 @@ class LSTMModel(BaseModel):
         self.net: _LSTMNet | None = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs) -> None:
         Xs, ys = _windowed(X, y, self.seq_len)
         if len(Xs) == 0:
             raise ValueError("Insufficient data for LSTM training")

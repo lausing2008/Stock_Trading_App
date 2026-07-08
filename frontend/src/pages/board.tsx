@@ -632,17 +632,32 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
                       {((plan.exit_price! - effectiveEntry) / (plan.take_profit - effectiveEntry) * 100).toFixed(0)}% of target
                     </div>
                   )}
-                  {plan.trading_style && (
-                    <div style={{
-                      fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px',
-                      letterSpacing: '0.06em',
-                      color: plan.trading_style === 'SHORT' ? '#f87171' : plan.trading_style === 'LONG' ? '#4ade80' : '#818cf8',
-                      background: plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.12)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.12)' : 'rgba(129,140,248,0.12)',
-                      border: `1px solid ${plan.trading_style === 'SHORT' ? 'rgba(248,113,113,0.3)' : plan.trading_style === 'LONG' ? 'rgba(74,222,128,0.3)' : 'rgba(129,140,248,0.3)'}`,
-                    }}>
-                      {plan.trading_style}
-                    </div>
-                  )}
+                  {(() => {
+                    const STYLE_C: Record<string, { color: string; bg: string; border: string }> = {
+                      SHORT:  { color: '#f87171', bg: 'rgba(248,113,113,0.12)',  border: 'rgba(248,113,113,0.3)'  },
+                      SWING:  { color: '#818cf8', bg: 'rgba(129,140,248,0.12)', border: 'rgba(129,140,248,0.3)'  },
+                      LONG:   { color: '#4ade80', bg: 'rgba(74,222,128,0.12)',  border: 'rgba(74,222,128,0.3)'   },
+                      GROWTH: { color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', border: 'rgba(167,139,250,0.3)'  },
+                    };
+                    if (plan.trading_style) {
+                      const c = STYLE_C[plan.trading_style] ?? { color: '#64748b', bg: 'rgba(100,116,139,0.12)', border: 'rgba(100,116,139,0.3)' };
+                      return <div style={{ fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px', letterSpacing: '0.06em', color: c.color, background: c.bg, border: `1px solid ${c.border}` }}>{plan.trading_style}</div>;
+                    }
+                    return (
+                      <select
+                        onClick={e => e.stopPropagation()}
+                        onChange={async e => {
+                          if (!e.target.value) return;
+                          await api.updateBoardPlan(plan.id, { trading_style: e.target.value });
+                          onExitSaved();
+                        }}
+                        style={{ fontSize: 10, background: '#0f172a', color: '#475569', border: '1px solid #1e293b', borderRadius: 4, padding: '1px 4px', cursor: 'pointer' }}
+                      >
+                        <option value="">Set style…</option>
+                        {['SHORT', 'SWING', 'LONG', 'GROWTH'].map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    );
+                  })()}
                 </div>
               </div>
             ) : (
@@ -821,7 +836,7 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
                 {STAGE_META[s].label}
               </button>
             ))}
-            {plan.stage === 'planning' && (
+            {(plan.stage === 'planning' || plan.stage === 'active') && (
               <Link
                 href={`/research/${plan.symbol}`}
                 style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, cursor: 'pointer', border: '1px solid rgba(74,222,128,0.4)', background: 'rgba(74,222,128,0.1)', color: '#4ade80', marginLeft: '2px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
@@ -829,6 +844,19 @@ function PlanCard({ plan, priceAlerts, signalAlert, livePrice, onStageChange, on
                 Research
               </Link>
             )}
+            {plan.stage === 'active' && plan.trading_style && (() => {
+              const maxDays: Record<string, number> = { SHORT: 5, SWING: 14, LONG: 30, GROWTH: 20 };
+              const max = maxDays[plan.trading_style] ?? 14;
+              const daysHeld = Math.floor((Date.now() - new Date(plan.updated_at).getTime()) / 86400000);
+              const pct = Math.min(1, daysHeld / max);
+              const color = pct >= 0.9 ? '#f87171' : pct >= 0.7 ? '#fbbf24' : '#475569';
+              return (
+                <span title={`~${daysHeld}d in trade · ${plan.trading_style} max ~${max}d`}
+                  style={{ fontSize: '9px', fontWeight: 700, color, padding: '2px 6px', borderRadius: '4px', marginLeft: '2px', background: pct >= 0.9 ? 'rgba(248,113,113,0.1)' : 'transparent', border: pct >= 0.9 ? '1px solid rgba(248,113,113,0.25)' : '1px solid transparent' }}>
+                  {daysHeld}d
+                </span>
+              );
+            })()}
             {plan.stage === 'active' && (
               <button
                 onClick={() => setAlertOpen(o => !o)}
@@ -981,14 +1009,25 @@ export default function BoardPage() {
     const updates: Record<string, unknown> = { stage: 'closed' };
     if (!isNaN(exitPrice) && exitPrice > 0) updates.exit_price = exitPrice;
     await api.updateBoardPlan(closeConfirmId, updates);
-    // Remove from Positions if the card has a tracked position
+    // Remove from Positions and credit cash proceeds if the card has a tracked position
     if (closePlan?.symbol) {
       try {
         const positions = await api.listPositions();
         const existing = positions.find(p => p.symbol === closePlan.symbol.toUpperCase());
         if (existing) {
+          const isHK = /\.(HK|hk)$/.test(closePlan.symbol) || /^\d{4,5}$/.test(closePlan.symbol);
+          const currency: 'USD' | 'HKD' = isHK ? 'HKD' : 'USD';
           if (!isNaN(exitPrice) && exitPrice > 0 && (closePlan.shares ?? 0) > 0) {
-            await api.sellPosition(existing.id, { shares: Math.min(closePlan.shares!, existing.shares), price: exitPrice });
+            const soldShares = Math.min(closePlan.shares!, existing.shares);
+            await api.sellPosition(existing.id, { shares: soldShares, price: exitPrice });
+            // Credit proceeds back to cash balance
+            try {
+              const currentCash = await api.getCash();
+              await api.updateCash({
+                ...currentCash,
+                [currency]: Math.max(0, (currentCash[currency] ?? 0) + soldShares * exitPrice),
+              });
+            } catch { /* best-effort cash update */ }
           } else {
             await api.removePosition(existing.id);
           }
@@ -1014,12 +1053,21 @@ export default function BoardPage() {
       try {
         const positions = await api.listPositions();
         const existing = positions.find(p => p.symbol === activatingPlan.symbol.toUpperCase());
-        const currency = /\.(HK|hk)$/.test(activatingPlan.symbol) || /^\d{4,5}$/.test(activatingPlan.symbol) ? 'HKD' : 'USD';
+        const isHK = /\.(HK|hk)$/.test(activatingPlan.symbol) || /^\d{4,5}$/.test(activatingPlan.symbol);
+        const currency: 'USD' | 'HKD' = isHK ? 'HKD' : 'USD';
         if (existing) {
           await api.buyMorePosition(existing.id, { shares, price: fillPrice });
         } else {
           await api.addPosition({ symbol: activatingPlan.symbol, shares, price: fillPrice, currency });
         }
+        // Debit purchase cost from cash balance
+        try {
+          const currentCash = await api.getCash();
+          await api.updateCash({
+            ...currentCash,
+            [currency]: Math.max(0, (currentCash[currency] ?? 0) - shares * fillPrice),
+          });
+        } catch { /* best-effort cash debit */ }
         setFillSyncMsg(`✓ Added to Positions (${shares} shares @ ${fillPrice})`);
       } catch {
         setFillSyncMsg('⚠ Position sync failed — add manually in Positions');
@@ -1084,10 +1132,13 @@ export default function BoardPage() {
     const worst = Math.min(...returns);
 
     // Per-style breakdown
-    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa' };
-    const styleBreakdown = (['SHORT', 'SWING', 'LONG', 'GROWTH'] as const)
+    const styleColors: Record<string, string> = { SHORT: '#f87171', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#a78bfa', OTHER: '#64748b' };
+    const knownStyles = ['SHORT', 'SWING', 'LONG', 'GROWTH'] as const;
+    const styleBreakdown = ([...knownStyles, 'OTHER'] as string[])
       .map(style => {
-        const group = closed.filter(p => p.trading_style === style);
+        const group = style === 'OTHER'
+          ? closed.filter(p => !p.trading_style || !knownStyles.includes(p.trading_style as typeof knownStyles[number]))
+          : closed.filter(p => p.trading_style === style);
         if (group.length === 0) return null;
         const rets = group.map(p => {
           const eff = p.actual_entry_price ?? p.entry_price!;
@@ -1219,7 +1270,9 @@ export default function BoardPage() {
         const activeWithEntry = byStage.active.filter(p => (p.actual_entry_price ?? p.entry_price) != null);
         if (activeWithEntry.length === 0) return null;
 
-        let totalPnl = 0, totalRisk = 0, pnlCount = 0, riskCount = 0, breachCount = 0, nearTargetCount = 0;
+        let totalPnl = 0, totalRisk = 0, capitalDeployed = 0;
+        let pnlCount = 0, riskCount = 0, capitalCount = 0, breachCount = 0, nearTargetCount = 0;
+        const styleCounts: Record<string, number> = {};
         for (const p of activeWithEntry) {
           const lp = livePriceMap[p.symbol];
           const entry = p.actual_entry_price ?? p.entry_price!;
@@ -1228,36 +1281,58 @@ export default function BoardPage() {
           const target = p.take_profit ?? gpj?.take_profit?.price ?? null;
           if (lp && p.shares) { totalPnl += (lp.price - entry) * p.shares; pnlCount++; }
           if (stop != null && p.shares) { totalRisk += Math.max(0, (entry - stop) * p.shares); riskCount++; }
+          if (p.shares) { capitalDeployed += entry * p.shares; capitalCount++; }
           if (lp && stop != null && lp.price < stop) breachCount++;
           if (lp && target != null && lp.price >= target * 0.98) nearTargetCount++;
+          const style = p.trading_style ?? 'OTHER';
+          styleCounts[style] = (styleCounts[style] ?? 0) + 1;
         }
+        const styleColors: Record<string, string> = { SHORT: '#38bdf8', SWING: '#818cf8', LONG: '#4ade80', GROWTH: '#fb923c', OTHER: '#64748b' };
 
         return (
-          <div style={{ marginBottom: '16px', padding: '8px 14px', borderRadius: '8px', background: '#080f1e', border: '1px solid #1e293b', display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>ACTIVE {activeWithEntry.length}</span>
-            {pnlCount > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{ fontSize: '10px', color: '#475569' }}>Unrealized P&amp;L</span>
-                <span style={{ fontSize: '14px', fontWeight: 800, fontFamily: 'monospace', color: totalPnl >= 0 ? '#4ade80' : '#f87171' }}>
-                  {totalPnl >= 0 ? '+' : ''}${Math.abs(totalPnl).toFixed(0)}
+          <div style={{ marginBottom: '16px', padding: '8px 14px', borderRadius: '8px', background: '#080f1e', border: '1px solid #1e293b' }}>
+            <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: '10px', fontWeight: 700, color: '#334155', letterSpacing: '0.06em' }}>ACTIVE {activeWithEntry.length}</span>
+              {pnlCount > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ fontSize: '10px', color: '#475569' }}>Unrealized P&amp;L</span>
+                  <span style={{ fontSize: '14px', fontWeight: 800, fontFamily: 'monospace', color: totalPnl >= 0 ? '#4ade80' : '#f87171' }}>
+                    {totalPnl >= 0 ? '+' : ''}${Math.abs(totalPnl).toFixed(0)}
+                  </span>
+                </div>
+              )}
+              {capitalCount > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ fontSize: '10px', color: '#475569' }}>Deployed</span>
+                  <span style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace', color: '#94a3b8' }}>${capitalDeployed.toFixed(0)}</span>
+                </div>
+              )}
+              {riskCount > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ fontSize: '10px', color: '#475569' }}>Total Risk</span>
+                  <span style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace', color: '#f87171' }}>-${totalRisk.toFixed(0)}</span>
+                </div>
+              )}
+              {breachCount > 0 && (
+                <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                  ⚠ {breachCount} stop breached
                 </span>
+              )}
+              {nearTargetCount > 0 && (
+                <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.25)' }}>
+                  ↑ {nearTargetCount} near target
+                </span>
+              )}
+            </div>
+            {Object.keys(styleCounts).length > 0 && (
+              <div style={{ display: 'flex', gap: '6px', marginTop: '6px', paddingTop: '6px', borderTop: '1px solid #0f172a', flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: '10px', fontWeight: 700, color: '#1e293b', letterSpacing: '0.06em' }}>BY STYLE</span>
+                {Object.entries(styleCounts).map(([style, count]) => (
+                  <span key={style} style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: styleColors[style] ?? '#64748b', background: `${styleColors[style] ?? '#64748b'}10`, border: `1px solid ${styleColors[style] ?? '#64748b'}25` }}>
+                    {style} {count}
+                  </span>
+                ))}
               </div>
-            )}
-            {riskCount > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{ fontSize: '10px', color: '#475569' }}>Total Risk</span>
-                <span style={{ fontSize: '14px', fontWeight: 800, fontFamily: 'monospace', color: '#f87171' }}>-${totalRisk.toFixed(0)}</span>
-              </div>
-            )}
-            {breachCount > 0 && (
-              <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#f87171', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)' }}>
-                ⚠ {breachCount} stop breached
-              </span>
-            )}
-            {nearTargetCount > 0 && (
-              <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, color: '#4ade80', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.25)' }}>
-                ↑ {nearTargetCount} near target
-              </span>
             )}
           </div>
         );

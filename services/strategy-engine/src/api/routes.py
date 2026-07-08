@@ -143,7 +143,28 @@ def backtest(
         raise HTTPException(404, f"No data for {body.symbol}")
 
     engine = BacktestEngine()
-    result = engine.run(df, rule_dsl.get("entry"), rule_dsl.get("exit"))
+    try:
+        result = engine.run(df, rule_dsl.get("entry"), rule_dsl.get("exit"))
+    except ValueError as exc:
+        raise HTTPException(422, f"Invalid rule_dsl: {exc}") from exc
+
+    # Fetch SPY benchmark for the same date range
+    spy_df = _fetch_prices_df("SPY", start, end)
+    if not spy_df.empty and len(spy_df) > 1:
+        spy_close = spy_df.set_index("ts")["close"].sort_index()
+        # Align to strategy dates
+        spy_rets = spy_close.pct_change().fillna(0)
+        spy_eq = (1 + spy_rets).cumprod()
+        spy_total = float(spy_eq.iloc[-1] - 1)
+        spy_years = max((spy_df["ts"].iloc[-1] - spy_df["ts"].iloc[0]).days / 365.25, 1e-6)
+        spy_cagr = float(spy_eq.iloc[-1] ** (1 / spy_years) - 1) if spy_eq.iloc[-1] > 0 else -1.0
+        result.benchmark_cagr = round(spy_cagr, 4)
+        result.benchmark_total_return = round(spy_total, 4)
+        result.alpha = round(result.cagr - spy_cagr, 4)
+        result.benchmark_equity_curve = [
+            {"ts": str(t), "equity": round(float(e), 6)}
+            for t, e in zip(spy_df["ts"], spy_eq, strict=False)
+        ][-500:]
 
     bt = Backtest(
         strategy_id=strat.id,
@@ -157,7 +178,14 @@ def backtest(
         cagr=result.cagr,
         profit_factor=result.profit_factor,
         total_return=result.total_return,
-        equity_curve={"data": result.equity_curve[-500:]},
+        equity_curve={
+            "data": result.equity_curve[-500:],
+            "sortino": result.sortino,
+            "calmar": result.calmar,
+            "benchmark_cagr": result.benchmark_cagr,
+            "alpha": result.alpha,
+            "benchmark_equity_curve": result.benchmark_equity_curve,
+        },
         trades={"data": result.trades},
     )
     session.add(bt)
@@ -187,8 +215,8 @@ def list_backtests(
             "total_return": bt.total_return,
             "cagr": bt.cagr,
             "sharpe": bt.sharpe,
-            "sortino": None,
-            "calmar": None,
+            "sortino": (bt.equity_curve or {}).get("sortino"),
+            "calmar": (bt.equity_curve or {}).get("calmar"),
             "max_drawdown": bt.max_drawdown,
             "win_rate": bt.win_rate,
             "profit_factor": bt.profit_factor,
@@ -221,8 +249,8 @@ def get_backtest(
         "total_return": bt.total_return,
         "cagr": bt.cagr,
         "sharpe": bt.sharpe,
-        "sortino": None,
-        "calmar": None,
+        "sortino": (bt.equity_curve or {}).get("sortino"),
+        "calmar": (bt.equity_curve or {}).get("calmar"),
         "max_drawdown": bt.max_drawdown,
         "win_rate": bt.win_rate,
         "profit_factor": bt.profit_factor,
@@ -246,7 +274,7 @@ def delete_backtest(
     if not strat or strat.owner != username:
         raise HTTPException(403, "Not your backtest")
     session.delete(bt)
-    # Clean up orphaned strategy (no other backtests use it)
+    session.flush()   # apply delete before the count so orphan check sees the updated state
     remaining = session.query(Backtest).filter(Backtest.strategy_id == strat.id).count()
     if remaining == 0:
         session.delete(strat)

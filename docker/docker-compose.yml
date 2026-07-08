@@ -28,7 +28,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy volatile-lru
     #ports: ["6379:6379"]
     networks: [stockai-net]
     volumes:
@@ -106,6 +106,20 @@ services:
       dockerfile: services/research-engine/Dockerfile
     #ports: ["8008:8008"]
 
+  decision-engine:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/decision-engine/Dockerfile
+    #ports: ["8009:8009"]
+
+  event-intelligence:
+    <<: *py-common
+    build:
+      context: ..
+      dockerfile: services/event-intelligence/Dockerfile
+    #ports: ["8010:8010"]
+
   api-gateway:
     <<: *py-common
     build:
@@ -132,6 +146,10 @@ services:
       portfolio-optimizer:
         condition: service_healthy
       research-engine:
+        condition: service_healthy
+      decision-engine:
+        condition: service_healthy
+      event-intelligence:
         condition: service_healthy
 
   frontend:

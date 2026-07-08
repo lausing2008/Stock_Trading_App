@@ -37,6 +37,7 @@ class SignalAlertOut(BaseModel):
     symbol: str
     email: str | None
     last_signal: str | None
+    last_sent_at: datetime | None
     alert_mode: str
     horizon: str
     require_consensus: bool

@@ -45,4 +45,10 @@ run_migration "005_paper_portfolio_unique_index.sql"
 # Signal deduplication — unique constraint prevents concurrent refresh races
 run_migration "006_signal_unique_constraint.sql"
 
+# T232-OC6: censored-outcome tracking (survivorship bias fix) — additive nullable column
+run_migration "010_add_skip_reason_to_signal_outcomes.sql"
+
+# T232-PT6: scale-out realized P&L accumulator + entry_shares snapshot
+run_migration "011_add_realized_pnl_to_paper_trades.sql"
+
 echo "=== All migrations complete ==="
