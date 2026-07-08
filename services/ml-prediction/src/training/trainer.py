@@ -387,6 +387,12 @@ def _load_outcome_features(symbol: str, style: str = "SWING", lookback_days: int
     # Sort by date so rolling windows are computed in chronological order.
     df["ts"] = pd.to_datetime(df["ts"])
     df = df.sort_values("ts").reset_index(drop=True)
+    # T237-ML4: exclude today's partially-observed intraday bar, matching train_model() and
+    # validate_walkforward()'s existing pattern — a live-updating bar skews rolling features
+    # (SMA, ATR, z-scores) even though no label depends on it here.
+    df = df[df["ts"].dt.date < _date.today()].copy()
+    if df.empty:
+        return pd.DataFrame(), pd.Series(dtype=int)
 
     try:
         _outcome_horizon = {"SWING": 10, "LONG": 20, "GROWTH": 15, "SHORT": 5}.get(style.upper(), 10)
