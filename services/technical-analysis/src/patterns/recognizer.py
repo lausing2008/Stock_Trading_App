@@ -32,7 +32,12 @@ def _pct(a: float, b: float) -> float:
 
 
 def detect_head_and_shoulders(df: pd.DataFrame) -> list[PatternHit]:
-    highs_idx, _ = _find_pivots(df["close"], order=5)
+    # T237-TA-HS-CLOSE-HIGH-MISMATCH: pivots were found on `close` but then compared/scored
+    # using `high` at those same indices. A close-based local max is not guaranteed to line up
+    # with the bar's high, so the "shoulder"/"head" pivot indices could silently point at bars
+    # that aren't actually local highs at all. Find pivots on `high` directly since this pattern
+    # is a peak (resistance) formation.
+    highs_idx, _ = _find_pivots(df["high"], order=5)
     highs_idx = _last_n_pivots(highs_idx, 5)
     if len(highs_idx) < 3:
         return []
@@ -162,6 +167,18 @@ def detect_double_top_bottom(df: pd.DataFrame) -> list[PatternHit]:
                 }
             ))
             break
+
+    # T237-TA-DTB-MUTUAL-EXCLUSION: double-bottom (bullish) and double-top (bearish) are found by
+    # two independent scans over disjoint pivot arrays (lows_idx vs highs_idx), so nothing stopped
+    # both from firing for the same window — e.g. a choppy W-M consolidation produces a real local
+    # low pair AND a real local high pair, yielding a BUY-reversal and a SELL-reversal hit at once.
+    # Keep only the higher-confidence hit when their bar ranges overlap; a stock can't be both
+    # bottoming and topping in the same window.
+    if len(hits) == 2:
+        (bot, top) = hits if hits[0].name == "double_bottom" else (hits[1], hits[0])
+        overlaps = bot.start_idx <= top.end_idx and top.start_idx <= bot.end_idx
+        if overlaps:
+            hits = [bot] if bot.confidence >= top.confidence else [top]
 
     return hits
 
