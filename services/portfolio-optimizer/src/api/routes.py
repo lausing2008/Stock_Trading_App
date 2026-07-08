@@ -11,11 +11,13 @@ from common.jwt_auth import get_current_username
 from pydantic import BaseModel
 
 from common.config import get_settings
+from common.logging import get_logger
 
 from ..optimizers import ai_allocation, hierarchical_risk_parity, mean_variance, risk_parity
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 _settings = get_settings()
+log = get_logger("portfolio-optimizer")
 
 METHOD = Literal["mean_variance", "risk_parity", "hierarchical_risk_parity", "ai_allocation"]
 MIN_ROWS = 30  # minimum trading days required
@@ -68,8 +70,18 @@ def _fetch_closes(symbols: list[str], lookback_days: int) -> tuple[pd.DataFrame,
     return result, dropped + newly_dropped
 
 
-def _fetch_scores(symbols: list[str]) -> dict[str, float]:
-    scores = {}
+def _fetch_scores(symbols: list[str]) -> tuple[dict[str, float], list[str]]:
+    """Fetch K-Scores. Returns (scores, failed_symbols).
+
+    T237-PO1: a transient ranking-engine failure (timeout, 5xx, connection reset) used to
+    silently omit that symbol from `scores` with no log line — ai_allocation's
+    `scores.get(s, 0)` then defaulted it to 0, always below min_score, so the symbol was
+    silently excluded from the optimized portfolio indistinguishably from a genuinely low
+    K-Score. Track and surface failures separately, same pattern _fetch_closes already uses
+    for dropped_symbols, so callers/operators can tell "scored low" from "score fetch failed".
+    """
+    scores: dict[str, float] = {}
+    failed: list[str] = []
     with httpx.Client(timeout=15) as c:
         for s in symbols:
             try:
@@ -77,9 +89,13 @@ def _fetch_scores(symbols: list[str]) -> dict[str, float]:
                 if r.status_code == 200:
                     val = r.json().get("score")
                     scores[s] = float(val) if val is not None else 0.0
-            except Exception:
-                continue
-    return scores
+                else:
+                    failed.append(s)
+                    log.warning("portfolio.score_fetch_failed", symbol=s, status=r.status_code)
+            except Exception as exc:
+                failed.append(s)
+                log.warning("portfolio.score_fetch_failed", symbol=s, error=str(exc))
+    return scores, failed
 
 
 @router.post("/optimize")
@@ -104,10 +120,12 @@ def optimize(req: OptimizeRequest, _: str = Depends(get_current_username)):
     elif req.method == "hierarchical_risk_parity":
         out = hierarchical_risk_parity(returns)
     else:
-        scores = _fetch_scores(list(closes.columns))
+        scores, failed_scores = _fetch_scores(list(closes.columns))
         out = ai_allocation(returns, scores, min_score=req.min_score)
 
     result = asdict(out)
     if dropped:
         result["dropped_symbols"] = dropped
+    if req.method == "ai_allocation" and failed_scores:
+        result["failed_score_symbols"] = failed_scores
     return result
