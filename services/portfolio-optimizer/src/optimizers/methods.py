@@ -211,7 +211,11 @@ def ai_allocation(
     max_weight: float = 0.40,
 ) -> PortfolioWeights:
     """Filter by K-Score, blend score-based return views with historical, maximize Sharpe."""
-    keep = [s for s in returns.columns if scores.get(s, 0) >= min_score]
+    # T237-PO1: `scores` now only contains symbols the caller successfully fetched a score for
+    # (see routes.py's _fetch_scores) — a symbol missing from this dict means its fetch FAILED,
+    # not that it scored 0. Only filter on real scores so a transient ranking-engine failure
+    # doesn't silently masquerade as "this stock doesn't meet the quality bar".
+    keep = [s for s in returns.columns if scores.get(s, -1) >= min_score]
     if not keep:
         return PortfolioWeights("ai_allocation", {}, cash=1.0)
 
