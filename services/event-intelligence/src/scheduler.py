@@ -55,17 +55,25 @@ async def job_recompute_catalyst():
     from db import SessionLocal
     from sqlalchemy import text
     _tech_scores = {}
+    _atr_pcts: dict[int, float] = {}
     try:
         with SessionLocal() as _s:
             rows = _s.execute(text(
-                "SELECT DISTINCT ON (stock_id) stock_id, (reasons->>'ta_score')::float AS ta_score "
+                "SELECT DISTINCT ON (stock_id) stock_id, (reasons->>'ta_score')::float AS ta_score, "
+                "(reasons->>'atr_14_pct')::float AS atr_14_pct "
                 "FROM signals WHERE reasons->>'ta_score' IS NOT NULL "
                 "ORDER BY stock_id, ts DESC"
             )).fetchall()
             _tech_scores = {r[0]: float(r[1]) for r in rows if r[1] is not None}
+            # T237-EI3: _compute_risk_score's "Volatility risk (ATR % passed from signal)" branch
+            # was permanently dead — no caller anywhere ever passed a non-default atr_pct, so
+            # highly volatile stocks got 0 risk points from this branch instead of the intended
+            # up-to-+20. atr_14_pct lives in this same signals.reasons JSONB the ta_score query
+            # already reads, so wiring it through here is a natural extension of the same query.
+            _atr_pcts = {r[0]: float(r[2]) for r in rows if r[2] is not None}
     except Exception as exc:
         log.error("scheduler.tech_scores_fetch_failed", error=str(exc))
-    await _run("recompute_catalyst", catalyst.recompute_all(technical_scores=_tech_scores))
+    await _run("recompute_catalyst", catalyst.recompute_all(technical_scores=_tech_scores, atr_pcts=_atr_pcts))
 
 
 async def start_scheduler():
