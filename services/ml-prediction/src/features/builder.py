@@ -44,7 +44,12 @@
   days_to_earnings      — days to next expected earnings (0–90, 90=unknown/far)
   avg_post_earnings_return_5d — mean 5d return after past 4 earnings (PEAD signal)
   avg_revenue_surprise_pct    — mean revenue beat/miss % over last 4 quarters
-  eps_revision_direction      — direction of analyst recommendation changes over 8 weekly snapshots (+1=upgrading, 0=flat, -1=downgrading)
+  (eps_revision_direction removed T237-ML2: broadcast today's analyst-recommendation-trend
+   to every historical training row with no date bound — the exact lookahead-bias class
+   already fixed for recommendation_mean itself via the PIT snapshot join below, but missed
+   for this derived feature. Removed rather than reimplemented, matching this session's
+   ML-DEAD1 precedent, since a correct point-in-time version needs a nontrivial rolling-window
+   join against fundamentals_snapshot.)
 
 3 signal outcome (T206 — look-ahead-safe: only uses outcomes with exit_date ≤ bar_date − 10d):
   sig_acc_30d   — fraction of BUY signals correct in the prior 30-day exit window
@@ -299,8 +304,8 @@ FUNDAMENTAL_COLUMNS = [
     "ddm_discount",         # (div_yield / 0.07) - 1; positive = undervalued on dividend basis
     # T89-B: Piotroski F-Score — 0-9 composite quality metric from existing fundamentals
     "piotroski_score",      # 0=distressed, 9=high quality; NaN when insufficient fundamentals
-    # T220-F: Earnings revision momentum — direction of analyst recommendation changes over 8 weekly snapshots
-    "eps_revision_direction",  # +1 = upgrading, 0 = flat, -1 = downgrading
+    # T220-F/T237-ML2: eps_revision_direction removed — broadcast lookahead bias, see module
+    # docstring above for the full explanation. Not reimplemented as point-in-time (yet).
 ]
 
 # SA-29: Weekly context features — NaN-allowed (like fundamentals) so stocks with
@@ -518,9 +523,14 @@ def compute_label_threshold(df: pd.DataFrame, horizon: int = 5, symbol: str = ""
 
 
 def _rsi(close: pd.Series, w: int = 14) -> pd.Series:
+    # T237-ML3: min_periods=w added — same missing-warmup bug class already found and fixed
+    # this session in technical-analysis's atr() and strategy-engine's RSI/MACD/ATR/EMA.
+    # Without it, .ewm() emits non-NaN values from the 2nd row, well before the nominal
+    # w-period window has actually filled — a training feature that's statistically
+    # meaningless in the warmup window but indistinguishable from a converged value.
     d = close.diff()
-    g = d.clip(lower=0).ewm(alpha=1 / w, adjust=False).mean()
-    l = (-d.clip(upper=0)).ewm(alpha=1 / w, adjust=False).mean()
+    g = d.clip(lower=0).ewm(alpha=1 / w, adjust=False, min_periods=w).mean()
+    l = (-d.clip(upper=0)).ewm(alpha=1 / w, adjust=False, min_periods=w).mean()
     rs = g / l.replace(0, np.nan)
     return 100 - 100 / (1 + rs)
 
@@ -610,7 +620,8 @@ def build_features(
         (lo - c.shift(1)).abs(),
     ], axis=1).max(axis=1)
     # Wilder's EWM-ATR: matches paper trading and signal ATR (alpha=1/14 = Wilder smoothing)
-    atr14 = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    # T237-ML3: min_periods=14 added — see _rsi()'s comment above for the full explanation.
+    atr14 = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
     out["atr_14_pct"] = atr14 / c.replace(0, np.nan)
     out["atr_ratio"] = atr14 / atr14.rolling(20).mean().replace(0, np.nan)
 
@@ -627,10 +638,11 @@ def build_features(
     # --- Oscillators ---
     out["rsi_14"] = _rsi(c)
 
-    ema12 = c.ewm(span=12, adjust=False).mean()
-    ema26 = c.ewm(span=26, adjust=False).mean()
+    # T237-ML3: min_periods added — see _rsi()'s comment above for the full explanation.
+    ema12 = c.ewm(span=12, adjust=False, min_periods=12).mean()
+    ema26 = c.ewm(span=26, adjust=False, min_periods=26).mean()
     macd_line = ema12 - ema26
-    sig = macd_line.ewm(span=9, adjust=False).mean()
+    sig = macd_line.ewm(span=9, adjust=False, min_periods=9).mean()
     # Normalise by price so MACD is comparable across different price levels and over time
     price_norm = c.replace(0, np.nan)
     out["macd"] = macd_line / price_norm
@@ -748,31 +760,6 @@ def build_features(
     # --- Fundamental features (static per stock — broadcast from most-recent snapshot) ---
     # XGBoost handles NaN natively; models trained before this data exists will
     # see NaN for all fundamental columns and learn to ignore them gracefully.
-
-    # QW-1: eps_revision_direction query must run BEFORE the broadcast loop so the
-    # computed value is present in fund_data when FUNDAMENTAL_COLUMNS are assigned.
-    _eps_rev_sym = (fund_data or {}).get("_symbol") if fund_data else None
-    if _eps_rev_sym and "eps_revision_direction" not in (fund_data or {}):
-        try:
-            from db import SessionLocal
-            from sqlalchemy import text as _stext
-            with SessionLocal() as _fs:
-                _snaps = _fs.execute(_stext("""
-                    SELECT recommendation_mean
-                    FROM fundamentals_snapshot
-                    WHERE symbol = :sym
-                    ORDER BY snapshot_date DESC
-                    LIMIT 8
-                """), {"sym": _eps_rev_sym.upper()}).fetchall()
-            if len(_snaps) >= 2:
-                _recent_rec = float(_snaps[0].recommendation_mean)
-                _old_rec = float(_snaps[-1].recommendation_mean)
-                _rec_delta = _old_rec - _recent_rec  # positive = analysts upgrading
-                _rev_dir = 1 if _rec_delta > 0.15 else (-1 if _rec_delta < -0.15 else 0)
-                fund_data = fund_data or {}
-                fund_data["eps_revision_direction"] = float(_rev_dir)
-        except Exception:
-            pass
 
     for col in FUNDAMENTAL_COLUMNS:
         val = (fund_data or {}).get(col)
